@@ -203,7 +203,7 @@ class TestFallbackChainAdvancement:
 
     def test_youtab_non_anthropic_fallback_stays_on_chat_completions(self):
         portal = "https://inference-api.youtab.io/v1"
-        fbs = [{"provider": "youtab", "model": "youtab-4-405b"}]
+        fbs = [{"provider": "youtab", "model": "openai/gpt-5.5"}]
         agent = _make_agent(fallback_model=fbs)
         with (
             patch(
@@ -214,7 +214,7 @@ class TestFallbackChainAdvancement:
                 "agent.auxiliary_client.resolve_provider_client",
                 return_value=(
                     _mock_client(base_url=portal, api_key="portal-jwt"),
-                    "youtab-4-405b",
+                    "openai/gpt-5.5",
                 ),
             ),
             patch(

@@ -296,11 +296,11 @@ class TestMoaAggregatorSharedResolution:
                             "youtab-mix": {
                                 "enabled": True,
                                 "reference_models": [
-                                    {"provider": "youtab", "model": "youtab-4-70b"}
+                                    {"provider": "youtab", "model": "openai/gpt-5.4-mini"}
                                 ],
                                 "aggregator": {
                                     "provider": "youtab",
-                                    "model": "youtab-4-405b",
+                                    "model": "openai/gpt-5.5",
                                 },
                             },
                         },

@@ -29,13 +29,13 @@ This release reworks how the brand uppercase + Mondwest styling and color hierar
 
 ### Added
 
-- Storybook autodocs enabled for all components ([#21](https://github.com/YoutabBV/design-language/pull/21)).
+- Storybook autodocs enabled for all components (upstream design-language #21).
 
 ## 0.14.2
 
 ### Added
 
-- `Checkbox` component built on Radix primitive ([#20](https://github.com/YoutabBV/design-language/pull/20)).
+- `Checkbox` component built on Radix primitive (upstream design-language #20).
 
 ### Fixed
 

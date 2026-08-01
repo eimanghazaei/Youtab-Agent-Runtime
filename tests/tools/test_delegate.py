@@ -256,7 +256,7 @@ class TestDelegateTask(unittest.TestCase):
                 goal="Stay on chat completions",
                 context=None,
                 toolsets=None,
-                model="youtab-4-405b",
+                model="openai/gpt-5.5",
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
@@ -264,14 +264,14 @@ class TestDelegateTask(unittest.TestCase):
 
             _, kwargs = MockAgent.call_args
             self.assertEqual(kwargs["provider"], "youtab")
-            self.assertEqual(kwargs["model"], "youtab-4-405b")
+            self.assertEqual(kwargs["model"], "openai/gpt-5.5")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
 
         with patch("run_agent.AIAgent") as MockAgent:
             mock_child = MagicMock()
             MockAgent.return_value = mock_child
             parent.api_mode = "chat_completions"
-            parent.model = "youtab-4-405b"
+            parent.model = "openai/gpt-5.5"
 
             _build_child_agent(
                 task_index=0,

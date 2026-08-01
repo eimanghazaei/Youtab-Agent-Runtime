@@ -68,7 +68,7 @@ class TestApiModeRouting:
             == "anthropic_messages"
         )
         assert (
-            determine_api_mode("youtab", PORTAL_URL, model="youtab-4-405b")
+            determine_api_mode("youtab", PORTAL_URL, model="openai/gpt-5.5")
             == "chat_completions"
         )
         # No model → historical OpenAI-wire default (safer than guessing).
@@ -117,7 +117,7 @@ class TestRuntimeResolution:
         monkeypatch.setattr(
             rp,
             "_get_model_config",
-            lambda: {"provider": "youtab", "default": "youtab-4-405b"},
+            lambda: {"provider": "youtab", "default": "openai/gpt-5.5"},
         )
 
         resolved = rp.resolve_runtime_provider(
@@ -439,16 +439,16 @@ class TestAuxiliaryDualWire:
         with (
             patch(
                 "agent.auxiliary_client._try_youtab",
-                return_value=(plain, "youtab-4-405b"),
+                return_value=(plain, "openai/gpt-5.5"),
             ),
             patch(
                 "agent.anthropic_adapter.build_anthropic_client",
                 side_effect=AssertionError("must not build Anthropic client"),
             ),
         ):
-            client, model = resolve_provider_client("youtab", "youtab-4-405b")
+            client, model = resolve_provider_client("youtab", "openai/gpt-5.5")
 
-        assert model == "youtab-4-405b"
+        assert model == "openai/gpt-5.5"
         assert client is plain
         assert not isinstance(client, AnthropicAuxiliaryClient)
 
