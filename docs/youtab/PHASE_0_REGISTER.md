@@ -4,7 +4,7 @@
 
 **Gate:** G0 OPEN
 
-**Branch:** `bootstrap/phase-0-ground-truth`
+**Branch:** `agent/supply-chain-sovereignty`
 
 **Date opened:** 2026-08-01
 
@@ -36,6 +36,15 @@ boundary, or asset dependency.
   not merge into a Youtab product branch.
 - [x] Source-level supply-chain policy, offline installers, SBOM/checksum/
   provenance generators, and fail-closed release proof gate added.
+- [x] Private downstream `main` published at the exact pinned upstream commit
+  `cc4cab2f592e60a197e796506de9168f74baf3ea`.
+- [x] Downstream working branch published at
+  `89cea8fd61ebe5afe2e6c9c9147753f0ff284c20` and Draft PR #6 opened.
+- [x] All 16 owner-supplied architecture-intake documents verified
+  byte-for-byte against their source copies and a SHA-256 manifest.
+- [x] Authenticated checkouts of all three repositories established; the
+  2026-08-01 intake SHAs are Agent Runtime `89cea8fd61eb`,
+  backend `77393aeab7f8`, and frontend `07e452d53c6a`.
 
 ## Open requirements
 
@@ -56,26 +65,30 @@ boundary, or asset dependency.
   populate and verify the exact artifacts recorded by the manifests.
 - [ ] Build the production image with no external artifact egress, generate a
   full image/OS SBOM, sign image and provenance, and prove offline rebuild.
-- [ ] Store and periodically restore-test a verified all-ref Git bundle in a
-  durable location outside GitHub.
+- [x] Store and restore-test a verified all-ref Git bundle in a durable
+  location outside GitHub.
 - [ ] Verify the staged Simorgh implementation contents; current hash proves
   archive identity only, not frontend compatibility or Dutch-language parity.
 - [ ] Freeze the versioned Agent Control Plane contract in `youtab-ai-os`.
 - [x] Create the private GitHub repository
   `eimanghazaei/Youtab-Agent-Runtime` and configure it as `origin`.
-- [ ] Push this branch and open a Draft PR without merging it.
+- [x] Push this branch and open a Draft PR without merging it.
 
 ## Current blockers
 
 | ID | Blocker | Impact | Required resolution |
 |---|---|---|---|
-| B0-01 | Current runtime has no GitHub write connector and no `gh` CLI | Cannot create the private GitHub repository, push, or open a Draft PR | Restore GitHub app write capability or provide an environment with authenticated GitHub CLI |
-| B0-02 | Private `youtab-ai-os` is not readable from this runtime | Backend SHA and contracts cannot be verified | Connect the GitHub repository or provide an authenticated checkout |
-| B0-03 | Private `youtab-frontend` is not readable from this runtime | Frontend SHA, WIP, UI paths, and asset destination cannot be verified | Connect the GitHub repository or provide an authenticated checkout |
 | B0-04 | Docker is not installed in this Work runtime | Container and sandbox baseline cannot run here | Run Phase 1 on the approved isolated Runtime host with Docker/container support |
 | B0-05 | Work runtime denies the Unix-domain socket required by `execute_code` tests | Two timezone/code-execution tests are environment-blocked | Rerun the exact canonical test file on the approved Runtime host; do not weaken the code or test |
 | B0-06 | Internal PyPI/npm/OCI/binary stores and their credentials are not available in this runtime | Artifact copies, signatures, and a real offline rebuild cannot be completed | Provision Youtab-owned stores and run the release gate with immutable proof files |
 | B0-07 | Docker/Syft/Cosign are unavailable here | Production image, complete image SBOM, vulnerability scan, and signed provenance cannot be produced | Run the exact release workflow on the approved build runner |
+| B0-08 | The current fine-grained PAT lacks Workflow write permission; 19 of 1406 quarantined branch refs and 0 of 29 quarantined tag refs are materialized remotely | Manual mirror publication is incomplete; local mirror and off-GitHub bundle remain complete | Merge Draft PR #6 only after review/authorization so the repository-scoped workflow can publish all refs with its bounded `GITHUB_TOKEN`, or grant the PAT Workflow write permission |
+
+## Resolved access blockers
+
+- B0-01: portable authenticated GitHub CLI plus GitHub App write path proven.
+- B0-02: `youtab-ai-os` cloned and pinned at `77393aeab7f848e3332826c2a463e22f5079f0f9`.
+- B0-03: `youtab-frontend` cloned and pinned at `07e452d53c6a09f3d29601184174b21606f6daf8`.
 
 ## Gate verdict
 

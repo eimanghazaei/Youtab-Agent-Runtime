@@ -21,13 +21,14 @@ connect directly to this runtime.
 
 ## Current state
 
-- Bootstrap branch: `bootstrap/phase-0-ground-truth`
+- Downstream branch: `agent/supply-chain-sovereignty`
 - Upstream source is pinned and recorded in `UPSTREAM_PROVENANCE.md`.
 - No upstream core patch has been made.
 - Phase 0 is in progress; Gate G0 is not closed.
 - Phase 1 unmodified runtime qualification has not started.
 - Private origin: `eimanghazaei/Youtab-Agent-Runtime`; product changes remain
   isolated on a non-`main` branch until review and explicit merge approval.
+- Draft PR: `eimanghazaei/Youtab-Agent-Runtime#6`.
 - No merge, deployment, VPS change, or production admission is authorized by
   this bootstrap.
 
@@ -45,6 +46,9 @@ connect directly to this runtime.
   offline dependencies, SBOM/provenance, branding, and release gates.
 - `architecture-intake/README.md` — owner-supplied architecture reference
   set with explicit non-canon authority boundaries and a 16-file inventory.
+- `EXECUTION_REPORT_2026-08-01.md` — exact three-repository state, Hermes
+  completeness verdict, update-admission policy, validation, and roadmap gate
+  status.
 
 The operating doctrine is **Proof, Not Claim**. An unchecked item is not an
 implemented or supported capability.
