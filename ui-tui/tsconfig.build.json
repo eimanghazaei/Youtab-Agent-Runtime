@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@youtab/agent-ink": ["src/types/youtab-ink.d.ts"]
+    }
+  }
+}
