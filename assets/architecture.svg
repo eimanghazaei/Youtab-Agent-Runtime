@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 720" width="1600" height="720" role="img" aria-labelledby="t d">
+  <title id="t">Youtab Agent Runtime architectural position</title>
+  <desc id="d">One Youtab Brain issues signed task contracts to the Youtab Agent Runtime. The runtime executes against N replaceable Engines and returns completion, evidence and effect proposals to the Brain, which owns the Effect Gate.</desc>
+
+  <defs>
+    <linearGradient id="y" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#37D1CF"/>
+      <stop offset="1" stop-color="#4A8BF5"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#37D1CF"/>
+      <stop offset="1" stop-color="#4A8BF5"/>
+    </linearGradient>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#4A8BF5"/>
+    </marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#5B6B86"/>
+    </marker>
+  </defs>
+
+  <style>
+    .bg   { fill: #0B1220; }
+    .card { fill: #131C2E; stroke: #223049; stroke-width: 2; }
+    .auth { fill: #131C2E; stroke: url(#edge); stroke-width: 3; }
+    .h    { fill: #FFFFFF; font-family: "Segoe UI", Inter, system-ui, -apple-system, sans-serif; font-weight: 700; }
+    .p    { fill: #9FB0C9; font-family: "Segoe UI", Inter, system-ui, -apple-system, sans-serif; font-weight: 400; }
+    .tag  { fill: #37D1CF; font-family: "Segoe UI", Inter, system-ui, -apple-system, sans-serif; font-weight: 600; letter-spacing: .10em; }
+    .flow { stroke: #4A8BF5; stroke-width: 3; fill: none; }
+    .back { stroke: #5B6B86; stroke-width: 2.5; fill: none; stroke-dasharray: 8 7; }
+  </style>
+
+  <rect class="bg" width="1600" height="720" rx="20"/>
+
+  <!-- brand mark -->
+  <rect x="60" y="48" width="56" height="56" rx="15" fill="url(#y)"/>
+  <path d="M74 63 L88 82 L102 63 M88 82 L88 92" stroke="#FFFFFF" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <text class="h" x="134" y="88" font-size="30">Youtab Agent Runtime</text>
+  <text class="p" x="134" y="112" font-size="17">Execution substrate under One Brain &#8212; never a second Cognitive Authority</text>
+
+  <!-- 1. Brain -->
+  <rect class="auth" x="60" y="168" width="1480" height="128" rx="16"/>
+  <text class="tag" x="92" y="205" font-size="13">COGNITIVE AUTHORITY</text>
+  <text class="h"   x="92" y="240" font-size="25">Youtab One Brain</text>
+  <text class="p"   x="92" y="270" font-size="17">Intent, planning, tenant policy, durable memory promotion, model admission and the Effect Gate.</text>
+
+  <!-- Brain -> Runtime -->
+  <path class="flow" d="M800 296 L800 356" marker-end="url(#a)"/>
+  <text class="p" x="824" y="332" font-size="16">signed task contract &#183; tenant scope &#183; shared reasoning envelope</text>
+
+  <!-- 2. Runtime -->
+  <rect class="card" x="60" y="360" width="1480" height="136" rx="16"/>
+  <text class="tag" x="92" y="397" font-size="13">EXECUTION SUBSTRATE</text>
+  <text class="h"   x="92" y="432" font-size="25">Youtab Agent Runtime</text>
+  <text class="p"   x="92" y="462" font-size="17">Agents, sub-agents and Super-Agent Units &#183; tools, skills, plugins &#183; delegation and scheduling &#183; CLI / TUI / Desktop &#183; offline-capable.</text>
+  <text class="p"   x="92" y="484" font-size="16" fill="#7C8CA6">Cannot grant capabilities, set policy, authorize irreversible effects, or write sovereign memory.</text>
+
+  <!-- Runtime -> Engines -->
+  <path class="flow" d="M800 496 L800 552" marker-end="url(#a)"/>
+
+  <!-- 3. Engines -->
+  <g>
+    <rect class="card" x="60"   y="556" width="340" height="104" rx="14"/>
+    <text class="h" x="88" y="596" font-size="20">Engine 1</text>
+    <text class="p" x="88" y="624" font-size="16">local &#183; offline &#183; quantized</text>
+
+    <rect class="card" x="428"  y="556" width="340" height="104" rx="14"/>
+    <text class="h" x="456" y="596" font-size="20">Engine 2</text>
+    <text class="p" x="456" y="624" font-size="16">hosted &#183; frontier</text>
+
+    <rect class="card" x="796"  y="556" width="340" height="104" rx="14"/>
+    <text class="h" x="824" y="596" font-size="20">Engine 3</text>
+    <text class="p" x="824" y="624" font-size="16">self-hosted &#183; portal</text>
+
+    <rect class="card" x="1164" y="556" width="376" height="104" rx="14"/>
+    <text class="h" x="1192" y="596" font-size="20">Engine N</text>
+    <text class="p" x="1192" y="624" font-size="16">replaceable &#183; engines do not vote</text>
+  </g>
+
+  <!-- Return path: evidence and effect proposals -->
+  <path class="back" d="M1560 608 L1580 608 L1580 232 L1540 232" marker-end="url(#ar)"/>
+  <text class="p" x="1516" y="530" font-size="15" text-anchor="end">completion &#183; evidence &#183; uncertainty</text>
+  <text class="p" x="1516" y="552" font-size="15" text-anchor="end">effect proposals (runtime_authorized = false)</text>
+</svg>
