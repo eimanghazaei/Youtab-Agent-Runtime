@@ -178,24 +178,27 @@ def _bare_custom_provider_def(current_base_url: str) -> Optional[ProviderDef]:
 # Non-agentic model warning
 # ---------------------------------------------------------------------------
 
-_YOUTAB_AGENT_MODEL_WARNING = (
-    "Youtab B.V. Youtab 3 & 4 models are NOT agentic and are not designed "
-    "for use with Youtab Agent Runtime. They lack the tool-calling capabilities "
-    "required for agent workflows. Consider using an agentic model instead "
-    "(Claude, GPT, Gemini, DeepSeek, etc.)."
+_NON_AGENTIC_CHAT_MODEL_WARNING = (
+    "Hermes 3 & 4 are third-party chat models resold through the Youtab "
+    "Portal. They are NOT agentic and lack the tool-calling capabilities "
+    "required for Youtab Agent Runtime workflows. Consider using an agentic "
+    "model instead (Claude, GPT, Gemini, DeepSeek, etc.)."
 )
 
-# Match only the real Youtab B.V. Youtab 3 / Youtab 4 chat families.
-# The previous substring check (`"youtab" in name.lower()`) false-positived on
-# unrelated local Modelfiles like ``youtab-brain:qwen3-14b-ctx16k`` that just
-# happen to carry "youtab" in their tag but are fully tool-capable.
+# Match only the real third-party Hermes 3 / Hermes 4 chat families. These are
+# Nous Research models, not Youtab models; the identifier is third-party
+# provenance, not product identity.
+#
+# The previous substring check (`"hermes" in name.lower()`) false-positived on
+# unrelated local Modelfiles like ``hermes-brain:qwen3-14b-ctx16k`` that just
+# happen to carry the vendor string in their tag but are fully tool-capable.
 #
 # Positive examples the regex must match:
-#   YoutabBV/Youtab-3-Llama-3.1-70B, youtab-4-405b, openrouter/youtab3:70b
+#   NousResearch/Hermes-3-Llama-3.1-70B, hermes-4-405b, openrouter/hermes3:70b
 # Negative examples it must NOT match:
 #   youtab-brain:qwen3-14b-ctx16k, qwen3:14b, claude-opus-4-6
-_YOUTAB_YOUTAB_AGENT_NON_AGENTIC_RE = re.compile(
-    r"(?:^|[/:])youtab[-_ ]?[34](?:[-_.:]|$)",
+_NON_AGENTIC_CHAT_MODEL_RE = re.compile(
+    r"(?:^|[/:])hermes[-_ ]?[34](?:[-_.:]|$)",
     re.IGNORECASE,
 )
 
@@ -245,8 +248,8 @@ def format_model_for_display(model_name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-def is_youtab_youtab_non_agentic(model_name: str) -> bool:
-    """Return True if *model_name* is a real Youtab Youtab 3/4 chat model.
+def is_non_agentic_chat_model(model_name: str) -> bool:
+    """Return True if *model_name* is a real third-party Hermes 3/4 chat model.
 
     Used to decide whether to surface the non-agentic warning at startup.
     Callers in :mod:`cli.py` and here should go through this single helper
@@ -254,13 +257,13 @@ def is_youtab_youtab_non_agentic(model_name: str) -> bool:
     """
     if not model_name:
         return False
-    return bool(_YOUTAB_YOUTAB_AGENT_NON_AGENTIC_RE.search(model_name))
+    return bool(_NON_AGENTIC_CHAT_MODEL_RE.search(model_name))
 
 
-def _check_youtab_model_warning(model_name: str) -> str:
-    """Return a warning string if *model_name* is a Youtab Youtab 3/4 chat model."""
-    if is_youtab_youtab_non_agentic(model_name):
-        return _YOUTAB_AGENT_MODEL_WARNING
+def _check_non_agentic_model_warning(model_name: str) -> str:
+    """Return a warning string if *model_name* is a Hermes 3/4 chat model."""
+    if is_non_agentic_chat_model(model_name):
+        return _NON_AGENTIC_CHAT_MODEL_WARNING
     return ""
 
 
@@ -1762,9 +1765,9 @@ def switch_model(
     warnings: list[str] = []
     if validation.get("message"):
         warnings.append(validation["message"])
-    youtab_warn = _check_youtab_model_warning(new_model)
-    if youtab_warn:
-        warnings.append(youtab_warn)
+    non_agentic_warn = _check_non_agentic_model_warning(new_model)
+    if non_agentic_warn:
+        warnings.append(non_agentic_warn)
 
     # --- Build result ---
     return ModelSwitchResult(
