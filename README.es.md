@@ -8,7 +8,7 @@
 </p>
 <p align="center">
   <a href="https://youtab-agent-runtime.youtab.io/docs/"><img src="https://img.shields.io/badge/Docs-youtab--agent.youtab.io-FFD700?style=for-the-badge" alt="Documentación"></a>
-  <a href="https://discord.gg/YoutabBV"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions"><img src="https://img.shields.io/badge/Discussions-2EA043?style=for-the-badge&logo=github&logoColor=white" alt="Discussions"></a>
   <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/blob/main/LICENSE"><img src="https://img.shields.io/badge/Licencia-MIT-green?style=for-the-badge" alt="Licencia: MIT"></a>
   <a href="https://youtab.io"><img src="https://img.shields.io/badge/Creado%20por-Youtab%20Research-blueviolet?style=for-the-badge" alt="Creado por Youtab B.V."></a>
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-blue?style=for-the-badge" alt="English"></a>
@@ -205,7 +205,7 @@ scripts/run_tests.sh
 
 ## Comunidad
 
-- 💬 [Discord](https://discord.gg/YoutabBV)
+- 💬 [Discussions](https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions)
 - 📚 [Skills Hub](https://agentskills.io)
 - 🐛 [Issues](https://github.com/eimanghazaei/Youtab-Agent-Runtime/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Servidor MCP de control de escritorio Linux para Youtab y otros hosts MCP, con árboles de accesibilidad AT-SPI, entrada Wayland/X11, capturas de pantalla y targeting de ventanas del compositor.

@@ -13,7 +13,7 @@ body:
         - If you're in a chat session, you can use `/debug` instead — it does the same thing
         - Try `youtab update` to get the latest version
         - Check the [README troubleshooting section](https://github.com/eimanghazaei/Youtab-Agent-Runtime#troubleshooting)
-        - For general questions, consider the [Youtab B.V. Discord](https://discord.gg/YoutabBV) for faster help
+        - For general questions, consider the [Youtab Agent Runtime Discussions](https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions) for faster help
 
   - type: textarea
     id: description
