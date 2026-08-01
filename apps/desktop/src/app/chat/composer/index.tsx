@@ -368,7 +368,7 @@ export function ChatBar({
   // editor (O(n)), so running it on every event during a burst — holding a key,
   // or holding Cmd+V into a growing editor — is O(n²) across the burst. The
   // contentEditable DOM is the source of truth (submit + the compositionend /
-  // keydown paths re-read it synchronously), so collapsing the input/paste
+  // keydown paths re-read it synchroyoutably), so collapsing the input/paste
   // flushes to one per paint is lossless.
   const flushRafRef = useRef<number | undefined>(undefined)
 
@@ -992,7 +992,7 @@ export function ChatBar({
         IMPORTANT: don't let it render its default <TextareaAutosize>. That
         component runs `useLayoutEffect(resizeTextarea)` on every value change
         and reads `node.scrollHeight` against a hidden measurement textarea,
-        forcing two synchronous layouts per keystroke for an element the
+        forcing two synchroyoutab layouts per keystroke for an element the
         user can't see. Profiling 400-char synthetic typing showed >900ms
         cumulative cost in getHeight2/calculateNodeHeight alone (~2.3ms/key)
         on top of the per-keystroke React commit.

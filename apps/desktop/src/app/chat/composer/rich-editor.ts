@@ -82,7 +82,7 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   return chip
 }
 
-/** A non-editable reference for a picked slash command (`/skin nous`, `/tropes`).
+/** A non-editable reference for a picked slash command (`/skin youtab`, `/tropes`).
  *  `data-ref-text` carries the literal command so `composerPlainText` round-trips
  *  it back to the exact text that gets submitted. */
 export function slashChipElement(command: string, kind: SlashChipKind, label?: string) {

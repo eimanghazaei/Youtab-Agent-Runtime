@@ -1,7 +1,7 @@
 """Regression test for #40695 (salvage of keystone PR #40782).
 
 The Discord gateway heartbeat was stalling because the handoff watcher
-(``GatewayRunner._handoff_watcher``) polled the synchronous, blocking
+(``GatewayRunner._handoff_watcher``) polled the synchroyoutab, blocking
 SQLite-backed ``SessionDB`` directly on the asyncio event loop every 2s
 ('Shard ID None heartbeat blocked for more than N seconds').
 
@@ -11,7 +11,7 @@ the SQLite I/O runs on a worker thread and never blocks the event loop / Discord
 heartbeat.
 
 These tests assert that behaviour contract. They are mutation-survivable:
-reverting any ``await self._session_db.<call>(...)`` back to a direct synchronous
+reverting any ``await self._session_db.<call>(...)`` back to a direct synchroyoutab
 call on the loop makes the relevant assertion fail.
 """
 
@@ -68,7 +68,7 @@ def _make_fake_runner(session_db, *, fail_process=False):
     The watcher now talks to the SessionDB through the AsyncSessionDB facade,
     so wrap the recording stand-in the same way the gateway does.
     """
-    from hermes_state import AsyncSessionDB
+    from youtab_state import AsyncSessionDB
 
     fake = types.SimpleNamespace()
     fake._session_db = AsyncSessionDB(session_db)
@@ -110,22 +110,22 @@ async def test_watcher_wraps_calls_via_asyncio_to_thread(monkeypatch):
     """Explicitly assert the offload goes through asyncio.to_thread.
 
     Patches the AsyncSessionDB facade's ``asyncio.to_thread`` (it lives in
-    hermes_state) and records which SessionDB callables were handed to it.
+    youtab_state) and records which SessionDB callables were handed to it.
     Mutation-survivable: dropping any await removes its callable from the set.
     """
-    import hermes_state
+    import youtab_state
 
     db = _RecordingSessionDB(loop_thread_ident=-1)
     fake = _make_fake_runner(db, fail_process=False)
 
     wrapped = []
-    real_to_thread = hermes_state.asyncio.to_thread
+    real_to_thread = youtab_state.asyncio.to_thread
 
     async def _spy_to_thread(func, *args, **kwargs):
         wrapped.append(getattr(func, "__name__", repr(func)))
         return await real_to_thread(func, *args, **kwargs)
 
-    monkeypatch.setattr(hermes_state.asyncio, "to_thread", _spy_to_thread)
+    monkeypatch.setattr(youtab_state.asyncio, "to_thread", _spy_to_thread)
 
     await _run_one_tick(fake, monkeypatch)
 

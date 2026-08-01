@@ -7,7 +7,7 @@ license: MIT
 dependencies: [sglang-router>=0.2.3, ray, torch>=2.0.0, transformers>=4.40.0]
 platforms: [linux, macos]
 metadata:
-  hermes:
+  youtab:
     tags: [Reinforcement Learning, Megatron-LM, SGLang, GRPO, Post-Training, GLM]
 
 ---
@@ -169,13 +169,13 @@ python train.py \
 
 ---
 
-## Workflow 2: Asynchronous Training
+## Workflow 2: Asynchroyoutab Training
 
 Use async mode for higher throughput by overlapping rollout and training.
 
 ### When to Use Async
 - Large models with long generation times
-- High GPU idle time in synchronous mode
+- High GPU idle time in synchroyoutab mode
 - Sufficient memory for buffering
 
 ### Launch Async Training

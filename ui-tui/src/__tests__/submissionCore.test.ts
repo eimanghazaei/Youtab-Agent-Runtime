@@ -44,13 +44,13 @@ function makeDeps(gw: GatewayClient, over: Partial<SubmitPromptDeps> = {}): Subm
   }
 }
 
-describe('submissionCore.submitPrompt — synchronous busy (queue-race fix)', () => {
+describe('submissionCore.submitPrompt — synchroyoutab busy (queue-race fix)', () => {
   beforeEach(() => {
     resetUiState()
     patchUiState({ sid: 'sess-1' })
   })
 
-  it('flips busy=true SYNCHRONOUSLY, before input.detect_drop resolves', () => {
+  it('flips busy=true SYNCHROYOUTABLY, before input.detect_drop resolves', () => {
     const { gw, resolveDrop } = makeDeferredGateway()
 
     expect(getUiState().busy).toBe(false)

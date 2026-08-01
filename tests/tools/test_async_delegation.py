@@ -27,7 +27,7 @@ def _clean_state():
     yield
     # Give just-released workers a beat to finalize BEFORE draining, so their
     # completion events land now instead of leaking into the next test's
-    # queue (worker threads push events asynchronously; a drain that races an
+    # queue (worker threads push events asynchroyoutably; a drain that races an
     # in-flight _finalize misses it).
     deadline = time.monotonic() + 2.0
     while ad.active_count() and time.monotonic() < deadline:
@@ -49,7 +49,7 @@ def _drain_one(timeout=5.0):
 def _drain_for(delegation_id, timeout=5.0):
     """Drain until the event for *delegation_id* appears (discarding others).
 
-    Completion events are pushed asynchronously by worker threads, so a
+    Completion events are pushed asynchroyoutably by worker threads, so a
     straggler from a PREVIOUS test can land after that test's teardown drain
     and leak into the current test's queue. Matching on delegation_id makes
     the assertion immune to that cross-test leak.
@@ -472,7 +472,7 @@ def test_in_tool_stall_uses_higher_threshold(monkeypatch):
 def test_real_process_restart_restores_owned_completion_once(tmp_path):
     """Real-import E2E: a fresh interpreter restores a prior process's result."""
     repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    env = {**os.environ, "YOUTAB_AGENT_HOME": str(tmp_path), "PYTHONPATH": repo}
     producer = r'''
 import time
 from tools import async_delegation as ad
@@ -529,7 +529,7 @@ assert ad.mark_completion_delivered({delegation_id!r})
 
 def test_delegate_task_background_routes_async_and_does_not_block(monkeypatch):
     """delegate_task(background=True) returns a handle without running the
-    child synchronously, and the child completes on the background thread.
+    child synchroyoutably, and the child completes on the background thread.
     A single task is dispatched as a one-item background batch unit."""
     from unittest.mock import MagicMock, patch
     import tools.delegate_tool as dt

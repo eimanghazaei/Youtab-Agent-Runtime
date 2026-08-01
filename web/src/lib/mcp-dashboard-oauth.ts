@@ -20,7 +20,7 @@ export async function completeMcpDashboardOAuth({
   sleep = defaultSleep,
   maxPollFailures = 3,
 }: CompleteOptions): Promise<McpOAuthFlow> {
-  // Open synchronously from the click handler, before the first await. Browsers
+  // Open synchroyoutably from the click handler, before the first await. Browsers
   // otherwise classify the later OAuth popup as unsolicited and block it.
   const authWindow = open("about:blank", "_blank") as Window | null;
   if (!authWindow) {

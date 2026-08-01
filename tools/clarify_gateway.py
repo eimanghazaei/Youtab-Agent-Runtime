@@ -2,7 +2,7 @@
 
 The ``clarify`` tool needs to ask the user a question and block the agent
 thread until they respond.  In CLI mode this is trivial — ``input()`` is
-synchronous.  In gateway mode the agent runs on a worker thread while the
+synchroyoutab.  In gateway mode the agent runs on a worker thread while the
 event loop handles the user's reply, so we need a thread-safe primitive
 that:
 
@@ -422,7 +422,7 @@ def get_clarify_timeout() -> int:
     is still deciding.
     """
     try:
-        from hermes_cli.config import load_config
+        from youtab_agent_cli.config import load_config
         return resolve_clarify_timeout(load_config() or {})
     except Exception:
         return 3600

@@ -1,7 +1,6 @@
 import { atom } from 'nanostores'
 
 import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-sync'
-import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
 import { resetSessionsLimit } from '@/store/layout'
@@ -21,10 +20,11 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
+import { resetSidebarBatchCapability } from '@/youtab'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
-// overlay from resurrecting when startHermes re-emits boot progress.
+// overlay from resurrecting when startYoutab re-emits boot progress.
 export const $gatewaySwitching = atom(false)
 
 /**

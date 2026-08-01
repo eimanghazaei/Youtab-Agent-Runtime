@@ -12,7 +12,7 @@ import {
 } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 import { $focusedRuntimeId } from '@/store/session-states'
-import type { RpcEvent } from '@/types/hermes'
+import type { RpcEvent } from '@/types/youtab'
 
 type EventHandler = (event: RpcEvent) => void
 

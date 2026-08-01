@@ -65,7 +65,7 @@ def _ensure_file_checkpoint(
         return
 
     # File tools resolve relative paths against the task's live/session cwd,
-    # which can differ from the Hermes process cwd (notably in Docker).  Resolve
+    # which can differ from the Youtab process cwd (notably in Docker).  Resolve
     # through that same path pipeline before asking the checkpoint manager to
     # discover the project root.
     from tools.file_tools import _resolve_path_for_task
@@ -118,14 +118,14 @@ def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
 
 
 def _resolve_concurrent_tool_timeout() -> float | None:
-    raw = os.getenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "").strip()
+    raw = os.getenv("YOUTAB_AGENT_CONCURRENT_TOOL_TIMEOUT_S", "").strip()
     if not raw:
         return _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S
     try:
         value = float(raw)
     except ValueError:
         logger.warning(
-            "invalid HERMES_CONCURRENT_TOOL_TIMEOUT_S=%r; using %.0fs",
+            "invalid YOUTAB_AGENT_CONCURRENT_TOOL_TIMEOUT_S=%r; using %.0fs",
             raw,
             _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
         )
@@ -144,7 +144,7 @@ def _flush_session_db_after_tool_progress(
     """Flush tool-call progress before projecting it to any UI surface.
 
     Tool execution can perform side effects that terminate or restart the
-    current Hermes process before the normal turn-end persistence path runs.
+    current Youtab process before the normal turn-end persistence path runs.
     Flush the already-appended assistant/tool messages immediately so the
     transcript survives destructive-but-valid tool calls.
     """
@@ -365,9 +365,9 @@ def _run_agent_tool_execution_middleware(
     begin_execution=None,
     authorization_gate: _ConcurrentToolAuthorizationGate | None = None,
 ) -> _ManagedToolResult:
-    """Run Relay rewrites before Hermes policy and dispatch exactly once."""
+    """Run Relay rewrites before Youtab policy and dispatch exactly once."""
     from agent import relay_tools
-    from hermes_cli.middleware import (
+    from youtab_agent_cli.middleware import (
         apply_tool_request_middleware,
         run_tool_execution_middleware,
     )
@@ -385,7 +385,7 @@ def _run_agent_tool_execution_middleware(
         with dispatch_lock:
             if state["dispatched"]:
                 raise RuntimeError(
-                    "Hermes tool execution callback invoked more than once"
+                    "Youtab tool execution callback invoked more than once"
                 )
             state["dispatched"] = True
             state["blocked"] = False
@@ -415,7 +415,7 @@ def _run_agent_tool_execution_middleware(
 
             def _resolve_pre_tool_block():
                 try:
-                    from hermes_cli.plugins import resolve_pre_tool_block
+                    from youtab_agent_cli.plugins import resolve_pre_tool_block
 
                     return resolve_pre_tool_block(
                         function_name,
@@ -481,7 +481,7 @@ def _run_agent_tool_execution_middleware(
         _advance_start_order(_begin)
         return execute(final_args)
 
-    def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
+    def _youtab_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(
             function_name,
             relay_args,
@@ -516,7 +516,7 @@ def _run_agent_tool_execution_middleware(
     result, _relay_args = relay_tools.execute(
         function_name,
         function_args,
-        _hermes_pipeline,
+        _youtab_pipeline,
         session_id=str(getattr(agent, "session_id", "") or ""),
         metadata={
             "task_id": effective_task_id or "",
@@ -1438,7 +1438,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             def _execute(next_args: dict) -> Any:
                 session_db = agent._get_session_db_for_recall()
                 if not session_db:
-                    from hermes_state import format_session_db_unavailable
+                    from youtab_state import format_session_db_unavailable
                     return json.dumps({"success": False, "error": format_session_db_unavailable()})
                 from tools.session_search_tool import session_search as _session_search
                 return _session_search(

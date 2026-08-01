@@ -1,6 +1,6 @@
 """Gateway streaming-TTS consumer — LLM deltas to adapter PCM audio sink.
 
-Bridges the synchronous agent ``stream_delta_callback`` (fired from the
+Bridges the synchroyoutab agent ``stream_delta_callback`` (fired from the
 worker thread) to a voice-capable platform adapter's streaming-audio
 contract, so playback begins while the LLM is still generating.
 
@@ -16,7 +16,7 @@ Lifecycle::
     consumer.abort("cancelled")  # idempotent cancellation
 
 Design:
-- ``on_delta`` is synchronous and never blocks the agent thread. It feeds
+- ``on_delta`` is synchroyoutab and never blocks the agent thread. It feeds
   deltas into a ``SentenceChunker`` and queues completed clauses onto a
   thread-safe ``queue.Queue``.
 - An asyncio task (``run``) runs on the gateway event loop, draining the

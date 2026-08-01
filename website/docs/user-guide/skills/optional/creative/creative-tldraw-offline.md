@@ -14,10 +14,10 @@ Drive and script tldraw offline canvases with an agent.
 
 | | |
 |---|---|
-| Source | Optional — install with `hermes skills install official/creative/tldraw-offline` |
+| Source | Optional — install with `youtab skills install official/creative/tldraw-offline` |
 | Path | `optional-skills/creative/tldraw-offline` |
 | Version | `1.0.0` |
-| Author | Teknium + Hermes Agent |
+| Author | Teknium + Youtab Agent Runtime |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `tldraw`, `canvas`, `whiteboard`, `document-script`, `diagramming` |
@@ -25,7 +25,7 @@ Drive and script tldraw offline canvases with an agent.
 ## Reference: full SKILL.md
 
 :::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+The following is the complete skill definition that Youtab loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
 :::
 
 # tldraw offline Skill
@@ -57,7 +57,7 @@ them. Agents are far better at scripting the canvas than at drawing on it.
 - **Agent skills installed in the app**: `Develop → Install Agent Skills`. The
   app writes its own tldraw skill into `~/.codex/skills/`, `~/.claude/skills/`,
   `~/.cursor/skills/`, and `~/.gemini/skills/` — teaching that agent the `curl`
-  recipes below. (This Hermes skill mirrors that guidance for Hermes.)
+  recipes below. (This Youtab skill mirrors that guidance for Youtab.)
 - **The local control API.** On launch the app writes `server.json` to its config
   dir (Linux `~/.config/tldraw/`, macOS `~/Library/Application Support/tldraw/`,
   Windows `%APPDATA%\tldraw\`) with `port` (default `7236`), a bearer `token`,
@@ -255,7 +255,7 @@ light-red red white`. `font` enum: `draw sans serif mono`.
 
 ## Pitfalls
 
-- **`store.listen` fires on the tick AFTER a commit, not synchronously.** If you
+- **`store.listen` fires on the tick AFTER a commit, not synchroyoutably.** If you
   write a shape and immediately read state expecting the listener to have run, it
   hasn't. Verified live: an in-turn read shows 0 fires; after one `setTimeout`
   tick it shows 1. Same reason the app notes `editor.dispatch` is async — await a

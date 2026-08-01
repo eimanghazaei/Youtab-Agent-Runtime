@@ -1,4 +1,4 @@
-"""Shared utility functions for hermes-agent."""
+"""Shared utility functions for youtab-agent-runtime."""
 
 import errno
 import json
@@ -95,7 +95,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     ``target``.  When ``target`` is a symlink, the symlink itself is
     replaced with a regular file — silently detaching managed deployments
     that symlink ``config.yaml`` / ``SOUL.md`` / ``auth.json`` etc. from
-    ``~/.hermes/`` to a git-tracked profile package or dotfiles repo
+    ``~/.youtab-agent-runtime/`` to a git-tracked profile package or dotfiles repo
     (GitHub #16743).
 
     This helper resolves the symlink first so ``os.replace`` writes to
@@ -251,7 +251,7 @@ def warn_if_credential_file_broadly_readable(
 ) -> bool:
     """Warn (once per call) when a credential file is group/world-readable.
 
-    Secret-bearing files that users create by hand (or that older Hermes
+    Secret-bearing files that users create by hand (or that older Youtab
     versions wrote without an explicit mode) commonly end up 0o644 under the
     default umask. This helper is the shared read-time check for that class:
     call it before loading any token/credential file so the owner gets a
@@ -477,7 +477,8 @@ def fast_safe_load(stream: Any) -> Any:
     back to PyYAML's pure-Python ``SafeLoader`` when ``CSafeLoader`` isn't
     available, so behavior is identical everywhere — only the speed differs.
     """
-    return yaml.load(stream, Loader=_get_fast_yaml_loader())
+    # _get_fast_yaml_loader can only return CSafeLoader or SafeLoader.
+    return yaml.load(stream, Loader=_get_fast_yaml_loader())  # noqa: S506
 
 
 # ─── Environment Variable Helpers ─────────────────────────────────────────────

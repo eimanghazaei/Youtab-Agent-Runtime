@@ -40,8 +40,8 @@ class TestHandleFunctionCall:
         """
         with (
             patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
-            patch("hermes_cli.plugins.has_hook", return_value=True),
-            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+            patch("youtab_agent_cli.plugins.has_hook", return_value=True),
+            patch("youtab_agent_cli.plugins.invoke_hook") as mock_invoke_hook,
         ):
             handle_function_call("web_search", {"q": "test"}, task_id="t1")
 
@@ -86,14 +86,14 @@ class TestHandleFunctionCall:
             (),
             {"_middleware": {"tool_request": [fake_invoke_middleware], "tool_execution": [execution_middleware]}},
         )()
-        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
-        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr("youtab_agent_cli.plugins.invoke_middleware", fake_invoke_middleware)
+        monkeypatch.setattr("youtab_agent_cli.plugins.get_plugin_manager", lambda: manager)
         hook_calls = []
         monkeypatch.setattr(
-            "hermes_cli.plugins.invoke_hook",
+            "youtab_agent_cli.plugins.invoke_hook",
             lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
         )
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("youtab_agent_cli.plugins.has_hook", lambda name: True)
         monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
 
         result = json.loads(
@@ -156,8 +156,8 @@ class TestPreToolCallBlocking:
             dispatch_called = True
             raise AssertionError("dispatch should not run when blocked")
 
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("youtab_agent_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("youtab_agent_cli.plugins.has_hook", lambda name: True)
         monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
 
         result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
@@ -177,7 +177,7 @@ class TestPreToolCallBlocking:
                 return [{"action": "block", "message": "Blocked"}]
             return []
 
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("youtab_agent_cli.plugins.invoke_hook", fake_invoke_hook)
         monkeypatch.setattr("model_tools.registry.dispatch",
                             lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not run")))
         monkeypatch.setattr("tools.file_tools.notify_other_tool_call",
@@ -198,7 +198,7 @@ class TestPreToolCallBlocking:
                 ]
             return []
 
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("youtab_agent_cli.plugins.invoke_hook", fake_invoke_hook)
         monkeypatch.setattr("model_tools.registry.dispatch",
                             lambda *a, **kw: json.dumps({"ok": True}))
 
@@ -223,11 +223,11 @@ class TestPreToolCallBlocking:
             return json.dumps({"ok": True})
 
         monkeypatch.setattr(
-            "hermes_cli.observability.relay_runtime.apply_tool_request_intercepts",
+            "youtab_agent_cli.observability.relay_runtime.apply_tool_request_intercepts",
             rewrite,
         )
-        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
-        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("youtab_agent_cli.plugins.invoke_hook", fake_invoke_hook)
+        monkeypatch.setattr("youtab_agent_cli.plugins.has_hook", lambda name: True)
         monkeypatch.setattr("model_tools.registry.dispatch", dispatch)
 
         handle_function_call(
@@ -308,20 +308,20 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("1e3") == 1000
 
 class TestDisabledToolsetsPlatformBundle:
-    """Regression test for #33924: disabling a platform bundle (hermes-*)
+    """Regression test for #33924: disabling a platform bundle (youtab-*)
     must not remove core tools from other enabled toolsets."""
 
     def test_disabling_platform_bundle_preserves_core_tools(self):
-        """Disabling hermes-yuanbao should not strip core tools from hermes-telegram."""
+        """Disabling youtab-yuanbao should not strip core tools from youtab-telegram."""
         from model_tools import get_tool_definitions
 
         tools_telegram = get_tool_definitions(
-            enabled_toolsets=["hermes-telegram"],
+            enabled_toolsets=["youtab-telegram"],
             quiet_mode=True,
         )
         tools_telegram_no_yuanbao = get_tool_definitions(
-            enabled_toolsets=["hermes-telegram"],
-            disabled_toolsets=["hermes-yuanbao"],
+            enabled_toolsets=["youtab-telegram"],
+            disabled_toolsets=["youtab-yuanbao"],
             quiet_mode=True,
         )
         names_telegram = {t["function"]["name"] for t in tools_telegram}
@@ -329,17 +329,17 @@ class TestDisabledToolsetsPlatformBundle:
 
         # Disabling a *different* platform bundle must not remove any tools
         assert names_telegram == names_no_yuanbao, (
-            f"Tools lost after disabling hermes-yuanbao: "
+            f"Tools lost after disabling youtab-yuanbao: "
             f"{names_telegram - names_no_yuanbao}"
         )
 
     def test_disabling_platform_bundle_removes_own_tools(self):
-        """Disabling hermes-discord should remove discord-specific tools."""
+        """Disabling youtab-discord should remove discord-specific tools."""
         from model_tools import get_tool_definitions
 
         tools = get_tool_definitions(
-            enabled_toolsets=["hermes-discord"],
-            disabled_toolsets=["hermes-discord"],
+            enabled_toolsets=["youtab-discord"],
+            disabled_toolsets=["youtab-discord"],
             quiet_mode=True,
         )
         names = {t["function"]["name"] for t in tools}
@@ -352,13 +352,13 @@ class TestDisabledToolsetsPlatformBundle:
         """An unknown/garbage bundle name falls back to full resolution (best effort)."""
         from toolsets import bundle_non_core_tools
         # A non-existent bundle resolves to an empty set (no tools), not a crash.
-        assert bundle_non_core_tools("hermes-does-not-exist") == set()
+        assert bundle_non_core_tools("youtab-does-not-exist") == set()
 
 
 class TestDisabledToolsetsPostureToolset:
     """Regression test for #57315: disabling a posture toolset (`coding`,
     posture: True) must preserve the shared core tools it re-lists but does
-    not own -- same non-core-delta subtraction as hermes-* bundles (#33924) --
+    not own -- same non-core-delta subtraction as youtab-* bundles (#33924) --
     while atomic toolsets stay fully removable."""
 
     def test_disabling_coding_preserves_core_but_atomic_disables_still_remove(self):

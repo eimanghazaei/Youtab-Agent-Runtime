@@ -1,12 +1,12 @@
-import { resolveGatewayWsUrl } from '@hermes/shared'
+import { resolveGatewayWsUrl } from '@youtab/agent-shared'
 
-import { getApiRequestProfile, speakText } from '@/hermes'
 import {
   $voicePlayback,
   setVoicePlaybackState,
   type VoicePlaybackSource,
   type VoicePlaybackState
 } from '@/store/voice-playback'
+import { getApiRequestProfile, speakText } from '@/youtab'
 
 import { sanitizeTextForSpeech } from './speech-text'
 
@@ -97,7 +97,7 @@ export function stopVoicePlayback() {
 // ---------------------------------------------------------------------------
 
 async function resolveSpeakStreamUrl(): Promise<null | string> {
-  const desktop = window.hermesDesktop
+  const desktop = window.youtabDesktop
 
   if (!desktop?.getConnection) {
     return null

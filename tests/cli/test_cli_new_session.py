@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_state import SessionDB
+from youtab_state import SessionDB
 from tools.todo_tool import TodoStore
 
 
@@ -76,7 +76,7 @@ class _FakeAgent:
 
 
 def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
-    """Create a HermesCLI instance with minimal mocking."""
+    """Create a YoutabCLI instance with minimal mocking."""
     _clean_config = {
         "model": {
             "default": "anthropic/claude-opus-4.6",
@@ -89,7 +89,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     }
     if config_overrides:
         _clean_config.update(config_overrides)
-    clean_env = {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}
+    clean_env = {"LLM_MODEL": "", "YOUTAB_AGENT_MAX_ITERATIONS": ""}
     if env_overrides:
         clean_env.update(env_overrides)
     prompt_toolkit_stubs = {
@@ -118,7 +118,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
             _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
         ):
-            return _cli_mod.HermesCLI(**kwargs)
+            return _cli_mod.YoutabCLI(**kwargs)
 
 
 def _prepare_cli_with_active_session(tmp_path):
@@ -145,8 +145,8 @@ def _reset_session_id_context():
     from gateway.session_context import _UNSET, _VAR_MAP
 
     yield
-    os.environ.pop("HERMES_SESSION_ID", None)
-    _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
+    os.environ.pop("YOUTAB_AGENT_SESSION_ID", None)
+    _VAR_MAP["YOUTAB_AGENT_SESSION_ID"].set(_UNSET)
 
 
 def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path):
@@ -179,7 +179,7 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
 
 
 
-def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
+def test_new_session_delivers_context_engine_boundary_synchroyoutably(tmp_path):
     """The context-engine on_session_end must fire during /new itself.
 
     It is cheap local state work and ordering-sensitive: it must land before

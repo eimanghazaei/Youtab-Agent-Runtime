@@ -32,7 +32,7 @@ _FIRE_PURPOSE = "cron_fire"
 #
 # WHY THIS EXISTS: a PyJWKClient caches the fetched JWKS (signing keys) on the
 # INSTANCE. Constructing a fresh client per fire therefore threw that cache
-# away and forced a synchronous JWKS HTTP GET to the portal on EVERY fire. Under
+# away and forced a synchroyoutab JWKS HTTP GET to the portal on EVERY fire. Under
 # a burst of concurrent fires (an instance with several cron jobs firing in the
 # same window) that fanned out into N simultaneous JWKS fetches, which the
 # portal rate-limited (HTTP 403) — verification then failed and the agent

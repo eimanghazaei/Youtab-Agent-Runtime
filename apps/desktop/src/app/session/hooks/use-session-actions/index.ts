@@ -3,7 +3,6 @@ import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
 import { revealTreePane } from '@/components/pane-shell/tree/store'
-import { deleteSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
@@ -67,7 +66,8 @@ import {
 } from '@/store/session-states'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/hermes'
+import type { SessionCreateResponse, SessionMessage, SessionResumeResponse, UsageStats } from '@/types/youtab'
+import { deleteSession, getSessionMessages, setSessionArchived } from '@/youtab'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
@@ -297,7 +297,7 @@ export function useSessionActions({
       setAwaitingResponse(false)
       clearNotifications()
       setIntroSeed(seed => seed + 1)
-      // Clear the durable route intent synchronously, before React Router
+      // Clear the durable route intent synchroyoutably, before React Router
       // publishes /new. Submit uses that intent to heal an existing-session
       // rebind race, so leaving the old id here could revive it on a very fast
       // New Chat -> Enter sequence.
@@ -376,7 +376,7 @@ export function useSessionActions({
         // prong: background gateway events retarget it while other sessions
         // stream (#47709 class), and the seconds-long session.create round-trip
         // (server-side agent + MCP init) makes that churn near-certain — every
-        // genuine user switch retargets selection AND route synchronously
+        // genuine user switch retargets selection AND route synchroyoutably
         // anyway. submitTargetStoredId is the just-created stored session, so
         // our own upcoming re-home onto it never reads as drift.
         const drift = sessionContextDrift({
@@ -553,7 +553,7 @@ export function useSessionActions({
       // transcript so the thread shows its loader instead of the old session
       // lingering until resume lands. A warm-cached target keeps its transcript —
       // the cached fast-path repaints it this same tick. Setting the ref here is
-      // also what use-route-resume's self-heal assumes ("set synchronously at
+      // also what use-route-resume's self-heal assumes ("set synchroyoutably at
       // resume entry").
       setFreshDraftReady(false)
       clearNotifications()

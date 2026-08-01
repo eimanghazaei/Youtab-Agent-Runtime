@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 def _make_session_db(tmp_path):
     """Create a real SessionDB for integration-style tests."""
-    from hermes_state import SessionDB
+    from youtab_state import SessionDB
     db_path = tmp_path / "test_state.db"
     return SessionDB(db_path=db_path)
 
@@ -153,7 +153,7 @@ class TestSyncSessionKeyAfterAutoCompress:
         monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
         monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
 
-        # Use _ImmediateThread pattern to run synchronously
+        # Use _ImmediateThread pattern to run synchroyoutably
         class _ImmediateThread:
             def __init__(self, target=None, daemon=None, **kw):
                 self._target = target

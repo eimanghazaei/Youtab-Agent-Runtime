@@ -1,6 +1,6 @@
 """SQLite WAL-reset vulnerability gate (issue #69784).
 
-Hermes must not *enable* multi-process WAL on SQLite builds that still contain
+Youtab must not *enable* multi-process WAL on SQLite builds that still contain
 the upstream WAL-reset corruption bug:
 https://sqlite.org/wal.html#walresetbug
 
@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import hermes_state
-from hermes_state import (
+import youtab_state
+from youtab_state import (
     apply_wal_with_fallback,
     is_sqlite_wal_reset_vulnerable,
     sqlite_source_id,
@@ -24,9 +24,9 @@ from hermes_state import (
 
 @pytest.fixture(autouse=True)
 def _reset_wal_reset_bug_warnings():
-    hermes_state._wal_reset_bug_warned_paths.clear()
+    youtab_state._wal_reset_bug_warned_paths.clear()
     yield
-    hermes_state._wal_reset_bug_warned_paths.clear()
+    youtab_state._wal_reset_bug_warned_paths.clear()
 
 
 class TestIsSqliteWalResetVulnerable:
@@ -58,10 +58,10 @@ class TestIsSqliteWalResetVulnerable:
 class TestApplyWalWalResetGate:
     def test_fresh_db_uses_delete_when_vulnerable(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(
-            hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            youtab_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         conn = sqlite3.connect(str(tmp_path / "fresh.db"))
-        with caplog.at_level("WARNING", logger="hermes_state"):
+        with caplog.at_level("WARNING", logger="youtab_state"):
             mode = apply_wal_with_fallback(conn, db_label="fresh.db")
         assert mode == "delete"
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "delete"
@@ -73,7 +73,7 @@ class TestApplyWalWalResetGate:
     ):
         """Already-WAL DBs must not be live-downgraded under concurrent openers."""
         monkeypatch.setattr(
-            hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            youtab_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
         path = tmp_path / "prior_wal.db"
         seed = sqlite3.connect(str(path))
@@ -88,7 +88,7 @@ class TestApplyWalWalResetGate:
 
         conn = sqlite3.connect(str(path), timeout=30.0)
         try:
-            with caplog.at_level("WARNING", logger="hermes_state"):
+            with caplog.at_level("WARNING", logger="youtab_state"):
                 mode = apply_wal_with_fallback(conn, db_label="prior_wal.db")
             assert mode == "wal"
             assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
@@ -105,9 +105,9 @@ class TestApplyWalWalResetGate:
 
     def test_warning_deduped_per_label(self, tmp_path, monkeypatch, caplog):
         monkeypatch.setattr(
-            hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+            youtab_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
         )
-        with caplog.at_level("WARNING", logger="hermes_state"):
+        with caplog.at_level("WARNING", logger="youtab_state"):
             for name in ("a.db", "a.db", "b.db"):
                 conn = sqlite3.connect(str(tmp_path / name))
                 apply_wal_with_fallback(conn, db_label=name)
@@ -120,16 +120,16 @@ class TestApplyWalWalResetGate:
 
 def test_doctor_warns_without_adding_issues(monkeypatch, tmp_path, capsys):
     """Vulnerable SQLite is warn-only in doctor — not a blocking issues[] entry."""
-    from hermes_cli.doctor import run_doctor
+    from youtab_agent_cli.doctor import run_doctor
 
-    home = tmp_path / ".hermes"
+    home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: home)
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
+    monkeypatch.setattr("youtab_constants.get_youtab_home", lambda: home)
     monkeypatch.setattr(
-        hermes_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
+        youtab_state, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: True
     )
-    monkeypatch.setattr(hermes_state, "sqlite_source_id", lambda: "testid-abc")
+    monkeypatch.setattr(youtab_state, "sqlite_source_id", lambda: "testid-abc")
     monkeypatch.setattr(sqlite3, "sqlite_version", "3.50.4", raising=False)
 
     args = SimpleNamespace(fix=False, ack=None)
@@ -142,6 +142,6 @@ def test_doctor_warns_without_adding_issues(monkeypatch, tmp_path, capsys):
     assert "SQLite" in out
     assert "3.50.4" in out
     assert "WAL-reset" in out
-    assert "hermes update" in out
+    assert "youtab update" in out
     # No longer appended to the blocking issues summary.
     assert "Linked SQLite is vulnerable" not in out

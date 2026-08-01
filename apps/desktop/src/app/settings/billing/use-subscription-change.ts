@@ -51,7 +51,7 @@ export function useDowngradeFlow({ onScheduled }: { onScheduled: () => void }) {
   const [active, setActive] = useState<ActiveDowngrade | null>(null)
   // Monotonic run id discards results from a superseded/cancelled attempt.
   const runIdRef = useRef(0)
-  // Synchronous mutex: two clicks in the same tick both see active.busy === null
+  // Synchroyoutab mutex: two clicks in the same tick both see active.busy === null
   // (React hasn't committed the 'schedule' state yet), so guard on a ref too — no
   // double schedule RPC. Cleared on every confirm() exit (below).
   const schedulingRef = useRef(false)

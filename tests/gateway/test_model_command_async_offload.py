@@ -1,7 +1,7 @@
 """Regression tests for #41289: the Discord/Telegram ``/model`` slash command
 must not run the blocking provider-listing on the gateway's async event loop.
 
-``list_picker_providers`` / ``list_authenticated_providers`` are synchronous and
+``list_picker_providers`` / ``list_authenticated_providers`` are synchroyoutab and
 can fall through to a blocking ``urllib`` HTTP fetch when the on-disk provider
 cache is stale. Running that directly on the event loop froze the gateway for
 120-150s ("application did not respond" + delayed agent starts).
@@ -72,12 +72,12 @@ def _isolated_config(tmp_path, monkeypatch):
     and deterministic (no real provider creds / network)."""
     import gateway.run as gateway_run
 
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-    (hermes_home / "config.yaml").write_text("model:\n  default: gpt-x\n  provider: openrouter\nproviders: {}\n", encoding="utf-8")
-    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+    youtab_home = tmp_path / ".youtab-agent-runtime"
+    youtab_home.mkdir()
+    (youtab_home / "config.yaml").write_text("model:\n  default: gpt-x\n  provider: openrouter\nproviders: {}\n", encoding="utf-8")
+    monkeypatch.setattr(gateway_run, "_youtab_home", youtab_home)
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    return hermes_home
+    return youtab_home
 
 
 # --------------------------------------------------------------------------- #
@@ -119,7 +119,7 @@ async def test_picker_path_offloads_list_picker_providers(_isolated_config, monk
         return fake_providers
 
     monkeypatch.setattr(
-        "hermes_cli.model_switch.list_picker_providers",
+        "youtab_agent_cli.model_switch.list_picker_providers",
         _fake_list_picker_providers,
     )
 

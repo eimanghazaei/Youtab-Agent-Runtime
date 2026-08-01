@@ -1,10 +1,10 @@
 {
-  "name": "hermes",
-  "productName": "Hermes",
+  "name": "youtab",
+  "productName": "Youtab",
   "private": true,
   "version": "0.17.0",
-  "description": "Native desktop shell for Hermes Agent.",
-  "author": "Nous Research",
+  "description": "Native desktop shell for Youtab Agent Runtime.",
+  "author": "Youtab B.V.",
   "type": "module",
   "main": "dist/electron-main.mjs",
   "engines": {
@@ -16,12 +16,12 @@
     "clean:renderer":"tsc --build tsconfig.json --clean ",
     "clean:electron":"tsc --build tsconfig.electron.json --clean",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
-    "dev:fake-boot": "cross-env HERMES_DESKTOP_BOOT_FAKE=1 HERMES_DESKTOP_BOOT_FAKE_STEP_MS=650 npm run dev",
+    "dev:fake-boot": "cross-env YOUTAB_AGENT_DESKTOP_BOOT_FAKE=1 YOUTAB_AGENT_DESKTOP_BOOT_FAKE_STEP_MS=650 npm run dev",
     "dev:mock": "node scripts/dev-mock.mjs",
     "dev:renderer": "node scripts/assert-root-install.mjs && npm run clean:renderer && vite --host 127.0.0.1 --port 5174",
-    "dev:electron": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
-    "profile:main": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron --inspect=9229 .",
-    "profile:main:cpu": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
+    "dev:electron": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 YOUTAB_AGENT_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
+    "profile:main": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 YOUTAB_AGENT_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron --inspect=9229 .",
+    "profile:main:cpu": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof YOUTAB_AGENT_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
     "start": "npm run build && electron .",
     "prebuild": "npm run clean",
     "build": "node scripts/assert-root-install.mjs && node scripts/write-build-stamp.mjs && vite build && node scripts/bundle-electron-main.mjs && node scripts/stage-native-deps.mjs",
@@ -76,11 +76,11 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
-    "@hermes/shared": "file:../shared",
+    "@youtab/agent-shared": "file:../shared",
     "@icons-pack/react-simple-icons": "=13.11.1",
     "@lezer/highlight": "^1.2.3",
     "@nanostores/react": "^1.1.0",
-    "@nous-research/ui": "^0.13.0",
+    "@youtab/ui-desktop": "file:../../packages/youtab-ui-desktop",
     "@radix-ui/react-slot": "^1.2.4",
     "@streamdown/code": "^1.1.1",
     "@tabler/icons-react": "^3.41.1",
@@ -157,7 +157,7 @@
     "eslint": "^9.39.4",
     "eslint-plugin-perfectionist": "^5.9.0",
     "eslint-plugin-react": "^7.37.5",
-    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-hooks": "6.1.1",
     "eslint-plugin-unused-imports": "^4.4.1",
     "globals": "^16.5.0",
     "jsdom": "^29.1.1",
@@ -171,18 +171,18 @@
   },
   "build": {
     "electronVersion": "40.10.2",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
+    "appId": "com.youtab.youtab-agent-runtime",
+    "productName": "Youtab",
+    "executableName": "Youtab",
     "protocols": [
       {
-        "name": "Hermes Protocol",
+        "name": "Youtab Protocol",
         "schemes": [
-          "hermes"
+          "youtab"
         ]
       }
     ],
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
+    "artifactName": "Youtab-${version}-${os}-${arch}.${ext}",
     "icon": "assets/icon",
     "directories": {
       "output": "release"
@@ -218,12 +218,12 @@
       "entitlements": "electron/entitlements.mac.plist",
       "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
       "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
+        "CFBundleDisplayName": "Youtab",
+        "CFBundleExecutable": "Youtab",
+        "CFBundleName": "Youtab",
+        "NSAudioCaptureUsageDescription": "Youtab uses audio capture for voice conversations.",
+        "NSCameraUsageDescription": "Youtab uses the camera when a plugin or feature you enable requests it.",
+        "NSMicrophoneUsageDescription": "Youtab uses the microphone for voice input and voice conversations."
       },
       "gatekeeperAssess": false,
       "hardenedRuntime": true,
@@ -233,7 +233,7 @@
       ]
     },
     "dmg": {
-      "title": "Install Hermes",
+      "title": "Install Youtab",
       "backgroundColor": "#f5f5f7",
       "iconSize": 96,
       "window": {
@@ -255,7 +255,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "Youtab",
       "target": [
         "nsis",
         "msi"
@@ -264,8 +264,8 @@
     },
     "linux": {
       "category": "Development",
-      "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
+      "maintainer": "Youtab B.V. <support@youtab.io>",
+      "synopsis": "Native desktop shell for Youtab Agent Runtime.",
       "target": [
         "AppImage",
         "deb",
@@ -276,8 +276,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "Youtab",
+      "uninstallDisplayName": "Youtab",
       "warningsAsErrors": false
     }
   }

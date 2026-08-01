@@ -709,8 +709,8 @@ SQLITE_API int sqlite3_exec(
 ** to use Mac OS X style fullsync instead of fsync().
 **
 ** Do not confuse the SQLITE_SYNC_NORMAL and SQLITE_SYNC_FULL flags
-** with the [PRAGMA synchronous]=NORMAL and [PRAGMA synchronous]=FULL
-** settings.  The [synchronous pragma] determines when calls to the
+** with the [PRAGMA synchroyoutab]=NORMAL and [PRAGMA synchroyoutab]=FULL
+** settings.  The [synchroyoutab pragma] determines when calls to the
 ** xSync VFS method occur and applies uniformly across all platforms.
 ** The SQLITE_SYNC_NORMAL and SQLITE_SYNC_FULL flags determine how
 ** energetic or rigorous or forceful the sync operations are and
@@ -931,7 +931,7 @@ struct sqlite3_io_methods {
 ** sent to the VFS immediately before the xSync method is invoked on a
 ** database file descriptor. Or, if the xSync method is not invoked
 ** because the user has configured SQLite with
-** [PRAGMA synchronous | PRAGMA synchronous=OFF] it is invoked in place
+** [PRAGMA synchroyoutab | PRAGMA synchroyoutab=OFF] it is invoked in place
 ** of the xSync method. In most cases, the pointer argument passed with
 ** this file-control is NULL. However, if the database file is being synced
 ** as part of a multi-database commit, the argument points to a nul-terminated

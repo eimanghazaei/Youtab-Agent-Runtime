@@ -1038,7 +1038,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         payload = {
             "msgtype": "markdown",
-            "markdown": {"title": "Hermes", "text": normalized},
+            "markdown": {"title": "Youtab", "text": normalized},
         }
 
         try:
@@ -1175,7 +1175,7 @@ class DingTalkAdapter(BasePlatformAdapter):
             if not token:
                 return None
 
-            out_track_id = f"hermes_{uuid.uuid4().hex[:12]}"
+            out_track_id = f"youtab_{uuid.uuid4().hex[:12]}"
 
             conversation_id = getattr(message, "conversation_id", "") or ""
             conversation_type = getattr(message, "conversation_type", "1")
@@ -1660,7 +1660,7 @@ class _IncomingHandler(
 # per-platform core touchpoints (the Platform.DINGTALK elif in gateway/run.py,
 # the dingtalk_cfg YAML→env block + _PLATFORM_CONNECTED_CHECKERS entry in
 # gateway/config.py, the _setup_dingtalk wizard + _PLATFORMS["dingtalk"] static
-# dict in hermes_cli/gateway.py, and the _send_dingtalk dispatch in
+# dict in youtab_agent_cli/gateway.py, and the _send_dingtalk dispatch in
 # tools/send_message_tool.py).
 # ──────────────────────────────────────────────────────────────────────────
 
@@ -1716,13 +1716,13 @@ async def _standalone_send(
 def interactive_setup() -> None:
     """Configure DingTalk — QR scan (recommended) or manual credential entry.
 
-    Replaces hermes_cli/setup.py-era _setup_dingtalk + the static
-    _PLATFORMS["dingtalk"] dict in hermes_cli/gateway.py. CLI helpers are
+    Replaces youtab_agent_cli/setup.py-era _setup_dingtalk + the static
+    _PLATFORMS["dingtalk"] dict in youtab_agent_cli/gateway.py. CLI helpers are
     lazy-imported so the plugin's module-load surface stays minimal.
     """
-    from hermes_cli.config import get_env_value, save_env_value
-    from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import (
+    from youtab_agent_cli.config import get_env_value, save_env_value
+    from youtab_agent_cli.setup import prompt_choice
+    from youtab_agent_cli.cli_output import (
         prompt,
         prompt_yes_no,
         print_header,
@@ -1748,7 +1748,7 @@ def interactive_setup() -> None:
 
     if method == 0:
         try:
-            from hermes_cli.dingtalk_auth import dingtalk_qr_auth
+            from youtab_agent_cli.dingtalk_auth import dingtalk_qr_auth
         except ImportError as exc:
             print_warning(f"QR auth module failed to load ({exc}), falling back to manual input.")
             _manual_credential_entry(prompt, save_env_value, print_success)
@@ -1852,7 +1852,7 @@ def _build_adapter(config):
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point — called by the Youtab plugin system."""
     ctx.register_platform(
         name="dingtalk",
         label="DingTalk",

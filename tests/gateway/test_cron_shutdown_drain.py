@@ -3,7 +3,7 @@
 On restart the gateway must drain an in-flight cron delivery instead of
 dropping it. A cron delivery is a coroutine scheduled onto the gateway event
 loop (``safe_schedule_threadsafe``) while the ticker thread blocks on its
-future. The shutdown wait therefore must NOT block the loop with a synchronous
+future. The shutdown wait therefore must NOT block the loop with a synchroyoutab
 ``thread.join()`` — doing so deadlocks the delivery (the loop can never run it)
 and the message is silently lost. ``_await_thread_exit`` waits cooperatively so
 the pending delivery completes first.

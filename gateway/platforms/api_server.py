@@ -2,14 +2,14 @@
 OpenAI-compatible API server platform adapter.
 
 Exposes an HTTP server with endpoints:
-- POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via X-Hermes-Session-Key header)
-- POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key supported)
+- POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Youtab-Session-Id header; opt-in long-term memory scoping via X-Youtab-Session-Key header)
+- POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Youtab-Session-Key supported)
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
-- GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
+- GET  /v1/models                  — lists youtab-agent-runtime and any configured model_routes aliases
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
-- GET  /api/sessions               — list client-visible Hermes sessions
-- POST /api/sessions               — create an empty Hermes session
+- GET  /api/sessions               — list client-visible Youtab sessions
+- POST /api/sessions               — create an empty Youtab session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
@@ -23,7 +23,7 @@ Exposes an HTTP server with endpoints:
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
-AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
+AnythingLLM, NextChat, ChatBox, etc.) can connect to youtab-agent-runtime
 through this adapter by pointing at http://localhost:8642/v1 and
 authenticating with API_SERVER_KEY.
 
@@ -95,18 +95,18 @@ from gateway.readiness import collect_runtime_readiness
 logger = logging.getLogger(__name__)
 
 
-def _hermes_version() -> str:
-    """Return the canonical Hermes Agent version string.
+def _youtab_version() -> str:
+    """Return the canonical Youtab Agent Runtime version string.
 
-    ``hermes_cli.__version__`` is the runtime source of truth used by the CLI,
+    ``youtab_agent_cli.__version__`` is the runtime source of truth used by the CLI,
     dashboard, portal tags, and release script. Prefer it over installed
     distribution metadata because editable/source checkouts can retain stale
-    ``hermes_agent-*.dist-info`` after a source update until the environment is
+    ``youtab_agent_runtime-*.dist-info`` after a source update until the environment is
     reinstalled. Never raises — a version probe must not be able to break the
     health endpoint.
     """
     try:
-        from hermes_cli import __version__
+        from youtab_agent_cli import __version__
 
         return __version__
     except Exception:
@@ -114,7 +114,7 @@ def _hermes_version() -> str:
     try:
         from importlib.metadata import version
 
-        return version("hermes-agent")
+        return version("youtab-agent-runtime")
     except Exception:
         return "dev"
 
@@ -257,7 +257,7 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
     explicit provider/model so an API caller can use the same authenticated
     provider catalog as the TUI without mutating config.yaml.
     """
-    from hermes_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error, _get_model_config
+    from youtab_agent_cli.runtime_provider import resolve_runtime_provider, format_runtime_provider_error, _get_model_config
 
     try:
         runtime = resolve_runtime_provider(requested=provider, target_model=target_model)
@@ -266,7 +266,7 @@ def _resolve_request_runtime_agent_kwargs(provider: str, target_model: Optional[
 
     model_cfg = _get_model_config()
     max_tokens = None
-    env_max_tokens = os.environ.get("HERMES_MAX_TOKENS")
+    env_max_tokens = os.environ.get("YOUTAB_AGENT_MAX_TOKENS")
     if env_max_tokens:
         try:
             max_tokens = int(env_max_tokens)
@@ -301,7 +301,7 @@ def _request_agent_overrides(
 ) -> Dict[str, Any]:
     """Extract per-request model/provider/options for _run_agent.
 
-    ``/v1/models`` advertises a stable virtual model (usually ``hermes-agent``)
+    ``/v1/models`` advertises a stable virtual model (usually ``youtab-agent-runtime``)
     for OpenAI-compatible clients.  Treat that alias as "use the gateway
     default"; real model picker selections from the browser extension send the
     raw provider model id plus a provider slug and should override this turn.
@@ -311,9 +311,9 @@ def _request_agent_overrides(
     hardcode model names ("gpt-4o", ...), and existing deployments rely on
     those falling back to the gateway default on the OpenAI-compatible
     surfaces — so those handlers pass the opt-in
-    ``direct_model_requests`` config value here, while Hermes-native
+    ``direct_model_requests`` config value here, while Youtab-native
     endpoints (session chat, /v1/runs) always allow it.  A request that
-    sends an explicit ``provider`` is unambiguously Hermes-aware and is
+    sends an explicit ``provider`` is unambiguously Youtab-aware and is
     always honored.
     """
     if not isinstance(body, dict):
@@ -652,8 +652,8 @@ class ResponseStore:
         self._max_size = max_size
         if db_path is None:
             try:
-                from hermes_cli.config import get_hermes_home
-                db_path = str(get_hermes_home() / "response_store.db")
+                from youtab_agent_cli.config import get_youtab_home
+                db_path = str(get_youtab_home() / "response_store.db")
             except Exception:
                 db_path = ":memory:"
         self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
@@ -663,10 +663,10 @@ class ResponseStore:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
             self._db_path = None
         # Use shared WAL-fallback helper so response_store.db degrades
-        # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
+        # gracefully on NFS/SMB/FUSE-mounted YOUTAB_AGENT_HOME (same filesystem
         # issue addressed for state.db/kanban.db — see
-        # hermes_state._WAL_INCOMPAT_MARKERS).
-        from hermes_state import apply_wal_with_fallback
+        # youtab_state._WAL_INCOMPAT_MARKERS).
+        from youtab_state import apply_wal_with_fallback
         apply_wal_with_fallback(self._conn, db_label="response_store.db")
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS responses (
@@ -1094,7 +1094,7 @@ def _derive_chat_session_id(
     conversation history with every request.  The system prompt and first user
     message are constant across all turns of the same conversation, so hashing
     them produces a deterministic session ID that lets the API server reuse
-    the same Hermes session (and therefore the same Docker container sandbox
+    the same Youtab session (and therefore the same Docker container sandbox
     directory) across turns.
     """
     seed = f"{system_prompt or ''}\n{first_user_message}"
@@ -1170,7 +1170,7 @@ class APIServerAdapter(BasePlatformAdapter):
     OpenAI-compatible HTTP API server adapter.
 
     Runs an aiohttp web server that accepts OpenAI-format requests
-    and routes them through hermes-agent's AIAgent.
+    and routes them through youtab-agent-runtime's AIAgent.
     """
 
     # Stateless request/response: every route (the OpenAI-spec
@@ -1225,7 +1225,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # OpenAI clients routinely hardcode model names ("gpt-4o", ...), and
         # existing deployments rely on those falling back to the gateway
         # default rather than switching the executing model.  Requests that
-        # send an explicit ``provider`` — and the Hermes-native session-chat
+        # send an explicit ``provider`` — and the Youtab-native session-chat
         # and /v1/runs endpoints — are always honored regardless of this flag.
         # (Idea credit: PR #22825 by @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
@@ -1388,7 +1388,7 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         default = 10
         try:
-            from hermes_cli.config import cfg_get, load_config
+            from youtab_agent_cli.config import cfg_get, load_config
 
             raw = cfg_get(
                 load_config(),
@@ -1409,23 +1409,23 @@ class APIServerAdapter(BasePlatformAdapter):
         Priority:
         1. Explicit override (config extra or API_SERVER_MODEL_NAME env var)
         2. Active profile name (so each profile advertises a distinct model)
-        3. Fallback: "hermes-agent"
+        3. Fallback: "youtab-agent-runtime"
 
         Delegates the tiered fallthrough to
-        :func:`hermes_cli.model_switch.resolve_effective_model` (the shared
+        :func:`youtab_agent_cli.model_switch.resolve_effective_model` (the shared
         override > mid-tier > default precedence owner).
         """
-        from hermes_cli.model_switch import resolve_effective_model
+        from youtab_agent_cli.model_switch import resolve_effective_model
 
         profile_name = ""
         try:
-            from hermes_cli.profiles import get_active_profile_name
+            from youtab_agent_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
             if profile and profile not in {"default", "custom"}:
                 profile_name = profile
         except Exception:
             pass
-        return resolve_effective_model(explicit, profile_name, "hermes-agent")
+        return resolve_effective_model(explicit, profile_name, "youtab-agent-runtime")
 
     def _cors_headers_for_origin(self, origin: str) -> Optional[Dict[str, str]]:
         """Return CORS headers for an allowed browser origin."""
@@ -1521,7 +1521,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             from agent.secret_scope import get_secret
-            from hermes_cli.auth import has_usable_secret
+            from youtab_agent_cli.auth import has_usable_secret
 
             key = get_secret("API_SERVER_KEY", "") or ""
             if not has_usable_secret(key, min_length=16):
@@ -1742,7 +1742,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # the single-profile gateway (don't 404 a would-be valid route).
             return None
         try:
-            from hermes_cli.profiles import profiles_to_serve
+            from youtab_agent_cli.profiles import profiles_to_serve
 
             served = {name for name, _ in profiles_to_serve(multiplex=True)}
         except Exception:
@@ -1769,14 +1769,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 if is_multiplex_active():
                     from gateway.run import _profile_runtime_scope
-                    from hermes_constants import get_hermes_home
+                    from youtab_constants import get_youtab_home
 
-                    return _profile_runtime_scope(get_hermes_home())
+                    return _profile_runtime_scope(get_youtab_home())
             except Exception:
                 pass
             return nullcontext()
         from gateway.run import _profile_runtime_scope
-        from hermes_cli.profiles import get_profile_dir
+        from youtab_agent_cli.profiles import get_profile_dir
 
         return _profile_runtime_scope(get_profile_dir(profile))
 
@@ -1869,11 +1869,11 @@ class APIServerAdapter(BasePlatformAdapter):
     def _parse_session_key_header(
         self, request: "web.Request"
     ) -> tuple[Optional[str], Optional["web.Response"]]:
-        """Extract and validate the ``X-Hermes-Session-Key`` header.
+        """Extract and validate the ``X-Youtab-Session-Key`` header.
 
         The session key is a stable per-channel identifier that scopes
         long-term memory (e.g. Honcho sessions) across transcripts.  It
-        is independent of ``X-Hermes-Session-Id``: callers may send
+        is independent of ``X-Youtab-Session-Id``: callers may send
         either, both, or neither.
 
         Returns ``(session_key, None)`` on success (with an empty/absent
@@ -1885,18 +1885,18 @@ class APIServerAdapter(BasePlatformAdapter):
         unauthenticated client on a local-only server can't inject itself
         into another user's long-term memory scope by guessing a key.
         """
-        raw = request.headers.get("X-Hermes-Session-Key", "").strip()
+        raw = request.headers.get("X-Youtab-Session-Key", "").strip()
         if not raw:
             return None, None
 
         if not self._api_key:
             logger.warning(
-                "X-Hermes-Session-Key rejected: no API key configured. "
+                "X-Youtab-Session-Key rejected: no API key configured. "
                 "Set API_SERVER_KEY to enable long-term memory scoping."
             )
             return None, web.json_response(
                 _openai_error(
-                    "X-Hermes-Session-Key requires API key authentication. "
+                    "X-Youtab-Session-Key requires API key authentication. "
                     "Configure API_SERVER_KEY to enable this feature."
                 ),
                 status=403,
@@ -1931,7 +1931,7 @@ class APIServerAdapter(BasePlatformAdapter):
         — that stays reserved for an explicit test/manual override, so the first
         profile served can't pin every later request to its DB.
         """
-        from hermes_state import SessionDB
+        from youtab_state import SessionDB
 
         key = str(home)
         cache = getattr(self, "_session_dbs", None)
@@ -1947,12 +1947,12 @@ class APIServerAdapter(BasePlatformAdapter):
     def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.
 
-        Sessions are persisted to ``state.db`` so that ``hermes sessions list``
+        Sessions are persisted to ``state.db`` so that ``youtab sessions list``
         shows API-server conversations alongside CLI and gateway ones.
 
         Under multiplex ``/p/<profile>/`` requests the profile runtime scope
-        redirects ``get_hermes_home()``, so each profile gets its own DB —
-        never the default profile's file. Synchronous: used by ``_create_agent``
+        redirects ``get_youtab_home()``, so each profile gets its own DB —
+        never the default profile's file. Synchroyoutab: used by ``_create_agent``
         (itself sync, and run in both loop and worker contexts). Request
         handlers use ``_ensure_session_db_async`` to keep the SQLite open off
         the event loop.
@@ -1961,9 +1961,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_constants import get_hermes_home
+            from youtab_constants import get_youtab_home
 
-            return self._open_and_cache_session_db(get_hermes_home())
+            return self._open_and_cache_session_db(get_youtab_home())
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
             return None
@@ -1980,9 +1980,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if self._session_db is not None:
             return self._session_db
         try:
-            from hermes_constants import get_hermes_home
+            from youtab_constants import get_youtab_home
 
-            home = get_hermes_home()
+            home = get_youtab_home()
             key = str(home)
             cache = getattr(self, "_session_dbs", None)
             if cache is not None and cache.get(key) is not None:
@@ -2274,9 +2274,9 @@ class APIServerAdapter(BasePlatformAdapter):
     @staticmethod
     def _normalize_session_source(value: Any) -> str:
         text = str(value or "").strip().lower()
-        allowed = {"api_server", "hermes_browser", "browser", "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
+        allowed = {"api_server", "youtab_browser", "browser", "cli", "telegram", "discord", "slack", "desktop", "dashboard"}
         if text in allowed:
-            return "hermes_browser" if text == "browser" else text
+            return "youtab_browser" if text == "browser" else text
         return "api_server"
 
     def _session_model_override_for(self, session_key: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -2367,10 +2367,10 @@ class APIServerAdapter(BasePlatformAdapter):
         Uses _resolve_runtime_agent_kwargs() to pick up model, api_key,
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
-        gateway platforms), falling back to the hermes-api-server default.
+        gateway platforms), falling back to the youtab-api-server default.
 
         ``gateway_session_key`` is a stable per-channel identifier supplied
-        by the client (via ``X-Hermes-Session-Key``).  Unlike ``session_id``
+        by the client (via ``X-Youtab-Session-Key``).  Unlike ``session_id``
         which scopes the short-term transcript and rotates on /new, this
         key is meant to persist across transcripts so long-term memory
         providers (e.g. Honcho) can scope their per-chat state correctly
@@ -2403,7 +2403,7 @@ class APIServerAdapter(BasePlatformAdapter):
             _load_gateway_config,
             GatewayRunner,
         )
-        from hermes_cli.tools_config import _get_platform_tools
+        from youtab_agent_cli.tools_config import _get_platform_tools
 
         # Catch RuntimeError ONLY around this call, not the wider
         # _create_agent()+run_conversation() span --
@@ -2493,10 +2493,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if not confirmed_runtime_lock:
             session_override = self._session_model_override_for(session_key)
         # Model-string precedence delegates to the shared owner
-        # hermes_cli.model_switch.resolve_effective_model (session /model
+        # youtab_agent_cli.model_switch.resolve_effective_model (session /model
         # override > session-persisted model > global) — the rule 7dd00bb47d
         # had to re-fix here after it diverged from gateway/run.py.
-        from hermes_cli.model_switch import resolve_effective_model
+        from youtab_agent_cli.model_switch import resolve_effective_model
         if session_override:
             override_model = resolve_effective_model(session_override, None, model)
             session_provider = _clean_request_string(session_override.get("provider"))
@@ -2578,7 +2578,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         # When the config has no model.default but a provider was resolved
-        # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
+        # (e.g. user ran `youtab auth add openai-codex` without `youtab model`),
         # fall back to the provider's first catalog model so the API call
         # doesn't fail with "model must be a non-empty string". Mirrors
         # run.py::_resolve_session_agent_runtime. Runs after the selection
@@ -2586,7 +2586,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # resolved a model is never treated as "empty" here.
         if not model and runtime_kwargs.get("provider"):
             try:
-                from hermes_cli.models import get_default_model_for_provider
+                from youtab_agent_cli.models import get_default_model_for_provider
                 model = get_default_model_for_provider(runtime_kwargs["provider"])
                 if model:
                     logger.info(
@@ -2663,7 +2663,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_kwargs["service_tier"] = request_service_tier
 
         agent = AIAgent(**agent_kwargs)
-        agent._hermes_api_runtime = {
+        agent._youtab_api_runtime = {
             "provider": runtime_kwargs.get("provider") or getattr(agent, "provider", "") or "",
             "model": getattr(agent, "model", None) or model,
             "route_source": (
@@ -2685,7 +2685,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_health(self, request: "web.Request") -> "web.Response":
         """GET /health — simple health check."""
         return web.json_response(
-            {"status": "ok", "platform": "hermes-agent", "version": _hermes_version()}
+            {"status": "ok", "platform": "youtab-agent-runtime", "version": _youtab_version()}
         )
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
@@ -2726,8 +2726,8 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({
             "status": readiness["status"],
             "readiness": readiness,
-            "platform": "hermes-agent",
-            "version": _hermes_version(),
+            "platform": "youtab-agent-runtime",
+            "version": _youtab_version(),
             "gateway_state": gw_state,
             "platforms": runtime.get("platforms", {}),
             "active_agents": gw_active,
@@ -2748,7 +2748,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
-        """GET /v1/models — list hermes-agent and any configured model_routes aliases.
+        """GET /v1/models — list youtab-agent-runtime and any configured model_routes aliases.
 
         Under ``/p/<profile>/v1/models`` (multiplex on) the advertised primary
         model id follows that profile's name/config, not the default adapter's
@@ -2771,7 +2771,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "id": model_name,
                 "object": "model",
                 "created": now,
-                "owned_by": "hermes",
+                "owned_by": "youtab",
                 "permission": [],
                 "root": model_name,
                 "parent": None,
@@ -2787,7 +2787,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "id": alias,
                 "object": "model",
                 "created": now,
-                "owned_by": "hermes",
+                "owned_by": "youtab",
                 "permission": [],
                 "root": route_cfg.get("model", alias),
                 "parent": model_name,
@@ -2796,11 +2796,11 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"object": "list", "data": models})
 
     async def _handle_model_options(self, request: "web.Request") -> "web.Response":
-        """GET /api/model/options — return Hermes provider/model inventory.
+        """GET /api/model/options — return Youtab provider/model inventory.
 
         This mirrors the dashboard/TUI model picker inventory endpoint so
         external clients using the API server can sync to the user's configured
-        Hermes provider catalog instead of scraping the single OpenAI-compatible
+        Youtab provider catalog instead of scraping the single OpenAI-compatible
         `/v1/models` alias.
         """
         auth_err = self._check_auth(request)
@@ -2809,7 +2809,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         refresh = _coerce_request_bool(request.query.get("refresh"), default=False)
         try:
-            from hermes_cli.inventory import build_model_options_payload, load_picker_context
+            from youtab_agent_cli.inventory import build_model_options_payload, load_picker_context
 
             def _build_payload() -> Dict[str, Any]:
                 return build_model_options_payload(
@@ -2819,7 +2819,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
             # Inventory enrichment can fetch pricing and provider catalogs.
-            # Keep all synchronous picker work off aiohttp's event loop.
+            # Keep all synchroyoutab picker work off aiohttp's event loop.
             payload = await asyncio.to_thread(_build_payload)
             return web.json_response(payload)
         except Exception:
@@ -2837,15 +2837,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         External UIs and orchestrators use this endpoint to discover the API
         server's plugin-safe contract without scraping docs or assuming that
-        every Hermes version exposes the same endpoints.
+        every Youtab version exposes the same endpoints.
         """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
 
         return web.json_response({
-            "object": "hermes.api_server.capabilities",
-            "platform": "hermes-agent",
+            "object": "youtab.api_server.capabilities",
+            "platform": "youtab-agent-runtime",
             "model": self._model_name,
             "auth": {
                 "type": "bearer",
@@ -2856,7 +2856,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "tool_execution": "server",
                 "split_runtime": False,
                 "description": (
-                    "The API server creates a server-side Hermes AIAgent; "
+                    "The API server creates a server-side Youtab AIAgent; "
                     "tools execute on the API-server host unless a future "
                     "explicit split-runtime mode is enabled."
                 ),
@@ -2885,8 +2885,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "skills_api": True,
                 "audio_api": False,
                 "realtime_voice": False,
-                "session_continuity_header": "X-Hermes-Session-Id",
-                "session_key_header": "X-Hermes-Session-Key",
+                "session_continuity_header": "X-Youtab-Session-Id",
+                "session_key_header": "X-Youtab-Session-Key",
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
@@ -2961,8 +2961,8 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         try:
-            from hermes_cli.config import load_config
-            from hermes_cli.tools_config import (
+            from youtab_agent_cli.config import load_config
+            from youtab_agent_cli.tools_config import (
                 _get_effective_configurable_toolsets,
                 _get_platform_tools,
                 _toolset_has_keys,
@@ -3077,7 +3077,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return []
 
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
-        """GET /api/sessions — list persisted Hermes sessions."""
+        """GET /api/sessions — list persisted Youtab sessions."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -3106,7 +3106,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
-        """POST /api/sessions -- create an empty Hermes session row.
+        """POST /api/sessions -- create an empty Youtab session row.
 
         The existence check, insert, title handling, and invalid-title
         rollback run as a single off-loop operation to avoid a TOCTOU
@@ -3214,7 +3214,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error(f"Session already exists: {session_id}", code="session_exists"), status=409)
         if err and err.startswith("title:"):
             return web.json_response(_openai_error(err[len("title:"):], code="invalid_title"), status=400)
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)}, status=201)
+        return web.json_response({"object": "youtab.session", "session": self._session_response(session)}, status=201)
 
     async def _handle_get_session(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions/{session_id}."""
@@ -3224,7 +3224,7 @@ class APIServerAdapter(BasePlatformAdapter):
         session, err = await self._get_existing_session_or_404(request.match_info["session_id"])
         if err:
             return err
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+        return web.json_response({"object": "youtab.session", "session": self._session_response(session)})
 
     async def _handle_patch_session(self, request: "web.Request") -> "web.Response":
         """PATCH /api/sessions/{session_id} — update client-safe session metadata."""
@@ -3252,7 +3252,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if body.get("end_reason"):
             await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
         session = await asyncio.to_thread(db.get_session, session_id) or session
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+        return web.json_response({"object": "youtab.session", "session": self._session_response(session)})
 
     async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
         """DELETE /api/sessions/{session_id}."""
@@ -3265,7 +3265,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = await self._ensure_session_db_async()
         deleted = await asyncio.to_thread(db.delete_session, session_id)
-        return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
+        return web.json_response({"object": "youtab.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions/{session_id}/messages."""
@@ -3330,11 +3330,11 @@ class APIServerAdapter(BasePlatformAdapter):
         except ValueError as exc:
             return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
         fork = await asyncio.to_thread(db.get_session, fork_id) or {"id": fork_id, "parent_session_id": source_id}
-        return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
+        return web.json_response({"object": "youtab.session", "session": self._session_response(fork)}, status=201)
 
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
-        """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
+        """POST /api/sessions/{session_id}/chat — one synchroyoutab agent turn."""
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
@@ -3418,9 +3418,9 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
-        headers = {"X-Hermes-Session-Id": effective_session_id or session_id}
+        headers = {"X-Youtab-Session-Id": effective_session_id or session_id}
         if gateway_session_key:
-            headers["X-Hermes-Session-Key"] = gateway_session_key
+            headers["X-Youtab-Session-Key"] = gateway_session_key
         runtime = {}
         if isinstance(result, dict):
             runtime = result.get("runtime") or {}
@@ -3440,7 +3440,7 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         return web.json_response(
             {
-                "object": "hermes.session.chat.completion",
+                "object": "youtab.session.chat.completion",
                 "session_id": effective_session_id or session_id,
                 "message": {"role": "assistant", "content": final_response},
                 "usage": usage,
@@ -3637,10 +3637,10 @@ class APIServerAdapter(BasePlatformAdapter):
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
-            "X-Hermes-Session-Id": session_id,
+            "X-Youtab-Session-Id": session_id,
         }
         if gateway_session_key:
-            headers["X-Hermes-Session-Key"] = gateway_session_key
+            headers["X-Youtab-Session-Key"] = gateway_session_key
         response = web.StreamResponse(status=200, headers=headers)
         await response.prepare(request)
         try:
@@ -3700,7 +3700,7 @@ class APIServerAdapter(BasePlatformAdapter):
             model_lock="accepted",
         )
         return web.json_response({
-            "object": "hermes.session.model_lock",
+            "object": "youtab.session.model_lock",
             "session_id": session_id,
             "runtime": runtime,
         })
@@ -3763,26 +3763,26 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         # Allow caller to scope long-term memory (e.g. Honcho) with a
-        # stable per-channel identifier via X-Hermes-Session-Key.  This
-        # is independent of X-Hermes-Session-Id: the key persists across
+        # stable per-channel identifier via X-Youtab-Session-Key.  This
+        # is independent of X-Youtab-Session-Id: the key persists across
         # transcripts while the id rotates when the caller starts a new
         # transcript (i.e. /new semantics).  See _parse_session_key_header.
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
 
-        # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
+        # Allow caller to continue an existing session by passing X-Youtab-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
         # Security: session continuation exposes conversation history, so it is
         # only allowed when the API key is configured and the request is
         # authenticated.  Without this gate, any unauthenticated client could
         # read arbitrary session history by guessing/enumerating session IDs.
-        provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        provided_session_id = request.headers.get("X-Youtab-Session-Id", "").strip()
         if provided_session_id:
             if not self._api_key:
                 logger.warning(
-                    "Session continuation via X-Hermes-Session-Id rejected: "
+                    "Session continuation via X-Youtab-Session-Id rejected: "
                     "no API key configured.  Set API_SERVER_KEY to enable "
                     "session continuity."
                 )
@@ -3820,7 +3820,7 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             # Derive a stable session ID from the conversation fingerprint so
             # that consecutive messages from the same Open WebUI (or similar)
-            # conversation map to the same Hermes session.  The first user
+            # conversation map to the same Youtab session.  The first user
             # message + system prompt are constant across all turns.
             first_user = ""
             for cm in conversation_messages:
@@ -3875,7 +3875,7 @@ class APIServerAdapter(BasePlatformAdapter):
             _started_tool_call_ids: set[str] = set()
 
             def _on_tool_start(tool_call_id, function_name, function_args):
-                """Emit ``hermes.tool.progress`` with ``status: running``.
+                """Emit ``youtab.tool.progress`` with ``status: running``.
 
                 Replaces the old ``tool_progress_callback("tool.started",
                 ...)`` emit so SSE consumers receive a single event per
@@ -4002,10 +4002,10 @@ class APIServerAdapter(BasePlatformAdapter):
             finish_reason = "stop"
 
         response_headers = {
-            "X-Hermes-Session-Id": result.get("session_id", session_id),
+            "X-Youtab-Session-Id": result.get("session_id", session_id),
         }
         if gateway_session_key:
-            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+            response_headers["X-Youtab-Session-Key"] = gateway_session_key
 
         # Hard-fail path: no usable assistant text AND a real failure → 5xx
         # with OpenAI-style error envelope so SDK clients raise instead of
@@ -4016,18 +4016,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 err_type="server_error",
                 code="agent_incomplete",
             )
-            err_body["error"]["hermes"] = {
+            err_body["error"]["youtab"] = {
                 "completed": completed,
                 "partial": is_partial,
                 "failed": is_failed,
             }
-            response_headers["X-Hermes-Completed"] = "false"
-            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            response_headers["X-Youtab-Completed"] = "false"
+            response_headers["X-Youtab-Partial"] = "true" if is_partial else "false"
             return web.json_response(err_body, status=502, headers=response_headers)
 
         # Soft-partial path: we have *some* text but the run did not complete
         # (e.g. truncation with partial buffered output). Still 200 but signal
-        # truncation via finish_reason="length" + Hermes-specific extras.
+        # truncation via finish_reason="length" + Youtab-specific extras.
         response_data = {
             "id": completion_id,
             "object": "chat.completion",
@@ -4050,17 +4050,17 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
         if is_partial or is_failed or not completed:
-            response_data["hermes"] = {
+            response_data["youtab"] = {
                 "completed": completed,
                 "partial": is_partial,
                 "failed": is_failed,
                 "error": err_msg,
                 "error_code": "output_truncated" if finish_reason == "length" else "agent_error",
             }
-            response_headers["X-Hermes-Completed"] = "false"
-            response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
+            response_headers["X-Youtab-Completed"] = "false"
+            response_headers["X-Youtab-Partial"] = "true" if is_partial else "false"
             if err_msg:
-                response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
+                response_headers["X-Youtab-Error"] = _redact_api_error_text(err_msg, limit=200)
 
         return web.json_response(response_data, headers=response_headers)
 
@@ -4089,9 +4089,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if cors:
             sse_headers.update(cors)
         if session_id:
-            sse_headers["X-Hermes-Session-Id"] = session_id
+            sse_headers["X-Youtab-Session-Id"] = session_id
         if gateway_session_key:
-            sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+            sse_headers["X-Youtab-Session-Key"] = gateway_session_key
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -4113,7 +4113,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 Plain strings are sent as normal ``delta.content`` chunks.
                 Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
+                as a custom ``event: youtab.tool.progress`` SSE event so
                 frontends can display them without storing the markers in
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
@@ -4121,7 +4121,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
-                        f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                        f"event: youtab.tool.progress\ndata: {event_data}\n\n".encode()
                     )
                 else:
                     content_chunk = {
@@ -4215,7 +4215,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "message": err_msg,
                         "type": type(agent_error).__name__ if agent_error else "agent_error",
                     }
-                finish_chunk["hermes"] = {
+                finish_chunk["youtab"] = {
                     "completed": completed,
                     "partial": is_partial,
                     "failed": is_failed,
@@ -4317,9 +4317,9 @@ class APIServerAdapter(BasePlatformAdapter):
         if cors:
             sse_headers.update(cors)
         if session_id:
-            sse_headers["X-Hermes-Session-Id"] = session_id
+            sse_headers["X-Youtab-Session-Id"] = session_id
         if gateway_session_key:
-            sse_headers["X-Hermes-Session-Key"] = gateway_session_key
+            sse_headers["X-Youtab-Session-Key"] = gateway_session_key
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
 
@@ -5133,7 +5133,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Persist the effective session ID surfaced by _run_agent so that
         # compression-triggered session rotations propagate to the stored
-        # response and the X-Hermes-Session-Id header.  Without this,
+        # response and the X-Youtab-Session-Id header.  Without this,
         # previous_response_id chaining keeps resuming the pre-rotation
         # session and re-triggers compression on every subsequent request.
         _effective_session_id = session_id
@@ -5178,9 +5178,9 @@ class APIServerAdapter(BasePlatformAdapter):
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        response_headers = {"X-Hermes-Session-Id": _effective_session_id}
+        response_headers = {"X-Youtab-Session-Id": _effective_session_id}
         if gateway_session_key:
-            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+            response_headers["X-Youtab-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)
 
     # ------------------------------------------------------------------
@@ -5470,7 +5470,7 @@ class APIServerAdapter(BasePlatformAdapter):
         trips NAS's HTTP timeout. The store CAS claim inside fire_due guards
         against double-fire on a NAS/scheduler retry.
         """
-        from hermes_cli.config import cfg_get, load_config
+        from youtab_agent_cli.config import cfg_get, load_config
         from plugins.cron_providers.chronos.verify import get_fire_verifier
 
         auth = request.headers.get("Authorization", "")
@@ -5845,7 +5845,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
                     }
                     # Include the effective session ID in the result so callers
-                    # (e.g. X-Hermes-Session-Id header) can track compression-
+                    # (e.g. X-Youtab-Session-Id header) can track compression-
                     # triggered session rotations. (#16938)
                     _eff_sid = getattr(agent, "session_id", session_id)
                     if isinstance(_eff_sid, str) and _eff_sid:
@@ -5869,7 +5869,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         or (route_source and route_source != "global")
                     )
                     if include_runtime:
-                        runtime = dict(getattr(agent, "_hermes_api_runtime", {}) or {})
+                        runtime = dict(getattr(agent, "_youtab_api_runtime", {}) or {})
                         raw_provider = getattr(agent, "provider", "")
                         raw_model = getattr(agent, "model", "")
                         actual_provider = (
@@ -5977,7 +5977,7 @@ class APIServerAdapter(BasePlatformAdapter):
         now = time.time()
         current = self._run_statuses.get(run_id, {})
         current.update({
-            "object": "hermes.run",
+            "object": "youtab.run",
             "run_id": run_id,
             "status": status,
             "updated_at": now,
@@ -6296,11 +6296,11 @@ class APIServerAdapter(BasePlatformAdapter):
                             approval_token = set_current_session_key(approval_session_key)
                             session_tokens = self._bind_api_server_session(
                                 # chat_id carries the raw session id (the
-                                # X-Hermes-Session-Id equivalent) exactly like
+                                # X-Youtab-Session-Id equivalent) exactly like
                                 # the other agent-entry routes bind it via
                                 # _run_agent(). Without it,
                                 # tools.async_delegation reads an empty
-                                # HERMES_SESSION_CHAT_ID on /v1/runs and
+                                # YOUTAB_AGENT_SESSION_CHAT_ID on /v1/runs and
                                 # background delegations stay forced-sync
                                 # (no wake target).
                                 chat_id=session_id or "",
@@ -6469,7 +6469,7 @@ class APIServerAdapter(BasePlatformAdapter):
             task.add_done_callback(self._background_tasks.discard)
 
         response_headers = (
-            {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
+            {"X-Youtab-Session-Key": gateway_session_key} if gateway_session_key else {}
         )
         return web.json_response(
             {"run_id": run_id, "status": "started"},
@@ -6626,7 +6626,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 pass
 
         return web.json_response({
-            "object": "hermes.run.approval_response",
+            "object": "youtab.run.approval_response",
             "run_id": run_id,
             "choice": choice,
             "resolved": resolved,
@@ -6719,7 +6719,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
-            from hermes_cli.auth import has_usable_secret
+            from youtab_agent_cli.auth import has_usable_secret
         except Exception as exc:
             # Fail CLOSED. This guard is the only thing between a guessable
             # key and a terminal-capable endpoint, so "the check could not be
@@ -6796,7 +6796,7 @@ class APIServerAdapter(BasePlatformAdapter):
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
-            # Store the adapter after native routes are registered. Local Hermes-Relay
+            # Store the adapter after native routes are registered. Local Youtab-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the
             # upstream session-control handlers.
@@ -6816,13 +6816,13 @@ class APIServerAdapter(BasePlatformAdapter):
             # Loud warning when a network-accessible API server runs against an
             # unsandboxed local terminal backend. The API server can drive the
             # agent's terminal/file tools as the host user; on a public bind
-            # that is the exact surface the hermes-0day campaign abused to write
-            # ~/.hermes/config.yaml and plant persistence. Sandboxing (Docker /
+            # that is the exact surface the youtab-0day campaign abused to write
+            # ~/.youtab-agent-runtime/config.yaml and plant persistence. Sandboxing (Docker /
             # remote backend) contains the blast radius. Warn, don't refuse —
             # the operator may have an external firewall / strong key.
             if is_network_accessible(self._host):
                 try:
-                    from hermes_cli.config import load_config as _load_cfg
+                    from youtab_agent_cli.config import load_config as _load_cfg
                     _backend = (
                         ((_load_cfg() or {}).get("terminal") or {}).get(
                             "backend", "local"

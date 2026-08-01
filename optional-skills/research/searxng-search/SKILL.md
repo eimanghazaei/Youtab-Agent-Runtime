@@ -2,11 +2,11 @@
 name: searxng-search
 description: Free keyless meta-search aggregating 70+ engines.
 version: 1.0.1
-author: hermes-agent
+author: youtab-agent-runtime
 license: MIT
 platforms: [linux, macos]
 metadata:
-  hermes:
+  youtab:
     tags: [search, searxng, meta-search, self-hosted, free, fallback]
     related_skills: [duckduckgo-search, domain-intel]
     fallback_for_toolsets: [web]

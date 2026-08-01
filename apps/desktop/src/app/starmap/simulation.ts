@@ -1,6 +1,6 @@
 import { forceCollide, forceLink, forceManyBody, forceRadial, forceSimulation, type Simulation } from 'd3-force'
 
-import type { StarmapGraph, StarmapNode } from '@/types/hermes'
+import type { StarmapGraph, StarmapNode } from '@/types/youtab'
 
 import { RING_STEPS } from './constants'
 import { clamp, hash, nodeRadius, radiusForRecency } from './geometry'
@@ -234,7 +234,7 @@ function buildLayout(
     // Ignite in CLUSTERS, not a 1-by-1 trickle: split the band's (time-ordered)
     // nodes into a few sub-bursts (~CLUSTER_SIZE each) that share an ignite
     // moment, spaced across the band, with a hair of per-node jitter so a burst
-    // reads as organic rather than perfectly synchronous.
+    // reads as organic rather than perfectly synchroyoutab.
     const clusters = Math.max(1, Math.round(m / CLUSTER_SIZE))
 
     bucket.forEach((n, k) => {

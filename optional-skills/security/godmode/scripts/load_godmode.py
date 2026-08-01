@@ -3,7 +3,7 @@ Loader for G0DM0D3 scripts. Handles the exec-scoping issues.
 
 Usage in execute_code:
     exec(open(os.path.expanduser(
-        os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/red-teaming/godmode/scripts/load_godmode.py")
+        os.path.join(os.environ.get("YOUTAB_AGENT_HOME", os.path.expanduser("~/.youtab-agent-runtime")), "skills/red-teaming/godmode/scripts/load_godmode.py")
     )).read())
     
     # Now all functions are available:
@@ -17,7 +17,7 @@ Usage in execute_code:
 import os, sys
 from pathlib import Path
 
-_gm_scripts_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode" / "scripts"
+_gm_scripts_dir = Path(os.getenv("YOUTAB_AGENT_HOME", Path.home() / ".youtab-agent-runtime")) / "skills" / "red-teaming" / "godmode" / "scripts"
 
 _gm_old_argv = sys.argv
 sys.argv = ["_godmode_loader"]
@@ -26,7 +26,8 @@ def _gm_load(path):
     ns = dict(globals())
     ns["__name__"] = "_godmode_module"
     ns["__file__"] = str(path)
-    exec(compile(open(path).read(), str(path), 'exec'), ns)
+    # Red-team plugin loader: caller passes only fixed sibling filenames below.
+    exec(compile(open(path).read(), str(path), 'exec'), ns)  # noqa: S102
     return ns
 
 for _gm_script in ["parseltongue.py", "godmode_race.py", "auto_jailbreak.py"]:

@@ -2,7 +2,7 @@ import { atom } from 'nanostores'
 
 import { $gateway } from '@/store/gateway'
 
-// "Hey Hermes" wake-word listener state for the composer toggle. The gateway is
+// "Hey Youtab" wake-word listener state for the composer toggle. The gateway is
 // the single source of truth (the listener lives in the backend and is shared
 // with the TUI under a single-owner mic lease); this atom is the renderer's
 // cache of that truth, refreshed from every wake.* RPC response we see.
@@ -18,7 +18,7 @@ export interface WakeWordState {
   notice: string
   /** A toggle RPC is in flight — guards double-clicks. */
   pending: boolean
-  /** Human-facing wake phrase, e.g. "hey hermes". */
+  /** Human-facing wake phrase, e.g. "hey youtab". */
   phrase: string
 }
 
@@ -88,7 +88,7 @@ const gatewayRequester: WakeRequester = async <T>(method: string, params: Record
   const gateway = $gateway.get()
 
   if (!gateway) {
-    throw new Error('Hermes gateway unavailable')
+    throw new Error('Youtab gateway unavailable')
   }
 
   return method === 'wake.start'

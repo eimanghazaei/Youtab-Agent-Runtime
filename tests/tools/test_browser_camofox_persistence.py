@@ -63,16 +63,16 @@ class TestEphemeralMode:
     """Default behavior: random userId, no persistence."""
 
     def test_session_gets_random_user_id(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
 
         session = _get_session("task-1")
-        assert session["user_id"].startswith("hermes_")
+        assert session["user_id"].startswith("youtab_")
         assert session["managed"] is False
 
 
     def test_session_reuse_within_same_task(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
 
         s1 = _get_session("task-1")
@@ -81,10 +81,10 @@ class TestEphemeralMode:
 
 
 class TestManagedPersistenceMode:
-    """With managed_persistence: stable userId derived from Hermes profile."""
+    """With managed_persistence: stable userId derived from Youtab profile."""
 
     def test_session_gets_stable_user_id(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
 
         with _enable_persistence():
@@ -96,7 +96,7 @@ class TestManagedPersistenceMode:
 
 
     def test_navigate_reuses_identity_after_close(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
 
         requests_seen = []
@@ -127,7 +127,7 @@ class TestConfiguredCamofoxIdentity:
     """Externally managed Camofox sessions can provide their own identity."""
 
     def test_env_identity_overrides_default_identity(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         monkeypatch.setenv("CAMOFOX_USER_ID", "shared-camofox")
         monkeypatch.setenv("CAMOFOX_SESSION_KEY", "visible-tab")
@@ -148,7 +148,7 @@ class TestConfiguredCamofoxIdentity:
 
 
     def test_soft_cleanup_preserves_externally_managed_session(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         monkeypatch.setenv("CAMOFOX_USER_ID", "shared-camofox")
 
@@ -174,7 +174,7 @@ class TestVncUrlDiscovery:
 
 
     def test_navigate_includes_vnc_hint(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
         import tools.browser_camofox as mod
         mod._vnc_url = "http://localhost:6080"
@@ -193,7 +193,7 @@ class TestCamofoxSoftCleanup:
     """camofox_soft_cleanup drops local state only when managed persistence is on."""
 
     def test_returns_true_and_drops_session_when_enabled(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
 
         with _enable_persistence():
@@ -209,7 +209,7 @@ class TestCamofoxSoftCleanup:
 
     def test_does_not_call_server_delete(self, tmp_path, monkeypatch):
         """Soft cleanup must never hit the Camofox /sessions DELETE endpoint."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
 
         with (

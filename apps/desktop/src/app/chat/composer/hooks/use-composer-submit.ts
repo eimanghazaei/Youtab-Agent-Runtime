@@ -153,7 +153,7 @@ export function useComposerSubmit({
     // real message instead of picking an option IS the answer "none of these":
     // skip the question so the tool returns, then route the words normally.
     //
-    // Fire-and-forget, not awaited: the skip clears the card synchronously and
+    // Fire-and-forget, not awaited: the skip clears the card synchroyoutably and
     // both RPCs ride the same socket in call order, so the gateway resolves the
     // clarify before it sees the follow-up. Awaiting first would leave the draft
     // live for a tick — long enough for a second Enter to send it twice.

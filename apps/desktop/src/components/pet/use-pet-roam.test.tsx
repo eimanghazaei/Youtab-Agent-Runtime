@@ -42,7 +42,7 @@ function setVisibility(hidden: boolean) {
 
 function installWindowStateBridge() {
   windowStateCallback = null
-  Object.defineProperty(window, 'hermesDesktop', {
+  Object.defineProperty(window, 'youtabDesktop', {
     configurable: true,
     value: {
       onWindowStateChanged: vi.fn((callback: typeof windowStateCallback) => {
@@ -111,7 +111,7 @@ describe('usePetRoam RAF scheduling', () => {
     vi.useRealTimers()
     vi.restoreAllMocks()
     setVisibility(false)
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { youtabDesktop?: unknown }).youtabDesktop
   })
 
   it('uses a pause timer, not RAF, while dwelling at idle', () => {

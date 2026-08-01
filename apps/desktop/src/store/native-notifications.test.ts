@@ -13,8 +13,8 @@ import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from '.
 import { $approvalRequest, setApprovalRequest } from './prompts'
 import { $activeSessionId, setActiveSessionId } from './session'
 
-const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
-const initialHermesDesktop = desktopWindow.hermesDesktop
+const desktopWindow = window as unknown as { youtabDesktop?: Window['youtabDesktop'] }
+const initialYoutabDesktop = desktopWindow.youtabDesktop
 
 const notify = vi.fn().mockResolvedValue(true)
 
@@ -35,7 +35,7 @@ function freshSession(): string {
 
 beforeEach(() => {
   notify.mockClear()
-  desktopWindow.hermesDesktop = { notify } as unknown as Window['hermesDesktop']
+  desktopWindow.youtabDesktop = { notify } as unknown as Window['youtabDesktop']
   setNativeNotifyEnabled(true)
 
   for (const kind of NATIVE_NOTIFICATION_KINDS) {
@@ -48,10 +48,10 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  if (initialHermesDesktop) {
-    desktopWindow.hermesDesktop = initialHermesDesktop
+  if (initialYoutabDesktop) {
+    desktopWindow.youtabDesktop = initialYoutabDesktop
   } else {
-    delete desktopWindow.hermesDesktop
+    delete desktopWindow.youtabDesktop
   }
 })
 
@@ -184,7 +184,7 @@ describe('sendTestNativeNotification', () => {
   it('fires regardless of focus or active session', () => {
     setWindowState({ focused: true, hidden: false })
     setActiveSessionId('on-screen')
-    sendTestNativeNotification('Hermes', 'works')
+    sendTestNativeNotification('Youtab', 'works')
     expect(notify).toHaveBeenCalledTimes(1)
   })
 })

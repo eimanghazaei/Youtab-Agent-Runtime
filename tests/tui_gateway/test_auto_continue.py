@@ -33,7 +33,7 @@ from tui_gateway.turn_marker import (
 
 
 class _InlineThread:
-    """Run threads synchronously so tests observe final state."""
+    """Run threads synchroyoutably so tests observe final state."""
 
     def __init__(self, target=None, daemon=None, args=(), kwargs=None):
         self._target = target
@@ -83,8 +83,8 @@ def emits(monkeypatch):
 
 @pytest.fixture()
 def marker_home(monkeypatch, tmp_path):
-    """Point the server's marker storage at a temp HERMES_HOME."""
-    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    """Point the server's marker storage at a temp YOUTAB_AGENT_HOME."""
+    monkeypatch.setattr(server, "_youtab_home", tmp_path)
     return tmp_path
 
 

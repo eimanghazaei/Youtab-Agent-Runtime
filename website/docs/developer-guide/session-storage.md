@@ -1,16 +1,16 @@
 # Session Storage
 
-Hermes Agent uses a SQLite database (`~/.hermes/state.db`) to persist session
+Youtab Agent Runtime uses a SQLite database (`~/.youtab-agent-runtime/state.db`) to persist session
 metadata, full message history, and model configuration across CLI and gateway
 sessions. This replaces the earlier per-session JSONL file approach.
 
-Source file: `hermes_state.py`
+Source file: `youtab_state.py`
 
 
 ## Architecture Overview
 
 ```
-~/.hermes/state.db (SQLite, WAL mode)
+~/.youtab-agent-runtime/state.db (SQLite, WAL mode)
 ├── sessions              — Session metadata, token counts, billing
 ├── messages              — Full message history per session
 ├── session_model_usage   — Per-model/per-task usage attribution rows
@@ -36,7 +36,7 @@ Key design decisions:
 
 ### Sessions Table
 
-Abridged — see `SCHEMA_SQL` in `hermes_state.py` for the full current column list
+Abridged — see `SCHEMA_SQL` in `youtab_state.py` for the full current column list
 (which also includes gateway routing metadata such as `session_key`, `chat_id`,
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
@@ -135,7 +135,7 @@ The FTS5 table is kept in sync via three triggers that fire on INSERT, UPDATE,
 and DELETE of the `messages` table. The current triggers are gated on the
 `fts_rebuild_high_water` / `fts_rebuild_progress` markers in `state_meta` (so a
 background FTS rebuild can proceed without double-indexing) and cover all three
-indexed columns — see `SCHEMA_SQL` in `hermes_state.py` for the exact SQL.
+indexed columns — see `SCHEMA_SQL` in `youtab_state.py` for the exact SQL.
 
 
 ## Schema Version and Migrations
@@ -170,7 +170,7 @@ Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to ha
 
 ## Write Contention Handling
 
-Multiple hermes processes (gateway + CLI sessions + worktree agents) share one
+Multiple youtab processes (gateway + CLI sessions + worktree agents) share one
 `state.db`. The `SessionDB` class handles write contention with:
 
 - **Short SQLite timeout** (1 second) instead of the default 30s
@@ -194,9 +194,9 @@ _CHECKPOINT_EVERY_N_WRITES = 50
 ### Initialize
 
 ```python
-from hermes_state import SessionDB
+from youtab_state import SessionDB
 
-db = SessionDB()                           # Default: ~/.hermes/state.db
+db = SessionDB()                           # Default: ~/.youtab-agent-runtime/state.db
 db = SessionDB(db_path=Path("/tmp/test.db"))  # Custom path
 ```
 
@@ -400,10 +400,10 @@ db.delete_session("sess_abc123")
 
 ## Database Location
 
-Default path: `~/.hermes/state.db`
+Default path: `~/.youtab-agent-runtime/state.db`
 
-This is derived from `hermes_constants.get_hermes_home()` which resolves to
-`~/.hermes/` by default, or the value of `HERMES_HOME` environment variable.
+This is derived from `youtab_constants.get_youtab_home()` which resolves to
+`~/.youtab-agent-runtime/` by default, or the value of `YOUTAB_AGENT_HOME` environment variable.
 
 The database file, WAL file (`state.db-wal`), and shared-memory file
 (`state.db-shm`) are all created in the same directory.

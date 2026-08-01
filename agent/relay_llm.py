@@ -1,4 +1,4 @@
-"""Core NeMo Relay adapters for physical Hermes provider attempts."""
+"""Core NeMo Relay adapters for physical Youtab provider attempts."""
 
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ async def execute_async(
     metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False,
 ) -> Any:
-    """Run one asynchronous physical provider attempt through Relay."""
+    """Run one asynchroyoutab physical provider attempt through Relay."""
     runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
     if runtime is None or session is None or not runtime.managed_execution_enabled():
         return await callback(request)
@@ -208,7 +208,7 @@ def execute_current(
     metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False,
 ) -> Any:
-    """Run a provider attempt under the inherited Hermes turn when present."""
+    """Run a provider attempt under the inherited Youtab turn when present."""
     turn = relay_runtime.active_turn()
     if turn is None:
         return callback(request)
@@ -257,7 +257,7 @@ def stream_current(
     metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False,
 ) -> Any:
-    """Run a provider stream under the inherited Hermes turn when present."""
+    """Run a provider stream under the inherited Youtab turn when present."""
     turn = relay_runtime.active_turn()
     if turn is None:
         return stream_factory(request)
@@ -289,7 +289,7 @@ def stream(
     metadata: dict[str, Any] | None = None,
     defer_logical_completion: bool = False,
 ) -> "ManagedLlmStream":
-    """Return a synchronous view of one Relay-managed provider stream."""
+    """Return a synchroyoutab view of one Relay-managed provider stream."""
     return ManagedLlmStream(
         request,
         stream_factory,
@@ -308,7 +308,7 @@ def stream(
 
 
 class ManagedLlmStream(Iterator[Any]):
-    """Drive Relay's async stream from Hermes's provider worker thread."""
+    """Drive Relay's async stream from Youtab's provider worker thread."""
 
     def __init__(
         self,
@@ -726,7 +726,7 @@ class AnthropicStreamAccumulator:
         return {**self._message, "content": blocks}
 
     def response(self, base: Any = None) -> Any:
-        """Return the attribute-shaped response consumed by Hermes."""
+        """Return the attribute-shaped response consumed by Youtab."""
         assembled = self.finalize()
         base_payload = _jsonable(base)
         if not isinstance(base_payload, dict):
@@ -764,7 +764,7 @@ def _logical_parent(
                     metadata={
                         relay_runtime.RUNTIME_SCHEMA_KEY: relay_runtime.RUNTIME_SCHEMA_VERSION,
                         relay_runtime.RUNTIME_INSTANCE_KEY: runtime.runtime_id,
-                        "hermes.call_role": str(
+                        "youtab.call_role": str(
                             (metadata or {}).get("call_role") or "primary"
                         ),
                     },
@@ -805,7 +805,7 @@ def _complete_logical(
             # The provider result is authoritative. Retain the handle so turn
             # finalization can retry cleanup without changing that result.
             logger.warning(
-                "Hermes Relay logical LLM finalization failed",
+                "Youtab Relay logical LLM finalization failed",
                 exc_info=True,
             )
             return
@@ -1126,5 +1126,5 @@ def _run_awaitable(value: Any) -> Any:
     except RuntimeError:
         return asyncio.run(value)
     raise RuntimeError(
-        "Synchronous Relay LLM execution cannot run on an event-loop thread"
+        "Synchroyoutab Relay LLM execution cannot run on an event-loop thread"
     )

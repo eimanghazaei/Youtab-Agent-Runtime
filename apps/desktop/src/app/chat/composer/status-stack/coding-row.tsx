@@ -13,7 +13,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DiffCount } from '@/components/ui/diff-count'
-import type { HermesGitBranch } from '@/global'
+import type { YoutabGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
 import { registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
@@ -32,7 +32,7 @@ interface CodingStatusRowProps {
    *  branch). Drives the dialog's "convert a branch" picker. */
   onConvertBranch?: (branch: string, path?: null | string, isDefault?: boolean) => Promise<void>
   /** List the repo's local branches for the "convert a branch" picker. */
-  onListBranches?: () => Promise<HermesGitBranch[]>
+  onListBranches?: () => Promise<YoutabGitBranch[]>
   /** Open the review pane (changed files + diffs). */
   onOpen?: () => void
   /** Jump into an existing worktree (open a fresh session anchored there). */

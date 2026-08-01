@@ -1,6 +1,6 @@
 # Blender MCP — Pitfalls & Lessons Learned
 
-All interaction goes through the blender MCP tools (`hermes mcp install
+All interaction goes through the blender MCP tools (`youtab mcp install
 blender`): `get_scene_info`, `get_object_info`, `get_viewport_screenshot`,
 and `execute_blender_code` for arbitrary bpy Python.
 
@@ -100,7 +100,7 @@ Material colors use floating-point RGBA in the 0.0-1.0 range.
 
 ### 13. Render blocks the bridge — expect long calls
 
-Rendering is synchronous; the tool call won't return until the render
+Rendering is synchroyoutab; the tool call won't return until the render
 finishes. Expect renders to take far longer than other calls.
 
 ### 14. Engine name varies by Blender version

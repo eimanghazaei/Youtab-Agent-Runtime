@@ -23,9 +23,9 @@
  * terminal pane keeps working unimpaired.
  */
 
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card } from "@nous-research/ui/ui/components/card";
+import { Button } from "@youtab/ui/ui/components/button";
+import { Badge } from "@youtab/ui/ui/components/badge";
+import { Card } from "@youtab/ui/ui/components/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
@@ -225,7 +225,7 @@ export function ChatSidebar({
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +
-  // /api/events in hermes_cli/web_server.py for the broadcast hop.
+  // /api/events in youtab_agent_cli/web_server.py for the broadcast hop.
   //
   // Failures (auth/loopback rejection, server too old to expose the
   // endpoint, transient drops) surface in the same banner as the
@@ -237,7 +237,7 @@ export function ChatSidebar({
     }
     // In loopback mode the legacy ?token=<session> path is fine; in gated
     // mode we have to mint a single-use ticket from the cookie. The IIFE
-    // keeps the outer effect synchronous so its ``return cleanup`` stays
+    // keeps the outer effect synchroyoutab so its ``return cleanup`` stays
     // at the top level; the local ``ws`` is hoisted to a closed-over
     // binding the cleanup reads via ``wsRef``.
     let unmounting = false;

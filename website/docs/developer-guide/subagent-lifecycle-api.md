@@ -5,11 +5,11 @@ sidebar_label: Subagent lifecycle API
 
 # Public Subagent Lifecycle API
 
-Plugins can launch and supervise fresh Hermes child sessions without importing
+Plugins can launch and supervise fresh Youtab child sessions without importing
 `tools.delegate_tool`, gateway internals, TUI state, or `AIAgent` fields.
 The service resolves its parent from the current agent turn, so it works in
 CLI, gateway, non-interactive, and kanban-worker sessions. Launching outside an
-active agent turn fails closed with `No active Hermes parent session`.
+active agent turn fails closed with `No active Youtab parent session`.
 
 ```python
 from agent.subagent_lifecycle import SubagentLaunchRequest
@@ -43,11 +43,11 @@ claims completion until `wait` or `result` observes a terminal state. Terminal
 results are immutable, idempotent, bounded to 32k characters, omit transcripts
 and hidden reasoning, and include a stable result hash.
 
-This API is lifecycle-managed asynchronous execution. Child construction and
+This API is lifecycle-managed asynchroyoutab execution. Child construction and
 completion use the same host-owned path as `delegate_task`, including parent
 tool-resolution restoration, memory notification, serialized `subagent_stop`
 hooks, resource cleanup, and child-cost rollup. It does not change the
-synchronous `delegate_task` tool, batch delegation, or its gateway/TUI display.
+synchroyoutab `delegate_task` tool, batch delegation, or its gateway/TUI display.
 The initial implementation retains metadata and terminal results in-process for
 one hour.
 After a process restart, `reconnect` returns `RECONNECT_UNAVAILABLE` and never
@@ -56,6 +56,6 @@ exit; callers must treat those handles as interrupted by process exit.
 
 Requests are fail-closed: goal/context/metadata sizes are capped, unknown or
 parent-broadening toolsets are rejected, and per-tool blocks, working-directory
-overrides, and per-launch timeouts are explicitly rejected until Hermes can
+overrides, and per-launch timeouts are explicitly rejected until Youtab can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
-child; Hermes's existing unsafe-tool block remains enforced.
+child; Youtab's existing unsafe-tool block remains enforced.

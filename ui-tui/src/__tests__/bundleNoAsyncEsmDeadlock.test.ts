@@ -7,9 +7,9 @@
  * the top-level `await Promise.all([...])` in src/entry.tsx — the user
  * sees only 141 bytes of ANSI reset sequences and a blank screen forever.
  *
- * Root cause: re-exporting `ink-text-input` from `@hermes/ink`'s
+ * Root cause: re-exporting `ink-text-input` from `@youtab/agent-ink`'s
  * entry-exports drags the upstream `ink` package into the bundle. That
- * `ink` graph and our in-tree `@hermes/ink` graph reference each other
+ * `ink` graph and our in-tree `@youtab/agent-ink` graph reference each other
  * via React/`ink-text-input`, producing the circular async cycle that
  * `__esm` cannot resolve.
  *
@@ -17,7 +17,7 @@
  * keep the bundle deadlock-free:
  *
  *  1. No `async` `__esm` modules in the bundle. As long as every init
- *     runs synchronously, `__esm`'s closure-capture quirk is irrelevant.
+ *     runs synchroyoutably, `__esm`'s closure-capture quirk is irrelevant.
  *  2. No `ink-text-input` / `node_modules/ink/build` modules in the
  *     bundle. Their absence is what makes #1 hold; if a future commit
  *     re-introduces the re-export, it would reintroduce the cycle.
@@ -46,7 +46,7 @@ function bundleIsFresh(): boolean {
   try {
     const bundleMtime = statSync(bundlePath).mtimeMs
 
-    const sourceMtime = statSync(resolve(uiTuiRoot, 'packages/hermes-ink/src/entry-exports.ts')).mtimeMs
+    const sourceMtime = statSync(resolve(uiTuiRoot, 'packages/youtab-ink/src/entry-exports.ts')).mtimeMs
 
     return bundleMtime >= sourceMtime
   } catch {
@@ -87,16 +87,16 @@ describe('TUI bundle (issue #31227)', () => {
 
   it('does not bundle the upstream ink package or ink-text-input', () => {
     // Pulling either of these in re-creates the circular async chain
-    // that #31227 was about. The in-tree fork at @hermes/ink replaces
+    // that #31227 was about. The in-tree fork at @youtab/agent-ink replaces
     // all of `ink`; nothing in ui-tui imports `TextInput` from
-    // `@hermes/ink` so the re-export is unused dead weight.
+    // `@youtab/agent-ink` so the re-export is unused dead weight.
     expect(bundleSrc.includes('node_modules/ink/build/index.js')).toBe(false)
     expect(bundleSrc.includes('node_modules/ink-text-input/build/index.js')).toBe(false)
   })
 
-  it('has the @hermes/ink entry-exports module compiled to sync init', () => {
-    // Sanity check that the alias swap to packages/hermes-ink/src/entry-exports.ts
-    // is still active and producing the expected synchronous init shape.
-    expect(bundleSrc).toMatch(/var init_entry_exports = __esm\(\{\s*"packages\/hermes-ink\/src\/entry-exports\.ts"\(\)/)
+  it('has the @youtab/agent-ink entry-exports module compiled to sync init', () => {
+    // Sanity check that the alias swap to packages/youtab-ink/src/entry-exports.ts
+    // is still active and producing the expected synchroyoutab init shape.
+    expect(bundleSrc).toMatch(/var init_entry_exports = __esm\(\{\s*"packages\/youtab-ink\/src\/entry-exports\.ts"\(\)/)
   })
 })

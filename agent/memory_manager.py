@@ -434,9 +434,9 @@ class MemoryManager:
         # (#40466). Reject it here, at the door, so it never enters the routing
         # table at all — matching the built-ins-always-win invariant used by
         # the TTS/browser/search provider registries.
-        from toolsets import _HERMES_CORE_TOOLS
+        from toolsets import _YOUTAB_AGENT_CORE_TOOLS
 
-        _core_tool_names = set(_HERMES_CORE_TOOLS)
+        _core_tool_names = set(_YOUTAB_AGENT_CORE_TOOLS)
 
         # Index tool names → provider for routing
         for raw_schema in provider.get_tool_schemas():
@@ -508,7 +508,7 @@ class MemoryManager:
     def _strip_skill_scaffolding(text: str) -> Optional[str]:
         """Return memory-worthy user text, or None to skip the turn.
 
-        When a user invokes a /skill or /bundle, Hermes expands the turn into
+        When a user invokes a /skill or /bundle, Youtab expands the turn into
         a model-facing message that embeds the entire skill body. Feeding that
         verbatim to memory providers pollutes their stores/embeddings with
         prompt scaffolding instead of what the user actually asked. We recover
@@ -712,7 +712,7 @@ class MemoryManager:
         try:
             # Make submit+tracking atomic with the shutdown snapshot. The
             # callback is attached after releasing the lock because an already
-            # completed future invokes callbacks synchronously.
+            # completed future invokes callbacks synchroyoutably.
             with self._sync_executor_lock:
                 if self._shutting_down:
                     logger.warning("Memory manager is shutting down; rejecting late %s task", kind)
@@ -789,9 +789,9 @@ class MemoryManager:
         :meth:`add_provider`, so the manager must not advertise a schema it
         will never route. Built-ins always win (#40466).
         """
-        from toolsets import _HERMES_CORE_TOOLS
+        from toolsets import _YOUTAB_AGENT_CORE_TOOLS
 
-        _core_tool_names = set(_HERMES_CORE_TOOLS)
+        _core_tool_names = set(_YOUTAB_AGENT_CORE_TOOLS)
         schemas = []
         seen = set()
         for provider in self._providers:
@@ -900,7 +900,7 @@ class MemoryManager:
         every other provider write (per-turn ``sync_all``, prefetches), which
         already share the same worker. If the executor is unavailable,
         ``_submit_background`` degrades to inline execution — the pre-#16454
-        synchronous behavior, slow but correct.
+        synchroyoutab behavior, slow but correct.
         """
         if not self._providers:
             return
@@ -1224,13 +1224,13 @@ class MemoryManager:
     def initialize_all(self, session_id: str, **kwargs) -> None:
         """Initialize all providers.
 
-        Automatically injects ``hermes_home`` into *kwargs* so that every
+        Automatically injects ``youtab_home`` into *kwargs* so that every
         provider can resolve profile-scoped storage paths without importing
-        ``get_hermes_home()`` themselves.
+        ``get_youtab_home()`` themselves.
         """
-        if "hermes_home" not in kwargs:
-            from hermes_constants import get_hermes_home
-            kwargs["hermes_home"] = str(get_hermes_home())
+        if "youtab_home" not in kwargs:
+            from youtab_constants import get_youtab_home
+            kwargs["youtab_home"] = str(get_youtab_home())
         for provider in self._providers:
             try:
                 provider.initialize(session_id=session_id, **kwargs)

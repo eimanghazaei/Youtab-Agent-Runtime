@@ -11,7 +11,7 @@
  *
  * Background on the two auth models a remote gateway can use:
  *   - 'token': legacy static dashboard session token. REST uses an
- *     `X-Hermes-Session-Token` header; WS uses `?token=`.
+ *     `X-Youtab-Session-Token` header; WS uses `?token=`.
  *   - 'oauth': hosted gateways gate behind an OAuth provider. REST is authed
  *     by an HttpOnly session cookie; WS upgrades require a single-use
  *     `?ticket=` minted at POST /api/auth/ws-ticket. The gateway advertises
@@ -21,23 +21,23 @@
 // Bare + prefixed variants of the session cookies the gateway may set,
 // depending on its deploy shape (HTTPS direct → __Host-, behind a path prefix
 // → __Secure-, loopback HTTP → bare). Mirrors
-// hermes_cli/dashboard_auth/cookies.py.
+// youtab_agent_cli/dashboard_auth/cookies.py.
 //
 // Two cookies are in play (see that module):
-//   - hermes_session_at: the OAuth access token. Short-lived (~15 min); its
+//   - youtab_session_at: the OAuth access token. Short-lived (~15 min); its
 //     Max-Age tracks the access-token TTL, so the cookie jar drops it the
 //     instant the AT expires.
-//   - hermes_session_rt: the OAuth refresh token. Long-lived (24h rotating,
-//     reuse-detected — Portal NAS #293 / hermes #37247). When the AT cookie
+//   - youtab_session_rt: the OAuth refresh token. Long-lived (24h rotating,
+//     reuse-detected — Portal NAS #293 / youtab #37247). When the AT cookie
 //     has lapsed but the RT cookie is still present, the gateway middleware
 //     transparently rotates a fresh AT on the next authenticated request
 //     (POST /api/auth/ws-ticket), so the session is still LIVE even with no
 //     AT cookie. A liveness check that looked only at the AT cookie would
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
-const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
-const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
+const AT_COOKIE_VARIANTS = ['__Host-youtab_session_at', '__Secure-youtab_session_at', 'youtab_session_at']
+const RT_COOKIE_VARIANTS = ['__Host-youtab_session_rt', '__Secure-youtab_session_rt', 'youtab_session_rt']
 
-// The Nous portal (NAS) does NOT use Hermes gateway session cookies — it is a
+// The Youtab portal (NAS) does NOT use Youtab gateway session cookies — it is a
 // Privy-authed Next.js app. NAS `auth()` (src/server/auth/session.ts) reads the
 // `privy-token` access-token cookie (with `privy-id-token` alongside), which is
 // also exactly what the `/api/agents` cookie-auth path validates. So portal
@@ -193,7 +193,7 @@ function normAuthMode(mode) {
 }
 
 // True for connection modes that resolve to a REMOTE backend. 'cloud' is a
-// Hermes Cloud connection (cloud-auto-discovery Q3/Q6): it carries a
+// Youtab Cloud connection (cloud-auto-discovery Q3/Q6): it carries a
 // remote-shaped block and reuses the entire remote connect/probe/reconnect
 // path, so every resolution site treats it exactly like 'remote'. The only
 // places that distinguish cloud from remote are the settings UI (which card to
@@ -265,10 +265,10 @@ function normalizeSshConfig(entry) {
     out.keyPath = keyPath
   }
 
-  const remoteHermesPath = String(entry.remoteHermesPath || '').trim()
+  const remoteYoutabPath = String(entry.remoteYoutabPath || '').trim()
 
-  if (remoteHermesPath) {
-    out.remoteHermesPath = remoteHermesPath
+  if (remoteYoutabPath) {
+    out.remoteYoutabPath = remoteYoutabPath
   }
 
   return out
@@ -379,7 +379,7 @@ export interface ProfileBackendRoute {
  *  3. A profile inheriting the app-global remote shares the primary backend —
  *     one host serves every profile — so it is scoped per request instead.
  *  4. Any other local profile gets its own pooled backend, spawned with
- *     `--profile`, so its `HERMES_HOME` scopes it.
+ *     `--profile`, so its `YOUTAB_AGENT_HOME` scopes it.
  *
  * Routing used to be spread across three overlapping predicates that each
  * re-derived part of this table, which is how case 3 ended up registering
@@ -424,7 +424,7 @@ function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = 
   let parsed
 
   try {
-    parsed = new URL(rawPath, 'http://hermes.local')
+    parsed = new URL(rawPath, 'http://youtab.local')
   } catch {
     return path
   }
@@ -479,7 +479,7 @@ function resolveAuthMode(inputAuthMode, existingAuthMode) {
 }
 
 /**
- * True if any cookie in `cookies` is a hermes session ACCESS-token cookie
+ * True if any cookie in `cookies` is a youtab session ACCESS-token cookie
  * with a non-empty value. `cookies` is an array of {name, value} (the shape
  * Electron's session.cookies.get returns).
  *
@@ -519,10 +519,10 @@ function cookiesHaveLiveSession(cookies) {
 }
 
 /**
- * True if the cookie jar holds a live Nous PORTAL (Privy) session — a non-empty
+ * True if the cookie jar holds a live Youtab PORTAL (Privy) session — a non-empty
  * `privy-token` (access-token) cookie, or a variant. This is the portal
  * analogue of `cookiesHaveLiveSession`: the portal authenticates via Privy, not
- * the Hermes gateway session cookies, so cloud sign-in / discovery liveness
+ * the Youtab gateway session cookies, so cloud sign-in / discovery liveness
  * must check THIS, not the gateway helpers. (NAS `auth()` and the `/api/agents`
  * cookie path both key off `privy-token`.)
  */

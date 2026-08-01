@@ -9,7 +9,7 @@ Covers the canonical fix for issues #4146, #27303, #30882, #33057:
   3. tools.approval.check_execute_code_guard — the entry-point guard decision
      matrix (isolated backends, yolo/off, cron-deny, headless-local,
      gateway approve/deny/timeout/missing-notify, smart mode).
-  4. tools.code_execution_tool._scrub_child_env — broad HERMES_ prefix dropped,
+  4. tools.code_execution_tool._scrub_child_env — broad YOUTAB_AGENT_ prefix dropped,
      operational allowlist kept, DSN/WEBHOOK blocked, passthrough precedence.
 """
 
@@ -106,12 +106,12 @@ def test_both_rpc_threads_use_propagation_helper():
 
 @pytest.fixture
 def gw_session(monkeypatch):
-    """A clean gateway session: HERMES_GATEWAY_SESSION set, a bound session
+    """A clean gateway session: YOUTAB_AGENT_GATEWAY_SESSION set, a bound session
     key, and isolated gateway queues/callbacks. Yields the session_key."""
-    monkeypatch.setenv("HERMES_GATEWAY_SESSION", "1")
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
-    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.setenv("YOUTAB_AGENT_GATEWAY_SESSION", "1")
+    monkeypatch.delenv("YOUTAB_AGENT_INTERACTIVE", raising=False)
+    monkeypatch.delenv("YOUTAB_AGENT_CRON_SESSION", raising=False)
+    monkeypatch.delenv("YOUTAB_AGENT_EXEC_ASK", raising=False)
     # Force manual mode regardless of host config and disable any process-level
     # yolo inherited from the developer's live environment.
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
@@ -169,18 +169,18 @@ def test_guard_isolated_backend_approved():
 
 def test_guard_headless_local_approved(monkeypatch):
     # Documented #30882 limitation: no approval surface → preserve auto-run.
-    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
-    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
-    monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+    monkeypatch.delenv("YOUTAB_AGENT_GATEWAY_SESSION", raising=False)
+    monkeypatch.delenv("YOUTAB_AGENT_INTERACTIVE", raising=False)
+    monkeypatch.delenv("YOUTAB_AGENT_CRON_SESSION", raising=False)
+    monkeypatch.delenv("YOUTAB_AGENT_EXEC_ASK", raising=False)
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
     assert A.check_execute_code_guard("import os", "local")["approved"] is True
 
 
 def test_guard_cron_deny_blocks(monkeypatch):
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
-    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
-    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.setenv("YOUTAB_AGENT_CRON_SESSION", "1")
+    monkeypatch.delenv("YOUTAB_AGENT_GATEWAY_SESSION", raising=False)
     monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
     monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
     res = A.check_execute_code_guard("import os", "local")
@@ -397,17 +397,17 @@ def test_guard_session_yolo_bypasses(gw_session):
 # 4. Env scrubbing (#27303)
 # ---------------------------------------------------------------------------
 
-def test_env_scrub_hermes_allowlist_and_secret_blocks():
+def test_env_scrub_youtab_allowlist_and_secret_blocks():
     from tools.code_execution_tool import _scrub_child_env
 
     env = {
         # operational allowlist → kept
-        "HERMES_HOME": "/h", "HERMES_PROFILE": "p",
-        "HERMES_CONFIG": "/c.yaml", "HERMES_ENV": "/e",
-        "HERMES_DELEGATED_CHILD_CONTEXT": "1",
-        # other HERMES_* → dropped (broad prefix removed)
-        "HERMES_BASE_URL": "https://x", "HERMES_INTERACTIVE": "1",
-        "HERMES_KANBAN_DB": "postgres://u:p@h/db",
+        "YOUTAB_AGENT_HOME": "/h", "YOUTAB_AGENT_PROFILE": "p",
+        "YOUTAB_AGENT_CONFIG": "/c.yaml", "YOUTAB_AGENT_ENV": "/e",
+        "YOUTAB_AGENT_DELEGATED_CHILD_CONTEXT": "1",
+        # other YOUTAB_AGENT_* → dropped (broad prefix removed)
+        "YOUTAB_AGENT_BASE_URL": "https://x", "YOUTAB_AGENT_INTERACTIVE": "1",
+        "YOUTAB_AGENT_KANBAN_DB": "postgres://u:p@h/db",
         # secret substrings (incl. new DSN/WEBHOOK) → dropped
         "SENTRY_DSN": "https://a@s.io/1", "SLACK_WEBHOOK": "https://h/x",
         "OPENAI_API_KEY": "sk", "GITHUB_TOKEN": "ghp",
@@ -417,12 +417,12 @@ def test_env_scrub_hermes_allowlist_and_secret_blocks():
     out = _scrub_child_env(env, is_passthrough=lambda _: False, is_windows=False)
 
     for kept in (
-        "HERMES_HOME", "HERMES_PROFILE", "HERMES_CONFIG", "HERMES_ENV",
-        "HERMES_DELEGATED_CHILD_CONTEXT", "PATH",
+        "YOUTAB_AGENT_HOME", "YOUTAB_AGENT_PROFILE", "YOUTAB_AGENT_CONFIG", "YOUTAB_AGENT_ENV",
+        "YOUTAB_AGENT_DELEGATED_CHILD_CONTEXT", "PATH",
     ):
         assert kept in out, f"{kept} should be kept"
     for dropped in (
-        "HERMES_BASE_URL", "HERMES_INTERACTIVE", "HERMES_KANBAN_DB",
+        "YOUTAB_AGENT_BASE_URL", "YOUTAB_AGENT_INTERACTIVE", "YOUTAB_AGENT_KANBAN_DB",
         "SENTRY_DSN", "SLACK_WEBHOOK", "OPENAI_API_KEY", "GITHUB_TOKEN",
         "RANDOM_X",
     ):
@@ -451,14 +451,14 @@ def test_env_scrub_passthrough_overrides_secret_block():
 
 
 def test_env_scrub_no_log_when_nothing_dropped(caplog):
-    """No diagnostic noise when there are no dropped HERMES_* vars."""
+    """No diagnostic noise when there are no dropped YOUTAB_AGENT_* vars."""
     import logging
 
     from tools.code_execution_tool import _scrub_child_env
 
     with caplog.at_level(logging.DEBUG, logger="tools.code_execution_tool"):
         _scrub_child_env(
-            {"HERMES_HOME": "/h", "PATH": "/usr/bin"},
+            {"YOUTAB_AGENT_HOME": "/h", "PATH": "/usr/bin"},
             is_passthrough=lambda _: False,
             is_windows=False,
         )

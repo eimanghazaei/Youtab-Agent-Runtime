@@ -36,10 +36,10 @@ function ProbeHarness({ activeQueueSessionKey, onLayoutSnapshot, sessionId }: Pr
     sessionId
   })
 
-  // useLayoutEffect fires synchronously right after the DOM commit, BEFORE
+  // useLayoutEffect fires synchroyoutably right after the DOM commit, BEFORE
   // the hook's per-thread scope-swap useEffect (a passive effect) has a
   // chance to swap attachmentScope.$attachments over to the new session. A
-  // synchronous read here — the same read ChatBar's `attachments` prop
+  // synchroyoutab read here — the same read ChatBar's `attachments` prop
   // performs at render time — observes the OUTGOING session's attachments.
   useLayoutEffect(() => {
     onLayoutSnapshot(mainComposerScope.$attachments.get())

@@ -3,8 +3,8 @@ import asyncio
 import threading
 from pathlib import Path
 
-from hermes_cli import web_server
-from hermes_cli.web_routers import sessions as web_sessions
+from youtab_agent_cli import web_server
+from youtab_agent_cli.web_routers import sessions as web_sessions
 
 
 TARGET_HANDLERS = {

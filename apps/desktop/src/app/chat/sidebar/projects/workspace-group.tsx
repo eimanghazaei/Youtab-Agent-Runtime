@@ -2,12 +2,12 @@ import type * as React from 'react'
 import { useState } from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
-import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { setWorkspaceNodeOpen } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { newSessionInProfile } from '@/store/profile'
 import { switchBranchInRepo } from '@/store/projects'
+import type { SessionInfo } from '@/youtab'
 
 import { SidebarRowStack } from '../chrome'
 import { SidebarLoadMoreRow } from '../load-more-row'

@@ -1,6 +1,6 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
-import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
+import type { YoutabGitWorktree, YoutabRepoStatus } from '@/global'
 import { desktopGit } from '@/lib/desktop-git'
 
 import { $worktreeRefreshToken } from './projects'
@@ -21,19 +21,19 @@ const REPO_STATUS_REFRESH_DEBOUNCE_MS = 100
 
 const normalizeCwd = (cwd?: null | string): null | string => cwd?.trim() || null
 
-const EMPTY_WORKTREES: HermesGitWorktree[] = []
+const EMPTY_WORKTREES: YoutabGitWorktree[] = []
 
 // Status + worktrees per normalized cwd. Entries outlive their surface (the
 // map stays bounded by the worktrees touched this run) so re-opening a tile
 // paints its last-known status instantly while the fresh probe runs.
-export const $repoStatusByCwd = atom<Record<string, HermesRepoStatus | null>>({})
-export const $repoWorktreesByCwd = atom<Record<string, HermesGitWorktree[]>>({})
+export const $repoStatusByCwd = atom<Record<string, YoutabRepoStatus | null>>({})
+export const $repoWorktreesByCwd = atom<Record<string, YoutabGitWorktree[]>>({})
 
 // The PRIMARY (main pane) view — the active session's slice of the per-cwd
 // truth. Existing consumers (keybind gate, base-branch picker, file tree) keep
 // reading these; only surfaces that can live in ANOTHER worktree (tile rails)
 // need the per-cwd accessors below.
-export const $repoStatus: ReadableAtom<HermesRepoStatus | null> = computed(
+export const $repoStatus: ReadableAtom<YoutabRepoStatus | null> = computed(
   [$repoStatusByCwd, $currentCwd],
   (byCwd, cwd) => byCwd[normalizeCwd(cwd) ?? ''] ?? null
 )
@@ -42,20 +42,20 @@ export const $repoStatusLoading = atom(false)
 
 // The repo's real worktrees (for the coding rail's "jump to a worktree" menu).
 // Refreshed on the same edges as the status probe; empty off a repo.
-export const $repoWorktrees: ReadableAtom<HermesGitWorktree[]> = computed(
+export const $repoWorktrees: ReadableAtom<YoutabGitWorktree[]> = computed(
   [$repoWorktreesByCwd, $currentCwd],
   (byCwd, cwd) => byCwd[normalizeCwd(cwd) ?? ''] ?? EMPTY_WORKTREES
 )
 
 // Reference-stable per-cwd slices, so any number of rails can each subscribe
 // to their own worktree's status without re-deriving atoms per render.
-const statusAtomByCwd = new Map<string, ReadableAtom<HermesRepoStatus | null>>()
-const worktreesAtomByCwd = new Map<string, ReadableAtom<HermesGitWorktree[]>>()
-const $noRepoStatus = atom<HermesRepoStatus | null>(null)
-const $noWorktrees = atom<HermesGitWorktree[]>(EMPTY_WORKTREES)
+const statusAtomByCwd = new Map<string, ReadableAtom<YoutabRepoStatus | null>>()
+const worktreesAtomByCwd = new Map<string, ReadableAtom<YoutabGitWorktree[]>>()
+const $noRepoStatus = atom<YoutabRepoStatus | null>(null)
+const $noWorktrees = atom<YoutabGitWorktree[]>(EMPTY_WORKTREES)
 
 /** Reactive status for one repo cwd (a tile's worktree). Stable per cwd. */
-export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoStatus | null> {
+export function repoStatusForCwd(cwd?: null | string): ReadableAtom<YoutabRepoStatus | null> {
   const key = normalizeCwd(cwd)
 
   if (!key) {
@@ -73,7 +73,7 @@ export function repoStatusForCwd(cwd?: null | string): ReadableAtom<HermesRepoSt
 }
 
 /** Reactive worktree list for one repo cwd. Stable per cwd. */
-export function repoWorktreesForCwd(cwd?: null | string): ReadableAtom<HermesGitWorktree[]> {
+export function repoWorktreesForCwd(cwd?: null | string): ReadableAtom<YoutabGitWorktree[]> {
   const key = normalizeCwd(cwd)
 
   if (!key) {
@@ -148,7 +148,7 @@ export function registerRepoStatusCwd(cwd?: null | string): (() => void) | undef
   }
 }
 
-function setRepoStatusEntry(target: string, status: HermesRepoStatus | null): void {
+function setRepoStatusEntry(target: string, status: YoutabRepoStatus | null): void {
   const byCwd = $repoStatusByCwd.get()
 
   // Skip the no-op null→null write so a repeated failed probe doesn't churn
@@ -160,7 +160,7 @@ function setRepoStatusEntry(target: string, status: HermesRepoStatus | null): vo
   $repoStatusByCwd.set({ ...byCwd, [target]: status })
 }
 
-function setRepoWorktreesEntry(target: string, worktrees: HermesGitWorktree[]): void {
+function setRepoWorktreesEntry(target: string, worktrees: YoutabGitWorktree[]): void {
   const byCwd = $repoWorktreesByCwd.get()
 
   if (target in byCwd && byCwd[target] === worktrees) {
@@ -171,7 +171,7 @@ function setRepoWorktreesEntry(target: string, worktrees: HermesGitWorktree[]): 
 }
 
 interface RepoStatusRefreshRequest {
-  probe: (cwd: string) => Promise<HermesRepoStatus | null>
+  probe: (cwd: string) => Promise<YoutabRepoStatus | null>
   seq: number
   target: string
 }
@@ -255,7 +255,7 @@ async function drainRepoStatusRefreshes(): Promise<void> {
     await runRepoStatusRefresh(request)
   }
 
-  // This reset is synchronous with the final empty-queue check. A refresh
+  // This reset is synchroyoutab with the final empty-queue check. A refresh
   // arriving before this continuation runs is drained above; one arriving
   // afterward sees no in-flight promise and starts a new drain.
   repoStatusRefreshInFlight = null

@@ -7,7 +7,6 @@ import {
   DropdownMenuSub,
   DropdownMenuSubTrigger
 } from '@/components/ui/dropdown-menu'
-import type * as HermesApi from '@/hermes'
 import { $modelPresets, getModelPreset } from '@/store/model-presets'
 import {
   $activeSessionId,
@@ -18,11 +17,12 @@ import {
   setCurrentModelSource,
   setCurrentReasoningEffort
 } from '@/store/session'
+import type * as YoutabApi from '@/youtab'
 
 import { type FastControl, ModelEditSubmenu } from './model-edit-submenu'
 
-vi.mock('@/hermes', async importOriginal => {
-  const actual = await importOriginal<typeof HermesApi>()
+vi.mock('@/youtab', async importOriginal => {
+  const actual = await importOriginal<typeof YoutabApi>()
 
   return { ...actual, setApiRequestProfile: vi.fn() }
 })

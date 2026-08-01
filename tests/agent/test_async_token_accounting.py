@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from hermes_state import SessionDB
+from youtab_state import SessionDB
 
 
 @pytest.fixture()
@@ -278,7 +278,7 @@ class TestReaderFlush:
 
 
     def test_enqueue_after_close_raises_at_call_site(self, tmp_path):
-        """After close() the synchronous fallback surfaces the failure to the
+        """After close() the synchroyoutab fallback surfaces the failure to the
         caller (whose try/except logs it) — the pre-queue contract — instead
         of silently dropping the delta."""
         db = SessionDB(db_path=tmp_path / "closed.db")
@@ -292,7 +292,7 @@ class TestReaderFlush:
 
 
 # =========================================================================
-# Ordering vs synchronous route writes (/model switch)
+# Ordering vs synchroyoutab route writes (/model switch)
 # =========================================================================
 
 
@@ -412,7 +412,7 @@ class TestWriterFailure:
 
         db._coalesce_token_deltas = broken
         try:
-            with caplog.at_level("WARNING", logger="hermes_state"):
+            with caplog.at_level("WARNING", logger="youtab_state"):
                 db.queue_token_counts("s-co", input_tokens=3, api_call_count=1)
                 db.queue_token_counts("s-co", input_tokens=4, api_call_count=1)
                 assert db.flush_token_counts()

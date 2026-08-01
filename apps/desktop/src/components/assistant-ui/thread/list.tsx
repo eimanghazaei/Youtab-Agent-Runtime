@@ -48,7 +48,7 @@ const RENDER_BUDGET = 300
 // in a requestAnimationFrame — defers the heavy markdown+syntax-highlight render
 // past the initial commit, so the switch feels instant.
 //
-// 20, down from 60: the first-paint commit is synchronous and uninterruptible,
+// 20, down from 60: the first-paint commit is synchroyoutab and uninterruptible,
 // and at 60 parts it measured 627ms on a real session (LoAF: block=575ms, no
 // attributed script — pure commit). A viewport after scroll-to-bottom shows
 // 1-2 turns ≈ 10-20 parts; the transition backfill below fills the rest
@@ -281,7 +281,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Backfill from FIRST_PAINT_BUDGET to the full budget after the small
   // commit painted — as a TRANSITION, so the heavy markdown + syntax
   // highlight render of the older turns is interruptible instead of one long
-  // synchronous commit that freezes input right after the switch. Route
+  // synchroyoutab commit that freezes input right after the switch. Route
   // changes stay urgent (main.tsx disables router transitions); it's exactly
   // this backfill that belongs at background priority. "Show earlier" pages
   // (budget > RENDER_BUDGET) never re-enter here.
@@ -432,7 +432,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       lastHeight = height
       node.scrollTop = height
 
-      // Most session switches are synchronous and stabilize within 2 frames;
+      // Most session switches are synchroyoutab and stabilize within 2 frames;
       // the old 90-frame ceiling was for slow async image loads. Cap at 15
       // frames to minimize the settle-loop racing markdown paint on every switch.
       if (stableFrames >= 2 || ++frame > 15) {

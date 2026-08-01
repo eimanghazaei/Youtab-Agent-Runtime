@@ -47,10 +47,10 @@ from agent.tool_guardrails import (
     ToolCallGuardrailController,
     ToolGuardrailDecision,
 )
-from hermes_cli.config import cfg_get
-from hermes_cli.route_identity import normalize_route_base_url
-from hermes_cli.timeouts import get_provider_request_timeout
-from hermes_constants import get_hermes_home
+from youtab_agent_cli.config import cfg_get
+from youtab_agent_cli.route_identity import normalize_route_base_url
+from youtab_agent_cli.timeouts import get_provider_request_timeout
+from youtab_constants import get_youtab_home
 from utils import base_url_host_matches, is_truthy_value
 
 # Use the same logger name as run_agent so tests patching ``run_agent.logger``
@@ -115,9 +115,9 @@ def _provider_default_routes(provider: str) -> set[str]:
     """Return known exact default routes for a canonical provider id."""
     routes: set[str] = set()
     try:
-        from hermes_cli.providers import HERMES_OVERLAYS, get_provider
+        from youtab_agent_cli.providers import YOUTAB_AGENT_OVERLAYS, get_provider
 
-        overlay = HERMES_OVERLAYS.get(provider)
+        overlay = YOUTAB_AGENT_OVERLAYS.get(provider)
         provider_def = get_provider(provider, allow_network=False)
         for value in (
             getattr(overlay, "base_url_override", ""),
@@ -142,9 +142,9 @@ def _provider_default_routes(provider: str) -> set[str]:
         pass
 
     try:
-        from hermes_cli.auth import PROVIDER_REGISTRY
-        from hermes_cli.models import normalize_provider as normalize_model_provider
-        from hermes_cli.providers import normalize_provider as normalize_registry_provider
+        from youtab_agent_cli.auth import PROVIDER_REGISTRY
+        from youtab_agent_cli.models import normalize_provider as normalize_model_provider
+        from youtab_agent_cli.providers import normalize_provider as normalize_registry_provider
 
         for provider_id, config in PROVIDER_REGISTRY.items():
             canonical_id = normalize_registry_provider(
@@ -191,7 +191,7 @@ def _context_route_mismatch(
     if not configured_provider:
         return False
     try:
-        from hermes_cli.models import normalize_provider as normalize_model_provider
+        from youtab_agent_cli.models import normalize_provider as normalize_model_provider
 
         configured_provider = normalize_model_provider(configured_provider)
         active_provider = normalize_model_provider(active_provider)
@@ -199,7 +199,7 @@ def _context_route_mismatch(
         configured_provider = configured_provider.lower()
         active_provider = active_provider.lower()
     try:
-        from hermes_cli.providers import normalize_provider as normalize_registry_provider
+        from youtab_agent_cli.providers import normalize_provider as normalize_registry_provider
 
         configured_provider = normalize_registry_provider(configured_provider)
         active_provider = normalize_registry_provider(active_provider)
@@ -257,7 +257,7 @@ def _build_codex_gpt5_autoraise_notice(
         f"ℹ Codex {model} caps context at {cap}, so auto-compaction was raised "
         f"to {to_pct}% (from {from_pct}%) to use more of the window before "
         f"summarizing.\n"
-        f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+        f"  Opt back out: youtab config set compression.codex_gpt55_autoraise false"
     )
 
 
@@ -299,11 +299,11 @@ def _resolve_compression_threshold(
 def _codex_gpt55_autoraise_notice_marker():
     """Path to the per-profile marker recording that the autoraise notice ran.
 
-    Lives under ``$HERMES_HOME`` (which is profile-scoped) alongside the other
+    Lives under ``$YOUTAB_AGENT_HOME`` (which is profile-scoped) alongside the other
     internal markers like ``.container-mode`` — so it is not a user-facing config
     key, and every profile tracks its own notice state independently.
     """
-    return get_hermes_home() / ".codex_gpt55_autoraise_notice"
+    return get_youtab_home() / ".codex_gpt55_autoraise_notice"
 
 
 def _codex_gpt55_autoraise_notice_state(autoraise: Dict[str, Any]) -> str:
@@ -338,7 +338,7 @@ def _codex_gpt55_autoraise_notice_seen(autoraise: Dict[str, Any]) -> bool:
 def _record_codex_gpt55_autoraise_notice(autoraise: Dict[str, Any]) -> None:
     """Persist that the autoraise notice was shown for this profile/config state.
 
-    Best-effort: a read-only or missing ``$HERMES_HOME`` just means the notice
+    Best-effort: a read-only or missing ``$YOUTAB_AGENT_HOME`` just means the notice
     may show again next init, which is preferable to breaking agent init.
     """
     try:
@@ -560,10 +560,10 @@ def init_agent(
         platform (str): The interface platform the user is on (e.g. "cli", "telegram", "discord", "whatsapp").
             Used to inject platform-specific formatting hints into the system prompt.
         skip_context_files (bool): If True, skip auto-injection of project context files
-            (SOUL.md, .hermes.md, AGENTS.md, CLAUDE.md, .cursorrules) from the cwd / HERMES_HOME
+            (SOUL.md, .youtab-agent-runtime.md, AGENTS.md, CLAUDE.md, .cursorrules) from the cwd / YOUTAB_AGENT_HOME
             into the system prompt. Use this for batch processing and data generation to avoid
             polluting trajectories with user-specific persona or project instructions.
-        load_soul_identity (bool): If True, still use ~/.hermes/SOUL.md as the primary
+        load_soul_identity (bool): If True, still use ~/.youtab-agent-runtime/SOUL.md as the primary
             identity even when skip_context_files=True. Project context files from the cwd
             remain skipped.
     """
@@ -642,13 +642,13 @@ def init_agent(
         # AWS Bedrock — auto-detect from provider name or base URL
         # (bedrock-runtime.<region>.amazonaws.com).
         agent.api_mode = "bedrock_converse"
-    elif agent.provider in {"nous", "nous-portal", "nousresearch"}:
+    elif agent.provider in {"youtab", "youtab-portal", "youtab"}:
         # Portal is dual-wire: anthropic/* → Messages, everything else →
         # chat_completions. Callers that already pass api_mode win above;
         # this covers direct AIAgent construction without a resolved runtime.
-        from hermes_cli.providers import nous_api_mode
+        from youtab_agent_cli.providers import youtab_api_mode
 
-        agent.api_mode = nous_api_mode(agent.model)
+        agent.api_mode = youtab_api_mode(agent.model)
     else:
         agent.api_mode = "chat_completions"
 
@@ -678,7 +678,7 @@ def init_agent(
         pass  # Non-fatal — transport may not exist for all modes yet
 
     try:
-        from hermes_cli.model_normalize import (
+        from youtab_agent_cli.model_normalize import (
             _AGGREGATOR_PROVIDERS,
             normalize_model_for_provider,
         )
@@ -840,7 +840,7 @@ def init_agent(
     # sessions with >5-minute pauses between turns (#14971).
     agent._cache_ttl = "5m"
     try:
-        from hermes_cli.config import load_config_readonly as _load_pc_cfg
+        from youtab_agent_cli.config import load_config_readonly as _load_pc_cfg
 
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
@@ -879,9 +879,9 @@ def init_agent(
     agent._rate_limit_state: Optional["RateLimitState"] = None
 
     # Credits tracking (dev-only, L0 usage-aware-credits) — updated from
-    # x-nous-credits-* response headers after each API call.  Session-start
+    # x-youtab-credits-* response headers after each API call.  Session-start
     # remaining is latched the first time a header is ever seen so we can
-    # report cumulative micros spent.  Surfaced behind HERMES_DEV_CREDITS.
+    # report cumulative micros spent.  Surfaced behind YOUTAB_AGENT_DEV_CREDITS.
     agent._credits_state = None
     agent._credits_session_start_micros = None
     # Threshold-notice latch (L4): active sticky-notice keys + the crossing gates.
@@ -894,10 +894,10 @@ def init_agent(
     agent._or_cache_hits: int = 0
 
     # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
-    # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
+    # both live under ~/.youtab-agent-runtime/logs/.  Idempotent, so gateway mode
     # (which creates a new AIAgent per message) won't duplicate handlers.
-    from hermes_logging import setup_logging, setup_verbose_logging
-    setup_logging(hermes_home=_ra()._hermes_home)
+    from youtab_logging import setup_logging, setup_verbose_logging
+    setup_logging(youtab_home=_ra()._youtab_home)
 
     if agent.verbose_logging:
         setup_verbose_logging()
@@ -908,11 +908,11 @@ def init_agent(
         # root logger's file handlers (agent.log, errors.log) from
         # ever seeing the records, because Python checks
         # logger.isEnabledFor() before handler propagation. We rely
-        # on the fact that hermes_logging.setup_logging() does not
+        # on the fact that youtab_logging.setup_logging() does not
         # install a console StreamHandler in quiet mode — so INFO
         # records flow to the file handlers but never reach a
         # console. Any future noise reduction belongs at the
-        # handler level inside hermes_logging.py, not here.
+        # handler level inside youtab_logging.py, not here.
         pass
     
     # Internal stream callback (set during streaming TTS).
@@ -1023,7 +1023,7 @@ def init_agent(
             # state cost is one file read + one timestamp compare per request.
             if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
                 try:
-                    from hermes_cli.auth import build_minimax_oauth_token_provider
+                    from youtab_agent_cli.auth import build_minimax_oauth_token_provider
                     effective_key = build_minimax_oauth_token_provider()
                 except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
                     import logging as _logging
@@ -1090,7 +1090,7 @@ def init_agent(
         # Guardrail config — read from config.yaml at init time.
         agent._bedrock_guardrail_config = None
         try:
-            from hermes_cli.config import load_config_readonly as _load_br_cfg
+            from youtab_agent_cli.config import load_config_readonly as _load_br_cfg
             _gr = _load_br_cfg().get("bedrock", {}).get("guardrail", {})
             if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
                 agent._bedrock_guardrail_config = {
@@ -1143,7 +1143,7 @@ def init_agent(
             elif base_url_host_matches(effective_base, "api.routermint.com"):
                 client_kwargs["default_headers"] = _ra()._routermint_headers()
             elif base_url_host_matches(effective_base, "githubcopilot.com"):
-                from hermes_cli.models import copilot_default_headers
+                from youtab_agent_cli.models import copilot_default_headers
 
                 client_kwargs["default_headers"] = copilot_default_headers()
             elif base_url_host_matches(effective_base, "api.kimi.com"):
@@ -1156,9 +1156,9 @@ def init_agent(
                 from agent.auxiliary_client import _codex_cloudflare_headers
                 client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
             elif base_url_host_matches(effective_base, "x.ai"):
-                from tools.xai_http import hermes_xai_default_headers
+                from tools.xai_http import youtab_xai_default_headers
 
-                client_kwargs["default_headers"] = hermes_xai_default_headers()
+                client_kwargs["default_headers"] = youtab_xai_default_headers()
             elif "default_headers" not in client_kwargs:
                 # Fall back to profile.default_headers for providers that
                 # declare custom headers (e.g. Vercel AI Gateway attribution,
@@ -1204,7 +1204,7 @@ def init_agent(
                     # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
                     _env_hint = f"{_explicit.upper()}_API_KEY"
                     try:
-                        from hermes_cli.auth import PROVIDER_REGISTRY
+                        from youtab_agent_cli.auth import PROVIDER_REGISTRY
                         _pcfg = PROVIDER_REGISTRY.get(_explicit)
                         if _pcfg and _pcfg.api_key_env_vars:
                             _env_hint = _pcfg.api_key_env_vars[0]
@@ -1254,13 +1254,13 @@ def init_agent(
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
                             f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
+                            f"variable, or switch to a different provider with `youtab model`."
                         )
                 if not getattr(agent, "_fallback_activated", False):
                     # No provider configured — reject with a clear message.
                     raise RuntimeError(
-                        "No LLM provider configured. Run `hermes model` to "
-                        "select a provider, or run `hermes setup` for first-time "
+                        "No LLM provider configured. Run `youtab model` to "
+                        "select a provider, or run `youtab setup` for first-time "
                         "configuration."
                     )
         
@@ -1293,7 +1293,7 @@ def init_agent(
         agent._apply_user_default_headers()
 
         try:
-            from hermes_cli.config import (
+            from youtab_agent_cli.config import (
                 apply_custom_provider_extra_headers_to_client_kwargs,
                 apply_custom_provider_tls_to_client_kwargs,
                 get_compatible_custom_providers,
@@ -1410,7 +1410,7 @@ def init_agent(
 
     # Kanban worker/orchestrator lifecycle guidance is session-static:
     # the dispatcher decides at spawn time whether this process is a kanban
-    # worker (kanban_show tool is present iff HERMES_KANBAN_TASK is set).
+    # worker (kanban_show tool is present iff YOUTAB_AGENT_KANBAN_TASK is set).
     # Resolving the ~835-token block once here avoids re-running the
     # membership test + reference on every system-prompt rebuild
     # (init + each context compression).
@@ -1465,19 +1465,19 @@ def init_agent(
 
         set_current_session_id(agent.session_id)
     except Exception:
-        os.environ["HERMES_SESSION_ID"] = agent.session_id
+        os.environ["YOUTAB_AGENT_SESSION_ID"] = agent.session_id
 
-    # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
-    hermes_home = get_hermes_home()
-    agent.logs_dir = hermes_home / "sessions"
+    # Session logs go into ~/.youtab-agent-runtime/sessions/ alongside gateway sessions
+    youtab_home = get_youtab_home()
+    agent.logs_dir = youtab_home / "sessions"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
-    # Per-session JSON snapshot writer (~/.hermes/sessions/session_{sid}.json)
+    # Per-session JSON snapshot writer (~/.youtab-agent-runtime/sessions/session_{sid}.json)
     # is opt-in via sessions.write_json_snapshots (default False).  state.db
     # is canonical — the snapshot is only useful for external tooling that
     # reads the JSON files directly.  See run_agent._save_session_log.
     agent._session_json_enabled = False
     try:
-        from hermes_cli.config import load_config_readonly as _load_sess_cfg
+        from youtab_agent_cli.config import load_config_readonly as _load_sess_cfg
         _sess_cfg = (_load_sess_cfg().get("sessions") or {})
         agent._session_json_enabled = bool(_sess_cfg.get("write_json_snapshots", False))
     except Exception:
@@ -1548,7 +1548,7 @@ def init_agent(
     
     # Load config once for memory, skills, and compression sections
     try:
-        from hermes_cli.config import load_config_readonly as _load_agent_config
+        from youtab_agent_cli.config import load_config_readonly as _load_agent_config
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
@@ -1567,7 +1567,7 @@ def init_agent(
         agent.show_commentary = True
 
     # LM Studio can either be explicitly preloaded through LM Studio's
-    # management API (the historical Hermes behavior) or left to LM Studio's
+    # management API (the historical Youtab behavior) or left to LM Studio's
     # just-in-time / Auto-Evict chat-completions path.  Keep the default
     # explicit for backward compatibility; users with LM Studio Auto-Evict can
     # opt into JIT via ``model.lmstudio_load_mode: jit``.
@@ -1649,7 +1649,7 @@ def init_agent(
                     _init_kwargs = {
                         "session_id": agent.session_id,
                         "platform": platform or "cli",
-                        "hermes_home": str(get_hermes_home()),
+                        "youtab_home": str(get_youtab_home()),
                         "agent_context": "primary",
                     }
                     if _init_kwargs["platform"] == "cli":
@@ -1684,10 +1684,10 @@ def init_agent(
                         _init_kwargs["gateway_session_key"] = agent._gateway_session_key
                     # Profile identity for per-profile provider scoping
                     try:
-                        from hermes_cli.profiles import get_active_profile_name
+                        from youtab_agent_cli.profiles import get_active_profile_name
                         _profile = get_active_profile_name()
                         _init_kwargs["agent_identity"] = _profile
-                        _init_kwargs["agent_workspace"] = "hermes"
+                        _init_kwargs["agent_workspace"] = "youtab"
                     except Exception:
                         pass
                     agent._memory_manager.initialize_all(**_init_kwargs)
@@ -1753,7 +1753,7 @@ def init_agent(
             pass
 
     # Per-platform prompt-hint overrides (config.yaml → platform_hints).
-    # Lets an enterprise admin append to or replace Hermes' built-in
+    # Lets an enterprise admin append to or replace Youtab' built-in
     # platform hint for a single messaging platform (e.g. WhatsApp) without
     # affecting other platforms. Shape:
     #   platform_hints:
@@ -1966,10 +1966,10 @@ def init_agent(
     codex_app_server_auto_compaction = str(
         _compression_cfg.get("codex_app_server_auto", "native") or "native"
     ).lower()
-    if codex_app_server_auto_compaction not in {"native", "hermes", "off"}:
+    if codex_app_server_auto_compaction not in {"native", "youtab", "off"}:
         _ra().logger.warning(
             "Invalid compression.codex_app_server_auto=%r; using 'native'. "
-            "Valid values are: native, hermes, off.",
+            "Valid values are: native, youtab, off.",
             codex_app_server_auto_compaction,
         )
         codex_app_server_auto_compaction = "native"
@@ -2053,7 +2053,7 @@ def init_agent(
     # a named custom provider may keep its base URL only in this list rather
     # than repeating it under ``model``.
     try:
-        from hermes_cli.config import get_compatible_custom_providers
+        from youtab_agent_cli.config import get_compatible_custom_providers
         _custom_providers = get_compatible_custom_providers(_agent_cfg)
     except Exception:
         _custom_providers = _agent_cfg.get("custom_providers")
@@ -2073,7 +2073,7 @@ def init_agent(
         _active_runtime_model = agent.model
         if _configured_default_model:
             try:
-                from hermes_cli.model_normalize import normalize_model_for_provider
+                from youtab_agent_cli.model_normalize import normalize_model_for_provider
 
                 _configured_default_runtime_model = normalize_model_for_provider(
                     _configured_default_model, agent.provider
@@ -2108,7 +2108,7 @@ def init_agent(
             and not _configured_provider_norm.startswith("custom:")
         ):
             try:
-                from hermes_cli.auth import resolve_provider as resolve_auth_provider
+                from youtab_agent_cli.auth import resolve_provider as resolve_auth_provider
 
                 _resolved_auth_provider = resolve_auth_provider(
                     _configured_provider_norm
@@ -2126,7 +2126,7 @@ def init_agent(
             _user_providers = _agent_cfg.get("providers")
             _disabled_custom_provider_ids: set[str] = set()
             if isinstance(_user_providers, dict):
-                from hermes_cli.config import is_provider_enabled
+                from youtab_agent_cli.config import is_provider_enabled
 
                 for _provider_key, _provider_entry in _user_providers.items():
                     if not isinstance(_provider_entry, dict):
@@ -2225,7 +2225,7 @@ def init_agent(
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:
         try:
-            from hermes_cli.config import get_custom_provider_context_length
+            from youtab_agent_cli.config import get_custom_provider_context_length
             _cp_ctx_resolved = get_custom_provider_context_length(
                 model=agent.model,
                 base_url=agent.base_url,
@@ -2316,7 +2316,7 @@ def init_agent(
         if _selected_engine is None:
             _candidate = None
             try:
-                from hermes_cli.plugins import get_plugin_context_engine
+                from youtab_agent_cli.plugins import get_plugin_context_engine
                 _candidate = get_plugin_context_engine()
             except Exception:
                 _candidate = None
@@ -2437,14 +2437,14 @@ def init_agent(
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
-            f"by Hermes Agent.  Choose a model with at least "
+            f"by Youtab Agent Runtime.  Choose a model with at least "
             f"{MINIMUM_CONTEXT_LENGTH // 1000}K context.  If your server "
             f"reports a window smaller than the model's true window, set "
             f"model.context_length in config.yaml to the real value "
             f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
 
-    # Nous Hermes 3/4 are chat models, not tool-call-tuned. The interactive
+    # Youtab Youtab 3/4 are chat models, not tool-call-tuned. The interactive
     # CLI already warns via cli.py show_banner() (richer output + /model hint),
     # so skip platform=="cli" here to avoid emitting the warning twice per
     # startup. (Gateway/TUI/cron construct with quiet_mode=True and are already
@@ -2453,12 +2453,12 @@ def init_agent(
     # non-CLI surface to still surface the warning.)
     if not agent.quiet_mode and (agent.platform or "cli") != "cli":
         try:
-            from hermes_cli.model_switch import _check_hermes_model_warning
+            from youtab_agent_cli.model_switch import _check_youtab_model_warning
 
-            _hermes_warn = _check_hermes_model_warning(agent.model or "")
-            if _hermes_warn:
+            _youtab_warn = _check_youtab_model_warning(agent.model or "")
+            if _youtab_warn:
                 _user_msg = (
-                    "⚠ Nous Research Hermes 3 & 4 models are NOT agentic — they "
+                    "⚠ Youtab B.V. Youtab 3 & 4 models are NOT agentic — they "
                     "lack reliable tool-calling for agent workflows (delegation, "
                     "cron, proactive tools). Consider an agentic model instead "
                     "(Claude, GPT, Gemini, Qwen-Coder, etc.)."
@@ -2467,7 +2467,7 @@ def init_agent(
                     agent._emit_warning(_user_msg)
                 else:
                     print(f"\n{_user_msg}\n", file=sys.stderr)
-                _ra().logger.warning(_hermes_warn)
+                _ra().logger.warning(_youtab_warn)
         except Exception:
             pass
 
@@ -2527,7 +2527,7 @@ def init_agent(
         try:
             agent.context_compressor.on_session_start(
                 agent.session_id,
-                hermes_home=str(get_hermes_home()),
+                youtab_home=str(get_youtab_home()),
                 platform=agent.platform or "cli",
                 model=agent.model,
                 context_length=getattr(agent.context_compressor, "context_length", 0),

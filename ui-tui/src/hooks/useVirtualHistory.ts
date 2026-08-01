@@ -1,4 +1,4 @@
-import type { ScrollBoxHandle } from '@hermes/ink'
+import type { ScrollBoxHandle } from '@youtab/agent-ink'
 import {
   type RefObject,
   useCallback,

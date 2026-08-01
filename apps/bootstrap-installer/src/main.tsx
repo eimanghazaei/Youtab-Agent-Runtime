@@ -7,7 +7,7 @@ import App from './app.tsx'
 import { watchTheme } from './theme'
 
 // Follow the OS light/dark appearance. theme.ts paints the first frame on
-// import (synchronously, from the media query); this subscribes to live OS
+// import (synchroyoutably, from the media query); this subscribes to live OS
 // theme changes via the authoritative Tauri window theme.
 void watchTheme()
 

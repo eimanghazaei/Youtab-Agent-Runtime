@@ -12,12 +12,12 @@ SCRIPT_PATH = (
     / "migration"
     / "openclaw-migration"
     / "scripts"
-    / "openclaw_to_hermes.py"
+    / "openclaw_to_youtab.py"
 )
 
 
 def load_module():
-    spec = importlib.util.spec_from_file_location("openclaw_to_hermes", SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location("openclaw_to_youtab", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     sys.modules[spec.name] = module
@@ -48,12 +48,12 @@ def test_extract_markdown_entries_promotes_heading_context():
 
 ### Active Projects
 
-- Hermes Agent
+- Youtab Agent Runtime
 """
     entries = mod.extract_markdown_entries(text)
     assert "Tyler Williams: Founder of VANTA Research" in entries
     assert "Tyler Williams: Timezone: America/Los_Angeles" in entries
-    assert "Tyler Williams > Active Projects: Hermes Agent" in entries
+    assert "Tyler Williams > Active Projects: Youtab Agent Runtime" in entries
 
 
 
@@ -80,7 +80,7 @@ def test_merge_entries_respects_limit_and_reports_overflow():
 def test_migrator_copies_skill_and_merges_allowlist(tmp_path: Path):
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     target.mkdir()
 
     (source / "workspace" / "skills" / "demo-skill").mkdir(parents=True)
@@ -125,7 +125,7 @@ def test_migrator_copies_skill_and_merges_allowlist(tmp_path: Path):
 def test_migrator_optionally_imports_supported_secrets_and_messaging_settings(tmp_path: Path):
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
 
     (source / "credentials").mkdir(parents=True)
     (source / "openclaw.json").write_text(
@@ -171,7 +171,7 @@ def test_source_candidate_finds_files_in_custom_workspace(tmp_path: Path):
     be discovered there as a fallback."""
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     custom_ws = tmp_path / "my-custom-workspace"
 
     target.mkdir()
@@ -238,7 +238,7 @@ def test_slack_settings_migrated(tmp_path: Path):
     """Slack bot/app tokens and allowlist migrate to .env."""
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     target.mkdir()
     source.mkdir()
 
@@ -273,7 +273,7 @@ def test_model_config_migrated(tmp_path: Path):
     """Default model setting migrates to config.yaml."""
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     target.mkdir()
     source.mkdir()
 
@@ -304,7 +304,7 @@ def test_shared_skills_migrated(tmp_path: Path):
     """Shared skills from ~/.openclaw/skills/ are migrated."""
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     target.mkdir()
 
     # Create a shared skill (not in workspace/skills/)
@@ -328,7 +328,7 @@ def test_daily_memory_merged(tmp_path: Path):
     """Daily memory notes from workspace/memory/*.md are merged into MEMORY.md."""
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     target.mkdir()
 
     mem_dir = source / "workspace" / "memory"
@@ -359,7 +359,7 @@ def test_provider_keys_require_migrate_secrets_flag(tmp_path: Path):
     """Provider keys migration is double-gated: needs option + --migrate-secrets."""
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     target.mkdir()
     source.mkdir()
 
@@ -417,13 +417,13 @@ def test_skill_installs_cleanly_under_skills_guard():
     # agent_config_mod   — references AGENTS.md to migrate workspace instructions
     # python_os_environ  — reads MIGRATION_JSON_OUTPUT to enable JSON output mode
     #                      (feature flag, not an env dump)
-    # hermes_config_mod  — print statements in the post-migration summary that
-    #                      tell the user to *review* ~/.hermes/config.yaml;
+    # youtab_config_mod  — print statements in the post-migration summary that
+    #                      tell the user to *review* ~/.youtab-agent-runtime/config.yaml;
     #                      the script never writes to that file
     #
     # Accept "caution" or "safe" — just not "dangerous" from a *real* threat.
     assert result.verdict in {"safe", "caution", "dangerous"}, f"Unexpected verdict: {result.verdict}"
-    KNOWN_FALSE_POSITIVES = {"agent_config_mod", "python_os_environ", "hermes_config_mod"}
+    KNOWN_FALSE_POSITIVES = {"agent_config_mod", "python_os_environ", "youtab_config_mod"}
     for f in result.findings:
         assert f.pattern_id in KNOWN_FALSE_POSITIVES, f"Unexpected finding: {f}"
 
@@ -433,15 +433,15 @@ def test_skill_installs_cleanly_under_skills_guard():
 
 def test_rebrand_text_replaces_openclaw_variants():
     mod = load_module()
-    # Mixed-case / capitalized matches → capital-H ``Hermes``.
-    assert mod.rebrand_text("OpenClaw prefers Python 3.11") == "Hermes prefers Python 3.11"
-    assert mod.rebrand_text("I told Open Claw to use dark mode") == "I told Hermes to use dark mode"
-    assert mod.rebrand_text("Open-Claw config is great") == "Hermes config is great"
-    assert mod.rebrand_text("OPENCLAW uses tools well") == "Hermes uses tools well"
-    # All-lowercase matches → lowercase ``hermes``; this preserves the
-    # real filesystem path ``~/.hermes`` (Hermes home) when rebranding
+    # Mixed-case / capitalized matches → capital-H ``Youtab``.
+    assert mod.rebrand_text("OpenClaw prefers Python 3.11") == "Youtab prefers Python 3.11"
+    assert mod.rebrand_text("I told Open Claw to use dark mode") == "I told Youtab to use dark mode"
+    assert mod.rebrand_text("Open-Claw config is great") == "Youtab config is great"
+    assert mod.rebrand_text("OPENCLAW uses tools well") == "Youtab uses tools well"
+    # All-lowercase matches → lowercase ``youtab``; this preserves the
+    # real filesystem path ``~/.youtab-agent-runtime`` (Youtab home) when rebranding
     # memory entries that reference ``~/.openclaw`` or ``openclaw`` prose.
-    assert mod.rebrand_text("openclaw should always respond concisely") == "hermes should always respond concisely"
+    assert mod.rebrand_text("openclaw should always respond concisely") == "youtab should always respond concisely"
 
 
 
@@ -465,7 +465,7 @@ def _run_model_migration(tmp_path: Path, openclaw_json: dict) -> dict:
 
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     source.mkdir(parents=True)
     target.mkdir(parents=True)
     (source / "openclaw.json").write_text(json.dumps(openclaw_json), encoding="utf-8")
@@ -522,7 +522,7 @@ def test_command_allowlist_handles_invalid_utf8_bytes(tmp_path: Path):
     valid patterns elsewhere in the same file must still be imported."""
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     source.mkdir()
     target.mkdir()
 
@@ -552,7 +552,7 @@ def test_messaging_settings_handles_invalid_utf8_in_telegram_allowlist(tmp_path:
     valid user IDs elsewhere in the same file must still be imported."""
     mod = load_module()
     source = tmp_path / ".openclaw"
-    target = tmp_path / ".hermes"
+    target = tmp_path / ".youtab-agent-runtime"
     source.mkdir()
     target.mkdir()
 

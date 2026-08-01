@@ -2,11 +2,11 @@
 name: apple-notes
 description: "Manage Apple Notes via memo CLI: create, search, edit."
 version: 1.0.1
-author: Hermes Agent
+author: Youtab Agent Runtime
 license: MIT
 platforms: [macos]
 metadata:
-  hermes:
+  youtab:
     tags: [Notes, Apple, macOS, note-taking]
     related_skills: [obsidian]
 prerequisites:

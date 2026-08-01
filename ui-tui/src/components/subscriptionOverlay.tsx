@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import { Box, Text, useInput } from '@hermes/ink'
+import { Box, Text, useInput } from '@youtab/agent-ink'
 import { useEffect, useRef, useState } from 'react'
 
 import type {
@@ -396,7 +396,7 @@ function OverviewScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
     if (s.portal_url) {
       void ctx.openManageLink()
     } else {
-      ctx.sys('🔴 No portal URL available — manage your subscription on the Nous portal.')
+      ctx.sys('🔴 No portal URL available — manage your subscription on the Youtab portal.')
     }
 
     return onClose()
@@ -583,7 +583,7 @@ function ConfirmScreen({ onClose, onPatch, overlay, t }: ScreenProps) {
   const effect = isCancellation ? 'scheduled' : (preview?.effect ?? 'blocked')
 
   const [submitting, setSubmitting] = useState(false)
-  // Synchronous guard: two key events can both see submitting===false before
+  // Synchroyoutab guard: two key events can both see submitting===false before
   // React commits, double-firing the mutation/charge.
   const submittingRef = useRef(false)
 

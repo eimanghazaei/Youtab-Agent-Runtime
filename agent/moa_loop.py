@@ -1,7 +1,7 @@
 """Mixture-of-Agents runtime helpers for /moa turns.
 
 The slash command is deliberately not a model tool. It marks one user turn as
-MoA-enabled; the normal Hermes agent loop still owns tool calling and turn
+MoA-enabled; the normal Youtab agent loop still owns tool calling and turn
 termination, while this module gathers reference-model context before each model
 iteration.
 """
@@ -73,7 +73,7 @@ def _redact_reference_text(text: Any) -> Any:
 
 def _moa_privacy_mode(moa_raw: Any) -> str:
     """Resolve the normalized privacy-filter mode from a raw ``moa`` config."""
-    from hermes_cli.moa_config import coerce_privacy_filter
+    from youtab_agent_cli.moa_config import coerce_privacy_filter
 
     raw = moa_raw if isinstance(moa_raw, dict) else {}
     return coerce_privacy_filter(raw.get("privacy_filter"))
@@ -273,7 +273,7 @@ def _slot_reasoning_config(slot: dict[str, Any]) -> dict[str, Any] | None:
     """Translate optional per-MoA-slot reasoning_effort into runtime config."""
     effort = slot.get("reasoning_effort")
     try:
-        from hermes_constants import parse_reasoning_effort
+        from youtab_constants import parse_reasoning_effort
 
         return parse_reasoning_effort(effort)
     except Exception:  # pragma: no cover - defensive; bad config must not break MoA
@@ -300,8 +300,8 @@ def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] |
     if cfg is not None:
         return cfg
     try:
-        from hermes_cli.config import load_config
-        from hermes_constants import resolve_reasoning_config
+        from youtab_agent_cli.config import load_config
+        from youtab_constants import resolve_reasoning_config
 
         return resolve_reasoning_config(
             load_config() or {}, str(aggregator.get("model") or "")
@@ -331,7 +331,7 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     model = str(slot.get("model") or "").strip()
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
-        from hermes_cli.runtime_provider import resolve_runtime_provider
+        from youtab_agent_cli.runtime_provider import resolve_runtime_provider
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)
         # Forward the resolved endpoint through to call_llm unconditionally.
@@ -343,7 +343,7 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
         # so provider branches that add auth refresh / request metadata /
         # request-shape adapters — anthropic OAuth (Bearer + anthropic-beta),
         # openai-codex Responses wrapping + Cloudflare headers, xai-oauth,
-        # bedrock SigV4 signing, nous Portal tags — still fire. Those branches
+        # bedrock SigV4 signing, youtab Portal tags — still fire. Those branches
         # re-resolve their own credentials by name and ignore a forwarded
         # base_url/api_key, so forwarding is safe even for a placeholder key
         # (bedrock's "aws-sdk"). We used to maintain a name-preservation set here
@@ -453,7 +453,7 @@ def _run_reference(
 
     Never raises: a failed reference becomes a labelled note so the aggregator
     can still act with partial context. Designed to run inside a thread pool —
-    ``call_llm`` is synchronous/blocking, so threads (not asyncio) are the right
+    ``call_llm`` is synchroyoutab/blocking, so threads (not asyncio) are the right
     concurrency primitive, mirroring ``delegate_task``'s batch fan-out.
     """
     from agent.usage_pricing import CanonicalUsage, estimate_usage_cost, normalize_usage
@@ -783,7 +783,7 @@ def _run_references_parallel(
     workers = min(_MAX_REFERENCE_WORKERS, len(reference_models))
     # Reference slots run on bare executor threads, which start with an empty
     # contextvars.Context — propagate the parent turn's context (approval
-    # callbacks + the Nous Portal conversation tag) into each worker so
+    # callbacks + the Youtab Portal conversation tag) into each worker so
     # advisor calls attribute to the same conversation as the acting turn.
     from tools.thread_context import propagate_context_to_thread
 
@@ -960,7 +960,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     came back — not just the agent's narration. We therefore preserve the whole
     conversation flow, but flatten it into clean user/assistant *text* turns:
 
-      - system prompt: dropped (8K of Hermes boilerplate, not advisory signal).
+      - system prompt: dropped (8K of Youtab boilerplate, not advisory signal).
       - assistant turns: kept; any ``tool_calls`` are rendered inline as
         ``[called tool: name(args)]`` text lines appended to the turn's text.
       - ``tool``-role results: NOT dropped. Each is folded (head+tail preview,
@@ -1111,7 +1111,7 @@ def _preset_temperature(preset: dict[str, Any], key: str) -> float | None:
 
     Returns None when the key is absent, empty, or explicitly null — meaning
     "don't send temperature; let the provider default apply", exactly like a
-    single-model Hermes agent (which never sends temperature unless
+    single-model Youtab agent (which never sends temperature unless
     configured). The old coercion ``float(preset.get(key, 0.6) or 0.6)``
     made unset impossible: absent, null, and even 0 all collapsed to the
     hardcoded default, so MoA advisors/aggregator always ran at 0.6/0.4
@@ -1215,7 +1215,7 @@ def aggregate_moa_context(
     # runs on the successful outputs only (failed refs are already filtered
     # into the degraded notice).
     try:
-        from hermes_cli.config import load_config as _load_config
+        from youtab_agent_cli.config import load_config as _load_config
 
         if _moa_privacy_mode((_load_config() or {}).get("moa")) == "full":
             successful_outputs = _redact_reference_outputs(successful_outputs)
@@ -1252,7 +1252,7 @@ def aggregate_moa_context(
     synth_prompt = (
         "You are the aggregator in a Mixture of Agents process. Synthesize the "
         "reference responses into concise, actionable guidance for the main "
-        "Hermes agent. Focus on next steps, tool-use strategy, risks, and any "
+        "Youtab agent. Focus on next steps, tool-use strategy, risks, and any "
         "disagreements. Do not answer the user directly unless that is all that "
         "is needed; produce context the main agent should use in its normal loop.\n\n"
         f"Original user prompt:\n{user_prompt}\n\n"
@@ -1292,7 +1292,7 @@ def aggregate_moa_context(
 
     return (
         "[Mixture of Agents context — use this as private guidance for the "
-        "normal Hermes agent loop. You may call tools, continue reasoning, or "
+        "normal Youtab agent loop. You may call tools, continue reasoning, or "
         "finish normally.]\n"
         f"Aggregator: {agg_label}\n"
         f"References: {', '.join(_slot_label(slot) for slot in reference_models)}\n\n"
@@ -1694,8 +1694,8 @@ class MoAChatCompletions:
                 raise TypeError("_moa_prepared_request must be a dict")
             return self._call_prepared_aggregator(prepared_request, api_kwargs)
 
-        from hermes_cli.config import load_config
-        from hermes_cli.moa_config import resolve_moa_preset
+        from youtab_agent_cli.config import load_config
+        from youtab_agent_cli.moa_config import resolve_moa_preset
 
         _moa_raw = load_config().get("moa") or {}
         preset = resolve_moa_preset(_moa_raw, self.preset_name)

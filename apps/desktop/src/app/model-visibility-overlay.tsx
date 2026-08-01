@@ -1,12 +1,12 @@
 import { useStore } from '@nanostores/react'
 
 import { ModelVisibilityDialog } from '@/components/model-visibility-dialog'
-import type { HermesGateway } from '@/hermes'
 import { $modelVisibilityOpen, setModelVisibilityOpen } from '@/store/model-visibility'
 import { $activeSessionId, $gatewayState } from '@/store/session'
+import type { YoutabGateway } from '@/youtab'
 
 interface ModelVisibilityOverlayProps {
-  gateway?: HermesGateway
+  gateway?: YoutabGateway
   onOpenProviders: () => void
   profile: string
 }

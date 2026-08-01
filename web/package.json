@@ -15,8 +15,8 @@
     "check": "npm run typecheck && npm run test && npm run lint"
   },
   "dependencies": {
-    "@hermes/shared": "file:../apps/shared",
-    "@nous-research/ui": "0.18.2",
+    "@youtab/agent-shared": "file:../apps/shared",
+    "@youtab/ui": "file:../packages/youtab-ui",
     "@observablehq/plot": "^0.6.17",
     "@react-three/fiber": "^9.6.0",
     "@tailwindcss/vite": "^4.2.1",
@@ -47,7 +47,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
     "eslint": "^9.39.4",
-    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-hooks": "6.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
     "three": "^0.180.0",

@@ -5,7 +5,7 @@
  * unhandled rejections, so the app usually survives — but the reason lands on
  * stderr alone, which is discarded entirely when the app is launched from
  * Finder or the Start menu. Without a record in desktop.log, a main-process
- * fault is invisible in a `hermes debug share` bundle and the user is left
+ * fault is invisible in a `youtab debug share` bundle and the user is left
  * describing symptoms instead of showing a stack.
  */
 
@@ -37,7 +37,7 @@ export function describeCrashReason(reason: unknown): string {
 }
 
 /**
- * Record main-process faults to desktop.log and flush synchronously, since a
+ * Record main-process faults to desktop.log and flush synchroyoutably, since a
  * fault that does prove fatal leaves no chance for the batched async flush.
  */
 export function installCrashForensics({ flush, log, target = process }: CrashForensicsOptions): void {

@@ -1,5 +1,5 @@
 """
-Photon Spectrum (iMessage) platform adapter for Hermes Agent.
+Photon Spectrum (iMessage) platform adapter for Youtab Agent Runtime.
 
 Both directions of traffic flow through a small supervised Node sidecar
 (see ``sidecar/index.mjs``) that runs the ``spectrum-ts`` SDK — the SDK is
@@ -51,7 +51,7 @@ else:
     try:
         import httpx
         HTTPX_AVAILABLE = True
-    except ImportError:  # pragma: no cover - httpx is already a Hermes dep
+    except ImportError:  # pragma: no cover - httpx is already a Youtab dep
         HTTPX_AVAILABLE = False
         httpx = None
 
@@ -83,7 +83,7 @@ _MAX_MESSAGE_LENGTH = 8000
 # ---------------------------------------------------------------------------
 # Sidecar runtime record
 #
-# Out-of-process senders (cron subprocesses, `hermes send`, the dashboard)
+# Out-of-process senders (cron subprocesses, `youtab send`, the dashboard)
 # go through ``_standalone_send`` and need the live sidecar's port + token —
 # but the token is generated at spawn time and otherwise exists only in the
 # gateway process memory and the sidecar child env (issue #69960). The
@@ -95,10 +95,10 @@ _RUNTIME_RECORD_NAME = "photon-sidecar.json"
 
 
 def _runtime_record_path() -> Path:
-    # get_hermes_home() honors profile overrides — never hardcode ~/.hermes.
-    from hermes_constants import get_hermes_home
+    # get_youtab_home() honors profile overrides — never hardcode ~/.youtab-agent-runtime.
+    from youtab_constants import get_youtab_home
 
-    return get_hermes_home() / "runtime" / _RUNTIME_RECORD_NAME
+    return get_youtab_home() / "runtime" / _RUNTIME_RECORD_NAME
 
 
 def _write_runtime_record(port: int, token: str, pid: int) -> None:
@@ -192,7 +192,7 @@ _FFFC_WAIT_SECONDS = 15.0  # Timeout for waiting on an attachment after a U+FFFC
 # Resolution is deliberately NOT done at import time: resolve_sidecar_dir()
 # probes the filesystem (touch/unlink) and may mirror files to the data
 # volume — side effects that must not fire just because something imported
-# this module (hermes status, test collection, plugin discovery).
+# this module (youtab status, test collection, plugin discovery).
 from .sidecar_paths import dir_writable as _dir_writable, resolve_sidecar_dir
 
 # Tests monkeypatch these module globals directly; the accessors below
@@ -237,7 +237,7 @@ _PHOTON_RETRYABLE_PATTERNS = (
 
 # iMessage may emit the Open Graph preview art for a rich link as one or more
 # image attachments immediately after the URL/richlink message. Suppress those
-# artifacts so Hermes sees the link once, not a follow-up "(attachment)" prompt.
+# artifacts so Youtab sees the link once, not a follow-up "(attachment)" prompt.
 _RICHLINK_PREVIEW_SUPPRESS_SECONDS = 30.0
 _RICHLINK_PREVIEW_ATTACHMENT_SUFFIX = ".pluginpayloadattachment"
 
@@ -251,8 +251,8 @@ _TYPING_COOLDOWN_SECONDS = 5.0
 # behavior and defaults as the BlueBubbles iMessage channel so the two
 # iMessage adapters gate group chats identically.
 _DEFAULT_MENTION_PATTERNS = [
-    r"(?<![\w@])@?hermes\s+agent\b[,:\-]?",
-    r"(?<![\w@])@?hermes\b[,:\-]?",
+    r"(?<![\w@])@?youtab\s+agent\b[,:\-]?",
+    r"(?<![\w@])@?youtab\b[,:\-]?",
 ]
 
 
@@ -333,7 +333,7 @@ def sidecar_deps_installed() -> bool:
     existence: npm creates node_modules/ before aborting on ENOSPC, a
     network timeout, or EACCES, so an empty/partial node_modules/ would
     otherwise read as "installed". Shared by check_requirements(),
-    _start_sidecar(), and `hermes photon status` so all three agree on
+    _start_sidecar(), and `youtab photon status` so all three agree on
     what "installed" means.
     """
     return (_sidecar_dir() / "node_modules" / "spectrum-ts").exists()
@@ -400,14 +400,14 @@ def check_requirements() -> bool:
         # the (resolved, possibly mirrored) sidecar dir is writable — report
         # available so the gateway creates the adapter and ``_start_sidecar``
         # cold-installs from the committed lockfile (on hosted images the
-        # user has no CLI to run `hermes photon setup`, so the connect path
+        # user has no CLI to run `youtab photon setup`, so the connect path
         # must self-heal). Otherwise keep returning False so
-        # `hermes setup` / status surface the missing-deps state.
+        # `youtab setup` / status surface the missing-deps state.
         if bool(shutil.which("npm")) and _dir_writable(_sidecar_dir()):
             return True
         # DEBUG (not WARNING): this is the normal pre-setup state.
         # check_fn() is called from multiple hot paths in the core
-        # (load_gateway_config, hermes status, GET /api/status polling) —
+        # (load_gateway_config, youtab status, GET /api/status polling) —
         # WARNING here would spam logs on every probe for unconfigured photon.
         npm_error = ""
         try:
@@ -418,13 +418,13 @@ def check_requirements() -> bool:
         if npm_error:
             logger.debug(
                 "photon: spectrum-ts not installed at %s "
-                "(last npm error: %s) — run: hermes photon setup",
+                "(last npm error: %s) — run: youtab photon setup",
                 _sidecar_dir(),
                 npm_error,
             )
         else:
             logger.debug(
-                "photon: spectrum-ts not installed at %s — run: hermes photon setup",
+                "photon: spectrum-ts not installed at %s — run: youtab photon setup",
                 _sidecar_dir(),
             )
         return False
@@ -434,7 +434,7 @@ def check_requirements() -> bool:
 def _sidecar_deps_stale() -> bool:
     """True when node_modules exists but is older than the committed lockfile.
 
-    `hermes update` rewrites ``package-lock.json`` when the spectrum-ts pin is
+    `youtab update` rewrites ``package-lock.json`` when the spectrum-ts pin is
     bumped, but does not reinstall ``node_modules``. npm records the state of
     the last install in ``node_modules/.package-lock.json``; when the top-level
     lockfile is newer than that marker, the install is out of date. This is the
@@ -452,7 +452,7 @@ def _sidecar_deps_stale() -> bool:
 def _reinstall_sidecar_deps() -> None:
     """Reinstall the sidecar's node_modules from the lockfile (blocking).
 
-    Mirrors ``hermes photon install-sidecar``: ``npm ci`` for an exact,
+    Mirrors ``youtab photon install-sidecar``: ``npm ci`` for an exact,
     reproducible install, falling back to ``npm install`` if the lockfile is
     missing or drifted. Runs the postinstall patch as part of the install.
     Best-effort — a failure here just leaves the (stale) deps in place and the
@@ -464,7 +464,7 @@ def _reinstall_sidecar_deps() -> None:
         return
     # Windows: suppress the console flash these short-lived npm runs would
     # otherwise pop (0 elsewhere). Same helper as the sidecar spawn below.
-    from hermes_cli._subprocess_compat import windows_hide_flags
+    from youtab_agent_cli._subprocess_compat import windows_hide_flags
 
     try:
         result = subprocess.run(  # noqa: S603
@@ -573,7 +573,7 @@ def _richlink_candidate(text: str) -> Optional[str]:
 
     Keep this intentionally narrow: only exact http(s) URL messages become
     rich links. Prose containing URLs and Markdown links stay on the normal
-    markdown/text path so Hermes does not drop labels or rewrite intent.
+    markdown/text path so Youtab does not drop labels or rewrite intent.
     """
     if not _markdown_enabled():
         return None
@@ -819,7 +819,7 @@ class PhotonAdapter(BasePlatformAdapter):
         """Compile group-mention wake words from config/env.
 
         ``raw`` is a list (config or env JSON), a string (env var: JSON
-        list, or comma/newline-separated), or None (use Hermes defaults).
+        list, or comma/newline-separated), or None (use Youtab defaults).
         Mirrors the BlueBubbles implementation so both iMessage channels
         accept the same configuration shapes.
         """
@@ -862,7 +862,7 @@ class PhotonAdapter(BasePlatformAdapter):
             self._set_fatal_error(
                 "MISSING_CREDENTIALS",
                 "PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are required. "
-                "Run: hermes photon setup",
+                "Run: youtab photon setup",
                 retryable=False,
             )
             return False
@@ -1013,7 +1013,7 @@ class PhotonAdapter(BasePlatformAdapter):
         if client is None:
             return
         url = f"http://{self._sidecar_bind}:{self._sidecar_port}/inbound"
-        headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
+        headers = {"X-Youtab-Sidecar-Token": self._sidecar_token}
         backoff = 1.0
         while self._inbound_running:
             try:
@@ -1454,7 +1454,7 @@ class PhotonAdapter(BasePlatformAdapter):
             )
         except (OSError, subprocess.TimeoutExpired):
             return False
-        # Checkout-agnostic: any Hermes checkout's sidecar entry point.
+        # Checkout-agnostic: any Youtab checkout's sidecar entry point.
         return "photon/sidecar/index.mjs" in out.stdout
 
     @staticmethod
@@ -1482,7 +1482,7 @@ class PhotonAdapter(BasePlatformAdapter):
             async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
                 await client.post(
                     f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
-                    headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+                    headers={"X-Youtab-Sidecar-Token": self._sidecar_token},
                 )
         except httpx.RequestError:
             return  # nothing listening — the normal case
@@ -1537,7 +1537,7 @@ class PhotonAdapter(BasePlatformAdapter):
         if not sidecar_deps_installed():
             # Cold install (NS-606): on hosted/managed images the install
             # tree is immutable and the user has no CLI to run
-            # `hermes photon setup`, so the connect path must be able to
+            # `youtab photon setup`, so the connect path must be able to
             # bootstrap the deps itself. _sidecar_dir() has already been
             # resolved to a writable location (or mirrored to the data
             # volume) by sidecar_paths.resolve_sidecar_dir; `npm ci` off
@@ -1554,9 +1554,9 @@ class PhotonAdapter(BasePlatformAdapter):
                 raise RuntimeError(
                     f"Photon sidecar deps could not be installed into "
                     f"{_sidecar_dir()} (see log for the npm error). "
-                    f"Run: cd {_sidecar_dir()} && npm ci   (or `hermes photon setup`)"
+                    f"Run: cd {_sidecar_dir()} && npm ci   (or `youtab photon setup`)"
                 )
-        # A `hermes update` that bumps the spectrum-ts pin rewrites
+        # A `youtab update` that bumps the spectrum-ts pin rewrites
         # package-lock.json but never reinstalls node_modules, so the sidecar
         # spawns against stale deps and dies on every reconnect (the v8 patch
         # script can't find @spectrum-ts/imessage/dist that only v8 ships).
@@ -1584,7 +1584,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
         # Windows: hide the child console (0 elsewhere). Same helper the
         # discord/whatsapp adapters use for their sidecar spawns.
-        from hermes_cli._subprocess_compat import windows_hide_flags
+        from youtab_agent_cli._subprocess_compat import windows_hide_flags
 
         try:
             # Off the event loop, for the same reason the dep reinstall above
@@ -1651,11 +1651,11 @@ class PhotonAdapter(BasePlatformAdapter):
                 try:
                     resp = await client.post(
                         f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
-                        headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+                        headers={"X-Youtab-Sidecar-Token": self._sidecar_token},
                     )
                     if resp.status_code == 200:
                         # Persist port/token/pid so out-of-process senders
-                        # (cron, `hermes send`) can reach this sidecar
+                        # (cron, `youtab send`) can reach this sidecar
                         # (see _standalone_send / issue #69960).
                         _write_runtime_record(
                             self._sidecar_port,
@@ -1719,7 +1719,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 try:
                     await self._http_client.post(
                         f"http://{self._sidecar_bind}:{self._sidecar_port}/shutdown",
-                        headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+                        headers={"X-Youtab-Sidecar-Token": self._sidecar_token},
                         timeout=2.0,
                     )
                 except Exception:
@@ -1803,7 +1803,7 @@ class PhotonAdapter(BasePlatformAdapter):
         try:
             resp = await client.post(
                 url,
-                headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+                headers={"X-Youtab-Sidecar-Token": self._sidecar_token},
                 timeout=self._probe_timeout,
             )
         except asyncio.CancelledError:
@@ -2527,7 +2527,7 @@ class PhotonAdapter(BasePlatformAdapter):
         to a plain audio attachment on platforms without voice notes),
         otherwise ``"attachment"``. spectrum-ts infers ``name`` and
         ``mimeType`` from the file extension; we only pass overrides when
-        Hermes supplied them.
+        Youtab supplied them.
         """
         # Defense-in-depth: re-validate the path before handing it to the
         # Node sidecar. The gateway already filters MEDIA paths, but
@@ -2580,7 +2580,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # send_message_tool).  The inbound streaming loop continues to use
         # _http_client directly — it always runs on the gateway's loop.
         url = f"http://{self._sidecar_bind}:{self._sidecar_port}{path}"
-        headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
+        headers = {"X-Youtab-Sidecar-Token": self._sidecar_token}
         async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
             resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
@@ -2734,7 +2734,7 @@ async def _standalone_send(
     if not token:
         # Fall back to the runtime record the gateway persists once its
         # sidecar passes /healthz (issue #69960) — the token only exists in
-        # the gateway process env otherwise, so cron/`hermes send` would be
+        # the gateway process env otherwise, so cron/`youtab send` would be
         # structurally unable to authenticate.
         record = _read_runtime_record()
         stale_hint = ""
@@ -2752,14 +2752,14 @@ async def _standalone_send(
             return {
                 "error": (
                     "Photon standalone send requires a running sidecar. "
-                    "Start the Hermes gateway (which spawns the sidecar and "
-                    "records its address under <hermes-home>/runtime/"
+                    "Start the Youtab gateway (which spawns the sidecar and "
+                    "records its address under <youtab-home>/runtime/"
                     f"{_RUNTIME_RECORD_NAME}), or set PHOTON_SIDECAR_TOKEN "
                     "in this process's environment." + stale_hint
                 )
             }
     base = f"http://{_DEFAULT_SIDECAR_BIND}:{port}"
-    headers = {"X-Hermes-Sidecar-Token": token}
+    headers = {"X-Youtab-Sidecar-Token": token}
     last_message_id: Optional[str] = None
     try:
         async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
@@ -2834,9 +2834,9 @@ async def _standalone_send(
 # Plugin entry point
 
 def register(ctx) -> None:
-    """Called by the Hermes plugin loader at startup."""
+    """Called by the Youtab plugin loader at startup."""
     # Local import to avoid argparse work at module load; reused for both the
-    # gateway-setup hook and the `hermes photon` CLI command below.
+    # gateway-setup hook and the `youtab photon` CLI command below.
     from . import cli as _cli
 
     ctx.register_platform(
@@ -2848,11 +2848,11 @@ def register(ctx) -> None:
         is_connected=is_connected,
         required_env=["PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET"],
         install_hint=(
-            "Run: hermes photon setup  (logs in via device flow, creates a "
+            "Run: youtab photon setup  (logs in via device flow, creates a "
             "Spectrum project, links your phone number, installs the "
             "spectrum-ts sidecar)."
         ),
-        # Surfaces Photon in `hermes gateway setup` alongside every other
+        # Surfaces Photon in `youtab gateway setup` alongside every other
         # channel — same unified onboarding wizard, no Photon-only detour.
         setup_fn=_cli.gateway_setup,
         env_enablement_fn=_env_enablement,
@@ -2877,7 +2877,7 @@ def register(ctx) -> None:
         ),
     )
 
-    # Register CLI subcommands — `hermes photon ...`
+    # Register CLI subcommands — `youtab photon ...`
     ctx.register_cli_command(
         name="photon",
         help="Set up and manage the Photon iMessage integration",

@@ -236,7 +236,7 @@ class TestStreamConsumerFinalSendGap:
     run()) does not check for or fix unclosed ```.  The _accumulated
     text goes to the adapter verbatim.
 
-    Note: This class uses synchronous tests because pytest-asyncio is not
+    Note: This class uses synchroyoutab tests because pytest-asyncio is not
     installed in this project (existing stream consumer tests use it but
     the conftest may register the marker differently).  We test the
     accumulator behaviour directly.

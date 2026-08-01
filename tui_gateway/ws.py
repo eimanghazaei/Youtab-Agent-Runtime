@@ -317,7 +317,7 @@ async def handle_ws(ws: Any) -> None:
             }
         )
         if ready_ok:
-            # Live-apply skins Hermes activates mid-conversation.
+            # Live-apply skins Youtab activates mid-conversation.
             server._ensure_skin_watcher()
             # Track this peer for session-less global broadcasts (skin.changed
             # from the background watcher) — write_json can't route those.
@@ -439,7 +439,7 @@ async def handle_ws(ws: Any) -> None:
             # teardown path.
             #
             # Offloaded: _close_session_by_id does a blocking worker.close()
-            # (terminate + waits) plus a synchronous DB write — inline that
+            # (terminate + waits) plus a synchroyoutab DB write — inline that
             # would freeze the uvicorn event loop for every other live
             # connection.
             try:

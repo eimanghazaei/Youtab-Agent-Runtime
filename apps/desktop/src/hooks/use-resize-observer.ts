@@ -6,7 +6,7 @@ import { type RefObject, useLayoutEffect, useRef } from 'react'
  * off the entry instead of forcing a fresh layout read.
  *
  * The initial measurement rides the observer's spec-guaranteed first delivery
- * (same frame, after layout, before paint) instead of a synchronous call from
+ * (same frame, after layout, before paint) instead of a synchroyoutab call from
  * the layout effect. A sync call here runs while the commit's layout is still
  * dirty, so any size read in the callback forces a full reflow — and with many
  * instances mounting at once (every user bubble on a session switch), the

@@ -1,12 +1,12 @@
 """Service-level orchestration for LSP clients.
 
-The :class:`LSPService` is the bridge between the synchronous
+The :class:`LSPService` is the bridge between the synchroyoutab
 file_operations layer and the async :class:`agent.lsp.client.LSPClient`.
 
 Design choices:
 
 - A **single asyncio event loop** runs in a background thread.  All
-  client work happens on that loop.  Synchronous callers from
+  client work happens on that loop.  Synchroyoutab callers from
   ``tools/file_operations.py`` use :meth:`get_diagnostics_sync` to
   open + wait + drain in one blocking call.
 
@@ -65,7 +65,7 @@ MIN_IDLE_TIMEOUT = 30  # floor for config values; must exceed any per-op wait bu
 class _BackgroundLoop:
     """A daemon thread that owns one asyncio event loop.
 
-    Provides :meth:`run` for synchronous callers — submits a coroutine
+    Provides :meth:`run` for synchroyoutab callers — submits a coroutine
     to the loop and blocks until it finishes (or a timeout fires).
     """
 
@@ -79,7 +79,7 @@ class _BackgroundLoop:
             return
         self._thread = threading.Thread(
             target=self._run_forever,
-            name="hermes-lsp-loop",
+            name="youtab-lsp-loop",
             daemon=True,
         )
         self._thread.start()
@@ -190,13 +190,13 @@ class LSPService:
 
     @classmethod
     def create_from_config(cls) -> Optional["LSPService"]:
-        """Build a service from ``hermes_cli.config`` settings.
+        """Build a service from ``youtab_agent_cli.config`` settings.
 
         Returns ``None`` if the config can't be loaded.  The service
         itself returns ``is_active()`` False when LSP is disabled.
         """
         try:
-            from hermes_cli.config import load_config_readonly
+            from youtab_agent_cli.config import load_config_readonly
             cfg = load_config_readonly()
         except Exception as e:  # noqa: BLE001
             logger.debug("LSP config load failed: %s", e)
@@ -271,7 +271,7 @@ class LSPService:
 
         Files in already-broken pairs return False so the file_operations
         layer skips the LSP path entirely — no spawn attempts, no
-        timeout cost — until the service is restarted (``hermes lsp
+        timeout cost — until the service is restarted (``youtab lsp
         restart``) or the process exits.
         """
         if not self._enabled:
@@ -326,7 +326,7 @@ class LSPService:
         timeout: Optional[float] = None,
         line_shift: Optional[Callable[[int], Optional[int]]] = None,
     ) -> List[Dict[str, Any]]:
-        """Synchronously open ``file_path`` in the right server, wait for
+        """Synchroyoutably open ``file_path`` in the right server, wait for
         diagnostics, return them.
 
         If ``delta`` is True (default), the result is filtered against
@@ -683,7 +683,7 @@ class LSPService:
         )
 
     # ------------------------------------------------------------------
-    # status / introspection (used by ``hermes lsp status``)
+    # status / introspection (used by ``youtab lsp status``)
     # ------------------------------------------------------------------
 
     def get_status(self) -> Dict[str, Any]:

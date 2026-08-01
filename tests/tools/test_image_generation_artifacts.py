@@ -5,8 +5,8 @@ from types import SimpleNamespace
 def test_postprocess_adds_agent_visible_image_for_active_ssh_env(monkeypatch, tmp_path):
     from tools import image_generation_tool
 
-    hermes_home = tmp_path / ".hermes"
-    image_dir = hermes_home / "cache" / "images"
+    youtab_home = tmp_path / ".youtab-agent-runtime"
+    image_dir = youtab_home / "cache" / "images"
     image_dir.mkdir(parents=True)
     image_path = image_dir / "xai_grok-imagine-image_test.jpg"
     image_path.write_bytes(b"jpg")
@@ -22,7 +22,7 @@ def test_postprocess_adds_agent_visible_image_for_active_ssh_env(monkeypatch, tm
         _sync_manager=FakeSyncManager(),
     )
 
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
     monkeypatch.setattr(image_generation_tool, "_active_terminal_env", lambda task_id: env)
 
     raw = json.dumps({"success": True, "image": str(image_path)})
@@ -33,7 +33,7 @@ def test_postprocess_adds_agent_visible_image_for_active_ssh_env(monkeypatch, tm
     assert result["image"] == str(image_path)
     assert result["host_image"] == str(image_path)
     assert result["agent_visible_image"] == (
-        "/home/remotesshuser/.hermes/cache/images/xai_grok-imagine-image_test.jpg"
+        "/home/remotesshuser/.youtab-agent-runtime/cache/images/xai_grok-imagine-image_test.jpg"
     )
     assert sync_calls == [True]
 
@@ -41,8 +41,8 @@ def test_postprocess_adds_agent_visible_image_for_active_ssh_env(monkeypatch, tm
 def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path):
     from tools import image_generation_tool
 
-    hermes_home = tmp_path / ".hermes"
-    image_dir = hermes_home / "cache" / "images"
+    youtab_home = tmp_path / ".youtab-agent-runtime"
+    image_dir = youtab_home / "cache" / "images"
     image_dir.mkdir(parents=True)
     image_path = image_dir / "plugin.png"
     image_path.write_bytes(b"png")
@@ -55,7 +55,7 @@ def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path
         seen_task_ids.append(task_id)
         return env
 
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
     monkeypatch.setattr(image_generation_tool, "_active_terminal_env", fake_active_env)
     monkeypatch.setattr(
         image_generation_tool,
@@ -71,4 +71,4 @@ def test_handle_image_generate_postprocesses_plugin_result(monkeypatch, tmp_path
     )
 
     assert seen_task_ids == ["plugin-task"]
-    assert result["agent_visible_image"] == "/home/remote/.hermes/cache/images/plugin.png"
+    assert result["agent_visible_image"] == "/home/remote/.youtab-agent-runtime/cache/images/plugin.png"

@@ -1,5 +1,5 @@
 """
-Microsoft Teams platform adapter for Hermes Agent.
+Microsoft Teams platform adapter for Youtab Agent Runtime.
 
 Uses the microsoft-teams-apps SDK for authentication and activity processing.
 Runs an aiohttp webhook server to receive messages from Teams.
@@ -515,8 +515,8 @@ async def _standalone_send(
     """Acquire a Bot Framework bearer token and POST a single message activity.
 
     Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
-    runner is not in this process (e.g. ``hermes cron`` running as a
-    separate process from ``hermes gateway``).  Without this hook,
+    runner is not in this process (e.g. ``youtab cron`` running as a
+    separate process from ``youtab gateway``).  Without this hook,
     ``deliver=teams`` cron jobs fail with ``No live adapter for platform``.
 
     Configuration: requires ``TEAMS_CLIENT_ID``, ``TEAMS_CLIENT_SECRET``,
@@ -763,7 +763,7 @@ class TeamsAdapter(BasePlatformAdapter):
                 client_secret=self._client_secret,
                 tenant_id=self._tenant_id,
                 http_server_adapter=_AiohttpBridgeAdapter(aiohttp_app),
-                client=ClientOptions(headers={"User-Agent": "Hermes"}),
+                client=ClientOptions(headers={"User-Agent": "Youtab"}),
             )
 
             # Register message handler before initialize()
@@ -835,7 +835,7 @@ class TeamsAdapter(BasePlatformAdapter):
         ) as client:
             response = await client.get(
                 url,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"},
+                headers={"User-Agent": "Mozilla/5.0 (compatible; YoutabAgent/1.0)"},
             )
             response.raise_for_status()
             return response.content
@@ -1012,10 +1012,10 @@ class TeamsAdapter(BasePlatformAdapter):
 
         action = ctx.activity.value.action
         data = action.data or {}
-        hermes_action = data.get("hermes_action", "")
+        youtab_action = data.get("youtab_action", "")
         session_key = data.get("session_key", "")
 
-        if not hermes_action or not session_key:
+        if not youtab_action or not session_key:
             return InvokeResponse(
                 status=200,
                 body=AdaptiveCardActionMessageResponse(value="Unknown action."),
@@ -1057,7 +1057,7 @@ class TeamsAdapter(BasePlatformAdapter):
             "approve_always": "always",
             "deny": "deny",
         }
-        choice = choice_map.get(hermes_action)
+        choice = choice_map.get(youtab_action)
         if not choice:
             return InvokeResponse(
                 status=200,
@@ -1123,22 +1123,22 @@ class TeamsAdapter(BasePlatformAdapter):
         }
 
         actions = [ExecuteAction(
-            title="Allow Once", verb="hermes_approve",
-            data={**btn_data_base, "hermes_action": "approve_once"}, style="positive",
+            title="Allow Once", verb="youtab_approve",
+            data={**btn_data_base, "youtab_action": "approve_once"}, style="positive",
         )]
         if not smart_denied and allow_session:
             actions.append(ExecuteAction(
-                title="Allow Session", verb="hermes_approve",
-                data={**btn_data_base, "hermes_action": "approve_session"},
+                title="Allow Session", verb="youtab_approve",
+                data={**btn_data_base, "youtab_action": "approve_session"},
             ))
             if allow_permanent:
                 actions.append(ExecuteAction(
-                    title="Always Allow", verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_always"},
+                    title="Always Allow", verb="youtab_approve",
+                    data={**btn_data_base, "youtab_action": "approve_always"},
                 ))
         actions.append(ExecuteAction(
-            title="Deny", verb="hermes_approve",
-            data={**btn_data_base, "hermes_action": "deny"}, style="destructive",
+            title="Deny", verb="youtab_approve",
+            data={**btn_data_base, "youtab_action": "deny"}, style="destructive",
         ))
         body = [
             TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
@@ -1344,11 +1344,11 @@ class TeamsAdapter(BasePlatformAdapter):
 
 def interactive_setup() -> None:
     """Guide the user through Teams setup using the Teams CLI."""
-    from hermes_cli.config import (
+    from youtab_agent_cli.config import (
         get_env_value,
         save_env_value,
     )
-    from hermes_cli.cli_output import (
+    from youtab_agent_cli.cli_output import (
         prompt,
         prompt_yes_no,
         print_info,
@@ -1368,7 +1368,7 @@ def interactive_setup() -> None:
     print()
     print_info("Then expose port 3978 publicly (devtunnel / ngrok / cloudflared),")
     print_info("and create your bot:")
-    print_info("  teams app create --name \"Hermes\" --endpoint \"https://<tunnel>/api/messages\"")
+    print_info("  teams app create --name \"Youtab\" --endpoint \"https://<tunnel>/api/messages\"")
     print()
     print_info("The CLI will print CLIENT_ID, CLIENT_SECRET, and TENANT_ID. Paste them below.")
     print()
@@ -1408,15 +1408,15 @@ def interactive_setup() -> None:
         print_warning("⚠️  Open access — anyone who can message the bot can command it.")
 
     print()
-    print_success("Teams configuration saved to ~/.hermes/.env")
+    print_success("Teams configuration saved to ~/.youtab-agent-runtime/.env")
     print_info("Install the app in Teams:  teams app install --id <teamsAppId>")
-    print_info("Restart the gateway:       hermes gateway restart")
+    print_info("Restart the gateway:       youtab gateway restart")
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system."""
+    """Plugin entry point — called by the Youtab plugin system."""
     ctx.register_platform(
         name="teams",
         label="Microsoft Teams",

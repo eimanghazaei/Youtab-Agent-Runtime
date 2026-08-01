@@ -1,9 +1,9 @@
-import { type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@hermes/shared'
+import { type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@youtab/agent-shared'
 import { atom } from 'nanostores'
 
-import { HermesGateway } from '@/hermes'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setGatewayState } from '@/store/session'
+import { YoutabGateway } from '@/youtab'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
 // Concurrent sessions across profiles need concurrent sockets: the renderer's
@@ -19,7 +19,7 @@ const normKey = (profile: string | null | undefined): string => (profile ?? '').
 
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
-const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
+const isOpen = (gateway: YoutabGateway | null): boolean => gateway?.connectionState === 'open'
 
 interface RegistryConfig {
   onEvent: (event: GatewayEvent) => void
@@ -28,7 +28,7 @@ interface RegistryConfig {
 // ── Secondary (pool) backends ──────────────────────────────────────────────
 interface Secondary {
   profile: string
-  gateway: HermesGateway
+  gateway: YoutabGateway
   offEvent: () => void
   offState: () => void
   reconnectTimer: ReturnType<typeof setTimeout> | null
@@ -52,14 +52,14 @@ interface Secondary {
 // runtime behavior is identical to plain module state.
 interface GatewayRegistryState {
   config: RegistryConfig | null
-  primaryGateway: HermesGateway | null
+  primaryGateway: YoutabGateway | null
   primaryProfile: string
   activeKey: string
   secondaries: Map<string, Secondary>
-  $gateway: ReturnType<typeof atom<HermesGateway | null>>
+  $gateway: ReturnType<typeof atom<YoutabGateway | null>>
 }
 
-const STATE_KEY = Symbol.for('hermes.desktop.gatewayRegistryState')
+const STATE_KEY = Symbol.for('youtab.desktop.gatewayRegistryState')
 
 function createRegistryState(): GatewayRegistryState {
   return {
@@ -71,7 +71,7 @@ function createRegistryState(): GatewayRegistryState {
     // The active gateway instance, exposed for inline message-stream
     // components (inline ClarifyTool, model overlays) that call gateway
     // methods without the instance threaded down through props.
-    $gateway: atom<HermesGateway | null>(null)
+    $gateway: atom<YoutabGateway | null>(null)
   }
 }
 
@@ -115,7 +115,7 @@ export function emitLocalGatewayEvent(event: GatewayEvent): void {
   g.config?.onEvent(event)
 }
 
-export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
+export function setPrimaryGateway(gateway: YoutabGateway | null, profile = 'default'): void {
   g.primaryGateway = gateway
   g.primaryProfile = normKey(profile)
 }
@@ -124,7 +124,7 @@ export function isActivePrimary(): boolean {
   return g.activeKey === g.primaryProfile
 }
 
-export function activeGateway(): HermesGateway | null {
+export function activeGateway(): YoutabGateway | null {
   if (g.activeKey === g.primaryProfile) {
     return g.primaryGateway
   }
@@ -167,7 +167,7 @@ function clearTimer(entry: Secondary): void {
 }
 
 async function openSecondary(entry: Secondary): Promise<void> {
-  const desktop = window.hermesDesktop
+  const desktop = window.youtabDesktop
 
   if (!desktop) {
     return
@@ -215,7 +215,7 @@ async function reconnectSecondary(entry: Secondary): Promise<void> {
 }
 
 function createSecondary(profile: string): Secondary {
-  const gateway = new HermesGateway()
+  const gateway = new YoutabGateway()
 
   const entry: Secondary = {
     profile,
@@ -301,7 +301,7 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
 
 // Reconnect the active gateway after a transient request failure. Primary
 // reconnects are owned by use-gateway-boot, so we only drive secondaries here.
-export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
+export async function ensureActiveGatewayOpen(): Promise<YoutabGateway | null> {
   if (g.activeKey === g.primaryProfile) {
     return g.primaryGateway
   }
@@ -335,7 +335,7 @@ export function reconnectSecondaryGateways(): void {
 // Keep the idle reaper from killing a backend we still need: ping every live
 // secondary. The active one is pinged separately (touchActiveGatewayBackend).
 export function touchSecondaryGateways(): void {
-  const desktop = window.hermesDesktop
+  const desktop = window.youtabDesktop
 
   for (const entry of g.secondaries.values()) {
     if (entry.wantOpen) {

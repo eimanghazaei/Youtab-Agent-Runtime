@@ -1,6 +1,6 @@
 import { PassThrough } from 'stream'
 
-import { Box, renderSync } from '@hermes/ink'
+import { Box, renderSync } from '@youtab/agent-ink'
 import chalk from 'chalk'
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -16,7 +16,7 @@ afterEach(() => {
 })
 
 // Stub the network and warm the shared title cache, so a subsequent render
-// has the resolved title available synchronously.
+// has the resolved title available synchroyoutably.
 const stubFetchedTitle = (url: string, title: string) => {
   vi.stubGlobal(
     'fetch',
@@ -74,7 +74,7 @@ describe('INLINE_RE emphasis', () => {
   })
 
   it('keeps intraword underscores literal', () => {
-    const path = '/home/me/.hermes/cache/screenshots/browser_screenshot_ecc1c3feab.png'
+    const path = '/home/me/.youtab-agent-runtime/cache/screenshots/browser_screenshot_ecc1c3feab.png'
 
     expect(matches(path)).toEqual([])
     expect(matches('snake_case_var and MY_CONST')).toEqual([])
@@ -199,9 +199,9 @@ describe('INLINE_RE inline math', () => {
 describe('protocol sentinels', () => {
   it('captures MEDIA: paths with surrounding quotes or backticks', () => {
     expect('MEDIA:/tmp/a.png'.match(MEDIA_LINE_RE)?.[1]).toBe('/tmp/a.png')
-    expect('  MEDIA: /home/me/.hermes/cache/screenshots/browser_screenshot_ecc.png  '.match(MEDIA_LINE_RE)?.[1]).toBe(
-      '/home/me/.hermes/cache/screenshots/browser_screenshot_ecc.png'
-    )
+    expect(
+      '  MEDIA: /home/me/.youtab-agent-runtime/cache/screenshots/browser_screenshot_ecc.png  '.match(MEDIA_LINE_RE)?.[1]
+    ).toBe('/home/me/.youtab-agent-runtime/cache/screenshots/browser_screenshot_ecc.png')
     expect('`MEDIA:/tmp/a.png`'.match(MEDIA_LINE_RE)?.[1]).toBe('/tmp/a.png')
     expect('"MEDIA:C:\\files\\a.png"'.match(MEDIA_LINE_RE)?.[1]).toBe('C:\\files\\a.png')
   })
@@ -293,7 +293,7 @@ describe('Md link labels', () => {
     const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque-rainforest-adventure'
 
     // Warm the shared cache so `useLinkTitle` would have a title to render
-    // synchronously — the label must still win.
+    // synchroyoutably — the label must still win.
     await stubFetchedTitle(url, 'El Yunque Rainforest Adventure | Expedia')
 
     const lines = renderPlain(
@@ -325,7 +325,7 @@ describe('Md link labels', () => {
 
 describe('renderTable CJK width alignment', () => {
   it('column starts share the same display offset across CJK rows', async () => {
-    const { stringWidth } = await import('@hermes/ink')
+    const { stringWidth } = await import('@youtab/agent-ink')
 
     const md = [
       '| 配置 | Config | 状态 |',

@@ -97,7 +97,7 @@ async def test_await_with_thread_deadline_cleanup_error_is_swallowed():
 
 @pytest.mark.asyncio
 async def test_blocked_loop_after_expiry_dumps_diagnostics(monkeypatch):
-    """#63309: when the loop thread is stuck in a synchronous call, the expiry
+    """#63309: when the loop thread is stuck in a synchroyoutab call, the expiry
     callback never runs and every asyncio timeout goes silent. The off-loop
     watchdog must detect that state and emit diagnostics from its own thread."""
     import asyncio as _asyncio
