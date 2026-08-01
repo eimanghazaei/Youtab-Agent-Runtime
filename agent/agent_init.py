@@ -2453,10 +2453,10 @@ def init_agent(
     # non-CLI surface to still surface the warning.)
     if not agent.quiet_mode and (agent.platform or "cli") != "cli":
         try:
-            from youtab_agent_cli.model_switch import _check_youtab_model_warning
+            from youtab_agent_cli.model_switch import _check_non_agentic_model_warning
 
-            _youtab_warn = _check_youtab_model_warning(agent.model or "")
-            if _youtab_warn:
+            _non_agentic_warn = _check_non_agentic_model_warning(agent.model or "")
+            if _non_agentic_warn:
                 _user_msg = (
                     "⚠ Youtab B.V. Youtab 3 & 4 models are NOT agentic — they "
                     "lack reliable tool-calling for agent workflows (delegation, "
@@ -2467,7 +2467,7 @@ def init_agent(
                     agent._emit_warning(_user_msg)
                 else:
                     print(f"\n{_user_msg}\n", file=sys.stderr)
-                _ra().logger.warning(_youtab_warn)
+                _ra().logger.warning(_non_agentic_warn)
         except Exception:
             pass
 
