@@ -25,6 +25,10 @@ boundary, or asset dependency.
 - [x] Three-repository ownership boundary recorded.
 - [x] Simorgh source archive re-hashed as
   `d41faffa2ea26a3eaa9fc089755e3f4722e94b6f8029210a6c87722f0956d225`.
+- [x] Locked development environment created from `uv.lock` without changing
+  the lockfile.
+- [x] First canonical credential-free smoke slice completed: 84 passed and 0
+  failed across constants, toolsets, and backend identity.
 
 ## Open requirements
 
@@ -54,6 +58,8 @@ boundary, or asset dependency.
 | B0-01 | Current runtime has no GitHub write connector and no `gh` CLI | Cannot create the private GitHub repository, push, or open a Draft PR | Restore GitHub app write capability or provide an environment with authenticated GitHub CLI |
 | B0-02 | Private `youtab-ai-os` is not readable from this runtime | Backend SHA and contracts cannot be verified | Connect the GitHub repository or provide an authenticated checkout |
 | B0-03 | Private `youtab-frontend` is not readable from this runtime | Frontend SHA, WIP, UI paths, and asset destination cannot be verified | Connect the GitHub repository or provide an authenticated checkout |
+| B0-04 | Docker is not installed in this Work runtime | Container and sandbox baseline cannot run here | Run Phase 1 on the approved isolated Runtime host with Docker/container support |
+| B0-05 | Work runtime denies the Unix-domain socket required by `execute_code` tests | Two timezone/code-execution tests are environment-blocked | Rerun the exact canonical test file on the approved Runtime host; do not weaken the code or test |
 
 ## Gate verdict
 

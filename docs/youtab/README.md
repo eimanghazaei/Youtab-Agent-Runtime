@@ -38,6 +38,8 @@ connect directly to this runtime.
 - `FEATURE_PARITY_MATRIX.md` — retained-capability inventory and proof status.
 - `PATCH_REGISTRY.md` — downstream core-patch ledger.
 - `BASELINE_PLAN.md` — Phase 1 isolation and qualification plan.
+- `PHASE_1_PREFLIGHT_EVIDENCE_2026-08-01.md` — first executable preflight
+  evidence and environment blockers.
 
 The operating doctrine is **Proof, Not Claim**. An unchecked item is not an
 implemented or supported capability.
