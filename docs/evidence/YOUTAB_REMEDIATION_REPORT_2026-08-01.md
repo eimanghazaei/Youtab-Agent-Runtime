@@ -93,7 +93,8 @@ Text gates run against a clean `git archive` export of the branch head.
 | Dependency integrity | `scripts/youtab/dependency_gate.py` | **PASS** — 3,573 npm integrity, 2,053 python artifacts, 3 pinned actions, 0 errors |
 | npm vulnerabilities | `npm audit` | **PARTIAL** — 9 → **2** (critical `tar` resolved; 2 high remain) |
 | Python vulnerabilities | `pip-audit` | **FAIL** — 26 advisories across 4 packages |
-| Python regression | `pytest tests` | see §4 |
+| Managed-runtime boundary suite | `pytest tests/youtab_runtime` | **PASS** — 23/23 |
+| Python regression | `pytest tests` | **PARTIAL** — no regressions; see §4 |
 | DNS / endpoint reachability | `nslookup` | **BLOCKED** — all DNS egress times out in this environment, including control hosts. No claim made about whether `youtab.io` endpoints resolve. |
 
 Evidence files live beside this report in `docs/evidence/`.
@@ -157,6 +158,38 @@ and a full re-run. Not attempted here; recorded rather than hidden.
 
 Run on Windows 11 with CPython 3.12.10, inside the project's supported
 `>=3.11,<3.14` range.
+
+### Before / after, same command on both trees
+
+The base tree was checked out into a separate worktree at `ee79f935` and run
+with identical flags. This is the number that matters — the absolute counts are
+dominated by pre-existing Windows platform failures.
+
+| Subset | Base `ee79f935` | This branch | Delta |
+| --- | --- | --- | --- |
+| `tests/plugins` | 17 failed / 1,014 passed | 15 failed / 1,016 passed | **−2 failures** |
+| `tests/agent` | 36 failed / 3,323 passed | 35 failed / 3,324 passed | **−1 failure** |
+| `tests/tools` | 153 failed / 4,792 passed | 153 failed / 4,792 passed | unchanged |
+| `tests/youtab_agent_cli` | not completed — run hung on the base tree | 85 failed / 3,438 passed / 1 error | not compared |
+| `tests/gateway` | not completed | 49 failed / 4,376 passed | not compared |
+| `tests/youtab_runtime` | — | **23 passed / 0 failed** | green |
+
+**No regression was introduced by this branch, and three failures were
+removed.** The comparison for the last two subsets did not finish because the
+base-tree run hung; their head-side numbers are reported above without a
+baseline rather than being presented as a delta.
+
+### Whole-suite run
+
+A full `pytest tests` run reached 99% of collection before hanging on a late
+test and was stopped. Marks counted from the progress stream at that point:
+**22,049 passed, 531 failed, 362 skipped** across 22,942 executed. This is not
+a clean qualification result and is not presented as one.
+
+The 531 is consistent with the per-subset numbers above and is **not** a
+parallelisation artifact: running `tests/plugins` serially and under `-n 12`
+produced identical counts (15 failed / 1,016 passed / 7 skipped both ways).
+These are genuine Windows-platform failures that predate this work.
 
 Two modules cannot be collected on Windows and are explicitly **not
 qualified** on this platform rather than skipped silently:
