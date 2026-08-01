@@ -15,7 +15,10 @@ name: OSV-Scanner
 # dep became known-vulnerable" case.
 #
 # Uses Google's officially-recommended reusable workflow, pinned by SHA.
-# Findings land in the repo's Security tab (Code Scanning > OSV-Scanner).
+# Findings land in the repo's Security tab when Code Scanning is explicitly
+# enabled through the YOUTAB_CODE_SCANNING_ENABLED repository variable.
+# Otherwise the same scanner and SARIF artifact still run without attempting
+# an unavailable Code Scanning upload.
 # fail-on-vuln is disabled so the job does not block merges on pre-existing
 # vulnerabilities in pinned deps that we may need to patch deliberately.
 #
@@ -52,6 +55,7 @@ jobs:
       # fixed artifact name, which the wrapper downloads below.
       results-file-name: osv-results.sarif
       fail-on-vuln: false
+      upload-sarif: ${{ vars.YOUTAB_CODE_SCANNING_ENABLED == 'true' }}
 
   emit-status:
     name: Emit review status
@@ -118,7 +122,7 @@ jobs:
           except Exception:
               print(json.dumps(''))
           ")
-              STATUS="[{\"source\":\"osv scan\",\"results\":[{\"kind\":\"warning\",\"title\":\"OSV vulnerability scan\",\"summary\":\"${VULN_COUNT} known vulnerabilit${VULN_PLURAL} found in pinned dependencies.\",\"detail\":${VULN_DETAIL},\"how_to_fix\":\"Review the findings in the [Security tab](../../security/code-scanning). Update the affected dependencies if a patched version is available.\"}]}]"
+              STATUS="[{\"source\":\"osv scan\",\"results\":[{\"kind\":\"warning\",\"title\":\"OSV vulnerability scan\",\"summary\":\"${VULN_COUNT} known vulnerabilit${VULN_PLURAL} found in pinned dependencies.\",\"detail\":${VULN_DETAIL},\"how_to_fix\":\"Review the OSV Scanner SARIF workflow artifact. If Code Scanning is enabled for this repository, set YOUTAB_CODE_SCANNING_ENABLED=true to also publish the findings to the Security tab. Update affected dependencies when a patched version is available.\"}]}]"
             else
               STATUS="[]"
             fi

@@ -141,7 +141,13 @@ def main() -> int:
     result = {
         "schema_version": 1,
         "mode": args.mode,
-        "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "git_commit": subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ).strip(),
         "counts": counts,
         "errors": errors,
         "known_release_blockers": blockers,

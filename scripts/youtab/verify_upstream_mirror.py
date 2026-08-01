@@ -11,7 +11,12 @@ from pathlib import Path
 
 
 def git(*args: str) -> str:
-    return subprocess.check_output(["git", *args], text=True).strip()
+    return subprocess.check_output(
+        ["git", *args],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).strip()
 
 
 def remote_refs(remote: str, kind: str) -> dict[str, str]:

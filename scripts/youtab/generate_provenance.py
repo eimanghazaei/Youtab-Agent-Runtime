@@ -22,7 +22,13 @@ def main() -> int:
     parser.add_argument("--sbom", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ).strip()
     subjects = []
     for path in [ROOT / "uv.lock", ROOT / "package-lock.json", args.sbom]:
         subjects.append({"name": str(path.relative_to(ROOT) if path.is_relative_to(ROOT) else path.name), "digest": {"sha256": sha(path)}})
