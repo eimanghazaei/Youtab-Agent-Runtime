@@ -118,9 +118,9 @@ Hey, search the web for "Youtab Agent Runtime release notes" and summarize the t
 youtab config set model.default anthropic/claude-sonnet-4.6
 ```
 
-### 不要在 agent 任务中使用 Youtab-4
+### 不要在 agent 任务中使用 Hermes-4
 
-Youtab-4-70B 和 Youtab-4-405B 在 Portal 上以大幅折扣提供，但它们是**对话/推理模型**，并非针对工具调用优化的模型。它们在多步骤 agent 循环中表现不佳。请通过[订阅代理](/user-guide/features/subscription-proxy)从非 agent 工具中将它们用于对话或研究工作。对于 Youtab Agent Runtime 本身，请坚持使用上述前沿 agentic 模型。
+Hermes-4-70B 和 Hermes-4-405B 在 Portal 上以大幅折扣提供，但它们是**对话/推理模型**，并非针对工具调用优化的模型。它们在多步骤 agent 循环中表现不佳。请通过[订阅代理](/user-guide/features/subscription-proxy)从非 agent 工具中将它们用于对话或研究工作。对于 Youtab Agent Runtime 本身，请坚持使用上述前沿 agentic 模型。
 
 Portal 的[信息页面](https://api.youtab.io/info)也有此说明——这是 Youtab 官方指导，并非仅代表 Youtab 一方的意见。
 

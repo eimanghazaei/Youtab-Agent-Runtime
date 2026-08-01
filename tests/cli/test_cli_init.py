@@ -106,11 +106,11 @@ class TestFallbackChainInit:
             "fallback_providers": [
                 {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
             ],
-            "fallback_model": {"provider": "youtab", "model": "Youtab-4"},
+            "fallback_model": {"provider": "youtab", "model": "openai/gpt-5.5"},
         })
         assert cli._fallback_model == [
             {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
-            {"provider": "youtab", "model": "Youtab-4"},
+            {"provider": "youtab", "model": "openai/gpt-5.5"},
         ]
 
 

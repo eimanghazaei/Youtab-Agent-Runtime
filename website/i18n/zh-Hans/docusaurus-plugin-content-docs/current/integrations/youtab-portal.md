@@ -35,7 +35,7 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 | **GLM / Zhipu** | GLM-4.6、GLM-4-Plus |
 | **MiniMax** | M2.7、M1 |
 | **xAI** | Grok-4、Grok-3 |
-| **Youtab** | Youtab-4-70B、Youtab-4-405B（对话，见[下方说明](#a-note-on-youtab-4)） |
+| **Youtab** | Hermes-4-70B、Hermes-4-405B（对话，见[下方说明](#a-note-on-youtab-4)） |
 | **+ 其他所有模型** | 240+ 额外模型——完整的 agentic 前沿生态 |
 
 底层上，Portal 会为每个模型选择最合适的后端——部分模型通过 OpenRouter 路由，其他模型则通过专有或备用提供商，且某个模型的路由方式可能随时间调整。所有用量都统一计入你的 Youtab 订阅。在会话中途用 `/model` 即可在 Claude Sonnet 4.6（适合代码）和 Gemini 2.5 Pro（适合长上下文）之间切换——无需新凭证，无需充值，不会遇到余额为零的意外报错。
@@ -70,7 +70,7 @@ Portal 代理了来自整个生态系统的精选 agentic 模型目录——统�
 
 ## 关于 Youtab 4 的说明
 
-Youtab B.V. 自家的 **Youtab 4** 系列（Youtab-4-70B、Youtab-4-405B）通过 Portal 提供，享有大幅折扣。这些是**前沿混合推理对话模型**——在数学、科学、指令遵循、schema 遵从、角色扮演和长文写作方面表现出色。
+Youtab B.V. 自家的 **Youtab 4** 系列（Hermes-4-70B、Hermes-4-405B）通过 Portal 提供，享有大幅折扣。这些是**前沿混合推理对话模型**——在数学、科学、指令遵循、schema 遵从、角色扮演和长文写作方面表现出色。
 
 但**不建议在 Youtab Agent Runtime 内部使用它们**。Youtab 4 针对对话和推理进行了调优，而非 agent 所依赖的高频工具调用循环。请将它们用于研究工作流，或通过[订阅代理](/user-guide/features/subscription-proxy)从其他工具调用——但在 agent 场景下，请从目录中选择前沿 agentic 模型：
 

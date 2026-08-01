@@ -77,8 +77,8 @@ youtab = YoutabProfile(
     description="Youtab B.V. — Youtab model family",
     signup_url="https://youtab.io/",
     fallback_models=(
-        "youtab-3-405b",
-        "youtab-3-70b",
+        "anthropic/claude-sonnet-5",
+        "openai/gpt-5.5",
     ),
     base_url="https://inference-api.youtab.io/v1",
     auth_type="oauth_device_code",

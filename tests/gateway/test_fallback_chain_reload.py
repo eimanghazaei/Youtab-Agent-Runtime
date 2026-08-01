@@ -110,11 +110,11 @@ def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):
         "    model: deepseek-v4-flash\n"
         "fallback_model:\n"
         "  provider: youtab\n"
-        "  model: Youtab-4\n"
+        "  model: openai/gpt-5.5\n"
     )
 
     chain = GatewayRunner._load_fallback_model()
     assert chain == [
         {"provider": "deepseek", "model": "deepseek-v4-flash"},
-        {"provider": "youtab", "model": "Youtab-4"},
+        {"provider": "youtab", "model": "openai/gpt-5.5"},
     ]

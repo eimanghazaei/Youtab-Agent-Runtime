@@ -39,7 +39,7 @@ The Portal proxies a curated catalog of agentic models from across the ecosystem
 | **Tencent** | Hunyuan 3 Preview |
 | **Xiaomi** | MiMo V2.5 Pro |
 | **StepFun** | Step 3.5 Flash |
-| **Youtab** | Youtab-4-70B, Youtab-4-405B (chat, see [note below](#a-note-on-youtab-4)) |
+| **Nous Research** | Hermes-4-70B, Hermes-4-405B (chat, see [note below](#a-note-on-hermes-4)) |
 | **+ everything else** | 280+ additional models — the full agentic frontier |
 
 Under the hood, the Portal routes each model to the backend best suited for it — some models go through OpenRouter, others through proprietary or secondary providers, and the routing for a given model can change over time. Everything is billed against your Youtab subscription either way. Switch between Claude Sonnet 4.6 for code and Gemini 3 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
@@ -72,11 +72,11 @@ Because everything routes through one OAuth-authenticated Portal session, you do
 
 [Native Windows](/user-guide/windows-native) makes per-tool API key setup its rough edge — installing a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key from Windows is the highest-friction part of getting a useful agent. A Portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
 
-## A note on Youtab 4
+## A note on Hermes 4
 
-Youtab B.V.'s own **Youtab 4** family (Youtab-4-70B, Youtab-4-405B) is available through the Portal at heavily discounted rates. These are **frontier hybrid-reasoning chat models** — strong at math, science, instruction following, schema adherence, roleplay, and long-form writing.
+Nous Research's **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is resold through the Portal at heavily discounted rates. These are third-party **hybrid-reasoning chat models** — strong at math, science, instruction following, schema adherence, roleplay, and long-form writing. They are not Youtab models; Youtab B.V. neither trains nor owns them.
 
-They are **not recommended for use inside Youtab Agent Runtime**, however. Youtab 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for research workflows or via the [subscription proxy](/user-guide/features/subscription-proxy) from other tooling — but for agent work, pick a frontier agentic model from the catalog instead:
+They are **not recommended for use inside Youtab Agent Runtime**, however. Hermes 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for research workflows or via the [subscription proxy](/user-guide/features/subscription-proxy) from other tooling — but for agent work, pick a frontier agentic model from the catalog instead:
 
 ```bash
 /model anthropic/claude-sonnet-4.6     # best general-purpose agentic model
@@ -85,7 +85,7 @@ They are **not recommended for use inside Youtab Agent Runtime**, however. Youta
 /model deepseek/deepseek-v4-pro        # cost-effective coder
 ```
 
-The Portal's own [model info page](https://api.youtab.io/info) carries the same warning, so this isn't a Youtab-side opinion — it's the official guidance from Youtab B.V..
+The Portal's own [model info page](https://api.youtab.io/info) carries the same warning, so this is not a runtime-side opinion — it matches the Portal's published guidance.
 
 ## Setup
 
