@@ -1,0 +1,11 @@
+{
+  "counts": {
+    "github_actions": 3,
+    "npm_lock_metadata": 6,
+    "npm_registry_integrity": 3573,
+    "python_artifacts": 2053
+  },
+  "errors": [],
+  "passed": true,
+  "schema_version": 1
+}
