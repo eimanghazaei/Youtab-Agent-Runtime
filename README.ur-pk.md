@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://youtab-agent-runtime.youtab.io/docs/"><img src="https://img.shields.io/badge/Docs-youtab--agent.youtab.io-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/YoutabBV"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions"><img src="https://img.shields.io/badge/Discussions-2EA043?style=for-the-badge&logo=github&logoColor=white" alt="Discussions"></a>
   <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://youtab.io"><img src="https://img.shields.io/badge/Built%20by-Youtab%20Research-blueviolet?style=for-the-badge" alt="Built by Youtab B.V."></a>
   <a href="README.md"><img src="https://img.shields.io/badge/Lang-English-lightgrey?style=for-the-badge" alt="English"></a>
@@ -244,7 +244,7 @@ scripts/run_tests.sh
 
 ## کمیونٹی (Community)
 
-- 💬 [ڈسکارڈ (Discord)](https://discord.gg/YoutabBV)
+- 💬 [گفتگو (Discussions)](https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions)
 - 📚 [سکلز ہب (Skills Hub)](https://agentskills.io)
 - 🐛 [مسائل (Issues)](https://github.com/eimanghazaei/Youtab-Agent-Runtime/issues)
 - 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — ہرمیس اور دیگر MCP ہوسٹس کے لیے لینکس (Linux) ڈیسک ٹاپ کنٹرول MCP سرور، جس میں AT-SPI ایکسیسیبلٹی ٹریز، Wayland/X11 ان پٹ، سکرین شاٹس، اور کمپوزیٹر ونڈو ٹارگیٹنگ شامل ہے۔

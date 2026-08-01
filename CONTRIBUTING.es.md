@@ -45,7 +45,7 @@ Las habilidades incluidas (en `skills/`) se envían con cada instalación de You
 
 Si tu habilidad es oficial y útil pero no universalmente necesaria (ej., una integración de servicio de pago, una dependencia pesada), ponla en **`optional-skills/`** — se envía con el repositorio pero no está activada por defecto. Los usuarios pueden descubrirla a través de `youtab skills browse` (etiquetada como "oficial") e instalarla con `youtab skills install` (sin advertencia de terceros, confianza integrada).
 
-Si tu habilidad es especializada, contribuida por la comunidad o de nicho, es mejor para un **Skills Hub** — súbela a un registro de habilidades y compártela en el [Discord de Youtab B.V.](https://discord.gg/YoutabBV). Los usuarios pueden instalarla con `youtab skills install`.
+Si tu habilidad es especializada, contribuida por la comunidad o de nicho, es mejor para un **Skills Hub** — súbela a un registro de habilidades y compártela en el [Discusiones de Youtab Agent Runtime](https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions). Los usuarios pueden instalarla con `youtab skills install`.
 
 ---
 
@@ -591,7 +591,7 @@ test(tools): añadir tests unitarios para file_operations
 
 ## Comunidad
 
-- **Discord**: [discord.gg/YoutabBV](https://discord.gg/YoutabBV) — para preguntas, mostrar proyectos y compartir habilidades
+- **Discord**: [GitHub Discussions](https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions) — para preguntas, mostrar proyectos y compartir habilidades
 - **GitHub Discussions**: Para propuestas de diseño y discusiones de arquitectura
 - **Skills Hub**: Sube habilidades especializadas a un registro y compártelas con la comunidad
 
