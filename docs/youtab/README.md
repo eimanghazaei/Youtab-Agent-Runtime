@@ -42,6 +42,8 @@ connect directly to this runtime.
   evidence and environment blockers.
 - `SUPPLY_CHAIN_SOVEREIGNTY.md` — source mirroring, quarantined updates,
   offline dependencies, SBOM/provenance, branding, and release gates.
+- `architecture-intake/README.md` — owner-supplied architecture reference
+  set with explicit non-canon authority boundaries and a 16-file inventory.
 
 The operating doctrine is **Proof, Not Claim**. An unchecked item is not an
 implemented or supported capability.
