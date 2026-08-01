@@ -12,7 +12,8 @@ into the product branch.
 
 - All upstream branches and tags are mirrored into dedicated Git namespaces.
 - The `upstream` remote has a disabled push URL.
-- A scheduled workflow can copy exact refs to a separate private Youtab mirror.
+- A scheduled workflow copies exact refs into quarantined
+  `upstream-mirror/*` branches and tags in the private Youtab origin.
 - The mirror workflow never rebases or merges the Youtab product branch.
 - A verified `git bundle --all` plus a ref manifest is the second, off-GitHub
   backup format.
@@ -51,7 +52,7 @@ Youtab identity, public UI, Brain authority, patches, or production admission.
 | Binaries/assets | SHA-256 manifest, internal mirror, offline `COPY` | Known Docker assets registered; complete platform installer inventory pending |
 | Runtime | no package/binary download or lazy install | Lazy dependency retrieval and self-update are denied by `YAR-PATCH-0001`; admitted image and egress proof remain pending |
 | Evidence | source SBOM, runtime-image SBOM, checksums, signed provenance | Deterministic source evidence implemented; image SBOM/signing pending build infrastructure |
-| Source backup | independent Git origin, exact upstream mirror, off-GitHub bundle | Complete local mirror implemented; private origins and durable off-GitHub upload pending access |
+| Source backup | independent Git origin, exact upstream mirror, off-GitHub bundle | Private origin provisioned; complete quarantined mirror and durable verified off-GitHub bundle implemented |
 
 ## Public identity boundary
 

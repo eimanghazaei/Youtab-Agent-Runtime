@@ -26,7 +26,8 @@ connect directly to this runtime.
 - No upstream core patch has been made.
 - Phase 0 is in progress; Gate G0 is not closed.
 - Phase 1 unmodified runtime qualification has not started.
-- This checkout is not connected to a Youtab GitHub `origin` yet.
+- Private origin: `eimanghazaei/Youtab-Agent-Runtime`; product changes remain
+  isolated on a non-`main` branch until review and explicit merge approval.
 - No merge, deployment, VPS change, or production admission is authorized by
   this bootstrap.
 

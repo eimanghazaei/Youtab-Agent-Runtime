@@ -41,7 +41,8 @@ must remain truthful and must not be removed.
 ## Downstream remote policy
 
 - `upstream` is read-only by policy for Youtab work.
-- A future private Youtab repository will be configured as `origin`.
+- The private Youtab repository `eimanghazaei/Youtab-Agent-Runtime` is the
+  downstream `origin`; upstream remains read-only and optional.
 - Downstream branches are based on immutable upstream commits.
 - Every core divergence must be registered in `PATCH_REGISTRY.md` with tests,
   rollback, and an upstream-sync decision.

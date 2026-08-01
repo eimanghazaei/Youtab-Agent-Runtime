@@ -61,7 +61,8 @@ boundary, or asset dependency.
 - [ ] Verify the staged Simorgh implementation contents; current hash proves
   archive identity only, not frontend compatibility or Dutch-language parity.
 - [ ] Freeze the versioned Agent Control Plane contract in `youtab-ai-os`.
-- [ ] Create the private GitHub repository and configure it as `origin`.
+- [x] Create the private GitHub repository
+  `eimanghazaei/Youtab-Agent-Runtime` and configure it as `origin`.
 - [ ] Push this branch and open a Draft PR without merging it.
 
 ## Current blockers
