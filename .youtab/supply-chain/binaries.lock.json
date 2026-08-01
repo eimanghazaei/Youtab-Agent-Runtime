@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "policy": "Install assets are acquired only in the controlled intake job, verified by SHA-256, mirrored internally, and copied into offline builds.",
+  "assets": [
+    {
+      "name": "sqlite-autoconf-3530400.tar.gz",
+      "source": "https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz",
+      "sha256": "0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c",
+      "internal_path": "install-assets/sqlite/sqlite-autoconf-3530400.tar.gz",
+      "admission": "checksum-known-copy-pending"
+    },
+    {
+      "name": "s6-overlay-noarch-3.2.3.0.tar.xz",
+      "source": "https://github.com/just-containers/s6-overlay/releases/download/v3.2.3.0/s6-overlay-noarch.tar.xz",
+      "sha256": "b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf",
+      "internal_path": "install-assets/s6-overlay/3.2.3.0/s6-overlay-noarch.tar.xz",
+      "admission": "checksum-known-copy-pending"
+    },
+    {
+      "name": "s6-overlay-x86_64-3.2.3.0.tar.xz",
+      "source": "https://github.com/just-containers/s6-overlay/releases/download/v3.2.3.0/s6-overlay-x86_64.tar.xz",
+      "sha256": "a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563",
+      "internal_path": "install-assets/s6-overlay/3.2.3.0/s6-overlay-x86_64.tar.xz",
+      "admission": "checksum-known-copy-pending"
+    },
+    {
+      "name": "s6-overlay-aarch64-3.2.3.0.tar.xz",
+      "source": "https://github.com/just-containers/s6-overlay/releases/download/v3.2.3.0/s6-overlay-aarch64.tar.xz",
+      "sha256": "0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581",
+      "internal_path": "install-assets/s6-overlay/3.2.3.0/s6-overlay-aarch64.tar.xz",
+      "admission": "checksum-known-copy-pending"
+    },
+    {
+      "name": "s6-overlay-symlinks-noarch-3.2.3.0.tar.xz",
+      "source": "https://github.com/just-containers/s6-overlay/releases/download/v3.2.3.0/s6-overlay-symlinks-noarch.tar.xz",
+      "sha256": "a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e",
+      "internal_path": "install-assets/s6-overlay/3.2.3.0/s6-overlay-symlinks-noarch.tar.xz",
+      "admission": "checksum-known-copy-pending"
+    }
+  ],
+  "blockers": [
+    "The upstream installers contain additional platform-specific downloads that still require inventory and mirroring before those install paths can be admitted.",
+    "No authenticated internal binary store is available in the current environment."
+  ]
+}

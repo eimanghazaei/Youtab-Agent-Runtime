@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "policy": "Every production image is copied by digest into Youtab's OCI registry before admission.",
+  "images": [
+    {
+      "role": "uv-build-source",
+      "source": "ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b",
+      "sha256": "b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b",
+      "internal_copy": "registry.youtab.internal/mirror/astral-sh/uv@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b",
+      "admission": "pending-internal-copy"
+    },
+    {
+      "role": "node-build-source",
+      "source": "docker.io/library/node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732",
+      "sha256": "7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732",
+      "internal_copy": "registry.youtab.internal/mirror/library/node@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732",
+      "admission": "pending-internal-copy"
+    }
+  ],
+  "blockers": [
+    "The Debian 13.4 source and runtime stages in the upstream Dockerfile are tag-pinned but not digest-pinned.",
+    "No authenticated Youtab OCI registry is available in the current environment, so internal copies and signatures cannot yet be proven.",
+    "The production runtime image has not been built, scanned, signed, or admitted."
+  ]
+}

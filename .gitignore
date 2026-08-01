@@ -194,3 +194,12 @@ native/fts5_cjk/*.so
 # interrupted; consumed by launch-time recovery. Never commit it (was tracked
 # by accident via 3a69e34702, removed in the #72002 salvage).
 .lazy-refresh-incomplete
+
+# Youtab supply-chain materialization. Manifests and generators are tracked;
+# mirrored package bytes, image archives, evidence packs, and Git bundles are
+# immutable release artifacts stored outside the source repository.
+/.youtab/vendor/
+/.youtab/evidence/
+/.youtab/backups/
+*.bundle
+*.bundle.sha256

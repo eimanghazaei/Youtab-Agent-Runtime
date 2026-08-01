@@ -1,0 +1,9 @@
+registry=https://npm.youtab.internal/
+replace-registry-host=always
+always-auth=true
+audit=false
+fund=false
+ignore-scripts=false
+package-lock=true
+save-exact=true
+strict-ssl=true

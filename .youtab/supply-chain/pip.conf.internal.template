@@ -1,0 +1,9 @@
+[global]
+index-url = https://pypi.youtab.internal/simple
+require-hashes = true
+disable-pip-version-check = true
+no-input = true
+trusted-host =
+
+[install]
+only-binary = :all:

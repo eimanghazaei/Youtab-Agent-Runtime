@@ -29,6 +29,13 @@ boundary, or asset dependency.
   the lockfile.
 - [x] First canonical credential-free smoke slice completed: 84 passed and 0
   failed across constants, toolsets, and backend identity.
+- [x] Every currently advertised upstream branch and tag fetched into an
+  isolated local mirror namespace; exact remote/local ref proof required after
+  every subsequent sync.
+- [x] Upstream push disabled locally; automated intake is mirror-only and may
+  not merge into a Youtab product branch.
+- [x] Source-level supply-chain policy, offline installers, SBOM/checksum/
+  provenance generators, and fail-closed release proof gate added.
 
 ## Open requirements
 
@@ -45,6 +52,12 @@ boundary, or asset dependency.
   manifests, and tests.
 - [ ] Run the pinned upstream unmodified in an isolated environment.
 - [ ] Complete dependency, SBOM, vulnerability, secret, and license scans.
+- [ ] Provision authenticated internal Python, npm, OCI, and binary stores;
+  populate and verify the exact artifacts recorded by the manifests.
+- [ ] Build the production image with no external artifact egress, generate a
+  full image/OS SBOM, sign image and provenance, and prove offline rebuild.
+- [ ] Store and periodically restore-test a verified all-ref Git bundle in a
+  durable location outside GitHub.
 - [ ] Verify the staged Simorgh implementation contents; current hash proves
   archive identity only, not frontend compatibility or Dutch-language parity.
 - [ ] Freeze the versioned Agent Control Plane contract in `youtab-ai-os`.
@@ -60,6 +73,8 @@ boundary, or asset dependency.
 | B0-03 | Private `youtab-frontend` is not readable from this runtime | Frontend SHA, WIP, UI paths, and asset destination cannot be verified | Connect the GitHub repository or provide an authenticated checkout |
 | B0-04 | Docker is not installed in this Work runtime | Container and sandbox baseline cannot run here | Run Phase 1 on the approved isolated Runtime host with Docker/container support |
 | B0-05 | Work runtime denies the Unix-domain socket required by `execute_code` tests | Two timezone/code-execution tests are environment-blocked | Rerun the exact canonical test file on the approved Runtime host; do not weaken the code or test |
+| B0-06 | Internal PyPI/npm/OCI/binary stores and their credentials are not available in this runtime | Artifact copies, signatures, and a real offline rebuild cannot be completed | Provision Youtab-owned stores and run the release gate with immutable proof files |
+| B0-07 | Docker/Syft/Cosign are unavailable here | Production image, complete image SBOM, vulnerability scan, and signed provenance cannot be produced | Run the exact release workflow on the approved build runner |
 
 ## Gate verdict
 

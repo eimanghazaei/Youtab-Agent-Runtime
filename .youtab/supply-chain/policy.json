@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "product": "Youtab Agent Runtime",
+  "upstream": {
+    "remote": "upstream",
+    "url": "https://github.com/NousResearch/hermes-agent.git",
+    "mirror_heads_namespace": "refs/youtab-upstream/heads/",
+    "mirror_tags_namespace": "refs/youtab-upstream/tags/",
+    "push_forbidden": true,
+    "automatic_product_merge": false
+  },
+  "intake": {
+    "mode": "quarantine",
+    "candidate_branch_prefix": "intake/upstream-",
+    "required_gates": [
+      "source_mirror_exact",
+      "license_and_provenance",
+      "dependency_locks",
+      "runtime_download_denied",
+      "public_branding",
+      "feature_parity",
+      "security",
+      "deterministic_tests",
+      "sbom",
+      "checksums",
+      "signed_provenance"
+    ]
+  },
+  "registries": {
+    "python": "https://pypi.youtab.internal/simple",
+    "npm": "https://npm.youtab.internal/",
+    "oci": "registry.youtab.internal"
+  },
+  "runtime": {
+    "download_policy": "deny",
+    "lazy_install_policy": "deny",
+    "approved_artifacts_only": true,
+    "network_model_and_tool_traffic_is_separate_from_artifact_downloads": true
+  },
+  "release": {
+    "source_sbom_required": true,
+    "runtime_image_sbom_required": true,
+    "sha256_manifest_required": true,
+    "signed_provenance_required": true,
+    "off_github_git_bundle_required": true,
+    "internal_registry_copy_required": true
+  },
+  "public_identity": {
+    "product_name": "Youtab",
+    "forbidden_public_tokens": ["Hermes", "Nous Research", "NousResearch"],
+    "legal_and_provenance_exempt": true,
+    "runtime_has_no_direct_public_ingress": true
+  }
+}

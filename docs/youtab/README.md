@@ -40,6 +40,8 @@ connect directly to this runtime.
 - `BASELINE_PLAN.md` — Phase 1 isolation and qualification plan.
 - `PHASE_1_PREFLIGHT_EVIDENCE_2026-08-01.md` — first executable preflight
   evidence and environment blockers.
+- `SUPPLY_CHAIN_SOVEREIGNTY.md` — source mirroring, quarantined updates,
+  offline dependencies, SBOM/provenance, branding, and release gates.
 
 The operating doctrine is **Proof, Not Claim**. An unchecked item is not an
 implemented or supported capability.

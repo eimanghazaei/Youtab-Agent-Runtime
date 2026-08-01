@@ -497,6 +497,15 @@ def _allow_lazy_installs() -> bool:
     refusing to install would lock people out of their own backends; the
     decision to block is an explicit user opt-in.
     """
+    # (0) The downstream production policy is stronger than the upstream
+    # durable-target mode: no executable artifact may be retrieved after the
+    # image has been admitted. Keep this opt-in so developer checkouts retain
+    # the upstream default behaviour.
+    from hermes_cli.youtab_runtime_policy import runtime_artifact_downloads_denied
+
+    if runtime_artifact_downloads_denied():
+        return False
+
     # (1) Config kill switch wins in every mode.
     try:
         from hermes_cli.config import load_config
@@ -837,10 +846,17 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             )
 
     if not _allow_lazy_installs():
-        raise FeatureUnavailable(
-            feature, missing,
-            "lazy installs disabled (security.allow_lazy_installs=false)"
+        from hermes_cli.youtab_runtime_policy import (
+            runtime_artifact_downloads_denied,
+            runtime_download_denial_reason,
         )
+
+        reason = (
+            runtime_download_denial_reason()
+            if runtime_artifact_downloads_denied()
+            else "lazy installs disabled (security.allow_lazy_installs=false)"
+        )
+        raise FeatureUnavailable(feature, missing, reason)
 
     # Only show the interactive confirmation when we own a TTY and
     # prompt_toolkit isn't running.  A bare input() deadlocks when a
@@ -976,6 +992,17 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> 
             )
 
     if not _allow_lazy_installs():
+        from hermes_cli.youtab_runtime_policy import (
+            runtime_artifact_downloads_denied,
+            runtime_download_denial_reason,
+        )
+
+        if runtime_artifact_downloads_denied():
+            return InstallSpecsResult(
+                ok=False,
+                blocked=True,
+                reason=runtime_download_denial_reason(),
+            )
         target = _lazy_install_target()
         if os.environ.get("HERMES_DISABLE_LAZY_INSTALLS") == "1" and target is None:
             reason = (

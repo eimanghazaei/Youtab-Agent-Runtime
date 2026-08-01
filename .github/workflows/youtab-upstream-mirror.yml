@@ -1,0 +1,54 @@
+name: Youtab upstream mirror intake
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: youtab-upstream-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+      - name: Require isolated private mirror destination
+        env:
+          MIRROR_REPOSITORY: ${{ vars.YOUTAB_UPSTREAM_MIRROR_REPOSITORY }}
+          MIRROR_TOKEN: ${{ secrets.YOUTAB_UPSTREAM_MIRROR_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$MIRROR_REPOSITORY"
+          test -n "$MIRROR_TOKEN"
+          test "$MIRROR_REPOSITORY" != "${GITHUB_REPOSITORY}"
+      - name: Fetch and prove every upstream branch and tag
+        run: |
+          set -euo pipefail
+          git remote remove upstream 2>/dev/null || true
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          scripts/youtab/sync_upstream_mirror.sh upstream
+      - name: Push exact refs to Youtab private mirror
+        env:
+          MIRROR_REPOSITORY: ${{ vars.YOUTAB_UPSTREAM_MIRROR_REPOSITORY }}
+          MIRROR_TOKEN: ${{ secrets.YOUTAB_UPSTREAM_MIRROR_TOKEN }}
+        run: |
+          set -euo pipefail
+          mirror_url="https://x-access-token:${MIRROR_TOKEN}@github.com/${MIRROR_REPOSITORY}.git"
+          git remote add private-mirror "$mirror_url"
+          git push --prune private-mirror \
+            '+refs/youtab-upstream/heads/*:refs/heads/*'
+          git push --prune private-mirror \
+            '+refs/youtab-upstream/tags/*:refs/tags/*'
+      - name: Report update without merging product code
+        run: |
+          set -euo pipefail
+          printf 'upstream_main=%s\n' "$(git rev-parse refs/youtab-upstream/heads/main)"
+          printf 'product_head=%s\n' "$(git rev-parse HEAD)"
+          echo 'No merge, rebase, branding change, or production mutation was performed.'

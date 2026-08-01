@@ -8961,6 +8961,16 @@ def cmd_update(args):
     runs the update, then restores stdio on the way out (even on
     ``sys.exit`` or unhandled exceptions).
     """
+    from hermes_cli.youtab_runtime_policy import (
+        runtime_artifact_downloads_denied,
+        runtime_download_denial_reason,
+    )
+
+    if runtime_artifact_downloads_denied():
+        print(f"Youtab managed runtime: {runtime_download_denial_reason()}.")
+        print("Deploy an approved, digest-pinned Youtab runtime image instead.")
+        return
+
     from hermes_cli.config import (
         detect_install_method,
         format_docker_update_message,
