@@ -1,22 +1,123 @@
 #!/usr/bin/env bash
-set -euo pipefail
+#
+# Run every Youtab gate and report the whole picture.
+#
+# Deliberately not `set -e`. Under `set -e` this script stopped at the first
+# red gate, and since the branding gate runs first, one failure there meant a
+# CI run reported nothing at all about secrets, dependencies, SAST, OWASP, the
+# runtime test suite, compileall, ruff or the lock file -- the job exited in
+# forty seconds having measured one thing out of ten. Every gate now runs, its
+# exit code is recorded, and the script fails at the end if any of them failed.
+#
+# A gate that cannot run (missing binary, exit 127) is reported as a failure
+# like any other. Not being able to check something is never a pass.
+set -uo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 evidence_dir="${1:-$repo_root/.youtab/evidence/local}"
 python_bin="${YOUTAB_AGENT_PYTHON:-python}"
-mkdir -p "$evidence_dir"
-cd "$repo_root"
+mkdir -p "$evidence_dir" || exit 1
+cd "$repo_root" || exit 1
 
+gate_names=()
+gate_codes=()
+
+# Call immediately after a gate, as `record <name> $?`, so the status captured
+# is the gate's own. With `pipefail` set this is correct for piped gates too.
+record() {
+  gate_names+=("$1")
+  gate_codes+=("$2")
+  if [ "$2" -eq 0 ]; then
+    printf -- '----- %s: PASS\n' "$1"
+  else
+    printf -- '----- %s: FAIL (exit %d)\n' "$1" "$2"
+  fi
+}
+
+begin() {
+  printf -- '\n===== gate: %s =====\n' "$1"
+}
+
+begin branding
 "$python_bin" scripts/youtab/branding_gate.py --root . --ocr --output "$evidence_dir/branding.json"
-"$python_bin" scripts/youtab/secret_gate.py --root . --output "$evidence_dir/secrets.json"
-"$python_bin" scripts/youtab/dependency_gate.py --root . --output "$evidence_dir/dependencies.json"
-"$python_bin" scripts/youtab/sast_gate.py --root . --output "$evidence_dir/sast.json"
-"$python_bin" scripts/youtab/owasp_smoke.py > "$evidence_dir/owasp-smoke.json"
-scripts/run_tests.sh tests/youtab_runtime -q | tee "$evidence_dir/unit-integration-e2e.log"
-"$python_bin" -m compileall -q youtab_runtime youtab_agent_cli agent tools gateway
-"$python_bin" -m ruff check youtab_runtime scripts/youtab tests/youtab_runtime --output-format concise | tee "$evidence_dir/quality-ruff.log"
-UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/youtab-uv-cache}" uv lock --check --offline | tee "$evidence_dir/uv-lock.log"
-git diff --check
+record branding $?
 
-printf '{"schema_version":1,"passed":true}\n' > "$evidence_dir/aggregate.json"
-printf 'PASS: all local Youtab gates\n'
+begin secrets
+"$python_bin" scripts/youtab/secret_gate.py --root . --output "$evidence_dir/secrets.json"
+record secrets $?
+
+begin dependencies
+"$python_bin" scripts/youtab/dependency_gate.py --root . --output "$evidence_dir/dependencies.json"
+record dependencies $?
+
+begin sast
+"$python_bin" scripts/youtab/sast_gate.py --root . --output "$evidence_dir/sast.json"
+record sast $?
+
+begin owasp-smoke
+"$python_bin" scripts/youtab/owasp_smoke.py > "$evidence_dir/owasp-smoke.json"
+record owasp-smoke $?
+
+begin unit-integration-e2e
+scripts/run_tests.sh tests/youtab_runtime -q | tee "$evidence_dir/unit-integration-e2e.log"
+record unit-integration-e2e $?
+
+begin compileall
+"$python_bin" -m compileall -q youtab_runtime youtab_agent_cli agent tools gateway
+record compileall $?
+
+begin ruff
+"$python_bin" -m ruff check youtab_runtime scripts/youtab tests/youtab_runtime --output-format concise | tee "$evidence_dir/quality-ruff.log"
+record ruff $?
+
+begin uv-lock
+UV_CACHE_DIR="${UV_CACHE_DIR:-/tmp/youtab-uv-cache}" uv lock --check --offline | tee "$evidence_dir/uv-lock.log"
+record uv-lock $?
+
+begin whitespace
+git diff --check
+record whitespace $?
+
+failed=0
+for code in "${gate_codes[@]}"; do
+  [ "$code" -eq 0 ] || failed=$((failed + 1))
+done
+
+{
+  printf '{\n'
+  printf '  "schema_version": 2,\n'
+  if [ "$failed" -eq 0 ]; then
+    printf '  "passed": true,\n'
+  else
+    printf '  "passed": false,\n'
+  fi
+  printf '  "gates_total": %d,\n' "${#gate_names[@]}"
+  printf '  "gates_failed": %d,\n' "$failed"
+  printf '  "gates": {\n'
+  last=$(( ${#gate_names[@]} - 1 ))
+  for i in "${!gate_names[@]}"; do
+    if [ "$i" -eq "$last" ]; then
+      printf '    "%s": %d\n' "${gate_names[$i]}" "${gate_codes[$i]}"
+    else
+      printf '    "%s": %d,\n' "${gate_names[$i]}" "${gate_codes[$i]}"
+    fi
+  done
+  printf '  }\n'
+  printf '}\n'
+} > "$evidence_dir/aggregate.json"
+
+printf -- '\n===== gate summary =====\n'
+for i in "${!gate_names[@]}"; do
+  if [ "${gate_codes[$i]}" -eq 0 ]; then
+    printf '  PASS  %s\n' "${gate_names[$i]}"
+  else
+    printf '  FAIL  %s (exit %d)\n' "${gate_names[$i]}" "${gate_codes[$i]}"
+  fi
+done
+
+if [ "$failed" -ne 0 ]; then
+  printf '\nFAIL: %d of %d Youtab gates failed\n' "$failed" "${#gate_names[@]}"
+  exit 1
+fi
+
+printf '\nPASS: all %d Youtab gates\n' "${#gate_names[@]}"
