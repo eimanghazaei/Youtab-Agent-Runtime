@@ -57,7 +57,7 @@ Prompt caches are keyed to the model serving the request, so any mid-conversatio
 
 ## Setting auxiliary models
 
-Click **Show auxiliary** to reveal the 11 task slots:
+Click **Configure** on the **Auxiliary tasks** row to reveal the 11 task slots:
 
 ![Auxiliary panel expanded](/img/docs/dashboard-models/auxiliary-expanded.png)
 
