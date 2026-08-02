@@ -200,7 +200,7 @@ WSL2 在轻量级虚拟机中运行，拥有独立的网络栈。这意味着 WS
 
 最常见的场景：你在 **Windows 上运行 Ollama、LM Studio 或 llama-server**，而 WSL 内的 Youtab 需要访问它。
 
-此场景的权威说明在 providers 指南中：**[WSL2 本地模型网络配置 →](/integrations/providers#wsl2-networking-windows-users)**
+此场景的权威说明在 providers 指南中：**[WSL2 本地模型网络配置 →](/integrations/providers)**
 
 简要说明：
 
@@ -292,7 +292,7 @@ AMD ROCm 和 Intel Arc 在 WSL2 内的支持仍在发展中，不在 Youtab 的�
 ## 常见问题
 
 **连接 Windows 上的 Ollama / LM Studio 时报"Connection refused"。**
-参见 [WSL2 网络配置](/integrations/providers#wsl2-networking-windows-users)。九成情况是服务绑定在 `127.0.0.1` 上，需要改为 `0.0.0.0`（Ollama：`OLLAMA_HOST=0.0.0.0`），或者缺少防火墙规则。
+参见 [WSL2 网络配置](/integrations/providers)。九成情况是服务绑定在 `127.0.0.1` 上，需要改为 `0.0.0.0`（Ollama：`OLLAMA_HOST=0.0.0.0`），或者缺少防火墙规则。
 
 **`git status` / `youtab chat` 在仓库中极慢。**
 你很可能在 `/mnt/c/...` 下工作。将仓库移到 `~/code/...`（Linux 侧），速度会有数量级的提升。
@@ -327,6 +327,6 @@ WSL2 将虚拟机磁盘存储为 `%LOCALAPPDATA%\Packages\...` 下的稀疏 VHDX
 ## 下一步
 
 - **[安装说明](/getting-started/installation)** —— 实际安装步骤（Linux/WSL2/Termux 均使用同一安装程序）。
-- **[集成 → Providers → WSL2 网络配置](/integrations/providers#wsl2-networking-windows-users)** —— 本地模型服务器网络配置的权威深度说明。
+- **[集成 → Providers → WSL2 网络配置](/integrations/providers)** —— 本地模型服务器网络配置的权威深度说明。
 - **[MCP 指南 → WSL → Windows Chrome](/guides/use-mcp-with-youtab#wsl2-bridge-youtab-in-wsl-to-windows-chrome)** —— 从 WSL 中的 Youtab 控制你已登录的 Windows Chrome。
 - **[Tool Gateway](/user-guide/features/tool-gateway)** 和 **[Web Dashboard](/user-guide/features/web-dashboard)** —— 你最常需要从 WSL 暴露到网络其他部分的长期运行服务。
