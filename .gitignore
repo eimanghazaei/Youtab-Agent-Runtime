@@ -199,3 +199,7 @@ native/fts5_cjk/*.so
 /.github/pr-screenshots/
 /apps/desktop/pr-assets/
 /sqlite_leak_fix.png
+
+# Windows pytest litter: tmp_path (C:\Users\...\AppData\Local\Temp\pytest-*) interpolated
+# into a bash command lands in the repo root with the drive colon mangled to U+F03A.
+*AppDataLocalTemppytest-*
