@@ -231,15 +231,16 @@ kanban_complete(
 
 ### 熔断器 — 持续性失败
 
-一个因 profile 环境中未设置 `AWS_ACCESS_KEY_ID` 而无法生成 worker 的部署任务：
+一个根本无法生成 worker 的部署任务。这里任务请求 `worktree` 工作区，但没有任何配置告诉 Youtab 该以哪个仓库为锚点，因此 dispatcher 连启动 worker 的目录都无法解析 —— 这与缺失凭据、profile 不存在等其他持续性的生成期故障是同一种形态：
 
 ```bash
-youtab kanban create "Deploy to staging (missing creds)" \
+youtab kanban create "Deploy to staging (no workspace anchor)" \
     --assignee deploy-bot --tenant ops \
+    --workspace worktree \
     --max-retries 3
 ```
 
-dispatcher 尝试生成 worker。生成失败（`RuntimeError: AWS_ACCESS_KEY_ID not set`）。dispatcher 释放认领，递增失败计数器，并在下一次 tick 重试。由于本示例设置了 `--max-retries 3`，在三次连续失败后熔断器触发：任务进入 `blocked` 状态，outcome 为 `gave_up`。如果省略该标志，Youtab 使用 `kanban.failure_limit`（默认值：2）。在人工解除阻塞之前不再重试。
+dispatcher 认领任务并尝试生成 worker，在 worker 进程存在之前就失败了。dispatcher 释放认领，递增失败计数器，并在下一次 tick 重试。由于本示例设置了 `--max-retries 3`，在三次连续失败后熔断器触发：任务进入 `blocked` 状态，outcome 为 `gave_up`。如果省略该标志，Youtab 使用 `kanban.failure_limit`（默认值：2）。在人工解除阻塞之前不再重试。
 
 点击被阻塞的任务：
 
@@ -250,14 +251,14 @@ dispatcher 尝试生成 worker。生成失败（`RuntimeError: AWS_ACCESS_KEY_ID
 在终端：
 
 ```bash
-youtab kanban runs t_ef5d
+youtab kanban runs t_26f5
 # #   OUTCOME        PROFILE        ELAPSED  STARTED
-# 1   spawn_failed   deploy-bot          0s  2026-04-27 19:34
-#       ! AWS_ACCESS_KEY_ID not set in deploy-bot env
-# 2   spawn_failed   deploy-bot          0s  2026-04-27 19:34
-#       ! AWS_ACCESS_KEY_ID not set in deploy-bot env
-# 3   gave_up        deploy-bot          0s  2026-04-27 19:34
-#       ! AWS_ACCESS_KEY_ID not set in deploy-bot env
+# 1   spawn_failed   deploy-bot          0s  2026-08-02 13:29
+#       ! workspace: task t_26f51c85 has workspace_kind=worktree but no workspace_path…
+# 2   spawn_failed   deploy-bot          0s  2026-08-02 13:29
+#       ! workspace: task t_26f51c85 has workspace_kind=worktree but no workspace_path…
+# 3   gave_up        deploy-bot          0s  2026-08-02 13:29
+#       ! workspace: task t_26f51c85 has workspace_kind=worktree but no workspace_path…
 ```
 
 如果接入了 Telegram/Discord/Slack，gateway 会在 `gave_up` 事件时发送通知，让你无需主动检查看板就能得知故障。
@@ -278,7 +279,7 @@ youtab kanban runs t_ef5d
 
 ![Crash and recovery — 1 crashed + 1 completed](/img/kanban-tutorial/06-drawer-crash-recovery.png)
 
-Run 1 — `crashed`，错误为 `OOM kill at row 2.3M (process 99999 gone)`。Run 2 — `completed`，metadata 中包含 `"strategy": "chunked with LIMIT + WHERE id > last_id"`。重试的 worker 在其上下文中看到了 run 1 的崩溃信息，并选择了更安全的策略；metadata 让未来的观察者（或事后分析撰写者）能清楚地看到发生了什么变化。
+Run 1 — `crashed`，错误是 dispatcher 发现 worker 消失时记录的内容（`pid … not alive`），metadata 中带有那个已死的 pid。Run 2 — `completed`，其 summary 说明迁移现在每次迭代按 10,000 行分块执行，正是为了不再一次性materialize 完整的约 240 万行结果集。重试的 worker 在其上下文中看到了 run 1 的崩溃信息，并选择了更安全的策略；run history 让未来的观察者（或事后分析撰写者）能清楚地看到发生了什么变化。
 
 ## 结构化交接 — `summary` 和 `metadata` 的重要性
 

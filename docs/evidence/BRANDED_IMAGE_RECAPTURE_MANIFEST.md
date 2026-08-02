@@ -1,8 +1,14 @@
-# Re-capture manifest: the 16 images that still render the retired brand
+# Re-capture manifest: the 16 images that rendered the retired brand
 
-Produced by `scripts/youtab/branding_gate.py --ocr` (engine: rapidocr-onnxruntime
-1.4.4) against `fix/youtab-runtime-completion-and-qualification`. Of 61 tracked
-images, 61 were read, 0 were unreadable, and 16 carry the retired brand.
+**Status: closed.** All 16 have been re-captured or re-authored. The last
+`scripts/youtab/branding_gate.py --ocr` run (engine: rapidocr-onnxruntime 1.4.4)
+against `fix/youtab-runtime-completion-and-qualification` reads all 61 tracked
+images, finds **0 unreadable** and **0 carrying the retired brand**, and exits 0.
+
+The sections below are kept as written — they are the specification the capture
+session was executed against, and the record of why each image needed what it
+needed. What actually happened per group is recorded under
+[How each group was closed](#how-each-group-was-closed) at the end.
 
 This file exists because the fix is not a code change. It is a capture session
 against a running, credentialed product, and this is the specification for it.
@@ -136,3 +142,60 @@ The 300 permitted occurrences are attribution and third-party facts, never
 active product brand: `.mailmap` and skill `author:` metadata for real
 contributors, and real model ids, OpenRouter slugs and external repositories the
 product genuinely depends on or documents.
+
+## How each group was closed
+
+Every replacement is a photograph of this branch's own build, taken at the
+original file's exact pixel dimensions and colour mode. Nothing was overlaid,
+blurred, cropped, deleted, renamed, or allowlisted, and the gate itself was not
+touched. Each replacement was OCR'd directly after being written into place.
+
+**Group B (3) and the achievements asset** — re-captured first, from the
+dashboard built out of this branch (`cd web && npm run build`) and served with
+`youtab dashboard`. These needed no credentials.
+
+**Group D `unbroker.png`** — redrawn from scratch at 879x1100 in the Youtab
+palette and rendered headless from source. Not an edit of the old file.
+
+**Group A — model configuration (4).** Taken against a real credentialed
+provider: `provider: deepseek`, `model: deepseek-v4-pro`, with the key loaded
+normally by the runtime from `~/.youtab-agent-runtime/.env`. The usage analytics
+in `overview.png` and `use-as-dropdown.png` are real sessions this host ran
+through DeepSeek, not seeded rows — which is why the cards read
+`deepseek-v4-pro` (main) and `deepseek-v4-flash` with genuine token, cost and
+tool-call counts. `dashboard.show_token_analytics` was switched on because the
+page these figures document describes token counts and cost.
+
+DeepSeek is named as DeepSeek throughout. It is a third-party provider, not
+Youtab's model; `Youtab-1` stays reserved for Youtab's own.
+
+**Group C — kanban tutorial (7).** Every state was produced by the real
+dispatcher driving real workers, through the documented CLI. No row of
+`kanban.db` was written or edited by hand:
+
+| Figure | How the state was reached |
+| --- | --- |
+| `03-drawer-schema-task` | `backend-dev` worker ran the schema task and called `kanban_complete`; one `completed` run, 53s |
+| `04b-drawer-retry-history-scrolled` | Run 1: the worker judged the reviewer's two concerns valid and called `kanban_block`. A human answered in a comment and ran `youtab kanban unblock`. Run 2: the dispatcher respawned it and the worker completed |
+| `06-drawer-crash-recovery` | The worker was spawned, then SIGKILLed mid-flight. The dispatcher detected the dead pid on its own and reopened the task; the retry read the crash in its prior-attempt context and chose a chunked strategy |
+| `08-pipeline-auth` | The live board, tenant-filtered to `auth-project` |
+| `09-drawer-pipeline-review` | The reviewer's task, ready, parented on the completed implementation |
+| `10-drawer-in-flight` | Captured while the `backend-dev` worker was genuinely running: run history shows one `active` run with no end |
+| `11-drawer-gave-up` | Three real dispatcher passes against a task whose worker cannot be spawned: 2 `spawn_failed`, then `gave_up` at the task's `--max-retries 3` |
+
+Two prose fixes went with these, so the tutorial describes what its figures now
+show: Story 4's circuit-breaker example is stated as the spawn failure that
+actually occurs, and the crash-recovery paragraph quotes the error the
+dispatcher really records. Both are in the English and zh-Hans copies.
+
+### One product bug found and fixed on the way
+
+`plugins/kanban/dashboard/dist/` shipped a stylesheet whose 303 selectors were
+named `youtab-agent-runtime-kanban-*` while the bundle's `className` strings
+emitted `youtab-kanban-*`. The rebrand had renamed the two halves
+inconsistently, so **none of the kanban plugin's styles applied** and the board
+rendered as an unstyled vertical list. The bundle's own `querySelector` strings
+already used the long name, so the 270 class-name tokens plus the one root class
+were brought in line with them; the 7 custom event names (`youtab-kanban:drop`
+and friends) were deliberately left alone. Without this the board could not be
+photographed as the tutorial documents it.
