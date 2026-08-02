@@ -326,7 +326,7 @@ providers:
 
 (Older configs use the legacy `custom_providers:` list — still supported and auto-migrated to `providers:`.)
 
-See [Context Length Detection](../integrations/providers.md#context-length-detection) for how auto-detection works and all override options.
+See [Context Length Detection](../integrations/providers.md) for how auto-detection works and all override options.
 
 ---
 

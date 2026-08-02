@@ -343,7 +343,7 @@ custom_providers:
         context_length: 32768
 ```
 
-有关自动检测的工作原理及所有覆盖选项，请参阅[上下文长度检测](../integrations/providers.md#context-length-detection)。
+有关自动检测的工作原理及所有覆盖选项，请参阅[上下文长度检测](../integrations/providers.md)。
 
 ---
 

@@ -200,7 +200,7 @@ Two cases come up constantly.
 
 Most common: you're running **Ollama, LM Studio, or a llama-server on Windows**, and Youtab (inside WSL) needs to hit it.
 
-The canonical how-to for this lives in the providers guide: **[WSL2 Networking for Local Models →](/integrations/providers#wsl2-networking-windows-users)**
+The canonical how-to for this lives in the providers guide: **[WSL2 Networking for Local Models →](/integrations/providers)**
 
 Short version:
 
@@ -318,7 +318,7 @@ If you're running a **Windows-native** local-model server (Ollama for Windows, L
 ## Common pitfalls
 
 **"Connection refused" to my Windows-hosted Ollama / LM Studio.**
-See [WSL2 Networking](/integrations/providers#wsl2-networking-windows-users). Ninety percent of the time the server is bound to `127.0.0.1` and needs `0.0.0.0` (Ollama: `OLLAMA_HOST=0.0.0.0`), or you're missing a firewall rule.
+See [WSL2 Networking](/integrations/providers). Ninety percent of the time the server is bound to `127.0.0.1` and needs `0.0.0.0` (Ollama: `OLLAMA_HOST=0.0.0.0`), or you're missing a firewall rule.
 
 **Massive slowness on `git status` / `youtab chat` in a repo.**
 You're probably working under `/mnt/c/...`. Move the repo to `~/code/...` (Linux side). Order-of-magnitude faster.
@@ -353,6 +353,6 @@ WSL2 stores its VM disk as a sparse VHDX under `%LOCALAPPDATA%\Packages\...`. It
 ## Where to go next
 
 - **[Installation](/getting-started/installation)** — actual install steps (Linux/WSL2/Termux all use the same installer).
-- **[Integrations → Providers → WSL2 Networking](/integrations/providers#wsl2-networking-windows-users)** — the canonical networking deep-dive for local model servers.
+- **[Integrations → Providers → WSL2 Networking](/integrations/providers)** — the canonical networking deep-dive for local model servers.
 - **[MCP guide → WSL → Windows Chrome](/guides/use-mcp-with-youtab#wsl2-bridge-youtab-in-wsl-to-windows-chrome)** — controlling your signed-in Windows Chrome from Youtab in WSL.
 - **[Tool Gateway](/user-guide/features/tool-gateway)** and **[Web Dashboard](/user-guide/features/web-dashboard)** — the long-lived services you'll most often want to expose from WSL to the rest of your network.
