@@ -13,11 +13,45 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        id: py
         with:
           python-version: "3.12"
       - name: Install locked development environment
         run: python -m pip install -e '.[dev]'
+      # The branding gate OCRs every shipped image, and this runner had no OCR
+      # engine at all -- so it read none of the 61 tracked images and reported
+      # that as if the images were at fault.
+      #
+      # RapidOCR rather than tesseract, measured on this repository's assets:
+      # over the same 61 images, rapidocr finds the 16 that carry the retired
+      # brand and tesseract finds 1. These are UI screenshots with small
+      # anti-aliased text, which tesseract reads poorly. Installing tesseract
+      # here would be worse than useless: `_ocr_backend()` prefers whichever
+      # engine it finds first, so its presence would displace the accurate one
+      # and turn a known 16-image finding into a falsely reassuring 1.
+      - name: Install the OCR engine the branding gate needs
+        run: python -m pip install 'rapidocr-onnxruntime==1.4.4'
+      # `uv lock --check --offline` exited 127 -- uv was never on this runner,
+      # so the lock file has never actually been verified in CI. Installed from
+      # PyPI rather than via a setup action: every action here is SHA-pinned,
+      # and a pip pin is a smaller supply-chain surface than a new action.
+      # 0.8.17 is the version this lock (version 1, revision 3) was verified
+      # against.
+      - name: Install uv for the lock-file gate
+        run: python -m pip install 'uv==0.8.17'
+      # `scripts/run_tests.sh` refuses to run unless it finds a venv carrying
+      # pytest at .venv/ or venv/, or YOUTAB_AGENT_PYTHON pointing at a python
+      # that has it. `pip install -e '.[dev]'` above installs into the
+      # setup-python interpreter, which is neither -- so the guard fired and
+      # the runtime suite has never once executed here. Pointing the variable
+      # at that interpreter satisfies the guard without weakening it.
+      #
+      # Both pins above are deliberately kept out of the `dev` extra: they are
+      # CI tooling, not package dependencies, and adding them there would force
+      # a uv.lock regeneration that the uv-lock gate then has to re-verify.
       - name: Unit, integration, E2E, OWASP, SAST, secret, dependency and branding gates
+        env:
+          YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
         run: scripts/youtab/run_all_gates.sh
 
   javascript:
