@@ -70,6 +70,17 @@ SKIP_DIRS = {
 # Files whose entire purpose is legal provenance.
 LEGAL_FILES = {"LICENSE", "THIRD_PARTY_NOTICES.md"}
 
+# This tool's own output. `brand-url-inventory.json` and the remediation report
+# exist to record where the retired brand appears, so they quote every
+# occurrence verbatim. Scanning them means reading our own audit trail back in
+# and blocking on it: once the evidence was committed, occurrences went 300 ->
+# 1222 and blocking 0 -> 73, and every one of the 73 was inside these two
+# files. Excluded from the scan rather than classified, because "do not read
+# your own output" is not a policy judgement about any occurrence -- the same
+# reason `dist` and `node_modules` are in SKIP_DIRS. The count of files skipped
+# this way is reported in the result so the exclusion is never silent.
+SKIP_PATH_PREFIXES = ("docs/evidence/", ".youtab/evidence/")
+
 # --- Class 2: real third-party things the product depends on or documents ----
 THIRD_PARTY_PATTERNS = [
     # Model identifiers passed to providers verbatim.
@@ -176,12 +187,16 @@ def _classify(path_rel: str, line_text: str, match: str) -> tuple[str, str]:
 def scan(root: Path, tracked_only: bool = True) -> dict[str, object]:
     findings: list[Finding] = []
     scanned = 0
+    evidence_skipped = 0
     for path in _iter_files(root, tracked_only):
         try:
             rel = path.relative_to(root).as_posix()
         except ValueError:
             continue
         if any(part in SKIP_DIRS for part in Path(rel).parts):
+            continue
+        if rel.startswith(SKIP_PATH_PREFIXES):
+            evidence_skipped += 1
             continue
         if not path.is_file():
             continue
@@ -210,8 +225,9 @@ def scan(root: Path, tracked_only: bool = True) -> dict[str, object]:
         counts[f.classification] = counts.get(f.classification, 0) + 1
     blocking = [f for f in findings if f.classification in FORBIDDEN_CLASSES]
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "text_files_scanned": scanned,
+        "evidence_files_skipped": evidence_skipped,
         "total_occurrences": len(findings),
         "counts_by_classification": dict(sorted(counts.items())),
         "blocking_count": len(blocking),
@@ -226,6 +242,8 @@ def to_markdown(result: dict[str, object]) -> str:
         "# Youtab brand and URL inventory",
         "",
         f"- text files scanned: **{result['text_files_scanned']}**",
+        f"- evidence files skipped (this tool's own output): "
+        f"**{result['evidence_files_skipped']}**",
         f"- retired-upstream occurrences: **{result['total_occurrences']}**",
         f"- blocking (classes 4, 5, 6): **{result['blocking_count']}**",
         "",
