@@ -3,7 +3,7 @@
     "LEGAL_PROVENANCE": 539,
     "MIGRATION_COMPAT": 656,
     "PRIVATE_BINDING": 242,
-    "USER_REACHABLE": 307
+    "USER_REACHABLE": 277
   },
   "images_deferred_to_branding_gate": 69,
   "matrix_by_surface": {
@@ -23,7 +23,7 @@
     "docs.site": {
       "LEGAL_PROVENANCE": 54,
       "MIGRATION_COMPAT": 3,
-      "USER_REACHABLE": 139
+      "USER_REACHABLE": 107
     },
     "env.example": {
       "USER_REACHABLE": 1
@@ -45,7 +45,7 @@
     "scripts": {
       "LEGAL_PROVENANCE": 3,
       "MIGRATION_COMPAT": 5,
-      "USER_REACHABLE": 12
+      "USER_REACHABLE": 14
     },
     "service.cron": {
       "USER_REACHABLE": 1
@@ -78,7 +78,7 @@
       "USER_REACHABLE": 2
     }
   },
-  "occurrences_total": 1744,
+  "occurrences_total": 1714,
   "passed": false,
   "schema_version": 1,
   "user_reachable": [
@@ -764,6 +764,26 @@
     },
     {
       "classification": "USER_REACHABLE",
+      "line": 41,
+      "match": "DeepSeek",
+      "path": "scripts/youtab/user_reachability_matrix.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "The DeepSeek credential and the ``deepseek.v4_pro`` binding are Youtab-managed",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 93,
+      "match": "deepseek",
+      "path": "scripts/youtab/user_reachability_matrix.py",
+      "reason": "discloses or implies the Alpha private engine binding",
+      "surface": "scripts",
+      "text": "# The private engine binding for the public Alpha v0.6 profile. `deepseek`",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
       "line": 17,
       "match": "DeepSeek",
       "path": "skills/autonomous-ai-agents/youtab-agent-runtime/SKILL.md",
@@ -920,166 +940,6 @@
       "reason": "unclassified occurrence on a docs.site surface",
       "surface": "docs.site",
       "text": "/model deepseek/deepseek-v3.2          # cost-effective coder",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 42,
-      "match": "DeepSeek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "| **DeepSeek** | `DEEPSEEK_API_KEY` in `~/.youtab-agent-runtime/.env` (provider: `deepseek`) |",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 66,
-      "match": "DeepSeek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "[Youtab Portal](https://api.youtab.io) is Youtab B.V.'s unified subscription gateway and **the recommended way to run Youtab Agent Runtime**. One OAuth login covers 300+ frontier agentic models (Claud",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 315,
-      "match": "deepseek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "youtab chat --provider novita-ai --model deepseek/deepseek-v3-0324",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 354,
-      "match": "DeepSeek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "Anthropic Claude, Amazon Nova, DeepSeek v3.2, Meta Llama 4, and other models via AWS Bedrock. Uses the AWS SDK (`boto3`) credential chain \u2014 no API key, just standard AWS auth.",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 380,
-      "match": "DeepSeek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "Bedrock uses the **Converse API** under the hood \u2014 requests are translated to Bedrock's model-agnostic shape, so the same config works for Claude, Nova, DeepSeek, and Llama models. Set `BEDROCK_BASE_U",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 511,
-      "match": "deepseek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "youtab chat --provider gmi --model deepseek-ai/DeepSeek-V3.2",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 519,
-      "match": "deepseek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "default: \"deepseek-ai/DeepSeek-V3.2\"",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 553,
-      "match": "deepseek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "youtab chat --provider hf --model deepseek-ai/DeepSeek-V3.2",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 741,
-      "match": "deepseek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "Supported parsers: `youtab` (Qwen 2.5, Youtab 2/3), `llama3_json` (Llama 3.x), `mistral`, `deepseek_v3`, `deepseek_v31`, `xlam`, `pythonic`. Without these flags, tool calls won't work \u2014 the model will",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 776,
-      "match": "deepseek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "**Tool calling:** Use `--tool-call-parser` with the appropriate parser for your model family: `qwen` (Qwen 2.5), `llama3`, `llama4`, `deepseekv3`, `mistral`, `glm`. Without this flag, tool calls come ",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 816,
-      "match": "DeepSeek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "Native tool calling support (best performance): Llama 3.x, Qwen 2.5 (including Coder), Youtab 2/3, Mistral, DeepSeek, Functionary. All other models use a generic handler that works but may be less eff",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1119,
-      "match": "DeepSeek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "| [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1184,
-      "match": "deepseek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "deepseek-r1:70b:",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1283,
-      "match": "DeepSeek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "Hosts open-weight models (Llama, MiniMax, Gemma, DeepSeek, Qwen) at prices significantly below first-party APIs. Good default for multi-model fleets.",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1308,
-      "match": "deepseek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "/model custom:together:deepseek-ai/DeepSeek-V3",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1501,
-      "match": "deepseek",
-      "path": "website/docs/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "Supported providers: `openrouter`, `youtab`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, ",
       "token_family": "private_engine"
     },
     {
@@ -1710,166 +1570,6 @@
       "reason": "unclassified occurrence on a docs.site surface",
       "surface": "docs.site",
       "text": "/model deepseek/deepseek-v3.2          # \u9ad8\u6027\u4ef7\u6bd4\u7f16\u7a0b\u6a21\u578b",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 41,
-      "match": "DeepSeek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "| **DeepSeek** | `~/.youtab-agent-runtime/.env` \u4e2d\u7684 `DEEPSEEK_API_KEY`\uff08provider: `deepseek`\uff09 |",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 56,
-      "match": "DeepSeek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "[Youtab Portal](https://api.youtab.io) \u662f Youtab B.V. \u7684\u7edf\u4e00\u8ba2\u9605\u7f51\u5173\uff0c\u4e5f\u662f**\u8fd0\u884c Youtab Agent Runtime \u7684\u63a8\u8350\u65b9\u5f0f**\u3002\u4e00\u6b21 OAuth \u767b\u5f55\u5373\u53ef\u8bbf\u95ee 300+ \u524d\u6cbf\u667a\u80fd\u4f53\u6a21\u578b\uff08Claude\u3001GPT\u3001Gemini\u3001DeepSeek\u3001Qwen\u3001Kimi\u3001GLM\u3001MiniMax\u3001Grok \u7b49\uff09\u4ee5\u53ca [Tool Gateway](",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 286,
-      "match": "deepseek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "youtab chat --provider novita-ai --model deepseek/deepseek-v3-0324",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 325,
-      "match": "DeepSeek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "\u901a\u8fc7 AWS Bedrock \u4f7f\u7528 Anthropic Claude\u3001Amazon Nova\u3001DeepSeek v3.2\u3001Meta Llama 4 \u7b49\u6a21\u578b\u3002\u4f7f\u7528 AWS SDK\uff08`boto3`\uff09\u51ed\u636e\u94fe\u2014\u2014\u65e0\u9700 API key\uff0c\u4f7f\u7528\u6807\u51c6 AWS \u8ba4\u8bc1\u5373\u53ef\u3002",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 351,
-      "match": "DeepSeek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "Bedrock \u5e95\u5c42\u4f7f\u7528 **Converse API**\u2014\u2014\u8bf7\u6c42\u88ab\u8f6c\u6362\u4e3a Bedrock \u7684\u6a21\u578b\u65e0\u5173\u683c\u5f0f\uff0c\u56e0\u6b64\u540c\u4e00\u914d\u7f6e\u9002\u7528\u4e8e Claude\u3001Nova\u3001DeepSeek \u548c Llama \u6a21\u578b\u3002\u4ec5\u5728\u8c03\u7528\u975e\u9ed8\u8ba4\u533a\u57df\u7aef\u70b9\u65f6\u624d\u9700\u8bbe\u7f6e `BEDROCK_BASE_URL`\u3002",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 457,
-      "match": "deepseek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "youtab chat --provider gmi --model deepseek-ai/DeepSeek-R1",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 465,
-      "match": "deepseek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "default: \"deepseek-ai/DeepSeek-R1\"",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 499,
-      "match": "deepseek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "youtab chat --provider hf --model deepseek-ai/DeepSeek-V3.2",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 687,
-      "match": "deepseek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "\u652f\u6301\u7684\u89e3\u6790\u5668\uff1a`youtab`\uff08Qwen 2.5\u3001Youtab 2/3\uff09\u3001`llama3_json`\uff08Llama 3.x\uff09\u3001`mistral`\u3001`deepseek_v3`\u3001`deepseek_v31`\u3001`xlam`\u3001`pythonic`\u3002\u6ca1\u6709\u8fd9\u4e9b\u6807\u5fd7\uff0c\u5de5\u5177\u8c03\u7528\u5c06\u65e0\u6cd5\u5de5\u4f5c\u2014\u2014\u6a21\u578b\u4f1a\u5c06\u5de5\u5177\u8c03\u7528\u4ee5\u6587\u672c\u5f62\u5f0f\u8f93\u51fa\u3002",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 720,
-      "match": "deepseek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "**\u5de5\u5177\u8c03\u7528\uff1a** \u4f7f\u7528 `--tool-call-parser` \u5e76\u9009\u62e9\u9002\u5408\u4f60\u6a21\u578b\u7cfb\u5217\u7684\u89e3\u6790\u5668\uff1a`qwen`\uff08Qwen 2.5\uff09\u3001`llama3`\u3001`llama4`\u3001`deepseekv3`\u3001`mistral`\u3001`glm`\u3002\u6ca1\u6709\u6b64\u6807\u5fd7\uff0c\u5de5\u5177\u8c03\u7528\u5c06\u4ee5\u7eaf\u6587\u672c\u8fd4\u56de\u3002",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 760,
-      "match": "DeepSeek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "\u539f\u751f\u5de5\u5177\u8c03\u7528\u652f\u6301\uff08\u6700\u4f73\u6027\u80fd\uff09\uff1aLlama 3.x\u3001Qwen 2.5\uff08\u5305\u62ec Coder\uff09\u3001Youtab 2/3\u3001Mistral\u3001DeepSeek\u3001Functionary\u3002\u5176\u4ed6\u6240\u6709\u6a21\u578b\u4f7f\u7528\u901a\u7528\u5904\u7406\u5668\uff0c\u53ef\u4ee5\u5de5\u4f5c\u4f46\u6548\u7387\u53ef\u80fd\u8f83\u4f4e\u3002\u5b8c\u6574\u5217\u8868\u53c2\u89c1 [llama.cpp \u51fd\u6570\u8c03\u7528\u6587\u6863](https://github.com/ggml-org/llama.cpp/blob/master/docs/function-",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1051,
-      "match": "DeepSeek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "| [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek \u6a21\u578b |",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1116,
-      "match": "deepseek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "deepseek-r1:70b:",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1189,
-      "match": "DeepSeek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "\u6258\u7ba1\u5f00\u6e90\u6a21\u578b\uff08Llama\u3001MiniMax\u3001Gemma\u3001DeepSeek\u3001Qwen\uff09\uff0c\u4ef7\u683c\u663e\u8457\u4f4e\u4e8e\u4e00\u65b9 API\u3002\u9002\u5408\u591a\u6a21\u578b\u573a\u666f\u7684\u9ed8\u8ba4\u9009\u62e9\u3002",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1214,
-      "match": "deepseek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "/model custom:together:deepseek-ai/DeepSeek-V3",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 1407,
-      "match": "deepseek",
-      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/providers.md",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "\u652f\u6301\u7684\u63d0\u4f9b\u5546\uff1a`openrouter`\u3001`youtab`\u3001`openai-codex`\u3001`copilot`\u3001`copilot-acp`\u3001`anthropic`\u3001`gemini`\u3001`qwen-oauth`\u3001`huggingface`\u3001`zai`\u3001`kimi-coding`\u3001`kimi-coding-cn`\u3001`minimax`\u3001`minimax-cn`\u3001`minimax-oauth`\u3001`deepsee",
       "token_family": "private_engine"
     },
     {
@@ -3153,5 +2853,5 @@
       "token_family": "private_engine"
     }
   ],
-  "user_reachable_total": 307
+  "user_reachable_total": 277
 }

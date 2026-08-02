@@ -43,9 +43,17 @@ Production policy this encodes (Owner decision, 2026-08-02):
 * Provider integration code is **kept**, as private backend infrastructure and
   as disabled internal capability for a future entitlement-controlled
   Enterprise/on-premise feature. It is not deleted, and it is not reachable.
-* Third-party AI processors may be disclosed **only** in the Terms, the Privacy
-  Policy, and protected internal operator documentation -- see
-  ``PROCESSOR_DISCLOSURE_ALLOWED``. Anywhere else is a leak.
+* An exact provider identity or engine binding may appear **only** in private
+  backend infrastructure, Secret Manager, access-controlled operator records,
+  compliance records and processor agreements -- see ``PRIVATE_RECORD_PATHS``.
+* Public Terms and Privacy carry only the generic disclosure: that Youtab uses
+  carefully selected third-party infrastructure and AI processing providers,
+  subject to contractual, confidentiality, security and data-protection
+  requirements. They may **not** name a provider, and may **not** associate any
+  provider with a named Youtab Agent.
+* Nothing anywhere may state or imply that Alpha is, uses or is powered by a
+  particular provider. ``ALPHA_BINDING_DISCLOSURE`` detects that claim on its
+  own, because it is a leak even where the provider token alone would be one.
 
 Anything a rule cannot place lands in ``USER_REACHABLE``, deliberately: an
 unclassified occurrence is treated as a leak until someone evidences otherwise.
@@ -78,6 +86,7 @@ MIGRATION_COMPAT = "MIGRATION_COMPAT"
 _H = "her" + "mes"
 _N = "no" + "us"
 _T = "tek" + "nium"
+_P = "deep" + "seek"  # assembled so this file does not match its own scan
 
 LEGACY_BRAND = re.compile(rf"{_H}|{_N}research|{_N}[-_ ]research|{_T}", re.IGNORECASE)
 
@@ -93,20 +102,38 @@ LEGACY_BRAND = re.compile(rf"{_H}|{_N}research|{_N}[-_ ]research|{_T}", re.IGNOR
 # in noise. Whether a payload leaks these keys is a question about serialized
 # output, and `--check-payload-keys` answers it against real API responses
 # instead of guessing from source text.
-PRIVATE_ENGINE = re.compile(r"deepseek", re.IGNORECASE)
+PRIVATE_ENGINE = re.compile(_P, re.IGNORECASE)
 
 # Keys that must never appear in a normal user's serialized API response. Used
 # by the payload check, not by the source scan.
 FORBIDDEN_PAYLOAD_KEYS = ("provider_id", "engine_id", "model_id", "provider", "model")
 
-# The only places a third-party AI processor may be named. Terms and Privacy
-# are legal disclosure; operator docs are access-controlled. Everything else
-# that names a processor is a leak, including the public documentation site.
-PROCESSOR_DISCLOSURE_ALLOWED = (
-    r"(^|/)(TERMS|PRIVACY)[^/]*\.md$",
+# The only places an exact provider identity or engine binding may be named:
+# private backend infrastructure, access-controlled operator records, and
+# compliance/processor documentation. All three repositories are private, so
+# these paths are internal records rather than published material.
+#
+# Terms and Privacy are deliberately NOT here. An earlier cut allowed them on
+# the reasoning that naming a processor is legal disclosure; the Owner
+# corrected that. Public Terms and Privacy may carry only the generic
+# disclosure -- that Youtab uses carefully selected third-party infrastructure
+# and AI processing providers -- and may never associate any provider with a
+# named Youtab Agent. A provider name in Terms, Privacy, public docs or a setup
+# guide is a USER_REACHABLE leak, never LEGAL_PROVENANCE.
+PRIVATE_RECORD_PATHS = (
     r"^docs/operator/",
     r"^docs/adr/",
     r"^docs/evidence/",
+    r"^docs/compliance/",
+)
+
+# Naming the engine is one leak. Asserting the *mapping* -- that Alpha is, uses
+# or is powered by a given provider -- is the disclosure the policy most
+# specifically forbids, so it is detected on its own rather than relying on the
+# provider token alone. Outside the private record paths this is always a leak.
+ALPHA_BINDING_DISCLOSURE = re.compile(
+    rf"alpha[^\n]{{0,80}}{_P}|{_P}[^\n]{{0,80}}alpha|alpha\.v06[^\n]{{0,80}}(?:engine|provider|model)",
+    re.IGNORECASE,
 )
 
 SKIP_DIRS = {
@@ -196,8 +223,6 @@ THIRD_PARTY_RULES: list[tuple[str, str]] = [
     (rf"\b{_H}-[34](?:[-_.:]|\b)", "third-party model family"),
     (rf"{_H}-example-plugins|{_H}-mod\b", "third-party project"),
     (rf"{_N} Research", "third-party vendor name"),
-    (r"deepseek-ai/DeepSeek|deepseek/deepseek-", "third-party model id on an aggregator"),
-    (r"deepseek-r1", "third-party local model tag"),
 ]
 
 
@@ -242,11 +267,19 @@ def _classify(rel: str, surface: str, line_text: str) -> tuple[str, str]:
     # it would falsify a quoted source.
     if re.search(r"/references?/", rel):
         return LEGAL_PROVENANCE, "vendored third-party reference material"
+    in_private_record = any(re.search(p, rel) for p in PRIVATE_RECORD_PATHS)
+    # The Alpha-to-provider mapping, anywhere outside a private record, is the
+    # disclosure the policy forbids most explicitly. Checked before the legal
+    # rules so a copyright header on the same line cannot launder it.
+    if ALPHA_BINDING_DISCLOSURE.search(line_text) and not in_private_record:
+        return USER_REACHABLE, "discloses or implies the Alpha private engine binding"
     reason = _first(LEGAL_RULES, line_text)
-    if reason:
+    if reason and not PRIVATE_ENGINE.search(line_text):
+        # A mandatory copyright or licence notice stays LEGAL_PROVENANCE, but
+        # it may not describe the private engine binding.
         return LEGAL_PROVENANCE, reason
-    if any(re.search(p, rel) for p in PROCESSOR_DISCLOSURE_ALLOWED):
-        return LEGAL_PROVENANCE, "permitted processor disclosure (terms/privacy/operator)"
+    if in_private_record:
+        return PRIVATE_BINDING, "access-controlled internal operator or compliance record"
     # Third-party *brand* facts (someone else's model id, someone else's repo)
     # are attribution. A third-party *processor we route to* is not covered by
     # this rule -- that is the private binding, and naming it outside the
