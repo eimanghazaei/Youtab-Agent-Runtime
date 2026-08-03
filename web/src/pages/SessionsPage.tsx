@@ -699,10 +699,10 @@ function SessionRow({
                 )}
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                {session.model && (
+                {session.agent_label && (
                   <>
                     <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
-                      {session.model.split("/").pop()}
+                      {session.agent_label}
                     </span>
                     <span className="text-border">&#183;</span>
                   </>
@@ -2138,11 +2138,9 @@ export default function SessionsPage() {
                       </span>
 
                       <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        {s.model && (
+                        {s.agent_label && (
                           <>
-                            <span className="font-mono-ui">
-                              {s.model.split("/").pop()}
-                            </span>{" "}
+                            <span>{s.agent_label}</span>{" "}
                             ·{" "}
                           </>
                         )}

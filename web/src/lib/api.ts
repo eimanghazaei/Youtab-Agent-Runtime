@@ -1896,7 +1896,13 @@ export interface StatusResponse {
 export interface SessionInfo {
   id: string;
   source: string | null;
-  model: string | null;
+  /**
+   * The Agent's public name, resolved on the server from the configured
+   * engine. The raw `provider/model` is deliberately not part of this type:
+   * the sessions list used to render it, and a field that is still sent is one
+   * refactor away from being rendered again.
+   */
+  agent_label: string | null;
   title: string | null;
   started_at: number;
   ended_at: number | null;

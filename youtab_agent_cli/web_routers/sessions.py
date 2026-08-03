@@ -30,6 +30,8 @@ from youtab_agent_cli.web_models import (
 # Same logger the handlers used before extraction (identical logger object).
 _log = logging.getLogger("youtab_agent_cli.web_server")
 
+from youtab_agent_cli.agent_identity import label_for_engine, label_for_qualified_model
+
 list_router = APIRouter()
 search_router = APIRouter()
 manage_router = APIRouter()
@@ -145,6 +147,31 @@ def get_sessions(
                 )
                 s["profile"] = row_profile
                 s["is_default_profile"] = row_profile == "default"
+                # Resolve the configured engine to the Agent's public name,
+                # then drop every field that carries the engine itself. The
+                # substrate is not merely hidden by the UI here; it is absent
+                # from the response, because a field a client stops rendering
+                # is one refactor away from being rendered again.
+                #
+                # Three fields carried it. `model` was rendered directly --
+                # every session in the list showed `deepseek-v4-pro` to every
+                # user. `billing_provider` and `billing_base_url` were not
+                # rendered by anything, which is worse in one respect: they
+                # were on the wire for every dashboard user with nothing in the
+                # UI to make anyone notice, and `billing_base_url` is an
+                # infrastructure endpoint rather than only a name.
+                #
+                # The stored model may be qualified (`provider/model`) or bare,
+                # so the provider is taken from the row when the model does not
+                # carry one. An unresolvable engine yields the generic product
+                # name, never the configured value.
+                raw_model = s.get("model")
+                if raw_model and "/" in raw_model:
+                    s["agent_label"] = label_for_qualified_model(raw_model)
+                else:
+                    s["agent_label"] = label_for_engine(s.get("billing_provider"), raw_model)
+                for engine_field in ("model", "billing_provider", "billing_base_url"):
+                    s.pop(engine_field, None)
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
                 s["pinned"] = bool(s.get("pinned"))

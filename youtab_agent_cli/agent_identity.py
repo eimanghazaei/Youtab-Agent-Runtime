@@ -122,7 +122,27 @@ def label_for_engine(provider: str | None, model: str | None) -> str:
     return identity.public_label if identity else GENERIC_AGENT_LABEL
 
 
+def label_for_qualified_model(qualified: str | None) -> str:
+    """The label for a stored ``provider/model`` string, as sessions record it.
+
+    Session rows persist the engine as one qualified string. Splitting it here
+    rather than at each call site keeps the parsing in the module that owns the
+    binding, so no caller has to touch the two halves of a substrate name to
+    ask what to display.
+
+    Anything unrecognised -- an empty value, a bare model with no provider, a
+    pair that is not bound -- yields the generic product name. That is the
+    point: a surface that cannot resolve an Agent must not fall back to
+    printing what is configured.
+    """
+    if not qualified or "/" not in qualified:
+        return GENERIC_AGENT_LABEL
+    provider, _, model = qualified.partition("/")
+    return label_for_engine(provider, model)
+
+
 __all__ = [
+    "label_for_qualified_model",
     "GENERIC_AGENT_LABEL",
     "PublicAgentIdentity",
     "identity_for_engine",
