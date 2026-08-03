@@ -195,6 +195,11 @@ PRIVATE_BINDING_PATH_RULES: list[tuple[str, str]] = [
     (r"^providers/", "provider adapter, server-side"),
     (r"^plugins/model-providers/", "provider adapter plugin, server-side"),
     (r"^youtab_agent_cli/model_normalize\.py$", "engine id normalisation, server-side"),
+    (r"^youtab_agent_cli/agent_identity\.(py|v1\.json)$", "the Agent-to-engine binding and its "
+     "sole resolver. Generated from the backend registry, read only by the resolver, and "
+     "never served: this is what lets every surface above it render a public label."),
+    (r"^scripts/youtab/generate_agent_identity\.py$", "generator for the binding artifact; "
+     "runs against the authoritative backend registry, ships nothing to a user"),
     (r"^youtab_agent_cli/(auth|credential|secrets|dump)[^/]*\.py$", "credential plumbing"),
     (r"^agent/", "runtime routing internals"),
     (r"^gateway/", "gateway routing internals"),
@@ -268,9 +273,21 @@ def _classify(rel: str, surface: str, line_text: str) -> tuple[str, str]:
     if re.search(r"/references?/", rel):
         return LEGAL_PROVENANCE, "vendored third-party reference material"
     in_private_record = any(re.search(p, rel) for p in PRIVATE_RECORD_PATHS)
-    # The Alpha-to-provider mapping, anywhere outside a private record, is the
-    # disclosure the policy forbids most explicitly. Checked before the legal
-    # rules so a copyright header on the same line cannot launder it.
+    # A file explicitly registered as private binding infrastructure is where
+    # the mapping is SUPPOSED to live -- the generated identity artifact and the
+    # single resolver that reads it. Consulted before the disclosure rule below,
+    # which would otherwise flag the binding table for containing the binding.
+    #
+    # This is a narrow, reviewable escape: each entry is a path pattern in
+    # PRIVATE_BINDING_PATH_RULES carrying a written rationale, the same shape as
+    # the import allowlist in the backend. It is not a wildcard, and it cannot
+    # be applied to a document.
+    binding_home = _first(PRIVATE_BINDING_PATH_RULES, rel)
+    if binding_home:
+        return PRIVATE_BINDING, binding_home
+    # The Alpha-to-provider mapping, anywhere else, is the disclosure the policy
+    # forbids most explicitly. Checked before the legal rules so a copyright
+    # header on the same line cannot launder it.
     if ALPHA_BINDING_DISCLOSURE.search(line_text) and not in_private_record:
         return USER_REACHABLE, "discloses or implies the Alpha private engine binding"
     reason = _first(LEGAL_RULES, line_text)
@@ -291,9 +308,6 @@ def _classify(rel: str, surface: str, line_text: str) -> tuple[str, str]:
     reason = _first(MIGRATION_COMPAT_PATH_RULES, rel) or _first(MIGRATION_COMPAT_LINE_RULES, line_text)
     if reason:
         return MIGRATION_COMPAT, reason
-    reason = _first(PRIVATE_BINDING_PATH_RULES, rel)
-    if reason:
-        return PRIVATE_BINDING, reason
     if surface.startswith(("runtime.", "service.")):
         reason = _first(PRIVATE_BINDING_LINE_RULES, line_text)
         if reason:

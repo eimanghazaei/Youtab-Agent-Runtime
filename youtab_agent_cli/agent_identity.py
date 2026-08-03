@@ -1,0 +1,132 @@
+"""Public Agent identity for user-facing Runtime surfaces.
+
+A normal user sees ``Alpha v0.6``. The provider and model that serve it are
+implementation detail, and this module is the boundary between the two: it
+takes the locally configured engine and returns the Agent's public identity,
+or nothing.
+
+It is the *only* place that reads the binding half of
+``agent_identity.v1.json``. Everything above it — the dashboard, the CLI, any
+export — asks for an identity and gets public fields, so a caller cannot leak
+the binding by forgetting to strip a field it never received.
+
+``None`` is a meaningful answer. A configured engine that no Agent claims is
+not an error and must not be papered over with a guess: a caller renders the
+generic product name instead. Inventing an Agent for an unrecognised engine
+would put a name on something Youtab never admitted.
+
+The artifact is generated from ``youtab-ai-os``'s governed registry by
+``scripts/youtab/generate_agent_identity.py``; it is not maintained here. See
+that script for why a second roster in this repository would be a bug.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
+
+_ARTIFACT = Path(__file__).with_name("agent_identity.v1.json")
+
+# What a Runtime surface shows when no Agent claims the configured engine.
+# Deliberately the product name, not a provider and not a guess.
+GENERIC_AGENT_LABEL = "Youtab Agent"
+
+
+@dataclass(frozen=True)
+class PublicAgentIdentity:
+    """Exactly what a user-facing surface may render."""
+
+    profile_id: str
+    public_label: str
+    display_name: str
+    display_version: str | None
+    role: str
+    icon: str
+
+    def as_public_dict(self) -> dict[str, str | None]:
+        return {
+            "profile_id": self.profile_id,
+            "public_label": self.public_label,
+            "display_name": self.display_name,
+            "display_version": self.display_version,
+            "role": self.role,
+            "icon": self.icon,
+        }
+
+
+@lru_cache(maxsize=1)
+def _artifact() -> dict:
+    try:
+        return json.loads(_ARTIFACT.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # A missing or unreadable artifact must not take the Runtime down, and
+        # must not fall back to showing the engine. Every lookup then returns
+        # None and callers render the generic label.
+        return {"agents": [], "private_binding": {}}
+
+
+@lru_cache(maxsize=1)
+def _agents_by_id() -> dict[str, PublicAgentIdentity]:
+    out: dict[str, PublicAgentIdentity] = {}
+    for entry in _artifact().get("agents", []):
+        try:
+            identity = PublicAgentIdentity(
+                profile_id=entry["profile_id"],
+                public_label=entry["public_label"],
+                display_name=entry["display_name"],
+                display_version=entry.get("display_version"),
+                role=entry.get("role", ""),
+                icon=entry.get("icon", "agent-generic"),
+            )
+        except KeyError:
+            continue
+        out[identity.profile_id] = identity
+    return out
+
+
+def public_agents() -> list[PublicAgentIdentity]:
+    """Every Agent this Runtime knows how to name, ordered by identifier."""
+    return [_agents_by_id()[k] for k in sorted(_agents_by_id())]
+
+
+def identity_for_profile(profile_id: str | None) -> PublicAgentIdentity | None:
+    if not profile_id:
+        return None
+    return _agents_by_id().get(profile_id)
+
+
+def identity_for_engine(provider: str | None, model: str | None) -> PublicAgentIdentity | None:
+    """Resolve a configured provider/model pair to its Agent, or ``None``.
+
+    This is the private-binding lookup, and the reason this module is the only
+    consumer of that half of the artifact.
+    """
+    if not provider or not model:
+        return None
+    binding = _artifact().get("private_binding", {})
+    profile_id = binding.get("by_provider_model", {}).get(f"{provider}/{model}")
+    return identity_for_profile(profile_id)
+
+
+def label_for_engine(provider: str | None, model: str | None) -> str:
+    """The label a user-facing surface shows for a configured engine.
+
+    Never returns the provider or the model. An unrecognised engine yields the
+    generic product name, because the alternative — showing what is actually
+    configured — is the leak this function exists to prevent, and guessing an
+    Agent would name something Youtab never admitted.
+    """
+    identity = identity_for_engine(provider, model)
+    return identity.public_label if identity else GENERIC_AGENT_LABEL
+
+
+__all__ = [
+    "GENERIC_AGENT_LABEL",
+    "PublicAgentIdentity",
+    "identity_for_engine",
+    "identity_for_profile",
+    "label_for_engine",
+    "public_agents",
+]
