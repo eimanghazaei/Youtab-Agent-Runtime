@@ -1,8 +1,8 @@
 {
   "counts_by_classification": {
-    "LEGAL_PROVENANCE": 539,
-    "MIGRATION_COMPAT": 656,
-    "PRIVATE_BINDING": 242,
+    "LEGAL_PROVENANCE": 538,
+    "MIGRATION_COMPAT": 636,
+    "PRIVATE_BINDING": 267,
     "USER_REACHABLE": 277
   },
   "images_deferred_to_branding_gate": 69,
@@ -12,8 +12,7 @@
     },
     "cli": {
       "LEGAL_PROVENANCE": 2,
-      "MIGRATION_COMPAT": 7,
-      "PRIVATE_BINDING": 55,
+      "PRIVATE_BINDING": 66,
       "USER_REACHABLE": 99
     },
     "docs.repo": {
@@ -33,14 +32,11 @@
     },
     "other": {
       "LEGAL_PROVENANCE": 1,
-      "MIGRATION_COMPAT": 3,
-      "PRIVATE_BINDING": 43,
+      "PRIVATE_BINDING": 46,
       "USER_REACHABLE": 6
     },
     "runtime.agent": {
-      "LEGAL_PROVENANCE": 1,
-      "MIGRATION_COMPAT": 10,
-      "PRIVATE_BINDING": 140
+      "PRIVATE_BINDING": 151
     },
     "scripts": {
       "LEGAL_PROVENANCE": 3,
@@ -78,7 +74,7 @@
       "USER_REACHABLE": 2
     }
   },
-  "occurrences_total": 1714,
+  "occurrences_total": 1718,
   "passed": false,
   "schema_version": 1,
   "user_reachable": [

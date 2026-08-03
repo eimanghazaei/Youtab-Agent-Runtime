@@ -1,18 +1,18 @@
 # User-reachability matrix
 
-Occurrences scanned: **1714**  
+Occurrences scanned: **1718**  
 User-reachable (must be 0): **277**
 
 | Surface | USER_REACHABLE | LEGAL_PROVENANCE | PRIVATE_BINDING | MIGRATION_COMPAT |
 | --- | ---: | ---: | ---: | ---: |
 | `attribution` | 0 | 7 | 0 | 0 |
-| `cli` | 99 | 2 | 55 | 7 |
+| `cli` | 99 | 2 | 66 | 0 |
 | `docs.repo` | 3 | 1 | 0 | 0 |
 | `docs.site` | 107 | 54 | 0 | 3 |
 | `env.example` | 1 | 0 | 0 | 0 |
 | `legal` | 0 | 4 | 0 | 0 |
-| `other` | 6 | 1 | 43 | 3 |
-| `runtime.agent` | 0 | 1 | 140 | 10 |
+| `other` | 6 | 1 | 46 | 0 |
+| `runtime.agent` | 0 | 0 | 151 | 0 |
 | `scripts` | 14 | 3 | 0 | 5 |
 | `service.cron` | 1 | 0 | 0 | 0 |
 | `service.gateway` | 0 | 0 | 4 | 0 |

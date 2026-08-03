@@ -1,0 +1,67 @@
+{
+  "agents": [
+    {
+      "display_name": "Alpha",
+      "display_version": "v0.6",
+      "icon": "agent-reasoning",
+      "profile_id": "alpha.v06",
+      "public_label": "Alpha v0.6",
+      "role": "reasoning"
+    },
+    {
+      "display_name": "Amour",
+      "display_version": "v0.3",
+      "icon": "agent-conversational",
+      "profile_id": "amour.v03",
+      "public_label": "Amour v0.3",
+      "role": "conversational"
+    },
+    {
+      "display_name": "Eco",
+      "display_version": "v.01",
+      "icon": "agent-economy",
+      "profile_id": "eco.v01",
+      "public_label": "Eco v.01",
+      "role": "economy"
+    },
+    {
+      "display_name": "Homa",
+      "display_version": null,
+      "icon": "agent-vision",
+      "profile_id": "homa",
+      "public_label": "Homa",
+      "role": "vision"
+    },
+    {
+      "display_name": "Pirouz",
+      "display_version": "v2.0",
+      "icon": "agent-reasoning",
+      "profile_id": "pirouz.v20",
+      "public_label": "Pirouz v2.0",
+      "role": "reasoning"
+    }
+  ],
+  "generated_from": {
+    "profiles_catalogue_version": "1.1.3",
+    "profiles_revision": 5,
+    "registry_revision": 5,
+    "registry_version": "1.2.2"
+  },
+  "private_binding": {
+    "by_engine_id": {
+      "deepseek.v4_flash": "amour.v03",
+      "deepseek.v4_pro": "alpha.v06",
+      "moonshot.kimi_k3": "pirouz.v20",
+      "ollama.qwen3_5_9b": "eco.v01",
+      "zai.glm_4_6v_flash": "homa"
+    },
+    "by_provider_model": {
+      "deepseek/deepseek-v4-flash": "amour.v03",
+      "deepseek/deepseek-v4-pro": "alpha.v06",
+      "moonshot/kimi-k3": "pirouz.v20",
+      "ollama/qwen3.5:9b": "eco.v01",
+      "zai/glm-4.6v-flash": "homa"
+    }
+  },
+  "schema_version": 1
+}
