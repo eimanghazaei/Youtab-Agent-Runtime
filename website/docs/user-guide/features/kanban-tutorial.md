@@ -232,15 +232,16 @@ Real workers fail. Missing credentials, OOM kills, transient network errors. The
 
 ### Circuit breaker — permanent-looking failure
 
-A deploy task that can't spawn its worker because `AWS_ACCESS_KEY_ID` isn't set in the profile's environment:
+A deploy task that can't spawn its worker at all. Here the task asks for a `worktree` workspace but nothing tells Youtab which repo to anchor it on, so the dispatcher cannot even resolve a directory to launch the worker in — the same shape as a missing credential, a profile that doesn't exist, or any other permanent-looking spawn-time fault:
 
 ```bash
-youtab kanban create "Deploy to staging (missing creds)" \
+youtab kanban create "Deploy to staging (no workspace anchor)" \
     --assignee deploy-bot --tenant ops \
+    --workspace worktree \
     --max-retries 3
 ```
 
-The dispatcher tries to spawn the worker. Spawn fails (`RuntimeError: AWS_ACCESS_KEY_ID not set`). The dispatcher releases the claim, increments a failure counter, and tries again next tick. Because this example sets `--max-retries 3`, the circuit trips after three consecutive failures: the task goes to `blocked` with outcome `gave_up`. If you omit the flag, Youtab uses `kanban.failure_limit` (default: 2). No more retries until a human unblocks it.
+The dispatcher claims the task, tries to spawn the worker, and fails before the worker process exists. The dispatcher releases the claim, increments a failure counter, and tries again next tick. Because this example sets `--max-retries 3`, the circuit trips after three consecutive failures: the task goes to `blocked` with outcome `gave_up`. If you omit the flag, Youtab uses `kanban.failure_limit` (default: 2). No more retries until a human unblocks it.
 
 Click the blocked task:
 
@@ -251,14 +252,14 @@ Three runs, all with the same error on the `error` field. The first two are `spa
 On the terminal:
 
 ```bash
-youtab kanban runs t_ef5d
+youtab kanban runs t_26f5
 # #   OUTCOME        PROFILE        ELAPSED  STARTED
-# 1   spawn_failed   deploy-bot          0s  2026-04-27 19:34
-#       ! AWS_ACCESS_KEY_ID not set in deploy-bot env
-# 2   spawn_failed   deploy-bot          0s  2026-04-27 19:34
-#       ! AWS_ACCESS_KEY_ID not set in deploy-bot env
-# 3   gave_up        deploy-bot          0s  2026-04-27 19:34
-#       ! AWS_ACCESS_KEY_ID not set in deploy-bot env
+# 1   spawn_failed   deploy-bot          0s  2026-08-02 13:29
+#       ! workspace: task t_26f51c85 has workspace_kind=worktree but no workspace_path…
+# 2   spawn_failed   deploy-bot          0s  2026-08-02 13:29
+#       ! workspace: task t_26f51c85 has workspace_kind=worktree but no workspace_path…
+# 3   gave_up        deploy-bot          0s  2026-08-02 13:29
+#       ! workspace: task t_26f51c85 has workspace_kind=worktree but no workspace_path…
 ```
 
 If Telegram / Discord / Slack is wired in, a gateway notification fires on the `gave_up` event so you hear about the outage without having to check the board.
@@ -279,7 +280,7 @@ The drawer shows the full two-attempt history:
 
 ![Crash and recovery — 1 crashed + 1 completed](/img/kanban-tutorial/06-drawer-crash-recovery.png)
 
-Run 1 — `crashed`, with the error `OOM kill at row 2.3M (process 99999 gone)`. Run 2 — `completed`, with `"strategy": "chunked with LIMIT + WHERE id > last_id"` in its metadata. The retrying worker saw the crash of run 1 in its context and picked a safer strategy; the metadata makes it obvious to a future observer (or postmortem writer) what changed.
+Run 1 — `crashed`, with the error the dispatcher recorded when it found the worker gone (`pid … not alive`) and the dead pid in its metadata. Run 2 — `completed`, and its summary says the migration now runs in chunks of 10,000 rows per iteration precisely so it never materializes the full ~2.4M-row result set again. The retrying worker saw the crash of run 1 in its context and picked a safer strategy; the run history makes it obvious to a future observer (or postmortem writer) what changed.
 
 ## Structured handoff — why `summary` and `metadata` matter
 

@@ -212,11 +212,11 @@ branding:
 tool_prefix: "▏"
 ```
 
-## Youtab Mod — Visual Skin Editor
+## Hermes Mod — Visual Skin Editor
 
-[Youtab Mod](https://github.com/cocktailpeanut/youtab-mod) is a community-built web UI for creating and managing skins visually. Instead of writing YAML by hand, you get a point-and-click editor with live preview.
+[Hermes Mod](https://github.com/cocktailpeanut/hermes-mod) is a community-built web UI for creating and managing skins visually. Instead of writing YAML by hand, you get a point-and-click editor with live preview.
 
-![Youtab Mod skin editor](https://raw.githubusercontent.com/cocktailpeanut/youtab-mod/master/youtab.png)
+![Hermes Mod skin editor](https://raw.githubusercontent.com/cocktailpeanut/hermes-mod/master/hermes.png)
 
 **What it does:**
 
@@ -243,7 +243,7 @@ npx -y youtab-mod
 **Option 3 — Manual:**
 
 ```bash
-git clone https://github.com/cocktailpeanut/youtab-mod.git
+git clone https://github.com/cocktailpeanut/hermes-mod.git
 cd youtab-mod/app
 npm install
 npm start
@@ -259,7 +259,7 @@ npm start
 6. Click **Save** to write the skin YAML to `~/.youtab-agent-runtime/skins/`.
 7. Click **Activate** to set it as the current skin (updates `display.skin` in `config.yaml`).
 
-Youtab Mod respects the `YOUTAB_AGENT_HOME` environment variable, so it works with [profiles](/user-guide/profiles) too.
+Hermes Mod respects the `YOUTAB_AGENT_HOME` environment variable, so it works with [profiles](/user-guide/profiles) too.
 
 ## Operational notes
 

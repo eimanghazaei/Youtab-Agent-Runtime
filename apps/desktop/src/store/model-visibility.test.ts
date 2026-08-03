@@ -48,12 +48,12 @@ describe('model visibility', () => {
     const stored = new Set([emptyProviderSentinelKey('youtab')])
 
     const visible = effectiveVisibleKeys(stored, [
-      provider('youtab', ['youtab-3-llama-3.1-70b', 'youtab-3-llama-3.1-8b']),
+      provider('youtab', ['hermes-3-llama-3.1-70b', 'hermes-3-llama-3.1-8b']),
       provider('ollama', ['qwen3:latest'])
     ])
 
-    expect(visible.has(modelVisibilityKey('youtab', 'youtab-3-llama-3.1-70b'))).toBe(false)
-    expect(visible.has(modelVisibilityKey('youtab', 'youtab-3-llama-3.1-8b'))).toBe(false)
+    expect(visible.has(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-70b'))).toBe(false)
+    expect(visible.has(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-8b'))).toBe(false)
     // Sentinel itself is stripped from the result.
     expect(visible.has(emptyProviderSentinelKey('youtab'))).toBe(false)
     // Other providers still get defaults.
@@ -67,15 +67,15 @@ describe('model visibility', () => {
     // After toggle: sentinel removed, one model added.
     const afterToggle = new Set(stored)
     afterToggle.delete(emptyProviderSentinelKey('youtab'))
-    afterToggle.add(modelVisibilityKey('youtab', 'youtab-3-llama-3.1-70b'))
+    afterToggle.add(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-70b'))
 
     const visible = effectiveVisibleKeys(afterToggle, [
-      provider('youtab', ['youtab-3-llama-3.1-70b', 'youtab-3-llama-3.1-8b']),
+      provider('youtab', ['hermes-3-llama-3.1-70b', 'hermes-3-llama-3.1-8b']),
       provider('ollama', ['qwen3:latest'])
     ])
 
-    expect(visible.has(modelVisibilityKey('youtab', 'youtab-3-llama-3.1-70b'))).toBe(true)
-    expect(visible.has(modelVisibilityKey('youtab', 'youtab-3-llama-3.1-8b'))).toBe(false)
+    expect(visible.has(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-70b'))).toBe(true)
+    expect(visible.has(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-8b'))).toBe(false)
   })
 
   it('folds a date-pinned snapshot into its rolling alias when present', () => {

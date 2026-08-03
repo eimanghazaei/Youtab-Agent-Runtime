@@ -1,0 +1,21 @@
+{
+  "binary_files_seen": 107,
+  "blocking": [],
+  "counts_by_classification": {
+    "LEGAL_PROVENANCE_ALLOWED": 116,
+    "THIRD_PARTY_DEPENDENCY_ALLOWED": 184
+  },
+  "evidence_files_skipped": 13,
+  "gate_errors": [],
+  "images_ocr_unreadable": 0,
+  "images_seen": 61,
+  "images_with_old_brand": 0,
+  "occurrences_total": 300,
+  "ocr_enabled": true,
+  "ocr_engine": "rapidocr",
+  "ocr_findings": [],
+  "ocr_status": "ran",
+  "passed": true,
+  "schema_version": 3,
+  "text_files_scanned": 7896
+}

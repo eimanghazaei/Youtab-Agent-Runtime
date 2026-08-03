@@ -1,0 +1,2414 @@
+{
+  "blocking": [],
+  "blocking_count": 0,
+  "counts_by_classification": {
+    "LEGAL_PROVENANCE_ALLOWED": 116,
+    "THIRD_PARTY_DEPENDENCY_ALLOWED": 184
+  },
+  "findings": [
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 13,
+      "match": "Teknium",
+      "path": ".mailmap",
+      "reason": "contributor credit",
+      "text": "# === Teknium (multiple emails) ==="
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 14,
+      "match": "Teknium",
+      "path": ".mailmap",
+      "reason": "contributor identity",
+      "text": "Teknium <127238744+teknium1@users.noreply.github.com> <teknium1@gmail.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 14,
+      "match": "teknium",
+      "path": ".mailmap",
+      "reason": "contributor identity",
+      "text": "Teknium <127238744+teknium1@users.noreply.github.com> <teknium1@gmail.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 14,
+      "match": "teknium",
+      "path": ".mailmap",
+      "reason": "contributor identity",
+      "text": "Teknium <127238744+teknium1@users.noreply.github.com> <teknium1@gmail.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 15,
+      "match": "Teknium",
+      "path": ".mailmap",
+      "reason": "contributor identity",
+      "text": "Teknium <127238744+teknium1@users.noreply.github.com> <teknium@nousresearch.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 15,
+      "match": "teknium",
+      "path": ".mailmap",
+      "reason": "contributor identity",
+      "text": "Teknium <127238744+teknium1@users.noreply.github.com> <teknium@nousresearch.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 15,
+      "match": "teknium",
+      "path": ".mailmap",
+      "reason": "contributor identity",
+      "text": "Teknium <127238744+teknium1@users.noreply.github.com> <teknium@nousresearch.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 15,
+      "match": "nousresearch",
+      "path": ".mailmap",
+      "reason": "contributor identity",
+      "text": "Teknium <127238744+teknium1@users.noreply.github.com> <teknium@nousresearch.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 76,
+      "match": "nousresearch",
+      "path": ".mailmap",
+      "reason": "upstream contributor domain",
+      "text": "emozilla <emozilla@nousresearch.com> <emozilla@nousresearch.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 76,
+      "match": "nousresearch",
+      "path": ".mailmap",
+      "reason": "upstream contributor domain",
+      "text": "emozilla <emozilla@nousresearch.com> <emozilla@nousresearch.com>"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 87,
+      "match": "Nous Research",
+      "path": ".mailmap",
+      "reason": "third-party vendor name",
+      "text": "# Nous Research team (upstream contributors)"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 88,
+      "match": "nousresearch",
+      "path": ".mailmap",
+      "reason": "upstream contributor domain",
+      "text": "benbarclay <ben@nousresearch.com> <ben@nousresearch.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 88,
+      "match": "nousresearch",
+      "path": ".mailmap",
+      "reason": "upstream contributor domain",
+      "text": "benbarclay <ben@nousresearch.com> <ben@nousresearch.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 89,
+      "match": "nousresearch",
+      "path": ".mailmap",
+      "reason": "upstream contributor domain",
+      "text": "jquesnelle <jonny@nousresearch.com> <jonny@nousresearch.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 89,
+      "match": "nousresearch",
+      "path": ".mailmap",
+      "reason": "upstream contributor domain",
+      "text": "jquesnelle <jonny@nousresearch.com> <jonny@nousresearch.com>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 10,
+      "match": "Hermes",
+      "path": "THIRD_PARTY_NOTICES.md",
+      "reason": "dedicated legal notice file",
+      "text": "Portions of this software were derived from Hermes Agent at immutable source"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 13,
+      "match": "NousResearch",
+      "path": "THIRD_PARTY_NOTICES.md",
+      "reason": "dedicated legal notice file",
+      "text": "Source: <https://github.com/NousResearch/hermes-agent>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 13,
+      "match": "hermes",
+      "path": "THIRD_PARTY_NOTICES.md",
+      "reason": "dedicated legal notice file",
+      "text": "Source: <https://github.com/NousResearch/hermes-agent>"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 17,
+      "match": "Nous Research",
+      "path": "THIRD_PARTY_NOTICES.md",
+      "reason": "dedicated legal notice file",
+      "text": "Copyright (c) 2025 Nous Research"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 40,
+      "match": "nous-research",
+      "path": "THIRD_PARTY_NOTICES.md",
+      "reason": "dedicated legal notice file",
+      "text": "licensed `@nous-research/ui` distributions at versions `0.13.0`, `0.16.0`, and"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 181,
+      "match": "hermes",
+      "path": "agent/coding_context.py",
+      "reason": "vendor token in model-family list",
+      "text": "\"hermes\", \"llama\", \"mistral\", \"devstral\", \"minimax\"),"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2081,
+      "match": "Teknium",
+      "path": "agent/conversation_compression.py",
+      "reason": "contributor credit",
+      "text": "# for search/recovery (Teknium review \u2014 keep one durable id"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 2737,
+      "match": "Hermes",
+      "path": "agent/model_metadata.py",
+      "reason": "third-party chat model family",
+      "text": "# ``Hermes-3-Llama-3.1-70B`` substring-match ``llama`` (131072) even when"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 335,
+      "match": "Teknium",
+      "path": "apps/desktop/src/app/session/hooks/use-prompt-actions/index.test.tsx",
+      "reason": "contributor credit",
+      "text": "// Teknium's report: start a goal in the desktop app, then `/goal status`"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 7,
+      "match": "hermes",
+      "path": "apps/desktop/src/contrib/plugins.ts",
+      "reason": "third-party example repo",
+      "text": "*    `hermes-example-plugins` repo."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 9,
+      "match": "hermes",
+      "path": "apps/desktop/src/plugins/README.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 9,
+      "match": "NousResearch",
+      "path": "apps/desktop/src/plugins/README.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 9,
+      "match": "hermes",
+      "path": "apps/desktop/src/plugins/README.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 51,
+      "match": "hermes",
+      "path": "apps/desktop/src/store/model-visibility.test.ts",
+      "reason": "third-party chat model family",
+      "text": "provider('youtab', ['hermes-3-llama-3.1-70b', 'hermes-3-llama-3.1-8b']),"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 51,
+      "match": "hermes",
+      "path": "apps/desktop/src/store/model-visibility.test.ts",
+      "reason": "third-party chat model family",
+      "text": "provider('youtab', ['hermes-3-llama-3.1-70b', 'hermes-3-llama-3.1-8b']),"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 55,
+      "match": "hermes",
+      "path": "apps/desktop/src/store/model-visibility.test.ts",
+      "reason": "third-party chat model family",
+      "text": "expect(visible.has(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-70b'))).toBe(false)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 56,
+      "match": "hermes",
+      "path": "apps/desktop/src/store/model-visibility.test.ts",
+      "reason": "third-party chat model family",
+      "text": "expect(visible.has(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-8b'))).toBe(false)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 70,
+      "match": "hermes",
+      "path": "apps/desktop/src/store/model-visibility.test.ts",
+      "reason": "third-party chat model family",
+      "text": "afterToggle.add(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-70b'))"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 73,
+      "match": "hermes",
+      "path": "apps/desktop/src/store/model-visibility.test.ts",
+      "reason": "third-party chat model family",
+      "text": "provider('youtab', ['hermes-3-llama-3.1-70b', 'hermes-3-llama-3.1-8b']),"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 73,
+      "match": "hermes",
+      "path": "apps/desktop/src/store/model-visibility.test.ts",
+      "reason": "third-party chat model family",
+      "text": "provider('youtab', ['hermes-3-llama-3.1-70b', 'hermes-3-llama-3.1-8b']),"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 77,
+      "match": "hermes",
+      "path": "apps/desktop/src/store/model-visibility.test.ts",
+      "reason": "third-party chat model family",
+      "text": "expect(visible.has(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-70b'))).toBe(true)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 78,
+      "match": "hermes",
+      "path": "apps/desktop/src/store/model-visibility.test.ts",
+      "reason": "third-party chat model family",
+      "text": "expect(visible.has(modelVisibilityKey('youtab', 'hermes-3-llama-3.1-8b'))).toBe(false)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 28,
+      "match": "nousresearch",
+      "path": "datagen-config-examples/web_research.yaml",
+      "reason": "OpenRouter model id",
+      "text": "model: openrouter/nousresearch/hermes-3-llama-3.1-405b"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 28,
+      "match": "hermes",
+      "path": "datagen-config-examples/web_research.yaml",
+      "reason": "OpenRouter model id",
+      "text": "model: openrouter/nousresearch/hermes-3-llama-3.1-405b"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 4,
+      "match": "Teknium",
+      "path": "docs/design/profile-builder.md",
+      "reason": "skill author metadata",
+      "text": "Author: drafted for Teknium"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 126,
+      "match": "Teknium",
+      "path": "docs/design/profile-builder.md",
+      "reason": "contributor credit",
+      "text": "## Open product decisions (need Teknium)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 10,
+      "match": "NousResearch",
+      "path": "docs/relay-connector-contract.md",
+      "reason": "third-party connector repo",
+      "text": "`NousResearch/gateway-gateway`). The connector implementer's first action is to"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 658,
+      "match": "NousResearch",
+      "path": "docs/relay-connector-contract.md",
+      "reason": "third-party connector repo",
+      "text": "(`NousResearch/gateway-gateway`); this section is the gateway-facing summary."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 17,
+      "match": "NousResearch",
+      "path": "optional-skills/creative/kanban-video-orchestrator/SKILL.md",
+      "reason": "third-party pipeline repo",
+      "text": "https://github.com/NousResearch/kanban-video-pipeline."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 14,
+      "match": "NousResearch",
+      "path": "optional-skills/creative/kanban-video-orchestrator/references/kanban-setup.md",
+      "reason": "third-party pipeline repo",
+      "text": "> [NousResearch/kanban-video-pipeline](https://github.com/NousResearch/kanban-video-pipeline)."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 14,
+      "match": "NousResearch",
+      "path": "optional-skills/creative/kanban-video-orchestrator/references/kanban-setup.md",
+      "reason": "third-party pipeline repo",
+      "text": "> [NousResearch/kanban-video-pipeline](https://github.com/NousResearch/kanban-video-pipeline)."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 11,
+      "match": "NousResearch",
+      "path": "optional-skills/creative/kanban-video-orchestrator/scripts/bootstrap_pipeline.py",
+      "reason": "third-party pipeline repo",
+      "text": "adapted from alt-glitch's NousResearch/kanban-video-pipeline."
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "optional-skills/creative/tldraw-offline/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium + Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "optional-skills/devops/pinggy-tunnel/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "teknium",
+      "path": "optional-skills/devops/pinggy-tunnel/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 20,
+      "match": "NousResearch",
+      "path": "optional-skills/gaming/pokemon-player/SKILL.md",
+      "reason": "third-party demo repo",
+      "text": "The repo is NousResearch/pokemon-agent on GitHub. Clone it, then"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 3184,
+      "match": "NousResearch",
+      "path": "optional-skills/mlops/training/axolotl/references/other.md",
+      "reason": "Hugging Face model id",
+      "text": "base_model: NousResearch/Llama-3.2-1B"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 3190,
+      "match": "teknium",
+      "path": "optional-skills/mlops/training/axolotl/references/other.md",
+      "reason": "contributor credit",
+      "text": "- path: teknium/GPT4-LLM-Cleaned"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 3199,
+      "match": "NousResearch",
+      "path": "optional-skills/mlops/training/axolotl/references/other.md",
+      "reason": "Hugging Face model id",
+      "text": "base_model: NousResearch/Nous-Hermes-llama-1b-v1"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 3199,
+      "match": "Hermes",
+      "path": "optional-skills/mlops/training/axolotl/references/other.md",
+      "reason": "Hugging Face model id",
+      "text": "base_model: NousResearch/Nous-Hermes-llama-1b-v1"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "optional-skills/payments/mpp-agent/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "teknium",
+      "path": "optional-skills/payments/mpp-agent/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "optional-skills/payments/stripe-link-cli/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "teknium",
+      "path": "optional-skills/payments/stripe-link-cli/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "optional-skills/payments/stripe-projects/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "teknium",
+      "path": "optional-skills/payments/stripe-projects/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "optional-skills/research/gitnexus-explorer/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Youtab Agent Runtime + Teknium"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "optional-skills/research/qmd/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Youtab Agent Runtime + Teknium"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Youtab Agent Runtime + Teknium"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 396,
+      "match": "Hermes",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "third-party chat model family",
+      "text": "5. **Hermes models don't need jailbreaking** \u2014 nousresearch/hermes-3-* and nousresearch/hermes-4-* are already uncensored. Use them directly for the fastest path."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 396,
+      "match": "nousresearch",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "third-party chat model family",
+      "text": "5. **Hermes models don't need jailbreaking** \u2014 nousresearch/hermes-3-* and nousresearch/hermes-4-* are already uncensored. Use them directly for the fastest path."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 396,
+      "match": "hermes",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "third-party chat model family",
+      "text": "5. **Hermes models don't need jailbreaking** \u2014 nousresearch/hermes-3-* and nousresearch/hermes-4-* are already uncensored. Use them directly for the fastest path."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 396,
+      "match": "nousresearch",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "third-party chat model family",
+      "text": "5. **Hermes models don't need jailbreaking** \u2014 nousresearch/hermes-3-* and nousresearch/hermes-4-* are already uncensored. Use them directly for the fastest path."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 396,
+      "match": "hermes",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "third-party chat model family",
+      "text": "5. **Hermes models don't need jailbreaking** \u2014 nousresearch/hermes-3-* and nousresearch/hermes-4-* are already uncensored. Use them directly for the fastest path."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 80,
+      "match": "nousresearch",
+      "path": "optional-skills/security/godmode/references/jailbreak-templates.md",
+      "reason": "OpenRouter model id",
+      "text": "**Model:** `nousresearch/hermes-4-405b`"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 80,
+      "match": "hermes",
+      "path": "optional-skills/security/godmode/references/jailbreak-templates.md",
+      "reason": "OpenRouter model id",
+      "text": "**Model:** `nousresearch/hermes-4-405b`"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 51,
+      "match": "nousresearch",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'nousresearch/hermes-3-llama-3.1-70b',"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 51,
+      "match": "hermes",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'nousresearch/hermes-3-llama-3.1-70b',"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 59,
+      "match": "nousresearch",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'nousresearch/hermes-4-70b',"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 59,
+      "match": "hermes",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'nousresearch/hermes-4-70b',"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 76,
+      "match": "nousresearch",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'nousresearch/hermes-4-405b',"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 76,
+      "match": "hermes",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'nousresearch/hermes-4-405b',"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 78,
+      "match": "nousresearch",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'nousresearch/hermes-3-llama-3.1-405b',"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 78,
+      "match": "hermes",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'nousresearch/hermes-3-llama-3.1-405b',"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 438,
+      "match": "nousresearch",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'model': 'nousresearch/hermes-4-405b',"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 438,
+      "match": "hermes",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "OpenRouter model id",
+      "text": "'model': 'nousresearch/hermes-4-405b',"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "optional-skills/software-development/code-wiki/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "teknium",
+      "path": "optional-skills/software-development/code-wiki/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Teknium (teknium1), Youtab Agent Runtime"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5128,
+      "match": "teknium",
+      "path": "plugins/platforms/discord/adapter.py",
+      "reason": "contributor handle in alias map",
+      "text": "Users can specify usernames (e.g. \"teknium\") or display names instead of"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2849,
+      "match": "Teknium",
+      "path": "scripts/install.ps1",
+      "reason": "contributor credit",
+      "text": "# leaving them to lazy first-use install. Policy change (Teknium, July"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2871,
+      "match": "Teknium",
+      "path": "scripts/install.sh",
+      "reason": "contributor credit",
+      "text": "# leaving them to lazy first-use install. Policy change (Teknium, July"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 573,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor credit",
+      "text": "# teknium (multiple emails)"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 574,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor identity",
+      "text": "\"teknium1@gmail.com\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 574,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor identity",
+      "text": "\"teknium1@gmail.com\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 661,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"teknium@youtab.io\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 661,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"teknium@youtab.io\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 689,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor identity",
+      "text": "\"127238744+teknium1@users.noreply.github.com\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 689,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor identity",
+      "text": "\"127238744+teknium1@users.noreply.github.com\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1548,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"teknium@noreply.github.com\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1548,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"teknium@noreply.github.com\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1681,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"codex@openai.invalid\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1682,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"screenmachine@gmail.com\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1687,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"teknium@youtab.dev\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1687,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"teknium@youtab.dev\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1722,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"teknium@youtab-agent-runtime\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1722,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"teknium@youtab-agent-runtime\": \"teknium1\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2382,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor alias map",
+      "text": "teknium_aliases = {\"@teknium1\"}"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2382,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor alias map",
+      "text": "teknium_aliases = {\"@teknium1\"}"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2387,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor alias map",
+      "text": "if author not in teknium_aliases:"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2390,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor alias map",
+      "text": "if coauthor not in teknium_aliases:"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2425,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor alias map",
+      "text": "if author not in teknium_aliases:"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2438,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor alias map",
+      "text": "if author not in teknium_aliases:"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 2441,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "contributor alias map",
+      "text": "if coauthor not in teknium_aliases:"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "skills/autonomous-ai-agents/claude-code/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Youtab Agent Runtime + Teknium"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "skills/autonomous-ai-agents/youtab-agent-runtime/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Youtab Agent Runtime + Teknium"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "skills/creative/popular-web-designs/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Youtab Agent Runtime + Teknium (design systems sourced from VoltAgent/awesome-design-md)"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "skills/productivity/teams-meeting-pipeline/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Youtab Agent Runtime + Teknium"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "Teknium",
+      "path": "skills/research/polymarket/SKILL.md",
+      "reason": "skill author metadata",
+      "text": "author: Youtab Agent Runtime + Teknium"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 9,
+      "match": "teknium",
+      "path": "skills/research/research-paper-writing/references/sources.md",
+      "reason": "contributor credit",
+      "text": "The writing philosophy, citation verification workflow, and conference reference materials in this skill were originally compiled by **[Orchestra Research](https://github.com/orchestra-research)** as "
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 269,
+      "match": "nousresearch",
+      "path": "tests/agent/test_coding_context.py",
+      "reason": "OpenRouter model id",
+      "text": "\"moonshot/kimi-k2\", \"zai/glm-4.6\", \"nousresearch/hermes-4-405b\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 269,
+      "match": "hermes",
+      "path": "tests/agent/test_coding_context.py",
+      "reason": "OpenRouter model id",
+      "text": "\"moonshot/kimi-k2\", \"zai/glm-4.6\", \"nousresearch/hermes-4-405b\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 482,
+      "match": "Teknium",
+      "path": "tests/agent/test_image_routing.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"\"\"Teknium's requested regression case."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 474,
+      "match": "NousResearch",
+      "path": "tests/agent/test_model_metadata_local_ctx.py",
+      "reason": "OpenRouter model id",
+      "text": "model = \"NousResearch/Hermes-3-Llama-3.1-70B\""
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 474,
+      "match": "Hermes",
+      "path": "tests/agent/test_model_metadata_local_ctx.py",
+      "reason": "OpenRouter model id",
+      "text": "model = \"NousResearch/Hermes-3-Llama-3.1-70B\""
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 3,
+      "match": "Teknium",
+      "path": "tests/cron/test_cron_profile_isolation.py",
+      "reason": "contributor credit",
+      "text": "Design intent (Teknium, June 2026): a profile's cron jobs both LIVE in that"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1632,
+      "match": "Teknium",
+      "path": "tests/cron/test_scheduler.py",
+      "reason": "contributor credit",
+      "text": "# --- continuable cron: thread-preferred (Teknium's interface) ---"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 4,
+      "match": "NousResearch",
+      "path": "tests/gateway/relay/test_contract_doc_conformance.py",
+      "reason": "third-party connector repo",
+      "text": "(NousResearch/gateway-gateway) implements against. The connector's TypeScript"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 248,
+      "match": "Teknium",
+      "path": "tests/plugins/dashboard_auth/test_youtab_provider.py",
+      "reason": "contributor credit",
+      "text": "registers successfully. This is the path Teknium's review pushed"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 113,
+      "match": "hermes",
+      "path": "tests/providers/test_transport_parity.py",
+      "reason": "third-party chat model family",
+      "text": "model=\"hermes-3-llama-3.1-405b\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 91,
+      "match": "Teknium",
+      "path": "tests/run_agent/test_in_place_compaction.py",
+      "reason": "contributor credit",
+      "text": "# Teknium's review): the LIVE context is the compacted set, but the"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 246,
+      "match": "Teknium",
+      "path": "tests/run_agent/test_in_place_compaction.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"\"\"Teknium's review hinges on the pre-compaction transcript staying"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 9,
+      "match": "Teknium",
+      "path": "tests/test_live_system_guard_self_test.py",
+      "reason": "contributor credit",
+      "text": "(5+ live gateway kills in 3 days). Per Teknium 2026-05-10:"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 149,
+      "match": "Teknium",
+      "path": "tests/tools/test_delegate.py",
+      "reason": "contributor credit",
+      "text": "# execute_code for programmatic tool calling (Teknium, Jul 2026)."
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 592,
+      "match": "Teknium",
+      "path": "tests/tools/test_delegate.py",
+      "reason": "contributor credit",
+      "text": "(Teknium, Jul 2026).\"\"\""
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 550,
+      "match": "Teknium",
+      "path": "tests/tools/test_file_operations.py",
+      "reason": "contributor credit",
+      "text": "AttributeError on origin/main. Deleted wholesale per Teknium's"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 691,
+      "match": "Teknium",
+      "path": "tests/tools/test_session_search.py",
+      "reason": "contributor credit",
+      "text": "# Teknium review round 2: rewind exclusion + delegation-under-compression"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 3,
+      "match": "Teknium",
+      "path": "tests/tools/test_stt_default_language.py",
+      "reason": "contributor credit",
+      "text": "Teknium (July 2026): the global ``stt.language`` DEFAULTS to \"en\" because"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 3,
+      "match": "Teknium",
+      "path": "tests/tools/test_video_generation_tool_surface_matrix.py",
+      "reason": "contributor credit",
+      "text": "This is the integration test for the question Teknium asked: regardless"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 1259,
+      "match": "Teknium",
+      "path": "tests/youtab_agent_cli/test_gateway_service.py",
+      "reason": "contributor handle in alias map",
+      "text": "\"\"\"Teknium's constraint: profile units (youtab-gateway-coder.service)"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 28,
+      "match": "Teknium",
+      "path": "tests/youtab_agent_cli/test_memory_reset.py",
+      "reason": "contributor credit",
+      "text": "\"\u00a7\\nUser is Teknium\\n\u00a7\\nTimezone: US Pacific\","
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 140,
+      "match": "Teknium",
+      "path": "tests/youtab_agent_cli/test_models_dev_preferred_merge.py",
+      "reason": "contributor credit",
+      "text": "\"\"\"Per Teknium: openrouter and youtab are NEVER merged with models.dev.\"\"\""
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 3,
+      "match": "Hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "Hermes 3/4 are third-party Nous Research chat models resold through the Youtab"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 3,
+      "match": "Nous Research",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "Hermes 3/4 are third-party Nous Research chat models resold through the Youtab"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 7,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "vendor token in model-family list",
+      "text": "``\"hermes\"`` anywhere (case-insensitive). That false-positived on unrelated"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 8,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "local Modelfile tag, tool-capable",
+      "text": "local Modelfiles such as ``hermes-brain:qwen3-14b-ctx16k`` \u2014 a tool-capable"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 11,
+      "match": "Hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "``is_non_agentic_chat_model`` should match only the real Hermes 3 / Hermes 4"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 11,
+      "match": "Hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "``is_non_agentic_chat_model`` should match only the real Hermes 3 / Hermes 4"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 29,
+      "match": "NousResearch",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "OpenRouter model id",
+      "text": "\"NousResearch/Hermes-3-Llama-3.1-70B\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 29,
+      "match": "Hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "OpenRouter model id",
+      "text": "\"NousResearch/Hermes-3-Llama-3.1-70B\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 30,
+      "match": "NousResearch",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "OpenRouter model id",
+      "text": "\"NousResearch/Hermes-3-Llama-3.1-405B\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 30,
+      "match": "Hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "OpenRouter model id",
+      "text": "\"NousResearch/Hermes-3-Llama-3.1-405B\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 31,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "\"hermes-3\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 32,
+      "match": "Hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "\"Hermes-3\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 33,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "\"hermes-4\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 34,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "\"hermes-4-405b\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 35,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "model family fixture",
+      "text": "\"hermes_4_70b\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 36,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model tag",
+      "text": "\"openrouter/hermes3:70b\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 37,
+      "match": "nousresearch",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "OpenRouter model id",
+      "text": "\"openrouter/nousresearch/hermes-4-405b\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 37,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "OpenRouter model id",
+      "text": "\"openrouter/nousresearch/hermes-4-405b\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 38,
+      "match": "NousResearch",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "\"NousResearch/Hermes3\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 38,
+      "match": "Hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "\"NousResearch/Hermes3\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 39,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "\"hermes-3.1\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 42,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party family test name",
+      "text": "def test_matches_real_hermes_chat_models(model_name: str) -> None:"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 44,
+      "match": "Hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "f\"expected {model_name!r} to be flagged as Hermes 3/4\""
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 56,
+      "match": "hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "local Modelfile tag, tool-capable",
+      "text": "\"hermes-brain:qwen3-14b-ctx16k\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 74,
+      "match": "Hermes",
+      "path": "tests/youtab_agent_cli/test_non_agentic_chat_model.py",
+      "reason": "third-party chat model family",
+      "text": "f\"expected {model_name!r} NOT to be flagged as Hermes 3/4\""
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 64,
+      "match": "Teknium",
+      "path": "tests/youtab_agent_cli/test_youtab_auth_status_cache.py",
+      "reason": "contributor credit",
+      "text": "Teknium's case: ~31 cache misses per `youtab tools` \"All Platforms\""
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 40,
+      "match": "Teknium",
+      "path": "tools/x_search_tool.py",
+      "reason": "contributor credit",
+      "text": "reworked to honor both auth modes per Teknium's design."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 64,
+      "match": "hermes",
+      "path": "website/docs/developer-guide/desktop-plugin-sdk.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 64,
+      "match": "NousResearch",
+      "path": "website/docs/developer-guide/desktop-plugin-sdk.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 64,
+      "match": "hermes",
+      "path": "website/docs/developer-guide/desktop-plugin-sdk.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 554,
+      "match": "hermes",
+      "path": "website/docs/developer-guide/desktop-plugin-sdk.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 554,
+      "match": "NousResearch",
+      "path": "website/docs/developer-guide/desktop-plugin-sdk.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 554,
+      "match": "hermes",
+      "path": "website/docs/developer-guide/desktop-plugin-sdk.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 189,
+      "match": "hermes",
+      "path": "website/docs/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 189,
+      "match": "NousResearch",
+      "path": "website/docs/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 189,
+      "match": "hermes",
+      "path": "website/docs/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 193,
+      "match": "NousResearch",
+      "path": "website/docs/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 193,
+      "match": "hermes",
+      "path": "website/docs/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 463,
+      "match": "NousResearch",
+      "path": "website/docs/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "* [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) \u2014 sync structured extraction with image input"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 463,
+      "match": "hermes",
+      "path": "website/docs/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "* [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) \u2014 sync structured extraction with image input"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 464,
+      "match": "NousResearch",
+      "path": "website/docs/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "* [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) \u2014 async with `asyncio.gather()`"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 464,
+      "match": "hermes",
+      "path": "website/docs/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "* [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) \u2014 async with `asyncio.gather()`"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 121,
+      "match": "Hermes",
+      "path": "website/docs/guides/run-youtab-with-youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "### Don't pick Hermes-4 for agent work"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 123,
+      "match": "Hermes",
+      "path": "website/docs/guides/run-youtab-with-youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them for c"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 123,
+      "match": "Hermes",
+      "path": "website/docs/guides/run-youtab-with-youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them for c"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 42,
+      "match": "Nous Research",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "| **Nous Research** | Hermes-4-70B, Hermes-4-405B (chat, see [note below](#a-note-on-hermes-4)) |"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 42,
+      "match": "Hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "| **Nous Research** | Hermes-4-70B, Hermes-4-405B (chat, see [note below](#a-note-on-hermes-4)) |"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 42,
+      "match": "Hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "| **Nous Research** | Hermes-4-70B, Hermes-4-405B (chat, see [note below](#a-note-on-hermes-4)) |"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 42,
+      "match": "hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "| **Nous Research** | Hermes-4-70B, Hermes-4-405B (chat, see [note below](#a-note-on-hermes-4)) |"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 75,
+      "match": "Hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "## A note on Hermes 4"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 77,
+      "match": "Nous Research",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Nous Research's **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is resold through the Portal at heavily discounted rates. These are third-party **hybrid-reasoning chat models** \u2014 strong at math, sci"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 77,
+      "match": "Hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Nous Research's **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is resold through the Portal at heavily discounted rates. These are third-party **hybrid-reasoning chat models** \u2014 strong at math, sci"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 77,
+      "match": "Hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Nous Research's **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is resold through the Portal at heavily discounted rates. These are third-party **hybrid-reasoning chat models** \u2014 strong at math, sci"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 77,
+      "match": "Hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Nous Research's **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is resold through the Portal at heavily discounted rates. These are third-party **hybrid-reasoning chat models** \u2014 strong at math, sci"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 79,
+      "match": "Hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "They are **not recommended for use inside Youtab Agent Runtime**, however. Hermes 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for research wor"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 24,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "Themes and plugins are independent but synergistic. A theme can stand alone (just a YAML file). A plugin can stand alone (just a tab). Together they let you build a complete visual reskin with custom "
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 704,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "A reference plugin (`example-dashboard` in [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/example-dashboard)) ships a live demo that injects a banner into "
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 704,
+      "match": "NousResearch",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "A reference plugin (`example-dashboard` in [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/example-dashboard)) ships a live demo that injects a banner into "
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 704,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "A reference plugin (`example-dashboard` in [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/example-dashboard)) ships a live demo that injects a banner into "
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 841,
+      "match": "NousResearch",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "The [`strike-freedom-cockpit`](https://github.com/NousResearch/hermes-example-plugins/tree/main/strike-freedom-cockpit) plugin (companion repo `hermes-example-plugins`) is a complete reskin demo. It p"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 841,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "The [`strike-freedom-cockpit`](https://github.com/NousResearch/hermes-example-plugins/tree/main/strike-freedom-cockpit) plugin (companion repo `hermes-example-plugins`) is a complete reskin demo. It p"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 841,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "The [`strike-freedom-cockpit`](https://github.com/NousResearch/hermes-example-plugins/tree/main/strike-freedom-cockpit) plugin (companion repo `hermes-example-plugins`) is a complete reskin demo. It p"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 855,
+      "match": "NousResearch",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "git clone https://github.com/NousResearch/hermes-example-plugins.git"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 855,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "git clone https://github.com/NousResearch/hermes-example-plugins.git"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 858,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "cp hermes-example-plugins/strike-freedom-cockpit/theme/strike-freedom.yaml \\"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 862,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "cp -r hermes-example-plugins/strike-freedom-cockpit ~/.youtab-agent-runtime/plugins/"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 215,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "## Hermes Mod \u2014 Visual Skin Editor"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 217,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "[Hermes Mod](https://github.com/cocktailpeanut/hermes-mod) is a community-built web UI for creating and managing skins visually. Instead of writing YAML by hand, you get a point-and-click editor with "
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 217,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "[Hermes Mod](https://github.com/cocktailpeanut/hermes-mod) is a community-built web UI for creating and managing skins visually. Instead of writing YAML by hand, you get a point-and-click editor with "
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 219,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "![Hermes Mod skin editor](https://raw.githubusercontent.com/cocktailpeanut/hermes-mod/master/hermes.png)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 219,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "![Hermes Mod skin editor](https://raw.githubusercontent.com/cocktailpeanut/hermes-mod/master/hermes.png)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 219,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "![Hermes Mod skin editor](https://raw.githubusercontent.com/cocktailpeanut/hermes-mod/master/hermes.png)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 246,
+      "match": "hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "git clone https://github.com/cocktailpeanut/hermes-mod.git"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 262,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "Hermes Mod respects the `YOUTAB_AGENT_HOME` environment variable, so it works with [profiles](/user-guide/profiles) too."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 62,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "Model:      Hermes-4-70B    # or Hermes-4.3-36B, Hermes-4-405B"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 62,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "Model:      Hermes-4-70B    # or Hermes-4.3-36B, Hermes-4-405B"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 62,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "Model:      Hermes-4-70B    # or Hermes-4.3-36B, Hermes-4-405B"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 125,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "\"model\": \"Hermes-4-70B\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 156,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "INFERENCE_TEXT_MODEL=Hermes-4-70B"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 913,
+      "match": "NousResearch",
+      "path": "website/docs/user-guide/features/web-dashboard.md",
+      "reason": "third-party service repo",
+      "text": "The provider implements the [Youtab Portal OAuth contract v1](https://github.com/NousResearch/nous-account-service/blob/main/docs/agent-dashboard-oauth-contract.md) \u2014 authorization-code grant with PKC"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md",
+      "reason": "skill author table",
+      "text": "| Author | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-youtab-agent-runtime.md",
+      "reason": "skill author table",
+      "text": "| Author | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/creative/creative-popular-web-designs.md",
+      "reason": "skill author table",
+      "text": "| Author | Youtab Agent Runtime + Teknium (design systems sourced from VoltAgent/awesome-design-md) |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline.md",
+      "reason": "skill author table",
+      "text": "| Author | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/research/research-polymarket.md",
+      "reason": "skill author table",
+      "text": "| Author | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/creative/creative-tldraw-offline.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium + Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/devops/devops-pinggy-tunnel.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "teknium",
+      "path": "website/docs/user-guide/skills/optional/devops/devops-pinggy-tunnel.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 40,
+      "match": "NousResearch",
+      "path": "website/docs/user-guide/skills/optional/gaming/gaming-pokemon-player.md",
+      "reason": "third-party demo repo",
+      "text": "The repo is NousResearch/pokemon-agent on GitHub. Clone it, then"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/payments/payments-mpp-agent.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "teknium",
+      "path": "website/docs/user-guide/skills/optional/payments/payments-mpp-agent.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/payments/payments-stripe-link-cli.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "teknium",
+      "path": "website/docs/user-guide/skills/optional/payments/payments-stripe-link-cli.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/payments/payments-stripe-projects.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "teknium",
+      "path": "website/docs/user-guide/skills/optional/payments/payments-stripe-projects.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/research/research-gitnexus-explorer.md",
+      "reason": "skill author table",
+      "text": "| Author | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/research/research-qmd.md",
+      "reason": "skill author table",
+      "text": "| Author | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/security/security-godmode.md",
+      "reason": "skill author table",
+      "text": "| Author | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 414,
+      "match": "nousresearch",
+      "path": "website/docs/user-guide/skills/optional/security/security-godmode.md",
+      "reason": "third-party chat model family",
+      "text": "5. **Youtab models don't need jailbreaking** \u2014 nousresearch/hermes-3-* and youtab-4-* are already uncensored. Use them directly for the fastest path."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 414,
+      "match": "hermes",
+      "path": "website/docs/user-guide/skills/optional/security/security-godmode.md",
+      "reason": "third-party chat model family",
+      "text": "5. **Youtab models don't need jailbreaking** \u2014 nousresearch/hermes-3-* and youtab-4-* are already uncensored. Use them directly for the fastest path."
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/software-development/software-development-code-wiki.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "teknium",
+      "path": "website/docs/user-guide/skills/optional/software-development/software-development-code-wiki.md",
+      "reason": "skill author table",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 5,
+      "match": "teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/browser-supervisor.md",
+      "reason": "doc author line",
+      "text": "**\u4f5c\u8005\uff1a** @teknium1"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 163,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 163,
+      "match": "NousResearch",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 163,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 165,
+      "match": "NousResearch",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example)\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 165,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "[`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example)\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 368,
+      "match": "NousResearch",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "* [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) \u2014 \u5e26\u56fe\u50cf\u8f93\u5165\u7684\u540c\u6b65\u7ed3\u6784\u5316\u63d0\u53d6"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 368,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "* [`plugin-llm-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-example) \u2014 \u5e26\u56fe\u50cf\u8f93\u5165\u7684\u540c\u6b65\u7ed3\u6784\u5316\u63d0\u53d6"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 369,
+      "match": "NousResearch",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "* [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) \u2014 \u4f7f\u7528 `asyncio.gather()` \u7684\u5f02\u6b65\u793a\u4f8b"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 369,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/plugin-llm-access.md",
+      "reason": "third-party example repo",
+      "text": "* [`plugin-llm-async-example`](https://github.com/NousResearch/hermes-example-plugins/tree/main/plugin-llm-async-example) \u2014 \u4f7f\u7528 `asyncio.gather()` \u7684\u5f02\u6b65\u793a\u4f8b"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 121,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/guides/run-youtab-with-youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "### \u4e0d\u8981\u5728 agent \u4efb\u52a1\u4e2d\u4f7f\u7528 Hermes-4"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 123,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/guides/run-youtab-with-youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Hermes-4-70B \u548c Hermes-4-405B \u5728 Portal \u4e0a\u4ee5\u5927\u5e45\u6298\u6263\u63d0\u4f9b\uff0c\u4f46\u5b83\u4eec\u662f**\u5bf9\u8bdd/\u63a8\u7406\u6a21\u578b**\uff0c\u5e76\u975e\u9488\u5bf9\u5de5\u5177\u8c03\u7528\u4f18\u5316\u7684\u6a21\u578b\u3002\u5b83\u4eec\u5728\u591a\u6b65\u9aa4 agent \u5faa\u73af\u4e2d\u8868\u73b0\u4e0d\u4f73\u3002\u8bf7\u901a\u8fc7[\u8ba2\u9605\u4ee3\u7406](/user-guide/features/subscription-proxy)\u4ece\u975e agent \u5de5\u5177\u4e2d\u5c06\u5b83\u4eec\u7528\u4e8e\u5bf9\u8bdd\u6216\u7814\u7a76\u5de5\u4f5c\u3002\u5bf9\u4e8e Youtab Agent Runtime \u672c\u8eab\uff0c"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 123,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/guides/run-youtab-with-youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Hermes-4-70B \u548c Hermes-4-405B \u5728 Portal \u4e0a\u4ee5\u5927\u5e45\u6298\u6263\u63d0\u4f9b\uff0c\u4f46\u5b83\u4eec\u662f**\u5bf9\u8bdd/\u63a8\u7406\u6a21\u578b**\uff0c\u5e76\u975e\u9488\u5bf9\u5de5\u5177\u8c03\u7528\u4f18\u5316\u7684\u6a21\u578b\u3002\u5b83\u4eec\u5728\u591a\u6b65\u9aa4 agent \u5faa\u73af\u4e2d\u8868\u73b0\u4e0d\u4f73\u3002\u8bf7\u901a\u8fc7[\u8ba2\u9605\u4ee3\u7406](/user-guide/features/subscription-proxy)\u4ece\u975e agent \u5de5\u5177\u4e2d\u5c06\u5b83\u4eec\u7528\u4e8e\u5bf9\u8bdd\u6216\u7814\u7a76\u5de5\u4f5c\u3002\u5bf9\u4e8e Youtab Agent Runtime \u672c\u8eab\uff0c"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 38,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "| **Youtab** | Hermes-4-70B\u3001Hermes-4-405B\uff08\u5bf9\u8bdd\uff0c\u89c1[\u4e0b\u65b9\u8bf4\u660e](#a-note-on-youtab-4)\uff09 |"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 38,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "| **Youtab** | Hermes-4-70B\u3001Hermes-4-405B\uff08\u5bf9\u8bdd\uff0c\u89c1[\u4e0b\u65b9\u8bf4\u660e](#a-note-on-youtab-4)\uff09 |"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 73,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Youtab B.V. \u81ea\u5bb6\u7684 **Youtab 4** \u7cfb\u5217\uff08Hermes-4-70B\u3001Hermes-4-405B\uff09\u901a\u8fc7 Portal \u63d0\u4f9b\uff0c\u4eab\u6709\u5927\u5e45\u6298\u6263\u3002\u8fd9\u4e9b\u662f**\u524d\u6cbf\u6df7\u5408\u63a8\u7406\u5bf9\u8bdd\u6a21\u578b**\u2014\u2014\u5728\u6570\u5b66\u3001\u79d1\u5b66\u3001\u6307\u4ee4\u9075\u5faa\u3001schema \u9075\u4ece\u3001\u89d2\u8272\u626e\u6f14\u548c\u957f\u6587\u5199\u4f5c\u65b9\u9762\u8868\u73b0\u51fa\u8272\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 73,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/youtab-portal.md",
+      "reason": "third-party chat model family",
+      "text": "Youtab B.V. \u81ea\u5bb6\u7684 **Youtab 4** \u7cfb\u5217\uff08Hermes-4-70B\u3001Hermes-4-405B\uff09\u901a\u8fc7 Portal \u63d0\u4f9b\uff0c\u4eab\u6709\u5927\u5e45\u6298\u6263\u3002\u8fd9\u4e9b\u662f**\u524d\u6cbf\u6df7\u5408\u63a8\u7406\u5bf9\u8bdd\u6a21\u578b**\u2014\u2014\u5728\u6570\u5b66\u3001\u79d1\u5b66\u3001\u6307\u4ee4\u9075\u5faa\u3001schema \u9075\u4ece\u3001\u89d2\u8272\u626e\u6f14\u548c\u957f\u6587\u5199\u4f5c\u65b9\u9762\u8868\u73b0\u51fa\u8272\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 684,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "\u53c2\u8003\u63d2\u4ef6\uff08[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/example-dashboard) \u4e2d\u7684 `example-dashboard`\uff09\u63d0\u4f9b\u4e86\u4e00\u4e2a\u5411 `sessions:top` \u6ce8\u5165\u6a2a\u5e45\u7684\u5b9e\u65f6\u6f14\u793a\u2014\u2014\u5b89\u88c5\u5b83\u53ef\u7aef\u5230\u7aef\u4e86\u89e3\u8be5\u6a21\u5f0f\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 684,
+      "match": "NousResearch",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "\u53c2\u8003\u63d2\u4ef6\uff08[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/example-dashboard) \u4e2d\u7684 `example-dashboard`\uff09\u63d0\u4f9b\u4e86\u4e00\u4e2a\u5411 `sessions:top` \u6ce8\u5165\u6a2a\u5e45\u7684\u5b9e\u65f6\u6f14\u793a\u2014\u2014\u5b89\u88c5\u5b83\u53ef\u7aef\u5230\u7aef\u4e86\u89e3\u8be5\u6a21\u5f0f\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 684,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "\u53c2\u8003\u63d2\u4ef6\uff08[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins/tree/main/example-dashboard) \u4e2d\u7684 `example-dashboard`\uff09\u63d0\u4f9b\u4e86\u4e00\u4e2a\u5411 `sessions:top` \u6ce8\u5165\u6a2a\u5e45\u7684\u5b9e\u65f6\u6f14\u793a\u2014\u2014\u5b89\u88c5\u5b83\u53ef\u7aef\u5230\u7aef\u4e86\u89e3\u8be5\u6a21\u5f0f\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 821,
+      "match": "NousResearch",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "[`strike-freedom-cockpit`](https://github.com/NousResearch/hermes-example-plugins/tree/main/strike-freedom-cockpit) \u63d2\u4ef6\uff08\u4f34\u968f\u4ed3\u5e93 `hermes-example-plugins`\uff09\u662f\u4e00\u4e2a\u5b8c\u6574\u7684\u6362\u80a4\u6f14\u793a\u3002\u5b83\u5c06\u4e3b\u9898 YAML \u4e0e\u4ec5\u63d2\u69fd\u63d2\u4ef6\u914d\u5bf9\uff0c\u5728\u4e0d fork dashboard \u7684\u60c5\u51b5"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 821,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "[`strike-freedom-cockpit`](https://github.com/NousResearch/hermes-example-plugins/tree/main/strike-freedom-cockpit) \u63d2\u4ef6\uff08\u4f34\u968f\u4ed3\u5e93 `hermes-example-plugins`\uff09\u662f\u4e00\u4e2a\u5b8c\u6574\u7684\u6362\u80a4\u6f14\u793a\u3002\u5b83\u5c06\u4e3b\u9898 YAML \u4e0e\u4ec5\u63d2\u69fd\u63d2\u4ef6\u914d\u5bf9\uff0c\u5728\u4e0d fork dashboard \u7684\u60c5\u51b5"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 821,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "[`strike-freedom-cockpit`](https://github.com/NousResearch/hermes-example-plugins/tree/main/strike-freedom-cockpit) \u63d2\u4ef6\uff08\u4f34\u968f\u4ed3\u5e93 `hermes-example-plugins`\uff09\u662f\u4e00\u4e2a\u5b8c\u6574\u7684\u6362\u80a4\u6f14\u793a\u3002\u5b83\u5c06\u4e3b\u9898 YAML \u4e0e\u4ec5\u63d2\u69fd\u63d2\u4ef6\u914d\u5bf9\uff0c\u5728\u4e0d fork dashboard \u7684\u60c5\u51b5"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 835,
+      "match": "NousResearch",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "git clone https://github.com/NousResearch/hermes-example-plugins.git"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 835,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "git clone https://github.com/NousResearch/hermes-example-plugins.git"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 838,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "cp hermes-example-plugins/strike-freedom-cockpit/theme/strike-freedom.yaml \\"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 842,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/extending-the-dashboard.md",
+      "reason": "third-party example repo",
+      "text": "cp -r hermes-example-plugins/strike-freedom-cockpit ~/.youtab-agent-runtime/plugins/"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 215,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "## Hermes Mod \u2014 \u53ef\u89c6\u5316\u76ae\u80a4\u7f16\u8f91\u5668"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 217,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "[Hermes Mod](https://github.com/cocktailpeanut/hermes-mod) \u662f\u4e00\u4e2a\u793e\u533a\u6784\u5efa\u7684 Web UI\uff0c\u7528\u4e8e\u53ef\u89c6\u5316\u521b\u5efa\u548c\u7ba1\u7406\u76ae\u80a4\u3002\u65e0\u9700\u624b\u5199 YAML\uff0c\u63d0\u4f9b\u5e26\u5b9e\u65f6\u9884\u89c8\u7684\u70b9\u51fb\u5f0f\u7f16\u8f91\u5668\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 217,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "[Hermes Mod](https://github.com/cocktailpeanut/hermes-mod) \u662f\u4e00\u4e2a\u793e\u533a\u6784\u5efa\u7684 Web UI\uff0c\u7528\u4e8e\u53ef\u89c6\u5316\u521b\u5efa\u548c\u7ba1\u7406\u76ae\u80a4\u3002\u65e0\u9700\u624b\u5199 YAML\uff0c\u63d0\u4f9b\u5e26\u5b9e\u65f6\u9884\u89c8\u7684\u70b9\u51fb\u5f0f\u7f16\u8f91\u5668\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 219,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "![Hermes Mod skin editor](https://raw.githubusercontent.com/cocktailpeanut/hermes-mod/master/hermes.png)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 219,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "![Hermes Mod skin editor](https://raw.githubusercontent.com/cocktailpeanut/hermes-mod/master/hermes.png)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 219,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "![Hermes Mod skin editor](https://raw.githubusercontent.com/cocktailpeanut/hermes-mod/master/hermes.png)"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 246,
+      "match": "hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "git clone https://github.com/cocktailpeanut/hermes-mod.git"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 262,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "third-party community project",
+      "text": "Hermes Mod \u9075\u5faa `YOUTAB_AGENT_HOME` \u73af\u5883\u53d8\u91cf\uff0c\u56e0\u6b64\u4e5f\u9002\u7528\u4e8e[\u914d\u7f6e\u6587\u4ef6](/user-guide/profiles)\u3002"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 54,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "Model:      Hermes-4-70B    # \u6216 Hermes-4.3-36B\u3001Hermes-4-405B"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 54,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "Model:      Hermes-4-70B    # \u6216 Hermes-4.3-36B\u3001Hermes-4-405B"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 54,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "Model:      Hermes-4-70B    # \u6216 Hermes-4.3-36B\u3001Hermes-4-405B"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 104,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "\"model\": \"Hermes-4-70B\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 131,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/subscription-proxy.md",
+      "reason": "third-party chat model family",
+      "text": "INFERENCE_TEXT_MODEL=Hermes-4-70B"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md",
+      "reason": "skill author table",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-youtab-agent-runtime.md",
+      "reason": "skill author table",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/creative/creative-popular-web-designs.md",
+      "reason": "skill author table",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium\uff08\u8bbe\u8ba1\u7cfb\u7edf\u6765\u6e90\uff1aVoltAgent/awesome-design-md\uff09 |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline.md",
+      "reason": "skill author table",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/research/research-polymarket.md",
+      "reason": "skill author table",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/devops/devops-pinggy-tunnel.md",
+      "reason": "skill author table",
+      "text": "| \u4f5c\u8005 | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/devops/devops-pinggy-tunnel.md",
+      "reason": "skill author table",
+      "text": "| \u4f5c\u8005 | Teknium (teknium1), Youtab Agent Runtime |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/research/research-gitnexus-explorer.md",
+      "reason": "skill author table",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "LEGAL_PROVENANCE_ALLOWED",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/research/research-qmd.md",
+      "reason": "skill author table",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 182,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "third-party chat model family",
+      "text": "\"Hermes 3 & 4 are third-party chat models resold through the Youtab \""
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 188,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "third-party chat model family",
+      "text": "# Match only the real third-party Hermes 3 / Hermes 4 chat families. These are"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 188,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "third-party chat model family",
+      "text": "# Match only the real third-party Hermes 3 / Hermes 4 chat families. These are"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 189,
+      "match": "Nous Research",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "third-party vendor name",
+      "text": "# Nous Research models, not Youtab models; the identifier is third-party"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 192,
+      "match": "hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "vendor token in model-family list",
+      "text": "# The previous substring check (`\"hermes\" in name.lower()`) false-positived on"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 193,
+      "match": "hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "local Modelfile tag, tool-capable",
+      "text": "# unrelated local Modelfiles like ``hermes-brain:qwen3-14b-ctx16k`` that just"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 197,
+      "match": "NousResearch",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "OpenRouter model id",
+      "text": "#   NousResearch/Hermes-3-Llama-3.1-70B, hermes-4-405b, openrouter/hermes3:70b"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 197,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "OpenRouter model id",
+      "text": "#   NousResearch/Hermes-3-Llama-3.1-70B, hermes-4-405b, openrouter/hermes3:70b"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 197,
+      "match": "hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "OpenRouter model id",
+      "text": "#   NousResearch/Hermes-3-Llama-3.1-70B, hermes-4-405b, openrouter/hermes3:70b"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 197,
+      "match": "hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "OpenRouter model id",
+      "text": "#   NousResearch/Hermes-3-Llama-3.1-70B, hermes-4-405b, openrouter/hermes3:70b"
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 201,
+      "match": "hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "detector regex for third-party family",
+      "text": "r\"(?:^|[/:])hermes[-_ ]?[34](?:[-_.:]|$)\","
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 252,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "third-party chat model family",
+      "text": "\"\"\"Return True if *model_name* is a real third-party Hermes 3/4 chat model."
+    },
+    {
+      "classification": "THIRD_PARTY_DEPENDENCY_ALLOWED",
+      "line": 264,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "third-party chat model family",
+      "text": "\"\"\"Return a warning string if *model_name* is a Hermes 3/4 chat model.\"\"\""
+    }
+  ],
+  "passed": true,
+  "schema_version": 1,
+  "text_files_scanned": 7888,
+  "total_occurrences": 300
+}

@@ -7114,10 +7114,10 @@ class YoutabCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 )
 
         # Warn if the configured model is a Youtab Youtab LLM (not agentic)
-        from youtab_agent_cli.model_switch import is_youtab_youtab_non_agentic
+        from youtab_agent_cli.model_switch import is_non_agentic_chat_model
 
         model_name = getattr(self, "model", "") or ""
-        if is_youtab_youtab_non_agentic(model_name):
+        if is_non_agentic_chat_model(model_name):
             self._console_print()
             self._console_print(
                 "[bold yellow]⚠  Youtab B.V. Youtab 3 & 4 models are NOT agentic and are not "

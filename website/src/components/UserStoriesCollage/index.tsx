@@ -302,7 +302,7 @@ export default function UserStoriesCollage(): JSX.Element {
           Add your story to this page
         </a>{' '}
         by editing <code>userStories.json</code>, or post it in the{' '}
-        <a href="https://discord.gg/YoutabBV" target="_blank" rel="noopener noreferrer">
+        <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions" target="_blank" rel="noopener noreferrer">
           Youtab B.V. Discord
         </a>{' '}
         and we&apos;ll pick it up.

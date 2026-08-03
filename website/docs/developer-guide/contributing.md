@@ -289,7 +289,7 @@ fix(security): prevent shell injection in sudo password piping
 
 ## Community
 
-- **Discord**: [discord.gg/YoutabBV](https://discord.gg/YoutabBV)
+- **Discord**: [GitHub Discussions](https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions)
 - **GitHub Discussions**: For design proposals and architecture discussions
 - **Skills Hub**: Upload specialized skills and share with the community
 

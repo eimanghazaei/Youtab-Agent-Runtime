@@ -43,7 +43,7 @@ Youtab 使用两类模型槽位：
 
 ## 设置辅助模型
 
-点击 **Show auxiliary** 展开 11 个任务槽位：
+在 **Auxiliary tasks**（辅助任务）行点击 **Configure** 展开 11 个任务槽位：
 
 ![辅助面板展开状态](/img/docs/dashboard-models/auxiliary-expanded.png)
 

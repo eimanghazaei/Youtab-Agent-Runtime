@@ -110,7 +110,7 @@ class TestYoutabParity:
     def test_tags(self, transport):
         from agent.portal_tags import youtab_portal_tags
         kw = transport.build_kwargs(
-            model="youtab-3-llama-3.1-405b",
+            model="hermes-3-llama-3.1-405b",
             messages=_simple_messages(),
             tools=None,
             provider_profile=get_provider_profile("youtab"),

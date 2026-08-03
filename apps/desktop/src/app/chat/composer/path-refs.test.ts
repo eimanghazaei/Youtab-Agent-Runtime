@@ -50,7 +50,7 @@ describe('pathifyRefs', () => {
   })
 
   it('leaves a handle alone', () => {
-    expect(pathifyRefs('cc @teknium1 on this')).toBe('cc @teknium1 on this')
+    expect(pathifyRefs('cc @devuser on this')).toBe('cc @devuser on this')
   })
 
   it('leaves simple refs alone', () => {
@@ -89,7 +89,7 @@ describe('chipTypedPathOnSpace', () => {
   })
 
   it('leaves a handle alone', () => {
-    const { editor, event } = spaceOn('cc @teknium1')
+    const { editor, event } = spaceOn('cc @devuser')
 
     expect(chipTypedPathOnSpace(event)).toBe(false)
     expect(editor.querySelector('[data-ref-text]')).toBeNull()

@@ -46,12 +46,12 @@ class TestReadChain:
         cfg = {
             "fallback_providers": [
                 {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
-                {"provider": "youtab", "model": "Youtab-4-Llama-3.1-405B"},
+                {"provider": "youtab", "model": "openai/gpt-5.5"},
             ]
         }
         assert _read_chain(cfg) == [
             {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
-            {"provider": "youtab", "model": "Youtab-4-Llama-3.1-405B"},
+            {"provider": "youtab", "model": "openai/gpt-5.5"},
         ]
 
 
@@ -100,7 +100,7 @@ class TestListCommand:
             "model": {"provider": "anthropic", "default": "claude-sonnet-4-6"},
             "fallback_providers": [
                 {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
-                {"provider": "youtab", "model": "Youtab-4"},
+                {"provider": "youtab", "model": "openai/gpt-5.5"},
             ],
         })
         from youtab_agent_cli.fallback_cmd import cmd_fallback_list
@@ -108,7 +108,7 @@ class TestListCommand:
         out = capsys.readouterr().out
         assert "Fallback chain (2 entries)" in out
         assert "anthropic/claude-sonnet-4.6" in out
-        assert "Youtab-4" in out
+        assert "openai/gpt-5.5" in out
         # Primary should be shown too
         assert "claude-sonnet-4-6" in out
 
@@ -227,12 +227,12 @@ class TestRemoveCommand:
         _write_config(isolated_home, {
             "fallback_providers": [
                 {"provider": "openrouter", "model": "gpt-5.4"},
-                {"provider": "youtab", "model": "Youtab-4"},
+                {"provider": "youtab", "model": "openai/gpt-5.5"},
                 {"provider": "anthropic", "model": "claude-sonnet-4-6"},
             ],
         })
 
-        # Picker returns index 1 (the middle entry, "youtab / Youtab-4")
+        # Picker returns index 1 (the middle entry, "youtab / openai/gpt-5.5")
         with patch("youtab_agent_cli.setup._curses_prompt_choice", return_value=1):
             from youtab_agent_cli.fallback_cmd import cmd_fallback_remove
             cmd_fallback_remove(types.SimpleNamespace())
@@ -244,7 +244,7 @@ class TestRemoveCommand:
         ]
         out = capsys.readouterr().out
         assert "Removed fallback" in out
-        assert "Youtab-4" in out
+        assert "openai/gpt-5.5" in out
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ class TestClearCommand:
         _write_config(isolated_home, {
             "fallback_providers": [
                 {"provider": "openrouter", "model": "gpt-5.4"},
-                {"provider": "youtab", "model": "Youtab-4"},
+                {"provider": "youtab", "model": "openai/gpt-5.5"},
             ],
         })
         monkeypatch.setattr("builtins.input", lambda *a, **kw: "y")

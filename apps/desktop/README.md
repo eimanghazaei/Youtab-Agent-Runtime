@@ -3,7 +3,7 @@
 <p align="center">
   <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/releases"><img src="https://img.shields.io/badge/Download-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-FFD700?style=for-the-badge" alt="Download"></a>
   <a href="https://youtab-agent-runtime.youtab.io/docs/"><img src="https://img.shields.io/badge/Docs-youtab--agent.youtab.io-FFD700?style=for-the-badge" alt="Documentation"></a>
-  <a href="https://discord.gg/YoutabBV"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
+  <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions"><img src="https://img.shields.io/badge/Discussions-2EA043?style=for-the-badge&logo=github&logoColor=white" alt="Discussions"></a>
   <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
 </p>
 
@@ -203,7 +203,7 @@ Remove-Item -Recurse -Force "$env:LOCALAPPDATA\youtab\youtab-agent-runtime\venv"
 
 ## Community
 
-- 💬 [Discord](https://discord.gg/YoutabBV)
+- 💬 [Discussions](https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions)
 - 📖 [Documentation](https://youtab-agent-runtime.youtab.io/docs/)
 - 🐛 [Issues](https://github.com/eimanghazaei/Youtab-Agent-Runtime/issues)
 

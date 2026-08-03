@@ -118,11 +118,11 @@ Pick a different default permanently:
 youtab config set model.default anthropic/claude-sonnet-4.6
 ```
 
-### Don't pick Youtab-4 for agent work
+### Don't pick Hermes-4 for agent work
 
-Youtab-4-70B and Youtab-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them for conversation/research work through the [subscription proxy](/user-guide/features/subscription-proxy) from non-agent tools. For Youtab Agent Runtime itself, stick to the frontier agentic models above.
+Hermes-4-70B and Hermes-4-405B are available on the Portal at deep discounts, but they're **chat/reasoning models**, not tool-call-tuned. They will struggle with multi-step agent loops. Use them for conversation/research work through the [subscription proxy](/user-guide/features/subscription-proxy) from non-agent tools. For Youtab Agent Runtime itself, stick to the frontier agentic models above.
 
-The Portal's own [info page](https://api.youtab.io/info) carries this warning too — it's the official Youtab guidance, not just a Youtab-side opinion.
+The Portal's own [info page](https://api.youtab.io/info) carries this warning too — it matches the Portal's published guidance, not just a runtime-side opinion.
 
 ## 6. (Optional) Customize Tool Gateway routing
 

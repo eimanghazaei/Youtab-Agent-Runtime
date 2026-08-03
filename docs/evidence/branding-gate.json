@@ -1,0 +1,14 @@
+{
+  "binary_files_seen": 108,
+  "blocking": [],
+  "counts_by_classification": {
+    "LEGAL_PROVENANCE_ALLOWED": 116,
+    "THIRD_PARTY_DEPENDENCY_ALLOWED": 184
+  },
+  "occurrences_total": 300,
+  "ocr_enabled": false,
+  "ocr_findings": [],
+  "passed": true,
+  "schema_version": 2,
+  "text_files_scanned": 7888
+}

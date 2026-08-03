@@ -526,7 +526,7 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
 
     def test_tags_preserved_on_youtab_endpoint(self, transport):
         kw = transport.build_kwargs(
-            "youtab-3-405b",
+            "openai/gpt-5.5",
             [{"role": "user", "content": "hi"}],
             None,
             provider_profile=self._youtab_profile(),

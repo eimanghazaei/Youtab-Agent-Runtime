@@ -1,3 +1,17 @@
+<div align="center">
+  <img src="assets/banner.png" alt="Youtab Agent Runtime" width="100%">
+</div>
+
+<div align="center">
+  <a href="https://youtab-agent-runtime.youtab.io/docs/"><img src="https://img.shields.io/badge/Docs-youtab--agent.youtab.io-FFD700?style=for-the-badge" alt="Documentation"></a>
+  <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/discussions"><img src="https://img.shields.io/badge/Discussions-2EA043?style=for-the-badge&logo=github&logoColor=white" alt="Discussions"></a>
+  <a href="https://github.com/eimanghazaei/Youtab-Agent-Runtime/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
+  <a href="https://youtab.io"><img src="https://img.shields.io/badge/Built%20by-Youtab%20B.V.-blueviolet?style=for-the-badge" alt="Built by Youtab B.V."></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
+  <a href="README.ur-pk.md"><img src="https://img.shields.io/badge/Lang-اردو-green?style=for-the-badge" alt="اردو"></a>
+  <a href="README.es.md"><img src="https://img.shields.io/badge/Lang-Español-orange?style=for-the-badge" alt="Español"></a>
+</div>
+
 # Youtab Agent Runtime
 
 Youtab Agent Runtime is the portable execution layer for Youtab agents and
@@ -12,18 +26,9 @@ executes Brain-issued task contracts; it does not own final cognitive authority,
 durable memory policy, tenant policy, effect authorization, model admission, or
 verified knowledge promotion.
 
-```text
-User / Organization
-        |
-        v
-Youtab One Brain (intent, planning, authority, memory and effect gates)
-        |
-        v
-Youtab Agent Runtime (deep execution, agents, tools and evidence packets)
-        |
-        v
-Completion / evidence / effect proposals return to the Brain
-```
+<div align="center">
+  <img src="assets/architecture.svg" alt="One Youtab Brain issues signed task contracts to the Youtab Agent Runtime, which executes against N replaceable Engines and returns completion, evidence and effect proposals to the Brain" width="100%">
+</div>
 
 The managed-runtime boundary follows these invariants:
 
