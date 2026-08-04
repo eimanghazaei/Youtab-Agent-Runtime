@@ -16192,6 +16192,27 @@ def _discover_user_themes() -> list:
     return result
 
 
+@app.get("/api/dashboard/capabilities")
+async def get_dashboard_capabilities():
+    """Report which optional surfaces this deployment offers.
+
+    The interface has to learn the answer from the server, because the server
+    is where it is decided. A nav entry pointing at a route that answers 403 is
+    worse than no nav entry: it advertises a capability, then blames the user
+    for using it.
+
+    Note this is a report, never a grant. Nothing downstream consults the
+    response to decide whether to serve a request — the gate in front of the
+    routes does that, on every request, without reference to what the client
+    was told. A client that ignores this and renders the entry anyway gets the
+    same refusal as one that never asked.
+
+    Deliberately not under any gated prefix: a client must be able to discover
+    that a surface is absent without being refused for asking.
+    """
+    return {"credential_surface": byok_entitled()}
+
+
 @app.get("/api/dashboard/themes")
 async def get_dashboard_themes():
     """Return available themes and the currently active one.

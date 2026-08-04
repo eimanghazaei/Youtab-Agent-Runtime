@@ -106,6 +106,10 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { latchChatActivation } from "@/lib/chat-activation";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
+import {
+  filterCredentialSurfaceNav,
+  filterCredentialSurfaceRoutes,
+} from "@/lib/credential-surface";
 
 function RouteFallback({ label = "Loading…" }: { label?: string }) {
   return (
@@ -425,6 +429,18 @@ export default function App() {
       .catch(() => setShowTokenAnalytics(false));
   }, []);
 
+  // Whether this deployment offers the credential/catalogue surface at all.
+  // Starts false and stays false if the probe fails: an unreachable or
+  // unrecognised server is not evidence that a surface is available, and the
+  // failure a default-on would produce is a visible entry leading to a 403.
+  const [credentialSurface, setCredentialSurface] = useState(false);
+  useEffect(() => {
+    api
+      .getCapabilities()
+      .then((caps) => setCredentialSurface(caps?.credential_surface === true))
+      .catch(() => setCredentialSurface(false));
+  }, []);
+
   // A plugin can replace the built-in /chat page via `tab.override: "/chat"`
   // in its manifest.  When one does, `buildRoutes` already swaps the route
   // element for <PluginPage /> — but we also have to suppress the
@@ -448,21 +464,26 @@ export default function App() {
   );
 
   const builtinRoutes = useMemo(
-    () => ({
-      ...BUILTIN_ROUTES_CORE,
-      ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
-    }),
-    [embeddedChat],
+    () =>
+      filterCredentialSurfaceRoutes(
+        {
+          ...BUILTIN_ROUTES_CORE,
+          ...(embeddedChat ? { "/chat": ChatRouteSink } : {}),
+        },
+        credentialSurface,
+      ),
+    [embeddedChat, credentialSurface],
   );
 
   const builtinNav = useMemo(() => {
     const base = embeddedChat
       ? [CHAT_NAV_ITEM, ...BUILTIN_NAV_REST]
       : BUILTIN_NAV_REST;
-    return showTokenAnalytics
+    const withAnalytics = showTokenAnalytics
       ? base
       : base.filter((n) => n.path !== "/analytics");
-  }, [embeddedChat, showTokenAnalytics]);
+    return filterCredentialSurfaceNav(withAnalytics, credentialSurface);
+  }, [embeddedChat, showTokenAnalytics, credentialSurface]);
 
   const sidebarNav = useMemo(
     () => partitionSidebarNav(builtinNav, manifests),

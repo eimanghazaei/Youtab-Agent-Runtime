@@ -139,6 +139,29 @@ def test_every_gated_prefix_is_actually_refused():
         _assert_refused(client.get(prefix, headers=HEADERS))
 
 
+def test_the_capability_report_says_the_surface_is_absent():
+    """The interface is told the truth, so it does not advertise a 403.
+
+    Reported rather than inferred: without this the dashboard would have to
+    guess from a failed request, and a client that guesses wrong renders a nav
+    entry leading straight to a refusal.
+    """
+    response = client.get("/api/dashboard/capabilities", headers=HEADERS)
+    assert response.status_code == 200, response.text
+    assert response.json()["credential_surface"] is False
+
+
+def test_the_capability_report_is_not_itself_gated():
+    """Asking whether a surface exists must not require the surface.
+
+    If this endpoint ever moved under one of the gated prefixes, the client
+    could not distinguish "absent" from "refused" and would have no way to
+    render correctly in either case.
+    """
+    for prefix in REFUSED_PATH_PREFIXES:
+        assert not "/api/dashboard/capabilities".startswith(prefix)
+
+
 def test_an_ungated_route_is_not_refused():
     """Positive control.
 

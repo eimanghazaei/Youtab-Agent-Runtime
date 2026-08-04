@@ -520,6 +520,11 @@ export const api = {
     ),
   getConfig: (profile = getManagementProfile()) =>
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
+  // Which optional surfaces this deployment offers. A report, not a grant:
+  // the server refuses the gated routes on its own authority whatever this
+  // says, so the only thing a wrong answer here costs is a nav entry.
+  getCapabilities: () =>
+    fetchJSON<{ credential_surface: boolean }>("/api/dashboard/capabilities"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>
