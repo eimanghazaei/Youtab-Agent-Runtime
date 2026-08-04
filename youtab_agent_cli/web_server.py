@@ -550,6 +550,55 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
 
 
 @app.middleware("http")
+async def access_identity_middleware(request: Request, call_next):
+    """Require a valid Cloudflare Access assertion on externally-addressed requests.
+
+    Reaching the Access login page proves the edge is enforcing. It proves
+    nothing here: anything that can talk to this socket still reaches the app.
+    Cloudflare signs an assertion for every request it forwards, and verifying
+    that signature is what turns edge enforcement into an origin-side
+    authorization decision.
+
+    "External" is decided by the Host header, which the guard below has already
+    constrained to either a loopback alias or the one configured public name.
+    So a request addressed to the public hostname must carry a valid assertion;
+    a loopback request -- Docker's healthcheck, nginx's own probe, an operator
+    on the box -- is unaffected. That split is deliberate: making the health
+    endpoint publicly exempt would hand out an unauthenticated liveness and
+    version oracle, and making loopback require a token would break the
+    container's own healthcheck.
+
+    Fails closed. Missing configuration on an external request is a refusal,
+    not a pass. Nothing about the token, the cookie or the claims is logged.
+    """
+    from youtab_agent_cli.access_jwt import ACCESS_JWT_HEADER, AccessDenied, require_access_identity
+
+    public_host, _scheme = _public_host_and_scheme()
+    if public_host:
+        host_only = (request.headers.get("host", "") or "").strip().lower()
+        if host_only.startswith("["):
+            close = host_only.find("]")
+            host_only = host_only[1:close] if close != -1 else host_only.strip("[]")
+        elif ":" in host_only:
+            host_only = host_only.rsplit(":", 1)[0]
+
+        if host_only == public_host:
+            try:
+                email = require_access_identity(request.headers.get(ACCESS_JWT_HEADER))
+            except AccessDenied as exc:
+                _log.warning("access assertion refused: %s", exc)
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Access identity required."},
+                )
+            # Verified identity, for downstream principal mapping. Set from the
+            # validated claims only -- never from a client-supplied header.
+            request.state.access_email = email
+
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
     """Reject requests whose Host header doesn't match the bound interface.
 
