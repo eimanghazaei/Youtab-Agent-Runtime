@@ -153,13 +153,18 @@ def get_sessions(
                 # from the response, because a field a client stops rendering
                 # is one refactor away from being rendered again.
                 #
-                # Three fields carried it. `model` was rendered directly --
-                # every session in the list showed `deepseek-v4-pro` to every
+                # Three fields carried it. `model` was rendered directly, so
+                # every session in the list showed the raw engine id to every
                 # user. `billing_provider` and `billing_base_url` were not
                 # rendered by anything, which is worse in one respect: they
                 # were on the wire for every dashboard user with nothing in the
                 # UI to make anyone notice, and `billing_base_url` is an
                 # infrastructure endpoint rather than only a name.
+                #
+                # None of those three values is named in this comment on
+                # purpose. The reachability gate reads source comments, and it
+                # flagged an earlier draft of this one: a note explaining a
+                # disclosure is a poor place to repeat it.
                 #
                 # The stored model may be qualified (`provider/model`) or bare,
                 # so the provider is taken from the row when the model does not
