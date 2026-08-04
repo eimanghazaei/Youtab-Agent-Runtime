@@ -57,6 +57,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from youtab_agent_cli import __version__, __release_date__
+from youtab_agent_cli.credential_entitlement import (
+    REFUSAL_DETAIL,
+    byok_entitled,
+    is_refused_path,
+)
 from youtab_agent_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -653,6 +658,26 @@ async def _token_auth_seam(request: Request, call_next):
     """
     from youtab_agent_cli.dashboard_auth.token_auth import token_auth_middleware
     return await token_auth_middleware(request, call_next)
+
+
+@app.middleware("http")
+async def _credential_entitlement_gate(request: Request, call_next):
+    """Refuse the credential/catalogue/raw-engine surface without entitlement.
+
+    Registered after the auth seams so it runs *before* them: a caller who
+    authenticates perfectly is still refused, because the question this answers
+    is not "who are you" but "does this deployment offer that at all". Putting
+    it ahead of authentication also means the refusal cannot be reached by
+    finding a way to satisfy a session check.
+
+    Deliberately not exempting the token-auth seam. A service principal holding
+    a valid bearer token is refused here like anyone else; an operator who
+    genuinely needs this surface grants the entitlement, which is a visible,
+    auditable act, rather than minting a token that quietly routes around it.
+    """
+    if is_refused_path(request.url.path) and not byok_entitled():
+        return JSONResponse(status_code=403, content={"detail": REFUSAL_DETAIL})
+    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
