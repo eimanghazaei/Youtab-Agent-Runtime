@@ -471,12 +471,38 @@ def should_require_auth(host: str, allow_public: bool = False) -> bool:
     return host not in _LOOPBACK_HOST_VALUES
 
 
+def _public_host_and_scheme() -> tuple[str, str]:
+    """The hostname and scheme of the operator-declared public URL.
+
+    ``("", "")`` when no public URL is configured, which leaves the guard
+    exactly as strict as it was before this existed.
+
+    This is the one seam by which a name other than the bound interface
+    becomes acceptable, and it is deliberately narrow: a single URL an
+    operator wrote down, not a pattern, not a list, not a header the request
+    can influence. A dashboard behind a reverse proxy is bound to loopback and
+    addressed as something else -- that is the whole shape of the deployment,
+    and without this the Host guard rejects every request that arrives through
+    the proxy while still, correctly, rejecting everything else.
+    """
+    from youtab_agent_cli.dashboard_auth.prefix import resolve_public_url
+
+    public_url = resolve_public_url()
+    if not public_url:
+        return "", ""
+    parsed = urllib.parse.urlparse(public_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return "", ""
+    return parsed.hostname.lower(), parsed.scheme
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - The hostname of the configured dashboard public URL, if one is set
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
@@ -504,6 +530,14 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # (requires --insecure per web_server.start_server). No Host-layer
     # defence can protect that mode; rely on operator network controls.
     if bound_host in {"0.0.0.0", "::"}:
+        return True
+
+    # The operator-declared public hostname, when one is configured. Checked
+    # before the bind-specific rules because it is orthogonal to them: the
+    # process stays bound to loopback and this does not widen what may reach
+    # it, only what it will answer to once it has.
+    public_host, _public_scheme = _public_host_and_scheme()
+    if public_host and host_only == public_host:
         return True
 
     # Loopback bind: accept the loopback names
@@ -14458,6 +14492,16 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
 
     if not _is_accepted_host(parsed.netloc, bound_host):
         return f"origin_mismatch origin={origin} bound={bound_host}"
+
+    # Scheme matters for the public origin in a way it does not for loopback.
+    # `_is_accepted_host` compares hostnames only, so without this an
+    # `http://` origin bearing the public hostname would be accepted on a
+    # deployment that is only ever reachable over HTTPS -- which is exactly
+    # the origin a stripped or spoofed page would present.
+    public_host, public_scheme = _public_host_and_scheme()
+    if public_host and parsed.hostname and parsed.hostname.lower() == public_host:
+        if parsed.scheme != public_scheme:
+            return f"origin_mismatch origin={origin} expected_scheme={public_scheme}"
     return None
 
 
