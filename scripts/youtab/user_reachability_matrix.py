@@ -38,8 +38,11 @@ Production policy this encodes (Owner decision, 2026-08-02):
   API-key entry, provider catalogue, model identifier or BYOK setup path, and
   the restriction is enforced server-side rather than by hiding controls.
 * Users authenticate through Youtab and see **Alpha v0.6** and nothing else.
-  The DeepSeek credential and the ``deepseek.v4_pro`` binding are Youtab-managed
-  and live only in the production secret-management environment.
+  The upstream credential and the engine binding behind that profile are
+  Youtab-managed and live only in the production secret-management
+  environment. Neither is named here: this file is scanned like any other, and
+  a policy document that spells out the binding in order to forbid it puts the
+  binding on a readable surface. ``agent_identity`` holds the mapping.
 * Provider integration code is **kept**, as private backend infrastructure and
   as disabled internal capability for a future entitlement-controlled
   Enterprise/on-premise feature. It is not deleted, and it is not reachable.
@@ -90,9 +93,11 @@ _P = "deep" + "seek"  # assembled so this file does not match its own scan
 
 LEGACY_BRAND = re.compile(rf"{_H}|{_N}research|{_N}[-_ ]research|{_T}", re.IGNORECASE)
 
-# The private engine binding for the public Alpha v0.6 profile. `deepseek`
-# alone is deliberately included: the provider name is exactly what a normal
-# user must never be shown.
+# The private engine binding for the public Alpha v0.6 profile. The bare
+# provider name -- assembled above rather than written out, for the same reason
+# the retired brand is -- is deliberately matched on its own: it is exactly the
+# string a normal user must never be shown, so a comment that spelled it out
+# here would be a finding this gate would then have to report against itself.
 #
 # Field NAMES (`provider_id`, `model_id`, `engine_id`) are deliberately NOT in
 # this pattern. A first cut included them and they produced 692 of 1325 hits --
