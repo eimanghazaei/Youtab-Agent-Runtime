@@ -241,7 +241,7 @@ class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_youtab_home):
+    def _setup_test_client(self, monkeypatch, _isolate_youtab_home, credential_entitlement):
         """Create a TestClient and isolate the state DB under the test YOUTAB_AGENT_HOME."""
         try:
             from starlette.testclient import TestClient
@@ -1982,7 +1982,7 @@ class TestModelInfoEndpoint:
     """Tests for GET /api/model/info endpoint."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self):
+    def _setup(self, credential_entitlement):
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -3303,7 +3303,7 @@ class TestValidateProviderCredential:
     """Live-probe credential validation (/api/providers/validate)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_youtab_home):
+    def _setup_test_client(self, monkeypatch, _isolate_youtab_home, credential_entitlement):
         try:
             from starlette.testclient import TestClient
         except ImportError:

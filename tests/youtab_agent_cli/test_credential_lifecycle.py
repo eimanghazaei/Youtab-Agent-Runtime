@@ -26,6 +26,11 @@ FAKE_OAUTH_TOKEN = "oa-" + "b" * 24
 NEW_KEY = "zk-" + "c" * 24
 
 
+@pytest.fixture(autouse=True)
+def _entitled(credential_entitlement):
+    """The subject here is what a stored value does, not who may store one."""
+
+
 @pytest.fixture
 def youtab_home(monkeypatch, tmp_path):
     """Fresh YOUTAB_AGENT_HOME with .env + auth.json + config.yaml fixtures."""

@@ -11,6 +11,7 @@ an invariant against the real FastAPI endpoints (not a snapshot / count), so it
 can never silently drift again when a provider plugin is added.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 from youtab_agent_cli.models import CANONICAL_PROVIDERS
@@ -38,6 +39,11 @@ _EXEMPT = {"custom"} | _VIRTUAL
 # Anthropic supports a direct API key (Keys tab) and a subscription OAuth /
 # Claude Code login (Accounts tab); surfacing both is correct, not a bug.
 _DUAL_TAB = {"anthropic"}
+
+
+@pytest.fixture(autouse=True)
+def _entitled(credential_entitlement):
+    """Parity is a question about the catalogue, asked from behind the gate."""
 
 
 def _keys_tab_providers() -> set[str]:

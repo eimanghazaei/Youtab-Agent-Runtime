@@ -6,6 +6,29 @@ import pytest
 
 
 @pytest.fixture
+def credential_entitlement(monkeypatch):
+    """Grant this deployment the credential/catalogue/raw-engine entitlement.
+
+    Those routes are refused by default, which is what production does and what
+    ``test_credential_surface_refused.py`` pins. A module whose subject is the
+    capability *behind* the gate — what an env row looks like, how a stored
+    value rotates, which tab a provider lands on — has to get past the gate
+    before it can test any of that.
+
+    Requesting this fixture is therefore a statement about what a module is
+    for. It is deliberately opt-in rather than autouse: if it were applied to
+    the whole package, the refusal would be tested nowhere and a future route
+    would be covered only in its entitled state.
+    """
+    from youtab_agent_cli.credential_entitlement import (
+        ENTITLEMENT_ENV,
+        ENTITLEMENT_GRANTED,
+    )
+
+    monkeypatch.setenv(ENTITLEMENT_ENV, ENTITLEMENT_GRANTED)
+
+
+@pytest.fixture
 def all_assignees_spawnable(monkeypatch):
     """Pretend every assignee maps to a real Youtab profile.
 

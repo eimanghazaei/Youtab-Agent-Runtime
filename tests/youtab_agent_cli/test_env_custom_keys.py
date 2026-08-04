@@ -8,6 +8,7 @@ password-masked — so the page can list and manage it, while a catalogued key i
 NOT mislabelled custom.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 import youtab_agent_cli.web_server as web_server
@@ -15,6 +16,11 @@ from youtab_agent_cli.web_server import _SESSION_TOKEN, app
 
 client = TestClient(app)
 HEADERS = {"X-Youtab-Session-Token": _SESSION_TOKEN}
+
+
+@pytest.fixture(autouse=True)
+def _entitled(credential_entitlement):
+    """Every test here is about the shape of a row, not about who may ask."""
 
 
 def _env_rows(monkeypatch, env_on_disk):

@@ -24,6 +24,11 @@ OLD_PAT = "ghp_" + "A" * 36
 NEW_PAT = "ghp_" + "B" * 36
 
 
+@pytest.fixture(autouse=True)
+def _entitled(credential_entitlement):
+    """The subject here is on-disk rewriting, reached from behind the gate."""
+
+
 @pytest.fixture
 def youtab_home(monkeypatch, tmp_path):
     home = tmp_path / "pat_home"

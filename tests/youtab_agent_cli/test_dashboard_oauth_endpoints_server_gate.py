@@ -22,6 +22,17 @@ from youtab_agent_cli.dashboard_auth import clear_providers, register_provider
 from tests.youtab_agent_cli.conftest_dashboard_auth import StubAuthProvider
 
 
+@pytest.fixture(autouse=True)
+def _entitled(credential_entitlement):
+    """These assert the *cookie* gate on those endpoints.
+
+    The credential entitlement now refuses them earlier and for a different
+    reason, which would turn every assertion below into a 403 that passes for
+    the wrong reason. Granting the entitlement keeps each test measuring the
+    thing it was written to measure.
+    """
+
+
 @pytest.fixture
 def gated_app():
     """A gated (``auth_required``) dashboard with no session cookie set."""
