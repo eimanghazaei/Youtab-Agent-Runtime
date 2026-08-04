@@ -18,11 +18,6 @@ client = TestClient(app)
 HEADERS = {"X-Youtab-Session-Token": _SESSION_TOKEN}
 
 
-@pytest.fixture(autouse=True)
-def _entitled(credential_entitlement):
-    """Every test here is about the shape of a row, not about who may ask."""
-
-
 def _env_rows(monkeypatch, env_on_disk):
     """Drive GET /api/env with a controlled on-disk env mapping."""
     monkeypatch.setattr(web_server, "load_env", lambda: dict(env_on_disk))

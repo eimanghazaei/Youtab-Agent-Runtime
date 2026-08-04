@@ -71,10 +71,6 @@ class TestProfileScopedConfig:
 
 
 class TestProfileScopedEnv:
-    @pytest.fixture(autouse=True)
-    def _entitled(self, credential_entitlement):
-        """Profile scoping is the subject; the gate is tested elsewhere."""
-
     def test_env_set_lands_in_target_profile_only(self, client, isolated_profiles):
         resp = client.put(
             "/api/env",
@@ -164,10 +160,6 @@ class TestProfileScopedMcp:
 
 
 class TestProfileScopedModel:
-    @pytest.fixture(autouse=True)
-    def _entitled(self, credential_entitlement):
-        """Profile scoping is the subject; the gate is tested elsewhere."""
-
     def test_model_set_main_scoped(self, client, isolated_profiles):
         resp = client.post(
             "/api/model/set",

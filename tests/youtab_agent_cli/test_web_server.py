@@ -241,7 +241,7 @@ class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_youtab_home, credential_entitlement):
+    def _setup_test_client(self, monkeypatch, _isolate_youtab_home):
         """Create a TestClient and isolate the state DB under the test YOUTAB_AGENT_HOME."""
         try:
             from starlette.testclient import TestClient
@@ -1982,14 +1982,18 @@ class TestModelInfoEndpoint:
     """Tests for GET /api/model/info endpoint."""
 
     @pytest.fixture(autouse=True)
-    def _setup(self, credential_entitlement):
+    def _setup(self):
         try:
             from starlette.testclient import TestClient
         except ImportError:
             pytest.skip("fastapi/starlette not installed")
-        from youtab_agent_cli.web_server import app
+        from youtab_agent_cli.web_server import _SESSION_TOKEN, app
         self.client = TestClient(app)
-
+        # This route left PUBLIC_API_PATHS: it serves the configured upstream
+        # and the raw engine identifier, so it now authenticates like any other
+        # privileged read. These tests are about the payload's shape, so they
+        # present the loopback session token and let the route answer.
+        self.client.headers.update({"X-Youtab-Session-Token": _SESSION_TOKEN})
 
     def test_model_info_with_dict_config(self, monkeypatch):
         import youtab_agent_cli.web_server as ws
@@ -3303,7 +3307,7 @@ class TestValidateProviderCredential:
     """Live-probe credential validation (/api/providers/validate)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_youtab_home, credential_entitlement):
+    def _setup_test_client(self, monkeypatch, _isolate_youtab_home):
         try:
             from starlette.testclient import TestClient
         except ImportError:

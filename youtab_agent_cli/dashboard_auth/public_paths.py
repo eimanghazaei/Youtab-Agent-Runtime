@@ -45,9 +45,17 @@ PUBLIC_API_PATHS: frozenset[str] = frozenset({
     # Read-only config-defaults / schema feeds for the SPA's Config page.
     "/api/config/defaults",
     "/api/config/schema",
-    # Read-only model metadata (context windows, etc.) — same shape as
-    # provider catalogs already exposed on the public internet.
-    "/api/model/info",
+    # ``/api/model/info`` was here, on the reasoning that its payload was "the
+    # same shape as provider catalogs already exposed on the public internet".
+    # That premise no longer holds and the entry has been removed: the response
+    # carries the configured upstream and the raw engine identifier, which is
+    # exactly what a normal user must never be shown, and being on this list
+    # meant it answered 200 to a caller with no credential at all.
+    #
+    # It is now an ordinary authenticated route, so the authorization gate can
+    # resolve a principal for it and refuse everyone below Owner/Superadmin.
+    # Nothing in the boot handshake needs it — desktop readiness probes
+    # ``/api/health`` and ``/api/status``, both still public above.
     # Read-only theme + plugin manifests for the dashboard skin engine.
     "/api/dashboard/themes",
     "/api/dashboard/plugins",

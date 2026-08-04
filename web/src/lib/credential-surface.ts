@@ -3,11 +3,14 @@
  * surface, and how to remove them.
  *
  * Presentation only. The server refuses the underlying routes on its own
- * authority — see `youtab_agent_cli/credential_entitlement.py`, and the
- * refusals pinned in `tests/youtab_agent_cli/test_credential_surface_refused.py`.
+ * authority, per the caller's role — see `youtab_agent_cli/authz.py`, and the
+ * separation pinned in `tests/youtab_agent_cli/test_authz_separation.py`.
  * Nothing here protects anything; a client that skipped it entirely would be
  * refused exactly the same. What it avoids is a sidebar advertising a page
  * that can only answer 403.
+ *
+ * `offered` is per-caller, not per-deployment: the same instance shows the
+ * Owner these entries and hides them from a customer.
  *
  * These live outside `App.tsx` so the rule can be tested as a pure function
  * rather than by mounting the whole application, which is how the rest of this

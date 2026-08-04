@@ -81,7 +81,7 @@ def test_gated_status_is_public(gated_app):
     "/api/health",
     "/api/config/defaults",
     "/api/config/schema",
-    "/api/model/info",
+    # "/api/model/info" is deliberately absent — see the companion test below.
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
 ])
@@ -106,6 +106,24 @@ def test_other_public_api_paths_are_public_under_gate(gated_app, path):
             f"{path} redirected to {location} — should be public, "
             "not bounced to /login"
         )
+
+
+def test_model_info_is_not_public(gated_app):
+    """``/api/model/info`` must never go back on the public allowlist.
+
+    It was there, justified as read-only metadata "the same shape as provider
+    catalogs already exposed on the public internet". The payload carries the
+    configured upstream and the raw engine identifier, so under the gate it
+    answered 200 to a caller holding no credential whatsoever.
+
+    Public and authenticated is the difference between the authorization gate
+    being able to resolve a principal for this route and not. Restoring the
+    entry would silently return it to serving that payload to anyone.
+    """
+    from youtab_agent_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+
+    assert "/api/model/info" not in PUBLIC_API_PATHS
+    assert gated_app.get("/api/model/info", follow_redirects=False).status_code == 401
 
 
 # ---------------------------------------------------------------------------

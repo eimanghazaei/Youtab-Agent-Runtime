@@ -57,10 +57,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from youtab_agent_cli import __version__, __release_date__
-from youtab_agent_cli.credential_entitlement import (
+from youtab_agent_cli.authz import (
+    CREDENTIAL_READ,
+    PROVIDER_READ,
     REFUSAL_DETAIL,
-    byok_entitled,
-    is_refused_path,
+    ROLE_SCOPES,
+    Principal,
+    Role,
+    required_scope,
+    resolve_principal,
 )
 from youtab_agent_cli.config import (
     cfg_get,
@@ -607,6 +612,63 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
     return await call_next(request)
 
 
+def _principal_for_request(request: Request) -> Principal:
+    """Resolve the caller to a principal with effective scopes.
+
+    Two binds, two answers:
+
+    * **Loopback.** ``should_require_auth`` already treats a loopback bind as a
+      local, trusted operator — it is that operator's own machine, their own
+      config file and their own credentials on disk, reachable with a text
+      editor whatever this returns. Refusing them access to their own keys
+      would not protect anything, so a loopback caller resolves to the Owner
+      role. This is why the local runtime keeps working exactly as before.
+    * **Gated.** Every hosted bind, which is what ``agent.youtab.io`` is. The
+      identity comes from the verified session and the authority comes from the
+      roster. Anyone absent from it — which is every ordinary customer — is a
+      normal user holding no scopes at all.
+
+    A request with no verified session resolves to a scopeless normal user
+    rather than raising, so an unauthenticated caller is refused by the same
+    path as an under-privileged one.
+    """
+    if not getattr(request.app.state, "auth_required", False):
+        return Principal(
+            user_id="local-operator",
+            org_id="",
+            role=Role.YOUTAB_OWNER,
+            scopes=ROLE_SCOPES[Role.YOUTAB_OWNER],
+        )
+    session = getattr(request.state, "session", None)
+    if session is None:
+        return Principal(user_id="", org_id="")
+    return resolve_principal(
+        user_id=getattr(session, "user_id", ""),
+        org_id=getattr(session, "org_id", ""),
+    )
+
+
+@app.middleware("http")
+async def _authorization_gate(request: Request, call_next):
+    """Default-deny authorization for the privileged surface.
+
+    Registered *before* the auth gate so it runs *after* it: this needs the
+    verified session the gate attaches, which is the whole difference between
+    asking "is this deployment allowed to do that" — the question an earlier
+    version of this gate asked, and the wrong one — and "is this caller".
+
+    The capability is not removed for anyone. An Owner or Superadmin passes
+    straight through to the same handlers as before; a customer, including a
+    Tenant Admin, is refused. Refusal is by scope, so a route added under a
+    guarded prefix is refused until somebody grants a scope for it, rather
+    than being reachable because nobody remembered it.
+    """
+    scope = required_scope(request.url.path, request.method)
+    if scope is not None and not _principal_for_request(request).has(scope):
+        return JSONResponse(status_code=403, content={"detail": REFUSAL_DETAIL})
+    return await call_next(request)
+
+
 # ---------------------------------------------------------------------------
 # Dashboard OAuth auth gate — engaged only when start_server flags the
 # bind as non-loopback-without-insecure.  No-op pass-through in loopback
@@ -658,26 +720,6 @@ async def _token_auth_seam(request: Request, call_next):
     """
     from youtab_agent_cli.dashboard_auth.token_auth import token_auth_middleware
     return await token_auth_middleware(request, call_next)
-
-
-@app.middleware("http")
-async def _credential_entitlement_gate(request: Request, call_next):
-    """Refuse the credential/catalogue/raw-engine surface without entitlement.
-
-    Registered after the auth seams so it runs *before* them: a caller who
-    authenticates perfectly is still refused, because the question this answers
-    is not "who are you" but "does this deployment offer that at all". Putting
-    it ahead of authentication also means the refusal cannot be reached by
-    finding a way to satisfy a session check.
-
-    Deliberately not exempting the token-auth seam. A service principal holding
-    a valid bearer token is refused here like anyone else; an operator who
-    genuinely needs this surface grants the entitlement, which is a visible,
-    auditable act, rather than minting a token that quietly routes around it.
-    """
-    if is_refused_path(request.url.path) and not byok_entitled():
-        return JSONResponse(status_code=403, content={"detail": REFUSAL_DETAIL})
-    return await call_next(request)
 
 
 # ---------------------------------------------------------------------------
@@ -16193,7 +16235,7 @@ def _discover_user_themes() -> list:
 
 
 @app.get("/api/dashboard/capabilities")
-async def get_dashboard_capabilities():
+async def get_dashboard_capabilities(request: Request):
     """Report which optional surfaces this deployment offers.
 
     The interface has to learn the answer from the server, because the server
@@ -16209,8 +16251,18 @@ async def get_dashboard_capabilities():
 
     Deliberately not under any gated prefix: a client must be able to discover
     that a surface is absent without being refused for asking.
+
+    The answer is per-caller, not per-deployment. The same running instance
+    tells an Owner that the credential surface exists and a customer that it
+    does not, because for that customer it genuinely does not — every route
+    behind it will refuse them.
     """
-    return {"credential_surface": byok_entitled()}
+    principal = _principal_for_request(request)
+    return {
+        "credential_surface": principal.has(CREDENTIAL_READ),
+        "provider_catalogue": principal.has(PROVIDER_READ),
+        "role": principal.role.value,
+    }
 
 
 @app.get("/api/dashboard/themes")

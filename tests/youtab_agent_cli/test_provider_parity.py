@@ -41,11 +41,6 @@ _EXEMPT = {"custom"} | _VIRTUAL
 _DUAL_TAB = {"anthropic"}
 
 
-@pytest.fixture(autouse=True)
-def _entitled(credential_entitlement):
-    """Parity is a question about the catalogue, asked from behind the gate."""
-
-
 def _keys_tab_providers() -> set[str]:
     """Provider slugs that have at least one card on the desktop API-keys tab."""
     data = client.get("/api/env", headers=HEADERS).json()
