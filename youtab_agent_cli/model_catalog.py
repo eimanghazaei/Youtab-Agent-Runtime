@@ -61,18 +61,46 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_CATALOG_URL = (
-    "https://youtab-agent-runtime.youtab.io/docs/api/model-catalog.json"
-)
-# Fallback fetch chain. The Docusaurus site is served through Vercel, which
-# occasionally returns HTTP 403 + x-vercel-mitigated: challenge for non-
-# browser clients (urllib, curl). When that happens the disk cache goes
-# stale and new model releases never reach the picker. The raw GitHub URL
-# is the same manifest published from the same repo and is not bot-gated,
-# so we fall through to it whenever the primary URL fails.
-DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = (
-    "https://raw.githubusercontent.com/eimanghazaei/Youtab-Agent-Runtime/main/website/static/api/model-catalog.json",
-)
+# The engine catalogue is private infrastructure and is no longer published.
+#
+# It used to be served from the documentation site at
+# a public documentation path, with a raw.githubusercontent fallback. Both
+# were world-readable, and the file is a full inventory of provider and model
+# identifiers -- exactly the binding that must not reach a normal user. Anyone
+# could read which engines sit behind the product by fetching a URL, with no
+# credential and no trace.
+#
+# It now ships inside the distribution instead. The data is unchanged and the
+# runtime still needs it; what changed is that reading it requires having the
+# package rather than knowing a URL.
+#
+# There is deliberately no default remote URL. An operator may still configure
+# one for a privately hosted catalogue, and nothing fetches over the network
+# unless they do.
+DEFAULT_CATALOG_URL = ""
+DEFAULT_CATALOG_FALLBACK_URLS: tuple[str, ...] = ()
+
+#: The catalogue shipped with the package. Declared in
+#: ``[tool.setuptools.package-data]`` so sealed builds keep it.
+BUNDLED_CATALOG_PATH = Path(__file__).parent / "data" / "engine_catalog.json"
+
+
+def load_bundled_catalog() -> dict[str, Any] | None:
+    """The packaged engine catalogue, or ``None`` if it is missing/invalid.
+
+    This is the floor the runtime falls back to, so a build that lost the data
+    file degrades to "no catalogue" rather than to "fetch it from the internet".
+    """
+    try:
+        with open(BUNDLED_CATALOG_PATH, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.debug("bundled engine catalogue unavailable (%s): %s", BUNDLED_CATALOG_PATH, exc)
+        return None
+    if not _validate_manifest(data):
+        logger.debug("bundled engine catalogue failed validation: %s", BUNDLED_CATALOG_PATH)
+        return None
+    return data
 DEFAULT_TTL_HOURS = 1
 DEFAULT_FETCH_TIMEOUT = 8.0
 SUPPORTED_SCHEMA_VERSION = 1
@@ -268,8 +296,12 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
         _catalog_cache_source_mtime = disk_mtime
         return disk_data
 
-    # Need to (re)fetch. If it fails, fall back to any stale disk copy.
-    fetched = _fetch_manifest_with_fallback(cfg["url"], DEFAULT_FETCH_TIMEOUT)
+    # Need to (re)fetch. With no configured URL there is nothing to fetch --
+    # the catalogue is private and ships in the package -- so the network step
+    # is skipped entirely rather than attempted against an empty address.
+    fetched = (
+        _fetch_manifest_with_fallback(cfg["url"], DEFAULT_FETCH_TIMEOUT) if cfg["url"] else None
+    )
     if fetched is not None:
         _write_disk_cache(fetched)
         new_disk_data, new_mtime = _read_disk_cache()
@@ -285,6 +317,16 @@ def get_catalog(*, force_refresh: bool = False) -> dict[str, Any]:
         _catalog_cache = disk_data
         _catalog_cache_source_mtime = disk_mtime
         return disk_data
+
+    # Last resort: the catalogue shipped with the package. Reached on a first
+    # run, or when the cache was cleared and no private URL is configured --
+    # which is now the ordinary case, since nothing is published to fetch.
+    bundled = load_bundled_catalog()
+    if bundled is not None:
+        _write_disk_cache(bundled)
+        _catalog_cache = bundled
+        _catalog_cache_source_mtime = time.time()
+        return bundled
 
     return {}
 
@@ -396,7 +438,7 @@ def seed_cache_from_checkout(project_root: "Path | str") -> bool:
     """Overwrite the disk cache with the catalog shipped in a local checkout.
 
     ``youtab update`` pulls the latest repo, so the freshly-pulled
-    ``website/static/api/model-catalog.json`` IS the newest catalog — no
+    ``youtab_agent_cli/data/engine_catalog.json`` IS the newest catalog — no
     network round-trip needed. Copying it straight over the disk cache keeps
     the model picker current even when the remote manifest fetch is bot-gated
     or the Portal hiccups.
@@ -408,7 +450,7 @@ def seed_cache_from_checkout(project_root: "Path | str") -> bool:
     as non-fatal — the network fetch path still applies on the next picker
     open).
     """
-    src = Path(project_root) / "website" / "static" / "api" / "model-catalog.json"
+    src = Path(project_root) / "youtab_agent_cli" / "data" / "engine_catalog.json"
     try:
         with open(src, encoding="utf-8") as fh:
             data = json.load(fh)

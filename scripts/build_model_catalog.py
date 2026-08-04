@@ -14,10 +14,10 @@ Usage::
 
     python scripts/build_model_catalog.py
 
-Output: ``website/static/api/model-catalog.json``
+Output: ``youtab_agent_cli/data/engine_catalog.json`` (private, packaged)
 
 Live URL (after ``deploy-site.yml`` runs on merge to main):
-``https://youtab-agent-runtime.youtab.io/docs/api/model-catalog.json``
+the packaged private catalogue (no longer published to any URL)
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ from youtab_agent_cli.models import (  # noqa: E402
     _PROVIDER_MODELS,
 )
 
-OUTPUT_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "model-catalog.json")
+OUTPUT_PATH = os.path.join(REPO_ROOT, "youtab_agent_cli", "data", "engine_catalog.json")
 CATALOG_VERSION = 1
 
 
@@ -64,7 +64,7 @@ def build_catalog() -> dict:
         "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "metadata": {
             "source": "youtab-agent-runtime repo",
-            "docs": "https://youtab-agent-runtime.youtab.io/docs/reference/model-catalog",
+            "docs": "",  # the public catalogue reference page was retired with the catalogue
         },
         "providers": {
             "openrouter": {

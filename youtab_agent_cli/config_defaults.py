@@ -2275,13 +2275,17 @@ DEFAULT_CONFIG = {
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
-    # curated model lists for OpenRouter and Youtab Portal from this URL,
-    # falling back to the in-repo snapshot on network failure.  Lets us
-    # update model picker lists without shipping a youtab-agent-runtime release.
-    # The default URL is served by the docs site GitHub Pages deploy.
+    # curated engine lists, read from the catalogue shipped inside the package.
+    #
+    # This used to default to a public docs-site URL, which made the full
+    # inventory of provider and model identifiers world-readable to anyone who
+    # knew the address. The catalogue is private infrastructure, so it is no
+    # longer published and there is no default URL. An operator may set one to
+    # point at a privately hosted catalogue; empty means "use the packaged
+    # copy" and performs no network request at all.
     "model_catalog": {
         "enabled": True,
-        "url": "https://youtab-agent-runtime.youtab.io/docs/api/model-catalog.json",
+        "url": "",
         # Disk cache TTL in hours.  Beyond this, the CLI refetches on the
         # next /model or `youtab model` invocation; network failures
         # silently fall back to the stale cache.

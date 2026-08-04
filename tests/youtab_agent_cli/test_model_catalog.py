@@ -10,6 +10,47 @@ from unittest.mock import patch
 
 import pytest
 
+# The engine catalogue now ships inside the package, so "the network failed"
+# no longer means "there is no catalogue". That is the point of bundling it --
+# but these tests are about the fetch path, and with the floor in place they
+# would silently stop exercising it.
+#
+# This fixture removes the floor for exactly those tests, preserving their
+# original meaning: nothing cached, nothing fetchable, nothing bundled. The
+# floor itself is asserted separately, in test_engine_catalog_is_private.py and
+# in TestBundledFloor below.
+@pytest.fixture
+def no_bundled_catalog():
+    """Restore the pre-bundling world for tests about the fetch path.
+
+    Two things changed underneath these tests. The catalogue now ships in the
+    package, so "the network failed" no longer means "no catalogue"; and the
+    shipped default URL is empty, so `get_catalog` skips the network entirely
+    rather than fetching an empty address.
+
+    Both are the intended new behaviour and are asserted in TestBundledFloor.
+    This fixture puts back what these particular tests are about -- an
+    operator-configured URL, and no floor beneath it -- so they keep covering
+    the fetch chain instead of quietly passing without exercising it.
+    """
+    from unittest.mock import patch as _patch
+
+    from youtab_agent_cli import model_catalog as _mc
+
+    with _patch.object(_mc, "load_bundled_catalog", return_value=None), _patch.object(
+        _mc,
+        "_load_catalog_config",
+        return_value={
+            "enabled": True,
+            "url": "https://catalogue.invalid/private/engine_catalog.json",
+            "ttl_hours": 1,
+            "providers": {},
+            "provider_overrides": {},
+        },
+    ):
+        yield
+
+
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
@@ -72,7 +113,7 @@ class TestValidation:
 
 
 class TestFetchSuccess:
-    def test_fetch_and_cache_writes_disk(self, isolated_home):
+    def test_fetch_and_cache_writes_disk(self, isolated_home, no_bundled_catalog):
         from youtab_agent_cli import model_catalog
         manifest = _valid_manifest()
         with patch.object(
@@ -90,13 +131,13 @@ class TestFetchSuccess:
 
 
 class TestFetchFailure:
-    def test_network_failure_returns_empty_when_no_cache(self, isolated_home):
+    def test_network_failure_returns_empty_when_no_cache(self, isolated_home, no_bundled_catalog):
         from youtab_agent_cli import model_catalog
         with patch.object(model_catalog, "_fetch_manifest", return_value=None):
             result = model_catalog.get_catalog(force_refresh=True)
         assert result == {}
 
-    def test_network_failure_falls_back_to_disk_cache(self, isolated_home):
+    def test_network_failure_falls_back_to_disk_cache(self, isolated_home, no_bundled_catalog):
         from youtab_agent_cli import model_catalog
         # Prime disk cache with a fresh copy.
         manifest = _valid_manifest()
@@ -137,10 +178,13 @@ class TestFallbackChain:
     releases (opus 4.8, etc.) never reach the picker.
     """
 
-    PRIMARY = "https://youtab-agent-runtime.youtab.io/docs/api/model-catalog.json"
+    # Placeholder operator-configured URLs. The shipped default is empty --
+    # the catalogue is packaged, not published -- so these exist only to
+    # exercise the fallback plumbing that a private URL would still use.
+    PRIMARY = "https://catalogue.invalid/private/engine_catalog.json"
     FALLBACK = (
         "https://raw.githubusercontent.com/eimanghazaei/Youtab-Agent-Runtime"
-        "/main/website/static/api/model-catalog.json"
+        "/private/engine_catalog.fallback.json"
     )
 
     def test_uses_primary_when_it_succeeds(self, isolated_home):
@@ -157,7 +201,17 @@ class TestFallbackChain:
         assert result is not None
         assert calls == [self.PRIMARY], "fallback URLs must not be touched on primary success"
 
-    def test_falls_through_to_raw_github_on_primary_failure(self, isolated_home):
+    def test_falls_through_to_the_configured_fallback_on_primary_failure(
+        self, isolated_home, no_bundled_catalog
+    ):
+        """The chain still works; what changed is that it ships empty.
+
+        This used to assert a hard-coded raw.githubusercontent fallback. That
+        URL published the engine catalogue to anyone who knew it, so it was
+        retired along with the primary. The plumbing it exercised is still
+        real -- an operator with a privately hosted catalogue and a mirror
+        needs it -- so the fallback is supplied here instead of assumed.
+        """
         from youtab_agent_cli import model_catalog
         calls: list[str] = []
 
@@ -167,14 +221,26 @@ class TestFallbackChain:
                 return None  # simulate Vercel 403
             return _valid_manifest()
 
+        # Passed explicitly rather than patched onto the module: the parameter
+        # is a default argument bound at definition time, so rebinding the
+        # module attribute would not reach it and the test would pass while
+        # walking an empty chain.
         with patch.object(model_catalog, "_fetch_manifest", side_effect=fake_fetch):
-            result = model_catalog._fetch_manifest_with_fallback(self.PRIMARY, 5.0)
+            result = model_catalog._fetch_manifest_with_fallback(
+                self.PRIMARY, 5.0, fallback_urls=(self.FALLBACK,)
+            )
 
         assert result is not None
         assert calls == [self.PRIMARY, self.FALLBACK]
 
+    def test_no_fallback_url_ships_by_default(self):
+        """The retired public mirror must not come back as a default."""
+        from youtab_agent_cli import model_catalog
 
-    def test_get_catalog_uses_fallback_chain(self, isolated_home):
+        assert model_catalog.DEFAULT_CATALOG_FALLBACK_URLS == ()
+
+
+    def test_get_catalog_uses_fallback_chain(self, isolated_home, no_bundled_catalog):
         """End-to-end: ``get_catalog`` routes through the fallback helper so
         a primary URL failure transparently produces a working catalog."""
         from youtab_agent_cli import model_catalog
@@ -187,7 +253,14 @@ class TestFallbackChain:
                 return None
             return manifest
 
-        with patch.object(model_catalog, "_fetch_manifest", side_effect=fake_fetch):
+        real_chain = model_catalog._fetch_manifest_with_fallback
+
+        def chain_with_fallback(primary, timeout, fallback_urls=None):
+            return real_chain(primary, timeout, fallback_urls=(self.FALLBACK,))
+
+        with patch.object(model_catalog, "_fetch_manifest", side_effect=fake_fetch), patch.object(
+            model_catalog, "_fetch_manifest_with_fallback", side_effect=chain_with_fallback
+        ):
             result = model_catalog.get_catalog(force_refresh=True)
 
         assert result == manifest
@@ -195,7 +268,7 @@ class TestFallbackChain:
 
 
 class TestCuratedAccessors:
-    def test_openrouter_returns_tuples(self, isolated_home):
+    def test_openrouter_returns_tuples(self, isolated_home, no_bundled_catalog):
         from youtab_agent_cli import model_catalog
         with patch.object(
             model_catalog, "_fetch_manifest", return_value=_valid_manifest()
@@ -208,7 +281,7 @@ class TestCuratedAccessors:
         ]
 
 
-    def test_youtab_returns_none_when_catalog_empty(self, isolated_home):
+    def test_youtab_returns_none_when_catalog_empty(self, isolated_home, no_bundled_catalog):
         from youtab_agent_cli import model_catalog
         with patch.object(model_catalog, "_fetch_manifest", return_value=None):
             assert model_catalog.get_curated_youtab_models() is None
@@ -260,7 +333,7 @@ class TestDefaultModelFromCache:
 
         repo_root = Path(model_catalog.__file__).resolve().parent.parent
         manifest = json.loads(
-            (repo_root / "website" / "static" / "api" / "model-catalog.json").read_text()
+            (repo_root / "youtab_agent_cli" / "data" / "engine_catalog.json").read_text()
         )
         for provider in ("openrouter", "youtab"):
             block = manifest["providers"][provider]
@@ -435,10 +508,10 @@ class TestIntegrationWithModelsModule:
 
 # -----------------------------------------------------------------------------
 # Drift guard — prevent the in-repo curated lists from going out of sync with
-# the docs-hosted manifest at website/static/api/model-catalog.json.
+# the packaged manifest at youtab_agent_cli/data/engine_catalog.json.
 #
 # History: qwen/qwen3.6-plus was added to _PROVIDER_MODELS["youtab"] in commit
-# 9dd6e5510 but website/static/api/model-catalog.json was not regenerated for
+# 9dd6e5510 but youtab_agent_cli/data/engine_catalog.json was not regenerated for
 # weeks, so free-tier users on a new install fetched a stale manifest and the
 # free-tier picker showed "No free models currently available." even though
 # the Portal was serving qwen/qwen3.6-plus as free. CI must catch this.
@@ -459,11 +532,11 @@ class TestManifestMatchesInRepoLists:
         """``scripts/build_model_catalog.py`` output must match the committed file.
 
         If this fails, run ``python scripts/build_model_catalog.py`` and
-        commit the regenerated ``website/static/api/model-catalog.json``.
+        commit the regenerated ``youtab_agent_cli/data/engine_catalog.json``.
         """
         # Resolve the repo root from this test file's location.
         repo_root = Path(__file__).resolve().parents[2]
-        manifest_path = repo_root / "website" / "static" / "api" / "model-catalog.json"
+        manifest_path = repo_root / "youtab_agent_cli" / "data" / "engine_catalog.json"
 
         if not manifest_path.exists():
             pytest.skip(f"manifest missing at {manifest_path}")
@@ -481,8 +554,54 @@ class TestManifestMatchesInRepoLists:
             actual = json.load(fh)
 
         assert self._strip_volatile(actual) == self._strip_volatile(expected), (
-            "website/static/api/model-catalog.json is out of sync with "
+            "youtab_agent_cli/data/engine_catalog.json is out of sync with "
             "_PROVIDER_MODELS['youtab'] / OPENROUTER_MODELS. "
             "Run: python scripts/build_model_catalog.py && "
-            "git add website/static/api/model-catalog.json"
+            "git add youtab_agent_cli/data/engine_catalog.json"
         )
+
+
+class TestBundledFloor:
+    """The packaged catalogue is the floor when nothing else is available.
+
+    This is what makes retiring the public URL safe: with no cache, no
+    configured URL and no network, the picker still has a catalogue. Without
+    it, "the catalogue is private" would have quietly meant "there is no
+    catalogue on a fresh install".
+    """
+
+    def test_no_cache_and_no_network_still_yields_a_catalogue(self, isolated_home):
+        from unittest.mock import patch
+
+        from youtab_agent_cli import model_catalog
+
+        model_catalog._catalog_cache = None
+        model_catalog._catalog_cache_source_mtime = None
+        with patch.object(model_catalog, "_fetch_manifest", return_value=None):
+            catalog = model_catalog.get_catalog(force_refresh=True)
+
+        assert catalog, "a fresh install with no network got an empty catalogue"
+
+    def test_the_floor_is_what_ships_in_the_package(self, isolated_home):
+        from youtab_agent_cli import model_catalog
+
+        assert model_catalog.load_bundled_catalog() is not None
+
+    def test_no_network_call_is_attempted_without_a_configured_url(self, isolated_home):
+        """Empty URL must mean "do not fetch", not "fetch an empty address"."""
+        from unittest.mock import patch
+
+        from youtab_agent_cli import model_catalog
+
+        model_catalog._catalog_cache = None
+        model_catalog._catalog_cache_source_mtime = None
+        with patch.object(model_catalog, "_fetch_manifest") as fetch:
+            with patch.object(
+                model_catalog, "_load_catalog_config",
+                return_value={
+                    "enabled": True, "url": "", "ttl_hours": 1,
+                    "providers": {}, "provider_overrides": {},
+                },
+            ):
+                model_catalog.get_catalog(force_refresh=True)
+        assert not fetch.called, "a fetch was attempted with no catalogue URL configured"

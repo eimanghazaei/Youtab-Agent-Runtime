@@ -2040,7 +2040,7 @@ def list_authenticated_providers(
     curated: dict[str, list[str]] = dict(_PROVIDER_MODELS)
     curated["openrouter"] = [mid for mid, _ in OPENROUTER_MODELS]
     # "youtab" pulls from the remote model-catalog manifest published at
-    # https://youtab-agent-runtime.youtab.io/docs/api/model-catalog.json so
+    # the packaged private engine catalogue so
     # newly added Portal models surface in the /model picker without
     # requiring a Youtab release. Falls back to the in-repo
     # _PROVIDER_MODELS["youtab"] snapshot when the manifest is unreachable.

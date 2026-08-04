@@ -3869,7 +3869,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Seed the model-catalog disk cache from the freshly-pulled checkout.
         # The repo ships the canonical catalog at
-        # website/static/api/model-catalog.json, and `git pull` just made it
+        # the packaged engine catalogue, and `git pull` just made it
         # current — so copy it straight over ~/.youtab-agent-runtime/cache/model_catalog.json
         # instead of waiting on a network fetch (which can be bot-gated or hit a
         # Portal hiccup). Keeps the model picker's curated/free lists in sync
