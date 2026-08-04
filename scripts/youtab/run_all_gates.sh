@@ -59,7 +59,19 @@ begin owasp-smoke
 record owasp-smoke $?
 
 begin unit-integration-e2e
-scripts/run_tests.sh tests/youtab_runtime -q | tee "$evidence_dir/unit-integration-e2e.log"
+# `tests/youtab_runtime` alone did not reach the dashboard's own surface, so
+# the gateway lifecycle contract — the truthful start/stop/restart result and
+# the authorization that guards it — was committed but never executed here.
+# A test that CI does not run is documentation.
+#
+# Named explicitly rather than widening to all of `tests/youtab_agent_cli`:
+# that directory carries the inherited upstream suite, and pulling it in
+# wholesale would change what this gate measures in one step. Adding the file
+# that belongs to a Youtab-owned contract keeps the gate's meaning intact.
+scripts/run_tests.sh \
+  tests/youtab_runtime \
+  tests/youtab_agent_cli/test_gateway_lifecycle.py \
+  -q | tee "$evidence_dir/unit-integration-e2e.log"
 record unit-integration-e2e $?
 
 begin compileall
@@ -67,7 +79,14 @@ begin compileall
 record compileall $?
 
 begin ruff
-"$python_bin" -m ruff check youtab_runtime scripts/youtab tests/youtab_runtime --output-format concise | tee "$evidence_dir/quality-ruff.log"
+# The two lifecycle files are listed individually for the same reason they are
+# listed individually above: `youtab_agent_cli` as a whole is inherited code
+# whose lint debt is not this gate's subject, but Youtab-owned modules are.
+"$python_bin" -m ruff check \
+  youtab_runtime scripts/youtab tests/youtab_runtime \
+  youtab_agent_cli/gateway_lifecycle.py \
+  tests/youtab_agent_cli/test_gateway_lifecycle.py \
+  --output-format concise | tee "$evidence_dir/quality-ruff.log"
 record ruff $?
 
 begin uv-lock

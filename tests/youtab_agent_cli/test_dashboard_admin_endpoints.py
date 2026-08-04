@@ -366,7 +366,15 @@ class TestWebhookEndpoints:
         r = self.client.post("/api/webhooks/enable")
 
         assert r.status_code == 200
-        assert r.json() == {
+        body = r.json()
+        # `restart_job_id` is the handle for the authoritative outcome. The
+        # auto-restart goes through the same job machinery as the explicit
+        # control, so the caller can poll for whether it actually worked
+        # instead of trusting `restart_started`, which only ever meant the
+        # child was dispatched.
+        job_id = body.pop("restart_job_id", None)
+        assert job_id, "webhook enable must return a job id to poll"
+        assert body == {
             "ok": True,
             "platform": "webhook",
             "enabled": True,

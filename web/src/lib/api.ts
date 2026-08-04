@@ -959,7 +959,14 @@ export const api = {
 
   // Gateway / update actions
   restartGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
+    fetchJSON<GatewayLifecycleAccepted>("/api/gateway/restart", {
+      method: "POST",
+    }),
+  /** Authoritative outcome of a lifecycle operation. Poll until not pending. */
+  getGatewayJob: (jobId: string) =>
+    fetchJSON<GatewayLifecycleJob>(
+      `/api/gateway/jobs/${encodeURIComponent(jobId)}`,
+    ),
   updateYoutab: () =>
     fetchJSON<ActionResponse>("/api/youtab/update", { method: "POST" }),
   checkYoutabUpdate: (force = false) =>
@@ -1213,9 +1220,13 @@ export const api = {
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
   startGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
+    fetchJSON<GatewayLifecycleAccepted>("/api/gateway/start", {
+      method: "POST",
+    }),
   stopGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
+    fetchJSON<GatewayLifecycleAccepted>("/api/gateway/stop", {
+      method: "POST",
+    }),
 
   // ── Admin: Operations ───────────────────────────────────────────────
   runDoctor: () =>
@@ -1644,6 +1655,9 @@ export interface WebhookEnableResponse {
   restart_started?: boolean;
   restart_action?: string;
   restart_pid?: number | null;
+  /** Poll with `getGatewayJob` for the authoritative restart outcome.
+   *  `restart_started` only says the restart was dispatched. */
+  restart_job_id?: string;
   restart_error?: string;
 }
 
@@ -1855,6 +1869,62 @@ export interface ActionStatusResponse {
   running: boolean;
 }
 
+/** Terminal state of a gateway lifecycle operation.
+ *
+ * `state` is the only field that decides what the UI renders. `ok` is `null`
+ * while pending -- deliberately not `false`, so a control cannot show "failed"
+ * for an operation that is merely still running.
+ */
+export type GatewayJobState = "pending" | "succeeded" | "failed";
+
+export interface GatewayLifecycleJob {
+  job_id: string;
+  action: string;
+  verb: "start" | "stop" | "restart";
+  profile: string | null;
+  state: GatewayJobState;
+  ok: boolean | null;
+  pid: number | null;
+  exit_code: number | null;
+  reason: string | null;
+  detail: string;
+  started_at: number;
+  finished_at: number | null;
+}
+
+/** `202` body from a lifecycle POST: the request was accepted, nothing more. */
+export interface GatewayLifecycleAccepted extends GatewayLifecycleJob {
+  status: "accepted";
+  reused: boolean;
+}
+
+/** Poll a lifecycle job until the backend reports a terminal state.
+ *
+ * Transient fetch failures are retried rather than treated as an outcome: the
+ * dashboard briefly loses its connection *because* the gateway is restarting,
+ * and reading that as a failed restart would be wrong exactly when the restart
+ * is working. Exhausting the attempts resolves to the last observed job, which
+ * is still `pending` -- never a synthesised success.
+ */
+export async function pollGatewayJob(
+  jobId: string,
+  { attempts = 120, intervalMs = 1500 }: { attempts?: number; intervalMs?: number } = {},
+): Promise<GatewayLifecycleJob> {
+  let last: GatewayLifecycleJob | null = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const job = await api.getGatewayJob(jobId);
+      last = job;
+      if (job.state !== "pending") return job;
+    } catch {
+      // keep polling
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  if (last) return last;
+  throw new Error("Gateway operation did not report a result.");
+}
+
 export interface PlatformStatus {
   error_code?: string;
   error_message?: string;
@@ -1975,6 +2045,9 @@ export interface TelegramOnboardingApplyResponse {
   restart_started?: boolean;
   restart_action?: string;
   restart_pid?: number | null;
+  /** Poll with `getGatewayJob` for the authoritative restart outcome.
+   *  `restart_started` only says the restart was dispatched. */
+  restart_job_id?: string;
   restart_error?: string;
 }
 
@@ -2007,6 +2080,9 @@ export interface WhatsAppOnboardingApplyResponse {
   restart_started?: boolean;
   restart_action?: string;
   restart_pid?: number | null;
+  /** Poll with `getGatewayJob` for the authoritative restart outcome.
+   *  `restart_started` only says the restart was dispatched. */
+  restart_job_id?: string;
   restart_error?: string;
 }
 

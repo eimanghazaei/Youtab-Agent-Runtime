@@ -112,8 +112,7 @@ ROLE_SCOPES: Final[Mapping[Role, frozenset[str]]] = {
 #: about which role or scope would change the answer. A refusal that explains
 #: how to defeat itself is a worse refusal.
 REFUSAL_DETAIL: Final[str] = (
-    "This account is not authorized for model credentials, upstream "
-    "catalogues or raw engine selection."
+    "This account is not authorized for this administrative operation."
 )
 
 #: Roles that are Youtab-internal. Used to refuse cross-tenant reads without
@@ -244,6 +243,20 @@ ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     ("/api/model/", PROVIDER_READ),
     ("/api/providers/", PROVIDER_READ),
     ("/api/credentials/", CREDENTIAL_WRITE),
+    # Gateway lifecycle. Bringing the gateway down is the most consequential
+    # control the dashboard offers -- it is a denial of service to every user
+    # of the deployment -- so it is held to the deployment scope rather than
+    # left reachable by anyone who is merely signed in.
+    #
+    # Enumerated per verb rather than guarding the whole `/api/gateway/`
+    # prefix: `/api/gateway/drain` authenticates through the non-interactive
+    # token seam, which attaches a token principal and no session, so a prefix
+    # rule would resolve that caller to a scopeless normal user and refuse the
+    # NAS-driven drain that works today.
+    ("/api/gateway/start", DEPLOYMENT_MANAGE),
+    ("/api/gateway/stop", DEPLOYMENT_MANAGE),
+    ("/api/gateway/restart", DEPLOYMENT_MANAGE),
+    ("/api/gateway/jobs", DEPLOYMENT_MANAGE),
 )
 
 #: Methods that mutate. A mutating request to a read-scoped prefix is held to

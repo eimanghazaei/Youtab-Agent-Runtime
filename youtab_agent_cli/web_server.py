@@ -4047,42 +4047,175 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
 
 
 def _restart_gateway_after_webhook_enable(profile: Optional[str] = None) -> dict[str, Any]:
-    """Best-effort gateway restart after enabling the webhook platform."""
+    """Best-effort gateway restart after enabling the webhook platform.
+
+    Goes through the same job machinery as the explicit control so the caller
+    gets a ``restart_job_id`` to poll. ``restart_started`` remains what it has
+    always been -- a statement that the restart was *dispatched* -- and is not
+    the outcome; the job is.
+    """
     try:
-        proc, reused = _spawn_gateway_restart(profile)
+        accepted = _begin_lifecycle_job(None, "restart", profile)
     except Exception as exc:
         _log.exception("Failed to auto-restart gateway after enabling webhooks")
         return {
             "restart_started": False,
             "restart_error": str(exc),
         }
-    if reused:
-        _log.info(
-            "Webhook enable: reusing in-flight gateway restart (pid %s)",
-            proc.pid,
-        )
     return {
         "restart_started": True,
         "restart_action": "gateway-restart",
-        "restart_pid": proc.pid,
+        "restart_pid": accepted.get("pid"),
+        "restart_job_id": accepted.get("job_id"),
     }
 
 
-@app.post("/api/gateway/restart")
-async def restart_gateway(profile: Optional[str] = None):
-    """Kick off a ``youtab gateway restart`` in the background."""
+def _lifecycle_audit(request: Optional[Request], event, job, **extra: Any) -> None:
+    """Record one lifecycle decision.
+
+    Carries who, what and the outcome -- never the child's output, which is
+    where a provider key would be if one leaked into a traceback.
+
+    ``request`` is ``None`` for a restart the server triggered itself (enabling
+    webhooks). The record is still written, attributed to the system, because
+    "the gateway restarted and nobody asked" is precisely the entry an incident
+    review needs to find.
+    """
+    from youtab_agent_cli.dashboard_auth.audit import audit_log
+
+    if request is None:
+        user_id, org_id, role = "system", "", "system"
+    else:
+        principal = _principal_for_request(request)
+        user_id, org_id, role = principal.user_id, principal.org_id, principal.role.value
+    audit_log(
+        event,
+        user_id=user_id,
+        org_id=org_id,
+        role=role,
+        verb=job.verb,
+        action=job.action,
+        profile=job.profile,
+        job_id=job.job_id,
+        **extra,
+    )
+
+
+def _begin_lifecycle_job(
+    request: Optional[Request], verb: str, profile: Optional[str]
+) -> dict[str, Any]:
+    """Accept a lifecycle operation and return the ``202`` body.
+
+    The response says the request was *accepted*, and nothing about whether it
+    worked -- that answer only exists once the child has exited and the gateway
+    has been observed, which is what ``GET /api/gateway/jobs/{id}`` reports.
+    """
+    from youtab_agent_cli import gateway_lifecycle as lifecycle
+    from youtab_agent_cli.dashboard_auth.audit import AuditEvent
+
+    # Raises 400/404 for an invalid or absent profile before anything is
+    # spawned, so a typo never produces a job that fails later for a reason
+    # the caller cannot distinguish from a broken gateway.
+    subcommand = _gateway_subcommand(profile, verb)
+
     try:
-        proc, _reused = _spawn_gateway_restart(profile)
-    except HTTPException:
-        raise
+        job, created = lifecycle.REGISTRY.admit(verb, profile)
+    except lifecycle.StormBlocked as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+
+    if not created:
+        # An identical operation is already in flight. Returning its job is
+        # what makes a double-clicked Restart idempotent instead of a race
+        # between two children on the kill-and-start path.
+        return {"status": "accepted", "reused": True, **job.public()}
+
+    # Sampled BEFORE the child is spawned. Without it a restart cannot tell
+    # "the gateway came back" from "the old one never went away", and the
+    # second case would render as a successful restart.
+    pid_before = lifecycle.default_pid_probe(profile)
+
+    action = lifecycle.VERB_ACTIONS[verb]
+    try:
+        if verb == "restart":
+            # Share the existing reuse seam rather than spawning past it: the
+            # auto-restart paths (webhook enable, onboarding) also go through
+            # it, and two concurrent `youtab gateway restart` children race
+            # each other on the kill-and-start path. The job then watches
+            # whichever child is actually live, so its verdict is about the
+            # restart that is really happening.
+            proc, _reused_child = _spawn_gateway_restart(profile)
+        else:
+            proc = _spawn_youtab_action(subcommand, action)
     except Exception as exc:
-        _log.exception("Failed to spawn gateway restart")
-        raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
-    return {
-        "ok": True,
-        "pid": proc.pid,
-        "name": "gateway-restart",
-    }
+        _log.exception("Failed to spawn gateway %s", verb)
+        lifecycle.REGISTRY.finish(
+            job,
+            lifecycle.JobState.FAILED,
+            lifecycle.Reason.SPAWN_FAILED,
+            detail=f"{type(exc).__name__}",
+        )
+        _lifecycle_audit(
+            request, AuditEvent.GATEWAY_LIFECYCLE_FAILED, job,
+            reason=lifecycle.Reason.SPAWN_FAILED.value,
+        )
+        raise HTTPException(status_code=500, detail=f"Failed to {verb} gateway.")
+
+    _lifecycle_audit(request, AuditEvent.GATEWAY_LIFECYCLE_REQUESTED, job, pid=proc.pid)
+
+    log_path = _ACTION_LOG_DIR / _ACTION_LOG_FILES[action]
+
+    def _on_terminal(finished, recovered: bool) -> None:
+        if finished.state == lifecycle.JobState.SUCCEEDED:
+            event = (
+                AuditEvent.GATEWAY_LIFECYCLE_RECOVERED
+                if recovered
+                else AuditEvent.GATEWAY_LIFECYCLE_SUCCEEDED
+            )
+        else:
+            event = AuditEvent.GATEWAY_LIFECYCLE_FAILED
+        _lifecycle_audit(
+            request, event, finished,
+            reason=finished.reason.value if finished.reason else None,
+            exit_code=finished.exit_code,
+        )
+
+    lifecycle.start_job_thread(
+        job,
+        proc,
+        pid_before=pid_before,
+        tail=lambda: "\n".join(_tail_lines(log_path, 20)),
+        on_terminal=_on_terminal,
+    )
+    return {"status": "accepted", "reused": False, **job.public()}
+
+
+@app.post("/api/gateway/restart", status_code=202)
+async def restart_gateway(request: Request, profile: Optional[str] = None):
+    """Accept a gateway restart. The result arrives via the job, not from here.
+
+    ``202``, not ``200``: the operation has been admitted, not completed. This
+    endpoint previously returned ``{"ok": true}`` as soon as ``Popen`` returned,
+    which reported the spawn and called it the outcome -- so a restart that
+    exited 1 because the supervised slot did not exist rendered in the UI as a
+    success beside "Gateway Status: Off".
+    """
+    return _begin_lifecycle_job(request, "restart", profile)
+
+
+@app.get("/api/gateway/jobs/{job_id}")
+async def get_gateway_job(job_id: str):
+    """Authoritative state of one lifecycle operation.
+
+    Guarded by ``deployment:manage`` in the route table, same as the verbs that
+    create these jobs: the reason a restart failed is operational detail about
+    the deployment, not something every signed-in customer may read.
+    """
+    from youtab_agent_cli import gateway_lifecycle as lifecycle
+
+    job = lifecycle.REGISTRY.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown lifecycle job.")
+    return job.public()
 
 
 @app.post("/api/gateway/drain")
@@ -12442,28 +12575,20 @@ async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/gateway/start")
-async def start_gateway(profile: Optional[str] = None):
-    try:
-        proc = _spawn_youtab_action(_gateway_subcommand(profile, "start"), "gateway-start")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _log.exception("Failed to spawn gateway start")
-        raise HTTPException(status_code=500, detail=f"Failed to start gateway: {exc}")
-    return {"ok": True, "pid": proc.pid, "name": "gateway-start"}
+@app.post("/api/gateway/start", status_code=202)
+async def start_gateway(request: Request, profile: Optional[str] = None):
+    """Accept a gateway start. Success means a gateway is actually running.
+
+    A ``start`` whose child exits 0 without leaving a live gateway is a
+    failure, not a success -- see :mod:`youtab_agent_cli.gateway_lifecycle`.
+    """
+    return _begin_lifecycle_job(request, "start", profile)
 
 
-@app.post("/api/gateway/stop")
-async def stop_gateway(profile: Optional[str] = None):
-    try:
-        proc = _spawn_youtab_action(_gateway_subcommand(profile, "stop"), "gateway-stop")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _log.exception("Failed to spawn gateway stop")
-        raise HTTPException(status_code=500, detail=f"Failed to stop gateway: {exc}")
-    return {"ok": True, "pid": proc.pid, "name": "gateway-stop"}
+@app.post("/api/gateway/stop", status_code=202)
+async def stop_gateway(request: Request, profile: Optional[str] = None):
+    """Accept a gateway stop. Success means the gateway is actually stopped."""
+    return _begin_lifecycle_job(request, "stop", profile)
 
 
 # ---------------------------------------------------------------------------

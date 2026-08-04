@@ -46,7 +46,11 @@ def test_supervised_slots_are_container_local():
     """
     from youtab_agent_cli.service_manager import S6_DYNAMIC_SCANDIR
 
-    assert str(S6_DYNAMIC_SCANDIR).startswith("/run/"), (
+    # ``as_posix()`` rather than ``str()``: the constant is a container path,
+    # but ``Path`` renders it with the *host* separator, so on a Windows
+    # developer machine ``str()`` is ``\run\service`` and the assertion would
+    # fail for a reason that has nothing to do with the topology.
+    assert S6_DYNAMIC_SCANDIR.as_posix().startswith("/run/"), (
         f"supervised slots now live at {S6_DYNAMIC_SCANDIR}; if that is shared "
         "between containers, revisit the single-container topology"
     )

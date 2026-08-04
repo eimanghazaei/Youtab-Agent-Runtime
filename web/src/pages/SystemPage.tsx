@@ -44,7 +44,7 @@ import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { YoutabConsoleModal } from "@/components/YoutabConsoleModal";
 import { cn, themedBody } from "@/lib/utils";
-import { api } from "@/lib/api";
+import { api, pollGatewayJob } from "@/lib/api";
 import type {
   StatusResponse,
   MemoryStatus,
@@ -58,6 +58,7 @@ import type {
   CuratorStatus,
   PortalStatus,
   DebugShareResponse,
+  GatewayLifecycleJob,
 } from "@/lib/api";
 
 function formatBytes(n: number): string {
@@ -205,6 +206,9 @@ export default function SystemPage() {
   const [loading, setLoading] = useState(true);
 
   const [activeAction, setActiveAction] = useState<string | null>(null);
+  // Authoritative outcome of the last lifecycle operation, straight from the
+  // backend. `pending` renders as pending; it is never optimistically green.
+  const [gatewayJob, setGatewayJob] = useState<GatewayLifecycleJob | null>(null);
   const [consoleOpen, setConsoleOpen] = useState(false);
 
   // Add-credential form.
@@ -285,21 +289,41 @@ export default function SystemPage() {
   }, [loadAll]);
 
   // ── Gateway lifecycle ──────────────────────────────────────────────
+  //
+  // The POST returns 202 with a job id and says nothing about whether the
+  // operation worked. The verdict is polled from the job, so a child that
+  // exits non-zero -- or exits cleanly while leaving no running gateway --
+  // renders as a failure here instead of the "Gateway restart started"
+  // success the old code showed unconditionally.
   const runGateway = async (verb: "start" | "stop" | "restart") => {
     try {
-      if (verb === "start") {
-        await api.startGateway();
-        setActiveAction("gateway-start");
-      } else if (verb === "stop") {
-        await api.stopGateway();
-        setActiveAction("gateway-stop");
+      const accepted =
+        verb === "start"
+          ? await api.startGateway()
+          : verb === "stop"
+            ? await api.stopGateway()
+            : await api.restartGateway();
+      setActiveAction(accepted.action);
+      // Pending is rendered inline beside the controls rather than toasted:
+      // a transient toast cannot express "still running", which is the state
+      // the operator most needs to see.
+      setGatewayJob(accepted);
+
+      const job = await pollGatewayJob(accepted.job_id);
+      setGatewayJob(job);
+      if (job.state === "succeeded") {
+        showToast(`Gateway ${verb} succeeded`, "success");
       } else {
-        await api.restartGateway();
-        setActiveAction("gateway-restart");
+        showToast(
+          `Gateway ${verb} failed: ${job.reason ?? "unknown"}${
+            job.exit_code != null ? ` (exit ${job.exit_code})` : ""
+          }`,
+          "error",
+        );
       }
-      showToast(`Gateway ${verb} started`, "success");
-      setTimeout(loadAll, 3000);
+      loadAll();
     } catch (e) {
+      setGatewayJob(null);
       showToast(`Gateway ${verb} failed: ${e}`, "error");
     }
   };
@@ -1050,13 +1074,35 @@ export default function SystemPage() {
                 {status?.gateway_state ?? "—"}
                 {status?.gateway_pid ? ` · pid ${status.gateway_pid}` : ""}
               </span>
+              {/* Outcome of the last lifecycle operation, from the backend
+                  job. Pending is shown as pending -- the control does not go
+                  green until the backend says the gateway is actually up. */}
+              {gatewayJob && (
+                <Badge
+                  data-testid="gateway-job-state"
+                  tone={
+                    gatewayJob.state === "succeeded"
+                      ? "success"
+                      : gatewayJob.state === "failed"
+                        ? "destructive"
+                        : "secondary"
+                  }
+                >
+                  {gatewayJob.verb}{" "}
+                  {gatewayJob.state === "pending"
+                    ? "pending…"
+                    : gatewayJob.state === "succeeded"
+                      ? "succeeded"
+                      : `failed: ${gatewayJob.reason ?? "unknown"}`}
+                </Badge>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <Button
                 size="sm"
                 className="uppercase"
                 onClick={() => runGateway("start")}
-                disabled={gatewayRunning}
+                disabled={gatewayRunning || gatewayJob?.state === "pending"}
                 prefix={<Play className="h-3.5 w-3.5" />}
               >
                 Start
@@ -1065,6 +1111,7 @@ export default function SystemPage() {
                 size="sm"
                 className="uppercase"
                 onClick={() => runGateway("restart")}
+                disabled={gatewayJob?.state === "pending"}
                 prefix={<RotateCw className="h-3.5 w-3.5" />}
               >
                 Restart
@@ -1074,7 +1121,7 @@ export default function SystemPage() {
                 className="uppercase text-warning"
                 ghost
                 onClick={() => runGateway("stop")}
-                disabled={!gatewayRunning}
+                disabled={!gatewayRunning || gatewayJob?.state === "pending"}
                 prefix={<Power className="h-3.5 w-3.5" />}
               >
                 Stop

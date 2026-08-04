@@ -61,6 +61,16 @@ class AuditEvent(enum.Enum):
     # binding or read a credential slot.
     PRIVILEGED_ACCESS_GRANTED = "privileged_access_granted"
     PRIVILEGED_ACCESS_DENIED = "privileged_access_denied"
+    # Gateway lifecycle. Requested is recorded when the operation is accepted;
+    # the outcome events are recorded when it actually reaches a terminal
+    # state, which is a different moment and frequently a different answer.
+    # Recovery is separated from success because "it came back after being
+    # down" is the supervisor working, and reading that as an ordinary restart
+    # hides every crash the supervisor absorbed.
+    GATEWAY_LIFECYCLE_REQUESTED = "gateway_lifecycle_requested"
+    GATEWAY_LIFECYCLE_SUCCEEDED = "gateway_lifecycle_succeeded"
+    GATEWAY_LIFECYCLE_FAILED = "gateway_lifecycle_failed"
+    GATEWAY_LIFECYCLE_RECOVERED = "gateway_lifecycle_recovered"
 
 
 def _resolve_log_path() -> Path:
