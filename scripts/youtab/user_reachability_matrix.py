@@ -198,6 +198,14 @@ PRIVATE_BINDING_PATH_RULES: list[tuple[str, str]] = [
     (r"^youtab_agent_cli/agent_identity\.(py|v1\.json)$", "the Agent-to-engine binding and its "
      "sole resolver. Generated from the backend registry, read only by the resolver, and "
      "never served: this is what lets every surface above it render a public label."),
+    (r"^youtab_agent_cli/data/engine_catalog\.json$", "the engine catalogue. It was published "
+     "at /docs/api/model-catalog.json and mirrored on raw.githubusercontent, which made the "
+     "whole provider/model inventory world-readable; it now ships inside the package and is "
+     "read by the model picker's resolver, never served. An exact path, not a directory "
+     "prefix: youtab_agent_cli/data/ must not become a place where anything private can be "
+     "dropped without review."),
+    (r"^scripts/build_model_catalog\.py$", "generator for the private engine catalogue; "
+     "writes the packaged artifact and ships nothing to a user"),
     (r"^scripts/youtab/generate_agent_identity\.py$", "generator for the binding artifact; "
      "runs against the authoritative backend registry, ships nothing to a user"),
     (r"^youtab_agent_cli/(auth|credential|secrets|dump)[^/]*\.py$", "credential plumbing"),

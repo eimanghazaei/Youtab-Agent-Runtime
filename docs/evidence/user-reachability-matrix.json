@@ -2,8 +2,8 @@
   "counts_by_classification": {
     "LEGAL_PROVENANCE": 538,
     "MIGRATION_COMPAT": 636,
-    "PRIVATE_BINDING": 267,
-    "USER_REACHABLE": 277
+    "PRIVATE_BINDING": 271,
+    "USER_REACHABLE": 273
   },
   "images_deferred_to_branding_gate": 69,
   "matrix_by_surface": {
@@ -12,7 +12,7 @@
     },
     "cli": {
       "LEGAL_PROVENANCE": 2,
-      "PRIVATE_BINDING": 66,
+      "PRIVATE_BINDING": 70,
       "USER_REACHABLE": 99
     },
     "docs.repo": {
@@ -22,7 +22,7 @@
     "docs.site": {
       "LEGAL_PROVENANCE": 54,
       "MIGRATION_COMPAT": 3,
-      "USER_REACHABLE": 107
+      "USER_REACHABLE": 103
     },
     "env.example": {
       "USER_REACHABLE": 1
@@ -1880,46 +1880,6 @@
     },
     {
       "classification": "USER_REACHABLE",
-      "line": 92,
-      "match": "deepseek",
-      "path": "website/static/api/model-catalog.json",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "\"id\": \"deepseek/deepseek-v4-pro\",",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 96,
-      "match": "deepseek",
-      "path": "website/static/api/model-catalog.json",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "\"id\": \"deepseek/deepseek-v4-flash\",",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 228,
-      "match": "deepseek",
-      "path": "website/static/api/model-catalog.json",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "\"id\": \"deepseek/deepseek-v4-pro\"",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
-      "line": 231,
-      "match": "deepseek",
-      "path": "website/static/api/model-catalog.json",
-      "reason": "unclassified occurrence on a docs.site surface",
-      "surface": "docs.site",
-      "text": "\"id\": \"deepseek/deepseek-v4-flash\"",
-      "token_family": "private_engine"
-    },
-    {
-      "classification": "USER_REACHABLE",
       "line": 60,
       "match": "DeepSeek",
       "path": "youtab-already-has-routines.md",
@@ -1960,7 +1920,7 @@
     },
     {
       "classification": "USER_REACHABLE",
-      "line": 2947,
+      "line": 2951,
       "match": "DeepSeek",
       "path": "youtab_agent_cli/config_defaults.py",
       "reason": "unclassified occurrence on a cli surface",
@@ -1970,7 +1930,7 @@
     },
     {
       "classification": "USER_REACHABLE",
-      "line": 3265,
+      "line": 3269,
       "match": "DEEPSEEK",
       "path": "youtab_agent_cli/config_defaults.py",
       "reason": "unclassified occurrence on a cli surface",
@@ -1980,7 +1940,7 @@
     },
     {
       "classification": "USER_REACHABLE",
-      "line": 3266,
+      "line": 3270,
       "match": "DeepSeek",
       "path": "youtab_agent_cli/config_defaults.py",
       "reason": "unclassified occurrence on a cli surface",
@@ -1990,7 +1950,7 @@
     },
     {
       "classification": "USER_REACHABLE",
-      "line": 3267,
+      "line": 3271,
       "match": "DeepSeek",
       "path": "youtab_agent_cli/config_defaults.py",
       "reason": "unclassified occurrence on a cli surface",
@@ -2000,7 +1960,7 @@
     },
     {
       "classification": "USER_REACHABLE",
-      "line": 3268,
+      "line": 3272,
       "match": "deepseek",
       "path": "youtab_agent_cli/config_defaults.py",
       "reason": "unclassified occurrence on a cli surface",
@@ -2010,7 +1970,7 @@
     },
     {
       "classification": "USER_REACHABLE",
-      "line": 3272,
+      "line": 3276,
       "match": "DEEPSEEK",
       "path": "youtab_agent_cli/config_defaults.py",
       "reason": "unclassified occurrence on a cli surface",
@@ -2020,7 +1980,7 @@
     },
     {
       "classification": "USER_REACHABLE",
-      "line": 3273,
+      "line": 3277,
       "match": "DeepSeek",
       "path": "youtab_agent_cli/config_defaults.py",
       "reason": "unclassified occurrence on a cli surface",
@@ -2030,7 +1990,7 @@
     },
     {
       "classification": "USER_REACHABLE",
-      "line": 3274,
+      "line": 3278,
       "match": "DeepSeek",
       "path": "youtab_agent_cli/config_defaults.py",
       "reason": "unclassified occurrence on a cli surface",
@@ -2849,5 +2809,5 @@
       "token_family": "private_engine"
     }
   ],
-  "user_reachable_total": 277
+  "user_reachable_total": 273
 }
