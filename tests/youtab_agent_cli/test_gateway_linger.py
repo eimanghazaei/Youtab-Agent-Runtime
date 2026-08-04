@@ -2,7 +2,32 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 import youtab_agent_cli.gateway as gateway
+
+
+@pytest.fixture
+def posix_systemd_host(monkeypatch):
+    """Model the POSIX host a `systemctl --user` install runs on.
+
+    ``_systemctl_cmd`` calls ``_ensure_user_systemd_env``, which starts with
+    ``os.getuid()``. That attribute does not exist on Windows, so a developer
+    running this suite there got ``AttributeError: module 'os' has no attribute
+    'getuid'`` from inside the product before any assertion was reached -- a
+    failure that says nothing about the linger behaviour under test.
+
+    The platform is modelled rather than skipped, so the systemd install path
+    is exercised on every host and the argv contract below is checked
+    everywhere. Both env vars are pre-set because that is the branch a real
+    logged-in systemd session takes: with them present the helper returns
+    without probing ``/run/user/<uid>`` or mutating ``os.environ``, which is
+    also what makes this deterministic on a Linux CI runner where that
+    directory may genuinely exist.
+    """
+    monkeypatch.setattr(gateway.os, "getuid", lambda: 1000, raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
 
 
 class TestEnsureLingerEnabled:
@@ -66,7 +91,9 @@ class TestEnsureLingerEnabled:
         assert "Permission denied" in out
 
 
-def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
+def test_systemd_install_calls_linger_helper(
+    monkeypatch, tmp_path, capsys, posix_systemd_host
+):
     unit_path = tmp_path / "systemd" / "user" / "youtab-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)

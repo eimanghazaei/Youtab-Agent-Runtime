@@ -42,6 +42,27 @@ class GatewayLifecycleBlocked(ValueError):
     """Raised when a cron job spec contains a gateway-lifecycle command."""
 
 
+# The service identifier this product actually registers, in the shapes a
+# supervisor names it: the launchd label `ai.youtab-agent-runtime.gateway` and
+# the systemd unit `youtab-gateway[.service]`.
+#
+# The `[.\-]?` that stood here matched `youtab-gateway` and `youtab.gateway`
+# and nothing else, so it recognised the *short* label and missed the one this
+# product ships. That is not a cosmetic gap: `launchctl kickstart
+# gui/501/ai.youtab-agent-runtime.gateway` is the exact command the restart-loop
+# breaker exists to stop, and the guard read it as unrelated. The label gained
+# its middle components when the runtime was renamed and this pattern was
+# renamed token-for-token alongside it, which preserved the spelling and lost
+# the meaning.
+#
+# Intermediate components are matched explicitly rather than with `.*` so the
+# branch still refuses supervisor operations on the product's *other*
+# services -- `ai.youtab-agent-runtime.update-checker.plist` and
+# `...daemon` have no `gateway` component and must keep passing through.
+# The trailing guard stops `gateway-watcher`-style names from matching a
+# service that merely starts with the word.
+_GATEWAY_SERVICE_LABEL = r"\byoutab(?:[.\-][a-z0-9]+)*[.\-]gateway(?![\w-])"
+
 # Shell-level command shapes that target the gateway lifecycle. Each branch
 # is anchored on a concrete command identifier so a match can only fire on
 # actual shell-command-shaped strings, not on prose.
@@ -52,13 +73,14 @@ _GATEWAY_LIFECYCLE_PATTERN = re.compile(
     # gateway is benign (a no-op or "already running" error), and a
     # legitimate cron job might start a sibling profile's gateway.
     r"(?:youtab\s+gateway\s+(?:restart|stop))"
-    # Branch B: launchctl ops on a youtab-gateway label. macOS launchd
-    # labels look like `ai.youtab-agent-runtime.gateway` / `youtab-gateway`. Requiring the
+    # Branch B: launchctl ops on a youtab-gateway label. Requiring the
     # gateway identifier prevents blocking unrelated youtab services (e.g.
     # `launchctl unload ai.youtab-agent-runtime.update-checker.plist`).
-    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart)\b[^\n]*\byoutab[.\-]?gateway)"
+    r"|(?:launchctl\s+(?:kickstart|unload|load|stop|restart)\b[^\n]*"
+    + _GATEWAY_SERVICE_LABEL + r")"
     # Branch C: systemctl ops on a youtab-gateway unit.
-    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*\byoutab[.\-]?gateway)"
+    r"|(?:systemctl\s+(?:-\S+\s+)*(?:restart|stop|start)\b[^\n]*"
+    + _GATEWAY_SERVICE_LABEL + r")"
     # Branch D: pkill / kill targeting the youtab gateway process. Both
     # token orders because real reproductions show both.
     r"|(?:p?kill\b[^\n]*\byoutab\b[^\n]*\bgateway)"

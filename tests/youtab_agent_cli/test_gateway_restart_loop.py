@@ -29,11 +29,45 @@ class TestGatewayLifecyclePattern:
         "youtab gateway restart",
         "youtab gateway stop",
         "youtab  gateway  restart",         # double spaces
-        "Hermez Gateway Restart".lower().replace("z", "s"),  # case handled
+        # Mixed case. This case previously spelled the retired upstream brand,
+        # assembled from a misspelling at runtime so the literal never appeared
+        # in the file — an evasion of the branding gate rather than a contract.
+        # What it was actually testing is case-insensitivity, which is what it
+        # tests now, against the command this product ships. The retired brand
+        # is not restored: `pyproject.toml` installs `youtab` and no legacy
+        # entrypoint, so that command cannot exist on a Youtab install, and the
+        # branding gate classifies the old CLI name as forbidden product
+        # identity.
+        "Youtab Gateway Restart",           # mixed case
         "YOUTAB GATEWAY RESTART",           # uppercase
     ])
     def test_youtab_gateway_commands(self, text):
         assert _contains_gateway_lifecycle_command(text), f"Should match: {text!r}"
+
+
+    @pytest.mark.parametrize("cmd", [
+        # The launchd label this product actually registers. The guard matched
+        # only the short `youtab-gateway` form and read these as unrelated, so
+        # the restart-loop breaker did not fire on the one command the module
+        # docstring names as the reason it exists.
+        "launchctl kickstart gui/501/ai.youtab-agent-runtime.gateway",
+        "launchctl kickstart -k gui/501/ai.youtab-agent-runtime.gateway",
+        "launchctl unload ai.youtab-agent-runtime.gateway",
+        "launchctl stop ai.youtab-agent-runtime.gateway",
+    ])
+    def test_the_shipped_launchd_label_is_recognised(self, cmd):
+        assert _contains_gateway_lifecycle_command(cmd), f"Should match: {cmd!r}"
+
+
+    @pytest.mark.parametrize("cmd", [
+        # Widening the label must not swallow the product's other services.
+        "launchctl unload ai.youtab-agent-runtime.update-checker.plist",
+        "launchctl restart ai.youtab-agent-runtime.daemon",
+        # A service whose name merely begins with the word is not the gateway.
+        "launchctl restart ai.youtab-agent-runtime.gateway-watcher",
+    ])
+    def test_sibling_services_are_still_not_blocked(self, cmd):
+        assert not _contains_gateway_lifecycle_command(cmd), f"Should NOT match: {cmd!r}"
 
 
     @pytest.mark.parametrize("text", [

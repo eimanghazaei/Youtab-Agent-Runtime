@@ -24,7 +24,52 @@ def oauth_file(monkeypatch, tmp_path):
     return target
 
 
-def test_dashboard_oauth_write_uses_owner_only_permissions(oauth_file):
+def _filesystem_enforces_mode_bits(tmp_path) -> bool:
+    """Does this filesystem actually store POSIX permission bits?
+
+    A capability probe rather than a platform name: the question is what the
+    filesystem does, and the answer is a property of the mount, not of
+    ``sys.platform``. NTFS has no mode bits for ``chmod`` to set -- Python's
+    ``os.chmod`` there only toggles the read-only attribute -- so ``st_mode``
+    reads back 0o666 whatever was requested.
+    """
+    probe = tmp_path / '.mode-probe'
+    probe.write_text('', encoding='utf-8')
+    os.chmod(probe, 0o600)
+    supported = (probe.stat().st_mode & 0o777) == 0o600
+    probe.unlink()
+    return supported
+
+
+def test_dashboard_oauth_write_uses_owner_only_permissions(oauth_file, tmp_path, monkeypatch):
+    """The OAuth token file must be created owner-only, never world-readable.
+
+    Two assertions, because two different things are being checked and only
+    one of them is about our code.
+
+    The mode our writer *applies* is our code, it is identical on every
+    platform, and it is asserted on every platform. This previously had no
+    coverage outside POSIX at all: the test asserted only the resulting bits,
+    so on Windows it failed with ``assert 438 == 384`` -- 0o666 against 0o600 --
+    which is a true statement about NTFS and says nothing about whether the
+    product still asks for 0o600.
+
+    Whether those bits actually land is the filesystem's contract, so it is
+    asserted wherever the filesystem implements it. On the Linux CI runner
+    that is the full end-to-end check exactly as before; nothing is weakened
+    there.
+    """
+    import utils
+
+    applied = {}
+    real = utils.atomic_json_write
+
+    def spy(path, data, **kwargs):
+        applied['mode'] = kwargs.get('mode')
+        return real(path, data, **kwargs)
+
+    monkeypatch.setattr(utils, 'atomic_json_write', spy)
+
     old_umask = os.umask(0o022)
     try:
         _save_anthropic_oauth_creds('access-token', 'refresh-token', 123456)
@@ -32,8 +77,13 @@ def test_dashboard_oauth_write_uses_owner_only_permissions(oauth_file):
         os.umask(old_umask)
 
     assert oauth_file.exists()
-    mode = oauth_file.stat().st_mode & 0o777
-    assert mode == 0o600
+    assert applied.get('mode') == 0o600, (
+        'the OAuth token file must be created 0o600; a umask-dependent default '
+        'leaves it world-readable'
+    )
+
+    if _filesystem_enforces_mode_bits(tmp_path):
+        assert oauth_file.stat().st_mode & 0o777 == 0o600
 
 
 def test_dashboard_oauth_write_uses_atomic_json_write_with_owner_only_mode(oauth_file, monkeypatch):

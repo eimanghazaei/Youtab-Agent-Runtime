@@ -10055,6 +10055,27 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def _reexec_machine_dashboard(reexec_argv: list, env: dict) -> None:
+    """Hand this process over to the machine dashboard. Never returns.
+
+    Two mechanisms, one contract. ``os.execvpe`` does not truly replace the
+    process on Windows -- it spawns via CreateProcess and the parent exits --
+    and under Python 3.14+ that path can crash with STATUS_ACCESS_VIOLATION
+    (0xC0000005) when re-executing the dashboard for a non-default profile. So
+    Windows waits on an explicit child instead.
+
+    The selection lives in its own function so it can be tested on either
+    platform without driving the whole ``cmd_dashboard`` path. It previously
+    sat inline, and the test for it patched only ``os.execvpe``: on Windows
+    that patch was simply never reached, the real ``subprocess.Popen`` ran, and
+    the test built the web UI and tried to bind the dashboard port for real.
+    """
+    if sys.platform == "win32":
+        proc = subprocess.Popen(reexec_argv, env=env)
+        sys.exit(proc.wait())
+    os.execvpe(sys.executable, reexec_argv, env)
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     _token_file = getattr(args, "ssh_session_token_file", None)
@@ -10195,16 +10216,7 @@ def cmd_dashboard(args):
             # Best-effort: if root resolution fails, fall back to the prior
             # behaviour (drop YOUTAB_AGENT_HOME) rather than block the reroute.
             env.pop("YOUTAB_AGENT_HOME", None)
-        # On Windows, os.execvpe() does not truly replace the process — it
-        # spawns via CreateProcess then the parent exits.  Under Python 3.14+
-        # this can crash with STATUS_ACCESS_VIOLATION (0xC0000005) when
-        # re-executing the dashboard for a non-default profile.  Use
-        # subprocess.Popen + sys.exit() on Windows to avoid the crash.
-        if sys.platform == "win32":
-            proc = subprocess.Popen(reexec_argv, env=env)
-            sys.exit(proc.wait())
-        else:
-            os.execvpe(sys.executable, reexec_argv, env)
+        _reexec_machine_dashboard(reexec_argv, env)
 
     if _token_file:
         _ssh_session_token = _read_ssh_session_token_file(_token_file)
