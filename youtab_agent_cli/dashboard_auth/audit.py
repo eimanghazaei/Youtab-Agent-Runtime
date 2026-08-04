@@ -54,6 +54,13 @@ class AuditEvent(enum.Enum):
     NATIVE_CODE_ISSUED = "native_code_issued"
     NATIVE_TOKEN_SUCCESS = "native_token_success"
     NATIVE_TOKEN_FAILURE = "native_token_failure"
+    # Authorization decisions on the privileged surface — credentials, the
+    # upstream catalogue, engine bindings. Both outcomes are recorded, not just
+    # refusals: "who was turned away" is the smaller half of the question, and
+    # a log that only holds denials cannot answer who actually changed a
+    # binding or read a credential slot.
+    PRIVILEGED_ACCESS_GRANTED = "privileged_access_granted"
+    PRIVILEGED_ACCESS_DENIED = "privileged_access_denied"
 
 
 def _resolve_log_path() -> Path:

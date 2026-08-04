@@ -664,7 +664,28 @@ async def _authorization_gate(request: Request, call_next):
     than being reachable because nobody remembered it.
     """
     scope = required_scope(request.url.path, request.method)
-    if scope is not None and not _principal_for_request(request).has(scope):
+    if scope is None:
+        return await call_next(request)
+
+    principal = _principal_for_request(request)
+    granted = principal.has(scope)
+    # Both outcomes, and the same fields for each, so the record answers "who
+    # changed a binding" as readily as "who was turned away". No secret, no
+    # request body, no token: the audit trail must never become the place a
+    # credential ends up.
+    from youtab_agent_cli.dashboard_auth.audit import AuditEvent, audit_log
+
+    audit_log(
+        AuditEvent.PRIVILEGED_ACCESS_GRANTED if granted
+        else AuditEvent.PRIVILEGED_ACCESS_DENIED,
+        user_id=principal.user_id,
+        org_id=principal.org_id,
+        role=principal.role.value,
+        scope=scope,
+        method=request.method,
+        path=request.url.path,
+    )
+    if not granted:
         return JSONResponse(status_code=403, content={"detail": REFUSAL_DETAIL})
     return await call_next(request)
 

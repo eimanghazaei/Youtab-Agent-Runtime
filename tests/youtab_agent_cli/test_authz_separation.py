@@ -273,6 +273,59 @@ def test_the_capability_report_is_not_itself_guarded():
     assert required_scope("/api/dashboard/capabilities", "GET") is None
 
 
+def _audit_lines(home):
+    log = home / "logs" / "dashboard-auth.log"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+
+
+def test_privileged_decisions_generate_audit_events(gated, tmp_path, monkeypatch):
+    """Both outcomes are recorded, and neither record carries a secret.
+
+    A trail holding only refusals cannot answer who actually read a credential
+    slot or changed a binding, which is the question an incident starts from.
+    """
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+
+    _as(gated, NORMAL).get("/api/providers/oauth")
+    _as(gated, OWNER).get("/api/providers/oauth")
+
+    events = _audit_lines(tmp_path)
+    denied = [e for e in events if e["event"] == "privileged_access_denied"]
+    granted = [e for e in events if e["event"] == "privileged_access_granted"]
+
+    assert denied, "a refusal on the privileged surface left no audit record"
+    assert granted, "an authorized privileged read left no audit record"
+    assert denied[-1]["user_id"] == NORMAL
+    assert denied[-1]["role"] == Role.NORMAL_USER.value
+    assert denied[-1]["scope"] == PROVIDER_READ
+    assert granted[-1]["user_id"] == OWNER
+    assert granted[-1]["role"] == Role.YOUTAB_OWNER.value
+
+    # The audit trail must never become the place a credential ends up.
+    blob = json.dumps(events)
+    for forbidden in ("access_token", "api_key", "password", "cookie"):
+        assert forbidden not in blob
+
+
+def test_a_credential_write_is_audited_without_its_payload(gated, tmp_path, monkeypatch):
+    """The value being written must not reach the log with the event."""
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+    secret = "sk-" + "z" * 24
+
+    _as(gated, NORMAL).put(
+        "/api/env", json={"key": "EXAMPLE_UPSTREAM_API_KEY", "value": secret}
+    )
+
+    events = _audit_lines(tmp_path)
+    assert any(e["event"] == "privileged_access_denied" for e in events)
+    assert any(e["scope"] == CREDENTIAL_WRITE for e in events), (
+        "a mutating credential request must be audited against the write scope"
+    )
+    assert secret not in json.dumps(events), "the submitted value reached the audit log"
+
+
 def test_an_unguarded_route_is_not_refused_for_a_normal_user(gated):
     """Positive control.
 
