@@ -27,50 +27,53 @@
 #     this on an internet-facing host.
 #
 services:
-  gateway:
+  # ONE container. The dashboard is an s6-supervised service *inside* the
+  # gateway-role container, not a container of its own.
+  #
+  # This was two services until it was found not to work. `service_manager`
+  # locates supervised slots under `/run/service`, which is container-local
+  # tmpfs: a `gateway-default` slot registered inside a gateway container is
+  # invisible to a dashboard in a separate container, so the dashboard's
+  # Restart Gateway control failed with `no such gateway 'default'` and the UI
+  # reported "Gateway restart failed with exit 1 / Gateway Status: Off".
+  #
+  # There is no IPC that would have fixed the split: no lifecycle API, no
+  # control socket, no shared supervisor. Mounting the Docker socket would
+  # have "worked" and is not an option -- it hands the web application root
+  # control of the host.
+  #
+  # The role is decided by the command. `gateway run` makes
+  # `container_boot._is_gateway_container` true, so the boot reconciler
+  # registers `gateway-default`. A `dashboard` command selects the
+  # dashboard-only role, which deliberately skips gateway registration to
+  # avoid lock contention on `logs/gateways/<profile>/lock` -- correct
+  # behaviour, and the reason a second dashboard container must not come back.
+  youtab-agent-runtime:
     build: .
     image: youtab-agent-runtime
-    container_name: youtab
+    container_name: youtab-agent-runtime
     restart: unless-stopped
+    # Host networking: the dashboard binds loopback and the reverse proxy
+    # reaches it there. Nothing is published.
     network_mode: host
     volumes:
-      - ~/.youtab-agent-runtime:/opt/data
+      - youtab-agent-data:/opt/data
     environment:
       - YOUTAB_AGENT_UID=${YOUTAB_AGENT_UID:-10000}
       - YOUTAB_AGENT_GID=${YOUTAB_AGENT_GID:-10000}
-      # To expose the OpenAI-compatible API server beyond localhost,
-      # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
-      # - API_SERVER_HOST=0.0.0.0
-      # - API_SERVER_KEY=${API_SERVER_KEY}
-      # Microsoft Teams — uncomment and fill in to enable Teams gateway.
-      # Register your bot at https://dev.botframework.com/ to get these values.
-      # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
-      # - TEAMS_CLIENT_SECRET=${TEAMS_CLIENT_SECRET}
-      # - TEAMS_TENANT_ID=${TEAMS_TENANT_ID}
-      # - TEAMS_ALLOWED_USERS=${TEAMS_ALLOWED_USERS}
-      # - TEAMS_PORT=${TEAMS_PORT:-3978}
-      # Google Chat — uncomment and fill in to enable the Google Chat gateway.
-      # See website/docs/user-guide/messaging/google_chat.md for the full setup.
-      # The SA JSON path must point to a file mounted into the container —
-      # add a volume entry above (e.g. ``- ~/.youtab-agent-runtime/google-chat-sa.json:/secrets/google-chat-sa.json:ro``)
-      # then set GOOGLE_CHAT_SERVICE_ACCOUNT_JSON to that mount path.
-      # - GOOGLE_CHAT_PROJECT_ID=${GOOGLE_CHAT_PROJECT_ID}
-      # - GOOGLE_CHAT_SUBSCRIPTION_NAME=${GOOGLE_CHAT_SUBSCRIPTION_NAME}
-      # - GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON}
-      # - GOOGLE_CHAT_ALLOWED_USERS=${GOOGLE_CHAT_ALLOWED_USERS}
+      # Supervised dashboard. Both HOST and PORT are set explicitly: the run
+      # script defaults to 0.0.0.0:9119, and a non-loopback bind engages the
+      # auth gate, which fails closed with no provider registered.
+      - YOUTAB_AGENT_DASHBOARD=1
+      - YOUTAB_AGENT_DASHBOARD_HOST=${YOUTAB_AGENT_DASHBOARD_HOST:-127.0.0.1}
+      - YOUTAB_AGENT_DASHBOARD_PORT=${YOUTAB_AGENT_DASHBOARD_PORT:-8081}
     command: ["gateway", "run"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${YOUTAB_AGENT_DASHBOARD_PORT:-8081}/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
 
-  dashboard:
-    image: youtab-agent-runtime
-    container_name: youtab-dashboard
-    restart: unless-stopped
-    network_mode: host
-    depends_on:
-      - gateway
-    volumes:
-      - ~/.youtab-agent-runtime:/opt/data
-    environment:
-      - YOUTAB_AGENT_UID=${YOUTAB_AGENT_UID:-10000}
-      - YOUTAB_AGENT_GID=${YOUTAB_AGENT_GID:-10000}
-    # Localhost-only. For remote access, tunnel via `ssh -L 9119:localhost:9119`.
-    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
+volumes:
+  youtab-agent-data:
