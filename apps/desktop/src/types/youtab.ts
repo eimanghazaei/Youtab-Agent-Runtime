@@ -1132,6 +1132,35 @@ export interface ActionStatusResponse {
   running: boolean
 }
 
+/** Terminal state of a gateway lifecycle operation.
+ *
+ * `state` is the only field that decides what the UI renders. `ok` is `null`
+ * while pending -- deliberately not `false`, so a control cannot show "failed"
+ * for an operation that is merely still running.
+ */
+export type GatewayJobState = 'pending' | 'succeeded' | 'failed'
+
+export interface GatewayLifecycleJob {
+  job_id: string
+  action: string
+  verb: 'start' | 'stop' | 'restart'
+  profile: string | null
+  state: GatewayJobState
+  ok: boolean | null
+  pid: number | null
+  exit_code: number | null
+  reason: string | null
+  detail: string
+  started_at: number
+  finished_at: number | null
+}
+
+/** `202` body from a lifecycle POST: the request was accepted, nothing more. */
+export interface GatewayLifecycleAccepted extends GatewayLifecycleJob {
+  status: 'accepted'
+  reused: boolean
+}
+
 export interface BackendUpdateCommit {
   sha: string
   summary: string

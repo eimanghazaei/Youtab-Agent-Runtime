@@ -28,7 +28,15 @@ import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionPinId } from '@/store/session'
-import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateYoutab } from '@/youtab'
+import {
+  getActionStatus,
+  getGatewayJob,
+  getLogs,
+  getStatus,
+  getUsageAnalytics,
+  restartGateway,
+  updateYoutab
+} from '@/youtab'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/youtab'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -266,17 +274,40 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       setSystemError('')
 
       try {
-        const started = kind === 'restart' ? await restartGateway() : await updateYoutab()
+        // A restart answers 202 with a job; an update still answers with the
+        // action envelope. The two differ in what they claim: the job says
+        // nothing until the gateway has actually been observed, so the restart
+        // branch below stops on the *job*, not on the child's liveness.
+        //
+        // Resolved into separate consts rather than a union, so each shape is
+        // read as itself.
+        const restartJob = kind === 'restart' ? await restartGateway() : null
+        const updateAction = kind === 'restart' ? null : await updateYoutab()
+        const actionName = restartJob ? restartJob.action : (updateAction?.name ?? '')
+        const startedPid = restartJob ? restartJob.pid : (updateAction?.pid ?? null)
         let nextStatus: ActionStatusResponse | null = null
+        let jobDone = restartJob === null
 
         for (let attempt = 0; attempt < 18; attempt += 1) {
           await new Promise(resolve => window.setTimeout(resolve, 1200))
-          const polled = await getActionStatus(started.name, 180)
+          const polled = await getActionStatus(actionName, 180)
           nextStatus = polled
           setSystemAction(polled)
           upsertDesktopActionTask(polled)
 
-          if (!polled.running) {
+          if (restartJob) {
+            const job = await getGatewayJob(restartJob.job_id)
+            jobDone = job.state !== 'pending'
+            if (job.state === 'failed') {
+              setSystemError(
+                `${cc.gatewayRestartFailed} (${job.reason ?? 'unknown'}${
+                  job.exit_code != null ? `, exit ${job.exit_code}` : ''
+                })`
+              )
+            }
+          }
+
+          if (!polled.running && jobDone) {
             break
           }
         }
@@ -285,8 +316,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           const pendingStatus = {
             exit_code: null,
             lines: [cc.actionStartedWaiting],
-            name: started.name,
-            pid: started.pid,
+            name: actionName,
+            pid: startedPid,
             running: true
           }
 

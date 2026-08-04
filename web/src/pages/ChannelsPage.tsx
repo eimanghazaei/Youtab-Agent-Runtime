@@ -25,7 +25,7 @@ import { Spinner } from "@youtab/ui/ui/components/spinner";
 import { Switch } from "@youtab/ui/ui/components/switch";
 import { Toast } from "@youtab/ui/ui/components/toast";
 import { useToast } from "@youtab/ui/hooks/use-toast";
-import { api } from "@/lib/api";
+import { api, pollGatewayJob } from "@/lib/api";
 import type {
   MessagingPlatform,
   MessagingPlatformEnvVar,
@@ -262,11 +262,22 @@ export default function ChannelsPage() {
   const handleRestart = async () => {
     setRestarting(true);
     try {
-      await api.restartGateway();
+      const accepted = await api.restartGateway();
       showToast("Gateway restarting…", "success");
-      setRestartNeeded(false);
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
+      // The banner clears only once the backend confirms the gateway is
+      // actually back; a failed restart leaves "restart needed" standing.
+      const job = await pollGatewayJob(accepted.job_id, { attempts: 40 });
+      if (job.state === "succeeded") {
+        setRestartNeeded(false);
+      } else {
+        const suffix = job.exit_code != null ? `, exit ${job.exit_code}` : "";
+        showToast(
+          `Gateway restart failed (${job.reason ?? "unknown"}${suffix})`,
+          "error",
+        );
+      }
     } catch (e) {
       showToast(`Failed to restart: ${e}`, "error");
     } finally {
@@ -786,23 +797,23 @@ function WhatsAppOnboardingPanel({
     resetSetup();
   };
 
-  const watchRestartOutcome = async () => {
-    for (let i = 0; i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      try {
-        const st = await api.getActionStatus("gateway-restart", 5);
-        if (st.running) continue;
-        if (st.exit_code !== 0 && st.exit_code !== null) {
-          onRestartNeeded();
-          showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
-            "error",
-          );
-        }
-        return;
-      } catch {
-        // transient fetch error; keep polling
+  // Reads the lifecycle job, not the child's exit status: a restart that
+  // exits 0 without leaving a running gateway is a failure, and this banner
+  // used to stay cleared for exactly that case.
+  const watchRestartOutcome = async (jobId: string) => {
+    try {
+      const job = await pollGatewayJob(jobId, { attempts: 40 });
+      if (job.state === "failed") {
+        onRestartNeeded();
+        const suffix = job.exit_code != null ? `, exit ${job.exit_code}` : "";
+        showToast(
+          `Gateway restart failed (${job.reason ?? "unknown"}${suffix}) — restart manually`,
+          "error",
+        );
       }
+    } catch {
+      // The dashboard briefly loses its connection *because* the gateway is
+      // restarting; that is not evidence the restart failed.
     }
   };
 
@@ -816,11 +827,11 @@ function WhatsAppOnboardingPanel({
         allowed_users: allowedUsers,
       });
       resetSetup();
-      if (result.restart_started) {
+      if (result.restart_started && result.restart_job_id) {
         showToast("WhatsApp saved; gateway restarting…", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
-        void watchRestartOutcome();
+        void watchRestartOutcome(result.restart_job_id);
       } else {
         onRestartNeeded();
         const detail = result.restart_error ? `: ${result.restart_error}` : "";
@@ -1191,23 +1202,23 @@ function TelegramOnboardingPanel({
   // exit via the manual-restart banner. Note: in no-service installs the
   // child becomes the foreground gateway and never exits, so "still running
   // when the window closes" counts as success.
-  const watchRestartOutcome = async () => {
-    for (let i = 0; i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      try {
-        const st = await api.getActionStatus("gateway-restart", 5);
-        if (st.running) continue;
-        if (st.exit_code !== 0 && st.exit_code !== null) {
-          onRestartNeeded();
-          showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
-            "error",
-          );
-        }
-        return;
-      } catch {
-        // transient fetch error; keep polling
+  // Reads the lifecycle job, not the child's exit status: a restart that
+  // exits 0 without leaving a running gateway is a failure, and this banner
+  // used to stay cleared for exactly that case.
+  const watchRestartOutcome = async (jobId: string) => {
+    try {
+      const job = await pollGatewayJob(jobId, { attempts: 40 });
+      if (job.state === "failed") {
+        onRestartNeeded();
+        const suffix = job.exit_code != null ? `, exit ${job.exit_code}` : "";
+        showToast(
+          `Gateway restart failed (${job.reason ?? "unknown"}${suffix}) — restart manually`,
+          "error",
+        );
       }
+    } catch {
+      // The dashboard briefly loses its connection *because* the gateway is
+      // restarting; that is not evidence the restart failed.
     }
   };
 
@@ -1224,17 +1235,18 @@ function TelegramOnboardingPanel({
         allowed_user_ids: allowedIds,
       });
       resetSetup();
-      if (result.restart_started) {
+      if (result.restart_started && result.restart_job_id) {
         showToast("Telegram saved; gateway restarting…", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
-        void watchRestartOutcome();
+        void watchRestartOutcome(result.restart_job_id);
       } else if (result.restart_started === undefined && result.needs_restart) {
         try {
-          await api.restartGateway();
+          const accepted = await api.restartGateway();
           showToast("Telegram saved; gateway restarting…", "success");
           setRestartNeeded(false);
           setTimeout(() => void onChanged(), 4000);
+          void watchRestartOutcome(accepted.job_id);
         } catch (restartError) {
           onRestartNeeded();
           showToast(`Telegram saved; gateway restart failed: ${restartError}`, "error");

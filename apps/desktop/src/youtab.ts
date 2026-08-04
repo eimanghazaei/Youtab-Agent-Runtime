@@ -3,6 +3,8 @@ import { JsonRpcGatewayClient } from '@youtab/agent-shared'
 import type {
   ActionResponse,
   ActionStatusResponse,
+  GatewayLifecycleAccepted,
+  GatewayLifecycleJob,
   AnalyticsResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
@@ -126,6 +128,8 @@ export function audioTranscribeRequestTimeoutMs(dataUrl: string): number {
 export type {
   ActionResponse,
   ActionStatusResponse,
+  GatewayLifecycleAccepted,
+  GatewayLifecycleJob,
   AnalyticsDailyEntry,
   AnalyticsModelEntry,
   AnalyticsResponse,
@@ -1524,11 +1528,22 @@ export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelA
   })
 }
 
-export function restartGateway(): Promise<ActionResponse> {
-  return window.youtabDesktop.api<ActionResponse>({
+/** Accepts a restart and returns a job to poll. It does NOT report success:
+ *  the backend answers 202, and the verdict only exists once the child has
+ *  exited and the gateway has actually been observed. */
+export function restartGateway(): Promise<GatewayLifecycleAccepted> {
+  return window.youtabDesktop.api<GatewayLifecycleAccepted>({
     ...profileScoped(),
     path: '/api/gateway/restart',
     method: 'POST'
+  })
+}
+
+/** Authoritative state of one lifecycle operation. Poll until not pending. */
+export function getGatewayJob(jobId: string): Promise<GatewayLifecycleJob> {
+  return window.youtabDesktop.api<GatewayLifecycleJob>({
+    ...profileScoped(),
+    path: `/api/gateway/jobs/${encodeURIComponent(jobId)}`
   })
 }
 
