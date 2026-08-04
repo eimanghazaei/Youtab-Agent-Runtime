@@ -180,6 +180,12 @@ COPY ui-tui/packages/youtab-ink/ ui-tui/packages/youtab-ink/
 # apps/shared/ is copied IN FULL because web/package.json references it as a
 # `file:` workspace dependency (same pattern as youtab-ink above).
 COPY apps/shared/ apps/shared/
+# packages/youtab-ui/ is the third `file:` workspace dependency of web/ and is
+# copied IN FULL for the same reason.  Its published entrypoints resolve into
+# dist/, which is committed, so this needs no build step of its own — but the
+# tree has to be here before `npm install` or the workspace resolves to nothing
+# and every `@youtab/ui/...` import fails to typecheck.
+COPY packages/youtab-ui/ packages/youtab-ui/
 
 # `npm_config_install_links=false` forces npm to install `file:` deps as
 # symlinks instead of copies.  This is the default since npm 10+, which is
