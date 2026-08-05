@@ -482,9 +482,23 @@ class TestSystemStatsEndpoint:
         r = self.client.get("/api/system/stats")
         assert r.status_code == 200
         s = r.json()
-        # Identity fields always present (stdlib-sourced).
-        for key in ("os", "arch", "hostname", "python_version", "youtab_version"):
-            assert key in s and s[key]
+
+        # Present and a string, but not necessarily non-empty. `platform.node`,
+        # `.machine` and `.system` are each documented to return "" when the
+        # value cannot be determined, and on Windows `node()` goes through
+        # `gethostname()`, which does fail under load -- this test flaked
+        # exactly once in a 74-file parallel run and passed every time in
+        # isolation. Asserting truthiness here was asserting something the
+        # stdlib does not promise; the endpoint contract is that the key is
+        # always present with a string value.
+        for key in ("os", "arch", "hostname"):
+            assert key in s, f"{key} missing from /api/system/stats"
+            assert isinstance(s[key], str), f"{key} is {type(s[key]).__name__}, not str"
+
+        # These two are genuinely always available, so they stay non-empty.
+        for key in ("python_version", "youtab_version"):
+            assert s.get(key), f"{key} must be reported"
+
         # psutil flag tells the UI whether the richer metrics are populated.
         assert "psutil" in s
 

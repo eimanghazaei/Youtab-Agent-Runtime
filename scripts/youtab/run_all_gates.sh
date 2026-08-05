@@ -80,6 +80,7 @@ begin unit-integration-e2e
 scripts/run_tests.sh \
   tests/youtab_runtime \
   tests/youtab_agent_cli/test_gateway_lifecycle.py \
+  tests/youtab_agent_cli/test_cloudflare_access_provider.py \
   -q | tee "$evidence_dir/unit-integration-e2e.log"
 record unit-integration-e2e $?
 
@@ -96,6 +97,8 @@ begin ruff
   youtab_agent_cli/gateway_lifecycle.py \
   tests/youtab_agent_cli/test_gateway_lifecycle.py \
   cron/lifecycle_guard.py \
+  youtab_agent_cli/dashboard_auth/cloudflare_access.py \
+  tests/youtab_agent_cli/test_cloudflare_access_provider.py \
   --output-format concise | tee "$evidence_dir/quality-ruff.log"
 record ruff $?
 
