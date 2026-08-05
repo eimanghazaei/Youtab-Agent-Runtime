@@ -86,6 +86,7 @@ begin ruff
   youtab_runtime scripts/youtab tests/youtab_runtime \
   youtab_agent_cli/gateway_lifecycle.py \
   tests/youtab_agent_cli/test_gateway_lifecycle.py \
+  cron/lifecycle_guard.py \
   --output-format concise | tee "$evidence_dir/quality-ruff.log"
 record ruff $?
 

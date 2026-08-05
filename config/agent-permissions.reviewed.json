@@ -1,0 +1,89 @@
+{
+  "_comment": "Reviewed replacement for the uploaded kit's config/permissions.example.json. NOT active: activating a policy that governs the agent is an Owner action, so this is committed for review and adopted by copying to .claude/settings.json deliberately. Deny wins over allow in every mode.",
+
+  "_why_this_differs_from_the_kit": [
+    "The kit allowed Read(**) and defended it in a note: 'Restricting reads makes the agent guess, which is worse.' That trades a real boundary for a convenience. Read(**) grants the host filesystem - every repository, every home directory, every mounted volume - and the deny list beside it is an enumeration of the secrets someone happened to think of. A new credential path, a new provider's config file, a colleague's checkout: all readable, none denied.",
+    "Reads are scoped to roots instead. The agent still reads dependency source, which was the stated need, because the dependency roots are named explicitly.",
+    "This file is defence in depth and nothing more. It is a policy a process consults, so it is only as good as that process. The boundary is the container: mounts, namespaces, UID/GID, seccomp, AppArmor/SELinux and network policy. A permission JSON is not a security boundary and must never be the only thing standing between an agent and a credential."
+  ],
+
+  "permissions": {
+    "deny": [
+      "Read(/proc/*/environ)",
+      "Read(/proc/self/environ)",
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/gcloud/**)",
+      "Read(~/.docker/config.json)",
+      "Read(~/.kube/**)",
+      "Read(~/.youtab-agent-runtime/auth.json)",
+      "Read(~/.youtab-agent-runtime/credential_pool.json)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/*credentials*)",
+      "Read(**/id_rsa*)",
+      "Read(**/id_ed25519*)",
+      "Read(/run/secrets/**)",
+      "Read(/var/run/docker.sock)",
+
+      "Bash(git push:*origin main*)",
+      "Bash(git push:*origin master*)",
+      "Bash(git push:*origin production*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git filter-branch:*)",
+      "Bash(git filter-repo:*)",
+      "Bash(git merge:*main*)",
+      "Bash(git rebase:*main*)",
+      "Bash(rm -rf /*)",
+      "Bash(curl:*| sh*)",
+      "Bash(curl:*| bash*)",
+      "Bash(wget:*| sh*)",
+      "Bash(docker:*)",
+      "Bash(podman:*)",
+      "Bash(nsenter:*)",
+      "Bash(env)",
+      "Bash(printenv:*)",
+
+      "Write(.git/hooks/**)",
+      "Write(.git/config)",
+      "Write(~/.youtab-agent-runtime/config.yaml)",
+      "Write(scripts/youtab/verifications.toml)",
+      "Write(.github/workflows/**)"
+    ],
+
+    "ask": [
+      "Bash(*migrate*)",
+      "Bash(*alembic*)",
+      "Bash(pip install:*)",
+      "Bash(npm install:*)",
+      "Bash(yarn add:*)",
+      "Bash(psql:*)",
+      "Bash(mysql:*)",
+      "Bash(*deploy*)",
+      "Bash(docker push:*)",
+      "Bash(terraform apply:*)",
+      "Bash(tofu apply:*)"
+    ],
+
+    "allow": [
+      "Bash(git status)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git worktree:*)",
+      "Bash(git checkout -b:*)",
+      "Bash(pytest:*)",
+      "Bash(npm test:*)",
+
+      "Read(./**)",
+      "Read(.venv/lib/**)",
+      "Read(node_modules/**)"
+    ],
+
+    "_read_note": "Three roots, each with a reason. `./**` is the assigned task worktree, which is the only repository the sandbox is given - not the host tree. The other two are the dependency source the kit's note was actually asking for: reading how an installed library behaves is legitimate and does not require the home directory. `/proc/*/environ` is denied explicitly because a process's own environment is a credential store that no path glob would otherwise cover.",
+
+    "_enforcement_note": "Every deny above must ALSO hold when this file is absent. `Bash(docker:*)` is denied here and the socket is simply not mounted; `Read(~/.ssh/**)` is denied here and the home directory is simply not bind-mounted. If a control appears only in this file, it is not yet enforced."
+  }
+}
