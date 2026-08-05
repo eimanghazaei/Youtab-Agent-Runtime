@@ -88,12 +88,30 @@ def collect(app) -> dict:
                 walk(getattr(route, "routes", None), raw)
                 continue
 
-            # A wrapper that carries the real route inside it. The attribute
-            # name is not standardised across FastAPI versions, so several are
-            # tried rather than one being assumed -- assuming one is what put
-            # 158 routes in `unrecognised` on a runner with a different
-            # version.
-            for attr in ("route", "_route", "__wrapped__", "app"):
+            # FastAPI's `include_router` wrapper. Newer versions keep the
+            # included router and its prefix in a context object rather than
+            # flattening the routes into the parent, so the parent's
+            # `app.routes` contains `_IncludedRouter(original_router=...,
+            # include_context=_RouterIncludeContext(..., prefix=...))` and the
+            # real routes are one level down. Missing this is what reported 136
+            # of 294 route+methods on the CI runner while reporting all 294
+            # locally, purely because the two had different FastAPI versions.
+            #
+            # The prefix has to come from the context: the wrapper carries no
+            # `path`, so walking the inner router without it would record every
+            # included route at the wrong path.
+            context = getattr(route, "include_context", None)
+            included = (
+                getattr(route, "original_router", None)
+                or getattr(context, "included_router", None)
+            )
+            if included is not None and getattr(included, "routes", None) is not None:
+                walk(included.routes,
+                     prefix + str(getattr(context, "prefix", "") or ""))
+                continue
+
+            # Other wrapper shapes, by attribute rather than by type.
+            for attr in ("route", "_route", "__wrapped__"):
                 inner = getattr(route, attr, None)
                 if inner is not None and inner is not route and (
                     hasattr(inner, "path") or hasattr(inner, "routes")

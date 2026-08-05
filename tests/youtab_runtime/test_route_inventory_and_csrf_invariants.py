@@ -91,6 +91,77 @@ class TestInventoryComesFromTheRouter:
             assert inventory["mounts"] == []
 
 
+class TestIncludedRouterWrapperIsUnwrapped:
+    """The shape that broke CI, exercised where it can be seen.
+
+    FastAPI flattens included routers on some versions and wraps them on
+    others. My machine flattens, the runner wraps -- so the wrapper branch had
+    no local coverage at all and the defect was only visible as a red CI run.
+    This builds the wrapper shape directly, so the branch is tested on any
+    version.
+    """
+
+    def test_routes_inside_an_included_router_are_found_with_their_prefix(self):
+        from starlette.routing import Route
+
+        async def _ep(request):  # pragma: no cover - never called
+            return None
+
+        class _Ctx:
+            prefix = "/api/mounted"
+
+        class _InnerRouter:
+            routes = [Route("/thing", _ep, methods=["GET", "POST"])]
+
+        class _IncludedRouter:
+            original_router = _InnerRouter()
+            include_context = _Ctx()
+
+        class _App:
+            routes = [_IncludedRouter()]
+
+        inv = collect(_App())
+        found = {tuple(pair) for pair in inv["http"]}
+        assert ("/api/mounted/thing", "GET") in found
+        assert ("/api/mounted/thing", "POST") in found
+        assert inv["unrecognised"] == []
+
+    def test_the_context_prefix_is_applied_not_dropped(self):
+        """Without the prefix every included route lands at the wrong path."""
+        from starlette.routing import Route
+
+        async def _ep(request):  # pragma: no cover - never called
+            return None
+
+        class _Ctx:
+            prefix = "/v2"
+
+        class _Inner:
+            routes = [Route("/x", _ep, methods=["GET"])]
+
+        class _Wrapper:
+            original_router = _Inner()
+            include_context = _Ctx()
+
+        class _App:
+            routes = [_Wrapper()]
+
+        found = {tuple(p) for p in collect(_App())["http"]}
+        assert ("/v2/x", "GET") in found
+        assert ("/x", "GET") not in found
+
+    def test_an_unrecognisable_object_is_reported_not_dropped(self):
+        class _Mystery:
+            pass
+
+        class _App:
+            routes = [_Mystery()]
+
+        assert collect(_App())["unrecognised"], (
+            "an object with no path must be reported; dropping it hides a route"
+        )
+
+
 # --- the CSRF controls are still in place -----------------------------------
 
 
