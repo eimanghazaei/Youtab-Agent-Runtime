@@ -287,6 +287,33 @@ def _extract_bearer(request: Request) -> str:
     return ""
 
 
+#: Header Cloudflare Access signs onto every request it forwards.
+ACCESS_ASSERTION_HEADER = "cf-access-jwt-assertion"
+
+
+def _verify_access_assertion(request: Request):
+    """Turn a Cloudflare Access assertion into a session, via the provider stack.
+
+    Access has no in-app login leg -- the edge authenticates before the request
+    exists, and re-presents a signed assertion on every request. So there is no
+    cookie to read on a first visit, and without this the gate would 401 a
+    caller Cloudflare had already vetted.
+
+    This deliberately goes through ``verify_session`` rather than calling the
+    JWT verifier directly. There must be exactly one verification chain --
+    assertion -> provider -> ``access_jwt`` -> ``Session`` -> roster -> route --
+    and a second call site here would be a second path to keep in agreement,
+    which is how the two drift and the weaker one wins.
+
+    The header alone proves nothing and is never read for its value: only a
+    provider that cryptographically verifies it can produce a Session.
+    """
+    assertion = request.headers.get(ACCESS_ASSERTION_HEADER, "").strip()
+    if not assertion:
+        return None
+    return _verify_bearer(request, access_token=assertion)
+
+
 def _verify_bearer(request: Request, *, access_token: str):
     """Verify a native-app bearer access token via the session-provider stack.
 
@@ -353,6 +380,25 @@ async def gated_auth_middleware(
     # rotation for this path is the desktop's job via /auth/native/refresh —
     # the gate never sets a cookie here, so the transparent cookie-rotation
     # below must not run for a bearer caller.
+    # Cloudflare Access assertion. Checked before the bearer and cookie paths
+    # because on a protected deployment it is present on every request, and it
+    # is the only credential the edge actually vouches for.
+    try:
+        access_session = _verify_access_assertion(request)
+    except ProviderError as e:
+        return JSONResponse(
+            {"detail": f"Auth provider {str(e)!r} unreachable"}, status_code=503
+        )
+    if access_session is not None:
+        request.state.session = access_session
+        return await call_next(request)
+    if request.headers.get(ACCESS_ASSERTION_HEADER, "").strip():
+        # An assertion was presented and did not verify. Forged, expired,
+        # wrong issuer, wrong audience, or an identity nobody approved -- all
+        # refusals, and none of them a reason to fall through to a weaker
+        # credential path.
+        return _unauth_response(request, reason="invalid_or_expired_session")
+
     bearer = _extract_bearer(request)
     if bearer:
         try:

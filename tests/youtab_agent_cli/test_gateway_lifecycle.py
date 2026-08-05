@@ -864,7 +864,12 @@ class TestForgedAccessIdentity:
         resp = _as(access_host, OWNER).post(
             "/api/gateway/restart", headers={"Cf-Access-Jwt-Assertion": forged}
         )
-        assert resp.status_code == 403
+        # 401, not 403. A forged assertion is an identity failure, and since
+        # Cloudflare Access became a registered auth provider the dashboard
+        # gate refuses it before the origin-side guard is reached -- the gate
+        # runs outside `access_identity_middleware`. 403 would say "we know who
+        # you are and you may not", which is the opposite of what happened.
+        assert resp.status_code == 401
 
     def test_a_missing_assertion_is_refused_on_the_public_name(self, access_host, monkeypatch):
         """Fails closed: no assertion is not "internal", it is unproven."""
