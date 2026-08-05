@@ -91,13 +91,9 @@ def test_the_service_runs_the_gateway_role(compose):
     )
 
 
-def test_the_supervised_dashboard_is_enabled_and_pinned_to_loopback(compose):
-    """Host and port must both be explicit.
-
-    The run script defaults to `0.0.0.0:9119`. Neither default is safe here: a
-    non-loopback bind engages the auth gate, which fails closed with no
-    provider registered, and the reverse proxy expects a specific port.
-    """
+def test_the_supervised_dashboard_is_enabled_with_an_explicit_bind(compose):
+    """Host and port must both be explicit; the run script defaults to
+    `0.0.0.0:9119` and the reverse proxy expects a specific port."""
     service = next(iter(_services(compose).values()))
     env = {}
     for entry in service.get("environment") or []:
@@ -105,11 +101,58 @@ def test_the_supervised_dashboard_is_enabled_and_pinned_to_loopback(compose):
         env[key] = value
 
     assert env.get("YOUTAB_AGENT_DASHBOARD") == "1", "the supervised dashboard is not enabled"
-    assert "127.0.0.1" in env.get("YOUTAB_AGENT_DASHBOARD_HOST", ""), (
-        "the dashboard must be pinned to loopback; the run script default is 0.0.0.0"
-    )
+    assert env.get("YOUTAB_AGENT_DASHBOARD_HOST"), "the dashboard bind must be explicit"
     assert env.get("YOUTAB_AGENT_DASHBOARD_PORT"), (
         "the dashboard port must be explicit; the run script default is 9119"
+    )
+
+
+def test_the_dashboard_is_reachable_only_from_host_loopback(compose):
+    """Where the reachability control now lives.
+
+    This used to be "the process binds 127.0.0.1", which was the right control
+    under host networking: container loopback and host loopback were the same
+    interface. On a private bridge they are not, and Docker publishes to a
+    container's interface address rather than its loopback -- so a
+    loopback-bound dashboard would simply be unreachable through a published
+    port.
+
+    So the control moved rather than relaxed. The container binds every
+    interface *in its own namespace*, and that namespace has exactly one way
+    in: a port published on host loopback, where nginx reaches it. Anything
+    that is not the host itself cannot address it at all.
+
+    Note this makes the posture stricter, not looser: a non-loopback bind
+    engages `should_require_auth`, so the dashboard now requires a registered
+    auth provider where host networking let it serve unauthenticated.
+    """
+    service = next(iter(_services(compose).values()))
+
+    assert "network_mode" not in service, (
+        "host networking is back; the container would see every loopback "
+        "service on the host again"
+    )
+
+    published = [str(p) for p in (service.get("ports") or [])]
+    assert published, "nothing is published, so nginx cannot reach the dashboard"
+    for entry in published:
+        assert entry.startswith("127.0.0.1:") or entry.startswith("::1:"), (
+            f"port {entry!r} is not pinned to host loopback; Docker would "
+            "publish it on every interface"
+        )
+
+
+def test_the_container_filesystem_is_read_only_with_named_writable_paths(compose):
+    """A writable image layer lets a compromise survive a restart."""
+    service = next(iter(_services(compose).values()))
+    assert service.get("read_only") is True
+    tmpfs = [str(t) for t in (service.get("tmpfs") or [])]
+    assert any(t.startswith("/run") for t in tmpfs), (
+        "s6 needs a writable /run -- `/run/service` is the dynamic scandir the "
+        "gateway lifecycle contract depends on"
+    )
+    assert all("size=" in t for t in tmpfs), (
+        "an unsized tmpfs is host memory a container can fill"
     )
 
 

@@ -54,6 +54,15 @@ begin sast
 "$python_bin" scripts/youtab/sast_gate.py --root . --output "$evidence_dir/sast.json"
 record sast $?
 
+# Control-plane isolation. Structured, not textual: it parses the Compose and
+# Dockerfile so a comment explaining why host networking was removed cannot
+# fail the build, and an input it cannot resolve fails closed rather than
+# being assumed benign.
+begin container-control-plane-isolation
+"$python_bin" scripts/youtab/container_isolation_gate.py --root . \
+  --output "$evidence_dir/container-isolation.json"
+record container-control-plane-isolation $?
+
 begin owasp-smoke
 "$python_bin" scripts/youtab/owasp_smoke.py > "$evidence_dir/owasp-smoke.json"
 record owasp-smoke $?

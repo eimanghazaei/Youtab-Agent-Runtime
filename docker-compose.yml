@@ -53,27 +53,79 @@ services:
     image: youtab-agent-runtime
     container_name: youtab-agent-runtime
     restart: unless-stopped
-    # Host networking: the dashboard binds loopback and the reverse proxy
-    # reaches it there. Nothing is published.
-    network_mode: host
+    # Private bridge, not host networking. Host networking gave this container
+    # the host's entire network stack: every loopback-bound service on the box
+    # -- PostgreSQL, Redis, the Docker API on a TCP socket, unrelated Youtab
+    # services -- was reachable as 127.0.0.1 from inside. The isolation
+    # boundary is now the network namespace, and the only way in is the one
+    # port published below.
+    networks:
+      - youtab-runtime
+    # Loopback-only publication. Nginx on the host reaches this; nothing else
+    # on the network can. Written as a literal rather than an interpolation so
+    # the bind address is statically verifiable -- an unresolved ${VAR} here
+    # would leave "is this loopback?" unanswerable, and the isolation gate
+    # refuses inputs it cannot resolve.
+    ports:
+      - "127.0.0.1:8081:8081"
+
+    # --- process and filesystem hardening ---------------------------------
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # s6 needs a writable /run -- it is where the supervision tree lives, and
+    # `/run/service` is the dynamic scandir the gateway lifecycle contract
+    # depends on. Sized, so a runaway cannot fill host memory.
+    tmpfs:
+      - /run:size=64m,mode=0755
+      - /tmp:size=256m,mode=1777
+    # Ceilings, not guidance. Without pids_limit a fork bomb in any supervised
+    # service takes the host down with it.
+    cpus: "2.0"
+    mem_limit: 4g
+    pids_limit: 512
+
     volumes:
       - youtab-agent-data:/opt/data
     environment:
       - YOUTAB_AGENT_UID=${YOUTAB_AGENT_UID:-10000}
       - YOUTAB_AGENT_GID=${YOUTAB_AGENT_GID:-10000}
-      # Supervised dashboard. Both HOST and PORT are set explicitly: the run
-      # script defaults to 0.0.0.0:9119, and a non-loopback bind engages the
-      # auth gate, which fails closed with no provider registered.
       - YOUTAB_AGENT_DASHBOARD=1
-      - YOUTAB_AGENT_DASHBOARD_HOST=${YOUTAB_AGENT_DASHBOARD_HOST:-127.0.0.1}
-      - YOUTAB_AGENT_DASHBOARD_PORT=${YOUTAB_AGENT_DASHBOARD_PORT:-8081}
+      # Binds every interface *inside this container's own namespace*, which
+      # is the whole of its network world. This is not a public bind: the
+      # namespace has one published port and it is on host loopback.
+      #
+      # It has to be this way. Docker publishes to a container's interface
+      # address, never to its loopback, so a dashboard bound to 127.0.0.1
+      # inside the container is unreachable through a published port -- that
+      # binding only worked because host networking made container loopback
+      # and host loopback the same thing.
+      #
+      # Consequence, deliberately not papered over: `should_require_auth`
+      # treats any non-loopback bind as gated, so this ENGAGES the dashboard
+      # auth gate rather than relaxing it. The gate fails closed with no
+      # provider registered, so a provider must be configured before this
+      # configuration is deployed. That is a stricter posture than host
+      # networking gave, and it is a pre-deploy prerequisite, not a default.
+      - YOUTAB_AGENT_DASHBOARD_HOST=0.0.0.0
+      - YOUTAB_AGENT_DASHBOARD_PORT=8081
     command: ["gateway", "run"]
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:${YOUTAB_AGENT_DASHBOARD_PORT:-8081}/api/health || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/api/health || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 60s
+
+networks:
+  # Internal-only would also cut the gateway off from the messaging platforms
+  # it exists to reach, so this is a private bridge rather than `internal:
+  # true`. Egress restriction belongs to the governed egress proxy, which is
+  # its own slice and its own ADR.
+  youtab-runtime:
+    driver: bridge
 
 volumes:
   youtab-agent-data:
