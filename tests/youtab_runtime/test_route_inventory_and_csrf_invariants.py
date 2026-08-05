@@ -73,8 +73,22 @@ class TestInventoryComesFromTheRouter:
         assert inventory["unrecognised"] == []
 
     def test_mounts_are_reported_rather_than_silently_walked_past(self, inventory):
-        """A mount serves an arbitrary sub-application; it needs a decision."""
-        assert inventory["mounts"], "the /assets mount is not being reported"
+        """A mount serves an arbitrary sub-application, so it needs a decision.
+
+        Conditional on one existing, not on this checkout having one: the
+        `/assets` mount appears only when the web UI has been built, so
+        asserting it unconditionally passed locally and failed on a runner that
+        does not build the SPA. What must hold is that a mount present in the
+        router is reported.
+        """
+        from starlette.routing import Mount
+
+        from youtab_agent_cli.web_server import app
+
+        if any(isinstance(r, Mount) for r in app.routes):
+            assert inventory["mounts"], "a Mount exists but was not reported"
+        else:
+            assert inventory["mounts"] == []
 
 
 # --- the CSRF controls are still in place -----------------------------------

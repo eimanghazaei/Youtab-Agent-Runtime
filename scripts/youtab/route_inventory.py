@@ -55,58 +55,96 @@ def normalise(path: str) -> str:
 
 
 def collect(app) -> dict:
-    """Walk the router. Returns HTTP pairs, WebSocket routes and mounts."""
-    from starlette.routing import Mount, Route, WebSocketRoute
+    """Walk the router. Returns HTTP pairs, WebSocket routes and mounts.
+
+    Duck-typed rather than isinstance-driven. FastAPI wraps routes in its own
+    types depending on version -- a runner with a different FastAPI put 158 of
+    this application's routes into `_IncludedRoute`, which an isinstance check
+    against `starlette.routing.Route` does not match, and the inventory
+    silently reported 136 instead of 294. An inventory that under-reports is
+    worse than none: every route it misses is a route the registry never has to
+    classify.
+
+    So the shape decides, wrappers are unwrapped, and anything still
+    unrecognised is reported rather than dropped.
+    """
+    from starlette.routing import Mount
 
     http: set[tuple[str, str]] = set()
     sockets: set[str] = set()
     mounts: list[str] = []
     unknown: list[str] = []
+    seen: set[int] = set()
 
     def walk(routes, prefix: str = "") -> None:
-        for route in routes:
+        for route in routes or ():
+            if id(route) in seen:
+                continue
+            seen.add(id(route))
             raw = prefix + str(getattr(route, "path", "") or "")
+
             if isinstance(route, Mount):
                 mounts.append(normalise(raw))
-                # A mount serves an arbitrary sub-application. Its children are
-                # walked when it exposes them; when it does not, the mount is
-                # the unit of policy and is recorded as such.
-                child = getattr(route, "routes", None)
-                if child:
-                    walk(child, raw)
+                walk(getattr(route, "routes", None), raw)
                 continue
-            if isinstance(route, WebSocketRoute):
-                sockets.add(normalise(raw))
+
+            # A wrapper that carries the real route inside it. The attribute
+            # name is not standardised across FastAPI versions, so several are
+            # tried rather than one being assumed -- assuming one is what put
+            # 158 routes in `unrecognised` on a runner with a different
+            # version.
+            for attr in ("route", "_route", "__wrapped__", "app"):
+                inner = getattr(route, attr, None)
+                if inner is not None and inner is not route and (
+                    hasattr(inner, "path") or hasattr(inner, "routes")
+                ):
+                    walk([inner], prefix)
+                    break
+            else:
+                inner = None
+            if inner is not None:
                 continue
-            if isinstance(route, Route):
-                for method in sorted(route.methods or set()):
-                    if method not in _DERIVED_METHODS:
-                        http.add((normalise(raw), method))
-                continue
-            # Anything the framework grows later must be visible, not dropped.
-            path = getattr(route, "path", None)
+
             methods = getattr(route, "methods", None)
+            path = getattr(route, "path", None)
+
             if path and methods:
                 for method in sorted(methods):
                     if method not in _DERIVED_METHODS:
-                        http.add((normalise(prefix + path), method))
-            elif path:
-                sockets.add(normalise(prefix + path))
-            else:
-                unknown.append(repr(route))
+                        http.add((normalise(raw), method))
+                continue
+
+            # No methods but a path: a WebSocket route, or a wrapper around
+            # one. `endpoint` distinguishes a real route from a container.
+            if path and getattr(route, "endpoint", None) is not None:
+                sockets.add(normalise(raw))
+                continue
+
+            nested = getattr(route, "routes", None)
+            if nested:
+                if path:
+                    mounts.append(normalise(raw))
+                walk(nested, raw if path else prefix)
+                continue
+
+            if path:
+                sockets.add(normalise(raw))
+                continue
+
+            unknown.append(repr(route)[:200])
 
     walk(app.routes)
     return {
         "schema_version": 1,
         "http": sorted([list(pair) for pair in http]),
         "websocket": sorted(sockets),
-        "mounts": sorted(mounts),
+        "mounts": sorted(set(mounts)),
         "unrecognised": unknown,
         "counts": {
             "http_route_methods": len(http),
             "http_paths": len({p for p, _ in http}),
             "websocket": len(sockets),
-            "mounts": len(mounts),
+            "mounts": len(set(mounts)),
         },
     }
 
