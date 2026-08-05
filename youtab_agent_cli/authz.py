@@ -86,6 +86,10 @@ TENANT_MANAGE_OWN: Final = "tenant:manage:own"
 TENANT_MANAGE_ANY: Final = "tenant:manage:any"
 #: Deployment, rollback and infrastructure controls.
 DEPLOYMENT_MANAGE: Final = "deployment:manage"
+#: Subscribe to the realtime event stream. Its own scope rather than a
+#: byproduct of being signed in: the stream carries gateway lifecycle, session
+#: and system activity, so "authenticated" was never the right bar for it.
+EVENTS_READ: Final = "events:read"
 
 #: What each role may do. Written out per role rather than inherited, so the
 #: Tenant Admin row can be read on its own and confirmed to contain no
@@ -99,11 +103,11 @@ ROLE_SCOPES: Final[Mapping[Role, frozenset[str]]] = {
     Role.YOUTAB_OPERATOR: frozenset(),
     Role.YOUTAB_SUPERADMIN: frozenset({
         PROVIDER_READ, PROVIDER_WRITE, CREDENTIAL_READ, CREDENTIAL_WRITE,
-        ENGINE_SELECT, TENANT_MANAGE_ANY, DEPLOYMENT_MANAGE,
+        ENGINE_SELECT, TENANT_MANAGE_ANY, DEPLOYMENT_MANAGE, EVENTS_READ,
     }),
     Role.YOUTAB_OWNER: frozenset({
         PROVIDER_READ, PROVIDER_WRITE, CREDENTIAL_READ, CREDENTIAL_WRITE,
-        ENGINE_SELECT, TENANT_MANAGE_ANY, DEPLOYMENT_MANAGE,
+        ENGINE_SELECT, TENANT_MANAGE_ANY, DEPLOYMENT_MANAGE, EVENTS_READ,
     }),
 }
 
@@ -257,6 +261,16 @@ ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     ("/api/gateway/stop", DEPLOYMENT_MANAGE),
     ("/api/gateway/restart", DEPLOYMENT_MANAGE),
     ("/api/gateway/jobs", DEPLOYMENT_MANAGE),
+    # The realtime stream carries gateway lifecycle, session and system
+    # activity, so "signed in" was never the right bar for it.
+    #
+    # Only the stream, not the ticket mint. One ticket serves `/api/pty`,
+    # `/api/console`, `/api/ws` and `/api/pub` as well, so gating the mint on
+    # this scope would make the terminal require permission to read events.
+    # Authorization belongs at each socket, which is where `events_ws`
+    # enforces it -- and it has to be there anyway, because Starlette's HTTP
+    # middleware never runs on a WebSocket upgrade.
+    ("/api/events", EVENTS_READ),
 )
 
 #: Methods that mutate. A mutating request to a read-scoped prefix is held to

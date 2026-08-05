@@ -58,6 +58,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from youtab_agent_cli import __version__, __release_date__
 from youtab_agent_cli.authz import (
+    EVENTS_READ,
     CREDENTIAL_READ,
     PROVIDER_READ,
     REFUSAL_DETAIL,
@@ -14776,7 +14777,15 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            info = consume_ticket(ticket)
+            # Keep the identity the ticket proves. A socket that knows only
+            # "some valid ticket" cannot apply a per-principal scope, and
+            # Starlette's HTTP middleware -- where every other authorization
+            # decision is made -- never runs on a WebSocket upgrade.
+            try:
+                ws.state.ws_user_id = str((info or {}).get("user_id") or "")
+            except Exception:
+                pass
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
@@ -14793,6 +14802,25 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         return None, "token"
     return "token_mismatch", "token"
+
+
+def _ws_scope_ok(ws: "WebSocket", scope: str) -> bool:
+    """Does the identity behind this socket hold ``scope``?
+
+    Resolved through the same roster as HTTP, from the user id the ticket
+    proved. An ungated bind resolves to the local operator exactly as
+    ``_principal_for_request`` does, so loopback development is unchanged.
+    """
+    if not getattr(ws.app.state, "auth_required", False):
+        return True
+    user_id = getattr(getattr(ws, "state", None), "ws_user_id", "") or ""
+    if not user_id:
+        return False
+    try:
+        principal = resolve_principal(user_id=user_id, org_id="")
+    except Exception:
+        return False
+    return principal.has(scope)
 
 
 def _ws_auth_ok(ws: "WebSocket") -> bool:
@@ -15919,6 +15947,14 @@ async def pub_ws(ws: WebSocket) -> None:
         return
 
     if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+
+    # Same scope as the HTTP route, enforced here because the HTTP middleware
+    # stack does not run on a WebSocket upgrade. Without this the stream would
+    # be authenticated-only over its actual transport while appearing guarded
+    # over the one nobody uses to read it.
+    if not _ws_scope_ok(ws, EVENTS_READ):
         await ws.close(code=4403)
         return
 

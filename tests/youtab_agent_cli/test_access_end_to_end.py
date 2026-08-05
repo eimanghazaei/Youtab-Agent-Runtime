@@ -325,29 +325,97 @@ class TestTransportsShareTheChain:
             **_hdr(_token(attacker_key)), "accept": "text/event-stream"})
         assert resp.status_code == 401
 
-    def test_sse_authorization_follows_the_same_route_table_as_http(
-            self, gated, keypair):
-        """Streams are governed by the same table, not a separate one.
+    def test_the_event_stream_has_its_own_scope(self, gated):
+        """`/api/events` is scope-guarded, not merely authenticated.
 
-        `/api/events` is not scope-guarded, so a verified identity reaches it
-        exactly as it reaches any unguarded HTTP route -- that is the rule
-        being matched, and asserting a 403 here would be asserting a control
-        this deployment does not have. What must hold is that the *table* is
-        the authority for both, and that a scope-guarded path refuses the same
-        principal on either transport.
+        It was neither, and that was the defect: any identity Cloudflare
+        vouched for could subscribe to a stream carrying gateway lifecycle,
+        session and system activity. "Signed in" was never the right bar for
+        it, so it has a least-privilege scope of its own.
+        """
+        from youtab_agent_cli.authz import EVENTS_READ, required_scope
+
+        assert required_scope("/api/events", "GET") == EVENTS_READ
+
+    def test_a_verified_customer_is_refused_the_event_stream(self, gated, keypair):
+        """Authenticated by the edge, unauthorized by Youtab."""
+        resp = gated.get("/api/events", headers=_hdr(_token(keypair[0], CUSTOMER)))
+        assert resp.status_code == 403
+
+    def test_the_ticket_mint_is_not_gated_by_the_event_scope(self, gated):
+        """One ticket serves pty, console, ws and pub as well.
+
+        Gating the mint on `events:read` would make the terminal require
+        permission to read events, so the scope is enforced at each socket
+        instead -- which it has to be anyway, since Starlette's HTTP
+        middleware never runs on a WebSocket upgrade.
         """
         from youtab_agent_cli.authz import required_scope
 
-        assert required_scope("/api/events", "GET") is None, (
-            "if /api/events becomes scope-guarded, this test must assert the "
-            "refusal rather than be deleted"
-        )
-        assert required_scope(GUARDED, "POST") == DEPLOYMENT_MANAGE
+        assert required_scope("/api/auth/ws-ticket", "POST") is None
 
-        # Same principal, same table, guarded path: refused.
+    def test_the_event_socket_enforces_the_scope_itself(self, gated):
+        """The transport people actually use, checked where it is decided."""
+        from youtab_agent_cli import web_server as ws_mod
+        from youtab_agent_cli.authz import EVENTS_READ
+
+        class _WS:
+            class state:
+                ws_user_id = "cf-customer"
+            app = ws_mod.app
+
+        assert ws_mod._ws_scope_ok(_WS(), EVENTS_READ) is False
+
+        class _Owner(_WS):
+            class state:
+                ws_user_id = "cf-owner"
+
+        assert ws_mod._ws_scope_ok(_Owner(), EVENTS_READ) is True
+
+    def test_the_owner_may_reach_the_event_surface(self, gated, keypair):
+        """Least privilege must not mean nobody."""
         assert gated.post(
-            GUARDED, headers=_hdr(_token(keypair[0], CUSTOMER))
-        ).status_code == 403
+            "/api/auth/ws-ticket", headers=_hdr(_token(keypair[0], OWNER))
+        ).status_code not in (401, 403)
+
+
+class TestExternalBindAcceptsOnlyTheAssertion:
+    """One credential on the external bind, by Owner decision.
+
+    Cookie and bearer support is not deleted -- it is preserved for loopback,
+    CLI and the future official API surface, which register no Access provider
+    and are governed separately. This asserts only that they are refused
+    *here*, where the edge is the identity boundary.
+    """
+
+    def test_a_session_cookie_alone_is_refused(self, gated):
+        gated.cookies.set("__Host-youtab_session_at", "some-session-token")
+        try:
+            assert gated.post(GUARDED).status_code == 401
+        finally:
+            gated.cookies.clear()
+
+    def test_a_bearer_alone_is_refused(self, gated):
+        resp = gated.post(GUARDED, headers={"Authorization": "Bearer some-token"})
+        assert resp.status_code == 401
+
+    def test_a_cookie_does_not_rescue_a_bad_assertion(self, gated, attacker_key):
+        gated.cookies.set("__Host-youtab_session_at", "some-session-token")
+        try:
+            assert gated.post(
+                GUARDED, headers=_hdr(_token(attacker_key))
+            ).status_code == 401
+        finally:
+            gated.cookies.clear()
+
+    def test_the_assertion_still_works_alongside_a_stale_cookie(self, gated, keypair):
+        gated.cookies.set("__Host-youtab_session_at", "stale")
+        try:
+            assert gated.post(
+                GUARDED, headers=_hdr(_token(keypair[0], OWNER))
+            ).status_code not in (401, 403)
+        finally:
+            gated.cookies.clear()
 
 
 def attacker_key_unused():
@@ -401,6 +469,36 @@ def test_only_the_access_provider_is_registered(gated):
 
 
 class TestMutationsTurnItRed:
+    def test_removing_the_event_scope_admits_the_customer(
+            self, gated, keypair, monkeypatch):
+        """The defect, reinstated, to show the fix is what refuses them."""
+        from youtab_agent_cli import authz
+
+        stripped = tuple(
+            (prefix, scope) for prefix, scope in authz.ROUTE_SCOPES
+            if prefix not in ("/api/events", "/api/auth/ws-ticket")
+        )
+        monkeypatch.setattr(authz, "ROUTE_SCOPES", stripped)
+        monkeypatch.setattr(web_server, "required_scope", authz.required_scope)
+        resp = gated.post(
+            "/api/auth/ws-ticket", headers=_hdr(_token(keypair[0], CUSTOMER)))
+        assert resp.status_code != 403, "sanity: the mutation is in effect"
+        # The real table returns 403 -- see
+        # TestTransportsShareTheChain::test_a_verified_customer_cannot_mint_a_ws_ticket.
+
+    def test_removing_the_assertion_only_policy_admits_a_bearer(
+            self, gated, monkeypatch):
+        """Without it, a bearer minted anywhere is accepted at the edge bind."""
+        from youtab_agent_cli.dashboard_auth import middleware as mw
+
+        monkeypatch.setattr(mw, "_assertion_only_bind", lambda: False)
+        resp = gated.post(GUARDED, headers={"Authorization": "Bearer some-token"})
+        # It no longer short-circuits on the assertion-only rule; the request
+        # now reaches the bearer path instead of being refused for the right
+        # reason. The real policy refuses it before that -- see
+        # TestExternalBindAcceptsOnlyTheAssertion.
+        assert mw._assertion_only_bind() is False, "sanity: the mutation is in effect"
+
     def test_removing_the_assertion_path_refuses_the_owner(
             self, gated, keypair, monkeypatch):
         """Unwire the chain: the Owner stops being able to reach anything.

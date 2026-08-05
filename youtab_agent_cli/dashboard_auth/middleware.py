@@ -291,6 +291,22 @@ def _extract_bearer(request: Request) -> str:
 ACCESS_ASSERTION_HEADER = "cf-access-jwt-assertion"
 
 
+def _assertion_only_bind() -> bool:
+    """Is this the externally gated bind, where the assertion is the only credential?
+
+    Decided by whether the Cloudflare Access provider is registered, not by a
+    flag someone could set independently of it. Registration happens only when
+    Access is configured, so "the edge is in front of this bind" and "only edge
+    credentials are accepted here" cannot drift apart.
+
+    Loopback, CLI and the future official API surface register no Access
+    provider, so they keep the cookie and bearer paths they are governed by.
+    """
+    from youtab_agent_cli.dashboard_auth.cloudflare_access import PROVIDER_NAME
+
+    return any(p.name == PROVIDER_NAME for p in list_session_providers())
+
+
 def _verify_access_assertion(request: Request):
     """Turn a Cloudflare Access assertion into a session, via the provider stack.
 
@@ -398,6 +414,16 @@ async def gated_auth_middleware(
         # refusals, and none of them a reason to fall through to a weaker
         # credential path.
         return _unauth_response(request, reason="invalid_or_expired_session")
+
+    if _assertion_only_bind():
+        # Externally gated bind: the Access assertion is the ONLY browser
+        # credential. A cookie or bearer reaching this bind is either a stale
+        # session from before this policy or an attempt to route around the
+        # edge, and neither is a reason to admit it. Cookie and bearer support
+        # is not removed -- it is preserved for loopback, CLI and the future
+        # official API surface, which are separately governed binds where no
+        # Access provider is registered.
+        return _unauth_response(request, reason="assertion_required")
 
     bearer = _extract_bearer(request)
     if bearer:
