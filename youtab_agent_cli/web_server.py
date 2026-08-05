@@ -696,6 +696,13 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
     return await call_next(request)
 
 
+#: Paths a state-changing request may reach without a CSRF token. Only the
+#: mint itself, which cannot require the thing it issues, and which is a GET
+#: on the read path anyway -- listed so the exemption is visible rather than
+#: implicit.
+_CSRF_EXEMPT_PATHS: frozenset = frozenset({"/api/auth/csrf"})
+
+
 def _principal_for_request(request: Request) -> Principal:
     """Resolve the caller to a principal with effective scopes.
 
@@ -730,6 +737,73 @@ def _principal_for_request(request: Request) -> Principal:
         user_id=getattr(session, "user_id", ""),
         org_id=getattr(session, "org_id", ""),
     )
+
+
+@app.middleware("http")
+async def _browser_csrf_gate(request: Request, call_next):
+    """Exact origin + a single-use token on every state-changing browser request.
+
+    Registered next to the authorization gate so it runs on the same verified
+    session, and only on a gated bind: loopback is a local operator on their
+    own machine, and the CLI and service callers are separately governed
+    contracts that do not carry ambient browser credentials. Weakening the
+    browser check to accommodate those would defeat it, so they are excluded by
+    identity rather than by relaxing the rule.
+
+    Cloudflare Access does not make this unnecessary. The assertion is ambient:
+    the browser attaches it to any request to the protected hostname, including
+    one another site caused. That is the property CSRF attacks.
+    """
+    from youtab_agent_cli.dashboard_auth import csrf as _csrf
+
+    from youtab_agent_cli.dashboard_auth.middleware import _assertion_only_bind
+
+    if request.method not in _csrf.UNSAFE_METHODS:
+        return await call_next(request)
+    if not getattr(request.app.state, "auth_required", False):
+        return await call_next(request)
+    # The EXTERNAL gated bind specifically: the one behind Cloudflare Access,
+    # where the credential is ambient and the caller is a browser. Other gated
+    # binds (the OAuth and password flows) are separately governed contracts
+    # with their own session design; they are not weakened here, and they are
+    # not covered here either -- that is recorded as its own item rather than
+    # assumed away.
+    if not _assertion_only_bind():
+        return await call_next(request)
+    # Non-browser service callers authenticate on a separate, governed contract
+    # and present no ambient credential; the token seam has already verified
+    # them by this point.
+    if getattr(request.state, "token_authenticated", False):
+        return await call_next(request)
+    if request.url.path in _CSRF_EXEMPT_PATHS:
+        return await call_next(request)
+
+    # The declared public URL, whole. `_public_host_and_scheme` splits it into
+    # host and scheme, and comparing an origin against a bare host would accept
+    # a downgraded scheme.
+    from youtab_agent_cli.dashboard_auth.prefix import resolve_public_url
+
+    public_url = resolve_public_url()
+    if not _csrf.origin_is_trusted(
+        request.headers.get("origin", ""),
+        request.headers.get("referer", ""),
+        public_url,
+    ):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Request origin is not trusted."},
+        )
+
+    session = getattr(request.state, "session", None)
+    user_id = getattr(session, "user_id", "") or ""
+    if not user_id:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+    if not _csrf.consume(request.headers.get(_csrf.CSRF_HEADER, ""), user_id):
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Missing or invalid CSRF token."},
+        )
+    return await call_next(request)
 
 
 @app.middleware("http")

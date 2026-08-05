@@ -796,6 +796,23 @@ async def api_auth_me(request: Request):
 # ---------------------------------------------------------------------------
 
 
+@router.get("/api/auth/csrf", name="auth_csrf")
+async def api_auth_csrf(request: Request):
+    """Issue a single-use CSRF token for the authenticated principal.
+
+    A GET, and readable only by the principal it is minted for: a cross-origin
+    page cannot read this response, which is what stops it obtaining a token.
+    Single-use, so a captured one cannot be replayed.
+    """
+    sess = getattr(request.state, "session", None)
+    if sess is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    from youtab_agent_cli.dashboard_auth.csrf import TTL_SECONDS, mint
+
+    return {"csrf_token": mint(sess.user_id), "ttl_seconds": TTL_SECONDS}
+
+
 @router.post("/api/auth/ws-ticket", name="auth_ws_ticket")
 async def api_auth_ws_ticket(request: Request):
     """Mint a short-lived single-use ticket for the authenticated session.

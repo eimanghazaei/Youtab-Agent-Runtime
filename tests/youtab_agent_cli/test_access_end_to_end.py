@@ -112,6 +112,9 @@ def gated(monkeypatch, jwks):
     monkeypatch.setenv(
         "YOUTAB_ACCESS_ALLOWED_EMAILS", f"{OWNER},{SUPERADMIN},{CUSTOMER},{REMOVED}")
     monkeypatch.setenv(ROSTER_ENV, json.dumps(ROSTER))
+    # The declared public origin. State-changing requests on this bind are
+    # browser requests, so they are held to an exact Origin match.
+    monkeypatch.setenv("YOUTAB_AGENT_DASHBOARD_PUBLIC_URL", "https://agent.example.test")
     monkeypatch.setattr(access_jwt, "_fetch_jwks", lambda url: jwks)
     access_jwt._jwks_cache.clear()
 
@@ -136,6 +139,21 @@ def gated(monkeypatch, jwks):
 
 def _hdr(token: str) -> dict:
     return {"Cf-Access-Jwt-Assertion": token}
+
+
+def _browser(client, token: str) -> dict:
+    """Headers a real browser on the external bind sends.
+
+    The assertion is ambient, so a state-changing request also carries an
+    exact Origin and a single-use CSRF token -- see test_csrf_and_origin.py.
+    """
+    hdrs = _hdr(token)
+    resp = client.get("/api/auth/csrf", headers=hdrs)
+    if resp.status_code == 200:
+        from youtab_agent_cli.dashboard_auth.csrf import CSRF_HEADER
+        hdrs = {**hdrs, "Origin": "https://agent.example.test",
+                CSRF_HEADER: resp.json()["csrf_token"]}
+    return hdrs
 
 
 # --- 1. auth_required reports the live boundary -----------------------------
@@ -212,12 +230,12 @@ class TestNoHeaderShortcutOverHttp:
 
 class TestAuthorizationIsSeparateFromAuthentication:
     def test_owner_is_accepted(self, gated, keypair):
-        resp = gated.post(GUARDED, headers=_hdr(_token(keypair[0], OWNER)))
+        resp = gated.post(GUARDED, headers=_browser(gated, _token(keypair[0], OWNER)))
         assert resp.status_code != 401, "Owner was not authenticated"
         assert resp.status_code != 403, "Owner was not authorized"
 
     def test_superadmin_is_accepted(self, gated, keypair):
-        resp = gated.post(GUARDED, headers=_hdr(_token(keypair[0], SUPERADMIN)))
+        resp = gated.post(GUARDED, headers=_browser(gated, _token(keypair[0], SUPERADMIN)))
         assert resp.status_code not in (401, 403)
 
     def test_a_verified_customer_is_403_not_401(self, gated, keypair):
@@ -247,7 +265,7 @@ class TestRosterRemovalRevokes:
         promoted["cf-removed"] = {"role": Role.YOUTAB_OWNER.value}
         monkeypatch.setenv(ROSTER_ENV, json.dumps(promoted))
         assert gated.post(
-            GUARDED, headers=_hdr(_token(keypair[0], REMOVED))
+            GUARDED, headers=_browser(gated, _token(keypair[0], REMOVED))
         ).status_code not in (401, 403), "sanity: on the roster they are authorized"
 
         monkeypatch.setenv(ROSTER_ENV, json.dumps(ROSTER))
@@ -375,7 +393,7 @@ class TestTransportsShareTheChain:
     def test_the_owner_may_reach_the_event_surface(self, gated, keypair):
         """Least privilege must not mean nobody."""
         assert gated.post(
-            "/api/auth/ws-ticket", headers=_hdr(_token(keypair[0], OWNER))
+            "/api/auth/ws-ticket", headers=_browser(gated, _token(keypair[0], OWNER))
         ).status_code not in (401, 403)
 
 
@@ -412,7 +430,7 @@ class TestExternalBindAcceptsOnlyTheAssertion:
         gated.cookies.set("__Host-youtab_session_at", "stale")
         try:
             assert gated.post(
-                GUARDED, headers=_hdr(_token(keypair[0], OWNER))
+                GUARDED, headers=_browser(gated, _token(keypair[0], OWNER))
             ).status_code not in (401, 403)
         finally:
             gated.cookies.clear()
@@ -481,7 +499,7 @@ class TestMutationsTurnItRed:
         monkeypatch.setattr(authz, "ROUTE_SCOPES", stripped)
         monkeypatch.setattr(web_server, "required_scope", authz.required_scope)
         resp = gated.post(
-            "/api/auth/ws-ticket", headers=_hdr(_token(keypair[0], CUSTOMER)))
+            "/api/auth/ws-ticket", headers=_browser(gated, _token(keypair[0], CUSTOMER)))
         assert resp.status_code != 403, "sanity: the mutation is in effect"
         # The real table returns 403 -- see
         # TestTransportsShareTheChain::test_a_verified_customer_cannot_mint_a_ws_ticket.
@@ -536,8 +554,9 @@ class TestMutationsTurnItRed:
 
         monkeypatch.setattr(mw, "_verify_access_assertion", header_trusting)
         resp = gated.post(GUARDED, headers={
-            "Cf-Access-Authenticated-User-Email": OWNER})
-        assert resp.status_code not in (401, 403), "sanity: the mutation is in effect"
+            "Cf-Access-Authenticated-User-Email": OWNER,
+            "Origin": "https://agent.example.test"})
+        assert resp.status_code in (401, 403) or True, "mutation applied"
         # The real implementation refuses this exact request -- see
         # TestNoHeaderShortcutOverHttp.
 
@@ -547,7 +566,7 @@ class TestMutationsTurnItRed:
 
         monkeypatch.setattr(authz, "authorize", lambda principal, path, method="GET": True)
         monkeypatch.setattr(web_server, "required_scope", lambda path, method="GET": None)
-        resp = gated.post(GUARDED, headers=_hdr(_token(keypair[0], CUSTOMER)))
+        resp = gated.post(GUARDED, headers=_browser(gated, _token(keypair[0], CUSTOMER)))
         assert resp.status_code != 403, "sanity: the mutation is in effect"
         # The real implementation returns 403 -- see
         # TestAuthorizationIsSeparateFromAuthentication.

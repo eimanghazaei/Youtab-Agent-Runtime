@@ -82,6 +82,7 @@ scripts/run_tests.sh \
   tests/youtab_agent_cli/test_gateway_lifecycle.py \
   tests/youtab_agent_cli/test_cloudflare_access_provider.py \
   tests/youtab_agent_cli/test_access_end_to_end.py \
+  tests/youtab_agent_cli/test_csrf_and_origin.py \
   -q | tee "$evidence_dir/unit-integration-e2e.log"
 record unit-integration-e2e $?
 
@@ -101,6 +102,7 @@ begin ruff
   youtab_agent_cli/dashboard_auth/cloudflare_access.py \
   tests/youtab_agent_cli/test_cloudflare_access_provider.py \
   tests/youtab_agent_cli/test_access_end_to_end.py \
+  tests/youtab_agent_cli/test_csrf_and_origin.py \
   --output-format concise | tee "$evidence_dir/quality-ruff.log"
 record ruff $?
 
