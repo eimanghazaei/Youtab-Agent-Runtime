@@ -18,6 +18,8 @@ during a retry backoff) must still SIGINT the command (exit 130); non-approved
 commands keep current interrupt behavior.
 """
 import json
+import pathlib
+import shlex
 import threading
 import time
 
@@ -44,6 +46,22 @@ def _isolate(tmp_path, monkeypatch):
     yield
     with _lock:
         _interrupted_threads.clear()
+
+
+def _sh(path) -> str:
+    r"""A pytest ``tmp_path`` child, quoted for the shell that will run it.
+
+    On Windows ``tmp_path`` is ``C:\Users\...\pytest-of-x\...`` and these
+    commands run through bash. Interpolated raw, the backslashes are read as
+    escapes and the drive colon is mangled, so ``touch`` created the sentinel
+    in the *repository root* under a name with every separator eaten --
+    ``C:UserseimanAppDataLocalTemppytest-...``. Six of those accumulated in
+    the tree and were committed once as litter.
+
+    ``as_posix()`` gives bash a path it can traverse; ``shlex.quote`` keeps a
+    space or a shell character in the temp path from splitting the command.
+    """
+    return shlex.quote(pathlib.Path(path).as_posix())
 
 
 def _wait_for_sentinel(sentinel, timeout=10.0):
@@ -94,7 +112,7 @@ def test_approved_command_genuine_interrupt_after_start_still_kills(tmp_path):
 
     def worker():
         holder["result"] = tt.terminal_tool(
-            command=f"touch {sentinel}; sleep 5; echo DONE", force=True
+            command=f"touch {_sh(sentinel)}; sleep 5; echo DONE", force=True
         )
 
     t = threading.Thread(target=worker, daemon=True)
@@ -125,7 +143,7 @@ def test_approved_note_enriched_not_misleading_on_interrupt(monkeypatch, tmp_pat
     holder = {}
 
     def worker():
-        holder["result"] = tt.terminal_tool(command=f"touch {sentinel}; sleep 5; echo DONE")
+        holder["result"] = tt.terminal_tool(command=f"touch {_sh(sentinel)}; sleep 5; echo DONE")
 
     t = threading.Thread(target=worker, daemon=True)
     t.start()
