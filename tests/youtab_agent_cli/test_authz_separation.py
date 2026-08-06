@@ -37,6 +37,7 @@ from youtab_agent_cli.authz import (
     CREDENTIAL_WRITE,
     PROVIDER_READ,
     Principal,
+    ROLE_SCOPES,
     Role,
     ROSTER_ENV,
     authorize,
@@ -263,14 +264,23 @@ def test_the_capability_report_is_answered_per_caller(gated):
     assert owner["role"] == Role.YOUTAB_OWNER.value
 
 
-def test_the_capability_report_is_not_itself_guarded():
+def test_the_capability_report_is_reachable_by_a_normal_user():
     """Asking whether a surface exists must not require the surface.
 
-    If this route ever fell under a guarded prefix, a normal user could not
+    If this route required a privileged scope, a normal user could not
     distinguish "absent" from "refused" and the dashboard would have no way to
     render correctly in either case.
+
+    It used to be enough to assert this route had no entry at all. That is no
+    longer the same statement: an unclassified route is now a refusal, so
+    "unguarded" would mean "unreachable by anyone". The property held here is
+    the one that always mattered -- an ordinary user can ask.
     """
-    assert required_scope("/api/dashboard/capabilities", "GET") is None
+    scope = required_scope("/api/dashboard/capabilities", "GET")
+    assert scope is not None, "an unclassified route is now refused, not open"
+    assert scope not in PRIVILEGED
+    normal = resolve_principal(user_id="nobody", org_id=ACME, roster=ROSTER)
+    assert authorize(normal, "/api/dashboard/capabilities", "GET")
 
 
 def _audit_lines(home):
@@ -335,21 +345,43 @@ def test_an_unguarded_route_is_not_refused_for_a_normal_user(gated):
     assert _as(gated, NORMAL).get("/api/sessions").status_code != 403
 
 
+#: Everything a customer must never hold, at any privilege level of theirs.
+PRIVILEGED = frozenset({
+    "provider:read", "provider:write", "credential:read", "credential:write",
+    "engine:select", "tenant:manage:any", "deployment:manage", "events:read",
+    "ops:manage",
+})
+
+
 # --- The policy itself ------------------------------------------------------
 
-def test_an_identity_absent_from_the_roster_holds_nothing():
+def test_an_identity_absent_from_the_roster_holds_no_privileged_authority():
+    """The roster grants elevation; it is not what makes someone a user.
+
+    An unrostered identity resolves to the ordinary user baseline -- the
+    capabilities they had over their own installation before authorization was
+    default-deny, when every unguarded route was reachable. What the roster's
+    absence must never produce is a *privileged* scope, and it does not.
+    """
     stranger = resolve_principal(user_id="nobody", org_id=ACME, roster=ROSTER)
     assert stranger.role is Role.NORMAL_USER
-    assert stranger.scopes == frozenset()
+    assert stranger.scopes == ROLE_SCOPES[Role.NORMAL_USER]
+    assert not (stranger.scopes & PRIVILEGED)
 
 
-def test_an_unrecognised_role_name_grants_nothing():
+def test_an_unverified_identity_holds_nothing_at_all():
+    """The baseline is keyed on a verified identity, not handed out freely."""
+    anonymous = resolve_principal(user_id="", org_id="", roster={})
+    assert anonymous.scopes == frozenset()
+
+
+def test_an_unrecognised_role_name_grants_no_elevation():
     """A newer roster against an older binary must not fail open."""
     principal = resolve_principal(
         user_id="x", org_id="", roster={"x": {"role": "future_super_role"}}
     )
     assert principal.role is Role.NORMAL_USER
-    assert principal.scopes == frozenset()
+    assert not (principal.scopes & PRIVILEGED)
 
 
 def test_a_mutating_request_needs_the_write_scope():

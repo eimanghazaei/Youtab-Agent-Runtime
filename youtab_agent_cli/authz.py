@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final, Mapping
@@ -91,23 +92,102 @@ DEPLOYMENT_MANAGE: Final = "deployment:manage"
 #: and system activity, so "authenticated" was never the right bar for it.
 EVENTS_READ: Final = "events:read"
 
+# --- Sentinels --------------------------------------------------------------
+# Not capabilities. They are how the table says "this route is reachable
+# without a grant" and "this route needs a session but no particular grant",
+# so that every route resolves to an explicit decision and ``None`` can mean
+# one thing only: nobody has classified this, therefore refuse.
+
+#: Reachable with no credential. Reserved for routes that must answer before a
+#: session can exist -- the login flow, and the SPA shell that renders it.
+PUBLIC: Final = "public"
+#: Any verified session, no particular grant. Written per route, like every
+#: other decision; it is not a default and not a fallback.
+AUTHENTICATED: Final = "authenticated"
+
+# --- Capability scopes ------------------------------------------------------
+# The user-facing surface: what a signed-in person may do with their own
+# installation. ``NORMAL_USER`` holds these, because withholding them would
+# not be a security boundary -- it would be removing the product.
+
+SESSION_READ: Final = "session:read"
+SESSION_WRITE: Final = "session:write"
+PROFILE_READ: Final = "profile:read"
+PROFILE_WRITE: Final = "profile:write"
+REPO_READ: Final = "repo:read"
+REPO_WRITE: Final = "repo:write"
+SKILL_READ: Final = "skill:read"
+SKILL_WRITE: Final = "skill:write"
+CONFIG_READ: Final = "config:read"
+CONFIG_WRITE: Final = "config:write"
+FS_READ: Final = "fs:read"
+FS_WRITE: Final = "fs:write"
+UI_READ: Final = "ui:read"
+UI_WRITE: Final = "ui:write"
+MEMORY_READ: Final = "memory:read"
+MEMORY_WRITE: Final = "memory:write"
+TOOL_MANAGE: Final = "tool:manage"
+AUTOMATION_MANAGE: Final = "automation:manage"
+DEVICE_MANAGE: Final = "device:manage"
+MESSAGING_MANAGE: Final = "messaging:manage"
+PLUGIN_USE: Final = "plugin:use"
+#: Operations, drain, self-update, and the generated API documentation. Not a
+#: user capability: it describes or moves the deployment.
+OPS_MANAGE: Final = "ops:manage"
+
+# --- WebSocket scopes -------------------------------------------------------
+# Starlette's HTTP middleware never runs on a WebSocket upgrade, so the refusal
+# in :func:`authorize` does not reach these. Each socket enforces its own scope
+# at the upgrade; naming them here makes the socket surface a table rather than
+# something to hunt for across handlers.
+
+#: Interactive shell. The highest-authority socket on the surface.
+PTY_SCOPE: Final = "session:write"
+#: The chat/console stream.
+CONSOLE_SCOPE: Final = "session:write"
+#: General dashboard socket.
+WS_SCOPE: Final = "session:write"
+#: Text-to-speech stream. Read-shaped: it emits audio, it does not drive a
+#: session.
+AUDIO_STREAM_SCOPE: Final = "session:read"
+
+#: The capability set a signed-in person holds over their own installation.
+#: Named separately so the grant can be read on its own and confirmed to carry
+#: no provider, credential, engine, tenant, deployment or ops scope.
+USER_CAPABILITIES: Final[frozenset[str]] = frozenset({
+    SESSION_READ, SESSION_WRITE, PROFILE_READ, PROFILE_WRITE,
+    REPO_READ, REPO_WRITE, SKILL_READ, SKILL_WRITE,
+    CONFIG_READ, CONFIG_WRITE, FS_READ, FS_WRITE,
+    UI_READ, UI_WRITE, MEMORY_READ, MEMORY_WRITE,
+    TOOL_MANAGE, AUTOMATION_MANAGE, DEVICE_MANAGE, MESSAGING_MANAGE,
+    PLUGIN_USE,
+})
+
 #: What each role may do. Written out per role rather than inherited, so the
 #: Tenant Admin row can be read on its own and confirmed to contain no
 #: provider, credential or engine scope at all.
 ROLE_SCOPES: Final[Mapping[Role, frozenset[str]]] = {
-    Role.NORMAL_USER: frozenset(),
-    Role.TENANT_ADMIN: frozenset({TENANT_MANAGE_OWN}),
+    # Not empty any more, and the change is deliberate. Once an unmapped route
+    # is a refusal, a role holding nothing can reach nothing -- so the
+    # capabilities a signed-in person already had over their own installation
+    # have to be named rather than assumed. This restores exactly what was
+    # reachable before the flip and widens nothing: the provider, credential,
+    # engine, tenant, deployment and ops scopes are all absent from it.
+    Role.NORMAL_USER: USER_CAPABILITIES,
+    Role.TENANT_ADMIN: USER_CAPABILITIES | frozenset({TENANT_MANAGE_OWN}),
     # An operator holds nothing implicitly. Their scopes come from the roster
     # entry, one capability at a time — "explicitly scoped" is the whole point
     # of the role, so a blanket grant here would defeat it.
     Role.YOUTAB_OPERATOR: frozenset(),
-    Role.YOUTAB_SUPERADMIN: frozenset({
+    Role.YOUTAB_SUPERADMIN: USER_CAPABILITIES | frozenset({
         PROVIDER_READ, PROVIDER_WRITE, CREDENTIAL_READ, CREDENTIAL_WRITE,
         ENGINE_SELECT, TENANT_MANAGE_ANY, DEPLOYMENT_MANAGE, EVENTS_READ,
+        OPS_MANAGE,
     }),
-    Role.YOUTAB_OWNER: frozenset({
+    Role.YOUTAB_OWNER: USER_CAPABILITIES | frozenset({
         PROVIDER_READ, PROVIDER_WRITE, CREDENTIAL_READ, CREDENTIAL_WRITE,
         ENGINE_SELECT, TENANT_MANAGE_ANY, DEPLOYMENT_MANAGE, EVENTS_READ,
+        OPS_MANAGE,
     }),
 }
 
@@ -211,16 +291,29 @@ def resolve_principal(
     """
     entries = load_roster() if roster is None else roster
     entry = entries.get(user_id)
+    # The baseline a *verified* identity carries without a roster entry. Not a
+    # weakening: before the flip an unrostered user reached every unguarded
+    # route, which was the entire user surface. Resolving them to an empty
+    # scope set would not restrict authority -- it would lock every ordinary
+    # customer out of their own installation while leaving the privileged
+    # scopes exactly as unreachable as they already were.
+    #
+    # Keyed on ``user_id`` being non-empty. An unauthenticated caller never
+    # reaches here (``_principal_for_request`` returns a scopeless principal
+    # for a missing session), so this cannot grant anything to someone who has
+    # not proved who they are.
+    baseline = ROLE_SCOPES[Role.NORMAL_USER] if user_id else frozenset()
     if not isinstance(entry, dict):
-        return Principal(user_id=user_id, org_id=org_id)
+        return Principal(user_id=user_id, org_id=org_id, scopes=baseline)
 
     try:
         role = Role(entry.get("role", Role.NORMAL_USER))
     except ValueError:
         # An unrecognised role name is a typo or a downgrade of this binary
-        # against a newer roster. Either way the safe reading is "no
-        # authority", never "some authority we cannot name".
-        return Principal(user_id=user_id, org_id=org_id)
+        # against a newer roster. Either way the safe reading is "no elevated
+        # authority", never "some authority we cannot name" -- the ordinary
+        # user baseline, and nothing above it.
+        return Principal(user_id=user_id, org_id=org_id, scopes=baseline)
 
     granted = entry.get("scopes", ())
     extra = frozenset(s for s in granted if isinstance(s, str))
@@ -271,6 +364,167 @@ ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     # enforces it -- and it has to be there anyway, because Starlette's HTTP
     # middleware never runs on a WebSocket upgrade.
     ("/api/events", EVENTS_READ),
+
+    # --- Cluster grants -----------------------------------------------------
+    # Assigned per cluster rather than per endpoint, deliberately. Reading 250
+    # function bodies before closing a surface that includes an interactive
+    # shell, arbitrary file write and the endpoint that rewrites the agent's
+    # system prompt gets the ordering backwards: a wrong scope here is a 403
+    # that shows up in seconds and costs one line to correct, while an
+    # unmapped route is an open door for as long as it takes to read
+    # everything. Longest prefix still wins, so any of these can be narrowed
+    # later without reordering the table.
+    ("/api/sessions", SESSION_READ),
+    ("/api/profiles", PROFILE_READ),
+    ("/api/git", REPO_READ),
+    ("/api/skills", SKILL_READ),
+    ("/api/config", CONFIG_READ),
+    ("/api/fs", FS_READ),
+    ("/api/files", FS_READ),
+    ("/api/dashboard", UI_READ),
+    ("/api/memory", MEMORY_READ),
+    ("/api/learning", MEMORY_READ),
+    ("/api/mcp", TOOL_MANAGE),
+    ("/api/tools", TOOL_MANAGE),
+    ("/api/cron", AUTOMATION_MANAGE),
+    ("/api/webhooks", AUTOMATION_MANAGE),
+    ("/api/curator", AUTOMATION_MANAGE),
+    ("/api/ops", OPS_MANAGE),
+    ("/api/gateway/drain", OPS_MANAGE),
+    ("/api/youtab/update", OPS_MANAGE),
+    ("/api/pairing", DEVICE_MANAGE),
+    ("/api/messaging", MESSAGING_MANAGE),
+    ("/api/plugins", PLUGIN_USE),
+
+    # Nearest owning domain, by the same rule.
+    ("/api/analytics", UI_READ),
+    ("/api/logs", OPS_MANAGE),
+    ("/api/media", FS_READ),
+    ("/api/portal", UI_READ),
+    ("/api/status", UI_READ),
+    ("/api/system", OPS_MANAGE),
+    ("/api/ssh", REPO_READ),
+    ("/api/egress", OPS_MANAGE),
+    ("/api/actions", SESSION_WRITE),
+    ("/api/chat", SESSION_WRITE),
+    ("/api/audio", SESSION_READ),
+    ("/api/youtab", UI_READ),
+    ("/api/auth", AUTHENTICATED),
+
+    # The generated API documentation describes every route on the deployment,
+    # including the privileged ones. That is an operations surface, not a user
+    # one, and the cheapest way for an attacker to learn the shape of what
+    # they are attacking.
+    ("/docs", OPS_MANAGE),
+    ("/redoc", OPS_MANAGE),
+    ("/openapi.json", OPS_MANAGE),
+)
+
+#: Routes matched on the whole path rather than as a prefix.
+#:
+#: A prefix rule cannot express these. ``/login`` as a prefix would also claim
+#: a future ``/login-something``; ``/`` as a prefix would claim the entire
+#: application. Exact matching says what is meant and nothing more.
+EXACT_ROUTE_SCOPES: Final[Mapping[str, str]] = {
+    # The login flow. Every one of these has to answer before a session can
+    # exist, so requiring one would make the deployment unreachable -- the
+    # bootstrap paradox, not a judgement that the data is harmless.
+    "/api/auth/csrf": PUBLIC,
+    "/api/auth/providers": PUBLIC,
+    "/auth/login": PUBLIC,
+    "/auth/callback": PUBLIC,
+    "/auth/password-login": PUBLIC,
+    "/auth/logout": PUBLIC,
+    "/login": PUBLIC,
+    "/auth/native/authorize": PUBLIC,
+    "/auth/native/token": PUBLIC,
+    "/auth/native/refresh": PUBLIC,
+    # Process liveness for a local supervisor. Returns no configuration.
+    "/api/health": PUBLIC,
+    # The SPA shell: the HTML that renders the login screen, so it cannot
+    # require the session that screen exists to obtain.
+    #
+    # One key, two endpoint bodies -- ``serve_spa`` when the frontend is built,
+    # ``no_frontend`` (a 404 JSON) when it is not. Public is correct for both,
+    # so the classification holds in either artifact state.
+    "/": PUBLIC,
+    # Identity of the current session, and the single-use ticket a browser
+    # needs because it cannot set Authorization on a WebSocket upgrade.
+    "/api/auth/me": AUTHENTICATED,
+    "/api/auth/ws-ticket": AUTHENTICATED,
+    # Two routes inside the plugin cluster whose bodies were read before the
+    # cluster rule was applied, and which do not carry plugin authority.
+    # ``model-options`` returns authenticated provider slugs and their model
+    # lists; ``profiles`` returns the provider and model bound to every
+    # installed profile. Both are the private engine catalogue that
+    # ``/api/model/options`` is already held at ``provider:read`` for.
+    #
+    # Exact rather than prefix on purpose: as a prefix, ``.../profiles`` would
+    # also claim ``.../profiles/{name}`` and ``.../profiles/{name}/
+    # describe-auto``, which are user-authored descriptions and must stay
+    # ordinary plugin capability. Restricting a disclosure must not cost the
+    # editing feature beside it.
+    "/api/plugins/kanban/model-options": PROVIDER_READ,
+    "/api/plugins/kanban/profiles": PROVIDER_READ,
+}
+
+#: Routes whose path carries parameters, matched against the whole path.
+#:
+#: Written as the inventory's normalised templates (``{}`` for a dynamic
+#: segment) and compiled to anchored patterns, so a parameter cannot be renamed
+#: into a different decision and a segment cannot swallow a ``/``.
+PATTERN_ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
+    # Built CSS and dashboard plugin assets, both served to the login screen.
+    ("/assets/{}.css", PUBLIC),
+    ("/dashboard-plugins/{}/{}", PUBLIC),
+    # Writes ``model.default`` and ``model.provider`` into a named profile. Its
+    # own docstring records that it mirrors ``POST /api/model/set``, which is
+    # held at ``engine:select`` -- so letting the cluster rule resolve this to
+    # ``profile:write`` would leave that scope bypassable by addressing the
+    # same write through a different path. Read from the endpoint body, not
+    # inferred, before the cluster rule was applied.
+    ("/api/profiles/{}/model", ENGINE_SELECT),
+)
+
+#: Roots that belong to the application rather than to the browser router. A
+#: path under one of these is an endpoint, so falling through to the SPA
+#: catch-all must never make it reachable.
+_APPLICATION_ROOTS: Final[tuple[str, ...]] = (
+    "/api", "/auth", "/docs", "/redoc", "/openapi.json",
+    "/assets", "/dashboard-plugins",
+)
+
+
+def _spa_fallback(path: str) -> str | None:
+    """What the SPA catch-all (``GET /{full_path:path}``) resolves to.
+
+    The catch-all matches every path no other route claimed, which is how a
+    single-page application serves its own client-side routes -- ``/settings``,
+    ``/chat/abc`` -- and it has to answer before a session exists, because the
+    login screen is one of them.
+
+    That makes it the one rule that could quietly undo the flip: written as a
+    pattern it would match everything, including a new ``/api`` endpoint nobody
+    had classified, and the whole surface would be public again. So it is
+    evaluated last, and only for paths outside the application's own roots. An
+    unclassified ``/api`` route still resolves to ``None`` and is still
+    refused -- which is what the endpoint itself does anyway, since
+    ``serve_spa`` returns a real 404 for an unmatched ``/api`` path rather than
+    the shell.
+    """
+    if any(path == root or path.startswith(root + "/") for root in _APPLICATION_ROOTS):
+        return None
+    return PUBLIC
+
+
+def _compile(template: str) -> "re.Pattern[str]":
+    """Anchor a normalised template so ``{}`` matches exactly one segment."""
+    parts = [re.escape(p) for p in template.split("{}")]
+    return re.compile("^" + "[^/]+".join(parts) + "$")
+
+
+_PATTERNS: Final[tuple[tuple["re.Pattern[str]", str], ...]] = tuple(
+    (_compile(template), scope) for template, scope in PATTERN_ROUTE_SCOPES
 )
 
 #: Methods that mutate. A mutating request to a read-scoped prefix is held to
@@ -282,23 +536,48 @@ WRITE_METHODS: Final[frozenset[str]] = frozenset({"POST", "PUT", "PATCH", "DELET
 _WRITE_ESCALATION: Final[Mapping[str, str]] = {
     CREDENTIAL_READ: CREDENTIAL_WRITE,
     PROVIDER_READ: PROVIDER_WRITE,
+    SESSION_READ: SESSION_WRITE,
+    PROFILE_READ: PROFILE_WRITE,
+    REPO_READ: REPO_WRITE,
+    SKILL_READ: SKILL_WRITE,
+    CONFIG_READ: CONFIG_WRITE,
+    FS_READ: FS_WRITE,
+    UI_READ: UI_WRITE,
+    MEMORY_READ: MEMORY_WRITE,
 }
 
 
 def required_scope(path: str, method: str = "GET") -> str | None:
-    """The scope needed for ``path``, or ``None`` if it is not a guarded route.
+    """The scope needed for ``path``, or ``None`` if nothing classifies it.
 
-    ``None`` means "this table does not guard this path" — it is not a grant.
-    Callers apply it to the guarded surface only; everything else keeps
-    whatever authentication it already had.
+    ``None`` no longer means "unguarded, carry on". It means no rule in this
+    module describes this route, and :func:`authorize` treats that as a
+    refusal. The tables are consulted most-specific first: an exact path, then
+    a parameterised pattern, then the longest matching prefix, then the SPA
+    catch-all for paths outside the application's own roots.
+
+    A write method is held to the write half of a read/write pair, so a
+    mutating request cannot be reached with the read scope just because the
+    prefix table lists the read one.
     """
-    match = None
-    for prefix, scope in ROUTE_SCOPES:
-        if path.startswith(prefix) and (match is None or len(prefix) > len(match[0])):
-            match = (prefix, scope)
-    if match is None:
-        return None
-    scope = match[1]
+    scope = EXACT_ROUTE_SCOPES.get(path)
+    if scope is None:
+        for pattern, candidate in _PATTERNS:
+            if pattern.match(path):
+                scope = candidate
+                break
+    if scope is None:
+        match = None
+        for prefix, candidate in ROUTE_SCOPES:
+            if path.startswith(prefix) and (
+                match is None or len(prefix) > len(match[0])
+            ):
+                match = (prefix, candidate)
+        if match is None:
+            return _spa_fallback(path)
+        scope = match[1]
+    if scope in (PUBLIC, AUTHENTICATED):
+        return scope
     if method.upper() in WRITE_METHODS:
         return _WRITE_ESCALATION.get(scope, scope)
     return scope
@@ -307,10 +586,17 @@ def required_scope(path: str, method: str = "GET") -> str | None:
 def authorize(principal: Principal, path: str, method: str = "GET") -> bool:
     """True if ``principal`` may issue ``method path``.
 
-    Unguarded paths return True: this function answers only the question the
-    route table poses, and an unguarded path is not this module's to refuse.
+    Fail-closed. A route no table describes is refused, because the behaviour
+    this replaces meant that adding an endpoint published it, and that
+    forgetting to classify one was indistinguishable from deciding it was
+    open. The cost is real and is the point: a new route is refused until
+    somebody grants it a scope.
     """
     scope = required_scope(path, method)
     if scope is None:
+        return False
+    if scope == PUBLIC:
         return True
+    if scope == AUTHENTICATED:
+        return bool(principal.user_id)
     return principal.has(scope)

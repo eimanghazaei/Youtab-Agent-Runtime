@@ -68,6 +68,15 @@ from youtab_agent_cli.authz import (
     required_scope,
     resolve_principal,
 )
+from youtab_agent_cli.authz import AUTHENTICATED as authz_authenticated
+from youtab_agent_cli.authz import PUBLIC as authz_public
+from youtab_agent_cli.authz import (
+    AUDIO_STREAM_SCOPE,
+    CONSOLE_SCOPE,
+    PLUGIN_USE,
+    PTY_SCOPE,
+    WS_SCOPE,
+)
 from youtab_agent_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -822,11 +831,19 @@ async def _authorization_gate(request: Request, call_next):
     than being reachable because nobody remembered it.
     """
     scope = required_scope(request.url.path, request.method)
-    if scope is None:
+    # An unclassified route is now a refusal, not a pass-through. The scope is
+    # still resolved first so the audit record can name what was missing.
+    if scope == authz_public:
         return await call_next(request)
 
     principal = _principal_for_request(request)
-    granted = principal.has(scope)
+    if scope is None:
+        granted = False
+        scope = "<unclassified>"
+    elif scope == authz_authenticated:
+        granted = bool(principal.user_id)
+    else:
+        granted = principal.has(scope)
     # Both outcomes, and the same fields for each, so the record answers "who
     # changed a binding" as readily as "who was turned away". No secret, no
     # request body, no token: the audit trail must never become the place a
@@ -4888,6 +4905,9 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         await ws.close(code=4401)
         return
     if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+    if not _ws_scope_ok(ws, AUDIO_STREAM_SCOPE):
         await ws.close(code=4403)
         return
     await ws.accept()
@@ -15473,6 +15493,11 @@ async def console_ws(ws: WebSocket) -> None:
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
         return
 
+    if not _ws_scope_ok(ws, CONSOLE_SCOPE):
+        _log.warning("console refused: scope peer=%s", peer)
+        await ws.close(code=4403, reason=_ws_close_reason("scope"))
+        return
+
     await ws.accept()
 
     profile = _console_profile_from_ws(ws)
@@ -15829,6 +15854,14 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
         return
 
+    # The interactive shell: the highest authority on the socket surface, and
+    # the one an HTTP-only gate leaves completely open. A ticket minted for the
+    # event stream opened a terminal until this check existed.
+    if not _ws_scope_ok(ws, PTY_SCOPE):
+        _log.warning("pty refused: scope peer=%s", peer)
+        await ws.close(code=4403, reason=_ws_close_reason("scope"))
+        return
+
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
@@ -15993,6 +16026,13 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
+    # A credential proves who is upgrading, not what they may do. The HTTP
+    # gate never runs on an upgrade, so without this the socket is reachable
+    # by anyone holding any ticket.
+    if not _ws_scope_ok(ws, WS_SCOPE):
+        await ws.close(code=4403)
+        return
+
     from tui_gateway.ws import handle_ws
 
     await handle_ws(ws)
@@ -16057,6 +16097,14 @@ async def events_ws(ws: WebSocket) -> None:
         return
 
     if not _ws_request_is_allowed(ws):
+        await ws.close(code=4403)
+        return
+
+    # The scope this route already carried in ROUTE_SCOPES, finally enforced
+    # where it is actually reached. The HTTP entry never applied here, because
+    # Starlette's middleware stack does not run on a WebSocket upgrade -- so
+    # `events:read` was a rule about a transport nobody reads the stream over.
+    if not _ws_scope_ok(ws, EVENTS_READ):
         await ws.close(code=4403)
         return
 

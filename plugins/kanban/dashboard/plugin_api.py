@@ -83,6 +83,11 @@ def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
     dashboard ``web_server`` module isn't importable (e.g. the bare-FastAPI
     test harness); there we accept so the tail loop stays testable, matching
     the prior behaviour.
+
+    A credential proves who is upgrading, not what they may do, so the scope
+    the rest of the plugin cluster is held to is enforced here as well.
+    Starlette's HTTP middleware never runs on an upgrade, and without this a
+    ticket minted for any other socket opens the board stream.
     """
     try:
         from youtab_agent_cli import web_server as _ws
@@ -91,7 +96,11 @@ def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
         # testable; in production the dashboard module always imports
         # cleanly because it's the caller.
         return True
-    return bool(_ws._ws_auth_ok(ws))
+    if not _ws._ws_auth_ok(ws):
+        return False
+    from youtab_agent_cli.authz import PLUGIN_USE
+
+    return bool(_ws._ws_scope_ok(ws, PLUGIN_USE))
 
 
 def _resolve_board(board: Optional[str]) -> Optional[str]:

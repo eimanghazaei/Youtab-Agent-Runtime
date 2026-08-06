@@ -48,6 +48,7 @@ from typing import Final, Iterable, Mapping
 
 from youtab_agent_cli.authz import (
     CREDENTIAL_READ,
+    PROFILE_READ,
     CREDENTIAL_WRITE,
     DEPLOYMENT_MANAGE,
     ENGINE_SELECT,
@@ -421,14 +422,20 @@ _PLUGIN_SOCKETS: Final[tuple[RouteEntry, ...]] = (
 # ---------------------------------------------------------------------------
 _PROFILE_PRIVILEGED: Final[tuple[RouteEntry, ...]] = (
     RouteEntry(
-        "/api/profiles", "GET", RouteClass.OWNER_SUPERADMIN,
-        scope=PROVIDER_READ,
+        "/api/profiles", "GET", RouteClass.USER_OWNED_RESOURCE,
+        scope=PROFILE_READ,
         justification=(
+            "KNOWN OPEN DISCLOSURE, deliberately not closed with a scope. "
             "``_profile_to_dict`` returns ``model`` and ``provider`` — the raw "
             "engine binding — for every profile, alongside the profile's "
-            "absolute path on disk and ``has_env``, which discloses whether "
-            "credentials are configured. Three disclosures a normal user must "
-            "not have, from a route whose name reads like a list."
+            "absolute path on disk and ``has_env``, which reveals whether "
+            "credentials are configured. But this is the route the profile "
+            "picker lists from, so holding it at ``provider:read`` would take "
+            "the picker away from every ordinary user. The disclosure is in "
+            "the payload, so the fix belongs in the payload: mask ``model``, "
+            "``provider``, ``path`` and ``has_env`` for a caller without "
+            "``provider:read``, and leave the route at ``profile:read``. "
+            "Tracked, not forgotten."
         ),
     ),
     RouteEntry(

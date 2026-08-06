@@ -137,20 +137,27 @@ class TestRegistryMatchesTheRouter:
                           inventory["mounts"])
         assert len(report["classified"]) == len(INDEX)
 
-    def test_the_surface_is_not_yet_fully_classified(self, inventory):
-        """States the truth this branch is at, so nobody reads green as done.
+    def test_the_registry_documents_a_subset_of_the_enforced_surface(self, inventory):
+        """The registry is the body-verified subset, not the enforcement path.
 
-        This assertion is expected to be inverted — to "nothing unclassified"
-        — in the same commit that flips ``authorize()`` to default-deny. Until
-        then it exists so a passing suite cannot be mistaken for a finished
-        slice.
+        Enforcement is ``authz.required_scope``, which now covers the whole
+        router by cluster. This module remains the narrower, more expensive
+        record: the routes somebody actually opened. It is deliberately
+        smaller, and saying so here keeps a reader from mistaking its size for
+        the size of what is enforced.
         """
         report = coverage(inventory["http"], inventory["websocket"],
                           inventory["mounts"])
         assert report["unclassified"], (
-            "coverage is complete — flip authorize() to default-deny and "
-            "replace this assertion with its inverse"
+            "the registry now covers the whole router; fold it into the "
+            "enforced table or say so explicitly here"
         )
+        for pair in inventory["http"]:
+            path, method = tuple(pair)
+            probe = "/" if path == "/" else path.replace("{}", "x")
+            assert authz.required_scope(probe, method) is not None, (
+                f"{method} {path} is enforced by nothing"
+            )
 
 
 # --- agreement with the scope table -----------------------------------------
@@ -170,18 +177,29 @@ class TestRegistryAgreesWithAuthz:
                 f"ROUTE_SCOPES says {from_table}"
             )
 
-    def test_every_currently_scoped_route_is_classified(self, inventory):
-        """No route that ``ROUTE_SCOPES`` already guards may be left unmapped.
+    def test_every_privileged_route_is_body_classified(self, inventory):
+        """Every route held at a privileged scope has a body-derived entry.
 
-        The privileged surface is the part that was already reasoned about;
-        losing one of those entries while adding others would be a regression
-        the coverage number alone would hide.
+        Enforcement now covers the whole surface by cluster, so "does the
+        registry cover everything ``ROUTE_SCOPES`` guards" stopped being a
+        meaningful question -- it guards all of it. What still has to hold is
+        narrower and more valuable: nothing reaches a *privileged* scope
+        without somebody having opened the endpoint and written down why.
         """
+        privileged = {
+            authz.PROVIDER_READ, authz.PROVIDER_WRITE,
+            authz.CREDENTIAL_READ, authz.CREDENTIAL_WRITE,
+            authz.ENGINE_SELECT, authz.DEPLOYMENT_MANAGE,
+        }
         for pair in inventory["http"]:
             path, method = tuple(pair)
-            if authz.required_scope(path, method) is None:
+            probe = "/" if path == "/" else path.replace("{}", "x")
+            if authz.required_scope(probe, method) not in privileged:
                 continue
-            assert classify(path, method) is not None, f"{method} {path}"
+            assert classify(path, method) is not None, (
+                f"{method} {path} is held at a privileged scope with no "
+                "body-derived registry entry"
+            )
 
 
 # --- the findings this classification produced ------------------------------
@@ -208,12 +226,21 @@ class TestPrivilegeLeaksFoundByReadingBodies:
         assert entry.route_class is RouteClass.OWNER_SUPERADMIN
         assert entry.scope == authz.PROVIDER_READ
 
-    def test_profile_list_is_owner_only(self):
-        """It returns model, provider, on-disk path and has_env per profile."""
+    def test_profile_list_disclosure_is_recorded_as_open(self):
+        """A finding that was deliberately not closed with a scope.
+
+        ``GET /api/profiles`` returns model, provider, on-disk path and
+        has_env per profile -- but it is also the route the profile picker
+        lists from, so holding it at ``provider:read`` would take the picker
+        away from every ordinary user. The disclosure is in the payload and
+        the fix belongs there. This test exists so the decision stays visible
+        instead of dissolving into the cluster grant.
+        """
         entry = classify("/api/profiles", "GET")
         assert entry is not None
-        assert entry.route_class is RouteClass.OWNER_SUPERADMIN
-        assert entry.scope == authz.PROVIDER_READ
+        assert entry.scope == authz.PROFILE_READ
+        assert entry.scope == authz.required_scope("/api/profiles", "GET")
+        assert "KNOWN OPEN DISCLOSURE" in entry.justification
 
     def test_per_profile_model_write_is_held_to_engine_select(self):
         """Unmapped, this is a working bypass of ``POST /api/model/set``.
