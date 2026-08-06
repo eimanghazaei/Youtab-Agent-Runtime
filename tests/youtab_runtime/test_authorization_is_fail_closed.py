@@ -810,3 +810,55 @@ class TestMemoryProviderConfigStaysUserCapabilityBecauseItMasks:
         assert authorize(user, "/api/memory/providers/mem0/config", "GET")
         assert authorize(user, "/api/memory/providers/mem0/config", "PUT")
         assert authorize(user, "/api/memory", "GET")
+
+
+class TestRoutesTheSweepFlaggedAndTheBodyCleared:
+    """Flagged by the privileged-data sweep, kept after reading them.
+
+    Recorded because "we looked and it was fine" is only worth something if the
+    property that made it fine is asserted. Each of these stays user capability
+    *because* of a specific line, and these tests are those lines.
+    """
+
+    @pytest.fixture
+    def user(self):
+        return resolve_principal(user_id="someone", org_id="acme", roster={})
+
+    def test_the_mcp_flow_snapshot_carries_no_credential(self):
+        """`GET /api/mcp/oauth/flows/{id}` returns the flow's snapshot."""
+        import inspect
+
+        from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+        source = inspect.getsource(DashboardOAuthFlow.snapshot)
+        for leaked in ("access_token", "refresh_token", "client_secret",
+                       "expected_state", "code"):
+            assert leaked not in source, f"snapshot() exposes {leaked}"
+        assert "status" in source and "flow_id" in source
+
+    def test_messaging_platform_tokens_are_redacted_on_read(self):
+        """`GET /api/messaging/platforms` reports set-ness, not the token."""
+        import inspect
+
+        from youtab_agent_cli import web_server
+
+        source = inspect.getsource(web_server._messaging_platform_payload)
+        assert "redacted_value" in source
+        assert "redact_key(value)" in source
+        assert '"is_set": bool(value)' in source
+
+    def test_messaging_stays_a_user_capability(self, user):
+        """The user's own bot tokens, redacted on read. Not Youtab's bindings."""
+        assert authorize(user, "/api/messaging/platforms", "GET")
+        assert authorize(user, "/api/messaging/platforms/telegram", "PUT")
+
+    def test_the_git_cluster_stays_workspace_capability(self, user):
+        """Reads and writes split as the cluster rule assigned; bodies agree."""
+        for path, method, scope in (
+            ("/api/git/status", "GET", authz.REPO_READ),
+            ("/api/git/review/diff", "GET", authz.REPO_READ),
+            ("/api/git/review/commit", "POST", authz.REPO_WRITE),
+            ("/api/git/worktree/add", "POST", authz.REPO_WRITE),
+        ):
+            assert required_scope(path, method) == scope, f"{method} {path}"
+            assert authorize(user, path, method)
