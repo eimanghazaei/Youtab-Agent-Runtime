@@ -2831,14 +2831,45 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
     return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
 
 
+def _fs_path_or_refuse(raw_path: str) -> Path:
+    """``_fs_path``, refusing credential material.
+
+    ``/api/fs/*`` resolves any absolute path on the host, which made
+    ``fs:read`` a way to read the credential store -- ``.env`` and the
+    canonical credential basenames under the Youtab home -- without holding
+    ``credential:read``. That is the same shape as the per-profile model write
+    that bypassed ``engine:select``: a scope is not a control while another
+    route reaches the same data.
+
+    The guard is the one ``/api/files`` already uses, so "sensitive" keeps a
+    single definition: ``.env`` variants, the canonical credential basenames,
+    and the ``mcp-tokens``/``pairing`` trees. Ordinary project files are
+    untouched, which is the point -- this closes a credential bypass without
+    narrowing what the Agent may read and write in its workspace.
+
+    Applied to writes as well as reads. The managed-files guard is read-side
+    only by design, because its write endpoints land inside an operator-chosen
+    root; ``/api/fs/write-text`` has no such root, so an unguarded write could
+    plant a ``.env`` the runtime would later load as configuration.
+    """
+    target = _fs_path(raw_path)
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Path is not accessible")
+    return target
+
+
 @app.get("/api/fs/list")
 async def fs_list(path: str):
-    target = _fs_path(path)
+    target = _fs_path_or_refuse(path)
     try:
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
                 if entry.name in _FS_READDIR_HIDDEN:
+                    continue
+                # Same guard per entry: listing a directory must not disclose
+                # that a credential file exists in it, let alone its name.
+                if _is_sensitive_path(Path(entry.path)):
                     continue
                 entries.append({
                     "name": entry.name,
@@ -2859,7 +2890,7 @@ async def fs_list(path: str):
 
 @app.get("/api/fs/read-text")
 async def fs_read_text(path: str):
-    target, st = _fs_regular_file(_fs_path(path))
+    target, st = _fs_regular_file(_fs_path_or_refuse(path))
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     bytes_to_read = min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES)
@@ -2893,7 +2924,7 @@ async def fs_write_text(payload: FsWriteText):
     original. Stale-on-disk detection is the client's job (re-read before save),
     so both transports behave identically.
     """
-    target = _fs_path(payload.path)
+    target = _fs_path_or_refuse(payload.path)
     text = payload.content or ""
     if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="Content too large")
@@ -2930,7 +2961,7 @@ async def fs_write_text(payload: FsWriteText):
 
 @app.get("/api/fs/read-data-url")
 async def fs_read_data_url(path: str):
-    target, st = _fs_regular_file(_fs_path(path))
+    target, st = _fs_regular_file(_fs_path_or_refuse(path))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     try:

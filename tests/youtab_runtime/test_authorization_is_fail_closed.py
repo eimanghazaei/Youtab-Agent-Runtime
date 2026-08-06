@@ -611,3 +611,92 @@ class TestTheUserBaselineWasValidatedRouteByRoute:
             authz.DEPLOYMENT_MANAGE, authz.EVENTS_READ, authz.OPS_MANAGE,
         }
         assert not (USER_CAPABILITIES & privileged)
+
+
+class TestTheFsClusterCannotReachCredentialMaterial:
+    """`fs:read` was a way to read the credential store without `credential:read`.
+
+    `/api/fs/*` resolves any absolute path on the host — unlike `/api/files/*`,
+    which is bounded by an operator-chosen root and already filters sensitive
+    paths. Since `fs:read` and `fs:write` are both in the normal-user baseline,
+    every signed-in user could read `.env` and the canonical credential
+    basenames, which is exactly what `credential:read` exists to gate.
+
+    The same shape as the per-profile model write that bypassed
+    `engine:select`: a scope is not a control while another route reaches the
+    same data.
+    """
+
+    @pytest.fixture
+    def sensitive(self, tmp_path):
+        target = tmp_path / ".env"
+        target.write_text("YOUTAB_API_KEY=super-secret\n")
+        return target
+
+    def test_reading_a_credential_file_is_refused(self, sensitive):
+        from fastapi import HTTPException
+
+        from youtab_agent_cli.web_server import _fs_path_or_refuse
+
+        with pytest.raises(HTTPException) as excinfo:
+            _fs_path_or_refuse(str(sensitive))
+        assert excinfo.value.status_code == 403
+
+    @pytest.mark.parametrize("name", [
+        ".env", ".env.local", ".ENV", ".envrc",
+    ])
+    def test_the_env_variants_are_all_covered(self, tmp_path, name):
+        from fastapi import HTTPException
+
+        from youtab_agent_cli.web_server import _fs_path_or_refuse
+
+        (tmp_path / name).write_text("K=v\n")
+        with pytest.raises(HTTPException):
+            _fs_path_or_refuse(str(tmp_path / name))
+
+    def test_the_credential_directory_trees_are_covered(self, tmp_path):
+        from fastapi import HTTPException
+
+        from youtab_agent_cli.web_server import _fs_path_or_refuse
+
+        for tree in ("mcp-tokens", "pairing"):
+            path = tmp_path / tree / "token.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}")
+            with pytest.raises(HTTPException):
+                _fs_path_or_refuse(str(path))
+
+    def test_writing_one_is_refused_too(self, sensitive):
+        """An unguarded write could plant a .env the runtime later loads."""
+        from fastapi import HTTPException
+
+        from youtab_agent_cli.web_server import _fs_path_or_refuse
+
+        with pytest.raises(HTTPException):
+            _fs_path_or_refuse(str(sensitive))
+
+    def test_an_ordinary_project_file_is_untouched(self, tmp_path):
+        """The fix closes a credential bypass, it does not narrow the workspace."""
+        from youtab_agent_cli.web_server import _fs_path_or_refuse
+
+        ordinary = tmp_path / "main.py"
+        ordinary.write_text("print('hi')\n")
+        assert _fs_path_or_refuse(str(ordinary)) == ordinary.resolve()
+
+    def test_listing_omits_credential_entries(self, tmp_path):
+        """Listing must not disclose that a credential file exists."""
+        import asyncio
+
+        from youtab_agent_cli.web_server import fs_list
+
+        (tmp_path / ".env").write_text("K=v\n")
+        (tmp_path / "main.py").write_text("x\n")
+        names = {e["name"] for e in asyncio.run(fs_list(str(tmp_path)))["entries"]}
+        assert "main.py" in names
+        assert ".env" not in names
+
+    def test_the_fs_scopes_are_still_ordinary_user_capability(self):
+        """The guard is on the data, not on the caller. Capability is kept."""
+        user = resolve_principal(user_id="someone", org_id="acme", roster={})
+        assert authorize(user, "/api/fs/read-text", "GET")
+        assert authorize(user, "/api/fs/write-text", "POST")
