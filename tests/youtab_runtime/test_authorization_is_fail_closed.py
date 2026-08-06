@@ -234,20 +234,46 @@ class TestTheLoginFlowStaysReachable:
         assert required_scope(path, method) == PUBLIC
         assert authorize(Principal(user_id="", org_id=""), path, method)
 
+    #: Present only when the frontend has been built. A runner that skipped
+    #: the build must not go red for it, and a runner that did the build must
+    #: not be allowed to smuggle in an extra public route under cover of it.
+    BUILD_CONDITIONAL = {"/assets/{}.css"}
+
+    AUTHORISED_PUBLIC = {
+        "/api/auth/csrf", "/api/auth/providers", "/auth/login",
+        "/auth/callback", "/auth/password-login", "/auth/logout",
+        "/login", "/auth/native/authorize", "/auth/native/token",
+        "/auth/native/refresh", "/api/health", "/{}", "/assets/{}.css",
+        "/dashboard-plugins/{}/{}",
+    }
+
     def test_nothing_else_became_public(self, inventory):
-        """The public set is exactly what was authorised, and no larger."""
-        expected = {
-            "/api/auth/csrf", "/api/auth/providers", "/auth/login",
-            "/auth/callback", "/auth/password-login", "/auth/logout",
-            "/login", "/auth/native/authorize", "/auth/native/token",
-            "/auth/native/refresh", "/api/health", "/{}", "/assets/{}.css",
-            "/dashboard-plugins/{}/{}",
-        }
+        """The public set is what was authorised, and never larger.
+
+        Checked as a subset rather than an equality because the built and
+        unbuilt routers differ by exactly ``/assets/{}.css``. Equality would
+        make this fail on a CI runner that did not build the frontend -- red
+        for a reason that has nothing to do with authorization, which is the
+        kind of failure that teaches people to ignore the check.
+        """
         actual = {
             p for p, m in (tuple(x) for x in inventory["http"])
             if required_scope(probe(p), m) == PUBLIC
         }
-        assert actual == expected
+        assert actual <= self.AUTHORISED_PUBLIC, (
+            f"unauthorised public routes: {sorted(actual - self.AUTHORISED_PUBLIC)}"
+        )
+        missing = self.AUTHORISED_PUBLIC - actual
+        assert missing <= self.BUILD_CONDITIONAL, (
+            f"authorised public routes absent from the router: {sorted(missing)}"
+        )
+
+    def test_the_build_conditional_route_is_public_when_it_exists(self, inventory):
+        """And is genuinely conditional, not silently missing in both states."""
+        paths = {p for p, _ in (tuple(x) for x in inventory["http"])}
+        for path in self.BUILD_CONDITIONAL:
+            if path in paths:
+                assert required_scope(probe(path), "GET") == PUBLIC
 
     def test_status_is_not_public(self):
         """Explicitly withdrawn. See the report note about the portal probe."""
