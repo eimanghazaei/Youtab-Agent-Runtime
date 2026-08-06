@@ -768,3 +768,45 @@ class TestTheToolsetGroupIsNotUserCapability:
             ("/api/tools/toolsets/web/model", "PUT"),
         ):
             assert required_scope(path, method) == authz.ENGINE_SELECT, f"{method} {path}"
+
+
+class TestMemoryProviderConfigStaysUserCapabilityBecauseItMasks:
+    """Why this is not the toolset config, which was restricted.
+
+    Both surfaces report `is_set` per credential field. They are not the same
+    thing. The toolset config also returns Youtab's private provider matrix —
+    the catalogue `/api/model/options` is held at `provider:read` for — so it
+    moved. Memory providers are plugins the user installs, holding the user's
+    own keys, and configuring them is a capability the memory feature is made
+    of. What makes it safe to leave is that no secret value is ever returned,
+    which is a property of the code and is therefore asserted here.
+    """
+
+    def test_neither_payload_builder_returns_a_secret_value(self):
+        import inspect
+
+        from youtab_agent_cli import web_server
+
+        for name in ("_public_memory_provider_field", "_declared_provider_payload"):
+            source = inspect.getsource(getattr(web_server, name))
+            assert 'value' in source and ('""' in source or "''" in source), name
+            assert "secret" in source, f"{name} does not distinguish secret fields"
+
+    def test_a_secret_field_is_blanked_not_returned(self):
+        from youtab_agent_cli.web_server import _public_memory_provider_field
+
+        field = {
+            "key": "api_key", "kind": "secret", "label": "API key",
+            "description": "", "placeholder": "", "required": True,
+            "options": [],
+        }
+        entry = _public_memory_provider_field(field, {"api_key": "sk-live-REAL"})
+        assert entry["value"] == ""
+        assert "sk-live-REAL" not in repr(entry)
+        assert entry["is_set"] is True
+
+    def test_configuring_memory_stays_reachable(self):
+        user = resolve_principal(user_id="someone", org_id="acme", roster={})
+        assert authorize(user, "/api/memory/providers/mem0/config", "GET")
+        assert authorize(user, "/api/memory/providers/mem0/config", "PUT")
+        assert authorize(user, "/api/memory", "GET")
