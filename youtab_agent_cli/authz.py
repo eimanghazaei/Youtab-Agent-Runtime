@@ -538,6 +538,21 @@ EXACT_ROUTE_SCOPES: Final[Mapping[str, str]] = {
     #   /api/ssh/ownership     returns `sshOwnerNonce`, a live secret. Its own
     #                          docstring calls it a sensitive endpoint; repo:read
     #                          handed it to every ordinary user.
+    # The /api/tools/toolsets/* group, found by sweeping every endpoint the
+    # normal-user baseline reaches for bodies that touch provider bindings,
+    # credentials or engine identifiers. All four sat at `tool:manage`, which
+    # is ordinary user capability, and none of them is.
+    #
+    #   .../env    PUT persists API keys into ~/.youtab-agent-runtime/.env via
+    #              save_env_value -- the same credential store `/api/env` PUT is
+    #              held at credential:write for. An allowlist limits *which*
+    #              env vars, not the fact that it writes credentials.
+    #   .../config GET returns the provider matrix with each provider's env_vars
+    #              annotated `is_set` -- the provider catalogue plus exactly the
+    #              credential-slot metadata credential:read exists to gate.
+    #   .../models GET returns a backend's model catalogue, priced per model.
+    #   .../model  PUT persists the engine selection, the same act
+    #              `/api/model/set` is held at engine:select for.
     "/api/analytics/models": PROVIDER_READ,
     "/api/portal": PROVIDER_READ,
     "/api/ssh/ownership": OPS_MANAGE,
@@ -561,6 +576,10 @@ PATTERN_ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     # same write through a different path. Read from the endpoint body, not
     # inferred, before the cluster rule was applied.
     ("/api/profiles/{}/model", ENGINE_SELECT),
+    ("/api/tools/toolsets/{}/env", CREDENTIAL_WRITE),
+    ("/api/tools/toolsets/{}/config", CREDENTIAL_READ),
+    ("/api/tools/toolsets/{}/models", PROVIDER_READ),
+    ("/api/tools/toolsets/{}/model", ENGINE_SELECT),
 )
 
 #: Roots that belong to the application rather than to the browser router. A

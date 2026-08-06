@@ -711,3 +711,60 @@ class TestTheFsClusterCannotReachCredentialMaterial:
         user = resolve_principal(user_id="someone", org_id="acme", roster={})
         assert authorize(user, "/api/fs/read-text", "GET")
         assert authorize(user, "/api/fs/write-text", "POST")
+
+
+class TestTheToolsetGroupIsNotUserCapability:
+    """Four routes at `tool:manage` that write credentials and read catalogues.
+
+    Found by sweeping every endpoint the normal-user baseline reaches for
+    bodies touching provider bindings, credentials or engine identifiers, then
+    opening the ones that matched. All four sit inside `/api/tools`, whose
+    other routes are genuine user capability.
+    """
+
+    @pytest.fixture
+    def user(self):
+        return resolve_principal(user_id="someone", org_id="acme", roster={})
+
+    def test_writing_toolset_api_keys_needs_credential_write(self, user):
+        """It writes into the same .env that PUT /api/env is gated on."""
+        scope = required_scope("/api/tools/toolsets/web/env", "PUT")
+        assert scope == authz.CREDENTIAL_WRITE
+        assert scope == required_scope("/api/env", "PUT")
+        assert not authorize(user, "/api/tools/toolsets/web/env", "PUT")
+
+    def test_reading_the_key_status_matrix_needs_credential_read(self, user):
+        """`is_set` per env var is credential-slot metadata by definition."""
+        assert required_scope("/api/tools/toolsets/web/config", "GET") == \
+            authz.CREDENTIAL_READ
+        assert not authorize(user, "/api/tools/toolsets/web/config", "GET")
+
+    def test_reading_a_backend_model_catalogue_needs_provider_read(self, user):
+        assert required_scope("/api/tools/toolsets/web/models", "GET") == \
+            authz.PROVIDER_READ
+        assert not authorize(user, "/api/tools/toolsets/web/models", "GET")
+
+    def test_selecting_a_backend_model_needs_engine_select(self, user):
+        """The third route found writing an engine binding off-scope."""
+        scope = required_scope("/api/tools/toolsets/web/model", "PUT")
+        assert scope == authz.ENGINE_SELECT
+        assert scope == required_scope("/api/model/set", "POST")
+        assert not authorize(user, "/api/tools/toolsets/web/model", "PUT")
+
+    def test_the_rest_of_the_tools_cluster_stays_user_capability(self, user):
+        """Restricting four routes must not cost the toolset feature."""
+        assert authorize(user, "/api/tools", "GET")
+        assert authorize(user, "/api/tools/toolsets", "GET")
+
+    def test_every_engine_binding_write_is_held_to_one_scope(self):
+        """All three known writers of a model binding, in one assertion.
+
+        Each was found separately and each would have been a bypass on its own;
+        pinning them together is what stops a fourth being added beside them.
+        """
+        for path, method in (
+            ("/api/model/set", "POST"),
+            ("/api/profiles/abc/model", "PUT"),
+            ("/api/tools/toolsets/web/model", "PUT"),
+        ):
+            assert required_scope(path, method) == authz.ENGINE_SELECT, f"{method} {path}"

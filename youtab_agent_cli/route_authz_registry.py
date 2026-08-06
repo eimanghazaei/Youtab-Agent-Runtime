@@ -595,6 +595,46 @@ _PROFILE_USER_OWNED: Final[tuple[RouteEntry, ...]] = _entries(
 # ---------------------------------------------------------------------------
 _BASELINE_CORRECTIONS: Final[tuple[RouteEntry, ...]] = (
     RouteEntry(
+        "/api/tools/toolsets/{}/env", "PUT", RouteClass.OWNER_SUPERADMIN,
+        scope=CREDENTIAL_WRITE,
+        justification=(
+            "Persists API keys into ``~/.youtab-agent-runtime/.env`` via "
+            "``save_env_value`` — the same credential store ``PUT /api/env`` is "
+            "held at ``credential:write`` for. The allowlist on it limits which "
+            "env vars may be written, not the fact that it writes credentials, "
+            "so ``tool:manage`` made ``credential:write`` bypassable."
+        ),
+    ),
+    RouteEntry(
+        "/api/tools/toolsets/{}/config", "GET", RouteClass.OWNER_SUPERADMIN,
+        scope=CREDENTIAL_READ,
+        justification=(
+            "Returns the provider matrix with each provider's ``env_vars`` "
+            "annotated ``is_set`` — the provider catalogue plus exactly the "
+            "credential-slot metadata ``credential:read`` is defined to cover: "
+            "which slots are configured."
+        ),
+    ),
+    RouteEntry(
+        "/api/tools/toolsets/{}/models", "GET", RouteClass.OWNER_SUPERADMIN,
+        scope=PROVIDER_READ,
+        justification=(
+            "Returns a backend's model catalogue, priced and described per "
+            "model. The same private engine catalogue "
+            "``/api/model/options`` is held at ``provider:read`` for."
+        ),
+    ),
+    RouteEntry(
+        "/api/tools/toolsets/{}/model", "PUT", RouteClass.OWNER_SUPERADMIN,
+        scope=ENGINE_SELECT,
+        justification=(
+            "Persists the engine selection for an image/video backend. The "
+            "same act ``POST /api/model/set`` is held at ``engine:select`` "
+            "for, and the third route found writing an engine binding through "
+            "a path that scope did not cover."
+        ),
+    ),
+    RouteEntry(
         "/api/analytics/models", "GET", RouteClass.OWNER_SUPERADMIN,
         scope=PROVIDER_READ,
         justification=(
