@@ -412,6 +412,68 @@ _PLUGIN_SOCKETS: Final[tuple[RouteEntry, ...]] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# /api/profiles — 15 route+method pairs, every one read.
+#
+# Profiles are the user's own agents: their persona (SOUL.md), description,
+# skills, sessions and lifecycle. That is product capability and stays
+# user-owned. Two routes in the cluster are not that.
+# ---------------------------------------------------------------------------
+_PROFILE_PRIVILEGED: Final[tuple[RouteEntry, ...]] = (
+    RouteEntry(
+        "/api/profiles", "GET", RouteClass.OWNER_SUPERADMIN,
+        scope=PROVIDER_READ,
+        justification=(
+            "``_profile_to_dict`` returns ``model`` and ``provider`` — the raw "
+            "engine binding — for every profile, alongside the profile's "
+            "absolute path on disk and ``has_env``, which discloses whether "
+            "credentials are configured. Three disclosures a normal user must "
+            "not have, from a route whose name reads like a list."
+        ),
+    ),
+    RouteEntry(
+        "/api/profiles/{}/model", "PUT", RouteClass.OWNER_SUPERADMIN,
+        scope=ENGINE_SELECT,
+        justification=(
+            "Writes ``model.default`` and ``model.provider`` into a named "
+            "profile's config. Its own docstring records that it mirrors "
+            "``POST /api/model/set``, which is held at ``engine:select`` — so "
+            "leaving it unmapped is not merely an unclassified route, it is a "
+            "working bypass of that scope by way of a different path."
+        ),
+    ),
+)
+
+_PROFILE_USER_OWNED: Final[tuple[RouteEntry, ...]] = _entries(
+    RouteClass.USER_OWNED_RESOURCE,
+    (
+        # Profile lifecycle, all within the caller's own installation.
+        ("/api/profiles", "POST"),
+        ("/api/profiles/{}", "DELETE"),
+        ("/api/profiles/{}", "PATCH"),
+        ("/api/profiles/active", "GET"),
+        ("/api/profiles/active", "POST"),
+        # The agent's persona and memory. User-scoped product capability, not
+        # an administrative feature, and deliberately not restricted.
+        ("/api/profiles/{}/soul", "GET"),
+        ("/api/profiles/{}/soul", "PUT"),
+        # User-authored prose and its auxiliary-LLM generator.
+        ("/api/profiles/{}/description", "PUT"),
+        ("/api/profiles/{}/describe-auto", "POST"),
+        # The caller's own sessions, aggregated across their own profiles.
+        ("/api/profiles/sessions", "GET"),
+        ("/api/profiles/sessions/sidebar", "GET"),
+        # Local desktop affordance. ``_profile_setup_command`` returns a
+        # fixed-form string ("youtab setup" / "<name> setup") for a profile
+        # name that ``_resolve_profile_dir`` has already resolved to an
+        # existing directory, so neither route carries arbitrary-command
+        # authority.
+        ("/api/profiles/{}/setup-command", "GET"),
+        ("/api/profiles/{}/open-terminal", "POST"),
+    ),
+)
+
+
 #: Every classified route. Assembled from the clusters above rather than
 #: written as one flat literal, so a cluster can be reviewed on its own and a
 #: partially-classified surface is visible as such.
@@ -421,6 +483,8 @@ REGISTRY: Final[tuple[RouteEntry, ...]] = (
     *_PLUGIN_PRIVILEGED,
     *_PLUGIN_USER_OWNED,
     *_PLUGIN_SOCKETS,
+    *_PROFILE_PRIVILEGED,
+    *_PROFILE_USER_OWNED,
 )
 
 

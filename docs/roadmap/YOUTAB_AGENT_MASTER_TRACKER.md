@@ -16,7 +16,7 @@ than no tracker, because it reads as complete.
 | Branch | `feat/youtab-agent-runtime-on-main` |
 | PR | **#10** (OPEN, draft) |
 | Base | `main@cc4cab2f592e60a197e796506de9168f74baf3ea` |
-| PR head | `f81fe9e3be2379b0f533a2b44c4113451bb0682d` |
+| PR head | `464f8672b69190ad2a6758481ef9438325832bf7` |
 | **Deployed SHA (protected pre-production)** | **`64b32afb68dc022fc463c72d6e024054fd816e4c`** |
 
 The deployed SHA is tracked separately from the PR head on purpose. They are
@@ -54,7 +54,7 @@ different router than production builds.
 | 7 | CSRF + exact Origin/Referer on the external bind | **VERIFIED** | `tests/youtab_agent_cli/test_csrf_and_origin.py` (29) |
 | 8 | Route inventory from the real router | **VERIFIED** | `scripts/youtab/route_inventory.py`; 294/255/7/1, 0 unrecognised |
 | 9 | Dependency provenance & CI/local/production version parity | **VERIFIED** | this commit; 7 mutations RED, restored GREEN |
-| 10 | **Route authorization registry → default-deny → Router-vs-policy CI gate** | **ACTIVE — NEXT** | classify 294 pairs, 7 sockets, conditional mounts by endpoint body |
+| 10 | **Route authorization registry → default-deny → Router-vs-policy CI gate** | **ACTIVE — registry in progress, 101/302** | `youtab_agent_cli/route_authz_registry.py`; 34 tests, 11 mutations RED→GREEN. **Default-deny is NOT active.** |
 | 11 | Purpose-bound WebSocket tickets | QUEUED | one ticket currently opens any socket |
 | 12 | Tenant/user event filtering | QUEUED | scope gate exists; payload filtering does not |
 | 13 | Governed CSRF secret-file contract | QUEUED | `YOUTAB_CSRF_SECRET_FILE`, ≥32 bytes, fail closed |
@@ -82,6 +82,70 @@ different router than production builds.
   container-escape tests are CI/VPS work.
 - **`/assets` is conditional.** It exists only when the SPA is built, so route
   qualification must handle both states rather than assume one.
+
+## Workstream 10 — exact position
+
+The registry is **data only**. Nothing enforces it, so nothing can break; that
+ordering is deliberate and must be kept. Flipping `authorize()` to default-deny
+against a partial registry refuses every unclassified route, and the fastest
+way back to a working dashboard would be to bulk-assign a permissive class —
+the exact failure this control exists to prevent.
+
+| | |
+|---|---|
+| HTTP route+method pairs classified | **99 of 294** (SPA built) / 99 of 293 (unbuilt) |
+| WebSocket routes classified | **2 of 7** |
+| Conditional mounts classified | **0 of 1** (`/assets`) |
+| Registry entries total | 101 |
+| Stale entries | 0 |
+| `authorize()` default-deny | **NOT ACTIVE** — still returns `True` for unmapped |
+| Router-vs-policy CI gate | **NOT BUILT** |
+
+**Clusters complete** (every endpoint body opened): `/api/plugins` (47 + 1
+socket), `/api/profiles` (15), the `ROUTE_SCOPES` privileged surface (30 + 1
+socket), the `PUBLIC_API_PATHS` allowlist (7).
+
+**Clusters untouched**: `/api/git` 19, `/api/dashboard` 15, `/api/ops` 15,
+`/api/sessions` 14, `/api/cron` 13 (less `/fire`), `/api/providers` remainder,
+`/api/skills` 12, `/api/tools` 12, `/api/mcp` 11, `/api/messaging` 11,
+`/api/memory` 8, `/api/files` 7, `/api/fs` 6, `/api/config` remainder,
+`/api/webhooks` 5, `/api/auth` 4, `/api/learning` 4, `/api/pairing` 4,
+`/api/audio` 3, `/api/curator` 3, `/auth/native` 3, `/api/analytics` 2,
+`/api/youtab` 2, and the single-route clusters. Sockets still unclassified:
+`/api/audio/speak-stream`, `/api/console`, `/api/pty`, `/api/pub`, `/api/ws`.
+
+### Two authorization defects found by reading bodies
+
+Both were reachable by anyone merely signed in, and both sit under a path
+prefix whose neighbours are ordinary user data — a prefix-derived or
+name-derived classification would have missed them.
+
+1. `GET /api/plugins/kanban/model-options` and `GET /api/plugins/kanban/profiles`
+   return provider slugs, model lists and per-profile `provider`/`model`
+   bindings — the private engine catalogue `/api/model/options` is already held
+   at `provider:read` for.
+2. `GET /api/profiles` returns `model`, `provider`, the profile's absolute path
+   and `has_env` per profile. `PUT /api/profiles/{name}/model` **writes** the
+   same binding `POST /api/model/set` is held at `engine:select` for — so while
+   it is unmapped, that scope is bypassable through a different path.
+
+They are classified in the registry. They are **not yet enforced** — enforcement
+arrives with the default-deny flip.
+
+### Build-state delta, measured
+
+| | built | unbuilt |
+|---|---|---|
+| HTTP route+method pairs | 294 | 293 |
+| distinct paths | 255 | 254 |
+| mounts | 1 (`/assets`) | 0 |
+
+The only difference is `GET /assets/{}.css` plus the `/assets` StaticFiles
+mount. `GET /{}` exists in both states but is a *different endpoint* in each —
+`serve_spa` when built, `no_frontend` when not — so one registry key covers two
+bodies and the classification has to hold for both. The registry must be
+authored against the built superset and the gate must accept the unbuilt state
+as a subset, or CI goes red on any runner that has not built the frontend.
 
 ## Next permitted slice
 

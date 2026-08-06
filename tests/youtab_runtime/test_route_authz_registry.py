@@ -208,6 +208,25 @@ class TestPrivilegeLeaksFoundByReadingBodies:
         assert entry.route_class is RouteClass.OWNER_SUPERADMIN
         assert entry.scope == authz.PROVIDER_READ
 
+    def test_profile_list_is_owner_only(self):
+        """It returns model, provider, on-disk path and has_env per profile."""
+        entry = classify("/api/profiles", "GET")
+        assert entry is not None
+        assert entry.route_class is RouteClass.OWNER_SUPERADMIN
+        assert entry.scope == authz.PROVIDER_READ
+
+    def test_per_profile_model_write_is_held_to_engine_select(self):
+        """Unmapped, this is a working bypass of ``POST /api/model/set``.
+
+        Both write the same binding. One was scoped; the other was reachable
+        by anyone signed in, which made the scope on the first one advisory.
+        """
+        entry = classify("/api/profiles/{}/model", "PUT")
+        assert entry is not None
+        assert entry.route_class is RouteClass.OWNER_SUPERADMIN
+        assert entry.scope == authz.ENGINE_SELECT
+        assert entry.scope == authz.required_scope("/api/model/set", "POST")
+
     def test_the_profile_description_routes_stay_user_owned(self):
         """The fix restricts the roster read, not the capability beside it."""
         for path, method in (
@@ -236,6 +255,13 @@ class TestCapabilityIsPreserved:
         ("/api/plugins/kanban/tasks/{}/log", "GET"),
         ("/api/plugins/kanban/tasks/{}/attachments", "POST"),
         ("/api/plugins/kanban/events", "WEBSOCKET"),
+        # The agent's persona and memory stay user-scoped. Marking persistent
+        # user data Owner-only because it is persistent would remove a product
+        # capability under cover of a security change.
+        ("/api/profiles/{}/soul", "GET"),
+        ("/api/profiles/{}/soul", "PUT"),
+        ("/api/profiles/sessions", "GET"),
+        ("/api/profiles", "POST"),
     ])
     def test_agent_and_user_capability_stays_user_owned(self, path, method):
         entry = classify(path, method)
