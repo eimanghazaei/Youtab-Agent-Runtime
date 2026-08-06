@@ -21,6 +21,30 @@ from youtab_agent_cli.dashboard_auth import clear_providers, register_provider
 from tests.youtab_agent_cli.conftest_dashboard_auth import StubAuthProvider
 
 
+#: The gated bind terminates TLS, so the session cookie resolves to its
+#: ``__Host-`` variant. The stub provider accepts the user id as the token.
+SESSION_COOKIE = "__Host-youtab_session_at"
+
+
+def _signed_in(monkeypatch, user_id: str = "probe-user"):
+    """Resolve every request to an ordinary signed-in user.
+
+    This module's stub provider does not mint a session from a bare cookie, so
+    the principal is supplied directly. It is the *normal user* baseline — no
+    roster entry, nothing privileged — which is precisely the caller these
+    tests are about now that /api/status is no longer public.
+    """
+    from youtab_agent_cli.authz import Principal, ROLE_SCOPES, Role
+
+    monkeypatch.setattr(
+        web_server, "_principal_for_request",
+        lambda request: Principal(
+            user_id=user_id, org_id="", role=Role.NORMAL_USER,
+            scopes=ROLE_SCOPES[Role.NORMAL_USER],
+        ),
+    )
+
+
 @pytest.fixture
 def gated_client():
     clear_providers()
@@ -55,11 +79,15 @@ def loopback_client():
     web_server.app.state.auth_required = prev_required
 
 
-def test_status_reports_auth_required_in_gated_mode(gated_client):
+def test_status_reports_auth_required_in_gated_mode(gated_client, monkeypatch):
     # No ``_login()`` call — ``/api/status`` is in the shared
     # ``PUBLIC_API_PATHS`` allowlist precisely so external probes (and
     # the SPA's pre-login bootstrap) can read the gate's shape without
     # a cookie. Hit it cold.
+    # /api/status is no longer public (Owner direction), so the gate's shape
+    # is read as a signed-in user rather than cold. The payload contract below
+    # is unchanged -- only who may read it moved.
+    _signed_in(monkeypatch)
     r = gated_client.get("/api/status")
     assert r.status_code == 200
     body = r.json()
@@ -79,11 +107,16 @@ _HOST_DETAIL_FIELDS = frozenset({
 })
 
 
-def test_status_withholds_host_detail_in_gated_mode(gated_client):
-    """On a gated (non-loopback) bind, the public ``/api/status`` probe must
-    expose only the liveness + auth-gate shape — never absolute host paths,
-    the gateway PID, or the internal gateway health URL. The endpoint
-    bypasses dashboard auth, so anyone who can reach the host hits it cold."""
+def test_status_withholds_host_detail_in_gated_mode(gated_client, monkeypatch):
+    """On a gated (non-loopback) bind, ``/api/status`` must expose only the
+    liveness + auth-gate shape — never absolute host paths, the gateway PID,
+    or the internal gateway health URL.
+
+    The endpoint is no longer public (Owner direction), so it is read here as
+    an ordinary signed-in user. The withholding still matters at that level:
+    a customer is not entitled to deployment recon either, and this is the
+    assertion that says so."""
+    _signed_in(monkeypatch)
     r = gated_client.get("/api/status")
     assert r.status_code == 200
     body = r.json()
