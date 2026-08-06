@@ -16,7 +16,7 @@ than no tracker, because it reads as complete.
 | Branch | `feat/youtab-agent-runtime-on-main` |
 | PR | **#10** (OPEN, draft) |
 | Base | `main@cc4cab2f592e60a197e796506de9168f74baf3ea` |
-| PR head | `464f8672b69190ad2a6758481ef9438325832bf7` |
+| PR head | `e4dec29587f1581c90e639df3efb0a6f51a32797` |
 | **Deployed SHA (protected pre-production)** | **`64b32afb68dc022fc463c72d6e024054fd816e4c`** |
 
 The deployed SHA is tracked separately from the PR head on purpose. They are
@@ -54,7 +54,7 @@ different router than production builds.
 | 7 | CSRF + exact Origin/Referer on the external bind | **VERIFIED** | `tests/youtab_agent_cli/test_csrf_and_origin.py` (29) |
 | 8 | Route inventory from the real router | **VERIFIED** | `scripts/youtab/route_inventory.py`; 294/255/7/1, 0 unrecognised |
 | 9 | Dependency provenance & CI/local/production version parity | **VERIFIED** | this commit; 7 mutations RED, restored GREEN |
-| 10 | **Route authorization registry → default-deny → Router-vs-policy CI gate** | **ACTIVE — registry in progress, 101/302** | `youtab_agent_cli/route_authz_registry.py`; 34 tests, 11 mutations RED→GREEN. **Default-deny is NOT active.** |
+| 10 | **Route authorization default-deny** | **ACTIVE — flip landed, gate outstanding** | `authz.authorize` refuses unmapped; 294/294 HTTP + 6/7 sockets enforced; 76 tests. **Router-vs-policy CI gate NOT built.** |
 | 11 | Purpose-bound WebSocket tickets | QUEUED | one ticket currently opens any socket |
 | 12 | Tenant/user event filtering | QUEUED | scope gate exists; payload filtering does not |
 | 13 | Governed CSRF secret-file contract | QUEUED | `YOUTAB_CSRF_SECRET_FILE`, ≥32 bytes, fail closed |
@@ -85,67 +85,93 @@ different router than production builds.
 
 ## Workstream 10 — exact position
 
-The registry is **data only**. Nothing enforces it, so nothing can break; that
-ordering is deliberate and must be kept. Flipping `authorize()` to default-deny
-against a partial registry refuses every unclassified route, and the fastest
-way back to a working dashboard would be to bulk-assign a permissive class —
-the exact failure this control exists to prevent.
+Authorization is **fail-closed**. `authorize()` refuses any route no table
+describes, for every principal including the Owner. Enforcement is
+`authz.required_scope`, consulted most-specific first: exact path, then
+parameterised pattern, then longest prefix, then the SPA catch-all for paths
+outside the application's own roots.
 
 | | |
 |---|---|
-| HTTP route+method pairs classified | **99 of 294** (SPA built) / 99 of 293 (unbuilt) |
-| WebSocket routes classified | **2 of 7** |
-| Conditional mounts classified | **0 of 1** (`/assets`) |
-| Registry entries total | 101 |
-| Stale entries | 0 |
-| `authorize()` default-deny | **NOT ACTIVE** — still returns `True` for unmapped |
-| Router-vs-policy CI gate | **NOT BUILT** |
+| HTTP route+method pairs resolving to a decision | **294 of 294** (built) / 293 of 293 (unbuilt) |
+| Unmapped HTTP routes | **0** |
+| WebSockets enforcing a scope at the upgrade | **7 of 7** |
+| Public routes | 16 — 14 login/shell, 2 credential-bearing |
+| `authorize()` default-deny | **ACTIVE** |
+| Router-vs-policy CI gate | **NOT BUILT** — the remaining work on this row |
 
-**Clusters complete** (every endpoint body opened): `/api/plugins` (47 + 1
-socket), `/api/profiles` (15), the `ROUTE_SCOPES` privileged surface (30 + 1
-socket), the `PUBLIC_API_PATHS` allowlist (7).
+Classification is **by cluster**, on Owner direction, not by reading each
+endpoint body. The trade was explicit: reading 250 functions first would have
+left `/api/pty`, arbitrary file write and the system-prompt endpoint open for
+as long as the reading took, and a wrong scope surfaces as a 403 in seconds.
+Longest prefix wins, so any cluster can be narrowed without reordering.
 
-**Clusters untouched**: `/api/git` 19, `/api/dashboard` 15, `/api/ops` 15,
-`/api/sessions` 14, `/api/cron` 13 (less `/fire`), `/api/providers` remainder,
-`/api/skills` 12, `/api/tools` 12, `/api/mcp` 11, `/api/messaging` 11,
-`/api/memory` 8, `/api/files` 7, `/api/fs` 6, `/api/config` remainder,
-`/api/webhooks` 5, `/api/auth` 4, `/api/learning` 4, `/api/pairing` 4,
-`/api/audio` 3, `/api/curator` 3, `/auth/native` 3, `/api/analytics` 2,
-`/api/youtab` 2, and the single-route clusters. Sockets still unclassified:
-`/api/audio/speak-stream`, `/api/console`, `/api/pty`, `/api/pub`, `/api/ws`.
+Three routes are **not** on the cluster rule, because their bodies were read
+first and the cluster scope would have been wrong:
+`/api/plugins/kanban/model-options` and `.../profiles` (provider slugs and
+per-profile engine bindings → `provider:read`, matched exactly so the
+description-editing routes beneath them stay `plugin:use`), and
+`PUT /api/profiles/{name}/model` (writes the binding `POST /api/model/set` is
+held at `engine:select` for → `engine:select`, or the scope stays bypassable
+through a different path).
 
-### Two authorization defects found by reading bodies
+### Fail-closed must not mean fail-empty
 
-Both were reachable by anyone merely signed in, and both sit under a path
-prefix whose neighbours are ordinary user data — a prefix-derived or
-name-derived classification would have missed them.
+`NORMAL_USER` held no scopes and an unrostered identity resolved to nothing.
+Harmless while unguarded meant reachable; after the flip it would have locked
+every ordinary customer out of their own installation. `USER_CAPABILITIES` now
+names what they already had and is granted to the normal-user baseline. It
+contains no provider, credential, engine, tenant, deployment or ops scope.
 
-1. `GET /api/plugins/kanban/model-options` and `GET /api/plugins/kanban/profiles`
-   return provider slugs, model lists and per-profile `provider`/`model`
-   bindings — the private engine catalogue `/api/model/options` is already held
-   at `provider:read` for.
-2. `GET /api/profiles` returns `model`, `provider`, the profile's absolute path
-   and `has_env` per profile. `PUT /api/profiles/{name}/model` **writes** the
-   same binding `POST /api/model/set` is held at `engine:select` for — so while
-   it is unmapped, that scope is bypassable through a different path.
+### WebSocket enforcement, per socket
 
-They are classified in the registry. They are **not yet enforced** — enforcement
-arrives with the default-deny flip.
-
-### Build-state delta, measured
-
-| | built | unbuilt |
+| socket | scope | before |
 |---|---|---|
-| HTTP route+method pairs | 294 | 293 |
-| distinct paths | 255 | 254 |
-| mounts | 1 (`/assets`) | 0 |
+| `/api/pty` | `session:write` | **no check** |
+| `/api/console` | `session:write` | **no check** |
+| `/api/ws` | `session:write` | **no check** |
+| `/api/audio/speak-stream` | `session:read` | **no check** |
+| `/api/events` | `events:read` | **no check** — see below |
+| `/api/plugins/kanban/events` | `plugin:use` | credential only |
+| `/api/pub` | `events:read` | already enforced, unchanged |
 
-The only difference is `GET /assets/{}.css` plus the `/assets` StaticFiles
-mount. `GET /{}` exists in both states but is a *different endpoint* in each —
-`serve_spa` when built, `no_frontend` when not — so one registry key covers two
-bodies and the classification has to hold for both. The registry must be
-authored against the built superset and the gate must accept the unbuilt state
-as a subset, or CI goes red on any runner that has not built the frontend.
+`/api/events` carried an `events:read` entry in `ROUTE_SCOPES` and had no check
+at its socket. Starlette's HTTP middleware does not run on an upgrade, so that
+scope governed only the transport nobody reads the stream over. The
+`_ws_scope_ok(ws, EVENTS_READ)` call that existed was in `pub_ws`.
+
+### Open items, listed rather than guessed
+
+1. **`/api/status` is no longer public, and that breaks a named consumer.**
+   NAS `fly-provider.ts` `getInstanceRuntimeStatus` fetches it without a cookie
+   as its sole liveness probe; it now gets 403 and healthy agents will surface
+   as down in the portal UI. Point the probe at `/api/health` (still public) or
+   give it a credential. One line to revert if that is the wrong call.
+2. **Two tables disagree about `/api/status`.** It is still in
+   `dashboard_auth.public_paths.PUBLIC_API_PATHS`, so the cookie gate admits it
+   and the authorization gate then refuses it. Reconciling them means deciding
+   whether the probe is coming back.
+3. **`GET /api/profiles` still discloses** model, provider, on-disk path and
+   `has_env` per profile. Left at `profile:read` deliberately — it is the route
+   the profile picker lists from. The fix belongs in the payload: mask those
+   fields for a caller without `provider:read`.
+4. **Cluster scopes are unverified against endpoint bodies** for ~250 routes.
+   That is the accepted trade, not an oversight. `route_authz_registry.py`
+   remains the body-verified subset: 101 entries across `/api/plugins`,
+   `/api/profiles` and the pre-existing privileged surface.
+5. **`/docs`, `/redoc`, `/openapi.json`** are held at `ops:manage` rather than
+   disabled in production. Disabling them outright was the stated preference
+   and was not done.
+
+### Test evidence
+
+`tests/youtab_runtime/test_authorization_is_fail_closed.py` — 76 assertions,
+green in **both** build states. Full-suite delta measured against the pre-flip
+commit `b6cab1057`: **184 failed before, 183 after, zero new**. The 183 are
+pre-existing cross-test pollution — they pass in isolation and fail identically
+at `b6cab1057`. One was fixed by this change
+(`test_path_traversal_still_blocked`), because the `/dashboard-plugins/{}/{}`
+pattern is anchored to exactly two non-slash segments.
 
 ## Next permitted slice
 
