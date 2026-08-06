@@ -464,6 +464,13 @@ EXACT_ROUTE_SCOPES: Final[Mapping[str, str]] = {
     # describe-auto``, which are user-authored descriptions and must stay
     # ordinary plugin capability. Restricting a disclosure must not cost the
     # editing feature beside it.
+    # Chronos managed-cron fire webhook, NAS to agent. Not unauthenticated: it
+    # carries a short-lived NAS-minted JWT (purpose=cron_fire) that the handler
+    # verifies, and that JWT -- not this entry -- is the security boundary.
+    # Held to `automation:manage` it returned 403 before reaching the verifier,
+    # which broke every managed cron fire and turned a bad-token 401 into a
+    # 403. Public here means "the cookie gate does not apply", not "open".
+    "/api/cron/fire": PUBLIC,
     "/api/plugins/kanban/model-options": PROVIDER_READ,
     "/api/plugins/kanban/profiles": PROVIDER_READ,
 }
@@ -484,6 +491,10 @@ PATTERN_ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     # same write through a different path. Read from the endpoint body, not
     # inferred, before the cluster rule was applied.
     ("/api/profiles/{}/model", ENGINE_SELECT),
+    # Hosted MCP OAuth callback. The upstream provider redirects a browser here
+    # with no cookie for this origin; the handler validates the flow state.
+    # Under `/api/mcp` -> tool:manage it refused every hosted MCP connection.
+    ("/api/mcp/oauth/callback/{}", PUBLIC),
 )
 
 #: Roots that belong to the application rather than to the browser router. A

@@ -368,9 +368,15 @@ class TestTransportsShareTheChain:
         instead -- which it has to be anyway, since Starlette's HTTP
         middleware never runs on a WebSocket upgrade.
         """
-        from youtab_agent_cli.authz import required_scope
+        from youtab_agent_cli.authz import (
+            AUTHENTICATED, EVENTS_READ, required_scope,
+        )
 
-        assert required_scope("/api/auth/ws-ticket", "POST") is None
+        # Stated directly now that an unmapped route is refused rather than
+        # reachable: the mint needs a session and nothing beyond one.
+        scope = required_scope("/api/auth/ws-ticket", "POST")
+        assert scope == AUTHENTICATED
+        assert scope != EVENTS_READ
 
     def test_the_event_socket_enforces_the_scope_itself(self, gated):
         """The transport people actually use, checked where it is decided."""
@@ -565,7 +571,13 @@ class TestMutationsTurnItRed:
         from youtab_agent_cli import authz
 
         monkeypatch.setattr(authz, "authorize", lambda principal, path, method="GET": True)
-        monkeypatch.setattr(web_server, "required_scope", lambda path, method="GET": None)
+        # Returning ``None`` used to be the way to defeat the check, because an
+        # unmapped route was allowed. It now denies, so the mutation that would
+        # actually admit a customer is the one that calls the route public.
+        monkeypatch.setattr(
+            web_server, "required_scope",
+            lambda path, method="GET": authz.PUBLIC,
+        )
         resp = gated.post(GUARDED, headers=_browser(gated, _token(keypair[0], CUSTOMER)))
         assert resp.status_code != 403, "sanity: the mutation is in effect"
         # The real implementation returns 403 -- see

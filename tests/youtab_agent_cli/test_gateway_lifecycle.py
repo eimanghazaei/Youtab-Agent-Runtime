@@ -760,8 +760,24 @@ class TestAuthorization:
             assert required_scope(path, "POST") == DEPLOYMENT_MANAGE
 
     def test_drain_is_not_swept_into_the_lifecycle_scope(self):
-        """The token-auth seam attaches no session; a prefix rule would break it."""
-        assert required_scope("/api/gateway/drain", "POST") is None
+        """Drain is operations, not gateway lifecycle.
+
+        It used to be enough to assert drain had no entry at all, because an
+        unmapped route was reachable and the token-auth seam attaches no
+        session. Unmapped is now a refusal, so the property has to be stated
+        directly: drain carries its own operations scope and is *not* swept
+        into the lifecycle scope that guards start/stop/restart.
+
+        The token seam still works, because a request it authenticates now
+        resolves to the principal it verified rather than to a scopeless
+        stranger with no session.
+        """
+        from youtab_agent_cli.authz import DEPLOYMENT_MANAGE, OPS_MANAGE
+
+        scope = required_scope("/api/gateway/drain", "POST")
+        assert scope == OPS_MANAGE
+        assert scope != DEPLOYMENT_MANAGE
+        assert required_scope("/api/gateway/stop", "POST") == DEPLOYMENT_MANAGE
 
     def test_owner_may_restart(self, gated, fake_gateway):
         assert _as(gated, OWNER).post("/api/gateway/restart").status_code == 202

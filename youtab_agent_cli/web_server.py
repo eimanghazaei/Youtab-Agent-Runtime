@@ -738,6 +738,11 @@ def _principal_for_request(request: Request) -> Principal:
             role=Role.YOUTAB_OWNER,
             scopes=ROLE_SCOPES[Role.YOUTAB_OWNER],
         )
+    token_principal = getattr(request.state, "token_principal", None)
+    if token_principal is not None and getattr(
+        request.state, "token_authenticated", False
+    ):
+        return token_principal
     session = getattr(request.state, "session", None)
     if session is None:
         return Principal(user_id="", org_id="")

@@ -239,13 +239,18 @@ class TestTheLoginFlowStaysReachable:
     #: not be allowed to smuggle in an extra public route under cover of it.
     BUILD_CONDITIONAL = {"/assets/{}.css"}
 
+    #: Bypass the *cookie* gate, not authentication. Each carries its own
+    #: credential that its handler verifies, and holding them to a session
+    #: scope refuses them before that verification ever runs.
+    CREDENTIAL_BEARING = {"/api/cron/fire", "/api/mcp/oauth/callback/{}"}
+
     AUTHORISED_PUBLIC = {
         "/api/auth/csrf", "/api/auth/providers", "/auth/login",
         "/auth/callback", "/auth/password-login", "/auth/logout",
         "/login", "/auth/native/authorize", "/auth/native/token",
         "/auth/native/refresh", "/api/health", "/{}", "/assets/{}.css",
         "/dashboard-plugins/{}/{}",
-    }
+    } | CREDENTIAL_BEARING
 
     def test_nothing_else_became_public(self, inventory):
         """The public set is what was authorised, and never larger.
