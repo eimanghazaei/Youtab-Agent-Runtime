@@ -558,3 +558,56 @@ class TestApiDocsProductionPolicy:
         from youtab_agent_cli.authz import OPS_MANAGE, USER_CAPABILITIES
 
         assert OPS_MANAGE not in USER_CAPABILITIES
+
+
+class TestTheUserBaselineWasValidatedRouteByRoute:
+    """Three routes the cluster rule handed to every signed-in user wrongly.
+
+    Each was found by reading the endpoint body rather than by looking at the
+    prefix, which is the only way this class of error surfaces: all three sit
+    in clusters whose other routes are genuinely user capability.
+    """
+
+    @pytest.fixture
+    def user(self):
+        return resolve_principal(user_id="someone", org_id="acme", roster={})
+
+    def test_model_analytics_is_not_a_user_capability(self, user):
+        """It selects `model, billing_provider` per session."""
+        assert required_scope("/api/analytics/models", "GET") == authz.PROVIDER_READ
+        assert not authorize(user, "/api/analytics/models", "GET")
+
+    def test_but_the_caller_keeps_their_own_usage_totals(self, user):
+        """Restricting the disclosure must not cost the neighbouring feature."""
+        assert authorize(user, "/api/analytics/usage", "GET")
+
+    def test_portal_status_is_not_a_user_capability(self, user):
+        """It reports each feature's `current_provider` -- the binding."""
+        assert required_scope("/api/portal", "GET") == authz.PROVIDER_READ
+        assert not authorize(user, "/api/portal", "GET")
+
+    def test_the_ssh_owner_nonce_is_not_a_user_capability(self, user):
+        """It returns a live secret; its own docstring calls it sensitive."""
+        assert required_scope("/api/ssh/ownership", "GET") == authz.OPS_MANAGE
+        assert not authorize(user, "/api/ssh/ownership", "GET")
+
+    def test_no_ops_route_reaches_the_user_baseline(self, inventory, user):
+        """The whole /api/ops cluster, checked against the router not a list."""
+        for pair in inventory["http"]:
+            path, method = tuple(pair)
+            if not path.startswith("/api/ops"):
+                continue
+            assert not authorize(user, probe(path), method), (
+                f"{method} {path} is reachable by an ordinary user"
+            )
+
+    def test_no_baseline_scope_is_a_privileged_scope(self):
+        """The grant is a set; this is the assertion that it stayed clean."""
+        from youtab_agent_cli.authz import USER_CAPABILITIES
+
+        privileged = {
+            authz.PROVIDER_READ, authz.PROVIDER_WRITE, authz.CREDENTIAL_READ,
+            authz.CREDENTIAL_WRITE, authz.ENGINE_SELECT, authz.TENANT_MANAGE_ANY,
+            authz.DEPLOYMENT_MANAGE, authz.EVENTS_READ, authz.OPS_MANAGE,
+        }
+        assert not (USER_CAPABILITIES & privileged)

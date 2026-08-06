@@ -517,6 +517,24 @@ EXACT_ROUTE_SCOPES: Final[Mapping[str, str]] = {
     # which broke every managed cron fire and turned a bad-token 401 into a
     # 403. Public here means "the cookie gate does not apply", not "open".
     "/api/cron/fire": PUBLIC,
+    # Found by reading bodies during the route-by-route validation of what the
+    # normal-user baseline actually reaches. All three were granted to every
+    # signed-in user by their cluster and should not have been.
+    #
+    #   /api/analytics/models  selects `model, billing_provider` per session --
+    #                          raw engine identifiers and the billing provider,
+    #                          the same catalogue /api/model/options is held at
+    #                          provider:read for. `/api/analytics/usage` stays
+    #                          ui:read: it is the caller's own cost totals.
+    #   /api/portal            reports each subscription feature's
+    #                          `current_provider`, which is the provider
+    #                          binding, alongside Youtab account state.
+    #   /api/ssh/ownership     returns `sshOwnerNonce`, a live secret. Its own
+    #                          docstring calls it a sensitive endpoint; repo:read
+    #                          handed it to every ordinary user.
+    "/api/analytics/models": PROVIDER_READ,
+    "/api/portal": PROVIDER_READ,
+    "/api/ssh/ownership": OPS_MANAGE,
     "/api/plugins/kanban/model-options": PROVIDER_READ,
     "/api/plugins/kanban/profiles": PROVIDER_READ,
 }

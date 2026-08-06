@@ -48,6 +48,7 @@ from typing import Final, Iterable, Mapping
 
 from youtab_agent_cli.authz import (
     CREDENTIAL_READ,
+    OPS_MANAGE,
     PROFILE_READ,
     CREDENTIAL_WRITE,
     DEPLOYMENT_MANAGE,
@@ -481,6 +482,49 @@ _PROFILE_USER_OWNED: Final[tuple[RouteEntry, ...]] = _entries(
 )
 
 
+# ---------------------------------------------------------------------------
+# Routes the cluster rule handed to the normal-user baseline wrongly.
+#
+# Found by reading endpoint bodies during the route-by-route validation of what
+# that baseline actually reaches. All three sit in clusters whose other routes
+# are genuinely user capability, which is why a prefix could never have caught
+# them.
+# ---------------------------------------------------------------------------
+_BASELINE_CORRECTIONS: Final[tuple[RouteEntry, ...]] = (
+    RouteEntry(
+        "/api/analytics/models", "GET", RouteClass.OWNER_SUPERADMIN,
+        scope=PROVIDER_READ,
+        justification=(
+            "``_get_models_analytics`` selects ``model, billing_provider`` per "
+            "session and joins capability metadata onto it — the raw engine "
+            "identifiers and the billing provider behind them. "
+            "``/api/analytics/usage`` beside it stays ``ui:read``, because the "
+            "caller's own cost totals are theirs."
+        ),
+    ),
+    RouteEntry(
+        "/api/portal", "GET", RouteClass.OWNER_SUPERADMIN,
+        scope=PROVIDER_READ,
+        justification=(
+            "Reports each subscription feature's ``current_provider`` — the "
+            "provider binding — alongside Youtab account state. A status panel "
+            "rather than a capability, and the binding is not the customer's "
+            "to read at any privilege level of theirs."
+        ),
+    ),
+    RouteEntry(
+        "/api/ssh/ownership", "GET", RouteClass.OWNER_SUPERADMIN,
+        scope=OPS_MANAGE,
+        justification=(
+            "Returns ``sshOwnerNonce``, a live secret used to prove SSH "
+            "ownership. Its own helper ``_require_token`` documents it as a "
+            "sensitive endpoint; the ``repo:read`` the cluster rule gave it "
+            "handed that nonce to every ordinary signed-in user."
+        ),
+    ),
+)
+
+
 #: Every classified route. Assembled from the clusters above rather than
 #: written as one flat literal, so a cluster can be reviewed on its own and a
 #: partially-classified surface is visible as such.
@@ -492,6 +536,7 @@ REGISTRY: Final[tuple[RouteEntry, ...]] = (
     *_PLUGIN_SOCKETS,
     *_PROFILE_PRIVILEGED,
     *_PROFILE_USER_OWNED,
+    *_BASELINE_CORRECTIONS,
 )
 
 

@@ -73,16 +73,20 @@ begin unit-integration-e2e
 # the authorization that guards it — was committed but never executed here.
 # A test that CI does not run is documentation.
 #
-# Named explicitly rather than widening to all of `tests/youtab_agent_cli`:
-# that directory carries the inherited upstream suite, and pulling it in
-# wholesale would change what this gate measures in one step. Adding the file
-# that belongs to a Youtab-owned contract keeps the gate's meaning intact.
+# The whole of `tests/youtab_agent_cli`, not a named subset. The subset was a
+# deliberate narrowing while that directory's inherited failures were unowned,
+# and it cost real coverage: the authorization flip shipped two rules written
+# as fixed-segment patterns against `:path` routes, and both 403'd every real
+# request. Nothing in the 19 selected files touched them. `test_web_server.py`,
+# `test_plugin_runtime_disable_gate.py` and `test_web_server_gateway_topology.py`
+# all caught it immediately.
+#
+# `run_tests.sh` runs each file in its own subprocess, which is what makes the
+# widening viable: the inherited suite's failures were overwhelmingly
+# cross-test pollution and disappear under per-file isolation.
 scripts/run_tests.sh \
   tests/youtab_runtime \
-  tests/youtab_agent_cli/test_gateway_lifecycle.py \
-  tests/youtab_agent_cli/test_cloudflare_access_provider.py \
-  tests/youtab_agent_cli/test_access_end_to_end.py \
-  tests/youtab_agent_cli/test_csrf_and_origin.py \
+  tests/youtab_agent_cli \
   -q | tee "$evidence_dir/unit-integration-e2e.log"
 record unit-integration-e2e $?
 
