@@ -98,22 +98,18 @@ outside the application's own roots.
 | WebSockets enforcing a scope at the upgrade | **7 of 7** |
 | Public routes | 16 — 14 login/shell, 2 credential-bearing |
 | `authorize()` default-deny | **ACTIVE** |
-| Router-vs-policy CI gate | **NOT BUILT** — the remaining work on this row |
+| Router-vs-policy CI gate | **BUILT** — 9 conditions, each proven RED |
+| Endpoint-body audit | **IN PROGRESS** — the remaining work on this row |
 
-Classification is **by cluster**, on Owner direction, not by reading each
-endpoint body. The trade was explicit: reading 250 functions first would have
-left `/api/pty`, arbitrary file write and the system-prompt endpoint open for
-as long as the reading took, and a wrong scope surfaces as a 403 in seconds.
-Longest prefix wins, so any cluster can be narrowed without reordering.
+Classification started **by cluster**, on Owner direction, to close the surface
+before reading 250 function bodies. That was the right order — it stopped
+`/api/pty`, arbitrary file write and the system-prompt endpoint being open for
+as long as the reading took — but it was explicitly a first pass. The
+endpoint-body audit is now correcting it route by route, and the table of
+corrections below is what that pass has produced so far.
 
-Three routes are **not** on the cluster rule, because their bodies were read
-first and the cluster scope would have been wrong:
-`/api/plugins/kanban/model-options` and `.../profiles` (provider slugs and
-per-profile engine bindings → `provider:read`, matched exactly so the
-description-editing routes beneath them stay `plugin:use`), and
-`PUT /api/profiles/{name}/model` (writes the binding `POST /api/model/set` is
-held at `engine:select` for → `engine:select`, or the scope stays bypassable
-through a different path).
+Longest prefix wins, and exact rules beat prefixes, so any route can be
+narrowed without reordering the table.
 
 ### Fail-closed must not mean fail-empty
 
