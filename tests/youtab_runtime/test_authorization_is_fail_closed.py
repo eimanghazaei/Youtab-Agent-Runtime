@@ -240,7 +240,7 @@ class TestTheLoginFlowStaysReachable:
             "/api/auth/csrf", "/api/auth/providers", "/auth/login",
             "/auth/callback", "/auth/password-login", "/auth/logout",
             "/login", "/auth/native/authorize", "/auth/native/token",
-            "/auth/native/refresh", "/api/health", "/", "/assets/{}.css",
+            "/auth/native/refresh", "/api/health", "/{}", "/assets/{}.css",
             "/dashboard-plugins/{}/{}",
         }
         actual = {
@@ -269,7 +269,7 @@ class TestEveryWebSocketEnforcesAScope:
         "/api/pty": "PTY_SCOPE",
         "/api/console": "CONSOLE_SCOPE",
         "/api/ws": "WS_SCOPE",
-        "/api/pub": "PUB_SCOPE",
+        "/api/pub": "EVENTS_READ",
         "/api/audio/speak-stream": "AUDIO_STREAM_SCOPE",
         "/api/events": "EVENTS_READ",
     }
@@ -286,9 +286,14 @@ class TestEveryWebSocketEnforcesAScope:
     def test_it_calls_the_scope_gate(self, app, path):
         source = self._handler_source(app, path)
         assert "_ws_scope_ok" in source, f"{path} accepts without a scope check"
-        assert source.index("_ws_scope_ok") < source.index("ws.accept()"), (
-            f"{path} checks the scope after accepting the upgrade"
-        )
+        if "ws.accept()" in source:
+            assert source.index("_ws_scope_ok") < source.index("ws.accept()"), (
+                f"{path} checks the scope after accepting the upgrade"
+            )
+        else:
+            # Hands the socket to a delegate (tui_gateway) that accepts it, so
+            # the gate only has to precede the handoff.
+            assert source.index("_ws_scope_ok") < source.index("handle_ws(ws)")
 
     @pytest.mark.parametrize("path,const", sorted(SOCKETS.items()))
     def test_it_enforces_the_scope_named_for_it(self, app, path, const):

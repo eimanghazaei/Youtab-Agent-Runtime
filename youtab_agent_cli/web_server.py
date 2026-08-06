@@ -73,7 +73,6 @@ from youtab_agent_cli.authz import PUBLIC as authz_public
 from youtab_agent_cli.authz import (
     AUDIO_STREAM_SCOPE,
     CONSOLE_SCOPE,
-    PLUGIN_USE,
     PTY_SCOPE,
     WS_SCOPE,
 )
