@@ -263,8 +263,14 @@ class TestMigrate:
         final = target.read_text()
         assert "user-above" in final
         assert "user-below" in final
-        # And our managed block is still there with the new content
-        assert "[mcp_servers.youtab-agent-runtime-mcp]" in final
+        # And our managed block is still there with the new content.
+        #
+        # The server named here has to be the one the test actually migrates.
+        # Before the rebrand both were `hermes-mcp`; the rename rewrote the
+        # dict key to `youtab-mcp` and this assertion to
+        # `youtab-agent-runtime-mcp`, a name no code path emits, so the test
+        # asserted on a server that could never appear.
+        assert "[mcp_servers.youtab-mcp]" in final
 
 
 
