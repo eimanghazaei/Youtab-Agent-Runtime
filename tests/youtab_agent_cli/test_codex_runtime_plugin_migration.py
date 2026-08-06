@@ -266,10 +266,12 @@ class TestMigrate:
         # And our managed block is still there with the new content.
         #
         # The server named here has to be the one the test actually migrates.
-        # Before the rebrand both were `hermes-mcp`; the rename rewrote the
-        # dict key to `youtab-mcp` and this assertion to
-        # `youtab-agent-runtime-mcp`, a name no code path emits, so the test
-        # asserted on a server that could never appear.
+        # Before the rebrand the config key and this assertion were the same
+        # token; the rename rewrote them differently, leaving the dict key as
+        # `youtab-mcp` and this assertion as a longer variant that no code path
+        # emits — so the test asserted on a server that could never appear. The
+        # retired token is deliberately not spelled out: the branding gate
+        # sweeps tracked files for it, and it flagged this comment when it did.
         assert "[mcp_servers.youtab-mcp]" in final
 
 
