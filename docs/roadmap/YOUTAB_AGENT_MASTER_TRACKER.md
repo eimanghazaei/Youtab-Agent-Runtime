@@ -16,7 +16,7 @@ than no tracker, because it reads as complete.
 | Branch | `feat/youtab-agent-runtime-on-main` |
 | PR | **#10** (OPEN, draft) |
 | Base | `main@cc4cab2f592e60a197e796506de9168f74baf3ea` |
-| PR head | `a6025075225fcbe7f0a8307de84426a5e7de6b51` |
+| PR head | `b2503b8c00369edf680aa86d8d13bed025953de3` |
 | **Deployed SHA (protected pre-production)** | **`64b32afb68dc022fc463c72d6e024054fd816e4c`** |
 
 The deployed SHA is tracked separately from the PR head on purpose. They are
@@ -54,7 +54,7 @@ different router than production builds.
 | 7 | CSRF + exact Origin/Referer on the external bind | **VERIFIED** | `tests/youtab_agent_cli/test_csrf_and_origin.py` (29) |
 | 8 | Route inventory from the real router | **VERIFIED** | `scripts/youtab/route_inventory.py`; 294/255/7/1, 0 unrecognised |
 | 9 | Dependency provenance & CI/local/production version parity | **VERIFIED** | this commit; 7 mutations RED, restored GREEN |
-| 10 | **Route authorization default-deny** | **ACTIVE — flip landed, gate outstanding** | `authz.authorize` refuses unmapped; 294/294 HTTP + 6/7 sockets enforced; 76 tests. **Router-vs-policy CI gate NOT built.** |
+| 10 | **Route authorization default-deny + Router-vs-policy gate** | **ACTIVE — gate built, audit continuing** | `scripts/youtab/router_policy_gate.py`, 9 conditions each proven RED; 337 tests. Endpoint-body audit ongoing. |
 | 11 | Purpose-bound WebSocket tickets | QUEUED | one ticket currently opens any socket |
 | 12 | Tenant/user event filtering | QUEUED | scope gate exists; payload filtering does not |
 | 13 | Governed CSRF secret-file contract | QUEUED | `YOUTAB_CSRF_SECRET_FILE`, ≥32 bytes, fail closed |
@@ -185,17 +185,73 @@ scope governed only the transport nobody reads the stream over. The
    files outside the selection caught it on the first full run. Per-file
    subprocess isolation is what makes the widening viable.
 
+### Router-vs-policy gate — BUILT
+
+`scripts/youtab/router_policy_gate.py`, wired into `run_all_gates.sh` as the
+`router-policy` gate. It walks the real router and compares it against
+`authz`, failing closed on nine conditions: missing classification, stale
+entry, duplicate entry, unknown method, unknown route object, ambiguous
+parameter normalisation, missing WebSocket, missing mount, unjustified public.
+An inconclusive run fails too — a router that will not import fails the gate
+rather than passing it.
+
+Each of the nine is proven to turn it red, against the real policy tables
+rather than a fixture, then restored
+(`tests/youtab_runtime/test_router_policy_gate.py`, 14 tests).
+
+It found two things on its first run: eleven public routes with no written
+justification anywhere, and `/api/auth/csrf` classified public when its handler
+raises 401 without a session and neither middleware allowlist admits it.
+
+### Endpoint-body audit — findings so far
+
+Method: sweep every route the normal-user baseline reaches for bodies that
+touch provider bindings, credentials, engine identifiers or host paths
+(233 reachable, 100 flagged), then open each match. Clusters read in full:
+`/api/plugins` (48), `/api/profiles` (15), `/api/git` (19), `/api/sessions`
+(14), `/api/ops` (15), `/api/fs` (6), `/api/files` (7), `/api/memory` (8), the
+pre-existing privileged surface (31), and both allowlists.
+
+**Corrected out of the user baseline** — each found by reading the body, each
+in a cluster whose other routes are genuine user capability:
+
+| route | was | now | why |
+|---|---|---|---|
+| `PUT /api/tools/toolsets/{}/env` | `tool:manage` | `credential:write` | writes API keys into `.env` via `save_env_value` |
+| `GET /api/tools/toolsets/{}/config` | `tool:manage` | `credential:read` | provider matrix + per-key `is_set` |
+| `GET /api/tools/toolsets/{}/models` | `tool:manage` | `provider:read` | backend model catalogue |
+| `PUT /api/tools/toolsets/{}/model` | `tool:manage` | `engine:select` | persists an engine binding |
+| `GET /api/analytics/models` | `ui:read` | `provider:read` | selects `model, billing_provider` |
+| `GET /api/portal` | `ui:read` | `provider:read` | reports each feature's `current_provider` |
+| `GET /api/ssh/ownership` | `repo:read` | `ops:manage` | returns `sshOwnerNonce`, a live secret |
+| `GET /api/auth/csrf` | `public` | `authenticated` | handler 401s without a session |
+
+**Three routes write an engine binding**: `POST /api/model/set`,
+`PUT /api/profiles/{}/model`, `PUT /api/tools/toolsets/{}/model`. Each was
+found separately and each would have been a bypass of `engine:select` alone;
+all three are now pinned to it in one assertion.
+
+**`/api/fs` reached the credential store.** `_fs_path` resolves any absolute
+host path and applied no sensitive-path guard, so `fs:read` — in the user
+baseline — read `.env` without `credential:read`. It now uses the guard
+`/api/files` already had (`.env` variants, canonical credential basenames,
+`mcp-tokens/` and `pairing/`). Ordinary project files are untouched and
+`fs:read`/`fs:write` remain user capability.
+
+**Deliberately left as user capability, with the reason pinned**:
+`/api/memory/providers/{}/config` also reports `is_set`, but memory providers
+are user-installed plugins holding the user's own keys, and neither payload
+builder ever returns a secret value (`kind == "secret"` is blanked on both the
+declared and undeclared paths). That masking is now asserted with a real secret
+in the input.
+
 ### Still outstanding on this row
 
-- **Router-vs-policy CI gate — NOT BUILT.** This is what keeps workstream 10
-  ACTIVE.
-- **Cluster scopes remain unverified against endpoint bodies for most of the
-  ~250 cluster-assigned routes.** Validated so far by reading bodies:
-  `/api/plugins` (48), `/api/profiles` (15), the pre-existing privileged
-  surface (31), the `PUBLIC_API_PATHS` allowlist (7), `/api/ops` (15), and the
-  single-route "nearest domain" clusters. The registry
-  (`route_authz_registry.py`, 104 entries) remains the body-verified subset and
-  is deliberately smaller than the enforced table.
+- **The audit is not finished.** 233 baseline-reachable route+methods, 100
+  flagged by the sweep, of which the highest-signal matches have been opened.
+  The remainder of the flagged list is unread.
+- Cluster scopes for routes outside the read clusters remain unverified against
+  their bodies.
 
 ## Next permitted slice
 
