@@ -63,6 +63,15 @@ begin container-control-plane-isolation
   --output "$evidence_dir/container-isolation.json"
 record container-control-plane-isolation $?
 
+begin router-policy
+# The authorization policy is only a control while it describes the router the
+# application actually builds. This fails closed on nine conditions, including
+# a route added without a rule and a socket that accepts without a scope --
+# both of which are invisible to any test asserting on a hand-written list.
+"$python_bin" scripts/youtab/router_policy_gate.py \
+  --json "$evidence_dir/router-policy.json"
+record router-policy $?
+
 begin owasp-smoke
 "$python_bin" scripts/youtab/owasp_smoke.py > "$evidence_dir/owasp-smoke.json"
 record owasp-smoke $?

@@ -249,6 +249,109 @@ _PUBLIC: Final[tuple[RouteEntry, ...]] = (
 # Restated per route+method so the registry is complete on its own terms and
 # the gate can prove the two agree rather than assuming it.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The login flow and the shell that renders it.
+#
+# Every one of these has to answer before a session can exist, so requiring one
+# would make the deployment unreachable. That is the bootstrap paradox, not a
+# judgement that the data is harmless — and the Router-vs-policy gate refuses
+# to let any of them be public without the reason written down here.
+# ---------------------------------------------------------------------------
+_LOGIN_FLOW: Final[tuple[RouteEntry, ...]] = (
+    RouteEntry(
+        "/api/auth/csrf", "GET", RouteClass.AUTHENTICATED_USER,
+        justification=(
+            "Mints a single-use CSRF token *for an authenticated principal*. "
+            "It reads as part of the login bootstrap and was classified public "
+            "on that assumption, but the handler raises 401 when there is no "
+            "session, and neither middleware allowlist admits it. Public would "
+            "have described a reachability the code does not provide."
+        ),
+    ),
+    RouteEntry(
+        "/api/auth/providers", "GET", RouteClass.PUBLIC,
+        justification=(
+            "Lists which auth providers this deployment offers, so the login "
+            "screen knows which buttons to render. Provider names only — no "
+            "client secrets, no endpoints, no tenant data."
+        ),
+    ),
+    RouteEntry(
+        "/auth/login", "GET", RouteClass.PUBLIC,
+        justification=(
+            "Starts the provider redirect. It is the entry point of the flow "
+            "that produces a session, so it cannot require one."
+        ),
+    ),
+    RouteEntry(
+        "/auth/callback", "GET", RouteClass.PUBLIC,
+        justification=(
+            "The provider redirects an unauthenticated browser back here with "
+            "an authorization code. The flow state, not a session, is what "
+            "makes the callback trustworthy."
+        ),
+    ),
+    RouteEntry(
+        "/auth/password-login", "POST", RouteClass.PUBLIC,
+        justification=(
+            "Submits credentials to obtain a session. Gating it on a session "
+            "would make password login impossible; the credentials are the "
+            "authentication."
+        ),
+    ),
+    RouteEntry(
+        "/auth/logout", "POST", RouteClass.PUBLIC,
+        justification=(
+            "Ending a session must work even when that session is already "
+            "invalid or expired. A logout that refuses an unauthenticated "
+            "caller leaves a stale cookie in place, which is worse."
+        ),
+    ),
+    RouteEntry(
+        "/login", "GET", RouteClass.PUBLIC,
+        justification=(
+            "The login page itself. Serves the shell a user needs in order to "
+            "authenticate at all."
+        ),
+    ),
+    RouteEntry(
+        "/auth/native/authorize", "GET", RouteClass.PUBLIC,
+        justification=(
+            "Desktop authorization entry point, the native equivalent of "
+            "/auth/login. Same bootstrap reason: it is what produces the "
+            "session, so it cannot presuppose one."
+        ),
+    ),
+    RouteEntry(
+        "/auth/native/token", "POST", RouteClass.PUBLIC,
+        justification=(
+            "Exchanges a native authorization code for tokens. The code is the "
+            "credential; there is no session yet to gate on."
+        ),
+    ),
+    RouteEntry(
+        "/auth/native/refresh", "POST", RouteClass.PUBLIC,
+        justification=(
+            "Exchanges a refresh token for a new access token. The refresh "
+            "token is the credential, and refresh must work precisely when "
+            "the access token has expired."
+        ),
+    ),
+    RouteEntry(
+        "/{}", "GET", RouteClass.PUBLIC,
+        justification=(
+            "The SPA catch-all, spelled `/` in the policy table and `/{}` by "
+            "the router. Serves the client-side routes a single-page "
+            "application owns, including the login screen, so it must answer "
+            "before a session exists. Two endpoint bodies behind one key: "
+            "serve_spa when the frontend is built, no_frontend (a 404 JSON) "
+            "when it is not — public is correct for both. It cannot reopen "
+            "the API surface, because authz evaluates it last and only for "
+            "paths outside the application own roots."
+        ),
+    ),
+)
+
 _PRIVILEGED: Final[tuple[RouteEntry, ...]] = (
     *_entries(RouteClass.OWNER_SUPERADMIN, (
         ("/api/credentials/pool", "GET"),
@@ -530,6 +633,7 @@ _BASELINE_CORRECTIONS: Final[tuple[RouteEntry, ...]] = (
 #: partially-classified surface is visible as such.
 REGISTRY: Final[tuple[RouteEntry, ...]] = (
     *_PUBLIC,
+    *_LOGIN_FLOW,
     *_PRIVILEGED,
     *_PLUGIN_PRIVILEGED,
     *_PLUGIN_USER_OWNED,

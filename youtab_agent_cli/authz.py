@@ -446,7 +446,13 @@ EXACT_ROUTE_SCOPES: Final[Mapping[str, str]] = {
     # The login flow. Every one of these has to answer before a session can
     # exist, so requiring one would make the deployment unreachable -- the
     # bootstrap paradox, not a judgement that the data is harmless.
-    "/api/auth/csrf": PUBLIC,
+    # NOT public, despite being part of the login story. Read the handler:
+    # `api_auth_csrf` raises 401 when `request.state.session` is None, and its
+    # docstring is explicit -- "a single-use CSRF token for the authenticated
+    # principal". Calling it public would not make it reachable; it would only
+    # misdescribe the surface and dilute what "public" means. It falls to the
+    # `/api/auth` prefix rule, which is AUTHENTICATED, matching `/api/auth/me`
+    # and `/api/auth/ws-ticket` beside it.
     "/api/auth/providers": PUBLIC,
     "/auth/login": PUBLIC,
     "/auth/callback": PUBLIC,

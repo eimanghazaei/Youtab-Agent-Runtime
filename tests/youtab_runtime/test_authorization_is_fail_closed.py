@@ -216,7 +216,6 @@ class TestTheLoginFlowStaysReachable:
     """Every one of these has to answer before a session can exist."""
 
     @pytest.mark.parametrize("path,method", [
-        ("/api/auth/csrf", "GET"),
         ("/api/auth/providers", "GET"),
         ("/auth/login", "GET"),
         ("/auth/callback", "GET"),
@@ -245,7 +244,7 @@ class TestTheLoginFlowStaysReachable:
     CREDENTIAL_BEARING = {"/api/cron/fire", "/api/mcp/oauth/callback/{}"}
 
     AUTHORISED_PUBLIC = {
-        "/api/auth/csrf", "/api/auth/providers", "/auth/login",
+        "/api/auth/providers", "/auth/login",
         "/auth/callback", "/auth/password-login", "/auth/logout",
         "/login", "/auth/native/authorize", "/auth/native/token",
         "/auth/native/refresh", "/api/health", "/{}", "/assets/{}.css",
@@ -282,6 +281,18 @@ class TestTheLoginFlowStaysReachable:
         for path in self.BUILD_CONDITIONAL:
             if path in paths:
                 assert required_scope(probe(path), "GET") == PUBLIC
+
+    def test_the_csrf_mint_is_not_public(self):
+        """It reads as login bootstrap; the handler says otherwise.
+
+        `api_auth_csrf` raises 401 when there is no session, and its docstring
+        mints "for the authenticated principal". It is also on neither
+        middleware allowlist. Public would have described a reachability the
+        code does not provide, so it is AUTHENTICATED like the routes beside it.
+        """
+        assert required_scope("/api/auth/csrf", "GET") == AUTHENTICATED
+        assert not authorize(Principal(user_id="", org_id=""), "/api/auth/csrf", "GET")
+        assert authorize(Principal(user_id="u", org_id=""), "/api/auth/csrf", "GET")
 
     def test_status_is_public_again(self):
         """Superseded: the withdrawal broke the portal probe and was reverted.

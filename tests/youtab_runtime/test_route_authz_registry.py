@@ -315,7 +315,34 @@ class TestPublicSurfaceIsExactlyTheAllowlist:
             if e.route_class in {RouteClass.PUBLIC, RouteClass.LOOPBACK_HEALTH,
                                  RouteClass.INTERNAL_SERVICE}
         }
-        assert registry_open == set(PUBLIC_API_PATHS)
+        # Scoped to `/api/*`, and compared against *both* allowlists.
+        # `PUBLIC_API_PATHS` is the shared one; the gated middleware carries a
+        # second, `_GATE_PUBLIC_PREFIXES`, which is what actually lets
+        # `/api/auth/providers` and the MCP OAuth callback through before a
+        # session exists. Comparing against only the first asserts an equality
+        # that never held, and comparing against neither asserts nothing.
+        from youtab_agent_cli.dashboard_auth.middleware import _GATE_PUBLIC_PREFIXES
+
+        allowlisted = set(PUBLIC_API_PATHS) | {
+            p.rstrip("/") for p in _GATE_PUBLIC_PREFIXES if p.startswith("/api/")
+        }
+        registry_api = {p for p in registry_open if p.startswith("/api/")}
+        unlisted = registry_api - allowlisted
+        assert not unlisted, (
+            f"public in policy but on no middleware allowlist: {sorted(unlisted)}"
+        )
+
+    def test_the_non_api_public_routes_are_the_login_flow(self):
+        """Everything public outside `/api/` is the bootstrap, and nothing else."""
+        non_api = {
+            e.path for e in REGISTRY
+            if e.route_class is RouteClass.PUBLIC and not e.path.startswith("/api/")
+        }
+        assert non_api == {
+            "/auth/login", "/auth/callback", "/auth/password-login",
+            "/auth/logout", "/login", "/auth/native/authorize",
+            "/auth/native/token", "/auth/native/refresh", "/{}",
+        }
 
     def test_cron_fire_is_internal_service_not_public(self):
         """It bypasses the cookie gate but is not unauthenticated.
