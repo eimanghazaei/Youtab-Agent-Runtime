@@ -16,7 +16,7 @@ than no tracker, because it reads as complete.
 | Branch | `feat/youtab-agent-runtime-on-main` |
 | PR | **#10** (OPEN, draft) |
 | Base | `main@cc4cab2f592e60a197e796506de9168f74baf3ea` |
-| PR head | `e4dec29587f1581c90e639df3efb0a6f51a32797` |
+| PR head | `a6025075225fcbe7f0a8307de84426a5e7de6b51` |
 | **Deployed SHA (protected pre-production)** | **`64b32afb68dc022fc463c72d6e024054fd816e4c`** |
 
 The deployed SHA is tracked separately from the PR head on purpose. They are
@@ -140,38 +140,62 @@ at its socket. Starlette's HTTP middleware does not run on an upgrade, so that
 scope governed only the transport nobody reads the stream over. The
 `_ws_scope_ok(ws, EVENTS_READ)` call that existed was in `pub_ws`.
 
-### Open items, listed rather than guessed
+### Findings from the previous checkpoint — all six resolved
 
-1. **`/api/status` is no longer public, and that breaks a named consumer.**
-   NAS `fly-provider.ts` `getInstanceRuntimeStatus` fetches it without a cookie
-   as its sole liveness probe; it now gets 403 and healthy agents will surface
-   as down in the portal UI. Point the probe at `/api/health` (still public) or
-   give it a credential. One line to revert if that is the wrong call.
-2. **Two tables disagree about `/api/status`.** It is still in
-   `dashboard_auth.public_paths.PUBLIC_API_PATHS`, so the cookie gate admits it
-   and the authorization gate then refuses it. Reconciling them means deciding
-   whether the probe is coming back.
-3. **`GET /api/profiles` still discloses** model, provider, on-disk path and
-   `has_env` per profile. Left at `profile:read` deliberately — it is the route
-   the profile picker lists from. The fix belongs in the payload: mask those
-   fields for a caller without `provider:read`.
-4. **Cluster scopes are unverified against endpoint bodies** for ~250 routes.
-   That is the accepted trade, not an oversight. `route_authz_registry.py`
-   remains the body-verified subset: 101 entries across `/api/plugins`,
-   `/api/profiles` and the pre-existing privileged surface.
-5. **`/docs`, `/redoc`, `/openapi.json`** are held at `ops:manage` rather than
-   disabled in production. Disabling them outright was the stated preference
-   and was not done.
+1. **`/api/status` probe contract — RESTORED.** Withdrawing it broke NAS
+   `fly-provider.ts getInstanceRuntimeStatus`, whose cookie-less fetch is the
+   portal's sole liveness signal. Public again; what makes that safe is the
+   payload, and `test_status_withholds_host_detail_in_gated_mode` is the
+   assertion doing the work. The same mistake had been made four more times —
+   `/api/config/defaults`, `/api/config/schema`, `/api/dashboard/themes` and
+   `/api/dashboard/plugins` are on the middlewares' allowlist and are the SPA's
+   pre-login bootstrap; guarding them by cluster broke the login screen's own
+   rendering. **The policy and `PUBLIC_API_PATHS` now agree**, closing the
+   contradiction the previous checkpoint left open.
+2. **`GET /api/profiles` payload — MASKED.** `model`, `provider`, `path` and
+   `has_env` are stripped for a caller without `provider:read`; `name`,
+   `description` and `skill_count` survive, so the picker still works. Keys are
+   omitted rather than blanked — a blanked `provider` reads as "none
+   configured", which is an assertion the masker is not entitled to make.
+3. **`/api/cron/fire` and the MCP OAuth callback — VERIFIED.** The Chronos
+   verifier refuses without a JWKS, refuses without an audience, rejects
+   symmetric algorithms, requires `exp`/`aud`, and requires a `cron_fire`
+   purpose claim. The callback matches single-use flow state with
+   `secrets.compare_digest` and 404s when nothing matches. Public at the gate
+   is correct: the credential is the boundary in both cases.
+4. **Normal-user baseline — three corrections.** Found by reading bodies, all
+   in clusters whose other routes are genuine user capability:
+   `/api/analytics/models` (selects `model, billing_provider`) → `provider:read`;
+   `/api/portal` (reports each feature's `current_provider`) → `provider:read`;
+   `/api/ssh/ownership` (returns `sshOwnerNonce`, a live secret) → `ops:manage`.
+   `/api/analytics/usage` deliberately stays `ui:read`. The `/api/ops` cluster
+   is asserted clean against the router, and `USER_CAPABILITIES` is asserted to
+   intersect no privileged scope.
+5. **API docs policy — DECIDED: operator-only.** `/docs`, `/redoc`,
+   `/openapi.json` and `/docs/oauth2-redirect` are held at `ops:manage`, with
+   tests that an anonymous caller and an ordinary user are both refused and an
+   operator is allowed. Removing them outright would require the routes never
+   to be registered, which is an app-construction change; `ops:manage` gives
+   the same externally-visible result and keeps the inventory checkable.
+6. **CI scope — WIDENED.** The gate runs all of `tests/youtab_agent_cli`, not
+   nineteen named files. The narrowing cost real coverage: the flip shipped two
+   rules written as fixed-segment patterns against `:path` routes
+   (`/dashboard-plugins/{plugin}/{file:path}` and the MCP callback), and both
+   403'd every real request. Nothing in the selected files touched them; three
+   files outside the selection caught it on the first full run. Per-file
+   subprocess isolation is what makes the widening viable.
 
-### Test evidence
+### Still outstanding on this row
 
-`tests/youtab_runtime/test_authorization_is_fail_closed.py` — 76 assertions,
-green in **both** build states. Full-suite delta measured against the pre-flip
-commit `b6cab1057`: **184 failed before, 183 after, zero new**. The 183 are
-pre-existing cross-test pollution — they pass in isolation and fail identically
-at `b6cab1057`. One was fixed by this change
-(`test_path_traversal_still_blocked`), because the `/dashboard-plugins/{}/{}`
-pattern is anchored to exactly two non-slash segments.
+- **Router-vs-policy CI gate — NOT BUILT.** This is what keeps workstream 10
+  ACTIVE.
+- **Cluster scopes remain unverified against endpoint bodies for most of the
+  ~250 cluster-assigned routes.** Validated so far by reading bodies:
+  `/api/plugins` (48), `/api/profiles` (15), the pre-existing privileged
+  surface (31), the `PUBLIC_API_PATHS` allowlist (7), `/api/ops` (15), and the
+  single-route "nearest domain" clusters. The registry
+  (`route_authz_registry.py`, 104 entries) remains the body-verified subset and
+  is deliberately smaller than the enforced table.
 
 ## Next permitted slice
 
