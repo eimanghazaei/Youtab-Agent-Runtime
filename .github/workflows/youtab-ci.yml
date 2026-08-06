@@ -24,7 +24,16 @@ jobs:
       # The `web` extra carries the same FastAPI pin the production image gets
       # from `uv.lock`, so adding it makes the tested framework the deployed one.
       - name: Install locked development environment
-        run: python -m pip install -e '.[dev,web]'
+        # `slack` joins dev,web because the gate now runs the whole
+        # `tests/youtab_agent_cli` directory, and the platform-picker tests
+        # assert on plugins that only import when their extra is present.
+        # Without it `slack-platform` fails to load on `No module named
+        # 'aiohttp'`, slack drops out of the picker, and the test correctly
+        # reports over-filtering. The right fix is to give the tests the
+        # environment they describe, not to teach the test to expect a
+        # half-installed one. No pyproject change, so `uv lock --check` is
+        # unaffected: these pins already live in the `slack` extra.
+        run: python -m pip install -e '.[dev,web,slack]'
       # The branding gate OCRs every shipped image, and this runner had no OCR
       # engine at all -- so it read none of the 61 tracked images and reported
       # that as if the images were at fault.
