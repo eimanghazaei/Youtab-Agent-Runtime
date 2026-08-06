@@ -401,7 +401,6 @@ ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     ("/api/logs", OPS_MANAGE),
     ("/api/media", FS_READ),
     ("/api/portal", UI_READ),
-    ("/api/status", UI_READ),
     ("/api/system", OPS_MANAGE),
     ("/api/ssh", REPO_READ),
     ("/api/egress", OPS_MANAGE),
@@ -415,6 +414,24 @@ ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     # including the privileged ones. That is an operations surface, not a user
     # one, and the cheapest way for an attacker to learn the shape of what
     # they are attacking.
+    # Dashboard plugin assets. Declared `/dashboard-plugins/{plugin_name}/
+    # {file_path:path}`, so a real asset is `/dashboard-plugins/x/dist/index.js`
+    # -- three segments, which a two-segment pattern refused. A prefix is what
+    # a `:path` route is. The endpoint remains the guard for *what* it serves:
+    # it resolves the target and rejects anything outside the plugin base with
+    # 403, and restricts to a browser-fetchable suffix allowlist, so widening
+    # the authorization rule does not widen what can be read.
+    ("/dashboard-plugins", PUBLIC),
+    # Hosted MCP OAuth callback. The upstream provider redirects a browser here
+    # with no cookie for this origin. Verified fail-closed at the endpoint: it
+    # requires an in-flight flow in `authorization_required` whose
+    # `expected_state` matches by `secrets.compare_digest`, 404s when none
+    # matches, and rejects a replayed callback with 409. The OAuth state is the
+    # boundary, and it is single-use.
+    #
+    # A prefix, not a pattern: the route is `{server_name:path}`, so a server
+    # name that decodes to more than one segment is still this route.
+    ("/api/mcp/oauth/callback", PUBLIC),
     ("/docs", OPS_MANAGE),
     ("/redoc", OPS_MANAGE),
     ("/openapi.json", OPS_MANAGE),
@@ -441,6 +458,35 @@ EXACT_ROUTE_SCOPES: Final[Mapping[str, str]] = {
     "/auth/native/refresh": PUBLIC,
     # Process liveness for a local supervisor. Returns no configuration.
     "/api/health": PUBLIC,
+    # Liveness for the portal. NAS `fly-provider.ts getInstanceRuntimeStatus`
+    # fetches this without a cookie as its sole signal that a
+    # wildcard-subdomain agent is alive; holding it to a scope surfaced every
+    # healthy agent as STARTING/down. The body is deliberately shaped for an
+    # anonymous reader -- version, gateway state, active session count and the
+    # auth-gate shape -- and `test_status_withholds_host_detail_in_gated_mode`
+    # holds the line that absolute host paths, the gateway PID and the
+    # internal health URL never appear in it.
+    "/api/status": PUBLIC,
+    # The SPA's pre-login bootstrap. All four are on the middlewares'
+    # ``PUBLIC_API_PATHS`` allowlist and were reachable without a cookie
+    # before authorization was default-deny; guarding them by cluster was a
+    # new restriction that broke the login screen's own rendering. Bodies
+    # read, not assumed:
+    #
+    #   /api/config/defaults   returns the shipped ``DEFAULT_CONFIG`` constant
+    #                          -- defaults, never this deployment's values.
+    #   /api/config/schema     returns field definitions and category order:
+    #                          the shape of the form, not its contents.
+    #   /api/dashboard/themes  theme manifests plus the active theme name.
+    #                          The skin engine renders the login screen from
+    #                          these, so they must answer before a session.
+    #   /api/dashboard/plugins plugin names and mount points, already gated to
+    #                          the enabled set. Exact, not prefix: the deeper
+    #                          ``/api/dashboard/plugins/hub`` stays ``ui:read``.
+    "/api/config/defaults": PUBLIC,
+    "/api/config/schema": PUBLIC,
+    "/api/dashboard/themes": PUBLIC,
+    "/api/dashboard/plugins": PUBLIC,
     # The SPA shell: the HTML that renders the login screen, so it cannot
     # require the session that screen exists to obtain.
     #
@@ -481,9 +527,9 @@ EXACT_ROUTE_SCOPES: Final[Mapping[str, str]] = {
 #: segment) and compiled to anchored patterns, so a parameter cannot be renamed
 #: into a different decision and a segment cannot swallow a ``/``.
 PATTERN_ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
-    # Built CSS and dashboard plugin assets, both served to the login screen.
+    # Built CSS, served to the login screen. Single segment: the route is
+    # `/assets/{filename}.css`, not a `:path`.
     ("/assets/{}.css", PUBLIC),
-    ("/dashboard-plugins/{}/{}", PUBLIC),
     # Writes ``model.default`` and ``model.provider`` into a named profile. Its
     # own docstring records that it mirrors ``POST /api/model/set``, which is
     # held at ``engine:select`` -- so letting the cluster rule resolve this to
@@ -491,10 +537,6 @@ PATTERN_ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     # same write through a different path. Read from the endpoint body, not
     # inferred, before the cluster rule was applied.
     ("/api/profiles/{}/model", ENGINE_SELECT),
-    # Hosted MCP OAuth callback. The upstream provider redirects a browser here
-    # with no cookie for this origin; the handler validates the flow state.
-    # Under `/api/mcp` -> tool:manage it refused every hosted MCP connection.
-    ("/api/mcp/oauth/callback/{}", PUBLIC),
 )
 
 #: Roots that belong to the application rather than to the browser router. A

@@ -20,7 +20,7 @@ import time  # noqa: F401
 from pathlib import Path  # noqa: F401
 from typing import Any, Dict, List, Optional, Tuple  # noqa: F401
 
-from fastapi import APIRouter, HTTPException  # noqa: F401
+from fastapi import APIRouter, HTTPException, Request  # noqa: F401
 
 from youtab_agent_cli.web_deps import late
 from youtab_agent_cli.web_models import (
@@ -47,6 +47,8 @@ _fallback_profile_dicts = late("_fallback_profile_dicts")
 _hub_action_name = late("_hub_action_name")
 _profile_setup_command = late("_profile_setup_command")
 _profile_to_dict = late("_profile_to_dict")
+_principal_for_request = late("_principal_for_request")
+_mask_private_profile_fields = late("mask_private_profile_fields")
 _resolve_profile_dir = late("_resolve_profile_dir")
 _spawn_youtab_action = late("_spawn_youtab_action")
 _strip_session_list_rows = late("_strip_session_list_rows")
@@ -333,15 +335,25 @@ def get_profiles_sessions_sidebar(
 
 
 @router.get("/api/profiles")
-async def list_profiles_endpoint():
+async def list_profiles_endpoint(request: Request):
+    """List the caller's profiles.
+
+    A user capability, held at ``profile:read`` -- this is what the profile
+    picker lists from. Four of the fields it used to return are not: the raw
+    engine binding, the absolute on-disk path, and whether credentials are
+    configured. Those are masked for a caller without ``provider:read`` rather
+    than the whole route being taken away.
+    """
     from youtab_agent_cli import profiles as profiles_mod
+    principal = _principal_for_request(request)
     try:
         loop = asyncio.get_running_loop()
         profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
-        return {"profiles": [_profile_to_dict(p) for p in profiles]}
+        records = [_profile_to_dict(p) for p in profiles]
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
-        return {"profiles": _fallback_profile_dicts(profiles_mod)}
+        records = _fallback_profile_dicts(profiles_mod)
+    return {"profiles": _mask_private_profile_fields(records, principal)}
 
 
 @router.post("/api/profiles")

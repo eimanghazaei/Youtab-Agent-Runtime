@@ -48,7 +48,7 @@ import zipfile
 from youtab_agent_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, Final, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -13463,6 +13463,46 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_source": _profile_attr(info, "distribution_source"),
         "has_alias": _profile_attr(info, "alias_path") is not None,
     }
+
+
+#: Fields on a profile record that describe Youtab's private engine bindings
+#: or the host filesystem rather than the user's own profile.
+#:
+#: ``model`` and ``provider`` are the raw upstream identifiers a normal user
+#: must never be shown -- the same data ``/api/model/options`` is held at
+#: ``provider:read`` for. ``path`` is an absolute host path, which is
+#: deployment recon. ``has_env`` reports whether credentials are configured,
+#: which is a fact about the deployment's secrets even though it is not a
+#: secret itself.
+PRIVATE_PROFILE_FIELDS: Final = ("model", "provider", "path", "has_env")
+
+
+def mask_private_profile_fields(records, principal) -> List[Dict[str, Any]]:
+    """Strip the private fields from profile records for an unprivileged caller.
+
+    The disclosure was in the payload, so the fix is in the payload. Holding
+    ``GET /api/profiles`` itself at ``provider:read`` would have closed it by
+    removing the profile picker from every ordinary user, which is not a fix --
+    the route is a legitimate user capability and only four of its fields are
+    not.
+
+    Keys are omitted rather than blanked. A blanked ``provider`` reads as "no
+    provider configured" and a blanked ``has_env`` reads as "no credentials",
+    both of which are assertions this function is not entitled to make; an
+    absent key says only that the caller was not shown it. ``restricted`` marks
+    the record so a client can tell a masked payload from a sparse one.
+    """
+    if principal is not None and principal.has(PROVIDER_READ):
+        return list(records)
+    masked: List[Dict[str, Any]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            masked.append(record)
+            continue
+        trimmed = {k: v for k, v in record.items() if k not in PRIVATE_PROFILE_FIELDS}
+        trimmed["restricted"] = True
+        masked.append(trimmed)
+    return masked
 
 
 def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:

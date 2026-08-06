@@ -50,23 +50,8 @@ def gated_app():
 # ---------------------------------------------------------------------------
 
 
-def test_gated_status_requires_authorization(gated_app):
-    """``/api/status`` is deliberately NO LONGER public. See the note below.
-
-    WITHDRAWN BY OWNER DIRECTION. This endpoint was public so that NAS
-    (``fly-provider.ts`` ``getInstanceRuntimeStatus``) could use it without a
-    cookie as its sole liveness probe for wildcard-subdomain agents. It is now
-    held at ``ui:read``, so that probe receives 403 and every healthy agent
-    surfaces as STARTING/down in the portal UI until the probe is moved to
-    ``/api/health`` (still public) or given a credential.
-
-    The original contract is kept in this docstring rather than deleted,
-    because the consumer still exists and whoever revisits this needs to know
-    what it was and why it changed.
-
-    Original note follows.
-
-    ``/api/status`` MUST be public under the OAuth gate.
+def test_gated_status_is_public(gated_app):
+    """``/api/status`` MUST be public under the OAuth gate.
 
     Regression guard for the wildcard-subdomain rollout: NAS
     (``fly-provider.ts`` ``getInstanceRuntimeStatus``) hits
@@ -82,17 +67,14 @@ def test_gated_status_requires_authorization(gated_app):
     can distinguish loopback / gated / no-providers without a separate
     round trip.
     """
-    from youtab_agent_cli.authz import UI_READ, required_scope
-
-    assert required_scope("/api/status", "GET") == UI_READ
     r = gated_app.get("/api/status")
-    assert r.status_code == 403, (
-        "if this is 200 again, /api/status was returned to the public set -- "
-        "update this test and the portal-probe note above together"
+    assert r.status_code == 200, (
+        f"Expected 200, got {r.status_code}: {r.text}"
     )
-    # /api/health is the remaining public liveness probe, and is where an
-    # uncredentialed prober should be pointed.
-    assert gated_app.get("/api/health").status_code == 200
+    body = r.json()
+    assert body["auth_required"] is True
+    assert "version" in body
+    assert "gateway_state" in body
 
 
 @pytest.mark.parametrize("path", [

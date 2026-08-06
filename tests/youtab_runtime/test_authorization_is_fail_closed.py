@@ -250,6 +250,9 @@ class TestTheLoginFlowStaysReachable:
         "/login", "/auth/native/authorize", "/auth/native/token",
         "/auth/native/refresh", "/api/health", "/{}", "/assets/{}.css",
         "/dashboard-plugins/{}/{}",
+        # The probe contract and the SPA's pre-login bootstrap.
+        "/api/status", "/api/config/defaults", "/api/config/schema",
+        "/api/dashboard/themes", "/api/dashboard/plugins",
     } | CREDENTIAL_BEARING
 
     def test_nothing_else_became_public(self, inventory):
@@ -280,9 +283,13 @@ class TestTheLoginFlowStaysReachable:
             if path in paths:
                 assert required_scope(probe(path), "GET") == PUBLIC
 
-    def test_status_is_not_public(self):
-        """Explicitly withdrawn. See the report note about the portal probe."""
-        assert required_scope("/api/status", "GET") != PUBLIC
+    def test_status_is_public_again(self):
+        """Superseded: the withdrawal broke the portal probe and was reverted.
+
+        Kept as an assertion rather than deleted, so the reversal is recorded
+        where the withdrawal was. See TestStatusKeepsItsProbeContract.
+        """
+        assert required_scope("/api/status", "GET") == PUBLIC
 
 
 # --- WebSockets -------------------------------------------------------------
@@ -344,3 +351,210 @@ class TestEveryWebSocketEnforcesAScope:
         reader = Principal(user_id="r", org_id="",
                            scopes=frozenset({authz.SESSION_READ}))
         assert not reader.has(authz.PTY_SCOPE)
+
+
+# --- the findings this slice was opened to resolve ---------------------------
+
+
+class TestStatusKeepsItsProbeContract:
+    """Restored after being withdrawn. The withdrawal broke a real consumer.
+
+    NAS ``fly-provider.ts getInstanceRuntimeStatus`` fetches ``/api/status``
+    without a cookie as its sole signal that a wildcard-subdomain agent is
+    alive. Holding it to ``ui:read`` returned 403 and surfaced every healthy
+    agent as STARTING/down. It is public again, and the reason it is safe to
+    be public is a property of its *payload*, which the next test pins.
+    """
+
+    def test_it_is_public(self):
+        assert required_scope("/api/status", "GET") == PUBLIC
+        assert authorize(Principal(user_id="", org_id=""), "/api/status", "GET")
+
+    def test_it_is_not_shadowed_by_the_cluster_grant(self):
+        """An exact entry has to beat the prefix, or the fix is cosmetic."""
+        from youtab_agent_cli.authz import UI_READ
+
+        assert required_scope("/api/status", "GET") != UI_READ
+
+    def test_the_allowlist_and_the_policy_now_agree(self):
+        """They disagreed while /api/status was withdrawn. That is resolved."""
+        from youtab_agent_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
+
+        for path in PUBLIC_API_PATHS:
+            assert required_scope(path, "GET") in (PUBLIC, None) or path == "/api/cron/fire", (
+                f"{path} is on the middleware allowlist but the policy guards it"
+            )
+        assert "/api/status" in PUBLIC_API_PATHS
+
+
+class TestProfileListMasksThePrivateFields:
+    """The disclosure was in the payload, so the fix is in the payload.
+
+    Holding ``GET /api/profiles`` at ``provider:read`` would have closed it by
+    removing the profile picker from every ordinary user. The route stays a
+    user capability; four of its fields do not.
+    """
+
+    @pytest.fixture
+    def records(self):
+        return [{
+            "name": "default", "description": "d", "skill_count": 3,
+            "model": "gpt-x", "provider": "acme",
+            "path": "/root/.youtab-agent-runtime", "has_env": True,
+        }]
+
+    def test_a_normal_user_sees_none_of_them(self, records):
+        from youtab_agent_cli.web_server import (
+            PRIVATE_PROFILE_FIELDS, mask_private_profile_fields,
+        )
+
+        user = resolve_principal(user_id="someone", org_id="acme", roster={})
+        [masked] = mask_private_profile_fields(records, user)
+        for field in PRIVATE_PROFILE_FIELDS:
+            assert field not in masked, f"{field} still disclosed to a normal user"
+        assert masked["restricted"] is True
+
+    def test_the_useful_fields_survive(self, records):
+        """Masking that removed the picker's own data would be a regression."""
+        from youtab_agent_cli.web_server import mask_private_profile_fields
+
+        user = resolve_principal(user_id="someone", org_id="acme", roster={})
+        [masked] = mask_private_profile_fields(records, user)
+        assert masked["name"] == "default"
+        assert masked["description"] == "d"
+        assert masked["skill_count"] == 3
+
+    def test_a_provider_reader_still_sees_them(self, records):
+        from youtab_agent_cli.web_server import mask_private_profile_fields
+
+        owner = Principal(user_id="o", org_id="", role=Role.YOUTAB_OWNER,
+                          scopes=ROLE_SCOPES[Role.YOUTAB_OWNER])
+        [full] = mask_private_profile_fields(records, owner)
+        assert full["provider"] == "acme"
+        assert full["model"] == "gpt-x"
+
+    def test_an_absent_principal_is_masked_not_trusted(self, records):
+        from youtab_agent_cli.web_server import mask_private_profile_fields
+
+        assert "provider" not in mask_private_profile_fields(records, None)[0]
+
+    def test_the_route_itself_stays_a_user_capability(self):
+        user = resolve_principal(user_id="someone", org_id="acme", roster={})
+        assert authorize(user, "/api/profiles", "GET")
+
+
+class TestCredentialBearingRoutesVerifyTheirCredential:
+    """Public at the gate is only correct if the handler is the real boundary.
+
+    Both were read rather than assumed.
+    """
+
+    def test_the_cron_fire_verifier_refuses_without_a_key(self):
+        """No JWKS configured must mean refuse, never unsigned decode."""
+        from plugins.cron_providers.chronos.verify import verify_nas_fire_token
+
+        assert verify_nas_fire_token(
+            token="x.y.z", expected_audience="agent:1", jwks_or_key=None) is None
+
+    def test_the_cron_fire_verifier_refuses_without_an_audience(self):
+        from plugins.cron_providers.chronos.verify import verify_nas_fire_token
+
+        assert verify_nas_fire_token(
+            token="x.y.z", expected_audience="", jwks_or_key="https://n/jwks") is None
+
+    def test_the_cron_fire_verifier_refuses_an_empty_token(self):
+        from plugins.cron_providers.chronos.verify import verify_nas_fire_token
+
+        assert verify_nas_fire_token(
+            token="", expected_audience="agent:1", jwks_or_key="https://n/jwks") is None
+
+    def test_the_cron_fire_verifier_rejects_symmetric_algorithms(self):
+        """NAS signs asymmetrically; an HS256 token must not verify."""
+        import jwt as pyjwt
+        from plugins.cron_providers.chronos.verify import verify_nas_fire_token
+
+        forged = pyjwt.encode(
+            {"aud": "agent:1", "exp": 9999999999, "purpose": "cron_fire"},
+            "secret", algorithm="HS256")
+        assert verify_nas_fire_token(
+            token=forged, expected_audience="agent:1", jwks_or_key="secret") is None
+
+    def test_the_mcp_callback_compares_state_in_constant_time(self):
+        """The OAuth state is the boundary, so how it is compared matters."""
+        import inspect
+
+        from youtab_agent_cli.web_routers import mcp
+
+        source = inspect.getsource(mcp.mcp_oauth_callback)
+        assert "compare_digest" in source
+        assert "expected_state" in source
+
+    def test_both_are_public_at_the_gate(self):
+        assert required_scope("/api/cron/fire", "POST") == PUBLIC
+        assert required_scope("/api/mcp/oauth/callback/notion", "GET") == PUBLIC
+
+    def test_the_rest_of_their_clusters_is_not(self):
+        """The exemption is the one route, not the prefix around it."""
+        from youtab_agent_cli.authz import AUTOMATION_MANAGE, TOOL_MANAGE
+
+        assert required_scope("/api/cron/jobs", "GET") == AUTOMATION_MANAGE
+        assert required_scope("/api/mcp/servers", "GET") == TOOL_MANAGE
+
+
+class TestPathRoutesAreMatchedAsPaths:
+    """Two rules were written as fixed-segment patterns against ``:path`` routes.
+
+    Every real request carried more segments than the pattern allowed, fell
+    through to a refusal, and 403'd a route that was meant to be reachable.
+    Caught only because the full suite was run rather than the selected files.
+    """
+
+    @pytest.mark.parametrize("path", [
+        "/dashboard-plugins/bundledx/dist/index.js",
+        "/dashboard-plugins/kanban/assets/deep/nested/main.css",
+    ])
+    def test_a_multi_segment_plugin_asset_resolves(self, path):
+        assert required_scope(path, "GET") == PUBLIC
+
+    @pytest.mark.parametrize("path", [
+        "/api/mcp/oauth/callback/notion",
+        "/api/mcp/oauth/callback/scoped/server/name",
+    ])
+    def test_a_multi_segment_callback_resolves(self, path):
+        assert required_scope(path, "GET") == PUBLIC
+
+
+class TestApiDocsProductionPolicy:
+    """Decision: operator-only, not public, not removed.
+
+    Removing them outright would need the routes never registered, which is an
+    app-construction change rather than a policy one. Holding them at
+    ``ops:manage`` gives the same externally-visible result -- an anonymous or
+    ordinary caller cannot read the API surface -- and keeps the route
+    inventory stable so the policy stays checkable.
+    """
+
+    PATHS = ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"]
+
+    @pytest.mark.parametrize("path", PATHS)
+    def test_an_anonymous_caller_is_refused(self, path):
+        assert not authorize(Principal(user_id="", org_id=""), path, "GET")
+
+    @pytest.mark.parametrize("path", PATHS)
+    def test_a_normal_user_is_refused(self, path):
+        user = resolve_principal(user_id="someone", org_id="acme", roster={})
+        assert not authorize(user, path, "GET")
+
+    @pytest.mark.parametrize("path", PATHS)
+    def test_an_operator_holding_ops_manage_is_allowed(self, path):
+        from youtab_agent_cli.authz import OPS_MANAGE
+
+        operator = Principal(user_id="op", org_id="",
+                             role=Role.YOUTAB_OPERATOR,
+                             scopes=frozenset({OPS_MANAGE}))
+        assert authorize(operator, path, "GET")
+
+    def test_ops_manage_is_not_in_the_user_baseline(self):
+        from youtab_agent_cli.authz import OPS_MANAGE, USER_CAPABILITIES
+
+        assert OPS_MANAGE not in USER_CAPABILITIES

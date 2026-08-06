@@ -226,7 +226,12 @@ class TestSessionTokenInjection:
 
         client = TestClient(original_app)
         client.headers[original_header_name] = original_token
-        assert client.get("/api/__session_token_probe").status_code == 404
+        # 403, not 404: an /api path no policy classifies is refused before
+        # routing now that authorization is default-deny. The property this
+        # line is here for is unchanged -- the seeded token was accepted, so
+        # the answer is an authorization refusal and not a 401. A 404 would
+        # also confirm which routes do not exist, which 403 does not.
+        assert client.get("/api/__session_token_probe").status_code == 403
         assert ws.app is original_app
         assert ws._SESSION_HEADER_NAME == original_header_name
         assert ws._SESSION_TOKEN == original_token
