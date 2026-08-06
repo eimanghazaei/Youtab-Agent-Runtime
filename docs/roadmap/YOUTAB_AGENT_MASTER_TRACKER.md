@@ -16,7 +16,7 @@ than no tracker, because it reads as complete.
 | Branch | `feat/youtab-agent-runtime-on-main` |
 | PR | **#10** (OPEN, draft) |
 | Base | `main@cc4cab2f592e60a197e796506de9168f74baf3ea` |
-| PR head | `b2503b8c00369edf680aa86d8d13bed025953de3` |
+| PR head | `62a221f396e981cf53740964855b17dbe0a618b8` |
 | **Deployed SHA (protected pre-production)** | **`64b32afb68dc022fc463c72d6e024054fd816e4c`** |
 
 The deployed SHA is tracked separately from the PR head on purpose. They are
@@ -82,6 +82,34 @@ different router than production builds.
   container-escape tests are CI/VPS work.
 - **`/assets` is conditional.** It exists only when the SPA is built, so route
   qualification must handle both states rather than assume one.
+
+## Verified green checkpoint
+
+| | |
+|---|---|
+| SHA | **`62a221f396e981cf53740964855b17dbe0a618b8`** |
+| Workflow run | `31117452085` |
+| `python-security` | **success** (16:06:34Z) |
+| `javascript` | **success** (16:07:59Z) |
+| Youtab gates | **12 of 12 PASS**, including `router-policy` and `branding` |
+| Test suite | **545 files, 4282 tests passed, 0 failed** |
+
+The gate suites ran; they were not merely collected:
+
+| file | result |
+|---|---|
+| `test_router_policy_gate.py` | 14 passed |
+| `test_authorization_is_fail_closed.py` | 137 passed |
+| `test_route_authz_registry.py` | 35 passed |
+| `test_authz_separation.py` | ran (12.95s) |
+
+`fa28c6d13` was **not** green and must not be recorded as such: its run failed
+the branding gate, because the comment added to explain the codex rebrand
+inconsistency reproduced the retired brand token in a tracked file — the exact
+thing that gate exists to catch. `62a221f39` is that fix and is the first SHA
+on which all twelve gates pass.
+
+**No merge and no deployment were performed or authorized.**
 
 ## Workstream 10 — exact position
 
