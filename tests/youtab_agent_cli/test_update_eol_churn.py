@@ -13,9 +13,11 @@ the whole tree as modified. These tests pin down that coupling.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -59,6 +61,23 @@ def _managed_repo(tmp_path: Path, files: dict[str, bytes]) -> Path:
     for name in files:
         (repo / name).unlink()
     _git(repo, "checkout", "--", ".")
+    # Put every file back inside git's "racily clean" window.
+    #
+    # `git diff` skips the content comparison whenever a file's cached (mtime,
+    # size) still matches the index — and the churn here was written by git's
+    # own checkout, so the index recorded the churned stat. Only files whose
+    # mtime is at or after the index's own mtime get compared by content. A
+    # fast checkout puts every file in that window and the tree reads dirty by
+    # accident; under parallel load the files written early fall outside it and
+    # read clean, which surfaced as a contiguous prefix of a 1200-file tree
+    # going missing in roughly one run in five.
+    #
+    # Stamping the files after the index is written makes that deterministic
+    # without touching content: the fixture's job is to hand back a checkout
+    # whose churn is *visible*, and this is what makes it reliably so.
+    stamp = time.time() + 1
+    for name in files:
+        os.utime(repo / name, (stamp, stamp))
     return repo
 
 
