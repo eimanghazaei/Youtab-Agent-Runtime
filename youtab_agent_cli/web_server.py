@@ -68,7 +68,7 @@ from youtab_agent_cli.authz import (
     required_scope,
     resolve_principal,
 )
-from youtab_agent_cli.authz import DEVICE_MANAGE
+from youtab_agent_cli.authz import DEVICE_MANAGE, ENGINE_SELECT, PROVIDER_WRITE
 from youtab_agent_cli.authz import AUTHENTICATED as authz_authenticated
 from youtab_agent_cli.authz import PUBLIC as authz_public
 from youtab_agent_cli.authz import (
@@ -98,6 +98,8 @@ from youtab_agent_cli.config import (
     format_docker_update_message,
     recommended_update_command_for_method,
     redact_key,
+    redact_config_value,
+    _SECRET_CONFIG_KEYS,
     write_platform_config_field,
     _deep_merge,
 )
@@ -6393,7 +6395,21 @@ async def get_config(profile: Optional[str] = None):
     with _profile_scope(profile):
         config = _normalize_config_for_web(load_config())
     # Strip internal keys that the frontend shouldn't see or send back
-    return {k: v for k, v in config.items() if not k.startswith("_")}
+    served = {k: v for k, v in config.items() if not k.startswith("_")}
+    # config.yaml carries credentials, and this endpoint was handing them out
+    # verbatim: the eighteen ``auxiliary.*.api_key`` fields, ``delegation.
+    # api_key``, the ``providers``/``custom_providers`` keys, and
+    # ``dashboard.basic_auth.password`` -- the credential guarding this very
+    # dashboard. Everywhere else already redacts. GET /api/env returns only
+    # ``redact_key(value)`` and an ``is_set`` flag, and `youtab config` runs
+    # the same redactor this line now calls. The HTTP path was the exception,
+    # and config:read sits in the ordinary user baseline.
+    #
+    # Masking here is only safe because PUT refuses to persist a mask -- see
+    # _restore_masked_secrets. The dashboard read-modify-writes the whole
+    # object, so without that, saving any unrelated field would overwrite
+    # every secret with its own asterisks.
+    return redact_config_value(served)
 
 
 @app.get("/api/config/defaults")
@@ -7175,8 +7191,87 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+#: Root config keys that ARE the engine binding or a provider definition.
+#:
+#: Deliberately a named set rather than "config is privileged". Everything else
+#: in config.yaml -- approvals, command_allowlist, hooks, terminal, agent
+#: personalities -- is a person tuning their own agent inside their own
+#: workspace, and taking that away would cost capability while buying nothing.
+#: These five decide which engine answers and on whose credentials, which is
+#: the boundary POST /api/model/set, PUT /api/profiles/{}/model, PUT
+#: /api/tools/toolsets/{}/model and PUT /api/config/raw already enforce.
+_ENGINE_BINDING_CONFIG_KEYS: Final = (
+    "model",
+    "fallback_providers",
+    "providers",
+    "custom_providers",
+    "mcp_servers",
+)
+
+
+def _restore_masked_secrets(
+    incoming: Any, baseline: Any, _depth: int = 0
+) -> Any:
+    """Drop credential values that came back as the mask GET handed out.
+
+    GET /api/config masks credential-shaped values and the dashboard
+    read-modify-writes the whole object, so an untouched secret arrives here as
+    ``DASH...WORD``. Persisting that would destroy the real credential -- a
+    user changing their reasoning effort would wipe every API key they own.
+
+    A value equal to the mask of what is stored is therefore an *unchanged*
+    field, not an edit: drop it, and the deep-merge in the caller keeps the
+    stored secret. A value someone actually typed does not equal the mask of
+    the previous one, so real edits still land. Comparing against the mask
+    rather than sniffing for asterisks means a genuine secret that happens to
+    look like a mask is still written.
+    """
+    from agent.redact import mask_secret
+
+    if _depth > 20 or not isinstance(incoming, dict):
+        return incoming
+    base = baseline if isinstance(baseline, dict) else {}
+    out = {}
+    for key, value in incoming.items():
+        stored = base.get(key)
+        if (
+            isinstance(key, str)
+            and key.lower() in _SECRET_CONFIG_KEYS
+            and isinstance(value, str)
+            and isinstance(stored, str)
+            and stored
+            and value == mask_secret(stored)
+        ):
+            continue  # unchanged; let the merge keep what is on disk
+        out[key] = _restore_masked_secrets(value, stored, _depth + 1)
+    return out
+
+
+def _engine_binding_changes(incoming: dict, baseline: dict) -> list[str]:
+    """Names of engine-binding keys this payload would actually change.
+
+    Presence is not change. The dashboard PUTs the entire config on every
+    save, so ``model`` is in the body even when someone only edited their
+    theme; refusing on presence would 403 every ordinary save and cost exactly
+    the capability this audit is supposed to preserve. Comparing against the
+    stored value refuses the request that moves the binding and waves through
+    the one that carries it along untouched.
+
+    ``baseline`` must be the same merged view GET serves from, so that an
+    unmodified round-trip compares equal and a key absent from the body reads
+    as "not changed" rather than "changed to nothing".
+    """
+    return [
+        key
+        for key in _ENGINE_BINDING_CONFIG_KEYS
+        if key in incoming and incoming[key] != baseline.get(key)
+    ]
+
+
 @app.put("/api/config")
-async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
+async def update_config(
+    request: Request, body: ConfigUpdate, profile: Optional[str] = None
+):
     try:
         with _profile_scope(body.profile or profile):
             # The dashboard form is schema-driven (see CONFIG_SCHEMA). Any root
@@ -7187,6 +7282,33 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
             # frontend can only overwrite what it explicitly sends.
             existing = read_raw_config()
             incoming = _denormalize_config_from_web(body.config)
+            # The merged view, which is what GET serves and therefore what the
+            # body is a round-trip of. Comparing against the raw file instead
+            # would report a default-filled key as a change and 403 an
+            # ordinary save.
+            effective = load_config()
+            incoming = _restore_masked_secrets(incoming, effective)
+            moved = _engine_binding_changes(incoming, effective)
+            caller = _principal_for_request(request)
+            if moved and not (
+                caller.has(ENGINE_SELECT) or caller.has(PROVIDER_WRITE)
+            ):
+                # config:write is an ordinary user scope, and this endpoint
+                # takes an unconstrained dict straight into a deep-merge. That
+                # made it a fifth way to write the engine binding -- set
+                # model.provider here and the controls on /api/model/set,
+                # /api/profiles/{}/model, /api/tools/toolsets/{}/model and
+                # /api/config/raw are all bypassed without touching a route
+                # any of them guard. Refused before save_config, so a rejected
+                # request leaves the file untouched.
+                _log.warning(
+                    "PUT /api/config refused: engine binding change to %s "
+                    "without engine:select or provider:write",
+                    ", ".join(moved),
+                )
+                return JSONResponse(
+                    status_code=403, content={"detail": REFUSAL_DETAIL}
+                )
             save_config(_deep_merge(existing, incoming))
         return {"ok": True}
     except HTTPException:

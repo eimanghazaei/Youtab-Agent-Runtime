@@ -47,6 +47,8 @@ from enum import StrEnum
 from typing import Final, Iterable, Mapping
 
 from youtab_agent_cli.authz import (
+    CONFIG_READ,
+    CONFIG_WRITE,
     CREDENTIAL_READ,
     DEVICE_MANAGE,
     DEVICE_PAIR_SELF,
@@ -632,6 +634,39 @@ _BASELINE_CORRECTIONS: Final[tuple[RouteEntry, ...]] = (
             "that branch admits an arbitrary external identity and the handler "
             "raises the bar to `device:manage` for it. The route table cannot "
             "see which branch a body selects, so it grants the lower one."
+        ),
+    ),
+    RouteEntry(
+        "/api/config", "GET", RouteClass.USER_OWNED_RESOURCE,
+        scope=CONFIG_READ,
+        justification=(
+            "The caller's own settings, which is why it stays a user scope — "
+            "but `config.yaml` also holds credentials, and this endpoint "
+            "served them verbatim: the eighteen `auxiliary.*.api_key` fields, "
+            "`delegation.api_key`, the `providers`/`custom_providers` keys and "
+            "`dashboard.basic_auth.password`, the credential guarding this "
+            "dashboard. `GET /api/env` next door returns only "
+            "`redact_key(value)` and `youtab config` runs the same redactor, "
+            "so the HTTP path was the one exception. It now redacts too."
+        ),
+    ),
+    RouteEntry(
+        "/api/config", "PUT", RouteClass.USER_OWNED_RESOURCE,
+        scope=CONFIG_WRITE,
+        justification=(
+            "The fifth route found able to write an engine binding, and the "
+            "one that could not be closed by scope: it is what the dashboard "
+            "Config page saves through, so raising it would cost every "
+            "signed-in person the ability to change their own theme. "
+            "`ConfigUpdate.config` is an unconstrained dict, "
+            "`_denormalize_config_from_web` only reconstructs `model` when it "
+            "arrives as a string so a dict passes through untouched, and the "
+            "deep-merge has no allowlist. The handler therefore compares the "
+            "payload against what is stored and refuses the request that "
+            "*moves* `model`, `providers`, `custom_providers`, "
+            "`fallback_providers` or `mcp_servers` without "
+            "`engine:select`/`provider:write` — presence is not change, "
+            "because the page PUTs the whole document on every save."
         ),
     ),
     *_entries(RouteClass.TENANT_ADMIN, (

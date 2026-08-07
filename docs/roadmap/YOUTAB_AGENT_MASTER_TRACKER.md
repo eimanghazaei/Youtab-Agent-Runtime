@@ -317,6 +317,50 @@ That makes **four** routes able to write an engine binding — `/api/model/set`,
 each found separately, each a bypass alone. All four are pinned in one
 assertion so a fifth cannot be added quietly beside them.
 
+**3. `PUT /api/config` was the fifth writer, and it was already there.** The
+assertion above said four and called that complete. Opening the structured
+endpoint — the item this row listed as outstanding — found the fifth sitting
+beside them at `config:write`. `ConfigUpdate.config` is an unconstrained
+`dict`; `_denormalize_config_from_web` only reconstructs `model` when it
+arrives as a *string*, so a dict passes through untouched; `_deep_merge` has no
+allowlist. `{"config": {"model": {"provider": "..."}}}` therefore wrote the
+engine binding at an ordinary user scope.
+
+It could not be closed the way `/api/config/raw` was. This is what the
+dashboard Config page saves through, so raising the route's scope would have
+cost every signed-in person the ability to change their own theme. Two facts
+from the frontend decided the shape: `ConfigPage.tsx` PUTs the *entire* config
+it loaded, and `ReasoningPicker.tsx` read-modify-writes the whole document to
+change one key. So the handler compares the payload against what is stored and
+refuses only a request that **moves** `model`, `providers`, `custom_providers`,
+`fallback_providers` or `mcp_servers` — presence is not change. An ordinary
+save carries `model` untouched and still succeeds; a mutation is refused before
+`save_config`, leaving the file untouched.
+
+The same endpoint was also disclosing credentials. `GET /api/config` returned
+`config.yaml` with only `_`-prefixed keys stripped, which at `config:read` — an
+ordinary user scope — handed over the eighteen `auxiliary.*.api_key` fields,
+`delegation.api_key`, the `providers`/`custom_providers` keys, and
+`dashboard.basic_auth.password`, the credential guarding that same dashboard.
+`GET /api/env` next door has always returned only `redact_key(value)` and an
+`is_set` flag, and `youtab config` runs `redact_config_value` for exactly this
+reason; the HTTP path was the one exception. It now runs the same redactor.
+
+Masking alone would have been a worse bug than the leak. Because the dashboard
+read-modify-writes the whole document, an untouched secret comes back as its
+own mask, and persisting that would replace every credential with asterisks the
+first time anyone changed a theme. `PUT` therefore drops a credential value
+that equals the mask of what is stored — an unchanged field rather than an edit
+— and the merge keeps the real secret. A value someone actually typed never
+equals the mask of the previous one, so real edits still land.
+
+Not changed, and recorded as an Owner decision rather than settled quietly:
+`command_allowlist`, `approvals`, `hooks_auto_accept`, `security` and
+`code_execution` are all writable at `config:write`. They are execution-policy
+knobs for the caller's own agent in their own workspace, and withdrawing them
+would reduce agent autonomy rather than blast radius, which is the one thing
+this workstream is not permitted to do.
+
 Cleared after reading, with the property that clears them asserted rather than
 assumed: `/api/cron/fire` (fail-closed JWT verifier), the MCP OAuth callback
 (single-use state, `compare_digest`), `/auth/native/token` (PKCE
@@ -329,13 +373,15 @@ assumed: `/api/cron/fire` (fail-closed JWT verifier), the MCP OAuth callback
 
 ### Still outstanding on this row
 
-- **`GET /api/config` and `PUT /api/config`** return and write the same
-  configuration through the structured endpoint and remain at
-  `config:read`/`config:write`. Not changed here because the key handling in
-  `update_config` was not read, and guessing at it is what this audit exists to
-  avoid. Next thing to open.
+- `GET`/`PUT /api/config` — **closed**, see defect 3 above. The endpoint keeps
+  `config:read`/`config:write`; the engine-binding half is guarded in the
+  handler and the credential half is redacted.
+- The `_SECRET_CONFIG_KEYS` redactor is exact-match on key name. It catches
+  `api_key`, `token`, `password` and the rest of the usual shapes, so a future
+  credential stored under an unusual key name would not be masked. Worth a
+  sweep if new credential-bearing config keys are added.
 - The registry (`route_authz_registry.py`) remains the body-verified subset and
-  is deliberately smaller than the enforced table.
+  is deliberately smaller than the enforced table: **127 classified, 0 stale**.
 
 ## Next permitted slice
 
