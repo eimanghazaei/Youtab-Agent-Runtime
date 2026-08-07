@@ -128,7 +128,16 @@ MEMORY_READ: Final = "memory:read"
 MEMORY_WRITE: Final = "memory:write"
 TOOL_MANAGE: Final = "tool:manage"
 AUTOMATION_MANAGE: Final = "automation:manage"
+#: Administer pairings: list who is paired or pending, approve a pending
+#: request by its server-side id, revoke another identity's access, clear the
+#: pending queue. Every one of those acts on *somebody else's* access to this
+#: agent, which is why it is not in the ordinary user baseline.
 DEVICE_MANAGE: Final = "device:manage"
+#: Redeem a pairing code that was DM'd to you. Deliberately separate from
+#: :data:`DEVICE_MANAGE`: the code is never returned by any API, so possession
+#: of it *is* the proof that you are the person who asked to pair. That makes
+#: redeeming one self-service, while approving by request id is not.
+DEVICE_PAIR_SELF: Final = "device:pair:self"
 MESSAGING_MANAGE: Final = "messaging:manage"
 PLUGIN_USE: Final = "plugin:use"
 #: Operations, drain, self-update, and the generated API documentation. Not a
@@ -159,7 +168,7 @@ USER_CAPABILITIES: Final[frozenset[str]] = frozenset({
     REPO_READ, REPO_WRITE, SKILL_READ, SKILL_WRITE,
     CONFIG_READ, CONFIG_WRITE, FS_READ, FS_WRITE,
     UI_READ, UI_WRITE, MEMORY_READ, MEMORY_WRITE,
-    TOOL_MANAGE, AUTOMATION_MANAGE, DEVICE_MANAGE, MESSAGING_MANAGE,
+    TOOL_MANAGE, AUTOMATION_MANAGE, DEVICE_PAIR_SELF, MESSAGING_MANAGE,
     PLUGIN_USE,
 })
 
@@ -174,7 +183,9 @@ ROLE_SCOPES: Final[Mapping[Role, frozenset[str]]] = {
     # reachable before the flip and widens nothing: the provider, credential,
     # engine, tenant, deployment and ops scopes are all absent from it.
     Role.NORMAL_USER: USER_CAPABILITIES,
-    Role.TENANT_ADMIN: USER_CAPABILITIES | frozenset({TENANT_MANAGE_OWN}),
+    Role.TENANT_ADMIN: USER_CAPABILITIES | frozenset({
+        TENANT_MANAGE_OWN, DEVICE_MANAGE,
+    }),
     # An operator holds nothing implicitly. Their scopes come from the roster
     # entry, one capability at a time — "explicitly scoped" is the whole point
     # of the role, so a blanket grant here would defeat it.
@@ -182,12 +193,12 @@ ROLE_SCOPES: Final[Mapping[Role, frozenset[str]]] = {
     Role.YOUTAB_SUPERADMIN: USER_CAPABILITIES | frozenset({
         PROVIDER_READ, PROVIDER_WRITE, CREDENTIAL_READ, CREDENTIAL_WRITE,
         ENGINE_SELECT, TENANT_MANAGE_ANY, DEPLOYMENT_MANAGE, EVENTS_READ,
-        OPS_MANAGE,
+        OPS_MANAGE, DEVICE_MANAGE,
     }),
     Role.YOUTAB_OWNER: USER_CAPABILITIES | frozenset({
         PROVIDER_READ, PROVIDER_WRITE, CREDENTIAL_READ, CREDENTIAL_WRITE,
         ENGINE_SELECT, TENANT_MANAGE_ANY, DEPLOYMENT_MANAGE, EVENTS_READ,
-        OPS_MANAGE,
+        OPS_MANAGE, DEVICE_MANAGE,
     }),
 }
 
@@ -553,6 +564,31 @@ EXACT_ROUTE_SCOPES: Final[Mapping[str, str]] = {
     #   .../models GET returns a backend's model catalogue, priced per model.
     #   .../model  PUT persists the engine selection, the same act
     #              `/api/model/set` is held at engine:select for.
+    # Redeeming a pairing code. The rest of `/api/pairing` stays
+    # `device:manage`, because listing, revoking and clearing all act on other
+    # identities. The endpoint itself additionally requires `device:manage`
+    # when the caller approves by request id rather than by code -- the
+    # authorization layer matches on path and method and cannot see which
+    # branch a body selects, so that half of the decision has to live in the
+    # handler.
+    # The raw configuration file, read verbatim and replaced wholesale.
+    #
+    # `config.yaml` is where the engine bindings live -- `model.default`,
+    # `model.provider`, `mcp_servers` and the custom endpoint base URLs -- so
+    # `GET .../raw` hands a normal user the same private catalogue
+    # `/api/model/options` is held at `provider:read` for, plus the file's
+    # absolute host path.
+    #
+    # `PUT .../raw` is worse and is the widest bypass found on this surface:
+    # it is a full-document replacement (`merge_existing=False`), so a caller
+    # who can write it can set `model.provider` directly and defeat
+    # `engine:select`, `provider:write` and the custom-endpoint controls in one
+    # request, without ever touching the routes those scopes guard.
+    #
+    # `/api/config/defaults` and `/api/config/schema` stay public: they are the
+    # shipped defaults and the form's shape, not this deployment's values.
+    "/api/config/raw": PROVIDER_READ,
+    "/api/pairing/approve": DEVICE_PAIR_SELF,
     "/api/analytics/models": PROVIDER_READ,
     "/api/portal": PROVIDER_READ,
     "/api/ssh/ownership": OPS_MANAGE,

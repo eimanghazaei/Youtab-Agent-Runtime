@@ -862,3 +862,147 @@ class TestRoutesTheSweepFlaggedAndTheBodyCleared:
         ):
             assert required_scope(path, method) == scope, f"{method} {path}"
             assert authorize(user, path, method)
+
+
+class TestPairingCannotAuthorizeAnotherIdentity:
+    """A normal user pairs their own account and authorizes nobody else's.
+
+    `POST /api/pairing/approve` carried two authorization semantics behind one
+    path, both at `device:manage`, and `device:manage` was in the normal-user
+    baseline. So any signed-in user could approve a *stranger's* pending
+    request and admit that stranger to the agent.
+
+    The two branches are not the same act:
+
+    * the **code** is DM'd to whoever asked to pair and is never returned by
+      any endpoint (`list_pending` hashes it), so possession is proof of
+      identity — self-service;
+    * the **request id** is handed to anyone who can read `GET /api/pairing`
+      and proves nothing about the caller — administration of someone else's
+      access.
+    """
+
+    @pytest.fixture
+    def user(self):
+        return resolve_principal(user_id="someone", org_id="acme", roster={})
+
+    @pytest.fixture
+    def tenant_admin(self):
+        return Principal(user_id="ta", org_id="acme", role=Role.TENANT_ADMIN,
+                         scopes=ROLE_SCOPES[Role.TENANT_ADMIN])
+
+    def test_a_normal_user_may_redeem_a_code(self, user):
+        """Self-pairing is preserved. This is the capability half."""
+        assert required_scope("/api/pairing/approve", "POST") == authz.DEVICE_PAIR_SELF
+        assert authorize(user, "/api/pairing/approve", "POST")
+
+    def test_a_normal_user_cannot_list_who_is_paired(self, user):
+        assert not authorize(user, "/api/pairing", "GET")
+
+    def test_a_normal_user_cannot_revoke_another_identity(self, user):
+        assert not authorize(user, "/api/pairing/revoke", "POST")
+
+    def test_a_normal_user_cannot_clear_everyones_pending_queue(self, user):
+        assert not authorize(user, "/api/pairing/clear-pending", "POST")
+
+    def test_device_manage_left_the_user_baseline(self):
+        """The grant that made the whole cluster reachable is gone from it."""
+        from youtab_agent_cli.authz import USER_CAPABILITIES
+
+        assert authz.DEVICE_MANAGE not in USER_CAPABILITIES
+        assert authz.DEVICE_PAIR_SELF in USER_CAPABILITIES
+
+    def test_a_tenant_admin_administers_pairings(self, tenant_admin):
+        """Restricting must not orphan the capability: somebody still holds it."""
+        for path in ("/api/pairing", "/api/pairing/revoke",
+                     "/api/pairing/clear-pending"):
+            assert authorize(tenant_admin, path, "POST")
+
+    def test_the_owner_administers_pairings_too(self):
+        owner = Principal(user_id="o", org_id="", role=Role.YOUTAB_OWNER,
+                          scopes=ROLE_SCOPES[Role.YOUTAB_OWNER])
+        assert authorize(owner, "/api/pairing/revoke", "POST")
+
+    def test_the_handler_raises_the_bar_on_the_request_id_branch(self):
+        """The half the route table cannot express.
+
+        `required_scope` matches path and method; it cannot see which branch a
+        body selects. So the handler itself must refuse the request-id path to
+        a caller without `device:manage`, or the split is cosmetic.
+        """
+        import inspect
+
+        from youtab_agent_cli.web_server import approve_pairing
+
+        source = inspect.getsource(inspect.unwrap(approve_pairing))
+        assert "by_request_id and not _principal_for_request(request).has(DEVICE_MANAGE)" in source
+        assert source.index("DEVICE_MANAGE") < source.index("store.approve_request"), (
+            "the scope check must precede the store call, not follow it"
+        )
+
+    def test_the_code_is_never_returned_by_the_listing(self):
+        """What makes the code path safe, asserted rather than assumed."""
+        import inspect
+
+        from gateway.pairing import PairingStore
+
+        doc = inspect.getdoc(PairingStore.list_pending) or ""
+        assert "never returned" in doc
+        source = inspect.getsource(PairingStore.list_pending)
+        assert '"code"' not in source
+
+
+class TestRawConfigIsNotUserCapability:
+    """The widest bypass found on this surface.
+
+    `config.yaml` holds the engine bindings — `model.default`,
+    `model.provider`, `mcp_servers`, custom endpoint base URLs. `GET
+    /api/config/raw` returns that file verbatim plus its absolute host path,
+    and `PUT /api/config/raw` replaces it wholesale (`merge_existing=False`).
+
+    At `config:read`/`config:write` — both in the normal-user baseline — a
+    normal user could set `model.provider` by writing YAML and defeat
+    `engine:select`, `provider:write` and the custom-endpoint controls in one
+    request, without touching any route those scopes guard.
+    """
+
+    @pytest.fixture
+    def user(self):
+        return resolve_principal(user_id="someone", org_id="acme", roster={})
+
+    def test_reading_the_raw_config_needs_provider_read(self, user):
+        assert required_scope("/api/config/raw", "GET") == authz.PROVIDER_READ
+        assert not authorize(user, "/api/config/raw", "GET")
+
+    def test_replacing_the_raw_config_needs_provider_write(self, user):
+        assert required_scope("/api/config/raw", "PUT") == authz.PROVIDER_WRITE
+        assert not authorize(user, "/api/config/raw", "PUT")
+
+    def test_the_pre_login_config_routes_stay_public(self):
+        """Restricting the file must not cost the login screen its bootstrap."""
+        assert required_scope("/api/config/defaults", "GET") == PUBLIC
+        assert required_scope("/api/config/schema", "GET") == PUBLIC
+
+    def test_it_is_a_full_document_replacement(self):
+        """Why masking is not an option here, asserted from the body."""
+        import inspect
+
+        from youtab_agent_cli.web_server import update_config_raw
+
+        assert "merge_existing=False" in inspect.getsource(
+            inspect.unwrap(update_config_raw))
+
+    def test_every_route_that_can_write_an_engine_binding_is_privileged(self):
+        """The engine binding has four writers, not three.
+
+        Each was found separately and each would have been a bypass alone.
+        Pinning them together is what stops a fifth being added beside them.
+        """
+        privileged = {authz.ENGINE_SELECT, authz.PROVIDER_WRITE}
+        for path, method in (
+            ("/api/model/set", "POST"),
+            ("/api/profiles/abc/model", "PUT"),
+            ("/api/tools/toolsets/web/model", "PUT"),
+            ("/api/config/raw", "PUT"),
+        ):
+            assert required_scope(path, method) in privileged, f"{method} {path}"

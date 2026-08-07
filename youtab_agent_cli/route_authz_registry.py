@@ -48,6 +48,8 @@ from typing import Final, Iterable, Mapping
 
 from youtab_agent_cli.authz import (
     CREDENTIAL_READ,
+    DEVICE_MANAGE,
+    DEVICE_PAIR_SELF,
     OPS_MANAGE,
     PROFILE_READ,
     CREDENTIAL_WRITE,
@@ -594,6 +596,55 @@ _PROFILE_USER_OWNED: Final[tuple[RouteEntry, ...]] = _entries(
 # them.
 # ---------------------------------------------------------------------------
 _BASELINE_CORRECTIONS: Final[tuple[RouteEntry, ...]] = (
+    RouteEntry(
+        "/api/config/raw", "GET", RouteClass.OWNER_SUPERADMIN,
+        scope=PROVIDER_READ,
+        justification=(
+            "Returns `config.yaml` verbatim plus its absolute host path. That "
+            "file holds the engine bindings — `model.default`, "
+            "`model.provider`, `mcp_servers`, custom endpoint base URLs — so "
+            "it is the same private catalogue `/api/model/options` is held at "
+            "`provider:read` for, handed over as a whole document."
+        ),
+    ),
+    RouteEntry(
+        "/api/config/raw", "PUT", RouteClass.OWNER_SUPERADMIN,
+        scope=PROVIDER_WRITE,
+        justification=(
+            "Full-document replacement of `config.yaml` "
+            "(`merge_existing=False`), and the widest bypass found on this "
+            "surface: a caller who can write it sets `model.provider` "
+            "directly, defeating `engine:select`, `provider:write` and the "
+            "custom-endpoint controls in one request without touching any "
+            "route those scopes guard. It is the fourth route found able to "
+            "write an engine binding."
+        ),
+    ),
+    RouteEntry(
+        "/api/pairing/approve", "POST", RouteClass.USER_OWNED_RESOURCE,
+        scope=DEVICE_PAIR_SELF,
+        justification=(
+            "Two authorization semantics behind one path. The *code* is DM'd "
+            "to whoever asked to pair and is never returned by any endpoint — "
+            "`list_pending` hashes it — so possession proves identity and "
+            "redeeming one is self-service. The *request id* is handed to "
+            "anyone who can read `GET /api/pairing` and proves nothing, so "
+            "that branch admits an arbitrary external identity and the handler "
+            "raises the bar to `device:manage` for it. The route table cannot "
+            "see which branch a body selects, so it grants the lower one."
+        ),
+    ),
+    *_entries(RouteClass.TENANT_ADMIN, (
+        ("/api/pairing", "GET"),
+        ("/api/pairing/revoke", "POST"),
+        ("/api/pairing/clear-pending", "POST"),
+    ), scope=DEVICE_MANAGE,
+       justification=(
+           "Listing who is paired or pending, revoking another identity's "
+           "access, and clearing everyone's pending queue all act on somebody "
+           "else's access to this agent rather than the caller's own, so "
+           "`device:manage` left the ordinary user baseline."
+       )),
     RouteEntry(
         "/api/tools/toolsets/{}/env", "PUT", RouteClass.OWNER_SUPERADMIN,
         scope=CREDENTIAL_WRITE,

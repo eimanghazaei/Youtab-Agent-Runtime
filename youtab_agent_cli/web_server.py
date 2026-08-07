@@ -68,6 +68,7 @@ from youtab_agent_cli.authz import (
     required_scope,
     resolve_principal,
 )
+from youtab_agent_cli.authz import DEVICE_MANAGE
 from youtab_agent_cli.authz import AUTHENTICATED as authz_authenticated
 from youtab_agent_cli.authz import PUBLIC as authz_public
 from youtab_agent_cli.authz import (
@@ -12487,7 +12488,27 @@ async def list_pairing(profile: Optional[str] = None):
 
 
 @app.post("/api/pairing/approve")
-async def approve_pairing(body: PairingApprove):
+async def approve_pairing(request: Request, body: PairingApprove):
+    """Approve a pairing, by redeemed code or by administrative request id.
+
+    Two authorization semantics behind one path, which is why half the decision
+    is here rather than in the route table.
+
+    The *code* is DM'd to the person who asked to pair and is never returned by
+    any endpoint -- ``list_pending`` hashes it. Possession is therefore proof
+    that the caller is that person, so redeeming one is self-service and
+    ``device:pair:self`` is the right bar.
+
+    The *request id* is handed to anyone who can read ``GET /api/pairing``. It
+    proves nothing about who is calling, so approving by request id admits an
+    arbitrary external identity to this agent. That is administration of
+    somebody else's access and is held to ``device:manage``, which the ordinary
+    user baseline does not carry.
+
+    The route table matches on path and method and cannot see which branch a
+    body selects, so it grants the lower bar and this check raises the higher
+    one when the request-id branch is taken.
+    """
     store = _pairing_store(body.profile)
     platform = (body.platform or "").lower().strip()
     # `request_id` is what an admin surface sends after listing pending
@@ -12501,6 +12522,11 @@ async def approve_pairing(body: PairingApprove):
         )
 
     by_request_id = bool(body.request_id) or store.looks_like_request_id(target)
+    if by_request_id and not _principal_for_request(request).has(DEVICE_MANAGE):
+        # Refused before the store is touched, and with the same shape as any
+        # other scope refusal: approving by id is not this caller's to do, and
+        # saying more would tell them whether the id they guessed exists.
+        return JSONResponse(status_code=403, content={"detail": REFUSAL_DETAIL})
     if by_request_id:
         result = store.approve_request(platform, target)
     else:

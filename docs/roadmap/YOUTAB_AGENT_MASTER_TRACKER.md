@@ -279,13 +279,63 @@ builder ever returns a secret value (`kind == "secret"` is blanked on both the
 declared and undeclared paths). That masking is now asserted with a real secret
 in the input.
 
+### Cluster audit — all clusters now read
+
+`/api/cron` (13), `/api/messaging` (11), `/api/mcp`, `/api/config` (6),
+`/auth/native` (3), `/api/pairing` (4), `/api/webhooks` (5), `/api/learning`
+(4), `/api/curator` (3), `/api/skills` (12), `/api/dashboard/agent-plugins`
+(4). Two defects found, both fixed here.
+
+**1. `/api/pairing/approve` let a normal user authorize another identity.**
+One path, two authorization semantics, both at `device:manage`, which was in
+the normal-user baseline:
+
+| branch | proof of identity | correct bar |
+|---|---|---|
+| `code` | DM'd to whoever asked to pair, never returned by any endpoint (`list_pending` hashes it) — possession *is* the proof | `device:pair:self` |
+| `request_id` | handed to anyone who can read `GET /api/pairing`; proves nothing about the caller | `device:manage` |
+
+`device:manage` left the user baseline and now belongs to Tenant Admin,
+Superadmin and Owner; `device:pair:self` replaces it there so self-pairing is
+preserved. Listing, revoking and clearing the pending queue all act on someone
+else's access and are `device:manage`. The route table matches path and method
+and cannot see which branch a body selects, so the handler raises the bar
+itself for the request-id branch — *before* touching the store, so a refusal
+never reveals whether a guessed id exists.
+
+**2. `/api/config/raw` was the widest bypass on the surface.** `config.yaml`
+holds the engine bindings — `model.default`, `model.provider`, `mcp_servers`,
+custom endpoint base URLs. `GET` returned it verbatim plus its absolute host
+path at `config:read`; `PUT` replaced it wholesale (`merge_existing=False`) at
+`config:write`. Both in the user baseline, so a normal user could set
+`model.provider` by writing YAML and defeat `engine:select`, `provider:write`
+and the custom-endpoint controls in one request without touching any route
+those scopes guard. Now `provider:read` / `provider:write`.
+
+That makes **four** routes able to write an engine binding — `/api/model/set`,
+`/api/profiles/{}/model`, `/api/tools/toolsets/{}/model`, `/api/config/raw` —
+each found separately, each a bypass alone. All four are pinned in one
+assertion so a fifth cannot be added quietly beside them.
+
+Cleared after reading, with the property that clears them asserted rather than
+assumed: `/api/cron/fire` (fail-closed JWT verifier), the MCP OAuth callback
+(single-use state, `compare_digest`), `/auth/native/token` (PKCE
+`SHA256(verifier) == challenge`, single-use code), `/api/messaging/platforms`
+(`redact_key(value)`, never the raw token), `/api/memory/providers/{}/config`
+(secret fields blanked on both payload paths), `/api/mcp/oauth/flows/{}`
+(snapshot carries no token), `/api/learning` (the user's own skills and memory),
+`/api/skills` (agent capability, including `hub/install`), and
+`/api/dashboard/agent-plugins` (plugin lifecycle).
+
 ### Still outstanding on this row
 
-- **The audit is not finished.** 233 baseline-reachable route+methods, 100
-  flagged by the sweep, of which the highest-signal matches have been opened.
-  The remainder of the flagged list is unread.
-- Cluster scopes for routes outside the read clusters remain unverified against
-  their bodies.
+- **`GET /api/config` and `PUT /api/config`** return and write the same
+  configuration through the structured endpoint and remain at
+  `config:read`/`config:write`. Not changed here because the key handling in
+  `update_config` was not read, and guessing at it is what this audit exists to
+  avoid. Next thing to open.
+- The registry (`route_authz_registry.py`) remains the body-verified subset and
+  is deliberately smaller than the enforced table.
 
 ## Next permitted slice
 
