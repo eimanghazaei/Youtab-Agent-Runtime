@@ -16,12 +16,18 @@ than no tracker, because it reads as complete.
 | Branch | `feat/youtab-agent-runtime-on-main` |
 | PR | **#10** (OPEN, draft) |
 | Base | `main@cc4cab2f592e60a197e796506de9168f74baf3ea` |
-| PR head | `62a221f396e981cf53740964855b17dbe0a618b8` |
+| Last CI-verified SHA | **`210c173eadccb214e76e842af5cc3480c7e3fe49`** — see below |
+| PR head | this file's own commit, one docs-only commit ahead of it |
 | **Deployed SHA (protected pre-production)** | **`64b32afb68dc022fc463c72d6e024054fd816e4c`** |
 
 The deployed SHA is tracked separately from the PR head on purpose. They are
 not the same thing and have not been the same thing for the whole of this
 branch; conflating them is how a "green PR" gets described as shipped.
+
+The PR head is named by description rather than by SHA, because a commit that
+records the verified SHA necessarily advances past it. Writing a literal SHA
+there would make this table wrong the instant it was written. The verified SHA
+below is a fact about a completed run; the head is a moving target.
 
 **No merge and no deployment are authorized.**
 
