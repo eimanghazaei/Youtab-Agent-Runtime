@@ -87,27 +87,31 @@ different router than production builds.
 
 | | |
 |---|---|
-| SHA | **`62a221f396e981cf53740964855b17dbe0a618b8`** |
-| Workflow run | `31117452085` |
-| `python-security` | **success** (16:06:34Z) |
-| `javascript` | **success** (16:07:59Z) |
+| SHA | **`210c173eadccb214e76e842af5cc3480c7e3fe49`** (current PR #10 head) |
+| Workflow run | `31149976292` (run 48) |
+| `python-security` | **success** — gates step ran 11m49s |
+| `javascript` | **success** |
 | Youtab gates | **12 of 12 PASS**, including `router-policy` and `branding` |
-| Test suite | **545 files, 4282 tests passed, 0 failed** |
 
-The gate suites ran; they were not merely collected:
+The prior checkpoint `62a221f39` is also green on its own run (`31117452085`):
+545 files, 4282 tests passed, 0 failed, with `test_router_policy_gate.py` (14),
+`test_authorization_is_fail_closed.py` (137) and `test_route_authz_registry.py`
+(35) named in the log, so "the gate suites ran" is checkable rather than
+asserted. `210c173ea` differs from it by this file alone.
 
-| file | result |
-|---|---|
-| `test_router_policy_gate.py` | 14 passed |
-| `test_authorization_is_fail_closed.py` | 137 passed |
-| `test_route_authz_registry.py` | 35 passed |
-| `test_authz_separation.py` | ran (12.95s) |
+`fa28c6d13` is recorded as **not** green: its run failed the branding gate,
+because the comment added to explain the codex rebrand inconsistency reproduced
+the retired brand token while describing it. It is the SHA that looks like the
+finish line and is not.
 
-`fa28c6d13` was **not** green and must not be recorded as such: its run failed
-the branding gate, because the comment added to explain the codex rebrand
-inconsistency reproduced the retired brand token in a tracked file — the exact
-thing that gate exists to catch. `62a221f39` is that fix and is the first SHA
-on which all twelve gates pass.
+Run 48 was triggered by `workflow_dispatch` rather than `pull_request`, because
+the `pull_request` run for this SHA (`31119158285`) wedged during a GitHub
+Actions incident: five attempts produced no gate result — two died at
+`Failed to resolve action download info`, three never had a runner allocated
+(`runner_id: 0`, zero steps) — and the run then refused both `cancel`
+("not yet queued") and `rerun` ("already running"). The dispatched run executes
+the identical tree at the identical SHA; it may not tick PR #10's *required*
+check boxes, which are produced by the `pull_request` event.
 
 **No merge and no deployment were performed or authorized.**
 
