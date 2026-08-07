@@ -295,6 +295,19 @@ class TestExtractHttpStatus:
 class TestManagedGatewayErrorTranslation:
     """4xx from the Youtab managed gateway should be translated to a user-actionable message."""
 
+    @pytest.fixture(autouse=True)
+    def _no_sdk_needed(self, image_tool, monkeypatch):
+        """Both submit paths resolve the FAL SDK before this class's mocks bite.
+
+        `_submit_fal_request` calls `_load_fal_client()` up front, and the
+        managed path wraps the SDK too, so the real optional `fal-client`
+        extra was required to reach the error-translation logic under test.
+        On a host without it (and with lazy installs disabled) that raised
+        ImportError before any assertion ran. Everything downstream is already
+        mocked here, so the loader has nothing left to do.
+        """
+        monkeypatch.setattr(image_tool, "_load_fal_client", lambda: None)
+
     def test_4xx_translates_to_value_error_with_remediation(self, image_tool, monkeypatch):
         """403 from managed gateway → ValueError mentioning FAL_KEY + youtab tools."""
         from unittest.mock import MagicMock

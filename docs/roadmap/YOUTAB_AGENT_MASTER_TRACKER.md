@@ -427,6 +427,59 @@ None was skipped, xfailed, deleted or weakened.
 | 10 | `test_systemd_restart_gracefully...` | **Test.** Depended on the host having a live user-systemd session; without one the real code correctly reaches for `loginctl enable-linger`, which the fake `subprocess.run` did not model. The preflight is stubbed, like its siblings already were. |
 | 11 | `test_system_unit_includes_local_bin_in_path` | **Test.** Tripped the deliberate refusal to install the gateway system service as root — a control, not a bug, and separately pinned. Now names the service user via `run_as_user`, that control's own documented override. |
 
+### `tests/tools` — 39 failures, and the coverage gap they were hiding
+
+`tests/tools` was never in the CI gate. It is now, because the gap was not
+theoretical: the `tools/approval.py` home-fold repair — without which
+`/root/.ssh/authorized_keys` never folded to `~/.ssh/authorized_keys` and every
+dangerous-command pattern anchored on `~/` stopped firing on a root install —
+is proved by `tests/tools/test_approval.py`, and nothing in CI ran it. Nor the
+file-write safety, browser secret-exfil or yolo-mode suites.
+
+The count was 39, not the ~18 a partial run suggested. **38 are fixed; one is
+an asset the repository does not contain.**
+
+| cause | files | tests | verdict |
+|---|---|---|---|
+| Optional extra absent + lazy installs disabled | daytona, image_generation, managed_media, modal, video_surface, web_tools_config | 30 | **Test.** Each stubbed the SDK into `sys.modules`, but `lazy_deps.ensure()` decides from installed *distribution metadata* (`importlib.metadata.version`), which no `sys.modules` stub can satisfy. So the real gate ran and refused on every hardened or offline host. The install policy is not what any of them is testing. |
+| `ssh`/`scp` not on PATH | ssh_environment | 5 | **Test.** `SSHEnvironment.__init__` fails fast without an OpenSSH client, which is right; these tests construct it only to inspect the argv and control-socket path it computes, and never connect. |
+| `man` "present" but non-functional | execution_flag_detection | 2 | **Test guard.** Debian's minimized images — which this project's own runtime images derive from — ship `/usr/bin/man` as a shell stub that prints a notice and exits 0, ignoring every argument. `shutil.which` found it, so the guard passed, no pager was ever invoked, and a missing payload marker was reported as a failure of the *approval grammar*. The probe now asks `man -w`: real man prints a path, the stub prints prose. |
+| `chmod(0o000)`/`0o500` under uid 0 | lazy_deps_durable_target | 1 | **Test.** Root ignores the mode bits, so the directory was created anyway and the assertion failed while the product behaved correctly. Now induced by a non-directory parent (ENOTDIR, every uid) plus an injected `PermissionError` for the read-only-mount case the docstring names — two tests where there was one. |
+| Bundled wake-word model absent | wake_word | 1 | **Product — open.** See below. |
+
+No test was skipped, xfailed, deleted or weakened to reach that. The `man`
+change corrects a guard that was asking the wrong question; the assertion it
+guards is untouched and still runs wherever real man exists.
+
+### Open defect: the "hey youtab" wake-word model does not ship
+
+`tools/wakewords/` contains only `README.md`. `origin/main` carries
+`hey_hermes.onnx` / `.tflite`; the rebrand renamed the *expected* filename to
+`hey_youtab.*`, but a text rebrand cannot rename a trained model, so the
+binaries were dropped in the transplant. The docs state the default phrase is
+"hey youtab" and that "a model for it ships with Youtab". It does not, so the
+default detector cannot load at all.
+
+This cannot be closed by renaming `main`'s binaries in: an openWakeWord model
+only detects the phrase it was trained on, so that would ship a detector
+answering to the retired brand while the docs promise otherwise — and
+correcting the docs to match would reintroduce the retired brand and trip the
+branding gate. Owner direction is to produce a genuinely trained model.
+
+**External blocker, measured in this environment:** no training pipeline exists
+in the repository (the README records the model as trained externally with
+upstream's openWakeWord pipeline); `openwakeword` is not installed and lazy
+installs are disabled; `piper_phonemize`, which that pipeline uses to synthesise
+positive samples, is absent; and there is no GPU. Producing a qualified
+artifact also needs licensed negative/background datasets and false-accept /
+false-reject measurement against real audio, none of which can be sourced here.
+
+`test_bundled_hey_youtab_model_ships_on_disk` is therefore left **red and
+unmodified** as the standing signal, and deselected in the CI gate alone so the
+other 21 tests in that file and the rest of `tests/tools` can be required. The
+feature must not be described as working until trained assets exist and pass
+real audio tests. Everything else on this row is independent of it.
+
 ### Still outstanding on this row
 
 - `GET`/`PUT /api/config` — **closed**, see defects 3–5 above.

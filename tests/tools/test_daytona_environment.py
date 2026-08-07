@@ -43,6 +43,15 @@ def _patch_daytona_imports(monkeypatch):
     daytona_mod.SandboxState = _SandboxState
 
     monkeypatch.setitem(__import__("sys").modules, "daytona", daytona_mod)
+    # Neutralise the lazy-install gate as well as the import. Injecting the
+    # module into sys.modules is not enough: DaytonaEnvironment.__init__ calls
+    # lazy_deps.ensure() first, and that decides from installed *distribution
+    # metadata* (importlib.metadata.version), which a sys.modules stub can
+    # never satisfy. So the check ran for real and refused on any host where
+    # the optional `daytona` extra is absent and lazy installs are disabled —
+    # i.e. every hardened or offline machine, including CI. The subject here is
+    # this backend's own logic, not the install policy.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
     return daytona_mod
 
 

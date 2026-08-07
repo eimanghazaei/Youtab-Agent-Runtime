@@ -59,6 +59,12 @@ def matrix_env(tmp_path, monkeypatch):
     fake_fal.submit = _submit  # type: ignore
 
     monkeypatch.setitem(__import__("sys").modules, "fal_client", fake_fal)
+    # …and the lazy-install gate in front of that import. ensure() decides from
+    # installed distribution metadata, not sys.modules, so the stub above never
+    # satisfied it: on a host without the optional `fal-client` extra the
+    # plugin correctly returned its `missing_dependency` error response and
+    # every routing assertion in this matrix failed for the wrong reason.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
 
     # httpx stub for xAI
     import httpx

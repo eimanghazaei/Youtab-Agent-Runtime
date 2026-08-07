@@ -121,6 +121,15 @@ def _install_modal_test_modules(
         _save_json_store=_save_json_store,
         _file_mtime_key=_file_mtime_key,
     )
+    # The lazy-install gate, stubbed alongside the rest of the fake tree.
+    # modal.py calls ensure() before importing the SDK, and ensure() decides
+    # from installed distribution metadata rather than sys.modules — so the
+    # injected `modal` module below does not satisfy it, and the real check
+    # refused on any host without the optional extra and with lazy installs
+    # disabled. The subject here is snapshot isolation, not install policy.
+    sys.modules["tools.lazy_deps"] = types.SimpleNamespace(
+        ensure=lambda *a, **k: None,
+    )
     sys.modules["tools.interrupt"] = types.SimpleNamespace(is_interrupted=lambda: False)
     sys.modules["tools.credential_files"] = types.SimpleNamespace(
         get_credential_file_mounts=lambda: [],

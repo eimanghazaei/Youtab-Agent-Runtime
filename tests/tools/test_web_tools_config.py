@@ -272,8 +272,20 @@ class TestParallelClientConfig:
         fake_parallel.AsyncParallel = AsyncParallel
         sys.modules["parallel"] = fake_parallel
 
+        # The lazy-install gate runs before that import and decides from
+        # installed distribution metadata, which the sys.modules stub above
+        # cannot satisfy — so on a host without the optional `parallel-web`
+        # extra it refused and these tests never reached the client they were
+        # written to check. Saved and restored rather than monkeypatched
+        # because this class uses setup/teardown_method.
+        import tools.lazy_deps
+        self._real_ensure = tools.lazy_deps.ensure
+        tools.lazy_deps.ensure = lambda *a, **k: None
+
     def teardown_method(self):
+        import tools.lazy_deps
         import tools.web_tools
+        tools.lazy_deps.ensure = self._real_ensure
         tools.web_tools._parallel_client = None
         os.environ.pop("PARALLEL_API_KEY", None)
         sys.modules.pop("parallel", None)

@@ -37,6 +37,14 @@ class TestBuildSSHCommand:
 
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
+        # SSHEnvironment.__init__ fails fast when ssh/scp are not on PATH.
+        # That is right for the product and wrong as a precondition here:
+        # these tests construct the object only to inspect values it computes
+        # (the argv it would run, the control-socket path it would use) and
+        # never open a connection, so requiring an installed OpenSSH client
+        # made the assertions unreachable on any host without one.
+        monkeypatch.setattr("tools.environments.ssh._ensure_ssh_available",
+                            lambda: None)
         monkeypatch.setattr("tools.environments.ssh.subprocess.run",
                             lambda *a, **k: subprocess.CompletedProcess([], 0))
         monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",
@@ -70,6 +78,14 @@ class TestControlSocketPath:
 
     @pytest.fixture(autouse=True)
     def _mock_connection(self, monkeypatch):
+        # SSHEnvironment.__init__ fails fast when ssh/scp are not on PATH.
+        # That is right for the product and wrong as a precondition here:
+        # these tests construct the object only to inspect values it computes
+        # (the argv it would run, the control-socket path it would use) and
+        # never open a connection, so requiring an installed OpenSSH client
+        # made the assertions unreachable on any host without one.
+        monkeypatch.setattr("tools.environments.ssh._ensure_ssh_available",
+                            lambda: None)
         monkeypatch.setattr("tools.environments.ssh.subprocess.run",
                             lambda *a, **k: subprocess.CompletedProcess([], 0))
         monkeypatch.setattr("tools.environments.ssh.subprocess.Popen",

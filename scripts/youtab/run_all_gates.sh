@@ -93,9 +93,32 @@ begin unit-integration-e2e
 # `run_tests.sh` runs each file in its own subprocess, which is what makes the
 # widening viable: the inherited suite's failures were overwhelmingly
 # cross-test pollution and disappear under per-file isolation.
+# `tests/tools` joins them. It was the largest body of production-relevant
+# coverage CI did not run, and that gap was not theoretical: the home-fold
+# repair in `tools/approval.py` — without which `/root/.ssh/authorized_keys`
+# never folded to `~/.ssh/authorized_keys` and every dangerous-command pattern
+# anchored on `~/` stopped firing for a root install — is proved by
+# `tests/tools/test_approval.py`, which nothing in CI executed. So are the
+# file-write safety, browser secret-exfil and yolo-mode suites.
+#
+# The one deselection is an asset, not a flake. `tools/wakewords/` ships no
+# `hey_youtab.onnx`/`.tflite`: the rebrand renamed the expected filename but a
+# text rebrand cannot rename a trained model, so the binaries were dropped in
+# the transplant. An openWakeWord model only detects the phrase it was trained
+# on, so this cannot be satisfied by renaming another model in — it needs a
+# genuinely trained artifact, and this environment has no training pipeline in
+# the repo, no `openwakeword`, no Piper TTS for synthetic positives, and no
+# GPU. The test is left RED and unmodified as the standing signal; see the
+# Master Tracker for the blocker. Everything else in that file still runs.
+#
+# Deselected by name rather than `--deselect <nodeid>`: this runner splits a
+# value flag's argument off and re-reads the `::` half as `-k`, so the nodeid
+# form breaks every file in the run. The name is unique across the tree.
 scripts/run_tests.sh \
   tests/youtab_runtime \
   tests/youtab_agent_cli \
+  tests/tools \
+  -k 'not test_bundled_hey_youtab_model_ships_on_disk' \
   -q | tee "$evidence_dir/unit-integration-e2e.log"
 record unit-integration-e2e $?
 

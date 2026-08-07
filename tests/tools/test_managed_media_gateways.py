@@ -74,6 +74,15 @@ def _install_fake_tools_package():
             get_session_info=lambda: {},
         )
     )
+    # The lazy-install gate. `_install_fake_fal_client` puts a stand-in in
+    # sys.modules, but ensure() decides from installed distribution metadata,
+    # which no sys.modules stub can satisfy — so the real gate ran and refused
+    # wherever the optional `fal-client` extra is absent and lazy installs are
+    # disabled. These tests are about which gateway origin and token the
+    # request carries, not about installing anything.
+    sys.modules["tools.lazy_deps"] = types.SimpleNamespace(
+        ensure=lambda *a, **k: None,
+    )
     sys.modules["tools.managed_tool_gateway"] = _load_tool_module(
         "tools.managed_tool_gateway",
         "managed_tool_gateway.py",
