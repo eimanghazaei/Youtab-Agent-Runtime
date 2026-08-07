@@ -19,9 +19,11 @@ Two layers of coverage:
 from __future__ import annotations
 
 import http.server
+import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -47,9 +49,59 @@ class TestNoninteractiveGitEnv:
         env = noninteractive_git_env()
         assert env["YOUTAB_AGENT_TEST_SENTINEL"] == "xyz"
         assert env["GIT_TERMINAL_PROMPT"] == "0"
-        # Never mutates the live process environment.
-        assert os.environ.get("GIT_TERMINAL_PROMPT") != "0" or True
-        assert "GCM_INTERACTIVE" not in os.environ or os.environ["GCM_INTERACTIVE"] == env["GCM_INTERACTIVE"]
+
+    def test_never_mutates_the_live_process_environment(self):
+        """Run in a fresh interpreter, deliberately.
+
+        The two checks this replaces did not test this at all: one ended in
+        `or True` and so asserted nothing, and the other compared the *ambient*
+        GCM_INTERACTIVE against the value the helper forces -- so it failed on
+        any host that presets the variable (a container exporting `never`
+        against the canonical `Never`) while never detecting a mutation.
+
+        An in-process snapshot does not work either, and that is not obvious: a
+        leak is idempotent, so a call earlier in the same session has already
+        made it and the "before" snapshot contains it too. Nor is a plain
+        subprocess enough — it inherits the parent's environment, so a call
+        made earlier in *this* pytest session pollutes the child's baseline the
+        same way. Hence the deliberately minimal env below: whatever the helper
+        writes cannot already be there.
+        """
+        repo = Path(__file__).resolve().parents[2]
+        keep = ("PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", "VIRTUAL_ENV")
+        pristine = {k: v for k, v in os.environ.items() if k in keep}
+        pristine["PYTHONPATH"] = str(repo)
+
+        probe = subprocess.run(
+            [
+                sys.executable, "-c",
+                "import json, os\n"
+                "from youtab_agent_cli._subprocess_compat import noninteractive_git_env\n"
+                "before = dict(os.environ)\n"
+                "noninteractive_git_env()\n"
+                "after = dict(os.environ)\n"
+                "print(json.dumps(sorted(\n"
+                "    set(before).symmetric_difference(after)\n"
+                "    | {k for k in before.keys() & after.keys() if before[k] != after[k]}\n"
+                ")))\n",
+            ],
+            cwd=repo,
+            env=pristine,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(probe.stdout.strip()) == []
+
+    def test_forces_its_own_values_over_a_preset_environment(self):
+        """The kill switches are not advisory: an inherited value is replaced.
+
+        A host that exports GCM_INTERACTIVE=auto must still get a git
+        invocation that cannot pop a credential dialog.
+        """
+        env = noninteractive_git_env({"GCM_INTERACTIVE": "auto", "GIT_TERMINAL_PROMPT": "1"})
+        assert env["GCM_INTERACTIVE"] == "Never"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
 
 
     def test_overrides_explicit_prompt_enable(self):

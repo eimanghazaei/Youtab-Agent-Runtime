@@ -192,17 +192,43 @@ class TestUnreadableExistingConfig:
         the require_readable_config_before_write guard before the write is a
         belt-and-suspenders backstop for the read-then-write window. Either way
         the original bytes must survive."""
+        import builtins
+        import io
         import os
+        from unittest import mock
 
         issues = find_retired_xai_refs(_parse(trap_config))
         assert issues  # sanity: trap_config has retired refs
         original = trap_config.read_bytes()
 
-        os.chmod(trap_config, 0o000)
-        try:
+        # chmod(0o000) is how a real operator locks a file, but it is not a
+        # valid way to *simulate* one here: uid 0 bypasses the permission bits
+        # entirely, so under root (the default in this project's containers)
+        # the file stayed readable, apply_migration succeeded, and the test
+        # asserted nothing while still reporting green. The denial is injected
+        # at the open() boundary instead, which holds for every uid and on
+        # Windows, where the bits mean something different again.
+        real_open = io.open
+
+        def deny_this_file(file, *args, **kwargs):
+            try:
+                same = os.fspath(file) == os.fspath(trap_config)
+            except TypeError:  # an already-open fd, never our path
+                same = False
+            if same:
+                raise PermissionError(13, "Permission denied", str(trap_config))
+            return real_open(file, *args, **kwargs)
+
+        # Both chokepoints: bare open() resolves through builtins, while
+        # Path.open() calls io.open directly and would otherwise slip past.
+        with mock.patch.object(io, "open", deny_this_file), \
+                mock.patch.object(builtins, "open", deny_this_file):
+            # Sanity: the denial is actually in force. Without this the test
+            # could pass vacuously again if the patch ever stopped biting.
+            with pytest.raises(PermissionError):
+                trap_config.open("r", encoding="utf-8")
+
             with pytest.raises((PermissionError, RuntimeError, OSError)):
                 apply_migration(trap_config, issues, backup=False)
-        finally:
-            os.chmod(trap_config, 0o644)
 
         assert trap_config.read_bytes() == original

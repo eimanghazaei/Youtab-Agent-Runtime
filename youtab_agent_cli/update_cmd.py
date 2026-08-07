@@ -3073,15 +3073,28 @@ def _normalize_managed_eol(git_cmd, repo_root):
     probe = git_cmd + ["-c", "core.autocrlf=false"]
 
     def _dirty(*extra):
+        # --numstat, not --name-only. --name-only decides from the blob ids and
+        # never runs the text comparison, so --ignore-cr-at-eol has no effect on
+        # it: _eol_only() subtracted an identical set from itself, came up empty
+        # every time, the repair below never ran -- and the pin was written
+        # anyway, producing exactly the dirty checkout this function exists to
+        # prevent. --numstat, --stat and --quiet all honour the ignore flags.
         out = subprocess.run(
-            probe + ["diff", "-z", "--name-only", *extra],
+            probe + ["diff", "-z", "--numstat", "--no-renames", *extra],
             cwd=repo_root,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",
         )
         if out.returncode != 0:
             return None
-        return {p for p in out.stdout.split("\0") if p}
+        # Each -z record is "<added>\t<deleted>\t<path>"; a binary file reports
+        # "-" for both counts. --no-renames keeps every record single-path, so
+        # the path is always the third tab-separated field.
+        return {
+            rec.split("\t", 2)[2]
+            for rec in out.stdout.split("\0")
+            if rec.count("\t") >= 2
+        }
 
     def _eol_only():
         all_dirty, real_dirty = _dirty(), _dirty("--ignore-cr-at-eol")

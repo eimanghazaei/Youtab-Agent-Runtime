@@ -495,6 +495,13 @@ class TestGatewaySystemServiceRouting:
 
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        # User-scope restart first bootstraps the user systemd/D-Bus session,
+        # which on a host without a live login session reaches for `loginctl
+        # enable-linger`. That is correct product behaviour and not what this
+        # test is about: the fake subprocess.run below models only the
+        # systemctl calls, so an unstubbed preflight made the test depend on
+        # the ambient session state of whoever ran it.
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda **kw: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(
@@ -804,12 +811,23 @@ class TestGeneratedUnitIncludesLocalBin:
 
 
     def test_system_unit_includes_local_bin_in_path(self, monkeypatch):
+        import getpass
+
         monkeypatch.setattr(
             gateway_cli,
             "_build_user_local_paths",
             lambda home_path, existing: [str(home_path / ".local" / "bin")],
         )
-        unit = gateway_cli.generate_systemd_unit(system=True)
+        # Name the service user explicitly. Left to auto-detection this asks
+        # whoever happens to be running the suite, and _system_service_identity
+        # deliberately refuses an auto-detected root — a safety control, pinned
+        # by TestSystemServiceIdentityRootHandling below, that this test has no
+        # business tripping over. run_as_user is that control's documented
+        # override, so the real identity path (pwd/grp lookup, home resolution)
+        # still runs, on any host and any uid.
+        unit = gateway_cli.generate_systemd_unit(
+            system=True, run_as_user=getpass.getuser()
+        )
         # System unit uses the resolved home dir from _system_service_identity
         assert "/.local/bin" in unit
 

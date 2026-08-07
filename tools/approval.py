@@ -981,6 +981,12 @@ _PATH_TOKEN_STOP = r"""\s'"`;|&<>()"""
 _PATH_TAIL = r"(?P<tail>(?:[/\\][^/\\" + _PATH_TOKEN_STOP + r"]*)+)"
 
 
+#: Directories that hold other users' homes rather than being one. A home
+#: resolving to one of these is a misconfiguration, and folding it would
+#: rewrite every sibling user's path as though it were the caller's.
+_HOME_PARENT_DIRS = frozenset({"home", "users"})
+
+
 @functools.lru_cache(maxsize=64)
 def _home_prefix_fold_regex(path: str):
     """Compile a regex matching *path* used as an absolute directory prefix.
@@ -993,20 +999,32 @@ def _home_prefix_fold_regex(path: str):
     patterns (``~/.ssh/authorized_keys``) still match. The trailing tail is
     required (``+``), so a bare home with no path under it is not folded.
 
-    Returns ``None`` for an unset or degenerate path — one with fewer than two
-    components below the root — so a stray HOME / YOUTAB_AGENT_HOME such as ``/``,
-    ``C:\\`` or ``""`` cannot rewrite unrelated filesystem prefixes. Cached
-    because the resolved home is stable across calls on this hot path.
+    Returns ``None`` for an unset or degenerate path — one that is a filesystem
+    root or a directory that *contains* user homes — so a stray HOME /
+    YOUTAB_AGENT_HOME such as ``/``, ``/home``, ``C:\\`` or ``""`` cannot
+    rewrite unrelated filesystem prefixes. Cached because the resolved home is
+    stable across calls on this hot path.
     """
     if not path:
         return None
     components = [c for c in re.split(r"[/\\]+", path) if c]
-    # Require at least two non-empty components below the root. For POSIX this
-    # mirrors the historical ``count("/") >= 2`` guard (``/home/alice`` folds,
-    # ``/home`` does not); for Windows it rejects a bare drive root (``C:\\``)
-    # while accepting a real home (``C:\\Users\\alice``).
-    if len(components) < 2:
+    if not components:
         return None
+    # A single component used to be rejected outright, on the theory that it
+    # mirrored ``count("/") >= 2`` (``/home/alice`` folds, ``/home`` does not).
+    # But ``/root`` is a real home with one component, and running as root is
+    # ordinary in Docker — so on those installs no home path folded at all, and
+    # ``/root/.ssh/authorized_keys`` never became ``~/.ssh/authorized_keys``.
+    # The dangerous-command patterns anchor on the ``~/`` form, so they simply
+    # did not fire. Under-folding is the hazard here, not over-folding.
+    #
+    # What must still be refused is a path that is not one home: a filesystem
+    # or drive root, and the shared parents that *contain* homes — folding
+    # ``/home`` would rewrite every other user's path as if it were this one's.
+    if len(components) == 1:
+        only = components[0]
+        if re.fullmatch(r"[A-Za-z]:", only) or only.lower() in _HOME_PARENT_DIRS:
+            return None
     body = r"[/\\]+".join(re.escape(c) for c in components)
     # Optional leading root separator (POSIX ``/`` or UNC ``\\``); a Windows
     # drive letter is captured as the first component.

@@ -19,7 +19,9 @@ Three things are held here:
 from __future__ import annotations
 
 import inspect
+import json
 import sys
+from unittest import mock
 from pathlib import Path
 
 import pytest
@@ -1203,3 +1205,292 @@ class TestStructuredConfigCannotMoveTheEngineBinding:
             self._request("config:write", "provider:write"), served
         ) == {"ok": True}
         assert self._on_disk(home)["model"]["provider"] == "openai"
+
+
+class TestWorkspacePolicyStaysUserConfigurable:
+    """The line between "my agent" and "the platform".
+
+    `approvals`, `command_allowlist`, `hooks_auto_accept` and
+    `code_execution.mode` widen what the agent may do with the caller's own
+    files, in the caller's own session. Withdrawing them would cost autonomy
+    without containing anything, so they stay at `config:write`.
+
+    What does NOT stay is the platform's posture: what the agent may reach on
+    the network, whether secrets stay redacted, and whether the policy engine
+    runs at all. Those reach past the workspace, so they need `ops:manage`.
+    """
+
+    WORKSPACE = (
+        ({"approvals": {"mode": "off"}}, "approvals.mode"),
+        ({"command_allowlist": ["rm -rf ./build"]}, "command_allowlist"),
+        ({"hooks_auto_accept": True}, "hooks_auto_accept"),
+        ({"code_execution": {"mode": "strict"}}, "code_execution.mode"),
+        ({"security": {"acked_advisories": ["YT-1"]}}, "security.acked_advisories"),
+    )
+    PLATFORM = (
+        ({"security": {"allow_private_urls": True}}, "governed egress (SSRF)"),
+        ({"security": {"website_blocklist": {"enabled": False}}}, "governed egress"),
+        ({"security": {"redact_secrets": False}}, "secret protection"),
+        ({"security": {"tirith_enabled": False}}, "policy engine off"),
+        ({"security": {"tirith_path": "/tmp/mine"}}, "policy engine substituted"),
+        ({"security": {"tirith_fail_open": True}}, "fail-closed becomes fail-open"),
+        ({"security": {"allow_lazy_installs": True}}, "supply chain"),
+    )
+
+    @pytest.fixture
+    def home(self, tmp_path, monkeypatch):
+        import yaml
+
+        from youtab_agent_cli import config as config_mod
+
+        monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "approvals": {"mode": "manual"},
+            "command_allowlist": [],
+            "hooks_auto_accept": False,
+            "code_execution": {"mode": "project"},
+            "security": {
+                "allow_private_urls": False,
+                "redact_secrets": True,
+                "tirith_enabled": True,
+                "tirith_path": "/usr/bin/tirith",
+                "tirith_fail_open": False,
+                "allow_lazy_installs": False,
+                "acked_advisories": [],
+                "website_blocklist": {"enabled": True, "domains": []},
+            },
+        }), encoding="utf-8")
+        config_mod._RAW_CONFIG_CACHE.clear()
+        config_mod._LOAD_CONFIG_CACHE.clear()
+        return tmp_path
+
+    _request = staticmethod(TestStructuredConfigCannotMoveTheEngineBinding._request)
+    _put = TestStructuredConfigCannotMoveTheEngineBinding._put
+    _on_disk = TestStructuredConfigCannotMoveTheEngineBinding._on_disk
+
+    @pytest.mark.parametrize("payload,label", WORKSPACE)
+    def test_a_normal_user_still_governs_their_own_workspace(
+        self, home, payload, label
+    ):
+        assert self._put(self._request("config:write"), payload) == {"ok": True}, label
+
+    @pytest.mark.parametrize("payload,label", PLATFORM)
+    def test_a_normal_user_cannot_move_the_platform_posture(self, home, payload, label):
+        response = self._put(self._request("config:write"), payload)
+        assert getattr(response, "status_code", None) == 403, label
+
+    @pytest.mark.parametrize("payload,label", PLATFORM)
+    def test_the_refusal_lands_before_the_file_is_written(self, home, payload, label):
+        before = (home / "config.yaml").read_text(encoding="utf-8")
+        self._put(self._request("config:write"), payload)
+        assert (home / "config.yaml").read_text(encoding="utf-8") == before, label
+
+    @pytest.mark.parametrize("payload,label", PLATFORM)
+    def test_ops_manage_may_move_it(self, home, payload, label):
+        """A scope check, not a prohibition."""
+        assert self._put(
+            self._request("config:write", "ops:manage"), payload
+        ) == {"ok": True}, label
+
+    def test_an_unchanged_platform_key_is_not_a_change(self, home):
+        """The whole-document save must not 403 on values it merely carries."""
+        assert self._put(self._request("config:write"), {
+            "security": {"tirith_enabled": True, "acked_advisories": ["YT-9"]},
+        }) == {"ok": True}
+
+    def test_the_raw_yaml_editor_applies_the_same_bar(self, home):
+        """provider:write and ops:manage can be held separately by an operator."""
+        import asyncio
+
+        import yaml as _yaml
+
+        from youtab_agent_cli.web_models import RawConfigUpdate
+        from youtab_agent_cli.web_server import update_config_raw
+
+        doc = _yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+        doc["security"]["tirith_enabled"] = False
+        response = asyncio.run(update_config_raw(
+            self._request("provider:write"), RawConfigUpdate(yaml_text=_yaml.safe_dump(doc))
+        ))
+        assert response.status_code == 403
+
+    def test_the_hardline_floor_sits_under_every_workspace_bypass(self):
+        """Why widening approvals is safe to leave with the user.
+
+        `approvals.mode=off`, a permissive `command_allowlist` and `--yolo` all
+        widen the caller's own blast radius. None of them reaches the floor:
+        `rm -rf /`, `mkfs`, `dd` to a raw device and shutdown are refused
+        before any bypass is consulted. Asserted from the source, because this
+        ordering is the property that makes the split defensible.
+        """
+        import tools.approval as approval_module
+
+        # Behavioural, not a source-order grep: yolo is switched fully on and
+        # the floor is asked anyway.
+        with mock.patch.object(
+            approval_module, "is_current_session_yolo_enabled", lambda: True
+        ):
+            # A command inside the caller's own workspace: yolo is theirs to
+            # use, and it works.
+            assert approval_module.check_dangerous_command(
+                "rm -rf ./build", "local"
+            )["approved"] is True
+
+            for floor_command in (
+                "rm -rf /",
+                "mkfs.ext4 /dev/sda1",
+                "dd if=/dev/zero of=/dev/sda",
+                "shutdown -h now",
+            ):
+                verdict = approval_module.check_dangerous_command(
+                    floor_command, "local"
+                )
+                assert verdict["approved"] is False, floor_command
+                assert verdict.get("hardline") is True, floor_command
+
+
+class TestEveryCredentialFieldInTheSchemaIsCovered:
+    """Fail-closed coverage for the config surface's credentials.
+
+    The redactor matches leaf key names exactly, which is precise but silent:
+    a credential added under a name nobody thought of is served in the clear
+    and nothing says so. This class is the thing that says so.
+
+    It scans CONFIG_SCHEMA with a deliberately *broader* heuristic than the
+    redactor uses, and requires every hit to be either masked or listed in
+    :data:`NOT_A_SECRET` with a reason. A new credential-shaped field is
+    therefore red on arrival: the choice has to be made, it cannot be skipped.
+    That is what makes this cover future fields and not just today's.
+
+    It found two live defects when first written — `dashboard.basic_auth.
+    password_hash` and `browser.camofox.session_key`, both returned verbatim
+    by GET /api/config to any signed-in user.
+    """
+
+    #: Substrings that make a leaf name worth a second look. Broader than the
+    #: redactor's exact-match set on purpose — over-flagging costs one line
+    #: here, under-flagging costs a credential.
+    CREDENTIAL_WORDS = (
+        "key", "token", "secret", "password", "passwd", "credential",
+        "auth", "bearer", "jwt", "private", "passphrase", "signature", "salt",
+    )
+
+    #: Fields the heuristic flags that carry no secret value. Every entry is a
+    #: decision on the record, not a pattern — a wildcard here would silently
+    #: re-admit the class of bug this class exists to catch.
+    NOT_A_SECRET = {
+        # Booleans and policy switches, not values.
+        "browser.allow_private_urls": "boolean egress switch",
+        "browser.auto_local_for_private_urls": "boolean routing switch",
+        "security.allow_private_urls": "boolean egress switch",
+        "security.redact_secrets": "boolean — turns redaction on, is not a secret",
+        "dashboard.drain_auth.min_secret_chars": "integer length policy",
+        "dashboard.show_token_analytics": "boolean UI toggle",
+        "display.spinner_token_flow": "boolean UI toggle",
+        # "token" as in LLM context accounting.
+        "compression.threshold_tokens": "LLM token count",
+        "compression.proactive_prune_tokens": "LLM token count",
+        "compression.proactive_prune_min_reclaim_tokens": "LLM token count",
+        "moa.presets.default.max_tokens": "LLM token count",
+        "tools.tool_search.listing_max_tokens": "LLM token count",
+        # Names and identifiers that point AT a secret without being one.
+        "secrets.bitwarden.access_token_env": "env var name, not its value",
+        "secrets.onepassword.service_account_token_env": "env var name, not its value",
+        "proxy.credential_source": "names which source to read, not a credential",
+        # Genuinely unrelated words.
+        "voice.record_key": "keyboard binding",
+        "wake_word.porcupine.keyword": "the spoken wake word",
+        "discord.dm_role_auth_guild": "Discord guild id",
+    }
+
+    @staticmethod
+    def _credential_shaped_schema_keys():
+        from youtab_agent_cli.web_server import CONFIG_SCHEMA
+
+        cls = TestEveryCredentialFieldInTheSchemaIsCovered
+        return sorted(
+            str(k) for k in CONFIG_SCHEMA
+            if any(w in str(k).split(".")[-1].lower() for w in cls.CREDENTIAL_WORDS)
+        )
+
+    def test_every_credential_shaped_field_is_masked_or_justified(self):
+        """The fail-closed gate. A new one is red until somebody decides."""
+        from youtab_agent_cli.config import _SECRET_CONFIG_KEYS
+
+        unhandled = [
+            key for key in self._credential_shaped_schema_keys()
+            if key.split(".")[-1].lower() not in _SECRET_CONFIG_KEYS
+            and key not in self.NOT_A_SECRET
+        ]
+        assert unhandled == [], (
+            "These config fields look like credentials but are neither masked "
+            "by _SECRET_CONFIG_KEYS nor recorded in NOT_A_SECRET. Add the leaf "
+            "name to the redactor, or justify it here: " + ", ".join(unhandled)
+        )
+
+    def test_the_justifications_still_describe_real_fields(self):
+        """A stale exemption is a hole waiting for its name to be reused."""
+        live = set(self._credential_shaped_schema_keys())
+        stale = sorted(set(self.NOT_A_SECRET) - live)
+        assert stale == [], f"NOT_A_SECRET names fields no longer in the schema: {stale}"
+
+    def test_the_scan_actually_finds_the_known_credential_fields(self):
+        """A heuristic that matched nothing would satisfy every check above."""
+        found = set(self._credential_shaped_schema_keys())
+        for known in (
+            "auxiliary.vision.api_key",
+            "dashboard.basic_auth.password",
+            "dashboard.basic_auth.password_hash",
+            "browser.camofox.session_key",
+            "delegation.api_key",
+        ):
+            assert known in found, known
+        assert len(found) > 30
+
+    def test_each_masked_field_is_actually_redacted_by_value(self):
+        """Membership in the set is not the claim — the output is."""
+        from youtab_agent_cli.config import _SECRET_CONFIG_KEYS, redact_config_value
+
+        secret = "REAL-SECRET-VALUE-0123456789"
+        for key in self._credential_shaped_schema_keys():
+            leaf = key.split(".")[-1]
+            if leaf.lower() not in _SECRET_CONFIG_KEYS:
+                continue
+            tree = {}
+            cursor = tree
+            parts = key.split(".")
+            for part in parts[:-1]:
+                cursor = cursor.setdefault(part, {})
+            cursor[parts[-1]] = secret
+            assert secret not in json.dumps(redact_config_value(tree)), key
+
+    def test_each_masked_field_survives_the_dashboard_round_trip(self):
+        """Redaction that destroys the secret on the next save is not a fix.
+
+        The dashboard reads the whole document and writes it back, so every
+        masked field returns as its own mask. Each one must be recognised as
+        unchanged rather than persisted over the stored value.
+        """
+        from youtab_agent_cli.config import _SECRET_CONFIG_KEYS, redact_config_value
+        from youtab_agent_cli.web_server import _restore_masked_secrets
+
+        secret = "REAL-SECRET-VALUE-0123456789"
+        for key in self._credential_shaped_schema_keys():
+            leaf = key.split(".")[-1]
+            if leaf.lower() not in _SECRET_CONFIG_KEYS:
+                continue
+            stored, cursor = {}, None
+            cursor = stored
+            parts = key.split(".")
+            for part in parts[:-1]:
+                cursor = cursor.setdefault(part, {})
+            cursor[parts[-1]] = secret
+
+            served = redact_config_value(stored)          # what GET hands out
+            saved = _restore_masked_secrets(served, stored)  # what PUT keeps
+            # The masked field is dropped, so the deep-merge keeps the stored
+            # secret rather than overwriting it with asterisks.
+            probe = saved
+            for part in parts[:-1]:
+                probe = probe.get(part, {})
+            assert parts[-1] not in probe, f"{key} would persist its own mask"

@@ -4167,6 +4167,23 @@ _SECRET_CONFIG_KEYS = frozenset({
     "private_key",
     "bearer",
     "jwt",
+    # Found by the schema-coverage test in tests/youtab_runtime: both were
+    # being served in the clear by GET /api/config. `password_hash` is the
+    # stored verifier for the dashboard login — handing it out invites an
+    # offline crack — and `session_key` is a live browser session credential.
+    "session_key",
+    "password_hash",
+    # Same shape, named ahead of the field appearing: the coverage test forces
+    # any new credential-shaped schema key to be either masked here or
+    # explicitly justified as not-a-secret, so this list stays the answer.
+    "secret_key",
+    "access_key",
+    "api_secret",
+    "auth_token",
+    "signing_key",
+    "encryption_key",
+    "passphrase",
+    "webhook_secret",
 })
 
 

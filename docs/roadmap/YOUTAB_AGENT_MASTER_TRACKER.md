@@ -354,12 +354,51 @@ that equals the mask of what is stored — an unchanged field rather than an edi
 — and the merge keeps the real secret. A value someone actually typed never
 equals the mask of the previous one, so real edits still land.
 
-Not changed, and recorded as an Owner decision rather than settled quietly:
-`command_allowlist`, `approvals`, `hooks_auto_accept`, `security` and
-`code_execution` are all writable at `config:write`. They are execution-policy
-knobs for the caller's own agent in their own workspace, and withdrawing them
-would reduce agent autonomy rather than blast radius, which is the one thing
-this workstream is not permitted to do.
+**4. The workspace/platform line, drawn where the Owner asked for it.** Those
+five keys were left writable pending a decision. The decision: they stay
+configurable for the caller's own isolated workspace, and the settings that
+reach past it do not.
+
+| stays `config:write` — the caller's own agent | needs `ops:manage` — the platform's posture |
+|---|---|
+| `approvals.*` (mode, deny, timeouts, confirms) | `security.allow_private_urls` — governed egress / SSRF |
+| `command_allowlist` | `security.website_blocklist.*` — governed egress |
+| `hooks_auto_accept` | `security.redact_secrets` — secret protection |
+| `code_execution.mode` | `security.tirith_enabled` / `_path` / `_timeout` / `_fail_open` — whether the policy engine runs, which binary is it, and whether no-verdict means yes |
+| `security.acked_advisories` | `security.allow_lazy_installs` — supply chain |
+
+Two facts decided the left column rather than taste. `approvals.mode=off`, a
+permissive `command_allowlist` and `--yolo` all widen the caller's own blast
+radius and none of them reaches the floor: `detect_hardline_command` runs
+*before* every bypass, so `rm -rf /`, `mkfs`, `dd` to a raw device and shutdown
+stay refused — asserted behaviourally, with yolo switched on. And
+`code_execution.mode` only selects `project` vs `strict` — where a script runs
+and with which interpreter — while env scrubbing and the tool whitelist apply
+identically in both.
+
+The same bar is applied to `PUT /api/config/raw`. `provider:write` and
+`ops:manage` travel together on Superadmin and Owner, but an explicitly scoped
+operator can hold one without the other, and YAML reaches every key the
+structured form does.
+
+**5. Credential coverage is now fail-closed, and it found two live leaks.**
+The redactor matches leaf key names exactly — precise, but silent about a
+credential named something nobody listed. A new test scans `CONFIG_SCHEMA`
+with a deliberately broader heuristic and requires every hit to be either
+masked or recorded in `NOT_A_SECRET` with a reason, so a new credential-shaped
+field is red on arrival rather than served in the clear.
+
+Writing it surfaced two fields `GET /api/config` was handing to any signed-in
+user: `dashboard.basic_auth.password_hash` — the stored verifier for the
+dashboard login, an offline-crack target — and `browser.camofox.session_key`.
+Both are masked now, and each masked field is additionally proven to survive
+the read-modify-write round trip rather than persisting its own mask.
+
+The eighteen false positives the heuristic also catches are listed with their
+reasons: `voice.record_key` is a keyboard binding, `*_tokens` are LLM counters,
+`secrets.bitwarden.access_token_env` names a variable rather than holding one.
+A second test fails if any of those justifications stops matching a real field,
+so a stale exemption cannot sit waiting for its name to be reused.
 
 Cleared after reading, with the property that clears them asserted rather than
 assumed: `/api/cron/fire` (fail-closed JWT verifier), the MCP OAuth callback
@@ -371,17 +410,29 @@ assumed: `/api/cron/fire` (fail-closed JWT verifier), the MCP OAuth callback
 `/api/skills` (agent capability, including `hub/install`), and
 `/api/dashboard/agent-plugins` (plugin lifecycle).
 
+### Local suite — the eleven inherited failures, fixed at root cause
+
+They were being carried as "container artifacts". Four were real product bugs
+that only a root/IPv4-only/older-git host exposed; three were tests asserting
+nothing, or asserting it in a way that could not hold off the author's machine.
+None was skipped, xfailed, deleted or weakened.
+
+| # | failure | root cause |
+|---|---|---|
+| 1 | `test_normalize_folds_home_prefix` | **Product.** The home-fold guard required two path components, so `/root` — a real home, and the default in this project's Docker images — never folded. `/root/.ssh/authorized_keys` never became `~/.ssh/authorized_keys`, and every dangerous-command pattern anchored on `~/` stopped firing. Now folds any home except a filesystem/drive root or a directory *of* homes (`/home`, `/Users`). |
+| 2–6 | `test_update_eol_churn` (5) | **Product.** `_eol_only()` compared `--name-only` against `--name-only --ignore-cr-at-eol`, but `--name-only` decides from blob ids and never runs the text comparison, so the ignore flag did nothing and the two sets were always identical. The repair checkout never ran — and the `core.autocrlf=false` pin was written anyway, producing exactly the dirty checkout the function exists to prevent. Now probes with `--numstat`, which honours the flag. |
+| 7 | `test_skips_occupied_successor` | **Product.** `find_free_debug_port` required a bind on *both* loopbacks, so on an IPv4-only host every candidate failed the `::1` probe, the loop exhausted, and it returned the `preferred + 1` fallback unconditionally — handing back the occupied port it was asked to avoid. `EAFNOSUPPORT` and friends are now "not a constraint" rather than "occupied". |
+| 8 | `test_defaults_to_process_environ_copy` | **Test.** Asserted nothing: one check ended in `or True`, the other compared the *ambient* `GCM_INTERACTIVE` against the value the helper forces, so it broke on any host presetting it. Replaced with the real invariant — and that needed a subprocess with a pristine env, because an env leak is idempotent, so both an in-process snapshot and an inheriting child already contain it. |
+| 9 | `test_apply_refuses_to_overwrite_unreadable_config` | **Test.** Simulated an unreadable file with `chmod(0o000)`, which uid 0 ignores — so under root the file stayed readable, the migration succeeded, and the test asserted nothing while reporting green. The denial is now injected at the `open()` boundary, which holds for every uid and on Windows. |
+| 10 | `test_systemd_restart_gracefully...` | **Test.** Depended on the host having a live user-systemd session; without one the real code correctly reaches for `loginctl enable-linger`, which the fake `subprocess.run` did not model. The preflight is stubbed, like its siblings already were. |
+| 11 | `test_system_unit_includes_local_bin_in_path` | **Test.** Tripped the deliberate refusal to install the gateway system service as root — a control, not a bug, and separately pinned. Now names the service user via `run_as_user`, that control's own documented override. |
+
 ### Still outstanding on this row
 
-- `GET`/`PUT /api/config` — **closed**, see defect 3 above. The endpoint keeps
-  `config:read`/`config:write`; the engine-binding half is guarded in the
-  handler and the credential half is redacted.
-- The `_SECRET_CONFIG_KEYS` redactor is exact-match on key name. It catches
-  `api_key`, `token`, `password` and the rest of the usual shapes, so a future
-  credential stored under an unusual key name would not be masked. Worth a
-  sweep if new credential-bearing config keys are added.
+- `GET`/`PUT /api/config` — **closed**, see defects 3–5 above.
 - The registry (`route_authz_registry.py`) remains the body-verified subset and
   is deliberately smaller than the enforced table: **127 classified, 0 stale**.
+- `/api/plugins` (47 route+methods) is the largest cluster not yet body-read.
 
 ## Next permitted slice
 

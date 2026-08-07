@@ -230,7 +230,21 @@ def find_free_debug_port(preferred: int = DEFAULT_BROWSER_CDP_PORT, attempts: in
     will then fail with a clear browser-side error instead of silently
     doing nothing).
     """
+    import errno
     import socket
+
+    # A loopback this host does not have is not evidence about the port. An
+    # IPv4-only host (containers, hardened CI) fails EVERY ::1 probe, so
+    # treating that as "occupied" made no candidate ever qualify: the loop
+    # exhausted and returned the preferred + 1 fallback unconditionally --
+    # handing back a port that may be exactly the one in use, which is the
+    # bind conflict this function exists to avoid.
+    _FAMILY_UNAVAILABLE = {
+        errno.EAFNOSUPPORT,
+        errno.EPFNOSUPPORT,
+        errno.EADDRNOTAVAIL,
+        errno.EPROTONOSUPPORT,
+    }
 
     for port in range(preferred + 1, preferred + 1 + attempts):
         bindable = True
@@ -239,7 +253,9 @@ def find_free_debug_port(preferred: int = DEFAULT_BROWSER_CDP_PORT, attempts: in
                 with socket.socket(family, socket.SOCK_STREAM) as sock:
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     sock.bind((host, port))
-            except OSError:
+            except OSError as exc:
+                if exc.errno in _FAMILY_UNAVAILABLE:
+                    continue  # this loopback simply isn't a constraint here
                 bindable = False
                 break
         if bindable:

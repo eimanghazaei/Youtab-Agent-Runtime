@@ -68,7 +68,12 @@ from youtab_agent_cli.authz import (
     required_scope,
     resolve_principal,
 )
-from youtab_agent_cli.authz import DEVICE_MANAGE, ENGINE_SELECT, PROVIDER_WRITE
+from youtab_agent_cli.authz import (
+    DEVICE_MANAGE,
+    ENGINE_SELECT,
+    OPS_MANAGE,
+    PROVIDER_WRITE,
+)
 from youtab_agent_cli.authz import AUTHENTICATED as authz_authenticated
 from youtab_agent_cli.authz import PUBLIC as authz_public
 from youtab_agent_cli.authz import (
@@ -7247,25 +7252,85 @@ def _restore_masked_secrets(
     return out
 
 
-def _engine_binding_changes(incoming: dict, baseline: dict) -> list[str]:
-    """Names of engine-binding keys this payload would actually change.
+#: Settings that decide the platform's security posture rather than how this
+#: person's own agent behaves: what it may reach on the network, whether
+#: secrets stay redacted, and whether the policy engine runs at all.
+#:
+#: The distinction that puts a key here is blast radius beyond the caller's own
+#: workspace. ``approvals``, ``command_allowlist``, ``hooks_auto_accept`` and
+#: ``code_execution.mode`` are deliberately NOT in this list: they widen what
+#: the agent may do with the caller's own files, in the caller's own session,
+#: and taking them away would cost autonomy without containing anything. The
+#: hardline floor (``rm -rf /``, ``mkfs``, ``dd`` to a raw device, shutdown)
+#: is checked before every one of those bypasses, so no value they can hold
+#: reaches past the workspace. ``code_execution.mode`` only selects ``project``
+#: vs ``strict`` — where a script runs and with which interpreter — while env
+#: scrubbing and the tool whitelist apply identically in both.
+_PLATFORM_SECURITY_CONFIG_KEYS: Final = (
+    # Governed egress.
+    "security.allow_private_urls",
+    "security.website_blocklist",
+    # Secret protection.
+    "security.redact_secrets",
+    # The policy engine: whether it runs, which binary is it, and whether a
+    # failure to reach a verdict is treated as permission.
+    "security.tirith_enabled",
+    "security.tirith_path",
+    "security.tirith_timeout",
+    "security.tirith_fail_open",
+    # Sandbox/supply-chain boundary: fetching and running new packages.
+    "security.allow_lazy_installs",
+)
 
-    Presence is not change. The dashboard PUTs the entire config on every
-    save, so ``model`` is in the body even when someone only edited their
-    theme; refusing on presence would 403 every ordinary save and cost exactly
-    the capability this audit is supposed to preserve. Comparing against the
-    stored value refuses the request that moves the binding and waves through
-    the one that carries it along untouched.
+_MISSING: Final = object()
 
-    ``baseline`` must be the same merged view GET serves from, so that an
-    unmodified round-trip compares equal and a key absent from the body reads
-    as "not changed" rather than "changed to nothing".
+
+def _config_path_value(tree: Any, dotted: str) -> Any:
+    """Value at ``dotted`` inside ``tree``, or :data:`_MISSING` if absent."""
+    current = tree
+    for part in dotted.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return _MISSING
+        current = current[part]
+    return current
+
+
+def _changed_config_paths(
+    incoming: dict, baseline: dict, paths: "tuple[str, ...]"
+) -> list[str]:
+    """Which of ``paths`` this payload would actually change.
+
+    Presence is not change. The dashboard PUTs the entire config on every save,
+    so ``model`` is in the body even when someone only edited their theme;
+    refusing on presence would 403 every ordinary save and cost exactly the
+    capability this audit is supposed to preserve. Comparing against the stored
+    value refuses the request that moves a setting and waves through the one
+    that carries it along untouched.
+
+    A path absent from ``incoming`` reads as "not changed" rather than "changed
+    to nothing", so a partial payload is never treated as a deletion.
+
+    ``baseline`` must be the same merged view GET serves from, so an unmodified
+    round-trip compares equal.
     """
-    return [
-        key
-        for key in _ENGINE_BINDING_CONFIG_KEYS
-        if key in incoming and incoming[key] != baseline.get(key)
-    ]
+    changed = []
+    for dotted in paths:
+        proposed = _config_path_value(incoming, dotted)
+        if proposed is _MISSING:
+            continue
+        if proposed != _config_path_value(baseline, dotted):
+            changed.append(dotted)
+    return changed
+
+
+def _engine_binding_changes(incoming: dict, baseline: dict) -> list[str]:
+    """Engine-binding keys this payload would actually change."""
+    return _changed_config_paths(incoming, baseline, _ENGINE_BINDING_CONFIG_KEYS)
+
+
+def _platform_security_changes(incoming: dict, baseline: dict) -> list[str]:
+    """Platform-security settings this payload would actually change."""
+    return _changed_config_paths(incoming, baseline, _PLATFORM_SECURITY_CONFIG_KEYS)
 
 
 @app.put("/api/config")
@@ -7288,8 +7353,24 @@ async def update_config(
             # ordinary save.
             effective = load_config()
             incoming = _restore_masked_secrets(incoming, effective)
-            moved = _engine_binding_changes(incoming, effective)
             caller = _principal_for_request(request)
+            # Platform posture: reachable network, secret redaction, whether
+            # the policy engine runs. These are not this person's workspace --
+            # a normal user keeps approvals, command_allowlist,
+            # hooks_auto_accept and code_execution.mode, which only widen what
+            # their own agent may do with their own files, and which the
+            # unconditional hardline floor still sits underneath.
+            posture = _platform_security_changes(incoming, effective)
+            if posture and not caller.has(OPS_MANAGE):
+                _log.warning(
+                    "PUT /api/config refused: platform security change to %s "
+                    "without ops:manage",
+                    ", ".join(posture),
+                )
+                return JSONResponse(
+                    status_code=403, content={"detail": REFUSAL_DETAIL}
+                )
+            moved = _engine_binding_changes(incoming, effective)
             if moved and not (
                 caller.has(ENGINE_SELECT) or caller.has(PROVIDER_WRITE)
             ):
@@ -14339,12 +14420,28 @@ async def get_config_raw(profile: Optional[str] = None):
 
 
 @app.put("/api/config/raw")
-async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None):
+async def update_config_raw(
+    request: Request, body: RawConfigUpdate, profile: Optional[str] = None
+):
     try:
         parsed = yaml.safe_load(body.yaml_text)
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
         with _profile_scope(body.profile or profile):
+            # The same platform-posture bar the structured endpoint applies.
+            # provider:write and ops:manage travel together on Superadmin and
+            # Owner, but an explicitly scoped operator can hold one without the
+            # other, and YAML reaches every key the structured form does.
+            posture = _platform_security_changes(parsed, load_config())
+            if posture and not _principal_for_request(request).has(OPS_MANAGE):
+                _log.warning(
+                    "PUT /api/config/raw refused: platform security change to "
+                    "%s without ops:manage",
+                    ", ".join(posture),
+                )
+                return JSONResponse(
+                    status_code=403, content={"detail": REFUSAL_DETAIL}
+                )
             # Full-document replacement: the editor owns the whole file; do not
             # merge omitted sections back from disk (#62723).
             save_config(parsed, merge_existing=False)

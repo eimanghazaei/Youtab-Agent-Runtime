@@ -527,6 +527,47 @@ class TestWindowsAbsolutePathFolding:
         assert key is None
 
 
+class TestSingleComponentHomeFolds:
+    """A one-component home like ``/root`` is a home, not a degenerate path.
+
+    The fold guard required two components below the root, which quietly meant
+    that when the agent runs as root — the default in this project's own Docker
+    images — no home path folded at all. ``/root/.ssh/authorized_keys`` never
+    became ``~/.ssh/authorized_keys``, and every dangerous-command pattern
+    anchored on the ``~/`` form stopped firing. Under-folding is the hazard:
+    it silently removes protection rather than adding noise.
+    """
+
+    def test_root_home_ssh_write_is_still_dangerous(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/root")
+        dangerous, key, _ = detect_dangerous_command(
+            "cat key >> /root/.ssh/authorized_keys"
+        )
+        assert dangerous is True
+        assert key is not None
+
+    def test_root_home_unrelated_path_not_flagged(self, monkeypatch):
+        """Folding more must not start flagging ordinary files."""
+        monkeypatch.setenv("HOME", "/root")
+        dangerous, key, _ = detect_dangerous_command("cp report.txt /root/notes.txt")
+        assert dangerous is False
+        assert key is None
+
+    @pytest.mark.parametrize("shared_parent", ["/home", "/Users", "/users"])
+    def test_a_directory_of_homes_never_folds(self, shared_parent):
+        """Folding ``/home`` would rewrite every other user's path as ours."""
+        assert approval_module._home_prefix_fold_regex(shared_parent) is None
+
+    @pytest.mark.parametrize("root", ["", "/", "//", "C:", r"C:\\", "D:/"])
+    def test_filesystem_and_drive_roots_never_fold(self, root):
+        assert approval_module._home_prefix_fold_regex(root) is None
+
+    def test_a_real_home_under_a_shared_parent_still_folds(self):
+        """The guard rejects the parent, not the homes beneath it."""
+        assert approval_module._home_prefix_fold_regex("/home/alice") is not None
+        assert approval_module._home_prefix_fold_regex("/root") is not None
+
+
 class TestProjectSensitiveTeePattern:
     def test_tee_to_dotenv_with_trailing_file_arg_requires_approval(self):
         # tee writes to every file argument, so `.env` is overwritten even when
