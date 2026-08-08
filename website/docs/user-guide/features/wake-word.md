@@ -47,6 +47,14 @@ By default the phrase is **"hey youtab"** — a model for it ships with Youtab, 
 it works out of the box with no training. (On first use, openWakeWord downloads
 its shared feature-extraction models — a small one-time fetch.)
 
+That model was trained for this phrase specifically, on synthesized speech from
+hundreds of voices plus recorded human speech as negatives, and measured on
+voices, rooms and background recordings it never saw during training.
+`tools/wakewords/MODEL_CARD.md` records the datasets, their licences, the
+training configuration and the measured false-accept and false-reject rates;
+`scripts/wakeword/` is the pipeline that produced it, and it runs end to end on
+a CPU if you want to train a model for a different phrase.
+
 Both are lazy-installed the first time you enable the wake word (desktop
 installs made with `--include-desktop` pre-install them, so the ear works
 instantly). To install ahead of time:

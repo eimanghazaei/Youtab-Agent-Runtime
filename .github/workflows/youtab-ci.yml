@@ -55,6 +55,19 @@ jobs:
       # against.
       - name: Install uv for the lock-file gate
         run: python -m pip install 'uv==0.8.17'
+      # The wake word ships two artifacts, and macOS ARM64 loads the tflite one
+      # because openWakeWord's ONNX embedding model is dead there
+      # (dscripka/openWakeWord#336). `onnxruntime` reaches this runner as a
+      # transitive of the OCR engine above, so the ONNX artifact is executed by
+      # the regression tests either way -- without a tflite interpreter the
+      # file every Mac user actually loads would ship unexecuted, which is the
+      # gap this repository just spent a commit closing for `tests/tools`.
+      #
+      # Same pin as the `wake` extra, and a workflow step rather than a `dev`
+      # entry for the reason recorded below: it is CI tooling, and adding it to
+      # the extra would regenerate uv.lock.
+      - name: Install the tflite runtime the wake-word regression tests need
+        run: python -m pip install 'ai-edge-litert==2.1.6'
       # `scripts/run_tests.sh` refuses to run unless it finds a venv carrying
       # pytest at .venv/ or venv/, or YOUTAB_AGENT_PYTHON pointing at a python
       # that has it. `pip install -e '.[dev]'` above installs into the

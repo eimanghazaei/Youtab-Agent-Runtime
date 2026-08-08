@@ -436,8 +436,9 @@ dangerous-command pattern anchored on `~/` stopped firing on a root install —
 is proved by `tests/tools/test_approval.py`, and nothing in CI ran it. Nor the
 file-write safety, browser secret-exfil or yolo-mode suites.
 
-The count was 39, not the ~18 a partial run suggested. **38 are fixed; one is
-an asset the repository does not contain.**
+The count was 39, not the ~18 a partial run suggested. **All 39 are green.**
+Thirty-eight were fixed in the previous commit; the thirty-ninth was an asset
+the repository did not contain, and that asset now exists.
 
 | cause | files | tests | verdict |
 |---|---|---|---|
@@ -445,40 +446,113 @@ an asset the repository does not contain.**
 | `ssh`/`scp` not on PATH | ssh_environment | 5 | **Test.** `SSHEnvironment.__init__` fails fast without an OpenSSH client, which is right; these tests construct it only to inspect the argv and control-socket path it computes, and never connect. |
 | `man` "present" but non-functional | execution_flag_detection | 2 | **Test guard.** Debian's minimized images — which this project's own runtime images derive from — ship `/usr/bin/man` as a shell stub that prints a notice and exits 0, ignoring every argument. `shutil.which` found it, so the guard passed, no pager was ever invoked, and a missing payload marker was reported as a failure of the *approval grammar*. The probe now asks `man -w`: real man prints a path, the stub prints prose. |
 | `chmod(0o000)`/`0o500` under uid 0 | lazy_deps_durable_target | 1 | **Test.** Root ignores the mode bits, so the directory was created anyway and the assertion failed while the product behaved correctly. Now induced by a non-directory parent (ENOTDIR, every uid) plus an injected `PermissionError` for the read-only-mount case the docstring names — two tests where there was one. |
-| Bundled wake-word model absent | wake_word | 1 | **Product — open.** See below. |
+| Bundled wake-word model absent | wake_word | 1 | **Product — fixed.** The advertised default detector did not exist and could not be renamed into existence. It is now trained; see below. |
 
 No test was skipped, xfailed, deleted or weakened to reach that. The `man`
 change corrects a guard that was asking the wrong question; the assertion it
 guards is untouched and still runs wherever real man exists.
 
-### Open defect: the "hey youtab" wake-word model does not ship
+### Closed: the "hey youtab" wake-word model is trained and ships
 
-`tools/wakewords/` contains only `README.md`. `origin/main` carries
-`hey_hermes.onnx` / `.tflite`; the rebrand renamed the *expected* filename to
-`hey_youtab.*`, but a text rebrand cannot rename a trained model, so the
-binaries were dropped in the transplant. The docs state the default phrase is
-"hey youtab" and that "a model for it ships with Youtab". It does not, so the
-default detector cannot load at all.
+`tools/wakewords/` shipped only a `README.md`. The rebrand renamed the
+*expected* filename to `hey_youtab.*`, but a text rebrand cannot rename a
+trained model — the phrase is in the weights — so the binaries were dropped in
+the transplant and the advertised default detector could not load at all.
 
-This cannot be closed by renaming `main`'s binaries in: an openWakeWord model
-only detects the phrase it was trained on, so that would ship a detector
-answering to the retired brand while the docs promise otherwise — and
-correcting the docs to match would reintroduce the retired brand and trip the
-branding gate. Owner direction is to produce a genuinely trained model.
+That also ruled out both cheap exits. Renaming the predecessor's binaries in
+would ship a detector answering to the retired brand while the docs promise
+otherwise, and correcting the docs to match would put the retired brand back
+and trip the branding gate. An openWakeWord model detects exactly the phrase it
+was trained on, so the only way to close this was to train one.
 
-**External blocker, measured in this environment:** no training pipeline exists
-in the repository (the README records the model as trained externally with
-upstream's openWakeWord pipeline); `openwakeword` is not installed and lazy
-installs are disabled; `piper_phonemize`, which that pipeline uses to synthesise
-positive samples, is absent; and there is no GPU. Producing a qualified
-artifact also needs licensed negative/background datasets and false-accept /
-false-reject measurement against real audio, none of which can be sourced here.
+`scripts/wakeword/` is that pipeline. It runs end to end on four CPU cores with
+no GPU, and every external byte it consumes is pinned by SHA-256 in
+`assets.py` — a wrong hash fails the run rather than quietly training a
+different model, which is verified by mutation and not merely asserted.
 
-`test_bundled_hey_youtab_model_ships_on_disk` is therefore left **red and
-unmodified** as the standing signal, and deselected in the CI gate alone so the
-other 21 tests in that file and the rest of `tests/tools` can be required. The
-feature must not be described as working until trained assets exist and pass
-real audio tests. Everything else on this row is independent of it.
+**What the model is.** openWakeWord splits detection in two: a shared front end
+turns audio into 96-dimensional frames every 80 ms, and a small per-phrase
+classifier reads the trailing sixteen. Only the classifier is phrase-specific
+and only the classifier is trained here; the front end is pinned upstream
+Apache-2.0 and is an input to training as well as to inference, so the features
+the model was fit on are the features it is scored on.
+
+**Data, all redistributable.** Positives are synthesized from the
+piper-sample-generator LibriTTS-R model, which mixes pairs of 904 speaker
+embeddings — MIT code over a CC BY 4.0 corpus. Negatives are Google Speech
+Commands v0.02 (CC BY 4.0, 105,829 clips, 2,618 speakers) plus near misses
+synthesized from the same voices as the positives: `hey youtube`, `hey your
+tab`, `hey you tap`, `youtab` alone, `hey` alone, and thirty more. Reverberation
+is synthesized with pyroomacoustics rather than taken from a recorded corpus.
+No private recording and no unlicensed dataset is used anywhere.
+
+**Splits are disjoint by source, and verified so.** Synthesized voices are
+speakers `[0, 700)` for training and `[700, 904)` for measurement — the two
+sets were checked to share zero speaker embeddings. Recorded speech uses Speech
+Commands' own `validation_list.txt` and `testing_list.txt`, which are
+speaker-disjoint by construction. Four of the six background recordings train,
+two measure. Impulse-response pools are seeded independently.
+
+**Measured, not asserted.** `evaluate_model.py` constructs
+`tools.wake_word._OpenWakeWordEngine` — the class the CLI, TUI and desktop app
+construct — and streams 1280-sample frames through it, so the headline number
+is the engine's own fire decision under its own three-consecutive-frame rule,
+not a validation accuracy. Full results are in `tools/wakewords/MODEL_CARD.md`,
+which is generated from the run's outputs and records the artifact hashes
+alongside them so it cannot describe a model other than the one that shipped.
+
+One design fault was caught before it reached a measurement rather than after:
+positives were first placed with the phrase ending anywhere from 0 to 400 ms
+before the window edge, and a phrase ending *at* the edge scores high on
+exactly one frame — the next 80 ms pushes it out of the trailing sixteen. A
+model trained that way peaks beautifully and never fires, because the engine
+wants three frames in a row. Placement is now 0.16–0.64 s of trailing context,
+and the evaluator measures the resulting plateau instead of trusting it.
+
+**What it measures at.** 5,000 spoken wake words and 26,986 negatives — 15.0
+hours of audio — through the engine, at the default `sensitivity` of 0.6:
+
+| | ONNX | tflite |
+|---|---|---|
+| missed wake words | 6.70% | 6.70% |
+| fires on background, no speech | **0.000%** (0/1,000) | 0.000% |
+| fires on recorded human speech | **0.071%** — 1.29/hour | 0.071% |
+| fires on deliberate near misses | 8.7% | 8.8% |
+
+The near-miss corpus is adversarial by construction and is a sixth of the
+negatives, which no real room resembles; the recorded-speech row is the one
+that predicts how often an always-on listener interrupts someone. Both
+backends agree to 2.7e-06.
+
+That took two rounds, and the second was driven by a measurement rather than a
+hunch. Breaking the first model's false accepts down by phrase showed the
+inventory had been designed around the wrong confusion: `hey youtube` fired on
+1 clip in 106, while minimal pairs on the final syllable — `hey you tap`, one
+voicing feature from the wake word — fired on 88%, and `hey there` on 3.8%.
+Ten thousand more clips of the thirteen phrases that actually fired took the
+near-miss rate from 13.0% to 8.7%, recorded-speech false accepts from 1.89 to
+1.29 per hour, and `hey there` to zero, for 2.2 points of false-reject rate.
+That is the direction this product's own code already argues for: its
+confirmation-frames rule is documented as "the primary lever against
+unintended triggers on ambient talk."
+
+An intermediate attempt is recorded in the pipeline because it failed
+usefully: shifting the exported bias so the runtime's fixed 0.6 lands on a
+chosen false-reject target *tripled* false accepts on ordinary speech, 0.105%
+to 0.272%. Calibration is therefore used to compare epochs — comparing two
+epochs at a fixed 0.6 compares each at a different point on its own curve — and
+`--calibrate-operating-point` is off for export.
+
+`test_bundled_hey_youtab_model_ships_on_disk` is no longer deselected, and
+`run_all_gates.sh` now deselects nothing at all.
+`tests/tools/test_wake_word_model_assets.py` joins it: hashes, the tensor
+shapes openWakeWord reads back, backend agreement, and behaviour on committed
+held-out audio spanning clean, noisy, reverberant, near-miss and
+recorded-speech conditions. Both backends execute in required CI — ONNX
+already reached the runner as a transitive of the branding gate's OCR engine,
+and the tflite runtime is installed by a workflow step at the same pin the
+`wake` extra already carries, following this workflow's own recorded reason for
+keeping CI tooling out of the `dev` extra.
 
 ### Still outstanding on this row
 
