@@ -504,6 +504,38 @@ class TestDelegationCleanup:
                 child_finished.set()
 
         child.run_conversation.side_effect = run_conversation
+
+        # Hold `submit()` open until the child has actually registered its
+        # turn, so the timeout below is racing nothing.
+        #
+        # `_run_single_child` submits the child and then waits
+        # `_get_child_timeout()` seconds for it. That cap has to be short or
+        # the test would take as long as it, and a short cap leaves the wait
+        # racing three things that are not instant: spawning the pool's worker
+        # thread, acquiring the conversation lease, and registering the turn.
+        # On a loaded machine the wait wins and `run_conversation` has not run
+        # at all — six of twelve concurrent runs, measured. Nothing about that
+        # is the behaviour under test: the invariant here is that a child which
+        # times out *mid-turn* keeps its relay session until its own turn
+        # exits, and a child that never started has no turn to keep.
+        #
+        # Gating submit orders the two without changing either. The timeout
+        # still fires, on a child provably inside its turn.
+        from tools import daemon_pool
+
+        real_executor = daemon_pool.DaemonThreadPoolExecutor
+
+        class _StartGatedExecutor(real_executor):
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                if not child_started.wait(timeout=30):
+                    raise AssertionError(
+                        "child worker never began its turn within 30s"
+                    )
+                return future
+
+        monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", _StartGatedExecutor)
+
         try:
             result = _run_single_child(
                 task_index=0,

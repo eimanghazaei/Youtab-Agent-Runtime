@@ -28,7 +28,9 @@ voices are from the evaluation speaker pool, which training never saw.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
+import re
 import wave
 from pathlib import Path
 
@@ -258,3 +260,83 @@ class TestTheFixtureIsAuditable:
             assert row["label"] == int(label)
             assert row["source"], f"{name} has no recorded source"
         assert samples["meta"]["speaker_pool"] == "evaluation"
+
+
+# ── the device-verification path, qualified as far as hardware allows ────
+
+
+class TestDeviceVerificationIsPackaged:
+    """The parts of on-device verification that do not need a microphone.
+
+    The device runs themselves are pending — this build environment has no
+    audio hardware — so what CI can enforce is that the tool and its
+    instructions are present, consistent with each other, and able to report
+    the environment they would run in. That is the whole of the packaging;
+    only the physical run is outstanding, and `DEVICE_VERIFICATION.md` says so
+    in a table rather than leaving it implied.
+    """
+
+    @pytest.fixture(scope="class")
+    def module(self):
+        spec = importlib.util.spec_from_file_location(
+            "_verify_on_device",
+            Path(ww.__file__).parents[1] / "scripts" / "wakeword" / "verify_on_device.py",
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_the_instructions_ship_beside_the_tool(self, module):
+        doc = Path(module.__file__).with_name("DEVICE_VERIFICATION.md")
+        assert doc.is_file()
+        text = doc.read_text(encoding="utf-8")
+        for platform_name in ("Windows", "macOS"):
+            assert platform_name in text
+
+    def test_every_flag_the_instructions_tell_you_to_type_exists(self, module):
+        """Docs and tool cannot drift.
+
+        Only flags that appear inside a `verify_on_device.py` invocation are
+        judged -- the document also shows `uv pip install -e`, whose flags
+        belong to another program.
+        """
+        doc = Path(module.__file__).with_name("DEVICE_VERIFICATION.md")
+        text = doc.read_text(encoding="utf-8")
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        declared = set(re.findall(r'add_argument\(\s*"(--[a-z][a-z-]+)"', source))
+        assert declared, "no flags parsed out of the tool; the regex has rotted"
+
+        # Command lines, following backslash continuations to the end.
+        invocations = re.findall(
+            r"verify_on_device\.py((?:[^\n]|\\\n)*)", text
+        )
+        assert invocations, "the instructions show no invocation of the tool"
+        typed = {flag for block in invocations for flag in re.findall(r"--[a-z][a-z-]+", block)}
+        assert typed - declared == set(), (
+            f"documented but not implemented: {sorted(typed - declared)}"
+        )
+        for mode in ("--list-devices", "--check-capture", "--play-fixture", "--listen"):
+            assert mode in declared, f"{mode} is a documented mode but not implemented"
+            assert mode in typed, f"{mode} exists but no instruction tells you to run it"
+
+    def test_it_reports_the_environment_without_any_audio_device(self, module):
+        # No microphone is touched here, which is the point: an operator has to
+        # be able to read back which artifact and which backend a machine would
+        # use before plugging anything in.
+        env = module._environment()
+        assert env["inference_framework"] in {"onnx", "tflite"}
+        assert Path(env["model"]).is_file()
+        assert Path(env["model"]).parent == WAKEWORDS
+        assert 0.0 <= env["sensitivity"] <= 1.0
+        assert env["confirmation_frames"] >= 1
+
+    def test_the_playback_mode_has_an_expected_outcome_for_every_clip(self, module):
+        # --play-fixture scores each committed clip against `label`; a clip
+        # with no expected outcome would be played and silently not judged.
+        manifest = json.loads((module.FIXTURES / "samples.json").read_text(encoding="utf-8"))
+        assert manifest["samples"]
+        for row in manifest["samples"]:
+            assert row["label"] in (0, 1)
+            assert (module.FIXTURES / "audio" / row["file"]).is_file()
+        assert module.SAMPLE_RATE == 16000
+        assert module.FRAME == 1280

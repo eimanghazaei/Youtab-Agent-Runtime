@@ -22,6 +22,10 @@ required to say "hey youtab".
 - **Runtime:** openWakeWord's shared feature-extraction models (melspectrogram +
   embedding) are NOT bundled here — they are fetched once on first use by
   `tools/wake_word.py` via `openwakeword.utils.download_models()`.
+- **On-device checks:** `scripts/wakeword/DEVICE_VERIFICATION.md` is the
+  procedure for verifying the capture path on a real Windows or macOS
+  microphone — the one part no automated test can reach, because it starts
+  from a WAV file rather than a device.
 
 To use a different phrase, train your own model and point
 `wake_word.openwakeword.model` at its path, or set a built-in openWakeWord name
