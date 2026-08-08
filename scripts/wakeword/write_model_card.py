@@ -126,7 +126,7 @@ to tflite.
 |---|---|
 | Input | `{training["parity"]["onnx_input_shape"]}` float32 — openWakeWord embedding frames |
 | Output | `{training["parity"]["onnx_output_shape"]}` float32 — probability the phrase just finished |
-| Hidden layers | {hyper["hidden"]}, ReLU |
+| Convolutions | {hyper["channels"]} channels, kernels 5/5/3, ReLU |
 | Parameters | {training["parameters"]:,} |
 | Window | {measured["window_seconds"]:.2f} s |
 

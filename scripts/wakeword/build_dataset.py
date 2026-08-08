@@ -36,6 +36,7 @@ measuring.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import wave
@@ -55,6 +56,13 @@ EMBEDDING_DIM = 96
 #: broadband stationary source and one non-stationary source, so the held-out
 #: noise is not all of one kind.
 EVAL_NOISE = ("running_tap.wav", "dude_miaowing.wav")
+
+#: Of the four recordings evaluation does not use, these two are validation's.
+VALIDATION_NOISE = ("pink_noise.wav", "doing_the_dishes.wav")
+
+#: Speaker pools, mirrored from generate_speech so a split means the same
+#: thing in both stages.
+SPEAKER_POOLS = {"train": (0, 600), "validation": (600, 700), "eval": (700, 904)}
 
 #: Signal-to-noise range for the mixed-in background, in dB. The low end is
 #: deliberately hostile: 0 dB is a wake word spoken at the same level as the
@@ -214,6 +222,16 @@ def place_anywhere(utterance: np.ndarray, rng: random.Random) -> np.ndarray:
     return window
 
 
+def _speaker_bucket(path: Path) -> int:
+    """0-99 bucket from a hash of the Speech Commands speaker id.
+
+    The dataset's own convention: the id is the filename up to `_nohash_`, and
+    partitioning on a hash of it keeps every utterance by one speaker together.
+    """
+    speaker = path.name.split("_nohash_")[0]
+    return int(hashlib.sha1(speaker.encode("utf-8")).hexdigest(), 16) % 100
+
+
 def speech_commands_split(root: Path) -> tuple[list[Path], list[Path]]:
     """(train, evaluate) recorded-negative paths using the dataset's own lists.
 
@@ -247,11 +265,29 @@ def _source(path: Path) -> str:
     return f"{path.parent.name}/{path.name}"
 
 
-def _tts_clips(directory: Path) -> list[Path]:
+def _tts_clips(directory: Path, speakers: tuple[int, int] | None = None) -> list[Path]:
+    """Clips in ``directory``, optionally restricted to a speaker range.
+
+    The filter is what lets an earlier round's clips be reused after the
+    speaker pools were re-cut. Those were drawn from [0, 700) before a
+    validation pool was carved out of the top of that range; keeping only the
+    clips whose *both* mixed speakers fall inside the new training range
+    reuses about three quarters of them without leaking a validation voice
+    into training. Both speakers, not either: the generator interpolates
+    between the pair, so a clip mixing a training voice with a validation one
+    is partly a validation voice.
+    """
     if not directory.exists():
         return []
     manifest = directory / "manifest.jsonl"
     rows = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines() if line]
+    if speakers is not None:
+        lo, hi = speakers
+        rows = [
+            row
+            for row in rows
+            if lo <= row.get("speaker_1", -1) < hi and lo <= row.get("speaker_2", -1) < hi
+        ]
     return [directory / row["file"] for row in rows]
 
 
@@ -266,15 +302,47 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
     """
     rng = random.Random(args.seed)
     tts = Path(args.tts_root)
-    suffix = "train" if args.split == "train" else "eval"
+    suffix = args.split
+    speakers = SPEAKER_POOLS[args.split]
+
+    def clips(group: str) -> list[Path]:
+        """Clips for ``group``, from this split's directories and speakers.
+
+        A split reads its own directory first; where an earlier round only
+        produced a `_train` directory, it also reads that one under the
+        speaker filter, so nothing has to be regenerated to honour a re-cut
+        pool.
+        """
+        seen: list[Path] = []
+        # `<group>_<split>` plus any `<group>_<split>_<tag>` siblings, so a
+        # later round can add clips -- a new accent set, more of a phrase that
+        # was measured to confuse -- without renumbering an existing directory.
+        for directory in sorted(tts.glob(f"{group}_{suffix}")) + sorted(
+            tts.glob(f"{group}_{suffix}_*")
+        ):
+            seen.extend(_tts_clips(directory, speakers))
+        return seen
 
     sc_root = Path(args.speech_commands)
     sc_train, sc_eval = speech_commands_split(sc_root)
-    recorded = sc_train if args.split == "train" else sc_eval
+    if args.split == "eval":
+        recorded = sc_eval
+    else:
+        # Training and validation share the recorded-negative pool by
+        # partitioning it on a hash of the speaker id, the same way Speech
+        # Commands partitions its own lists, so no speaker crosses the line.
+        recorded = [p for p in sc_train if (_speaker_bucket(p) < 85) == (args.split == "train")]
 
     noise_dir = sc_root / "_background_noise_"
     all_noise = sorted(p for p in noise_dir.glob("*.wav"))
     noise_files = [p for p in all_noise if (p.name in EVAL_NOISE) == (args.split == "eval")]
+    if args.split == "validation":
+        # Validation gets its own two of the four non-evaluation recordings,
+        # so a threshold chosen on it is not chosen against the same room tone
+        # the model trained in.
+        noise_files = [p for p in noise_files if p.name in VALIDATION_NOISE]
+    elif args.split == "train":
+        noise_files = [p for p in noise_files if p.name not in VALIDATION_NOISE]
 
     rir_pool = build_rir_pool(args.rir_count, seed=args.seed + 7919)
     aug = Augmenter(noise_files, rir_pool, seed=args.seed + 104729)
@@ -298,16 +366,17 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
         params["label"] = label
         sink.add((augmented * 32767.0).astype(np.int16), label, group_id, category, params)
 
-    positives = _tts_clips(tts / f"positive_{suffix}")
+    positives = clips("positive")
     wanted = args.recorded_negatives if args.recorded_negatives > 0 else len(recorded)
     chosen = recorded if wanted >= len(recorded) else rng.sample(recorded, wanted)
     # The total is knowable before a single window exists, which is what lets
     # the sink preallocate instead of growing.
     sink.begin(
         len(positives) * args.positive_repeats
-        + len(_tts_clips(tts / f"hardneg_{suffix}")) * args.hard_negative_repeats
-        + len(_tts_clips(tts / f"confusable_{suffix}")) * args.confusable_repeats
-        + len(_tts_clips(tts / f"softneg_{suffix}"))
+        + len(clips("hardneg")) * args.hard_negative_repeats
+        + len(clips("confusable")) * args.confusable_repeats
+        + len(clips("softneg"))
+        + len(clips("common"))
         + len(chosen)
         + args.noise_only
     )
@@ -325,9 +394,13 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
         ("hardneg", args.hard_negative_repeats),
         ("confusable", args.confusable_repeats),
         ("softneg", 1),
+        ("common", 1),
     ):
-        category = "synthesized_speech" if group == "softneg" else "near_phrase"
-        for path in _tts_clips(tts / f"{group}_{suffix}"):
+        category = {
+            "softneg": "synthesized_speech",
+            "common": "common_speech",
+        }.get(group, "near_phrase")
+        for path in clips(group):
             audio = read_wav16(path)
             group_id += 1
             for _ in range(repeats):
@@ -462,7 +535,7 @@ def main() -> int:
     parser.add_argument("--tts-root", type=Path, required=True)
     parser.add_argument("--speech-commands", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--split", required=True, choices=("train", "eval"))
+    parser.add_argument("--split", required=True, choices=("train", "validation", "eval"))
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--positive-repeats", type=int, default=2)
     parser.add_argument("--hard-negative-repeats", type=int, default=2)

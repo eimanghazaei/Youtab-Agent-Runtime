@@ -136,6 +136,97 @@ CONFUSABLE_NEGATIVES: tuple[str, ...] = (
 )
 
 
+#: espeak-ng voices used to phonemize the wake phrase, each giving a different
+#: accent's realisation of it. The acoustic model is the same LibriTTS-R
+#: generator throughout; what changes is the phoneme string it is asked to
+#: speak, which is where accent lives for a phoneme-driven synthesizer.
+#:
+#: Every one of these was checked against the generator's own
+#: ``phoneme_id_map``: all twelve produce phonemes the model knows, so none of
+#: them silently degrades to dropped symbols. The realisations they give of
+#: "hey youtab" are genuinely different words to a detector:
+#:
+#:   en-us            hˈeɪ jˈuːɾæb    flapped /t/, General American
+#:   en-gb-x-rp       hˈeɪ jˈuːtæb    hard /t/, Received Pronunciation
+#:   en-gb-scotland   hˈeː jˈʉːtab    fronted /u/, monophthong /e/
+#:   en-029           hˈeɪ jˈuːtab    Caribbean
+#:   en-gb-x-gbcwmd   ˈeː jˈəutab     West Midlands, and h-dropping
+#:   en-au            hˈeɪ jˈuːɾɛəb   æ-tensing, shared with NZ/ZA/IN/NYC
+#:
+#: Weighted toward the two most common in this product's user base, but not so
+#: heavily that the others are token.
+ACCENTS: tuple[tuple[str, int], ...] = (
+    ("en-us", 6),
+    ("en-gb", 3),
+    ("en-gb-x-rp", 2),
+    ("en-au", 2),
+    ("en-in", 2),
+    ("en-gb-scotland", 1),
+    ("en-029", 1),
+    ("en-gb-x-gbclan", 1),
+    ("en-gb-x-gbcwmd", 1),
+    ("en-us-nyc", 1),
+    ("en-nz", 1),
+    ("en-za", 1),
+)
+
+#: Everyday speech that must never wake the agent. Distinct from
+#: SOFT_NEGATIVES, which are long read sentences: these are the short
+#: conversational fragments an always-on microphone hears all day, including
+#: the ones that start with "hey" and the ones that mention tabs, because those
+#: are the two things the wake phrase is made of.
+COMMON_PHRASES: tuple[str, ...] = (
+    "hey, how are you.",
+    "hey, can you hear me.",
+    "hey, come here a second.",
+    "hey, what time is it.",
+    "hey, look at this.",
+    "hey, did you see that.",
+    "hey, i'll call you back.",
+    "hey, no problem.",
+    "hey, hang on a moment.",
+    "hey, sorry about that.",
+    "hey guys.",
+    "hey everyone.",
+    "hey, that's great.",
+    "hey, over here.",
+    "open a new tab.",
+    "switch to the other tab.",
+    "close that tab please.",
+    "which tab was it in.",
+    "the tab is still loading.",
+    "check the network tab.",
+    "i left it open in a tab.",
+    "you can see it in the tab.",
+    "yes please.",
+    "no thank you.",
+    "one moment.",
+    "hold on.",
+    "never mind.",
+    "that's all for now.",
+    "okay then.",
+    "all right.",
+    "thanks a lot.",
+    "see you later.",
+    "good morning.",
+    "good night.",
+    "what do you think.",
+    "let me check.",
+    "i'm not sure.",
+    "sounds good to me.",
+    "can you repeat that.",
+    "just a second.",
+)
+
+
+def accents() -> list[str]:
+    """The accent voices expanded by weight, in a stable order."""
+    out: list[str] = []
+    for voice, weight in ACCENTS:
+        out.extend([voice] * weight)
+    return out
+
+
 def positive_texts() -> list[str]:
     """The positive spellings expanded by weight, in a stable order."""
     out: list[str] = []

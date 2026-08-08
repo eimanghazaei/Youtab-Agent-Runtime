@@ -53,28 +53,51 @@ for asset in assets.ALL_ASSETS:
 PY
 
 step "1. synthesize speech (multi-speaker, disjoint train/eval pools)"
-gen() { # group split count seed name
+gen() { # group split count seed name [--accents]
   "$python_bin" "$here/generate_speech.py" \
     --out "$tts/$5" --model "$downloads/en_US-libritts_r-medium.pt" \
     --generator-root "$generator" \
-    --group "$1" --split "$2" --count "$3" --seed "$4" --batch-size 32 \
+    --group "$1" --split "$2" --count "$3" --seed "$4" --batch-size 32 ${6:-} \
     || die "generate $5"
 }
-gen positive      train 20000 101 positive_train
-gen positive      eval   2500 102 positive_eval
-gen hard-negative train 12000 103 hardneg_train
-gen hard-negative eval   2000 104 hardneg_eval
-# The measured-confusable subset, synthesized again at a higher rate. Training
-# only; the evaluation set stays as it was so the numbers stay comparable.
-gen confusable    train 10000 107 confusable_train
-gen soft-negative train  6000 105 softneg_train
-gen soft-negative eval   1000 106 softneg_eval
+
+# Training pool, speakers [0, 600).
+gen positive      train      20000 101 positive_train
+gen hard-negative train      12000 103 hardneg_train
+gen soft-negative train       6000 105 softneg_train
+# The measured-confusable subset, synthesized again at a higher rate.
+gen confusable    train      10000 107 confusable_train
+# Accents, and the everyday phrases an always-on microphone actually hears.
+gen positive      train      12000 201 positive_train_accented   --accents
+gen confusable    train       8000 202 confusable_train_accented --accents
+gen common        train       6000 203 common_train              --accents
+
+# Validation pool, speakers [600, 700). Its own voices, for choosing the epoch
+# and the operating point without touching evaluation.
+gen positive      validation  3000 301 positive_validation   --accents
+gen hard-negative validation  2000 302 hardneg_validation    --accents
+gen confusable    validation  2000 303 confusable_validation --accents
+gen common        validation  1500 304 common_validation     --accents
+gen soft-negative validation   800 305 softneg_validation    --accents
+
+# Evaluation pool, speakers [700, 904). Built once and left alone.
+gen positive      eval        2500 102 positive_eval
+gen hard-negative eval        2000 104 hardneg_eval
+gen soft-negative eval        1000 106 softneg_eval
 
 step "2. build feature tensors"
 "$python_bin" "$here/build_dataset.py" \
   --tts-root "$tts" --speech-commands "$work/data/speech_commands" \
   --out "$features" --split train --seed 202 \
   --recorded-negatives 50000 --noise-only 4000 --rir-count 200 || die "train features"
+
+# Validation: its own speakers, its own share of the recorded-negative pool
+# (partitioned on a hash of the speaker id) and its own two room-tone
+# recordings. Both the epoch and the operating point are chosen on this.
+"$python_bin" "$here/build_dataset.py" \
+  --tts-root "$tts" --speech-commands "$work/data/speech_commands" \
+  --out "$features" --split validation --seed 404 \
+  --recorded-negatives 0 --noise-only 1500 --rir-count 80 || die "validation features"
 
 # The evaluation split keeps its raw audio: the measurement runs the real
 # engine over waveforms, not over precomputed features.
@@ -89,9 +112,9 @@ step "3. train, export both backends, check parity"
 # default's.
 "$python_bin" "$here/train_model.py" \
   --features "$features" --out "$models" \
-  --hidden 512 256 128 --epochs 50 --dropout 0.25 \
+  --channels 128 128 64 --epochs 60 --dropout 0.15 \
   --negative-weight 3.0 --hard-negative-weight 6.0 \
-  --max-false-reject 0.05 || die "training"
+  --calibrate-operating-point || die "training"
 
 step "4. measure through the product runtime"
 "$python_bin" "$here/evaluate_model.py" \

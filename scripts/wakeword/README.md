@@ -30,15 +30,27 @@ classifier is phrase-specific, and only the classifier is trained here; the
 front end is a pinned, unmodified upstream artifact shared with every other
 openWakeWord model.
 
-That makes the trained artifact small and auditable:
+That makes the trained artifact small and auditable. This table describes what
+this pipeline **builds**; what is currently **shipped** in `tools/wakewords/`
+is described by its own `MODEL_CARD.md`, which is generated from the run that
+produced those exact bytes. The two differ while a retrain is in flight, and
+the card is the one that describes the file a user loads.
 
 | | |
 |---|---|
 | Input | `(1, 16, 96)` float32 — 16 frames covering ~1.9 s of audio |
 | Output | `(1, 1)` float32 — probability the phrase just finished |
-| Layers | flatten, 3 hidden ReLU layers (512, 256, 128), sigmoid |
-| Parameters | 951,297 |
-| Arithmetic | ~0.95 M multiply-accumulates per 80 ms frame |
+| Layers | 3 temporal convolutions (128, 128, 64 channels; kernels 5, 5, 3), then 64-unit head, sigmoid |
+| Parameters | ~193,000 |
+
+The first version flattened all sixteen frames into one 1,536-wide vector and
+learned a dense map from it — 951,297 parameters, and it overfitted: training
+loss 0.037 against 8.7% held-out near-miss confusion. Convolving along the
+frame axis instead gives the same evidence a fifth of the parameters and the
+right inductive bias, because a five-frame kernel sees a 400 ms span wherever
+it lands rather than learning each position separately. That is exactly what
+the measured failures turned on: `hey you tap` against `hey youtab` is one
+voicing feature inside one 400 ms span.
 
 Input standardization is folded into the first layer at export, so both
 exported files are plain matrix multiplies with no backend-specific ops.
@@ -54,6 +66,7 @@ exported files are plain matrix multiplies with no backend-specific ops.
 | 4 | `evaluate_model.py` | Streams held-out audio through `tools.wake_word._OpenWakeWordEngine` and measures false accepts and false rejects. |
 | 5 | `make_test_fixture.py` | Cuts the committed regression fixture out of the evaluation set. |
 | 6 | `write_model_card.py` | Generates `tools/wakewords/MODEL_CARD.md` and `SHA256SUMS` from the run's own outputs. |
+| — | `verify_on_device.py` | Checks the capture path on a real microphone. See `DEVICE_VERIFICATION.md`; not part of the build. |
 
 `phrases.py` holds the phrase inventory shared by stages 1 and 4.
 
@@ -85,6 +98,21 @@ renderings are things people say:
 * `hey yoo tab` → `hˈeɪ jˈuː tˈæb` (hard /t/)
 * `hey you tab` → `hˈeɪ juː tˈæb` (unstressed carrier)
 
+**Accents.** For a phoneme-driven synthesizer, accent lives in the phoneme
+string rather than the acoustic model, so the same LibriTTS-R generator covers
+twelve English varieties by phonemizing through their espeak-ng voices. All
+twelve were checked against the generator's own `phoneme_id_map`, so none of
+them silently degrades to dropped symbols:
+
+| voice | "hey youtab" |
+|---|---|
+| `en-us` | `hˈeɪ jˈuːɾæb` — flapped /t/ |
+| `en-gb-x-rp` | `hˈeɪ jˈuːtæb` — hard /t/ |
+| `en-gb-scotland` | `hˈeː jˈʉːtab` — fronted /u/, monophthong /e/ |
+| `en-029` | `hˈeɪ jˈuːtab` — Caribbean |
+| `en-gb-x-gbcwmd` | `ˈeː jˈəutab` — West Midlands, h-dropping |
+| `en-au` / `en-nz` / `en-za` / `en-in` / `en-us-nyc` | `hˈeɪ jˈuːɾɛəb` — æ-tensing |
+
 ### Negatives
 
 Three kinds, because they fail differently:
@@ -104,6 +132,11 @@ Three kinds, because they fail differently:
   What actually fired was minimal pairs on the final syllable (`hey you tap`,
   one voicing feature away, at 88%) and the frame `hey <something> tab`. The
   extra clips go where the errors are.
+* **Common phrases** — the short conversational fragments an always-on
+  microphone hears all day, including the ones that begin with "hey" and the
+  ones that mention tabs, since those are the two things the wake phrase is
+  made of: `hey, how are you`, `hey guys`, `open a new tab`, `check the
+  network tab`, `just a second`.
 * **Recorded human speech** — every Speech Commands utterance, sometimes two
   concatenated. Real microphones, real rooms, 2,618 speakers.
 * **Background only** — room tone with no speech at all.
@@ -112,15 +145,23 @@ Three kinds, because they fail differently:
 
 Disjoint by source, not by shuffling:
 
-| | Train | Evaluate |
-|---|---|---|
-| Synthesized voices | speakers `[0, 700)` | speakers `[700, 904)` |
-| Recorded speech | everything not in the published lists | `validation_list.txt` + `testing_list.txt` (speaker-disjoint by construction) |
-| Background noise | `doing_the_dishes`, `exercise_bike`, `pink_noise`, `white_noise` | `running_tap`, `dude_miaowing` |
-| Room impulse responses | seeded pool A | seeded pool B |
+| | Train | Validate | Evaluate |
+|---|---|---|---|
+| Synthesized voices | speakers `[0, 600)` | `[600, 700)` | `[700, 904)` |
+| Recorded speech | 1,779 speakers | 333 speakers | 506 speakers (the published `validation_list` + `testing_list`) |
+| Background noise | `exercise_bike`, `white_noise` | `doing_the_dishes`, `pink_noise` | `running_tap`, `dude_miaowing` |
+| Room impulse responses | seeded pool A | seeded pool B | seeded pool C |
 
-No voice, room or noise recording is shared between fitting and measuring, so
-the reported false-reject rate is a rate on voices the model has never heard.
+Three pools, not two. The middle one exists because **both** the epoch and the
+operating threshold are chosen, and choosing them on a random split of the
+training windows is choosing them on voices the model has already heard. The
+recorded-speech pools are partitioned on a hash of the speaker id, the same
+convention Speech Commands uses for its own lists; the three sets were checked
+to share zero speakers pairwise.
+
+Evaluation is measured once, at the end, and is never used to choose anything.
+No voice, room or noise recording is shared between fitting, selecting and
+measuring.
 
 ### Augmentation
 
@@ -154,20 +195,37 @@ actually achieves rather than assuming one.
 
 ### Choosing the epoch, and choosing the threshold
 
-Two decisions that look like one. Epochs are compared at a **common
-false-reject rate** rather than at the runtime's fixed 0.6, because a trained
-sigmoid lands wherever the loss put it and comparing two epochs at 0.6 compares
-each at a different point on its own curve. That is not a technicality: an
-earlier version ranked at a fixed 0.6 with a constraint that no epoch met, so
-the constraint silently degenerated and the run selected an epoch with 9.5%
-false rejects.
+Both are chosen on the **validation** split, against the shipping targets
+themselves rather than a weighted sum of them:
 
-Shifting the exported bias so 0.6 *becomes* that comparison point is a separate
-decision, and `--calibrate-operating-point` is off because it measured worse:
-targeting a 4–5% false-reject rate moved the operating point to a part of the
-curve where false accepts on ordinary recorded speech tripled, 0.105% to
-0.272%, to buy two points of false-reject rate. The trained placement is
-better, so it is what ships.
+| target | |
+|---|---|
+| missed wake words | ≤ 5% |
+| activation on recorded human speech | ≤ 0.2 per hour |
+| activation on deliberate near misses | ≤ 2% |
+| activation on background alone | 0 |
+
+For each epoch the search finds the **lowest** threshold at which every
+false-accept target holds — lowest because raising the threshold only ever
+costs missed wake words, so among the thresholds that qualify the smallest is
+the cheapest. The epoch's score is the false-reject rate that threshold buys,
+and an epoch where no threshold qualifies cannot be selected at all. The chosen
+threshold is then folded into the exported bias, so the runtime's fixed
+`sensitivity` of 0.6 *is* that operating point.
+
+Two earlier versions of this are worth recording, because both failed quietly
+rather than loudly:
+
+* Ranking epochs at a fixed 0.6 compares each at whatever point on its own
+  curve the loss happened to land it, which is not a comparison. The version
+  that did this had a false-reject constraint no epoch met, so it silently
+  degenerated into the weighted sum it was meant to replace and selected an
+  epoch at 9.5% false rejects.
+* Calibrating to a false-reject *target* — rather than to the false-accept
+  budget — moved the operating point onto a part of the curve where false
+  accepts on ordinary recorded speech tripled, 0.105% to 0.272%, to buy two
+  points of false-reject rate. The budget has to be on the errors that happen
+  while nobody is talking to the agent.
 
 ## How the model is measured
 

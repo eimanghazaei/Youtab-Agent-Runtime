@@ -45,10 +45,18 @@ _TARGET_RATE = 16000
 _RESAMPLE_UP = 320
 _RESAMPLE_DOWN = 441
 
-#: Speakers [0, SPEAKER_SPLIT) train; [SPEAKER_SPLIT, 904) evaluate. Fixed
-#: here rather than passed in, so the split cannot drift between the run that
-#: trained the shipped model and a later run that re-measures it.
-SPEAKER_SPLIT = 700
+#: Three disjoint speaker pools, fixed here rather than passed in so they
+#: cannot drift between the run that trains a model and the run that measures
+#: it. Evaluation keeps the range it has always had, so measurements stay
+#: comparable across rounds; the training range was narrowed to carve out a
+#: validation pool, because selecting an epoch *and* an operating point on a
+#: random split of the training windows is selecting on voices the model has
+#: already heard.
+SPEAKER_POOLS = {
+    "train": (0, 600),
+    "validation": (600, 700),
+    "eval": (700, 904),
+}
 SPEAKER_COUNT = 904
 
 #: Speaking-rate multipliers. Lower is faster. Spanning 0.7-1.3 covers the
@@ -96,6 +104,7 @@ def generate(
     speaker_lo: int,
     speaker_hi: int,
     seed: int,
+    accents: list[str] | None = None,
     batch_size: int = 16,
 ) -> Path:
     """Synthesize ``count`` clips of ``texts`` from speakers [lo, hi).
@@ -111,8 +120,29 @@ def generate(
 
     out_dir.mkdir(parents=True, exist_ok=True)
     model, config = _load_generator(model_path)
-    voice = config["espeak"]["voice"]
     rng = random.Random(seed)
+    accent_pool = list(accents) if accents else [config["espeak"]["voice"]]
+
+    # Phonemize every (accent, text) pair once, up front, and never call espeak
+    # again.
+    #
+    # `get_phonemes` drives a module-level espeak singleton and switches its
+    # voice on every call. Doing that per clip segfaults: four of eight
+    # generation groups died with SIGSEGV, and a seeded repro crashed on one
+    # seed while surviving 20,000 calls on two others. It is not a bad input --
+    # every accent-by-text pair was swept individually without a crash -- so it
+    # is state accumulating across voice switches inside the C library, which
+    # this pipeline cannot fix from the outside.
+    #
+    # It can avoid it. The inventory is a dozen accents by a few dozen phrases,
+    # so the whole cross-product is a few hundred calls, in the regime that
+    # measured safe; the hot loop then does dictionary lookups. Faster, too.
+    phoneme_cache = {
+        (accent, text): get_phonemes(accent, config, text, False, False)
+        for accent in dict.fromkeys(accent_pool)
+        for text in dict.fromkeys(texts)
+    }
+    print(f"  phonemized {len(phoneme_cache)} accent/text pairs up front")
 
     manifest_path = out_dir / "manifest.jsonl"
     written = 0
@@ -122,6 +152,7 @@ def generate(
             rows = [
                 {
                     "text": rng.choice(texts),
+                    "accent": rng.choice(accent_pool),
                     "speaker_1": rng.randrange(speaker_lo, speaker_hi),
                     "speaker_2": rng.randrange(speaker_lo, speaker_hi),
                     "slerp_weight": rng.choice(_SLERP_WEIGHTS),
@@ -140,7 +171,9 @@ def generate(
                 for key in ("slerp_weight", "length_scale", "noise_scale", "noise_scale_w"):
                     row[key] = head[key]
 
-            phoneme_ids = [get_phonemes(voice, config, r["text"], False, False) for r in rows]
+            # Accent enters here: the acoustic model is the same throughout,
+            # and what differs is the phoneme string it is asked to speak.
+            phoneme_ids = [list(phoneme_cache[(r["accent"], r["text"])]) for r in rows]
             longest = max(len(p) for p in phoneme_ids)
             phoneme_ids = [p + [1] * (longest - len(p)) for p in phoneme_ids]
 
@@ -186,10 +219,18 @@ def main() -> int:
     parser.add_argument(
         "--group",
         required=True,
-        choices=("positive", "hard-negative", "confusable", "soft-negative"),
+        choices=("positive", "hard-negative", "confusable", "soft-negative", "common"),
     )
     parser.add_argument(
-        "--split", required=True, choices=("train", "eval"), help="speaker pool"
+        "--split",
+        required=True,
+        choices=tuple(SPEAKER_POOLS),
+        help="which disjoint speaker pool to draw voices from",
+    )
+    parser.add_argument(
+        "--accents",
+        action="store_true",
+        help="phonemize across the weighted accent set instead of en-us only",
     )
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
@@ -204,10 +245,15 @@ def main() -> int:
         "hard-negative": list(phrases.HARD_NEGATIVES),
         "confusable": list(phrases.CONFUSABLE_NEGATIVES),
         "soft-negative": list(phrases.SOFT_NEGATIVES),
+        "common": list(phrases.COMMON_PHRASES),
     }[args.group]
 
-    lo, hi = (0, SPEAKER_SPLIT) if args.split == "train" else (SPEAKER_SPLIT, SPEAKER_COUNT)
-    print(f"{args.group}/{args.split}: {args.count} clips from speakers [{lo}, {hi})")
+    lo, hi = SPEAKER_POOLS[args.split]
+    accent_pool = phrases.accents() if args.accents else None
+    print(
+        f"{args.group}/{args.split}: {args.count} clips from speakers [{lo}, {hi})"
+        + (f" across {len(set(accent_pool))} accents" if accent_pool else "")
+    )
     manifest = generate(
         texts=texts,
         out_dir=args.out,
@@ -217,6 +263,7 @@ def main() -> int:
         speaker_lo=lo,
         speaker_hi=hi,
         seed=args.seed,
+        accents=accent_pool,
         batch_size=args.batch_size,
     )
     print(f"manifest: {manifest}")
