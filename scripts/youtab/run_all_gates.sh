@@ -109,10 +109,20 @@ begin unit-integration-e2e
 # another model in either: an openWakeWord model only detects the phrase it
 # was trained on. The model is now genuinely trained (`scripts/wakeword/`),
 # both artifacts ship, and the test runs here like every other.
+#
+# `--file-retries 0` is load-bearing, not tidiness. The runner defaults to one
+# automatic re-run of any failing FILE (`_DEFAULT_FILE_RETRIES = 1`): a file
+# that fails then passes is counted as passed and reported as FLAKY. That is a
+# reasonable default for a developer's local loop, but in the REQUIRED gate it
+# means green can be reached on the second attempt — and a test that only
+# passes on retry is not genuinely green. Every test here must pass on its
+# first execution. Do not remove this flag to quiet an intermittent failure;
+# fix the flake at its root cause instead.
 scripts/run_tests.sh \
   tests/youtab_runtime \
   tests/youtab_agent_cli \
   tests/tools \
+  --file-retries 0 \
   -q | tee "$evidence_dir/unit-integration-e2e.log"
 record unit-integration-e2e $?
 

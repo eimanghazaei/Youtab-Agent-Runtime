@@ -123,6 +123,39 @@ for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT T
   fi
 done
 
+
+# ── Runner configuration variables (computed before we drop env) ───────────
+# `run_tests_parallel.py` advertises each of these in its own --help text
+# ("env: YOUTAB_AGENT_TEST_FILE_RETRIES", "Env: YOUTAB_AGENT_TEST_SLICE (format:
+# I/N)", ...). The `env -i` below starts from an EMPTY environment, so any knob
+# not named here never reaches the runner: it falls back to its built-in
+# default while the caller believes the override took. That is not a cosmetic
+# gap. Setting the retry knob to 0 ahead of this script silently kept
+# `_DEFAULT_FILE_RETRIES = 1`, so a run the operator had labelled
+# "file-retries=0" still re-ran failing files and still reported files that
+# passed only on the retry — a hidden retry produced by the plumbing, not by
+# the flag. Keep this list in sync with the runner; the consistency test in
+# tests/youtab_runtime/test_ci_runner_contract.py fails if it drifts.
+#
+# These are test-runner configuration, not credentials, so forwarding them
+# leaves the isolation intent intact. Each is forwarded only when actually
+# set, so a run with none of them set is byte-for-byte unchanged.
+RUNNER_ENV=()
+for _runner_var in \
+  YOUTAB_AGENT_TEST_FILE_RETRIES \
+  YOUTAB_AGENT_TEST_FILE_TIMEOUT \
+  YOUTAB_AGENT_TEST_IMAGE \
+  YOUTAB_AGENT_TEST_PATHS \
+  YOUTAB_AGENT_TEST_SLICE \
+  YOUTAB_AGENT_TEST_WORKERS
+do
+  # -n (not :+) so an explicit "0" forwards: it is a meaningful value here,
+  # and it is the exact value whose loss caused the hidden retry.
+  if [ -n "${!_runner_var:-}" ]; then
+    RUNNER_ENV+=("$_runner_var=${!_runner_var}")
+  fi
+done
+
 # ── Run in hermetic env ──────────────────────────────────────────────────────
 # env -i: start with empty environment, opt-in only what we need.
 # No credential var can leak — you'd have to explicitly add it here.
@@ -151,6 +184,7 @@ exec env -i \
   PYTHONUTF8=1 \
   ${YOUTAB_AGENT_RUN_SLOW_PET_TESTS:+YOUTAB_AGENT_RUN_SLOW_PET_TESTS="$YOUTAB_AGENT_RUN_SLOW_PET_TESTS"} \
   ${YOUTAB_AGENT_E2E_BROWSER:+YOUTAB_AGENT_E2E_BROWSER="$YOUTAB_AGENT_E2E_BROWSER"} \
+  ${RUNNER_ENV[@]+"${RUNNER_ENV[@]}"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

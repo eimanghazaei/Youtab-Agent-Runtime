@@ -554,6 +554,48 @@ and the tflite runtime is installed by a workflow step at the same pin the
 `wake` extra already carries, following this workflow's own recorded reason for
 keeping CI tooling out of the `dev` extra.
 
+### Closed: the required gate now proves a first-execution pass
+
+A repeated-suite run labelled `file-retries=0` still reported *"2 FLAKY files
+(failed once, passed on retry)"*. The contradiction was real and had two
+independent causes, neither of which was the flag itself:
+
+1. **The knob never reached the runner.** `scripts/run_tests.sh` execs
+   `run_tests_parallel.py` under `env -i` — an empty environment with an
+   explicit opt-in whitelist. Every one of the six `YOUTAB_AGENT_TEST_*`
+   variables the runner documents in its own `--help` was absent from that
+   whitelist, so `YOUTAB_AGENT_TEST_FILE_RETRIES=0` was discarded at the
+   boundary and the runner fell back to `_DEFAULT_FILE_RETRIES = 1`. The
+   override read as accepted and did nothing. Measured directly: with the old
+   whitelist the runner sees `None`, with the forwarding loop it sees `'0'`,
+   and with nothing set no `YOUTAB_AGENT_TEST_*` variable enters the
+   environment at all, so the isolation intent is unchanged.
+2. **The required gate never asked for it.** `run_all_gates.sh` invoked
+   `run_tests.sh` without `--file-retries 0`, so the gate ran with the retry
+   default regardless of any environment variable. Green was reachable on a
+   second attempt.
+
+The runner never printed a `file-retries=` header, so the header in that log
+came from the operator's wrapper, not from the runner — which is why the log
+looked self-contradictory rather than simply wrong.
+
+Both are fixed. `tests/youtab_runtime/test_ci_runner_contract.py` holds three
+tests: the wrapper must forward every knob the runner reads, the required gate
+must pass `--file-retries 0`, and `--file-retries 0` must let a first-attempt
+failure fail. The first two are mutation-proved — removing the forwarded name,
+and removing the flag, each turns its test RED and restoring turns it GREEN.
+Each parse asserts it found something before asserting a subset relation, so a
+regex that stops matching fails loudly instead of passing vacuously.
+
+The tests live in `tests/youtab_runtime/` deliberately: required CI collects
+only `tests/youtab_runtime`, `tests/youtab_agent_cli` and `tests/tools`, so a
+test placed at `tests/` root would never have run.
+
+Consequence to expect: retries are now off in the required gate, so any
+genuine flake surfaces as a red check instead of a FLAKY note. That is the
+intended behaviour. A red run names the file; fix it at root cause rather than
+restoring the retry.
+
 ### Still outstanding on this row
 
 - `GET`/`PUT /api/config` — **closed**, see defects 3–5 above.
