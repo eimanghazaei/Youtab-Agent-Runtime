@@ -355,10 +355,27 @@ case "$status_none" in
   *) fail "no client certificate should be refused 400, got '${status_none}'" ;;
 esac
 
+# An untrusted certificate can be refused in either of two places -- the
+# connection can be dropped during the handshake, or it can complete and the
+# request be answered 400 -- and which one happens depends on how the chain
+# fails, not on whether the control is working. Both are refusals, so both
+# pass. What must not happen is 403: reaching the access phase means the
+# certificate was accepted, which is exactly what an origin with
+# `ssl_verify_client off` would do with this same request.
 status_rogue="$(http_status rogue-cert)"
 case "$status_rogue" in
-  *400*) pass "certificate not signed by the origin-pull CA -- refused ${status_rogue}" ;;
-  *) fail "an untrusted client certificate should be refused 400, got '${status_rogue}'" ;;
+  *403*|*200*)
+    fail "an untrusted client certificate was ACCEPTED (${status_rogue}); origin pulls are not verifying"
+    ;;
+  "")
+    pass "certificate not signed by the origin-pull CA -- connection refused, no HTTP response"
+    ;;
+  *400*|*49[0-9]*)
+    pass "certificate not signed by the origin-pull CA -- refused ${status_rogue}"
+    ;;
+  *)
+    fail "unexpected response to an untrusted client certificate: '${status_rogue}'"
+    ;;
 esac
 
 status_valid="$(http_status client-cert)"
