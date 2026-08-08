@@ -201,12 +201,26 @@ pass "nginx is listening on :443 (artifact) and :9443 (legacy control)"
 # ---------------------------------------------------------------------------
 # Handshakes.
 #
-# Success is read from the `New, <protocol>, Cipher is <cipher>` line, NOT
-# from the SSL-Session block. s_client prints `Protocol : TLSv1` in that block
-# even when the handshake was refused -- it echoes what was configured, not
-# what was negotiated -- so a test keyed on it would report every rejection as
-# an acceptance. On a refused handshake this line reads `New, (NONE), Cipher
-# is (NONE)`, which is unambiguous.
+# Two different lines of s_client output are needed, because each one is
+# unreliable in a different way and neither is enough alone:
+#
+#   `New, <version>, Cipher is <cipher>`
+#       Trustworthy for DID THE HANDSHAKE COMPLETE -- it reads `(NONE)` when
+#       it did not. Useless for WHICH PROTOCOL: that field is
+#       SSL_CIPHER_get_version(), the version the CIPHER was introduced in.
+#       ECDHE-RSA-AES256-SHA reports `TLSv1.0` on a TLS 1.1 session, so a
+#       gate keyed on it reports TLS 1.1 as TLS 1.0 and fails a correct run.
+#
+#   `    Protocol  : <version>` in the SSL-Session block
+#       The negotiated protocol -- but printed even for a REFUSED handshake,
+#       where it echoes what the client asked for. Read on its own it reports
+#       every rejection as an acceptance.
+#
+# So: completion comes from the first, protocol from the second, and the
+# second is only consulted once the first says a handshake happened.
+#
+# Protocols are matched as patterns because OpenSSL spells TLS 1.0 both
+# `TLSv1` and `TLSv1.0` depending on which call produced the string.
 # ---------------------------------------------------------------------------
 ATTEMPT_RC=0
 ATTEMPT_PROTO=""
@@ -220,23 +234,24 @@ attempt() { # port, protocol flag, [no-cert]
   [ "$mode" = "with-cert" ] && args+=(-cert "$CERTS/client.crt" -key "$CERTS/client.key")
   out="$(openssl s_client "${args[@]}" </dev/null 2>&1)"
   ATTEMPT_RC=$?
-  ATTEMPT_PROTO="$(printf '%s\n' "$out" | sed -n 's/^New, \(.*\), Cipher is .*$/\1/p' | head -1)"
   ATTEMPT_CIPHER="$(printf '%s\n' "$out" | sed -n 's/^New, .*, Cipher is \(.*\)$/\1/p' | head -1)"
+  ATTEMPT_PROTO="$(printf '%s\n' "$out" | sed -n 's/^ *Protocol *: *//p' | head -1)"
   ATTEMPT_OK=0
   if [ "$ATTEMPT_RC" -eq 0 ] && [ -n "$ATTEMPT_CIPHER" ] && [ "$ATTEMPT_CIPHER" != "(NONE)" ]; then
     ATTEMPT_OK=1
   fi
 }
 
-evidence() { printf '        openssl: rc=%s protocol=%s cipher=%s\n' \
-  "$ATTEMPT_RC" "${ATTEMPT_PROTO:-none}" "${ATTEMPT_CIPHER:-none}"; }
+evidence() { printf '        openssl: rc=%s handshake=%s protocol=%s cipher=%s\n' \
+  "$ATTEMPT_RC" "$([ "$ATTEMPT_OK" -eq 1 ] && echo completed || echo refused)" \
+  "${ATTEMPT_PROTO:-none}" "${ATTEMPT_CIPHER:-none}"; }
 
-expect_accept() { # label, port, flag, expected protocol
+expect_accept() { # label, port, flag, extended regex the protocol must match
   attempt "$2" "$3"
-  if [ "$ATTEMPT_OK" -eq 1 ] && [ "$ATTEMPT_PROTO" = "$4" ]; then
+  if [ "$ATTEMPT_OK" -eq 1 ] && printf '%s' "$ATTEMPT_PROTO" | grep -Eq "$4"; then
     pass "$1"
   else
-    fail "$1 -- expected a completed $4 handshake"
+    fail "$1 -- expected a completed handshake with a protocol matching $4"
   fi
   evidence
 }
@@ -252,8 +267,8 @@ expect_reject() { # label, port, flag
 }
 
 section "non-vacuity preflight: legacy TLS must be observable in this environment"
-expect_accept "mutated control :9443 negotiates TLS 1.0" 9443 -tls1 TLSv1
-expect_accept "mutated control :9443 negotiates TLS 1.1" 9443 -tls1_1 TLSv1.1
+expect_accept "mutated control :9443 negotiates TLS 1.0" 9443 -tls1 '^TLSv1(\.0)?$'
+expect_accept "mutated control :9443 negotiates TLS 1.1" 9443 -tls1_1 '^TLSv1\.1$'
 if [ "$failures" -ne 0 ]; then
   printf '\nFAIL: legacy TLS could not be negotiated even against a server that permits it.\n'
   printf '      This environment cannot observe the exposure, so the rejections below\n'
@@ -263,8 +278,8 @@ if [ "$failures" -ne 0 ]; then
 fi
 
 section "handshake matrix against the committed artifact (:443)"
-expect_accept "TLS 1.2 ACCEPTED" 443 -tls1_2 TLSv1.2
-expect_accept "TLS 1.3 ACCEPTED" 443 -tls1_3 TLSv1.3
+expect_accept "TLS 1.2 ACCEPTED" 443 -tls1_2 '^TLSv1\.2$'
+expect_accept "TLS 1.3 ACCEPTED" 443 -tls1_3 '^TLSv1\.3$'
 expect_reject "TLS 1.0 REJECTED" 443 -tls1
 expect_reject "TLS 1.1 REJECTED" 443 -tls1_1
 
