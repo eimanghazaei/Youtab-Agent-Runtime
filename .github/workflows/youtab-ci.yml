@@ -82,6 +82,21 @@ jobs:
         env:
           YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
         run: scripts/youtab/run_all_gates.sh
+      # In this job rather than a job of its own, because `python-security` is
+      # a required check and a new job would not be: a TLS floor proved by a
+      # check nobody has to pass is a floor that can be removed by a green PR.
+      #
+      # Not in `run_all_gates.sh` either. That script runs on workstations,
+      # where a missing binary is reported as a gate failure -- correctly, but
+      # it would mean every local run of every gate went red for want of a
+      # Docker daemon that this repository does not otherwise need.
+      #
+      # `!cancelled()` so the TLS evidence is produced even when an unrelated
+      # gate above fails. The job is still red either way; this only decides
+      # whether the run tells you about both.
+      - name: Origin TLS floor -- nginx 1.18 config test and real handshake matrix
+        if: ${{ !cancelled() }}
+        run: scripts/youtab/nginx_tls_gate.sh
 
   javascript:
     runs-on: ubuntu-latest

@@ -116,6 +116,21 @@ server {{
     ssl_certificate     {certificate};
     ssl_certificate_key {certificate_key};
 
+    # The TLS floor, stated rather than inherited. Omitting `ssl_protocols`
+    # does not mean "modern TLS"; it means nginx's compiled default, and on
+    # 1.18 -- the deployment target -- that default is
+    # `ssl_protocols TLSv1 TLSv1.1 TLSv1.2;`. So the directive's ABSENCE was
+    # the exposure: this origin served TLS 1.0 and TLS 1.1, both deprecated by
+    # RFC 8996, on a control plane that can start and stop the gateway.
+    #
+    # Written inside the server block rather than once in `http {{}}` on
+    # purpose. An http-level floor is inherited only by server blocks that do
+    # not set their own, so it is one unrelated `include` away from being
+    # silently overridden -- and the failure is invisible, because the
+    # weakened block still starts and still serves. A floor stated here is a
+    # floor this artifact can be read for and tested against.
+    ssl_protocols TLSv1.2 TLSv1.3;
+
     # Authenticated Origin Pulls. The edge presents a client certificate and
     # the origin verifies it, which is the control that actually proves a
     # request came from Cloudflare rather than merely from an address that
@@ -167,3 +182,34 @@ server {{
     }}
 }}
 """
+
+
+#: Where the rendered artifact is committed, relative to the repository root.
+#: Named here rather than in the script and again in the test, so the two
+#: cannot come to disagree about which file is the generated one.
+AGENT_ORIGIN_CONF_PATH: Final[str] = "infrastructure/nginx/agent.youtab.io.conf"
+
+#: The arguments the committed artifact was rendered with. These were
+#: previously written out at each call site -- the script that regenerates the
+#: file, and the test that checks it -- which is a drift seam of exactly the
+#: kind this module exists to close: a test rendering `ssl_verify_client` from
+#: one set of paths and the host running another would agree with itself and
+#: prove nothing about what is deployed.
+AGENT_ORIGIN_PARAMETERS: Final[dict[str, str]] = {
+    "server_name": "agent.youtab.io",
+    "upstream": "127.0.0.1:8081",
+    "certificate": "/etc/ssl/cloudflare/agent.youtab.io.crt",
+    "certificate_key": "/etc/ssl/cloudflare/agent.youtab.io.key",
+    "origin_pull_ca": "/etc/ssl/cloudflare/origin-pull-ca.pem",
+}
+
+
+def render_agent_origin_conf() -> str:
+    """The exact text of :data:`AGENT_ORIGIN_CONF_PATH`.
+
+    The committed file is this function's return value and nothing else. It is
+    checked byte-for-byte in CI, so a hand-edit on the artifact fails rather
+    than quietly becoming the thing that is deployed -- which is how the
+    ``http2 on;`` correction happened on the host last time.
+    """
+    return render_nginx_server_block(**AGENT_ORIGIN_PARAMETERS)
