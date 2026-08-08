@@ -222,6 +222,10 @@ pass "nginx is listening on :443 (artifact) and :9443 (legacy control)"
 # Protocols are matched as patterns because OpenSSL spells TLS 1.0 both
 # `TLSv1` and `TLSv1.0` depending on which call produced the string.
 # ---------------------------------------------------------------------------
+http_request() {
+  printf 'GET /api/health HTTP/1.1\r\nHost: agent.youtab.io\r\nConnection: close\r\n\r\n'
+}
+
 ATTEMPT_RC=0
 ATTEMPT_PROTO=""
 ATTEMPT_CIPHER=""
@@ -232,19 +236,40 @@ attempt() { # port, protocol flag, [no-cert]
               -CAfile "$CERTS/origin-pull-ca.pem" "$flag"
               -cipher "DEFAULT@SECLEVEL=0")
   [ "$mode" = "with-cert" ] && args+=(-cert "$CERTS/client.crt" -key "$CERTS/client.key")
-  out="$(openssl s_client "${args[@]}" </dev/null 2>&1)"
+  # A real request rather than /dev/null. Closing immediately left TLS 1.3
+  # without a session block at all -- the ticket arrives post-handshake, so
+  # s_client had nothing to print and the protocol read back empty.
+  out="$(http_request | openssl s_client "${args[@]}" 2>&1)"
   ATTEMPT_RC=$?
   ATTEMPT_CIPHER="$(printf '%s\n' "$out" | sed -n 's/^New, .*, Cipher is \(.*\)$/\1/p' | head -1)"
   ATTEMPT_PROTO="$(printf '%s\n' "$out" | sed -n 's/^ *Protocol *: *//p' | head -1)"
+  if [ -z "$ATTEMPT_PROTO" ]; then
+    # Fall back to the cipher's own version. It under-reports (a TLS 1.0-era
+    # cipher on a TLS 1.2 session reads TLSv1.0), so it can only turn a real
+    # pass into a failure, never a failure into a pass -- and every attempt
+    # here pins min == max protocol, so the negotiated version is not in
+    # doubt anyway.
+    ATTEMPT_PROTO="$(printf '%s\n' "$out" | sed -n 's/^New, \(.*\), Cipher is .*$/\1/p' | head -1)"
+    [ "$ATTEMPT_PROTO" = "(NONE)" ] && ATTEMPT_PROTO=""
+  fi
   ATTEMPT_OK=0
   if [ "$ATTEMPT_RC" -eq 0 ] && [ -n "$ATTEMPT_CIPHER" ] && [ "$ATTEMPT_CIPHER" != "(NONE)" ]; then
     ATTEMPT_OK=1
   fi
 }
 
-evidence() { printf '        openssl: rc=%s handshake=%s protocol=%s cipher=%s\n' \
-  "$ATTEMPT_RC" "$([ "$ATTEMPT_OK" -eq 1 ] && echo completed || echo refused)" \
-  "${ATTEMPT_PROTO:-none}" "${ATTEMPT_CIPHER:-none}"; }
+evidence() {
+  if [ "$ATTEMPT_OK" -eq 1 ]; then
+    printf '        openssl: rc=%s handshake=completed protocol=%s cipher=%s\n' \
+      "$ATTEMPT_RC" "${ATTEMPT_PROTO:-unknown}" "${ATTEMPT_CIPHER:-none}"
+  else
+    # Not "protocol=..." here: on a refused handshake s_client echoes the
+    # version that was REQUESTED, and printing it next to the word refused
+    # reads as though it had been negotiated.
+    printf '        openssl: rc=%s handshake=refused (requested %s, cipher %s)\n' \
+      "$ATTEMPT_RC" "${ATTEMPT_PROTO:-unknown}" "${ATTEMPT_CIPHER:-none}"
+  fi
+}
 
 expect_accept() { # label, port, flag, extended regex the protocol must match
   attempt "$2" "$3"
@@ -283,38 +308,68 @@ expect_accept "TLS 1.3 ACCEPTED" 443 -tls1_3 '^TLSv1\.3$'
 expect_reject "TLS 1.0 REJECTED" 443 -tls1
 expect_reject "TLS 1.1 REJECTED" 443 -tls1_1
 
-section "authenticated origin pulls"
-# Over TLS 1.2 deliberately: in TLS 1.3 the client certificate travels after
-# the server's Finished, so the handshake completes and the refusal surfaces
-# later as an alert on first read. TLS 1.2 refuses inside the handshake, which
-# is a result this can assert without ambiguity.
-attempt 443 -tls1_2 no-cert
-if [ "$ATTEMPT_OK" -eq 0 ]; then
-  pass "a client presenting NO certificate is refused"
-else
-  fail "a client with NO certificate completed the handshake; ssl_verify_client is not enforcing"
-fi
-evidence
-attempt 443 -tls1_2
-if [ "$ATTEMPT_OK" -eq 1 ]; then
-  pass "the same handshake with a CA-signed client certificate succeeds (positive control)"
-else
-  fail "a valid origin-pull certificate was refused"
-fi
-evidence
+# ---------------------------------------------------------------------------
+# Origin pulls and the allowlist, at the HTTP layer.
+#
+# `ssl_verify_client on` does NOT abort the TLS handshake when no certificate
+# is presented, which is worth stating because the obvious test asserts that
+# it does -- and that test fails against a correctly configured nginx. nginx
+# installs a verify callback that always returns 1 and defers the decision, so
+# the handshake completes and the request is refused afterwards with nginx's
+# internal 496, served as `400 No required SSL certificate was sent`.
+#
+# So the refusal is an HTTP status, and the two controls separate cleanly:
+#
+#   no certificate            -> 400   rejected before the access phase
+#   certificate not from the CA -> 400   same
+#   valid origin-pull certificate -> 403   certificate accepted, then refused
+#                                          by `deny all` for not being an edge
+#
+# 403 is therefore the positive control for origin pulls as well as the proof
+# that the allowlist is live: reaching it means the certificate check passed.
+# ---------------------------------------------------------------------------
+section "authenticated origin pulls and the allowlist, at the HTTP layer"
 
-section "the allowlist is live, not merely written down"
-# This container's address is not a Cloudflare edge range, so a fully
-# authenticated request must still be refused at the access phase. Without the
-# closing `deny all` this would be proxied and return 502 from the absent
-# upstream instead.
-response="$(printf 'GET /api/health HTTP/1.1\r\nHost: agent.youtab.io\r\nConnection: close\r\n\r\n' |
-  openssl s_client -quiet -connect 127.0.0.1:443 -servername agent.youtab.io \
-    -CAfile "$CERTS/origin-pull-ca.pem" -cert "$CERTS/client.crt" -key "$CERTS/client.key" \
-    -tls1_2 2>/dev/null | head -1)"
-case "$response" in
-  *403*) pass "a non-Cloudflare source is refused 403 even with a valid client certificate" ;;
-  *) fail "expected 403 from the allowlist, got '${response}'" ;;
+# A certificate that is perfectly valid and simply not signed by the
+# origin-pull CA. Without this, "rejects a request with no certificate" is
+# consistent with an nginx that accepts any certificate at all.
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -sha256 \
+  -keyout "$CERTS/rogue.key" -out "$CERTS/rogue.crt" \
+  -subj "/CN=not the origin pull CA" >/dev/null 2>&1
+
+http_status() { # mode: no-cert | client-cert | rogue-cert
+  local mode="$1"
+  local args=(-quiet -connect 127.0.0.1:443 -servername agent.youtab.io
+              -CAfile "$CERTS/origin-pull-ca.pem" -tls1_2
+              -cipher "DEFAULT@SECLEVEL=0")
+  case "$mode" in
+    client-cert) args+=(-cert "$CERTS/client.crt" -key "$CERTS/client.key") ;;
+    rogue-cert)  args+=(-cert "$CERTS/rogue.crt" -key "$CERTS/rogue.key") ;;
+  esac
+  http_request | openssl s_client "${args[@]}" 2>/dev/null | head -1 | tr -d '\r'
+}
+
+status_none="$(http_status no-cert)"
+case "$status_none" in
+  *400*) pass "no client certificate -- refused ${status_none}" ;;
+  *) fail "no client certificate should be refused 400, got '${status_none}'" ;;
+esac
+
+status_rogue="$(http_status rogue-cert)"
+case "$status_rogue" in
+  *400*) pass "certificate not signed by the origin-pull CA -- refused ${status_rogue}" ;;
+  *) fail "an untrusted client certificate should be refused 400, got '${status_rogue}'" ;;
+esac
+
+status_valid="$(http_status client-cert)"
+case "$status_valid" in
+  *403*)
+    pass "valid origin-pull certificate accepted, then refused 403 by the allowlist"
+    pass "  -- 403 rather than 400 is the positive control for ssl_verify_client"
+    pass "  -- 403 rather than 502 is the proof that deny all is live"
+    ;;
+  *400*) fail "a CA-signed client certificate was refused 400; origin pulls are rejecting a valid cert" ;;
+  *) fail "expected 403 from the allowlist, got '${status_valid}'" ;;
 esac
 
 kill "$nginx_pid" 2>/dev/null
