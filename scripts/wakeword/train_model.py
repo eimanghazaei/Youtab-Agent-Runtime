@@ -256,6 +256,11 @@ def train(args: argparse.Namespace) -> tuple[WakeWordNet, dict]:
     # Wake words are asymmetric: a missed wake word is an annoyance, a false
     # fire wakes the agent while its owner is talking to someone else.
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    scheduler = (
+        torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+        if args.lr_schedule == "cosine"
+        else None
+    )
     loss_fn = nn.BCELoss(reduction="none")
 
     best = {"score": float("inf"), "state": None, "epoch": -1}
@@ -274,10 +279,22 @@ def train(args: argparse.Namespace) -> tuple[WakeWordNet, dict]:
             optimizer.zero_grad()
             pred = model(xb)
             per = loss_fn(pred, yb)
+            if args.focal_gamma > 0:
+                # Focal weighting. What decides this model is the tail: the few
+                # windows of ordinary recorded speech that score highest are
+                # the ones that set the false-accept rate, and they are a
+                # vanishing share of the loss once the easy millions are
+                # learned. Scaling each example by (1 - p_correct)^gamma keeps
+                # the gradient on the ones still being got wrong instead of
+                # spending it re-confirming the easy ones.
+                p_t = torch.where(yb > 0.5, pred, 1.0 - pred)
+                per = per * (1.0 - p_t).clamp(min=0.0) ** args.focal_gamma
             loss = (per * w_fit[batch]).mean()
             loss.backward()
             optimizer.step()
             total += float(loss) * len(batch)
+        if scheduler is not None:
+            scheduler.step()
 
         model.eval()
         with torch.no_grad():
@@ -463,6 +480,21 @@ def main() -> int:
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=1e-3)
+    # Both of these default to the behaviour that produced the shipped model.
+    # A new knob that changes what an existing command does would quietly make
+    # run_pipeline.sh reproduce something other than the artifact it documents.
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=0.0,
+        help="focal-loss exponent; 0 (the default) gives plain weighted BCE",
+    )
+    parser.add_argument(
+        "--lr-schedule",
+        choices=("constant", "cosine"),
+        default="constant",
+        help="cosine decays the learning rate to zero across --epochs",
+    )
     parser.add_argument("--dropout", type=float, default=0.2)
     parser.add_argument("--channels", type=int, nargs="+", default=[128, 128, 64])
     parser.add_argument("--negative-weight", type=float, default=3.0)
@@ -547,6 +579,8 @@ def main() -> int:
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "learning_rate": args.lr,
+        "focal_gamma": args.focal_gamma,
+        "lr_schedule": args.lr_schedule,
         "dropout": args.dropout,
         "channels": list(args.channels),
         "negative_weight": args.negative_weight,
