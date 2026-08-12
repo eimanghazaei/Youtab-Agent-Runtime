@@ -36,6 +36,29 @@ mkdir -p "$downloads" "$tts" "$features" "$models" "$evidence" || exit 1
 step() { printf '\n===== %s =====\n' "$1"; }
 die() { printf 'FAILED: %s\n' "$1" >&2; exit 1; }
 
+# Two prerequisites come from the Environment block in README.md rather than
+# from this script: the build virtualenv, and a clone of
+# piper-sample-generator. Both are checked here, before step 0 opens a socket.
+#
+# The ordering is the point. `install_generator_config` runs *after* step 0's
+# fetch loop, so without this guard a missing clone is discovered only once
+# several hundred megabytes of pinned assets have already been downloaded --
+# and a missing interpreter surfaces as a bare "No such file or directory" from
+# the heredoc, naming neither the cause nor the fix.
+#
+# The clone is deliberately not created here. generate_speech.py puts it on
+# sys.path, which makes it executed code, and `git clone` of a moving branch is
+# not pinned -- every other external byte this pipeline touches is verified by
+# SHA-256. Keeping it an explicit setup step is what stops this script from
+# silently running whatever upstream published today. The config file copied
+# out of the clone *is* hash-checked, which is what makes copying from an
+# unpinned clone safe.
+[ -x "$python_bin" ] || die "no build interpreter at $python_bin -- create it \
+with the Environment block in scripts/wakeword/README.md, or pass one as the \
+second argument"
+[ -d "$generator/models" ] || die "piper-sample-generator not found at \
+$generator -- clone it with the Environment block in scripts/wakeword/README.md"
+
 step "0. fetch, verify and install pinned inputs"
 # `$here` is passed in rather than derived: this runs from stdin, where
 # `__file__` does not exist.

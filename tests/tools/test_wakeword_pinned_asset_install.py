@@ -186,3 +186,48 @@ def test_pipeline_actually_installs_the_pinned_assets() -> None:
             "without installing it is exactly the bug this guards: the pin "
             "reads as protection while the runtime loads something else."
         )
+
+
+def test_pipeline_checks_its_prerequisites_before_downloading() -> None:
+    """Fail on a missing prerequisite before spending the bandwidth, not after.
+
+    The build virtualenv and the piper-sample-generator clone both come from
+    README's Environment block rather than from the pipeline. Neither is created
+    here on purpose -- the clone is put on ``sys.path`` by generate_speech.py,
+    so it is executed code, and a ``git clone`` of a moving branch is not
+    pinned the way every other input is.
+
+    But ``install_generator_config`` runs *after* step 0's fetch loop, so
+    without an up-front guard a missing clone surfaces only once several hundred
+    megabytes have been downloaded. This pins the ordering: the guards must come
+    before step 0, which is the whole point of them.
+    """
+    pipeline = (WAKEWORD / "run_pipeline.sh").read_text(encoding="utf-8")
+
+    step0 = pipeline.find('step "0.')
+    assert step0 != -1, "step 0 header not found; re-anchor this test"
+
+    for probe, what in (
+        ('[ -x "$python_bin" ]', "the build interpreter"),
+        ('[ -d "$generator/models" ]', "the piper-sample-generator clone"),
+    ):
+        at = pipeline.find(probe)
+        assert at != -1, (
+            f"run_pipeline.sh no longer checks for {what} ({probe}). Without it "
+            f"a missing prerequisite is reported late -- after the download for "
+            f"the clone, and as a bare 'No such file or directory' for the "
+            f"interpreter."
+        )
+        assert at < step0, (
+            f"the check for {what} moved after step 0, which defeats it: the "
+            f"fetch loop runs first and the bandwidth is already spent."
+        )
+
+    # Both guards must actually abort. A bare `[ ... ]` test with no `|| die`
+    # evaluates and is discarded, which would read as a check while enforcing
+    # nothing.
+    for probe in ('[ -x "$python_bin" ]', '[ -d "$generator/models" ]'):
+        tail = pipeline[pipeline.find(probe) + len(probe):]
+        assert tail.lstrip().startswith("|| die"), (
+            f"{probe} does not abort the run; it evaluates and is discarded."
+        )
