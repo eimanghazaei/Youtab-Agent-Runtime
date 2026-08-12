@@ -329,6 +329,25 @@ class FeatureUnavailable(RuntimeError):
         self.reason = reason
         super().__init__(self._format())
 
+    def __reduce__(self):
+        """Survive pickling across a process boundary.
+
+        ``RuntimeError``'s default reduce replays ``cls(*self.args)``, and
+        ``args`` here is the single formatted string handed to
+        ``super().__init__``. Reconstructing therefore calls
+        ``FeatureUnavailable(<message>)`` and raises
+
+            TypeError: __init__() missing 2 required positional arguments
+
+        which is what the parent process sees *instead of* this exception —
+        the real "you are missing dependency X" message is destroyed at the
+        boundary. That matters most exactly where it hurts most: raised inside
+        a ``ProcessPoolExecutor`` worker, the failure reaches the parent as an
+        unrelated TypeError, or as a bare BrokenProcessPool with no cause at
+        all. Rebuild from the real fields instead.
+        """
+        return (self.__class__, (self.feature, self.missing, self.reason))
+
     def _format(self) -> str:
         spec_list = " ".join(repr(s) for s in self.missing)
         return (

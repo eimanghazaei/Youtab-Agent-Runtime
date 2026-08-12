@@ -106,11 +106,16 @@ def generate(
     seed: int,
     accents: list[str] | None = None,
     batch_size: int = 16,
+    length_scales: list[float] | None = None,
 ) -> Path:
     """Synthesize ``count`` clips of ``texts`` from speakers [lo, hi).
 
     Returns the path of the JSONL manifest describing every clip written.
+
+    ``length_scales`` defaults to the full spread, so an existing call
+    reproduces exactly what it produced before.
     """
+    length_scales = tuple(length_scales) if length_scales else _LENGTH_SCALES
     sys.path.insert(0, str(generator_root))
     from piper_sample_generator.__main__ import (  # noqa: PLC0415
         audio_float_to_int16,
@@ -156,7 +161,7 @@ def generate(
                     "speaker_1": rng.randrange(speaker_lo, speaker_hi),
                     "speaker_2": rng.randrange(speaker_lo, speaker_hi),
                     "slerp_weight": rng.choice(_SLERP_WEIGHTS),
-                    "length_scale": rng.choice(_LENGTH_SCALES),
+                    "length_scale": rng.choice(length_scales),
                     "noise_scale": rng.choice(_NOISE_SCALES),
                     "noise_scale_w": rng.choice(_NOISE_SCALE_WS),
                 }
@@ -235,6 +240,25 @@ def main() -> int:
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument(
+        "--length-scales",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="SCALE",
+        help=(
+            "Speaking-rate multipliers to draw from (higher is slower). "
+            f"Default: {' '.join(str(s) for s in _LENGTH_SCALES)}. "
+            "Exists because the wake word is confirmed only after N "
+            "consecutive frames over threshold, so a positive that peaks "
+            "sharply and decays can score well and still never fire. "
+            "Measured on the round-2 model: the median positive held 6 frames "
+            "but the 10th percentile held 2, one short of the 3 required, and "
+            "that tail was two thirds of all false rejects. Drawing a block of "
+            "positives from the slower end widens the plateau. Not a default "
+            "change: the full range still covers clipped and drawn-out alike."
+        ),
+    )
     args = parser.parse_args()
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -265,6 +289,7 @@ def main() -> int:
         seed=args.seed,
         accents=accent_pool,
         batch_size=args.batch_size,
+        length_scales=args.length_scales,
     )
     print(f"manifest: {manifest}")
     return 0

@@ -36,10 +36,26 @@ mkdir -p "$downloads" "$tts" "$features" "$models" "$evidence" || exit 1
 step() { printf '\n===== %s =====\n' "$1"; }
 die() { printf 'FAILED: %s\n' "$1" >&2; exit 1; }
 
-step "0. fetch and verify pinned inputs"
+step "0. fetch, verify and install pinned inputs"
 # `$here` is passed in rather than derived: this runs from stdin, where
 # `__file__` does not exist.
-"$python_bin" - "$here" "$downloads" <<'PY' || die "asset verification"
+#
+# Fetching is not sufficient on its own, and for a long time this step only
+# fetched. Two pinned inputs have to be put somewhere specific before anything
+# downstream can run:
+#
+#   * openWakeWord ships no models inside its wheel. A fresh environment has an
+#     empty `resources/models`, so the first `AudioFeatures(...)` in
+#     build_dataset.py dies with NO_SUCHFILE — or, if the caller ever invokes
+#     `openwakeword.utils.download_models()`, quietly trains against whatever
+#     upstream publishes that day instead of the pinned bytes.
+#   * generate_speech.py opens `<checkpoint>.json` beside the VITS checkpoint.
+#     piper-sample-generator keeps that config in its git repository, not as a
+#     release asset, so it cannot be fetched by URL and must be copied from the
+#     pinned clone.
+#
+# Both installs verify SHA-256 at the source and again at the destination.
+"$python_bin" - "$here" "$downloads" "$generator" <<'PY' || die "asset verification"
 import sys
 from pathlib import Path
 
@@ -47,9 +63,17 @@ sys.path.insert(0, sys.argv[1])
 import assets
 
 into = Path(sys.argv[2])
+generator_root = Path(sys.argv[3])
+
 for asset in assets.ALL_ASSETS:
     assets.fetch(asset, into)
     print(f"  ok {asset.name} ({asset.license})")
+
+for path in assets.install_feature_extractors(into):
+    print(f"  installed {path.name} -> {path.parent}")
+
+config = assets.install_generator_config(generator_root, into)
+print(f"  installed {config.name} -> {config.parent} ({assets.GENERATOR_CONFIG_SOURCE})")
 PY
 
 step "1. synthesize speech (multi-speaker, disjoint train/eval pools)"

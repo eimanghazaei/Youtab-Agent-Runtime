@@ -268,7 +268,25 @@ def train(args: argparse.Namespace) -> tuple[WakeWordNet, dict]:
     order = np.arange(len(y))
     rng = np.random.default_rng(args.seed)
 
-    for epoch in range(args.epochs):
+    # Resume, if a checkpoint from this run is on disk. Training here is tens of
+    # minutes to hours on CPU, and the host is not guaranteed to stay awake for
+    # it; losing epoch 55 of 60 to a sleeping laptop and restarting from zero is
+    # not an acceptable failure mode.
+    start_epoch = 0
+    checkpoint = args.checkpoint or (args.out / "checkpoint.pt")
+    if checkpoint.exists() and not args.no_resume:
+        start_epoch, best, history = load_checkpoint(
+            checkpoint, model=model, optimizer=optimizer, scheduler=scheduler, rng=rng
+        )
+        if start_epoch >= args.epochs:
+            print(f"  checkpoint already at epoch {start_epoch - 1}; nothing to train")
+        else:
+            print(
+                f"  resuming from {checkpoint} at epoch {start_epoch} "
+                f"(best so far: epoch {best['epoch']}, score {best['score']:.5f})"
+            )
+
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         rng.shuffle(order)
         total = 0.0
@@ -341,7 +359,18 @@ def train(args: argparse.Namespace) -> tuple[WakeWordNet, dict]:
         print(
             f"  epoch {epoch:3d}  loss {total / len(order):.5f}  t={calibrated:.4f}  "
             f"{'ok ' if meets else 'MISS'}  near {near_far * 100:5.2f}%  "
-            f"rec {recorded_ph:5.2f}/h  FR {frr * 100:6.3f}%{marker}"
+            f"rec {recorded_ph:5.2f}/h  FR {frr * 100:6.3f}%{marker}",
+            flush=True,
+        )
+        save_checkpoint(
+            checkpoint,
+            epoch=epoch,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            rng=rng,
+            best=best,
+            history=history,
         )
 
     if best["state"] is not None:
@@ -439,6 +468,63 @@ def export_tflite(export: ExportNet, path: Path) -> None:
     path.write_bytes(converter.convert())
 
 
+def save_checkpoint(
+    path: Path,
+    *,
+    epoch: int,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    rng: np.random.Generator,
+    best: dict,
+    history: list[dict],
+) -> None:
+    """Persist everything needed to continue this exact run after an epoch.
+
+    Written atomically. A checkpoint half-flushed when the machine slept is
+    worse than none at all: it loads, looks plausible, and silently continues
+    from corrupt optimizer state.
+
+    Both RNG streams are saved. Restoring only the weights would resume a
+    *different* run -- numpy drives the batch shuffle and torch drives dropout,
+    so an unrestored resume changes which examples pair with which mask and the
+    epoch numbering stops describing what actually happened.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "epoch": epoch,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+        "numpy_rng": rng.bit_generator.state,
+        "torch_rng": torch.get_rng_state(),
+        "best": best,
+        "history": history,
+    }
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, tmp)
+    tmp.replace(path)
+
+
+def load_checkpoint(
+    path: Path,
+    *,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    rng: np.random.Generator,
+) -> tuple[int, dict, list[dict]]:
+    """Restore a run. Returns (next epoch to run, best, history)."""
+    payload = torch.load(path, weights_only=False)
+    model.load_state_dict(payload["model"])
+    optimizer.load_state_dict(payload["optimizer"])
+    if scheduler is not None and payload.get("scheduler") is not None:
+        scheduler.load_state_dict(payload["scheduler"])
+    rng.bit_generator.state = payload["numpy_rng"]
+    torch.set_rng_state(payload["torch_rng"])
+    return payload["epoch"] + 1, payload["best"], payload["history"]
+
+
 def check_parity(onnx_path: Path, tflite_path: Path, samples: np.ndarray) -> dict:
     """Score the same windows through both files and compare."""
     import onnxruntime as ort  # noqa: PLC0415
@@ -476,6 +562,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--features", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True, help="artifact directory")
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "per-epoch checkpoint file (default: <out>/checkpoint.pt). Written "
+            "atomically after every epoch and resumed from automatically."
+        ),
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help=(
+            "ignore an existing checkpoint and train from scratch. Use when the "
+            "data or hyperparameters changed — resuming across a change would "
+            "produce a model no single configuration describes."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=20260807)
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--batch-size", type=int, default=512)

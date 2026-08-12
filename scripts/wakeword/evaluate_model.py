@@ -167,6 +167,119 @@ def score_clips(
     return scores, fired
 
 
+def _cost_probe(job: tuple) -> dict:
+    """Time and measure one backend in a process of its own.
+
+    Runs in a child so ``ru_maxrss`` is that backend's own high-water mark
+    rather than the parent's accumulated total — the parent has already
+    memory-mapped the corpus and, on the second backend, already loaded the
+    first one's runtime, so a same-process reading would attribute both to
+    whichever backend happened to run second.
+
+    Deliberately single-process and unsharded: this measures what one frame
+    costs the product on one core, which is the number a device budget is
+    written against. Throughput under N workers is a different question and is
+    not what a latency figure should answer.
+    """
+    import resource  # noqa: PLC0415 — POSIX; this probe is skipped on Windows
+    import time  # noqa: PLC0415
+
+    audio_path, clips, repo_root, model_path, framework, threshold, confirmation = job
+    sys.path.insert(0, str(repo_root))
+    audio = np.ascontiguousarray(np.load(audio_path, mmap_mode="r")[:clips])
+
+    engine = _engine(Path(model_path), framework, threshold, confirmation)
+    frames_per_clip = audio.shape[1] // FRAME
+
+    # One untimed clip first: the first call through either runtime pays for
+    # lazy allocation and kernel selection, and folding that into p99 would
+    # describe a cost the user pays once as one they pay always.
+    engine.reset()
+    for f in range(frames_per_clip):
+        engine.process(audio[0][f * FRAME : (f + 1) * FRAME])
+
+    per_frame_ms: list[float] = []
+    wall0 = time.perf_counter()
+    for i in range(audio.shape[0]):
+        engine.reset()
+        clip = audio[i]
+        for f in range(frames_per_clip):
+            t0 = time.perf_counter_ns()
+            engine.process(clip[f * FRAME : (f + 1) * FRAME])
+            per_frame_ms.append((time.perf_counter_ns() - t0) / 1e6)
+    wall = time.perf_counter() - wall0
+
+    ms = np.asarray(per_frame_ms, dtype=np.float64)
+    audio_seconds = audio.shape[0] * frames_per_clip * FRAME / SAMPLE_RATE
+    return {
+        "clips": int(audio.shape[0]),
+        "frames": int(ms.size),
+        "frame_seconds": FRAME / SAMPLE_RATE,
+        "latency_ms": {
+            "mean": float(ms.mean()),
+            "p50": float(np.percentile(ms, 50)),
+            "p90": float(np.percentile(ms, 90)),
+            "p95": float(np.percentile(ms, 95)),
+            "p99": float(np.percentile(ms, 99)),
+            "max": float(ms.max()),
+        },
+        # <1.0 means the backend keeps up with a live microphone on one core.
+        "real_time_factor": float(wall / audio_seconds),
+        "audio_seconds_processed": float(audio_seconds),
+        "wall_seconds": float(wall),
+        "peak_rss_mb": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0,
+        "model_bytes": int(Path(model_path).stat().st_size),
+    }
+
+
+def measure_cost(
+    audio_path: Path,
+    clips: int,
+    repo_root: Path,
+    model_path: Path,
+    framework: str,
+    threshold: float,
+    confirmation: int,
+) -> dict:
+    """Latency and peak memory for one backend, measured in a clean child."""
+    from concurrent.futures import ProcessPoolExecutor  # noqa: PLC0415
+
+    job = (str(audio_path), clips, str(repo_root), str(model_path),
+           framework, threshold, confirmation)
+    with ProcessPoolExecutor(max_workers=1) as pool:
+        return pool.submit(_cost_probe, job).result()
+
+
+def detection_parity(
+    fired: dict[str, np.ndarray], scores: dict[str, np.ndarray]
+) -> dict:
+    """Do the two backends make the same decisions, not merely similar scores?
+
+    Numerical parity (``max_absolute_difference`` in train_model.py) compares
+    raw outputs. It can look excellent while the backends still disagree on
+    windows whose score sits within rounding distance of the threshold — and a
+    disagreement there is a user-visible difference: one build wakes, the other
+    does not. This measures the decision, which is the thing that ships.
+    """
+    if sorted(fired) != ["onnx", "tflite"]:
+        return {"measured": False, "reason": "needs both backends"}
+
+    a, b = fired["onnx"], fired["tflite"]
+    disagreements = int((a != b).sum())
+    sa, sb = scores["onnx"], scores["tflite"]
+    delta = np.abs(sa.astype(np.float64) - sb.astype(np.float64))
+    return {
+        "measured": True,
+        "windows": int(a.size),
+        "detection_disagreements": disagreements,
+        "detection_agreement_rate": float((a == b).mean()),
+        "onnx_fired_tflite_did_not": int((a & ~b).sum()),
+        "tflite_fired_onnx_did_not": int((b & ~a).sum()),
+        "max_absolute_frame_score_difference": float(delta.max()),
+        "mean_absolute_frame_score_difference": float(delta.mean()),
+    }
+
+
 def fires_from_scores(frame_scores: np.ndarray, threshold: float, confirmation: int) -> np.ndarray:
     """Apply the engine's N-consecutive-frames rule to per-frame scores."""
     over = frame_scores >= threshold
@@ -207,17 +320,44 @@ def plateau_stats(frame_scores: np.ndarray, labels: np.ndarray, threshold: float
     }
 
 
+def operating_key(threshold: float) -> str:
+    """Key for the operating-point row.
+
+    Four decimals, where the grid uses two, for a reason. ``--calibrate-
+    operating-point`` selects an arbitrary threshold, and at two decimals a
+    calibrated 0.601 would render as ``"0.60"`` and overwrite the grid row —
+    leaving a row labelled 0.60 that was actually measured at 0.601. At four
+    decimals the operating key can never collide with a two-decimal grid key,
+    so the two live side by side and each says what it means. The exact float
+    is stored in the row's ``threshold`` field regardless.
+    """
+    return f"{threshold:.4f}"
+
+
 def summarize(
     frame_scores: np.ndarray,
     labels: np.ndarray,
     categories: list[str],
     confirmation: int,
     window_seconds: float,
+    operating_threshold: float | None = None,
 ) -> dict:
-    """False-accept and false-reject rates at every swept threshold."""
+    """False-accept and false-reject rates at every swept threshold.
+
+    ``operating_threshold`` adds one more row at the threshold the model was
+    actually calibrated to on validation. Without it the grid is the only thing
+    measured, and a calibrated threshold that is not on the grid — which is the
+    normal case, the shipped model sits at 0.9991 — simply has no row at all.
+    """
     cats = np.array(categories)
     result: dict[str, dict] = {}
-    for threshold in SWEEP:
+    swept = list(SWEEP)
+    if operating_threshold is not None:
+        swept.append(float(operating_threshold))
+    for threshold in swept:
+        is_operating = (
+            operating_threshold is not None and threshold == float(operating_threshold)
+        )
         fired = fires_from_scores(frame_scores, threshold, confirmation)
         positives = labels == 1
         negatives = labels == 0
@@ -234,7 +374,8 @@ def summarize(
                 "false_accept_rate": float(fired[mask].mean()),
                 "false_accepts_per_hour": float(fired[mask].sum()) / hours if hours else 0.0,
             }
-        result[f"{threshold:.2f}"] = {
+        result[operating_key(threshold) if is_operating else f"{threshold:.2f}"] = {
+            "threshold": float(threshold),
             "false_reject_rate": float((~fired[positives]).mean()) if positives.any() else None,
             "false_rejects": int((~fired[positives]).sum()),
             "positive_windows": int(positives.sum()),
@@ -273,6 +414,16 @@ def main() -> int:
     parser.add_argument(
         "--frameworks", nargs="+", default=["onnx", "tflite"], choices=["onnx", "tflite"]
     )
+    parser.add_argument(
+        "--latency-clips",
+        type=int,
+        default=200,
+        help=(
+            "clips used for the single-process latency/memory probe. Separate "
+            "from --limit: accuracy wants the whole corpus, cost wants a "
+            "quiet single-core run. 0 skips the probe."
+        ),
+    )
     args = parser.parse_args()
 
     sys.path.insert(0, str(args.repo_root))
@@ -294,7 +445,11 @@ def main() -> int:
         "confirmation_frames": args.confirmation_frames,
         "negative_audio_hours": float((labels == 0).sum()) * window_seconds / 3600.0,
         "backends": {},
+        "runtime_cost": {},
+        "parity": {},
     }
+    fired_by_backend: dict[str, np.ndarray] = {}
+    scores_by_backend: dict[str, np.ndarray] = {}
     for framework in args.frameworks:
         model_path = args.models / f"hey_youtab.{framework}"
         print(f"  scoring {total} windows through the {framework} engine "
@@ -310,7 +465,8 @@ def main() -> int:
             args.jobs,
         )
         table = summarize(
-            frame_scores, labels, categories, args.confirmation_frames, window_seconds
+            frame_scores, labels, categories, args.confirmation_frames,
+            window_seconds, operating_threshold=args.threshold,
         )
         # The sweep is derived from per-frame scores; the headline row is the
         # engine's own verdict. If the two disagree on a single window the
@@ -323,18 +479,59 @@ def main() -> int:
                 f"{framework}: threshold sweep disagrees with the engine on "
                 f"{disagreements} of {len(engine_fired)} windows"
             )
-        table[f"{args.threshold:.2f}"]["source"] = "tools.wake_word._OpenWakeWordEngine.process"
+        table[operating_key(args.threshold)]["source"] = (
+            "tools.wake_word._OpenWakeWordEngine.process"
+        )
         report["backends"][framework] = table
         np.save(args.out.parent / f"frame_scores_{framework}.npy", frame_scores)
+        fired_by_backend[framework] = engine_fired
+        scores_by_backend[framework] = frame_scores
+
+        if args.latency_clips:
+            print(f"  measuring {framework} latency and peak memory "
+                  f"({args.latency_clips} clips, single process)")
+            report["runtime_cost"][framework] = measure_cost(
+                audio_path,
+                min(args.latency_clips, total),
+                args.repo_root,
+                model_path,
+                framework,
+                args.threshold,
+                args.confirmation_frames,
+            )
+
+    # Numerical parity is checked at export time in train_model.py. This is the
+    # decision-level counterpart: two backends can agree numerically to 1e-7 and
+    # still split on a window sitting on the threshold, and that split is what a
+    # user would experience as "it wakes on my Mac but not on my PC".
+    report["parity"] = detection_parity(fired_by_backend, scores_by_backend)
 
     args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     for framework, table in report["backends"].items():
-        at = table[f"{args.threshold:.2f}"]
+        at = table[operating_key(args.threshold)]
         print(
-            f"{framework:7s} @0.60  false-reject {at['false_reject_rate'] * 100:.2f}%  "
+            f"{framework:7s} @{args.threshold:.2f}  "
+            f"false-reject {at['false_reject_rate'] * 100:.2f}%  "
             f"false-accept {at['false_accept_rate'] * 100:.3f}%  "
             f"({at['false_accepts_per_hour']:.2f}/hour)"
+        )
+        cost = report["runtime_cost"].get(framework)
+        if cost:
+            print(
+                f"{'':7s}        frame p50 {cost['latency_ms']['p50']:.3f} ms  "
+                f"p99 {cost['latency_ms']['p99']:.3f} ms  "
+                f"RTF {cost['real_time_factor']:.4f}  "
+                f"peak RSS {cost['peak_rss_mb']:.0f} MB"
+            )
+
+    parity = report["parity"]
+    if parity.get("measured"):
+        print(
+            f"parity  detection {parity['detection_disagreements']} disagreement(s) "
+            f"over {parity['windows']} windows "
+            f"({parity['detection_agreement_rate'] * 100:.4f}% agreement), "
+            f"max frame-score delta {parity['max_absolute_frame_score_difference']:.3e}"
         )
     print(f"wrote {args.out}")
     return 0
