@@ -67,8 +67,26 @@ exported files are plain matrix multiplies with no backend-specific ops.
 | 5 | `make_test_fixture.py` | Cuts the committed regression fixture out of the evaluation set. |
 | 6 | `write_model_card.py` | Generates `tools/wakewords/MODEL_CARD.md` and `SHA256SUMS` from the run's own outputs. |
 | — | `verify_on_device.py` | Checks the capture path on a real microphone. See `DEVICE_VERIFICATION.md`; not part of the build. |
+| — | `verify_backends.py` | Runs both shipped artifacts on the current OS: parity, latency and memory. No hardware, no network. |
+| — | `freeze_manifest.py` | Freezes a recorded dataset — hashes every file, hashes the list, records split and usage. Not part of the build. |
+| — | `acquire_common_voice.py` | Bounded Common Voice negative acquisition. Blocked on an Owner credential; see `COMMON_VOICE.md`. |
 
 `phrases.py` holds the phrase inventory shared by stages 1 and 4.
+
+## Datasets that are recorded rather than downloaded
+
+Everything the pipeline downloads is pinned by SHA-256 and fails loudly on a
+mismatch. Anything *recorded* — a consented speaker session, a corpus subset
+assembled locally — gets the same treatment from `freeze_manifest.py`, which
+hashes every file, hashes the list, and refuses to overwrite a manifest that no
+longer matches. It also records the split and the usage, and
+`assert_usable_for()` raises rather than letting a sealed evaluation set be
+consumed for training: that set is worth exactly its unseenness, and
+re-recording the same speaker does not restore it.
+
+Manifests are written beside the dataset, never inside this repository — the
+tool refuses a destination under the checkout, because a list of filenames from
+a recording session is part of what stays on local disk.
 
 ## Data provenance
 
