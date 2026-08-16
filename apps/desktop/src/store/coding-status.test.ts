@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { HermesRepoStatus } from '@/global'
+import type { YoutabRepoStatus } from '@/global'
 
 import {
   $repoStatus,
@@ -14,7 +14,7 @@ import {
 } from './coding-status'
 import { $currentCwd, $selectedStoredSessionId } from './session'
 
-const sampleStatus: HermesRepoStatus = {
+const sampleStatus: YoutabRepoStatus = {
   branch: 'feature/login',
   defaultBranch: 'main',
   detached: false,
@@ -30,7 +30,7 @@ const sampleStatus: HermesRepoStatus = {
   files: []
 }
 
-const otherStatus: HermesRepoStatus = {
+const otherStatus: YoutabRepoStatus = {
   ...sampleStatus,
   branch: 'bb/other-worktree',
   added: 3,
@@ -40,8 +40,8 @@ const otherStatus: HermesRepoStatus = {
   unstaged: 1
 }
 
-function stubProbe(impl: (cwd: string) => Promise<HermesRepoStatus | null>) {
-  ;(window as unknown as { hermesDesktop?: unknown }).hermesDesktop = { git: { repoStatus: impl } }
+function stubProbe(impl: (cwd: string) => Promise<YoutabRepoStatus | null>) {
+  ;(window as unknown as { youtabDesktop?: unknown }).youtabDesktop = { git: { repoStatus: impl } }
 }
 
 describe('refreshRepoStatus', () => {
@@ -52,7 +52,7 @@ describe('refreshRepoStatus', () => {
     $selectedStoredSessionId.set(null)
     // Drain the cwd/session subscribe side-effects the sets above kick off.
     vi.advanceTimersByTime(200)
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { youtabDesktop?: unknown }).youtabDesktop
     _resetCodingStatusForTests()
   })
 
@@ -60,7 +60,7 @@ describe('refreshRepoStatus', () => {
     _resetCodingStatusForTests()
     vi.clearAllTimers()
     vi.useRealTimers()
-    delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
+    delete (window as unknown as { youtabDesktop?: unknown }).youtabDesktop
   })
 
   it('populates the per-cwd cache and the primary computed for that cwd', async () => {
@@ -118,7 +118,7 @@ describe('refreshRepoStatus', () => {
   })
 
   it('never publishes an old worktree status onto the primary after the active cwd moves', async () => {
-    let resolveOld!: (status: HermesRepoStatus | null) => void
+    let resolveOld!: (status: YoutabRepoStatus | null) => void
     stubProbe(
       () =>
         new Promise(resolve => {
@@ -160,7 +160,7 @@ describe('refreshRepoStatus', () => {
   })
 
   it('runs one probe at a time and coalesces overlap into one trailing refresh per drain', async () => {
-    const resolvers: Array<(status: HermesRepoStatus | null) => void> = []
+    const resolvers: Array<(status: YoutabRepoStatus | null) => void> = []
     const calls: string[] = []
     let active = 0
     let maxActive = 0

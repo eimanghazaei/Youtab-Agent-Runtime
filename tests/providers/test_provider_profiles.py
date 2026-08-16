@@ -126,19 +126,19 @@ class TestOpenRouterProfile:
         assert tl == {"verbosity": "high"}
 
 
-class TestNousProfile:
+class TestYoutabProfile:
     def test_tags(self):
-        from agent.portal_tags import nous_portal_tags
-        p = get_provider_profile("nous")
+        from agent.portal_tags import youtab_portal_tags
+        p = get_provider_profile("youtab")
         body = p.build_extra_body()
-        assert body["tags"] == nous_portal_tags()
+        assert body["tags"] == youtab_portal_tags()
 
 
 
 
 
     def test_auth_type(self):
-        p = get_provider_profile("nous")
+        p = get_provider_profile("youtab")
         assert p.auth_type == "oauth_device_code"
 
 

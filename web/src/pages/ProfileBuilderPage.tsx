@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { H2 } from "@nous-research/ui/ui/components/typography/h2";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { H2 } from "@youtab/ui/ui/components/typography/h2";
+import { Card, CardContent } from "@youtab/ui/ui/components/card";
+import { Badge } from "@youtab/ui/ui/components/badge";
+import { Button } from "@youtab/ui/ui/components/button";
+import { Input } from "@youtab/ui/ui/components/input";
+import { Label } from "@youtab/ui/ui/components/label";
+import { Checkbox } from "@youtab/ui/ui/components/checkbox";
+import { Toast } from "@youtab/ui/ui/components/toast";
+import { useToast } from "@youtab/ui/hooks/use-toast";
 import { api } from "@/lib/api";
 import type {
   McpHttpAuth,
@@ -50,7 +50,7 @@ interface ModelChoice {
  * manage — Name, Description, Model+Provider, Skills (built-in/optional +
  * hub), MCP servers — into one stepped create flow. Nothing is written to
  * disk until "Create profile" on the final step; the single POST /api/profiles
- * call commits model + MCPs + skill selection synchronously and spawns any
+ * call commits model + MCPs + skill selection synchroyoutably and spawns any
  * hub-skill installs (which the success toast reports as in-progress).
  *
  * Skills use REPLACE semantics: the default bundle is seeded server-side, then

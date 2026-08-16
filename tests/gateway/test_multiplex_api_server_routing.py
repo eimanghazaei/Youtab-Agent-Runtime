@@ -57,9 +57,9 @@ class TestApiServerModelsUnderProfile:
     def test_resolve_model_name_follows_active_profile(self, monkeypatch):
         """When the request is scoped to a named profile, advertise that name."""
         adapter = _make_adapter(multiplex=True)
-        adapter._model_name = "hermes-agent"
+        adapter._model_name = "youtab-agent-runtime"
         monkeypatch.setattr(
-            "hermes_cli.profiles.get_active_profile_name",
+            "youtab_agent_cli.profiles.get_active_profile_name",
             lambda: "coder",
         )
         token_prof = _api_request_profile.set("coder")

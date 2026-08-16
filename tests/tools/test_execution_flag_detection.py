@@ -32,6 +32,33 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     assert completed.stdout == expected_output
 
 
+def _tool_is_usable(tool: str) -> bool:
+    """Is ``tool`` present AND actually the program it claims to be?
+
+    ``shutil.which`` alone is not enough for ``man``. Debian's "minimized"
+    container images — which this project's own runtime images are built on —
+    ship ``/usr/bin/man`` as a shell stub that prints "This system has been
+    minimized…" and exits 0, ignoring every argument. ``which`` finds it, so
+    the guard passed, the stub never invoked a pager, and the payload marker
+    was never written: the test reported a failure of the *approval grammar*
+    when the real story was that man was not installed at all.
+
+    Real ``man -w`` prints the path of a page; the stub prints prose.
+    """
+    if shutil.which(tool) is None:
+        return False
+    if tool != "man":
+        return True
+    try:
+        probe = subprocess.run(
+            ["man", "-w", "ls"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    first = (probe.stdout or "").strip().splitlines()
+    return bool(first) and os.path.exists(first[0])
+
+
 @pytest.mark.parametrize(
     ("tool", "args", "stdin", "needs_tty"),
     [
@@ -47,7 +74,7 @@ def test_real_binaries_execute_leading_dash_program_payload(
     tmp_path, tool, args, stdin, needs_tty
 ):
     """A PATH marker proves these binaries do not reparse '-program' as an option."""
-    if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
+    if not _tool_is_usable(tool) or (needs_tty and shutil.which("script") is None):
         pytest.skip(f"{tool} or script is not installed")
 
     marker = tmp_path / "executed"

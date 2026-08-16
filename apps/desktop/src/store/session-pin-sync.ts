@@ -20,9 +20,9 @@
  * the local set untouched.
  */
 
-import { setSessionPinnedRemote } from '@/hermes'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session'
+import { setSessionPinnedRemote } from '@/youtab'
 
 // pin ids we've successfully PATCHed pinned=true this session.
 const mirrored = new Set<string>()
@@ -95,7 +95,7 @@ function pullRemotePins(): void {
 
 function reconcile(): void {
   // Config/session REST is only reachable through the Electron bridge.
-  if (!window.hermesDesktop) {
+  if (!window.youtabDesktop) {
     return
   }
 

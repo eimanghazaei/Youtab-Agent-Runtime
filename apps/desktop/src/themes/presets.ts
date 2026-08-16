@@ -19,48 +19,48 @@ const SYSTEM_MONO = 'Menlo, Monaco, "SF Mono", "Courier Prime", monospace, ' + E
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
-const NOUS_BLUE = '#0053FD'
+const YOUTAB_BLUE = '#0053FD'
 const PSYCHE_BLUE = '#1540B1'
 const PSYCHE_WARM = '#FFE6CB'
 
-const nousTint = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, #FFFFFF)`
-const nousTintTransparent = (pct: number) => `color-mix(in srgb, ${NOUS_BLUE} ${pct}%, transparent)`
+const youtabTint = (pct: number) => `color-mix(in srgb, ${YOUTAB_BLUE} ${pct}%, #FFFFFF)`
+const youtabTintTransparent = (pct: number) => `color-mix(in srgb, ${YOUTAB_BLUE} ${pct}%, transparent)`
 
 /**
- * Nous — canonical Hermes desktop identity. The palette keeps the current
+ * Youtab — canonical Youtab desktop identity. The palette keeps the current
  * glass geometry neutral, then lets the old bb/gui blue and psyche cream
  * return as accent seeds.
  */
-export const nousTheme: DesktopTheme = {
-  name: 'nous',
-  label: 'Nous',
-  description: 'Glass neutrals with Nous blue accents',
+export const youtabTheme: DesktopTheme = {
+  name: 'youtab',
+  label: 'Youtab',
+  description: 'Glass neutrals with Youtab blue accents',
   colors: {
     background: '#F8FAFF',
     foreground: '#17171A',
     card: '#FFFFFF',
     cardForeground: '#17171A',
-    muted: nousTint(5),
+    muted: youtabTint(5),
     mutedForeground: '#666678',
     popover: '#FFFFFF',
     popoverForeground: '#17171A',
-    primary: NOUS_BLUE,
+    primary: YOUTAB_BLUE,
     primaryForeground: '#FCFCFC',
-    secondary: nousTint(7),
+    secondary: youtabTint(7),
     secondaryForeground: '#242432',
-    accent: nousTint(10),
+    accent: youtabTint(10),
     accentForeground: '#202030',
-    border: nousTintTransparent(22),
-    input: nousTintTransparent(30),
-    ring: NOUS_BLUE,
-    midground: NOUS_BLUE,
-    composerRing: NOUS_BLUE,
+    border: youtabTintTransparent(22),
+    input: youtabTintTransparent(30),
+    ring: YOUTAB_BLUE,
+    midground: YOUTAB_BLUE,
+    composerRing: YOUTAB_BLUE,
     destructive: '#C72E4D',
     destructiveForeground: '#FFFFFF',
     sidebarBackground: '#F3F7FF',
-    sidebarBorder: nousTintTransparent(18),
-    userBubble: nousTint(6),
-    userBubbleBorder: nousTintTransparent(24)
+    sidebarBorder: youtabTintTransparent(18),
+    userBubble: youtabTint(6),
+    userBubbleBorder: youtabTintTransparent(24)
   },
   darkColors: {
     background: '#0D2F86',
@@ -80,7 +80,7 @@ export const nousTheme: DesktopTheme = {
     border: '#3158AD',
     input: '#0B2566',
     ring: PSYCHE_WARM,
-    midground: NOUS_BLUE,
+    midground: YOUTAB_BLUE,
     composerRing: PSYCHE_WARM,
     destructive: '#C0473A',
     destructiveForeground: '#FEF2F2',
@@ -277,7 +277,7 @@ export const slateTheme: DesktopTheme = {
 }
 
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
-  nous: nousTheme,
+  youtab: youtabTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
@@ -288,4 +288,4 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
-export const DEFAULT_SKIN_NAME = 'nous'
+export const DEFAULT_SKIN_NAME = 'youtab'

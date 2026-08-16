@@ -18,16 +18,16 @@ import { join } from 'node:path'
 // is swallowed). Persisting the death-explaining events here is what makes that
 // distinction (and a memory-critical `process.exit(137)`, which closes stdin →
 // clean EOF, not SIGTERM) diagnosable after the fact.
-const logDir = join(process.env.HERMES_HOME?.trim() || join(homedir(), '.hermes'), 'logs')
+const logDir = join(process.env.YOUTAB_AGENT_HOME?.trim() || join(homedir(), '.youtab-agent-runtime'), 'logs')
 const CRASH_LOG = join(logDir, 'tui_gateway_crash.log')
 
 // Skipped under vitest so unit tests exercising start()/kill() can't write into
-// a real ~/.hermes (tests must stay hermetic — see AGENTS.md).
+// a real ~/.youtab-agent-runtime (tests must stay hermetic — see AGENTS.md).
 const enabled = !process.env.VITEST
 // Slice a single breadcrumb's value to MAX_BREADCRUMB chars (a short
 // "[truncated …]" marker is appended, so the written line is slightly longer)
 // so a pathological value (e.g. a giant error) can't bloat the shared crash log
-// or add noticeable blocking on the synchronous append. Mirrors the spirit of
+// or add noticeable blocking on the synchroyoutab append. Mirrors the spirit of
 // GatewayClient's in-memory log-line cap.
 const MAX_BREADCRUMB = 4096
 let warned = false
@@ -53,7 +53,7 @@ export function recordParentLifecycle(line: string): void {
   } catch {
     if (!warned) {
       warned = true
-      process.stderr.write('hermes-tui: parent lifecycle log unavailable\n')
+      process.stderr.write('youtab-tui: parent lifecycle log unavailable\n')
     }
   }
 }

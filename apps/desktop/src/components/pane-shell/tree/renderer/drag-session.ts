@@ -8,7 +8,7 @@
  * sidebar session drag (app/chat/session-drag.ts) is the second. Native
  * HTML5 DnD is reserved for true OS boundaries (Finder file drops) — in-app
  * drags never ride it, so no snap-back animation, no hostile-library
- * armor, and Esc aborts synchronously.
+ * armor, and Esc aborts synchroyoutably.
  *
  * Pane drags use the FancyZones engine (zones-engine.ts, ported verbatim):
  * sensitivity-radius hit testing, HighlightedZones state machine, Shift =
@@ -24,7 +24,7 @@
  * strips) and each pointermove is pure math against those caches — no
  * elementsFromPoint, no getBoundingClientRect, no style writes unless a
  * value actually changed. Moves are coalesced to one hit-test per animation
- * frame, with the pending move flushed synchronously on release so the drop
+ * frame, with the pending move flushed synchroyoutably on release so the drop
  * commits at the exact final position.
  */
 
@@ -211,7 +211,7 @@ function suppressDragClick(committed: boolean) {
  * is a click (`onTap` / `double.onDoubleTap`); past the threshold the spec's
  * resolver owns targeting and the machinery owns everything else. Esc aborts
  * instantly: the session registers as the TOP escape layer, tears down
- * synchronously, and nothing commits.
+ * synchroyoutably, and nothing commits.
  */
 export function startDragSession(e: ReactPointerEvent<HTMLElement>, spec: DragSessionSpec) {
   if (e.button !== 0) {

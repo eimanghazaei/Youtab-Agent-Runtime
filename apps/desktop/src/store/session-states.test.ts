@@ -167,7 +167,7 @@ describe('reopenLastClosedTile focuses the restored tab', () => {
       title: 'chat'
     })
 
-    // panes ← $sessionTiles (paneMirror stub). Adoption is synchronous on
+    // panes ← $sessionTiles (paneMirror stub). Adoption is synchroyoutab on
     // register, so openSessionTile + focusOpenSession works the same tick.
     const registered = new Map<string, () => void>()
 

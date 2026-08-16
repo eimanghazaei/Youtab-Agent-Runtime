@@ -1,7 +1,7 @@
 /**
  * A flat, pointer-following drag chip — the shared "what am I holding"
  * affordance for in-app pointer drags. Plain DOM (no React) so it survives a
- * pointer-capture drag without re-renders and tears down synchronously on Esc.
+ * pointer-capture drag without re-renders and tears down synchroyoutably on Esc.
  *
  * Flat by design: a solid app surface with the dragged item's label, no
  * border / radius / shadow, dimmed — it copies the real row/tab it represents

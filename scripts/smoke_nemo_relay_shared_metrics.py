@@ -1,4 +1,4 @@
-"""Run a real Hermes CLI turn and validate the Relay shared-metrics output."""
+"""Run a real Youtab CLI turn and validate the Relay shared-metrics output."""
 
 from __future__ import annotations
 
@@ -22,19 +22,19 @@ MODEL_CANARY = "gpt-relay-smoke-sensitive-model"
 RESPONSE_CANARY = "relay-smoke-sensitive-response"
 
 
-def _resolve_hermes_executable(hermes_repo: Path) -> Path:
+def _resolve_youtab_executable(youtab_repo: Path) -> Path:
     for relative_path in (
-        Path(".venv") / "bin" / "hermes",
-        Path(".venv") / "Scripts" / "hermes.exe",
+        Path(".venv") / "bin" / "youtab",
+        Path(".venv") / "Scripts" / "youtab.exe",
     ):
-        candidate = hermes_repo / relative_path
+        candidate = youtab_repo / relative_path
         if candidate.is_file():
             return candidate
-    discovered = shutil.which("hermes")
+    discovered = shutil.which("youtab")
     if discovered:
         return Path(discovered)
     raise SystemExit(
-        "Hermes executable not found in the repository virtual environment "
+        "Youtab executable not found in the repository virtual environment "
         "or on PATH"
     )
 
@@ -161,10 +161,10 @@ class _ModelHandler(BaseHTTPRequestHandler):
 def _arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--hermes-repo",
+        "--youtab-repo",
         type=Path,
         default=Path.cwd(),
-        help="Hermes source checkout containing .venv/bin/hermes",
+        help="Youtab source checkout containing .venv/bin/youtab",
     )
     parser.add_argument(
         "--relay-python",
@@ -176,7 +176,7 @@ def _arguments() -> argparse.Namespace:
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for the isolated HERMES_HOME and captured output",
+        help="Directory for the isolated YOUTAB_AGENT_HOME and captured output",
     )
     return parser.parse_args()
 
@@ -222,15 +222,15 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
     ]
     by_name = {counter["name"]: counter for counter in counters}
     if set(by_name) != {
-        "hermes.model_call.count",
-        "hermes.task_run.finished",
-        "hermes.task_run.started",
+        "youtab.model_call.count",
+        "youtab.task_run.finished",
+        "youtab.task_run.started",
     }:
         raise AssertionError(
             f"Unexpected SQLite counters:\n{json.dumps(counters, indent=2)}"
         )
     expected_model = {
-        "name": "hermes.model_call.count",
+        "name": "youtab.model_call.count",
         "dimensions": {
             "call_role": "primary",
             "locality": "local",
@@ -241,12 +241,12 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "value": 1,
         "packaged_value": 1,
     }
-    if by_name["hermes.model_call.count"] != expected_model:
+    if by_name["youtab.model_call.count"] != expected_model:
         raise AssertionError(
-            f"Unexpected model counter: {by_name['hermes.model_call.count']}"
+            f"Unexpected model counter: {by_name['youtab.model_call.count']}"
         )
     expected_start = {
-        "name": "hermes.task_run.started",
+        "name": "youtab.task_run.started",
         "dimensions": {
             "entrypoint": "interactive",
             "execution_surface": "cli",
@@ -254,11 +254,11 @@ def _validate_store(database_path: Path) -> list[dict[str, Any]]:
         "value": 1,
         "packaged_value": 1,
     }
-    if by_name["hermes.task_run.started"] != expected_start:
+    if by_name["youtab.task_run.started"] != expected_start:
         raise AssertionError(
-            f"Unexpected task start: {by_name['hermes.task_run.started']}"
+            f"Unexpected task start: {by_name['youtab.task_run.started']}"
         )
-    terminal = by_name["hermes.task_run.finished"]
+    terminal = by_name["youtab.task_run.finished"]
     expected_terminal_dimensions = {
         "duration_bucket": terminal["dimensions"].get("duration_bucket"),
         "end_reason": "completed",
@@ -289,7 +289,7 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
         import jsonschema
     except ImportError as exc:
         raise RuntimeError(
-            "The Hermes development environment requires jsonschema"
+            "The Youtab development environment requires jsonschema"
         ) from exc
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     jsonschema.validate(package, schema)
@@ -302,14 +302,14 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
             )
     metrics = {metric["name"]: metric for metric in package.get("metrics", [])}
     if set(metrics) != {
-        "hermes.model_call.count",
-        "hermes.task_run.finished",
-        "hermes.task_run.started",
+        "youtab.model_call.count",
+        "youtab.task_run.finished",
+        "youtab.task_run.started",
     }:
         raise AssertionError(
             f"Unexpected package metrics:\n{json.dumps(package.get('metrics'), indent=2)}"
         )
-    if metrics["hermes.model_call.count"]["dimensions"] != {
+    if metrics["youtab.model_call.count"]["dimensions"] != {
         "call_role": "primary",
         "locality": "local",
         "model_family": "gpt",
@@ -317,9 +317,9 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
         "provider_family": "custom",
     }:
         raise AssertionError(
-            f"Unexpected model metric: {metrics['hermes.model_call.count']}"
+            f"Unexpected model metric: {metrics['youtab.model_call.count']}"
         )
-    terminal = metrics["hermes.task_run.finished"]
+    terminal = metrics["youtab.task_run.finished"]
     if terminal["dimensions"] != {
         "duration_bucket": terminal["dimensions"].get("duration_bucket"),
         "end_reason": "completed",
@@ -337,9 +337,9 @@ def _validate_package(outbox: Path, schema_path: Path) -> tuple[Path, dict[str, 
 
 def main() -> int:
     args = _arguments()
-    hermes_repo = args.hermes_repo.resolve()
+    youtab_repo = args.youtab_repo.resolve()
     relay_python = args.relay_python.resolve() if args.relay_python else None
-    hermes = _resolve_hermes_executable(hermes_repo)
+    youtab = _resolve_youtab_executable(youtab_repo)
     if relay_python is not None and not any(
         (relay_python / "nemo_relay").glob("_native.*")
     ):
@@ -354,8 +354,8 @@ def main() -> int:
             raise SystemExit(f"Refusing to replace existing output directory: {root}")
         root.mkdir(parents=True)
     else:
-        root = Path(tempfile.mkdtemp(prefix="hermes-relay-shared-metrics-"))
-    home = root / "hermes-home"
+        root = Path(tempfile.mkdtemp(prefix="youtab-relay-shared-metrics-"))
+    home = root / "youtab-home"
     workdir = root / "workspace"
     workdir.mkdir()
     home.mkdir()
@@ -368,7 +368,7 @@ def main() -> int:
     try:
         _write_config(home, server.server_port)
         env = os.environ.copy()
-        env["HERMES_HOME"] = str(home)
+        env["YOUTAB_AGENT_HOME"] = str(home)
         if relay_python is not None:
             env["PYTHONPATH"] = os.pathsep.join([
                 str(relay_python),
@@ -376,7 +376,7 @@ def main() -> int:
             ]).rstrip(os.pathsep)
         result = subprocess.run(
             [
-                str(hermes),
+                str(youtab),
                 "chat",
                 "--query",
                 PROMPT_CANARY,
@@ -402,35 +402,35 @@ def main() -> int:
         server.server_close()
         thread.join(timeout=5)
 
-    (root / "hermes.stdout.txt").write_text(result.stdout, encoding="utf-8")
-    (root / "hermes.stderr.txt").write_text(result.stderr, encoding="utf-8")
+    (root / "youtab.stdout.txt").write_text(result.stdout, encoding="utf-8")
+    (root / "youtab.stderr.txt").write_text(result.stderr, encoding="utf-8")
     if result.returncode != 0:
         raise AssertionError(
-            f"Hermes exited with {result.returncode}\n"
+            f"Youtab exited with {result.returncode}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     if not _ModelHandler.requests:
-        raise AssertionError("Hermes did not call the local model endpoint")
+        raise AssertionError("Youtab did not call the local model endpoint")
     request = _ModelHandler.requests[0]
     if request.get("model") != MODEL_CANARY:
         raise AssertionError(f"Unexpected model request: {request.get('model')!r}")
     if PROMPT_CANARY not in json.dumps(request.get("messages", [])):
-        raise AssertionError("Hermes model request did not contain the prompt canary")
+        raise AssertionError("Youtab model request did not contain the prompt canary")
     if RESPONSE_CANARY not in result.stdout:
-        raise AssertionError("Hermes did not print the mock model response")
+        raise AssertionError("Youtab did not print the mock model response")
 
     telemetry = home / "telemetry" / "shared_metrics"
     counters = _validate_store(telemetry / "metrics.sqlite3")
     package_path, package = _validate_package(
         telemetry / "outbox",
-        hermes_repo
-        / "hermes_cli"
+        youtab_repo
+        / "youtab_agent_cli"
         / "observability"
         / "schemas"
-        / "hermes.shared_metrics.v1.schema.json",
+        / "youtab.shared_metrics.v1.schema.json",
     )
 
-    print("Hermes -> NeMo Relay shared-metrics smoke test passed")
+    print("Youtab -> NeMo Relay shared-metrics smoke test passed")
     print(f"Artifact directory: {root}")
     print(f"Model requests: {len(_ModelHandler.requests)}")
     print(f"SQLite counters: {json.dumps(counters, indent=2)}")

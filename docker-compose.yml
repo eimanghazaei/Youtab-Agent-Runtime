@@ -1,12 +1,12 @@
 #
-# docker-compose.yml for Hermes Agent
+# docker-compose.yml for Youtab Agent Runtime
 #
 # Usage:
-#   HERMES_UID=$(id -u) HERMES_GID=$(id -g) docker compose up -d
+#   YOUTAB_AGENT_UID=$(id -u) YOUTAB_AGENT_GID=$(id -g) docker compose up -d
 #
-# Set HERMES_UID / HERMES_GID to the host user that owns ~/.hermes so
+# Set YOUTAB_AGENT_UID / YOUTAB_AGENT_GID to the host user that owns ~/.youtab-agent-runtime so
 # files created inside the container stay readable/writable on the host.
-# The s6-overlay stage2 hook remaps the internal `hermes` user to these
+# The s6-overlay stage2 hook remaps the internal `youtab` user to these
 # values via usermod/groupmod; each supervised service then drops to that
 # user via `s6-setuidgid`.
 #
@@ -17,7 +17,7 @@
 #     adds authentication — do NOT pass --insecure --host 0.0.0.0.
 #   - If you override entrypoint, keep `/init` as the first command in
 #     the chain (or let docker use the image's default ENTRYPOINT,
-#     which is `["/init", "/opt/hermes/docker/main-wrapper.sh"]`).
+#     which is `["/init", "/opt/youtab/docker/main-wrapper.sh"]`).
 #     `/init` is s6-overlay's PID 1 — it runs the cont-init.d scripts
 #     (chown, profile reconcile, dashboard toggle) and sets up the
 #     supervision tree before any service starts. Bypassing it skips
@@ -27,50 +27,105 @@
 #     this on an internet-facing host.
 #
 services:
-  gateway:
+  # ONE container. The dashboard is an s6-supervised service *inside* the
+  # gateway-role container, not a container of its own.
+  #
+  # This was two services until it was found not to work. `service_manager`
+  # locates supervised slots under `/run/service`, which is container-local
+  # tmpfs: a `gateway-default` slot registered inside a gateway container is
+  # invisible to a dashboard in a separate container, so the dashboard's
+  # Restart Gateway control failed with `no such gateway 'default'` and the UI
+  # reported "Gateway restart failed with exit 1 / Gateway Status: Off".
+  #
+  # There is no IPC that would have fixed the split: no lifecycle API, no
+  # control socket, no shared supervisor. Mounting the Docker socket would
+  # have "worked" and is not an option -- it hands the web application root
+  # control of the host.
+  #
+  # The role is decided by the command. `gateway run` makes
+  # `container_boot._is_gateway_container` true, so the boot reconciler
+  # registers `gateway-default`. A `dashboard` command selects the
+  # dashboard-only role, which deliberately skips gateway registration to
+  # avoid lock contention on `logs/gateways/<profile>/lock` -- correct
+  # behaviour, and the reason a second dashboard container must not come back.
+  youtab-agent-runtime:
     build: .
-    image: hermes-agent
-    container_name: hermes
+    image: youtab-agent-runtime
+    container_name: youtab-agent-runtime
     restart: unless-stopped
-    network_mode: host
-    volumes:
-      - ~/.hermes:/opt/data
-    environment:
-      - HERMES_UID=${HERMES_UID:-10000}
-      - HERMES_GID=${HERMES_GID:-10000}
-      # To expose the OpenAI-compatible API server beyond localhost,
-      # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
-      # - API_SERVER_HOST=0.0.0.0
-      # - API_SERVER_KEY=${API_SERVER_KEY}
-      # Microsoft Teams — uncomment and fill in to enable Teams gateway.
-      # Register your bot at https://dev.botframework.com/ to get these values.
-      # - TEAMS_CLIENT_ID=${TEAMS_CLIENT_ID}
-      # - TEAMS_CLIENT_SECRET=${TEAMS_CLIENT_SECRET}
-      # - TEAMS_TENANT_ID=${TEAMS_TENANT_ID}
-      # - TEAMS_ALLOWED_USERS=${TEAMS_ALLOWED_USERS}
-      # - TEAMS_PORT=${TEAMS_PORT:-3978}
-      # Google Chat — uncomment and fill in to enable the Google Chat gateway.
-      # See website/docs/user-guide/messaging/google_chat.md for the full setup.
-      # The SA JSON path must point to a file mounted into the container —
-      # add a volume entry above (e.g. ``- ~/.hermes/google-chat-sa.json:/secrets/google-chat-sa.json:ro``)
-      # then set GOOGLE_CHAT_SERVICE_ACCOUNT_JSON to that mount path.
-      # - GOOGLE_CHAT_PROJECT_ID=${GOOGLE_CHAT_PROJECT_ID}
-      # - GOOGLE_CHAT_SUBSCRIPTION_NAME=${GOOGLE_CHAT_SUBSCRIPTION_NAME}
-      # - GOOGLE_CHAT_SERVICE_ACCOUNT_JSON=${GOOGLE_CHAT_SERVICE_ACCOUNT_JSON}
-      # - GOOGLE_CHAT_ALLOWED_USERS=${GOOGLE_CHAT_ALLOWED_USERS}
-    command: ["gateway", "run"]
+    # Private bridge, not host networking. Host networking gave this container
+    # the host's entire network stack: every loopback-bound service on the box
+    # -- PostgreSQL, Redis, the Docker API on a TCP socket, unrelated Youtab
+    # services -- was reachable as 127.0.0.1 from inside. The isolation
+    # boundary is now the network namespace, and the only way in is the one
+    # port published below.
+    networks:
+      - youtab-runtime
+    # Loopback-only publication. Nginx on the host reaches this; nothing else
+    # on the network can. Written as a literal rather than an interpolation so
+    # the bind address is statically verifiable -- an unresolved ${VAR} here
+    # would leave "is this loopback?" unanswerable, and the isolation gate
+    # refuses inputs it cannot resolve.
+    ports:
+      - "127.0.0.1:8081:8081"
 
-  dashboard:
-    image: hermes-agent
-    container_name: hermes-dashboard
-    restart: unless-stopped
-    network_mode: host
-    depends_on:
-      - gateway
+    # --- process and filesystem hardening ---------------------------------
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # s6 needs a writable /run -- it is where the supervision tree lives, and
+    # `/run/service` is the dynamic scandir the gateway lifecycle contract
+    # depends on. Sized, so a runaway cannot fill host memory.
+    tmpfs:
+      - /run:size=64m,mode=0755
+      - /tmp:size=256m,mode=1777
+    # Ceilings, not guidance. Without pids_limit a fork bomb in any supervised
+    # service takes the host down with it.
+    cpus: "2.0"
+    mem_limit: 4g
+    pids_limit: 512
+
     volumes:
-      - ~/.hermes:/opt/data
+      - youtab-agent-data:/opt/data
     environment:
-      - HERMES_UID=${HERMES_UID:-10000}
-      - HERMES_GID=${HERMES_GID:-10000}
-    # Localhost-only. For remote access, tunnel via `ssh -L 9119:localhost:9119`.
-    command: ["dashboard", "--host", "127.0.0.1", "--no-open"]
+      - YOUTAB_AGENT_UID=${YOUTAB_AGENT_UID:-10000}
+      - YOUTAB_AGENT_GID=${YOUTAB_AGENT_GID:-10000}
+      - YOUTAB_AGENT_DASHBOARD=1
+      # Binds every interface *inside this container's own namespace*, which
+      # is the whole of its network world. This is not a public bind: the
+      # namespace has one published port and it is on host loopback.
+      #
+      # It has to be this way. Docker publishes to a container's interface
+      # address, never to its loopback, so a dashboard bound to 127.0.0.1
+      # inside the container is unreachable through a published port -- that
+      # binding only worked because host networking made container loopback
+      # and host loopback the same thing.
+      #
+      # Consequence, deliberately not papered over: `should_require_auth`
+      # treats any non-loopback bind as gated, so this ENGAGES the dashboard
+      # auth gate rather than relaxing it. The gate fails closed with no
+      # provider registered, so a provider must be configured before this
+      # configuration is deployed. That is a stricter posture than host
+      # networking gave, and it is a pre-deploy prerequisite, not a default.
+      - YOUTAB_AGENT_DASHBOARD_HOST=0.0.0.0
+      - YOUTAB_AGENT_DASHBOARD_PORT=8081
+    command: ["gateway", "run"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+networks:
+  # Internal-only would also cut the gateway off from the messaging platforms
+  # it exists to reach, so this is a private bridge rather than `internal:
+  # true`. Egress restriction belongs to the governed egress proxy, which is
+  # its own slice and its own ADR.
+  youtab-runtime:
+    driver: bridge
+
+volumes:
+  youtab-agent-data:

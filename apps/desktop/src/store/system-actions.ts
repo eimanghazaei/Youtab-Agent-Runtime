@@ -1,31 +1,34 @@
 import { atom } from 'nanostores'
 
-import { getActionStatus, restartGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import type { ActionResponse } from '@/types/hermes'
+import type { GatewayLifecycleAccepted } from '@/types/youtab'
+import { getGatewayJob, restartGateway } from '@/youtab'
 
 const POLL_ATTEMPTS = 18
 const POLL_INTERVAL_MS = 1200
-const POLL_TIMEOUT_S = 180
 
 // True while a gateway restart is in flight — drives the statusbar gateway
 // indicator (glyph spinner) so the restart shows up where users already look,
 // instead of a toast that vanishes or a generic "Agents running" counter.
 export const $gatewayRestarting = atom(false)
 
-// Poll a backend action to completion (or a bounded window), throwing on a
-// non-zero exit so the caller can surface the failure.
-async function awaitAction(started: ActionResponse): Promise<void> {
+// Poll the lifecycle job to a terminal state, throwing on failure so the
+// caller can surface it.
+//
+// The job, not the child's exit status: a restart whose child exits 0 while
+// leaving no running gateway is a failure, and reading only the exit code
+// cleared this spinner and reported success for exactly that case.
+async function awaitRestart(started: GatewayLifecycleAccepted): Promise<void> {
   for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
     await new Promise(resolve => window.setTimeout(resolve, POLL_INTERVAL_MS))
-    const status = await getActionStatus(started.name, POLL_TIMEOUT_S)
+    const job = await getGatewayJob(started.job_id)
 
-    if (!status.running) {
-      if (status.exit_code != null && status.exit_code !== 0) {
-        throw new Error(translateNow('commandCenter.gatewayRestartFailed'))
-      }
+    if (job.state === 'failed') {
+      throw new Error(translateNow('commandCenter.gatewayRestartFailed'))
+    }
 
+    if (job.state === 'succeeded') {
       return
     }
   }
@@ -39,7 +42,7 @@ export async function runGatewayRestart(): Promise<void> {
   $gatewayRestarting.set(true)
 
   try {
-    await awaitAction(await restartGateway())
+    await awaitRestart(await restartGateway())
   } catch (err) {
     notifyError(err, translateNow('commandCenter.gatewayRestartFailed'))
   } finally {

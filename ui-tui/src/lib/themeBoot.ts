@@ -1,8 +1,8 @@
 /**
  * Flash-free theme boot — the TUI port of the desktop app's
- * `hermes-boot-background` / `hermes-boot-color-scheme` localStorage keys.
+ * `youtab-boot-background` / `youtab-boot-color-scheme` localStorage keys.
  *
- * Theme resolution is asynchronous by nature (gateway skin arrives after
+ * Theme resolution is asynchroyoutab by nature (gateway skin arrives after
  * connect; the OSC-11 background probe answers after the first frame; the
  * config mode pin arrives with config sync), so without a cache every launch
  * repaints through default-dark → skin → detected-mode. This module persists
@@ -34,13 +34,14 @@ interface BootThemeFile {
   version: 1
 }
 
-// Profile-aware: the Python launcher exports HERMES_HOME (set by
+// Profile-aware: the Python launcher exports YOUTAB_AGENT_HOME (set by
 // _apply_profile_override) before spawning the TUI. Falling back to
-// ~/.hermes matches get_hermes_home()'s default.
-const bootFilePath = () => join(process.env.HERMES_HOME ?? join(homedir(), '.hermes'), 'tui-theme-boot.json')
+// ~/.youtab-agent-runtime matches get_youtab_home()'s default.
+const bootFilePath = () =>
+  join(process.env.YOUTAB_AGENT_HOME ?? join(homedir(), '.youtab-agent-runtime'), 'tui-theme-boot.json')
 
-// Never touch the user's real ~/.hermes from test runs (the TS suite has no
-// HERMES_HOME isolation fixture).
+// Never touch the user's real ~/.youtab-agent-runtime from test runs (the TS suite has no
+// YOUTAB_AGENT_HOME isolation fixture).
 const isTestRun = () => !!process.env.VITEST || process.env.NODE_ENV === 'test'
 
 const looksLikeTheme = (value: unknown): value is Theme => {
@@ -134,7 +135,7 @@ export function writeBootTheme(theme: Theme, background?: string, mode?: 'dark' 
 export interface BootSeedResult {
   /** The background hex this boot seeded into env, or null. */
   seededBackground: null | string
-  /** True when the cached config pin was seeded into HERMES_TUI_THEME. */
+  /** True when the cached config pin was seeded into YOUTAB_AGENT_TUI_THEME. */
   seededPin: boolean
 }
 
@@ -150,7 +151,7 @@ export function seedBootEnvironment(boot: BootTheme | null, env: NodeJS.ProcessE
 
   seeded = result
 
-  if (!boot || env.HERMES_TUI_THEME || env.HERMES_TUI_LIGHT) {
+  if (!boot || env.YOUTAB_AGENT_TUI_THEME || env.YOUTAB_AGENT_TUI_LIGHT) {
     return result
   }
 
@@ -159,7 +160,7 @@ export function seedBootEnvironment(boot: BootTheme | null, env: NodeJS.ProcessE
   // background, and without the pin the first skin resolution flips to the
   // physical pole before config hydration flips it back (multi-stage flash).
   if (boot.mode) {
-    env.HERMES_TUI_THEME = boot.mode
+    env.YOUTAB_AGENT_TUI_THEME = boot.mode
     result.seededPin = true
   }
 
@@ -169,9 +170,9 @@ export function seedBootEnvironment(boot: BootTheme | null, env: NodeJS.ProcessE
     // before the distrust rule existed must not poison this session's
     // detection (it would also suppress the macOS-appearance fallback).
     boot.background.toLowerCase() !== '#000000' &&
-    !env.HERMES_TUI_BACKGROUND
+    !env.YOUTAB_AGENT_TUI_BACKGROUND
   ) {
-    env.HERMES_TUI_BACKGROUND = boot.background
+    env.YOUTAB_AGENT_TUI_BACKGROUND = boot.background
     result.seededBackground = boot.background
   }
 
@@ -187,11 +188,11 @@ export function seedBootEnvironment(boot: BootTheme | null, env: NodeJS.ProcessE
  * Returns true when the slot was cleared.
  */
 export function invalidateBootBackground(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (!seeded.seededBackground || env.HERMES_TUI_BACKGROUND !== seeded.seededBackground) {
+  if (!seeded.seededBackground || env.YOUTAB_AGENT_TUI_BACKGROUND !== seeded.seededBackground) {
     return false
   }
 
-  delete env.HERMES_TUI_BACKGROUND
+  delete env.YOUTAB_AGENT_TUI_BACKGROUND
   seeded.seededBackground = null
 
   return true
@@ -199,7 +200,7 @@ export function invalidateBootBackground(env: NodeJS.ProcessEnv = process.env): 
 
 const boot = readBootTheme()
 
-/** True when this boot replayed a cached config pin into HERMES_TUI_THEME.
+/** True when this boot replayed a cached config pin into YOUTAB_AGENT_TUI_THEME.
  *  applyConfiguredTuiTheme treats it as config-owned so a later 'auto' can
  *  clear it — otherwise a stale cached pin masquerades as a user shell
  *  export and becomes unclearable. */

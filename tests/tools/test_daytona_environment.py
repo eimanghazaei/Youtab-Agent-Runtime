@@ -43,6 +43,15 @@ def _patch_daytona_imports(monkeypatch):
     daytona_mod.SandboxState = _SandboxState
 
     monkeypatch.setitem(__import__("sys").modules, "daytona", daytona_mod)
+    # Neutralise the lazy-install gate as well as the import. Injecting the
+    # module into sys.modules is not enough: DaytonaEnvironment.__init__ calls
+    # lazy_deps.ensure() first, and that decides from installed *distribution
+    # metadata* (importlib.metadata.version), which a sys.modules stub can
+    # never satisfy. So the check ran for real and refused on any host where
+    # the optional `daytona` extra is absent and lazy installs are disabled —
+    # i.e. every hardened or offline machine, including CI. The subject here is
+    # this backend's own logic, not the install policy.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
     return daytona_mod
 
 
@@ -135,7 +144,7 @@ class TestPersistence:
         env = make_env(get_side_effect=lambda name: existing, persistent=True,
                        task_id="mytask")
         existing.start.assert_called_once()
-        env._mock_client.get.assert_called_once_with("hermes-mytask")
+        env._mock_client.get.assert_called_once_with("youtab-mytask")
         env._mock_client.create.assert_not_called()
 
 
@@ -310,7 +319,7 @@ class TestSyncSafety:
 
         host_file = tmp_path / "token.txt"
         host_file.write_text("secret", encoding="utf-8")
-        remote_path = "/root/.hermes/skills/evil; touch /tmp/daytona-owned/file.txt"
+        remote_path = "/root/.youtab-agent-runtime/skills/evil; touch /tmp/daytona-owned/file.txt"
 
         env._daytona_upload(str(host_file), remote_path)
 
@@ -318,8 +327,8 @@ class TestSyncSafety:
         # The whole parent dir is a single quoted argument — the ';' cannot
         # break out into a second command.
         assert mkdir_cmd == (
-            "mkdir -p '/root/.hermes/skills/evil; touch /tmp/daytona-owned'"
+            "mkdir -p '/root/.youtab-agent-runtime/skills/evil; touch /tmp/daytona-owned'"
         )
         assert "; touch" not in mkdir_cmd.replace(
-            "'/root/.hermes/skills/evil; touch /tmp/daytona-owned'", ""
+            "'/root/.youtab-agent-runtime/skills/evil; touch /tmp/daytona-owned'", ""
         )

@@ -32,7 +32,7 @@ test('submits while same-chat search tokens churn during new-session creation', 
   await composer.click()
   await composer.type(PROMPT, { delay: 10 })
 
-  // The submit pipeline snapshots the route synchronously, then awaits session
+  // The submit pipeline snapshots the route synchroyoutably, then awaits session
   // creation. Keep changing only the query string of whichever chat route is
   // current. Before #69578, comparing the raw route token treated this as a
   // user chat switch and aborted before prompt.submit.

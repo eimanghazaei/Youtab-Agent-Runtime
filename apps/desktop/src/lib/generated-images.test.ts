@@ -12,11 +12,11 @@ describe('generatedImageFromResult', () => {
     expect(
       generatedImageFromResult({
         agent_visible_image: '/container/cache/cat.png',
-        host_image: '/Users/me/.hermes/cache/images/cat.png',
-        image: '/Users/me/.hermes/cache/images/cat.png',
+        host_image: '/Users/me/.youtab-agent-runtime/cache/images/cat.png',
+        image: '/Users/me/.youtab-agent-runtime/cache/images/cat.png',
         success: true
       })
-    ).toBe('/Users/me/.hermes/cache/images/cat.png')
+    ).toBe('/Users/me/.youtab-agent-runtime/cache/images/cat.png')
   })
 
   it('ignores failed image generation results', () => {

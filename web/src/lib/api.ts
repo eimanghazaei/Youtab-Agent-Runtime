@@ -1,23 +1,23 @@
-import { buildHermesWebSocketUrl } from "@hermes/shared";
+import { buildYoutabWebSocketUrl } from "@youtab/agent-shared";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
-// (e.g. https://mission-control.tilos.com/hermes/). The Python backend
-// injects ``window.__HERMES_BASE_PATH__`` into index.html based on the
+// (e.g. https://mission-control.tilos.com/youtab/). The Python backend
+// injects ``window.__YOUTAB_AGENT_BASE_PATH__`` into index.html based on the
 // incoming ``X-Forwarded-Prefix`` header so the SPA can address its own
 // ``/api/...`` and ``/dashboard-plugins/...`` URLs correctly without a
 // rebuild. Empty string means "served at root".
 function readBasePath(): string {
   if (typeof window === "undefined") return "";
-  const raw = window.__HERMES_BASE_PATH__ ?? "";
+  const raw = window.__YOUTAB_AGENT_BASE_PATH__ ?? "";
   if (!raw) return "";
   // Normalise: ensure leading slash, strip trailing slash.
   const withLead = raw.startsWith("/") ? raw : `/${raw}`;
   return withLead.replace(/\/+$/, "");
 }
 
-export const HERMES_BASE_PATH = readBasePath();
-const BASE = HERMES_BASE_PATH;
+export const YOUTAB_AGENT_BASE_PATH = readBasePath();
+const BASE = YOUTAB_AGENT_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
 
@@ -25,16 +25,16 @@ import type { DashboardTheme } from "@/themes/types";
 // Injected into index.html by the server — never fetched via API.
 declare global {
   interface Window {
-    __HERMES_SESSION_TOKEN__?: string;
-    __HERMES_BASE_PATH__?: string;
+    __YOUTAB_AGENT_SESSION_TOKEN__?: string;
+    __YOUTAB_AGENT_BASE_PATH__?: string;
     /** Server-injected flag: ``true`` when the dashboard's OAuth gate is
      * engaged (public bind, no ``--insecure``). Toggles the SPA's
      * WS-upgrade path from legacy ``?token=`` to single-use ``?ticket=``
      * fetched via :func:`getWsTicket`. */
-    __HERMES_AUTH_REQUIRED__?: boolean;
+    __YOUTAB_AGENT_AUTH_REQUIRED__?: boolean;
   }
 }
-const SESSION_HEADER = "X-Hermes-Session-Token";
+const SESSION_HEADER = "X-Youtab-Session-Token";
 
 function setSessionHeader(headers: Headers, token: string): void {
   if (!headers.has(SESSION_HEADER)) {
@@ -103,7 +103,7 @@ export async function fetchJSON<T>(
   url = withManagementProfile(url);
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
-  const token = window.__HERMES_SESSION_TOKEN__;
+  const token = window.__YOUTAB_AGENT_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
@@ -140,7 +140,7 @@ export async function fetchJSON<T>(
       // fallback the post-login handler can read.
       try {
         sessionStorage.setItem(
-          "hermes.lastLocation",
+          "youtab.lastLocation",
           window.location.pathname + window.location.search,
         );
       } catch {
@@ -151,25 +151,25 @@ export async function fetchJSON<T>(
       return new Promise<T>(() => {});
     }
     // Loopback mode: ``_SESSION_TOKEN`` rotates on every server restart
-    // (``hermes update``, ``hermes gateway restart``, etc.). A tab kept
+    // (``youtab update``, ``youtab gateway restart``, etc.). A tab kept
     // open across the restart holds the OLD token in
-    // ``window.__HERMES_SESSION_TOKEN__`` from the previous HTML render,
+    // ``window.__YOUTAB_AGENT_SESSION_TOKEN__`` from the previous HTML render,
     // so every fetch returns 401. The HTML is served ``Cache-Control:
     // no-store`` so a reload picks up the freshly-injected token. Trigger
     // that reload once on the first stale-token 401 — gated mode is
     // handled above, so reaching here in gated mode means a real
     // middleware failure that should not reload-loop.
-    if (!window.__HERMES_AUTH_REQUIRED__ && !options?.allowUnauthorized) {
+    if (!window.__YOUTAB_AGENT_AUTH_REQUIRED__ && !options?.allowUnauthorized) {
       let alreadyReloaded = false;
       try {
         alreadyReloaded =
-          sessionStorage.getItem("hermes.tokenReloadAttempted") === "1";
+          sessionStorage.getItem("youtab.tokenReloadAttempted") === "1";
       } catch {
         /* SSR / privacy mode — fall through to throw */
       }
       if (!alreadyReloaded) {
         try {
-          sessionStorage.setItem("hermes.tokenReloadAttempted", "1");
+          sessionStorage.setItem("youtab.tokenReloadAttempted", "1");
         } catch {
           /* SSR / privacy mode — best effort */
         }
@@ -180,10 +180,10 @@ export async function fetchJSON<T>(
   }
   if (res.ok) {
     // Clear the stale-token reload guard: a successful 2xx proves the
-    // current ``window.__HERMES_SESSION_TOKEN__`` is valid, so the next
+    // current ``window.__YOUTAB_AGENT_SESSION_TOKEN__`` is valid, so the next
     // 401 — if any — should be allowed to trigger its own reload cycle.
     try {
-      sessionStorage.removeItem("hermes.tokenReloadAttempted");
+      sessionStorage.removeItem("youtab.tokenReloadAttempted");
     } catch {
       /* SSR / privacy mode — ignore */
     }
@@ -203,7 +203,7 @@ function pluginPath(name: string): string {
 /**
  * Fetch a single-use ticket for a WebSocket upgrade in gated mode.
  *
- * The dashboard's gated-mode WS auth (``hermes_cli.web_server._ws_auth_ok``)
+ * The dashboard's gated-mode WS auth (``youtab_agent_cli.web_server._ws_auth_ok``)
  * rejects the legacy ``?token=<_SESSION_TOKEN>`` path and only accepts
  * ``?ticket=<minted>`` consumed against the in-memory ticket store. Browsers
  * can't set ``Authorization`` on a WS upgrade, so this round-trip via the
@@ -229,11 +229,11 @@ export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: numb
  * mode returns the injected session token.
  */
 export async function buildWsAuthParam(): Promise<[string, string]> {
-  if (window.__HERMES_AUTH_REQUIRED__) {
+  if (window.__YOUTAB_AGENT_AUTH_REQUIRED__) {
     const { ticket } = await getWsTicket();
     return ["ticket", ticket];
   }
-  const token = window.__HERMES_SESSION_TOKEN__ ?? "";
+  const token = window.__YOUTAB_AGENT_SESSION_TOKEN__ ?? "";
   return ["token", token];
 }
 
@@ -244,9 +244,9 @@ export async function buildWsAuthParam(): Promise<[string, string]> {
  * the caller can read ``.blob()`` / ``.formData()`` / stream it.
  *
  * Auth, in both modes, exactly as ``fetchJSON`` does it:
- *  - loopback / ``--insecure``: attach the ``X-Hermes-Session-Token`` header.
+ *  - loopback / ``--insecure``: attach the ``X-Youtab-Session-Token`` header.
  *  - gated OAuth: no token header (it's absent by design); the
- *    ``hermes_session_at`` cookie rides along via ``credentials: 'include'``.
+ *    ``youtab_session_at`` cookie rides along via ``credentials: 'include'``.
  *
  * Unlike ``fetchJSON`` this does NOT parse the body, does NOT throw on
  * non-2xx (the caller decides — a 404 on a download is meaningful), and
@@ -259,7 +259,7 @@ export async function authedFetch(
   init?: RequestInit,
 ): Promise<Response> {
   const headers = new Headers(init?.headers);
-  const token = window.__HERMES_SESSION_TOKEN__;
+  const token = window.__YOUTAB_AGENT_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
@@ -275,7 +275,7 @@ export async function authedFetch(
  * with the correct auth query param appended for the active mode (fresh
  * single-use ``ticket`` in gated mode, ``token`` in loopback). Plugins and
  * the SPA should use this instead of hand-assembling a WS URL + reading
- * ``window.__HERMES_SESSION_TOKEN__`` directly, so the gated-mode ticket
+ * ``window.__YOUTAB_AGENT_SESSION_TOKEN__`` directly, so the gated-mode ticket
  * path can never be forgotten.
  *
  * ``path`` is the dashboard-relative path (e.g.
@@ -287,7 +287,7 @@ export async function buildWsUrl(
   path: string,
   params?: Record<string, string>,
 ): Promise<string> {
-  return buildHermesWebSocketUrl({
+  return buildYoutabWebSocketUrl({
     authParam: await buildWsAuthParam(),
     basePath: BASE,
     params,
@@ -520,6 +520,11 @@ export const api = {
     ),
   getConfig: (profile = getManagementProfile()) =>
     fetchJSON<Record<string, unknown>>(appendProfileParam("/api/config", profile)),
+  // Which optional surfaces this deployment offers. A report, not a grant:
+  // the server refuses the gated routes on its own authority whatever this
+  // says, so the only thing a wrong answer here costs is a nav entry.
+  getCapabilities: () =>
+    fetchJSON<{ credential_surface: boolean }>("/api/dashboard/capabilities"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
   getModelInfo: (profile = getManagementProfile()) =>
@@ -954,12 +959,19 @@ export const api = {
 
   // Gateway / update actions
   restartGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
-  updateHermes: () =>
-    fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
-  checkHermesUpdate: (force = false) =>
+    fetchJSON<GatewayLifecycleAccepted>("/api/gateway/restart", {
+      method: "POST",
+    }),
+  /** Authoritative outcome of a lifecycle operation. Poll until not pending. */
+  getGatewayJob: (jobId: string) =>
+    fetchJSON<GatewayLifecycleJob>(
+      `/api/gateway/jobs/${encodeURIComponent(jobId)}`,
+    ),
+  updateYoutab: () =>
+    fetchJSON<ActionResponse>("/api/youtab/update", { method: "POST" }),
+  checkYoutabUpdate: (force = false) =>
     fetchJSON<UpdateCheckResponse>(
-      `/api/hermes/update/check${force ? "?force=true" : ""}`,
+      `/api/youtab/update/check${force ? "?force=true" : ""}`,
     ),
   getActionStatus: (name: string, lines = 200) =>
     fetchJSON<ActionStatusResponse>(
@@ -1208,9 +1220,13 @@ export const api = {
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
   startGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
+    fetchJSON<GatewayLifecycleAccepted>("/api/gateway/start", {
+      method: "POST",
+    }),
   stopGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
+    fetchJSON<GatewayLifecycleAccepted>("/api/gateway/stop", {
+      method: "POST",
+    }),
 
   // ── Admin: Operations ───────────────────────────────────────────────
   runDoctor: () =>
@@ -1338,7 +1354,7 @@ export const api = {
  *
  * Returned by the dashboard's gated middleware when a valid session cookie
  * is attached. ``email`` and ``display_name`` are empty strings under the
- * Nous Portal contract V1 (the access token has no email/name claims —
+ * Youtab Portal contract V1 (the access token has no email/name claims —
  * see Contract Anchor C4 in the plan). The AuthWidget surfaces a
  * truncated ``user_id`` instead.
  */
@@ -1422,7 +1438,7 @@ export interface SkillHubSource {
   label: string;
   /** GitHub only: whether the API is currently rate-limited. */
   rate_limited?: boolean;
-  /** hermes-index only: whether the centralized index loaded. */
+  /** youtab-index only: whether the centralized index loaded. */
   available?: boolean;
 }
 
@@ -1639,6 +1655,9 @@ export interface WebhookEnableResponse {
   restart_started?: boolean;
   restart_action?: string;
   restart_pid?: number | null;
+  /** Poll with `getGatewayJob` for the authoritative restart outcome.
+   *  `restart_started` only says the restart was dispatched. */
+  restart_job_id?: string;
   restart_error?: string;
 }
 
@@ -1787,7 +1806,7 @@ export interface SystemStats {
   hostname: string;
   python_version: string;
   python_impl: string;
-  hermes_version: string;
+  youtab_version: string;
   cpu_count: number | null;
   psutil: boolean;
   cpu_percent?: number;
@@ -1850,6 +1869,62 @@ export interface ActionStatusResponse {
   running: boolean;
 }
 
+/** Terminal state of a gateway lifecycle operation.
+ *
+ * `state` is the only field that decides what the UI renders. `ok` is `null`
+ * while pending -- deliberately not `false`, so a control cannot show "failed"
+ * for an operation that is merely still running.
+ */
+export type GatewayJobState = "pending" | "succeeded" | "failed";
+
+export interface GatewayLifecycleJob {
+  job_id: string;
+  action: string;
+  verb: "start" | "stop" | "restart";
+  profile: string | null;
+  state: GatewayJobState;
+  ok: boolean | null;
+  pid: number | null;
+  exit_code: number | null;
+  reason: string | null;
+  detail: string;
+  started_at: number;
+  finished_at: number | null;
+}
+
+/** `202` body from a lifecycle POST: the request was accepted, nothing more. */
+export interface GatewayLifecycleAccepted extends GatewayLifecycleJob {
+  status: "accepted";
+  reused: boolean;
+}
+
+/** Poll a lifecycle job until the backend reports a terminal state.
+ *
+ * Transient fetch failures are retried rather than treated as an outcome: the
+ * dashboard briefly loses its connection *because* the gateway is restarting,
+ * and reading that as a failed restart would be wrong exactly when the restart
+ * is working. Exhausting the attempts resolves to the last observed job, which
+ * is still `pending` -- never a synthesised success.
+ */
+export async function pollGatewayJob(
+  jobId: string,
+  { attempts = 120, intervalMs = 1500 }: { attempts?: number; intervalMs?: number } = {},
+): Promise<GatewayLifecycleJob> {
+  let last: GatewayLifecycleJob | null = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const job = await api.getGatewayJob(jobId);
+      last = job;
+      if (job.state !== "pending") return job;
+    } catch {
+      // keep polling
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  if (last) return last;
+  throw new Error("Gateway operation did not report a result.");
+}
+
 export interface PlatformStatus {
   error_code?: string;
   error_message?: string;
@@ -1863,7 +1938,7 @@ export interface StatusResponse {
    * (public bind, no ``--insecure``). Read alongside ``auth_providers``
    * to render a "gated / loopback" badge. */
   auth_required?: boolean;
-  /** Phase 7: registered ``DashboardAuthProvider`` names (e.g. ``["nous"]``).
+  /** Phase 7: registered ``DashboardAuthProvider`` names (e.g. ``["youtab"]``).
    * Empty in loopback mode; empty + ``auth_required=true`` is a
    * fail-closed state (the dashboard will refuse to bind). */
   auth_providers?: string[];
@@ -1875,8 +1950,8 @@ export interface StatusResponse {
    * older gateway ⇒ the desktop falls back to the embedded-webview flow. */
   auth_flows?: string[];
   /** False when the dashboard is running in a hosted/managed layout where
-   * updates are handled by the outer launcher instead of ``hermes update``. */
-  can_update_hermes?: boolean;
+   * updates are handled by the outer launcher instead of ``youtab update``. */
+  can_update_youtab?: boolean;
   config_path: string;
   config_version: number;
   env_path: string;
@@ -1887,7 +1962,7 @@ export interface StatusResponse {
   gateway_running: boolean;
   gateway_state: string | null;
   gateway_updated_at: string | null;
-  hermes_home: string;
+  youtab_home: string;
   latest_config_version: number;
   release_date: string;
   version: string;
@@ -1896,7 +1971,13 @@ export interface StatusResponse {
 export interface SessionInfo {
   id: string;
   source: string | null;
-  model: string | null;
+  /**
+   * The Agent's public name, resolved on the server from the configured
+   * engine. The raw `provider/model` is deliberately not part of this type:
+   * the sessions list used to render it, and a field that is still sent is one
+   * refactor away from being rendered again.
+   */
+  agent_label: string | null;
   title: string | null;
   started_at: number;
   ended_at: number | null;
@@ -1964,6 +2045,9 @@ export interface TelegramOnboardingApplyResponse {
   restart_started?: boolean;
   restart_action?: string;
   restart_pid?: number | null;
+  /** Poll with `getGatewayJob` for the authoritative restart outcome.
+   *  `restart_started` only says the restart was dispatched. */
+  restart_job_id?: string;
   restart_error?: string;
 }
 
@@ -1996,6 +2080,9 @@ export interface WhatsAppOnboardingApplyResponse {
   restart_started?: boolean;
   restart_action?: string;
   restart_pid?: number | null;
+  /** Poll with `getGatewayJob` for the authoritative restart outcome.
+   *  `restart_started` only says the restart was dispatched. */
+  restart_job_id?: string;
   restart_error?: string;
 }
 
@@ -2209,7 +2296,7 @@ export interface CronJob {
   id: string;
   profile?: string | null;
   profile_name?: string | null;
-  hermes_home?: string | null;
+  youtab_home?: string | null;
   is_default_profile?: boolean;
   name?: string | null;
   prompt?: string | null;
@@ -2310,7 +2397,7 @@ export interface ToolsetProvider {
   tag: string;
   env_vars: ToolsetProviderEnvVar[];
   post_setup: string | null;
-  requires_nous_auth: boolean;
+  requires_youtab_auth: boolean;
   is_active: boolean;
 }
 

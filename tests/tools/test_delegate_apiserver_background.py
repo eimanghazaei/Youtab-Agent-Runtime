@@ -1,6 +1,6 @@
 """delegate_task(background=true) on stateless API-server sessions.
 
-Previously async_delivery_supported()=False forced SYNCHRONOUS execution for
+Previously async_delivery_supported()=False forced SYNCHROYOUTAB execution for
 every background dispatch on the API server, blocking the whole turn. Now
 that background completions can wake the originating session via the
 /v1/chat/completions self-post (gateway/wake.py), a session-continuable
@@ -8,8 +8,8 @@ turn (raw session id bound as the api_server chat_id) dispatches async; only
 session-id-less one-shot requests keep the sync fallback.
 
 The wake target must be captured from the request-scoped chat_id binding,
-NOT from HERMES_SESSION_ID: constructing a child agent calls
-set_current_session_id(child.session_id), clobbering the HERMES_SESSION_ID
+NOT from YOUTAB_AGENT_SESSION_ID: constructing a child agent calls
+set_current_session_id(child.session_id), clobbering the YOUTAB_AGENT_SESSION_ID
 ContextVar and os.environ with the subagent's internal id before the
 dispatch code reads it — the fake child build below reproduces that clobber.
 """
@@ -26,7 +26,7 @@ from tools.process_registry import process_registry
 
 @pytest.fixture(autouse=True)
 def _clean_queue_and_context(monkeypatch):
-    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    monkeypatch.delenv("YOUTAB_AGENT_SESSION_ID", raising=False)
     while not process_registry.completion_queue.empty():
         try:
             process_registry.completion_queue.get_nowait()
@@ -46,7 +46,7 @@ def _clean_queue_and_context(monkeypatch):
     # other test modules.
     import os
 
-    os.environ.pop("HERMES_SESSION_ID", None)
+    os.environ.pop("YOUTAB_AGENT_SESSION_ID", None)
     while not process_registry.completion_queue.empty():
         try:
             process_registry.completion_queue.get_nowait()
@@ -94,7 +94,7 @@ def _patch_delegate(monkeypatch):
     def clobbering_build_child(**kw):
         # Reproduce what the real _build_child_agent -> AIAgent -> agent_init
         # path does: it synchronizes the child's internal session id into the
-        # HERMES_SESSION_ID ContextVar + os.environ, clobbering the spawner's
+        # YOUTAB_AGENT_SESSION_ID ContextVar + os.environ, clobbering the spawner's
         # id ~milliseconds before delegate_tool dispatches the batch.
         from gateway.session_context import set_current_session_id
 
@@ -108,11 +108,11 @@ def _patch_delegate(monkeypatch):
 
 
 def test_apiserver_session_with_id_dispatches_background(monkeypatch):
-    """async_delivery=False + a raw session id (HERMES_SESSION_ID) →
+    """async_delivery=False + a raw session id (YOUTAB_AGENT_SESSION_ID) →
     background dispatch (the completion wakes the session via the
     api_server self-post), NOT the forced-sync fallback."""
     dt = _patch_delegate(monkeypatch)
-    monkeypatch.setenv("HERMES_SESSION_ID", "raw-sid-7")
+    monkeypatch.setenv("YOUTAB_AGENT_SESSION_ID", "raw-sid-7")
     set_session_vars(
         platform="api_server",
         chat_id="raw-sid-7",
@@ -136,7 +136,7 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
     # wake to the REAL session (session_key alone is the raw id here, which
     # carries no parseable routing metadata). Crucially this is the SPAWNER's
     # id, not the subagent-internal id the child build clobbered
-    # HERMES_SESSION_ID with (see clobbering_build_child).
+    # YOUTAB_AGENT_SESSION_ID with (see clobbering_build_child).
     assert evt["origin_session_id"] == "raw-sid-7"
 
 
@@ -145,7 +145,7 @@ def test_apiserver_session_with_id_dispatches_background(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
+def test_apiserver_session_without_id_stays_synchroyoutab(monkeypatch):
     """No session id to wake → keep the sync fallback (a detached result
     would never re-enter any conversation)."""
     dt = _patch_delegate(monkeypatch)
@@ -163,5 +163,5 @@ def test_apiserver_session_without_id_stays_synchronous(monkeypatch):
     )
     parsed = json.loads(out)
     assert parsed.get("status") != "dispatched", parsed
-    assert "SYNCHRONOUSLY" in parsed.get("note", "")
+    assert "SYNCHROYOUTABLY" in parsed.get("note", "")
     assert process_registry.completion_queue.empty()

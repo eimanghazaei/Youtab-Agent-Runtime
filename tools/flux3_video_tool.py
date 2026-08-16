@@ -1,9 +1,9 @@
-"""Native BFL FLUX 3 video generation tools, backed by the Nous tool gateway.
+"""Native BFL FLUX 3 video generation tools, backed by the Youtab tool gateway.
 
 These are service-gated native tools in the ``image_generate`` mold: schemas
 and descriptions are pinned here as build-time facts, the handlers speak the
 gateway's own REST contract, and ``check_fn`` hides the whole toolset unless
-the user is signed in to Nous Portal with paid service access. No runtime
+the user is signed in to Youtab Portal with paid service access. No runtime
 discovery, and no server-supplied schema is ever consulted — that is the point
 of the design.
 
@@ -21,8 +21,8 @@ tool's result text, and surface ``error.message`` the same way on a refusal.
 
 Media inputs: handlers know their own media fields explicitly. A local file
 path is resolved through :func:`tools.image_source.resolve_image_source`
-(sandbox confinement, credential guard) and delivered via the Nous upload
-protocol (presign, direct PUT to storage, ``nous-upload:<token>`` reference).
+(sandbox confinement, credential guard) and delivered via the Youtab upload
+protocol (presign, direct PUT to storage, ``youtab-upload:<token>`` reference).
 URLs pass through untouched.
 """
 
@@ -39,7 +39,7 @@ from tools.managed_tool_gateway import (
     build_managed_media_uploader,
     managed_gateway_auth_headers,
     managed_vendor_endpoints,
-    read_nous_access_token,
+    read_youtab_access_token,
 )
 
 logger = logging.getLogger(__name__)
@@ -54,8 +54,8 @@ _TRANSPORT_READ_TIMEOUT_SECONDS = 180.0
 _TRANSPORT_CONNECT_TIMEOUT_SECONDS = 10.0
 
 _SIGN_IN_MESSAGE = (
-    "BFL video generation needs a Nous Portal sign-in with an active paid plan. "
-    "Ask the user to run `hermes model` and sign in to Nous, then retry."
+    "BFL video generation needs a Youtab Portal sign-in with an active paid plan. "
+    "Ask the user to run `youtab model` and sign in to Youtab, then retry."
 )
 
 # ---------------------------------------------------------------------------
@@ -231,10 +231,10 @@ async def _wait_before_second_look() -> bool:
     return True
 
 
-def _warm_nous_token() -> None:
-    """Refresh the Nous token once, before any parallel upload needs it.
+def _warm_youtab_token() -> None:
+    """Refresh the Youtab token once, before any parallel upload needs it.
 
-    ``read_nous_access_token`` takes no lock and, when a refresh fails, falls
+    ``read_youtab_access_token`` takes no lock and, when a refresh fails, falls
     back to returning the stale cached token. Uploading in parallel therefore
     had every request discover the token was expiring at the same instant and
     fire its own refresh; the rotating refresh token means the first wins and
@@ -243,9 +243,9 @@ def _warm_nous_token() -> None:
     reads it instead of racing for it.
     """
     try:
-        read_nous_access_token()
+        read_youtab_access_token()
     except Exception as exc:  # pragma: no cover — the real read retries below
-        logger.debug("Nous token warm-up failed before parallel uploads: %s", exc)
+        logger.debug("Youtab token warm-up failed before parallel uploads: %s", exc)
 
 
 async def _prepare_media(args: dict, task_id: Optional[str]) -> dict:
@@ -258,7 +258,7 @@ async def _prepare_media(args: dict, task_id: Optional[str]) -> dict:
     and discloses the user's directory layout to a third party.
     """
     prepared = dict(args or {})
-    _warm_nous_token()
+    _warm_youtab_token()
     for field, permitted in _MEDIA_FIELDS.items():
         value = prepared.get(field)
         if value is None:
@@ -287,7 +287,7 @@ def _without_media(args: dict) -> dict:
 
 
 async def _deliver_media(value, permitted: tuple, task_id: Optional[str]):
-    """Replace a local path with a ``nous-upload:`` reference; pass URLs through.
+    """Replace a local path with a ``youtab-upload:`` reference; pass URLs through.
 
     Raises ``ValueError`` with a model-readable sentence when the file cannot
     be read or uploaded — the caller turns that into the tool's error payload.
@@ -471,7 +471,7 @@ def _default_directory():
     On a messaging platform the user has no filesystem — the only way they
     ever see the clip is as an attachment — so it goes to the gateway's own
     video cache, which is an unconditionally allowed delivery root. Downloads
-    is not: an operator running HERMES_MEDIA_DELIVERY_STRICT=1 delivers only
+    is not: an operator running YOUTAB_AGENT_MEDIA_DELIVERY_STRICT=1 delivers only
     from the cache roots, so a clip saved to Downloads there is dropped on the
     way out and the user is shown a reply with nothing attached.
     """
@@ -479,9 +479,9 @@ def _default_directory():
 
     if _delivers_as_an_attachment():
         try:
-            from hermes_constants import get_hermes_dir
+            from youtab_constants import get_youtab_dir
 
-            return get_hermes_dir("cache/videos", "video_cache")
+            return get_youtab_dir("cache/videos", "video_cache")
         except Exception:
             logger.debug("Could not resolve the video cache dir; using Downloads", exc_info=True)
     downloads = Path.home() / "Downloads"
@@ -615,9 +615,9 @@ def check_bfl_requirements() -> bool:
     try:
         if _endpoints() is None:
             return False
-        from hermes_cli.nous_account import get_nous_portal_account_info
+        from youtab_agent_cli.youtab_account import get_youtab_portal_account_info
 
-        info = get_nous_portal_account_info()
+        info = get_youtab_portal_account_info()
         return bool(getattr(info, "logged_in", False) and getattr(info, "paid_service_access", False))
     except Exception:
         return False
@@ -632,7 +632,7 @@ _RESOLUTIONS = ["720p"]
 
 _GUIDE_POINTER = "Read bfl_flux3_prompting_guide before your first generation. "
 _MEDIA_SENTENCE = (
-    "Media fields accept a local file path (uploaded automatically to Nous-managed temporary "
+    "Media fields accept a local file path (uploaded automatically to Youtab-managed temporary "
     "storage and deleted when the generation finishes) or a URL. "
 )
 _OVERRIDE_SENTENCE = "All guidance is defaults: explicit user instructions override it."

@@ -135,7 +135,7 @@ def _call(handler, args, response, headers=None):
     with patch.object(
         flux3,
         "managed_gateway_auth_headers",
-        return_value=headers if headers is not None else {"Authorization": "Bearer nous-token"},
+        return_value=headers if headers is not None else {"Authorization": "Bearer youtab-token"},
     ), patch.object(httpx, "AsyncClient", lambda **_kw: _FakeClient(response, sink)):
         raw = _run(handler(args))
     return json.loads(raw), sink
@@ -150,21 +150,21 @@ class TestGating:
         # The free tool pool does not fund BFL, so a pool-only user must never
         # see the tools rather than see them and be refused.
         account = SimpleNamespace(logged_in=True, paid_service_access=False, tool_gateway_entitled=True)
-        with patch("hermes_cli.nous_account.get_nous_portal_account_info", return_value=account):
+        with patch("youtab_agent_cli.youtab_account.get_youtab_portal_account_info", return_value=account):
             assert flux3.check_bfl_requirements() is False
 
     def test_hidden_when_logged_out(self):
         account = SimpleNamespace(logged_in=False, paid_service_access=False)
-        with patch("hermes_cli.nous_account.get_nous_portal_account_info", return_value=account):
+        with patch("youtab_agent_cli.youtab_account.get_youtab_portal_account_info", return_value=account):
             assert flux3.check_bfl_requirements() is False
 
     def test_visible_for_a_paid_portal_account(self):
         account = SimpleNamespace(logged_in=True, paid_service_access=True)
-        with patch("hermes_cli.nous_account.get_nous_portal_account_info", return_value=account):
+        with patch("youtab_agent_cli.youtab_account.get_youtab_portal_account_info", return_value=account):
             assert flux3.check_bfl_requirements() is True
 
     def test_fails_closed_when_the_account_probe_raises(self):
-        with patch("hermes_cli.nous_account.get_nous_portal_account_info", side_effect=RuntimeError("portal down")):
+        with patch("youtab_agent_cli.youtab_account.get_youtab_portal_account_info", side_effect=RuntimeError("portal down")):
             assert flux3.check_bfl_requirements() is False
 
 
@@ -186,7 +186,7 @@ class TestSubmitTransport:
             "duration": 5,
             "mode": "text_to_video",
         }
-        assert requests[0]["headers"]["Authorization"] == "Bearer nous-token"
+        assert requests[0]["headers"]["Authorization"] == "Bearer youtab-token"
         # The gateway's guidance is the model-facing text, verbatim.
         assert parsed["result"] == "Poll bfl_flux3_get_result with id=bfl_job_1"
         assert parsed["details"]["id"] == "bfl_job_1"
@@ -233,7 +233,7 @@ class TestSubmitTransport:
         assert parsed["error"] == "A new BFL video generation may be started once every 5 minutes. Wait 210 seconds."
         assert parsed["details"] == {"retryAfterSeconds": 210}
 
-    def test_a_401_asks_for_a_nous_sign_in(self):
+    def test_a_401_asks_for_a_youtab_sign_in(self):
         parsed, _requests = _call(flux3._handle_text_to_video, {"prompt": "a"}, _FakeResponse(401, {"error": {"code": "AUTH_ERROR"}}))
 
         assert parsed["needs_reauth"] is True
@@ -377,13 +377,13 @@ class TestPollTransport:
         # ever see the clip. Downloads is not a delivery root on a strict
         # gateway, so a clip saved there is dropped on the way out and the
         # reply arrives with nothing attached.
-        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
-        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+        monkeypatch.setenv("YOUTAB_AGENT_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("YOUTAB_AGENT_MEDIA_DELIVERY_STRICT", "1")
         # Strict mode also trusts anything written in the last 10 minutes, and
         # a clip we just downloaded is always inside that window. Left on, the
         # assertion below passes from any directory on earth and stops being a
         # statement about where the clip was saved.
-        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+        monkeypatch.setenv("YOUTAB_AGENT_MEDIA_TRUST_RECENT_FILES", "0")
         response = _FakeResponse(200, {
             "id": "bfl_job_1",
             "status": "Ready",
@@ -407,7 +407,7 @@ class TestPollTransport:
         # parses but fails validation is the worst outcome: it is stripped from
         # the reply either way, so the user is shown a message that looks like
         # it simply forgot the attachment.
-        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        monkeypatch.setenv("YOUTAB_AGENT_SESSION_PLATFORM", "telegram")
         response = _FakeResponse(200, {
             "id": "bfl_job_1",
             "status": "Ready",
@@ -432,7 +432,7 @@ class TestPollTransport:
     def test_off_messaging_the_clip_stays_a_file_and_no_tag_is_offered(self, tmp_path, monkeypatch, platform):
         # The CLI has no attachment channel and its prompt forbids the tag —
         # emitting one there just prints literal text at the user.
-        monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
+        monkeypatch.setenv("YOUTAB_AGENT_SESSION_PLATFORM", platform)
         response = _FakeResponse(200, {
             "id": "bfl_job_1",
             "status": "Ready",
@@ -454,7 +454,7 @@ class TestPollTransport:
         # API server in particular only inlines *images* as data URLs and
         # leaves every other MEDIA: tag untouched, so offering one here puts
         # the literal text in front of an OpenAI-compatible caller.
-        monkeypatch.setenv("HERMES_SESSION_PLATFORM", platform)
+        monkeypatch.setenv("YOUTAB_AGENT_SESSION_PLATFORM", platform)
         response = _FakeResponse(200, {
             "id": "bfl_job_1",
             "status": "Ready",
@@ -470,11 +470,11 @@ class TestPollTransport:
         assert "MEDIA:" not in parsed["result"]
 
     def test_a_cli_session_is_recognised_by_its_source(self, tmp_path, monkeypatch):
-        # The CLI, TUI, and desktop leave HERMES_SESSION_PLATFORM empty and
-        # identify themselves on HERMES_SESSION_SOURCE instead, so keying only
+        # The CLI, TUI, and desktop leave YOUTAB_AGENT_SESSION_PLATFORM empty and
+        # identify themselves on YOUTAB_AGENT_SESSION_SOURCE instead, so keying only
         # on the platform would miss them.
-        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
-        monkeypatch.setenv("HERMES_SESSION_SOURCE", "tui")
+        monkeypatch.delenv("YOUTAB_AGENT_SESSION_PLATFORM", raising=False)
+        monkeypatch.setenv("YOUTAB_AGENT_SESSION_SOURCE", "tui")
         response = _FakeResponse(200, {
             "id": "bfl_job_1",
             "status": "Ready",
@@ -527,7 +527,7 @@ class TestMediaDelivery:
         async def fake_uploader(data, mime):
             assert data == _PNG
             assert mime == "image/png"
-            return "nous-upload:token-1"
+            return "youtab-upload:token-1"
 
         with patch.object(flux3, "build_managed_media_uploader", return_value=fake_uploader), patch(
             "tools.image_source.resolve_image_source", return_value=self._resolved()
@@ -538,14 +538,14 @@ class TestMediaDelivery:
                 _FakeResponse(200, {"id": "j", "status": "submitted", "guidance": "ok"}),
             )
 
-        assert requests[0]["json"]["input_image"] == "nous-upload:token-1"
+        assert requests[0]["json"]["input_image"] == "youtab-upload:token-1"
         # Images and video ride the same safety pipeline; only the permitted
         # type differs, and an image field must not accept a video.
         assert resolve.call_args.kwargs["permitted"] == ("image",)
 
     def test_video_fields_permit_video_only(self):
         async def fake_uploader(data, mime):
-            return "nous-upload:token-v"
+            return "youtab-upload:token-v"
 
         with patch.object(flux3, "build_managed_media_uploader", return_value=fake_uploader), patch(
             "tools.image_source.resolve_image_source", return_value=self._resolved("video/mp4", b"\x00\x00\x00\x18ftypmp42")
@@ -556,7 +556,7 @@ class TestMediaDelivery:
                 _FakeResponse(200, {"id": "j", "status": "submitted", "guidance": "ok"}),
             )
 
-        assert requests[0]["json"]["input_video"] == "nous-upload:token-v"
+        assert requests[0]["json"]["input_video"] == "youtab-upload:token-v"
         assert resolve.call_args.kwargs["permitted"] == ("video",)
 
     def test_every_keyframe_path_is_uploaded(self):
@@ -564,7 +564,7 @@ class TestMediaDelivery:
 
         async def fake_uploader(data, mime):
             uploads.append(mime)
-            return f"nous-upload:token-{len(uploads)}"
+            return f"youtab-upload:token-{len(uploads)}"
 
         with patch.object(flux3, "build_managed_media_uploader", return_value=fake_uploader), patch(
             "tools.image_source.resolve_image_source", return_value=self._resolved()
@@ -577,9 +577,9 @@ class TestMediaDelivery:
 
         # The URL in the middle is forwarded untouched.
         assert requests[0]["json"]["input_images"] == [
-            "nous-upload:token-1",
+            "youtab-upload:token-1",
             "https://x/b.png",
-            "nous-upload:token-2",
+            "youtab-upload:token-2",
         ]
 
     def test_a_list_valued_input_image_is_still_uploaded(self):
@@ -587,7 +587,7 @@ class TestMediaDelivery:
         # local paths must not slip past unsanitized — that would send raw
         # filesystem paths to the vendor and disclose the user's directories.
         async def fake_uploader(data, mime):
-            return "nous-upload:token-1"
+            return "youtab-upload:token-1"
 
         with patch.object(flux3, "build_managed_media_uploader", return_value=fake_uploader), patch(
             "tools.image_source.resolve_image_source", return_value=self._resolved()
@@ -598,7 +598,7 @@ class TestMediaDelivery:
                 _FakeResponse(200, {"id": "j", "status": "submitted", "guidance": "ok"}),
             )
 
-        assert requests[0]["json"]["input_image"] == ["nous-upload:token-1"]
+        assert requests[0]["json"]["input_image"] == ["youtab-upload:token-1"]
         assert "/tmp/frame.png" not in json.dumps(requests[0]["json"])
 
     def test_media_fields_are_sanitized_whatever_the_mode_expects(self):
@@ -608,7 +608,7 @@ class TestMediaDelivery:
 
         async def fake_uploader(data, mime):
             uploads.append(mime)
-            return f"nous-upload:token-{len(uploads)}"
+            return f"youtab-upload:token-{len(uploads)}"
 
         with patch.object(flux3, "build_managed_media_uploader", return_value=fake_uploader), patch(
             "tools.image_source.resolve_image_source", return_value=self._resolved()
@@ -626,7 +626,7 @@ class TestMediaDelivery:
 
         body = json.dumps(requests[0]["json"])
         assert "/tmp/sneaky.png" not in body
-        assert requests[0]["json"]["input_image"] == "nous-upload:token-1"
+        assert requests[0]["json"]["input_image"] == "youtab-upload:token-1"
 
     def test_text_to_video_strips_media_fields_instead_of_uploading_them(self):
         # The mode takes no media, so an upload would spend the caller's quota
@@ -709,7 +709,7 @@ class TestLocalPathDetection:
         [
             "frame.png",
             "https://example.com/f.png",
-            "nous-upload:eyJhbGciOiJIUzI1NiJ9.e30.sig",
+            "youtab-upload:eyJhbGciOiJIUzI1NiJ9.e30.sig",
             "C:frame.png",
             # Inline base64 of a JPEG always starts "/9j/" (first byte 0xFF),
             # which must not read as an absolute POSIX path.

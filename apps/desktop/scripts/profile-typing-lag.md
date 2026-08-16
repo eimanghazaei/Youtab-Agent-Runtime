@@ -24,7 +24,7 @@ node scripts/dev-no-hmr.mjs
 
 # Terminal B — start Electron with CDP exposed
 cd apps/desktop
-XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 \
+XCURSOR_SIZE=24 YOUTAB_AGENT_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 \
   ../../node_modules/.bin/electron --remote-debugging-port=9222 .
 ```
 
@@ -101,10 +101,10 @@ you can do a comparison diff in Chrome DevTools Memory tab.
 
 ```bash
 node apps/desktop/scripts/profile-typing.mjs \
-  --chars=400 --cps=30 --out=/tmp/hermes-typing
-# → /tmp/hermes-typing.cpuprofile  (open in Chrome DevTools Performance)
-# → /tmp/hermes-typing.before.heapsnapshot
-# → /tmp/hermes-typing.after.heapsnapshot
+  --chars=400 --cps=30 --out=/tmp/youtab-typing
+# → /tmp/youtab-typing.cpuprofile  (open in Chrome DevTools Performance)
+# → /tmp/youtab-typing.before.heapsnapshot
+# → /tmp/youtab-typing.after.heapsnapshot
 ```
 
 Loading the cpuprofile: Chrome DevTools → Performance tab → drag the file
@@ -129,7 +129,7 @@ edits. Three changes:
 
 1. **Per-keystroke `scrollHeight` read removed.** The expansion useEffect
    used to read `editorRef.current.scrollHeight` on every draft change
-   (forces synchronous layout). Replaced with a `draft.length > 60`
+   (forces synchroyoutab layout). Replaced with a `draft.length > 60`
    heuristic; the ResizeObserver catches anything the heuristic misses.
 
 2. **Bucketed CSS custom-property writes.** `syncComposerMetrics`

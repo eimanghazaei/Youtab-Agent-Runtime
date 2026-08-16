@@ -35,11 +35,11 @@ def test_gateway_health_event_maps_to_span_with_attrs():
     }])
     assert n == 1
     spans = mem.get_finished_spans()
-    assert spans[0].name == "hermes.gateway_health"
+    assert spans[0].name == "youtab.gateway_health"
     attrs = dict(spans[0].attributes or {})
-    assert attrs["hermes.old_state"] == "starting"
-    assert attrs["hermes.new_state"] == "running"
-    assert attrs["hermes.active_agents"] == 2
+    assert attrs["youtab.old_state"] == "starting"
+    assert attrs["youtab.new_state"] == "running"
+    assert attrs["youtab.active_agents"] == 2
 
 
 
@@ -59,7 +59,7 @@ def test_trace_resource_includes_stable_hashed_instance():
         {"monitoring": {"install_id": "private-install-id"}}
     )
 
-    assert attrs["service.name"] == "hermes-gateway"
+    assert attrs["service.name"] == "youtab-gateway"
     assert attrs["service.instance.id"].startswith("sha256:")
     assert len(attrs["service.instance.id"]) == len("sha256:") + 24
     assert "private-install-id" not in str(attrs)
@@ -82,7 +82,7 @@ def test_streamer_receives_events_and_respects_filter(monkeypatch):
     em.close()
 
     spans = mem.get_finished_spans()
-    assert [s.name for s in spans] == ["hermes.gateway_health"]
+    assert [s.name for s in spans] == ["youtab.gateway_health"]
     assert streamer.exported == 1
 
 

@@ -3,8 +3,8 @@
 Gateway-fired cron jobs hung forever on the 2nd+ non-streaming API call when
 ``interruptible_api_call`` spawned a daemon worker inside nested cron thread
 pools. The worker logged client creation but never opened a TCP connection.
-The same job succeeded via ``hermes cron tick``. Cron has no interactive
-interrupt surface, so the fix routes cron through a synchronous direct call on
+The same job succeeded via ``youtab cron tick``. Cron has no interactive
+interrupt surface, so the fix routes cron through a synchroyoutab direct call on
 the conversation thread instead of the interrupt worker.
 """
 

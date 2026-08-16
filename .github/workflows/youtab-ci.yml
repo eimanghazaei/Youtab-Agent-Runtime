@@ -1,0 +1,108 @@
+name: Youtab Agent Runtime gates
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        id: py
+        with:
+          python-version: "3.12"
+      # `.[dev]` pins Starlette but NOT FastAPI: the core dependency is
+      # `fastapi>=0.104.0,<1`, so pip resolved whatever was newest and this job
+      # tested a different router framework than production builds. That is not
+      # academic -- it reported 136 of this application's 294 routes because a
+      # newer FastAPI wraps included routers in a type the older one flattens.
+      # The `web` extra carries the same FastAPI pin the production image gets
+      # from `uv.lock`, so adding it makes the tested framework the deployed one.
+      - name: Install locked development environment
+        # `slack` joins dev,web because the gate now runs the whole
+        # `tests/youtab_agent_cli` directory, and the platform-picker tests
+        # assert on plugins that only import when their extra is present.
+        # Without it `slack-platform` fails to load on `No module named
+        # 'aiohttp'`, slack drops out of the picker, and the test correctly
+        # reports over-filtering. The right fix is to give the tests the
+        # environment they describe, not to teach the test to expect a
+        # half-installed one. No pyproject change, so `uv lock --check` is
+        # unaffected: these pins already live in the `slack` extra.
+        run: python -m pip install -e '.[dev,web,slack]'
+      # The branding gate OCRs every shipped image, and this runner had no OCR
+      # engine at all -- so it read none of the 61 tracked images and reported
+      # that as if the images were at fault.
+      #
+      # RapidOCR rather than tesseract, measured on this repository's assets:
+      # over the same 61 images, rapidocr finds the 16 that carry the retired
+      # brand and tesseract finds 1. These are UI screenshots with small
+      # anti-aliased text, which tesseract reads poorly. Installing tesseract
+      # here would be worse than useless: `_ocr_backend()` prefers whichever
+      # engine it finds first, so its presence would displace the accurate one
+      # and turn a known 16-image finding into a falsely reassuring 1.
+      - name: Install the OCR engine the branding gate needs
+        run: python -m pip install 'rapidocr-onnxruntime==1.4.4'
+      # `uv lock --check --offline` exited 127 -- uv was never on this runner,
+      # so the lock file has never actually been verified in CI. Installed from
+      # PyPI rather than via a setup action: every action here is SHA-pinned,
+      # and a pip pin is a smaller supply-chain surface than a new action.
+      # 0.8.17 is the version this lock (version 1, revision 3) was verified
+      # against.
+      - name: Install uv for the lock-file gate
+        run: python -m pip install 'uv==0.8.17'
+      # The wake word ships two artifacts, and macOS ARM64 loads the tflite one
+      # because openWakeWord's ONNX embedding model is dead there
+      # (dscripka/openWakeWord#336). `onnxruntime` reaches this runner as a
+      # transitive of the OCR engine above, so the ONNX artifact is executed by
+      # the regression tests either way -- without a tflite interpreter the
+      # file every Mac user actually loads would ship unexecuted, which is the
+      # gap this repository just spent a commit closing for `tests/tools`.
+      #
+      # Same pin as the `wake` extra, and a workflow step rather than a `dev`
+      # entry for the reason recorded below: it is CI tooling, and adding it to
+      # the extra would regenerate uv.lock.
+      - name: Install the tflite runtime the wake-word regression tests need
+        run: python -m pip install 'ai-edge-litert==2.1.6'
+      # `scripts/run_tests.sh` refuses to run unless it finds a venv carrying
+      # pytest at .venv/ or venv/, or YOUTAB_AGENT_PYTHON pointing at a python
+      # that has it. `pip install -e '.[dev]'` above installs into the
+      # setup-python interpreter, which is neither -- so the guard fired and
+      # the runtime suite has never once executed here. Pointing the variable
+      # at that interpreter satisfies the guard without weakening it.
+      #
+      # Both pins above are deliberately kept out of the `dev` extra: they are
+      # CI tooling, not package dependencies, and adding them there would force
+      # a uv.lock regeneration that the uv-lock gate then has to re-verify.
+      - name: Unit, integration, E2E, OWASP, SAST, secret, dependency and branding gates
+        env:
+          YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
+        run: scripts/youtab/run_all_gates.sh
+      # In this job rather than a job of its own, because `python-security` is
+      # a required check and a new job would not be: a TLS floor proved by a
+      # check nobody has to pass is a floor that can be removed by a green PR.
+      #
+      # Not in `run_all_gates.sh` either. That script runs on workstations,
+      # where a missing binary is reported as a gate failure -- correctly, but
+      # it would mean every local run of every gate went red for want of a
+      # Docker daemon that this repository does not otherwise need.
+      #
+      # `!cancelled()` so the TLS evidence is produced even when an unrelated
+      # gate above fails. The job is still red either way; this only decides
+      # whether the run tells you about both.
+      - name: Origin TLS floor -- nginx 1.18 config test and real handshake matrix
+        if: ${{ !cancelled() }}
+        run: scripts/youtab/nginx_tls_gate.sh
+
+  javascript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Install exact JavaScript lock
+        run: npm ci
+      - name: Type, lint and workspace tests
+        run: npm run check

@@ -57,7 +57,7 @@ export function useSessionStateCache({
   const activeSessionIdRef = useRef<string | null>(activeSessionId)
   const selectedStoredSessionIdRef = useRef<string | null>(selectedStoredSessionId)
 
-  // Mirror the latest prop into its ref synchronously during render — not via
+  // Mirror the latest prop into its ref synchroyoutably during render — not via
   // a passive useEffect, which only fires a frame after paint and left the
   // ref pointing at the outgoing session for one commit (#59305). Guarded to
   // fire only when the PROP itself changed since the last render (the same
@@ -230,7 +230,7 @@ export function useSessionStateCache({
       // throttles `requestAnimationFrame` to ~0 while the window is
       // backgrounded, occluded, or unfocused, so an RAF-deferred flush can be
       // stranded in `pendingViewStateRef` indefinitely — that's the "new chat
-      // stuck on Thinking until I refocus / F5" bug. Flush these synchronously
+      // stuck on Thinking until I refocus / F5" bug. Flush these synchroyoutably
       // (cancelling any in-flight RAF, since we're about to publish the latest
       // state anyway). The plain busy heartbeat stays RAF-batched: that
       // coalescing exists only to keep periodic `session.info` updates from

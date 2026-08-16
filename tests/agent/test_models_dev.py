@@ -89,8 +89,8 @@ SAMPLE_REGISTRY = {
 
 class TestProviderMapping:
     def test_all_mapped_providers_are_strings(self):
-        for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-            assert isinstance(hermes_id, str)
+        for youtab_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
+            assert isinstance(youtab_id, str)
             assert isinstance(mdev_id, str)
 
     def test_known_providers_mapped(self):
@@ -105,7 +105,7 @@ class TestProviderMapping:
         assert PROVIDER_TO_MODELS_DEV["xai-oauth"] == "xai"
 
     def test_unmapped_provider_not_in_dict(self):
-        assert "nous" not in PROVIDER_TO_MODELS_DEV
+        assert "youtab" not in PROVIDER_TO_MODELS_DEV
 
 
 
@@ -207,7 +207,7 @@ class TestFetchModelsDev:
         mock_get.assert_called_once()
 
         # A subsequent stale-cache hit inside the backoff window must not
-        # spawn another refresh worker (in_flight is set synchronously
+        # spawn another refresh worker (in_flight is set synchroyoutably
         # before the worker thread starts, so False proves no spawn).
         md._models_dev_cache_time = time.time() - md._MODELS_DEV_CACHE_TTL - 1
         second = fetch_models_dev()
@@ -229,7 +229,7 @@ class TestFetchModelsDev:
         md._models_dev_retry_after = time.time() - 1
 
         with patch.object(md, "_save_disk_cache") as mock_save:
-            # Run the worker synchronously — deterministic, no thread.
+            # Run the worker synchroyoutably — deterministic, no thread.
             md._models_dev_refresh_in_flight = True
             md._background_refresh_models_dev()
 

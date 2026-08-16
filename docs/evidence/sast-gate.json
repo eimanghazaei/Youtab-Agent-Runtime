@@ -1,0 +1,157 @@
+{
+  "blocking_findings": [],
+  "blocking_profile": [
+    "S102",
+    "S202",
+    "S307",
+    "S314",
+    "S403",
+    "S405",
+    "S506",
+    "S602"
+  ],
+  "blocking_returncode": 0,
+  "engine": "ruff-flake8-bandit",
+  "heuristic_inventory": {
+    "by_code": {
+      "S104": 13,
+      "S105": 71,
+      "S107": 2,
+      "S108": 33,
+      "S310": 164,
+      "S311": 42,
+      "S324": 22,
+      "S404": 176,
+      "S603": 478,
+      "S604": 1,
+      "S605": 1,
+      "S606": 5,
+      "S607": 207,
+      "S608": 107
+    },
+    "tool_returncode": 1,
+    "total": 1322
+  },
+  "passed": true,
+  "reviewed_inline_dispositions": [
+    {
+      "codes": [
+        "S202"
+      ],
+      "line": 636,
+      "path": "agent/curator_backup.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S202"
+      ],
+      "line": 646,
+      "path": "agent/curator_backup.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S506"
+      ],
+      "line": 166,
+      "path": "agent/skill_utils.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S202"
+      ],
+      "line": 518,
+      "path": "agent/proxy_sources/iron_proxy.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S202"
+      ],
+      "line": 523,
+      "path": "agent/proxy_sources/iron_proxy.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S602"
+      ],
+      "line": 189,
+      "path": "agent/secret_sources/command.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S506"
+      ],
+      "line": 282,
+      "path": "youtab_agent_cli/main.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S403"
+      ],
+      "line": 14,
+      "path": "optional-skills/research/darwinian-evolver/scripts/show_snapshot.py",
+      "reason": "explicit opt-in trusted-file inspection tool"
+    },
+    {
+      "codes": [
+        "S102"
+      ],
+      "line": 53,
+      "path": "optional-skills/security/godmode/scripts/auto_jailbreak.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S102"
+      ],
+      "line": 55,
+      "path": "optional-skills/security/godmode/scripts/auto_jailbreak.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S102"
+      ],
+      "line": 30,
+      "path": "optional-skills/security/godmode/scripts/load_godmode.py",
+      "reason": "inline reviewed disposition"
+    },
+    {
+      "codes": [
+        "S506"
+      ],
+      "line": 481,
+      "path": "utils.py",
+      "reason": "inline reviewed disposition"
+    }
+  ],
+  "schema_version": 1,
+  "targets": [
+    "youtab_runtime",
+    "agent",
+    "gateway",
+    "tools",
+    "youtab_agent_cli",
+    "plugins",
+    "skills",
+    "optional-skills",
+    "acp_adapter",
+    "cron",
+    "providers",
+    "scripts",
+    "cli.py",
+    "run_agent.py",
+    "utils.py",
+    "youtab_state.py",
+    "youtab_state_common.py",
+    "youtab_state_portability.py",
+    "youtab_state_schema.py",
+    "youtab_state_search.py"
+  ]
+}

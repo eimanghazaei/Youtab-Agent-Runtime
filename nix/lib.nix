@@ -71,7 +71,7 @@ let
   # Python source: everything except JS/TS/docs/infra directories.
   pythonSrc = lib.cleanSourceWith {
     src = repoRoot;
-    name = "hermes-python-source";
+    name = "youtab-python-source";
     filter =
       path: type:
       let
@@ -101,16 +101,16 @@ let
             "plans"
             # Nix build definitions (Python build doesn't need these)
             "nix"
-            # Skills are shipped via HERMES_BUNDLED_SKILLS /
-            # HERMES_OPTIONAL_SKILLS (see hermes-agent.nix), not via the
+            # Skills are shipped via YOUTAB_AGENT_BUNDLED_SKILLS /
+            # YOUTAB_AGENT_OPTIONAL_SKILLS (see youtab-agent-runtime.nix), not via the
             # wheel's data_files — setup.py's _data_file_tree returns []
             # for a missing dir, so the wheel builds fine without them.
             # This keeps SKILL.md edits from rebuilding the Python venv.
             "skills"
             "optional-skills"
             # locales/ and optional-mcps/ are bare data dirs (no
-            # __init__.py) shipped via symlinks + HERMES_BUNDLED_LOCALES
-            # / HERMES_OPTIONAL_MCPS, not via the wheel. Excluding them
+            # __init__.py) shipped via symlinks + YOUTAB_AGENT_BUNDLED_LOCALES
+            # / YOUTAB_AGENT_OPTIONAL_MCPS, not via the wheel. Excluding them
             # keeps catalog edits from rebuilding the Python venv.
             "locales"
             "optional-mcps"
@@ -135,7 +135,7 @@ let
           "SECURITY.md"
           "README.zh-CN.md"
           ".gitignore"
-          "setup-hermes.sh"
+          "setup-youtab.sh"
         ];
       in
       if relPath == "" then
@@ -229,10 +229,10 @@ in
   # e.g. apps/desktop depends on apps/shared.
   #
   # Usage:
-  #   npm = hermesNpmLib.mkNpmPassthru { dirs = [ "ui-tui" ]; };
-  #   npm = hermesNpmLib.mkNpmPassthru { dirs = [ "apps/desktop" "apps/shared" ]; };
+  #   npm = youtabNpmLib.mkNpmPassthru { dirs = [ "ui-tui" ]; };
+  #   npm = youtabNpmLib.mkNpmPassthru { dirs = [ "apps/desktop" "apps/shared" ]; };
   #   pkgs.buildNpmPackage (npm // {
-  #     pname = "hermes-tui";
+  #     pname = "youtab-tui";
   #     inherit version;
   #     buildPhase = '' ... '';
   #     installPhase = '' ... '';

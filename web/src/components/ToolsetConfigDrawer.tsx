@@ -7,14 +7,14 @@ import type {
   ToolsetInfo,
   ToolsetProvider,
 } from "@/lib/api";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Switch } from "@nous-research/ui/ui/components/switch";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Toast } from "@nous-research/ui/ui/components/toast";
+import { useToast } from "@youtab/ui/hooks/use-toast";
+import { Button } from "@youtab/ui/ui/components/button";
+import { Input } from "@youtab/ui/ui/components/input";
+import { Label } from "@youtab/ui/ui/components/label";
+import { Badge } from "@youtab/ui/ui/components/badge";
+import { Switch } from "@youtab/ui/ui/components/switch";
+import { Spinner } from "@youtab/ui/ui/components/spinner";
+import { Toast } from "@youtab/ui/ui/components/toast";
 import { cn, themedBody } from "@/lib/utils";
 
 interface Props {
@@ -30,7 +30,7 @@ interface Props {
 
 /**
  * Full configuration surface for a single toolset's backends — the dashboard
- * equivalent of selecting a toolset in the `hermes tools` curses UI: toggle
+ * equivalent of selecting a toolset in the `youtab tools` curses UI: toggle
  * the toolset on/off, pick a provider, enter API keys, and run a provider's
  * post-setup install hook (npm/pip/binary) with a live log tail.
  */
@@ -58,7 +58,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
   const [postSetupTrigger, setPostSetupTrigger] = useState(0);
 
   const loadConfig = useCallback(() => {
-    // Promise-chain shape (not async/await with a leading synchronous
+    // Promise-chain shape (not async/await with a leading synchroyoutab
     // setLoading) so callers in a useEffect don't trip
     // react-hooks/set-state-in-effect — setState only fires inside the
     // async .then/.catch/.finally callbacks.
@@ -300,9 +300,9 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
                           {provider.badge}
                         </Badge>
                       )}
-                      {provider.requires_nous_auth && (
+                      {provider.requires_youtab_auth && (
                         <Badge tone="outline" className="text-xs">
-                          Nous Portal
+                          Youtab Portal
                         </Badge>
                       )}
                     </div>

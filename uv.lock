@@ -1546,7 +1546,7 @@ wheels = [
 ]
 
 [[package]]
-name = "hermes-agent"
+name = "youtab-agent-runtime"
 version = "0.19.1"
 source = { editable = "." }
 dependencies = [
@@ -1554,6 +1554,7 @@ dependencies = [
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'" },
     { name = "croniter" },
     { name = "cryptography" },
+    { name = "defusedxml" },
     { name = "fastapi" },
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
@@ -1770,9 +1771,7 @@ web = [
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
-wecom = [
-    { name = "defusedxml" },
-]
+wecom = []
 youtube = [
     { name = "youtube-transcript-api" },
 ]
@@ -1801,7 +1800,7 @@ requires-dist = [
     { name = "cryptography", specifier = "==48.0.1" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.155.0" },
     { name = "debugpy", marker = "extra == 'dev'", specifier = "==1.8.20" },
-    { name = "defusedxml", marker = "extra == 'wecom'", specifier = "==0.7.1" },
+    { name = "defusedxml", specifier = "==0.7.1" },
     { name = "dingtalk-stream", marker = "extra == 'dingtalk'", specifier = "==0.24.3" },
     { name = "discord-py", extras = ["voice"], marker = "extra == 'messaging'", specifier = "==2.7.1" },
     { name = "edge-tts", marker = "extra == 'edge-tts'", specifier = "==7.2.7" },
@@ -1817,27 +1816,27 @@ requires-dist = [
     { name = "google-auth", marker = "extra == 'vertex'", specifier = "==2.55.1" },
     { name = "google-auth-httplib2", marker = "extra == 'google'", specifier = "==0.3.1" },
     { name = "google-auth-oauthlib", marker = "extra == 'google'", specifier = "==1.3.1" },
-    { name = "hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["acp"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["cli"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["cli"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["cron"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["google"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["google"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["pty"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["sms"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
-    { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["acp"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["acp"], marker = "extra == 'termux'" },
+    { name = "youtab-agent-runtime", extras = ["cli"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["cli"], marker = "extra == 'termux'" },
+    { name = "youtab-agent-runtime", extras = ["cron"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["cron"], marker = "extra == 'termux'" },
+    { name = "youtab-agent-runtime", extras = ["google"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["google"], marker = "extra == 'termux-all'" },
+    { name = "youtab-agent-runtime", extras = ["homeassistant"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["homeassistant"], marker = "extra == 'termux-all'" },
+    { name = "youtab-agent-runtime", extras = ["honcho"], marker = "extra == 'termux'" },
+    { name = "youtab-agent-runtime", extras = ["mcp"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["mcp"], marker = "extra == 'termux'" },
+    { name = "youtab-agent-runtime", extras = ["pty"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["pty"], marker = "extra == 'termux-all'" },
+    { name = "youtab-agent-runtime", extras = ["sms"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["sms"], marker = "extra == 'termux-all'" },
+    { name = "youtab-agent-runtime", extras = ["termux"], marker = "extra == 'termux-all'" },
+    { name = "youtab-agent-runtime", extras = ["web"], marker = "extra == 'all'" },
+    { name = "youtab-agent-runtime", extras = ["web"], marker = "extra == 'termux-all'" },
+    { name = "youtab-agent-runtime", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.2.0" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },

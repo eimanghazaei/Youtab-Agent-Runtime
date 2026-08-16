@@ -17,9 +17,9 @@
     "jsx": "react-jsx",
     "paths": {
       "@/*": ["./src/*"],
-      "@hermes/plugin-sdk": ["./src/sdk/index.ts"],
-      "@hermes/shared/billing": ["../shared/src/billing-types.ts"],
-      "@hermes/shared": ["../shared/src/index.ts"]
+      "@youtab/plugin-sdk": ["./src/sdk/index.ts"],
+      "@youtab/agent-shared/billing": ["../shared/src/billing-types.ts"],
+      "@youtab/agent-shared": ["../shared/src/index.ts"]
     }
   },
   "include": ["src", "../shared/src"],

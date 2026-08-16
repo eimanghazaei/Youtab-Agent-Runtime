@@ -1,6 +1,5 @@
 import { useCallback, useRef } from 'react'
 
-import { getCronJobs, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
@@ -28,6 +27,7 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
+import { getCronJobs, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/youtab'
 
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
@@ -121,7 +121,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   }, [])
 
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
-  // synchronously (agent tool call or the cron UI), so refreshing here right
+  // synchroyoutably (agent tool call or the cron UI), so refreshing here right
   // after an agent turn surfaces a new job immediately; the interval poll keeps
   // next-run/state fresh as the scheduler advances them. Jobs live per-profile
   // on disk and the list endpoint aggregates 'all' by default, so scope the

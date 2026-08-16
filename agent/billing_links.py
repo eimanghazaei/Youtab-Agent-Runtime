@@ -20,7 +20,7 @@ from utils import base_url_host_matches
 class BillingBlock:
     """Structured billing-wall descriptor shared across every surface.
 
-    ``is_nous`` is the routing bit: Nous has a first-class in-app billing surface
+    ``is_youtab`` is the routing bit: Youtab has a first-class in-app billing surface
     (desktop Settings → Billing, TUI/CLI ``/topup``), so surfaces prefer that over
     ``billing_url``; third-party providers have no in-app flow, so ``billing_url``
     is the deep link the user actually needs.
@@ -30,7 +30,7 @@ class BillingBlock:
     provider_label: str
     model: str
     billing_url: Optional[str]
-    is_nous: bool
+    is_youtab: bool
     message: str
 
     def to_dict(self) -> dict:
@@ -70,21 +70,21 @@ _PROVIDERS: tuple[_Provider, ...] = (
 _BY_SLUG: dict[str, _Provider] = {slug: p for p in _PROVIDERS for slug in p.slugs}
 
 
-def is_nous_inference_route(provider: str, base_url: str) -> bool:
-    """True when the failing route is the Nous-managed inference gateway."""
-    if (provider or "").strip().lower() == "nous":
+def is_youtab_inference_route(provider: str, base_url: str) -> bool:
+    """True when the failing route is the Youtab-managed inference gateway."""
+    if (provider or "").strip().lower() == "youtab":
         return True
-    return base_url_host_matches(str(base_url or ""), "inference-api.nousresearch.com")
+    return base_url_host_matches(str(base_url or ""), "inference-api.youtab.io")
 
 
-def _nous_billing_url() -> Optional[str]:
-    """Best-effort Nous portal billing URL (text-surface fallback; Nous prefers the in-app flow)."""
+def _youtab_billing_url() -> Optional[str]:
+    """Best-effort Youtab portal billing URL (text-surface fallback; Youtab prefers the in-app flow)."""
     try:
-        from hermes_cli.nous_account import nous_portal_billing_url
+        from youtab_agent_cli.youtab_account import youtab_portal_billing_url
 
-        return nous_portal_billing_url(None)
+        return youtab_portal_billing_url(None)
     except Exception:
-        return "https://portal.nousresearch.com/billing"
+        return "https://api.youtab.io/billing"
 
 
 def _resolve_provider_link(slug: str, base_url: str) -> tuple[str, Optional[str]]:
@@ -117,8 +117,8 @@ def build_billing_block(
     slug = (provider or "").strip().lower()
     model = (model or "").strip()
 
-    if is_nous_inference_route(slug, base_url):
-        return BillingBlock(slug or "nous", "Nous Portal", model, _nous_billing_url(), True, message or "")
+    if is_youtab_inference_route(slug, base_url):
+        return BillingBlock(slug or "youtab", "Youtab Portal", model, _youtab_billing_url(), True, message or "")
 
     label, url = _resolve_provider_link(slug, base_url)
     return BillingBlock(slug, label, model, url, False, message or "")

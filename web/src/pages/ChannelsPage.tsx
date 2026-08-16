@@ -16,16 +16,16 @@ import {
   X,
 } from "lucide-react";
 import * as QRCode from "qrcode";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Switch } from "@nous-research/ui/ui/components/switch";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { api } from "@/lib/api";
+import { Badge } from "@youtab/ui/ui/components/badge";
+import { Button } from "@youtab/ui/ui/components/button";
+import { Card, CardContent } from "@youtab/ui/ui/components/card";
+import { Input } from "@youtab/ui/ui/components/input";
+import { Label } from "@youtab/ui/ui/components/label";
+import { Spinner } from "@youtab/ui/ui/components/spinner";
+import { Switch } from "@youtab/ui/ui/components/switch";
+import { Toast } from "@youtab/ui/ui/components/toast";
+import { useToast } from "@youtab/ui/hooks/use-toast";
+import { api, pollGatewayJob } from "@/lib/api";
 import type {
   MessagingPlatform,
   MessagingPlatformEnvVar,
@@ -131,9 +131,9 @@ function normalizeWhatsAppMode(mode: unknown): "bot" | "self-chat" | null {
 
 export default function ChannelsPage() {
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
-  const [envPath, setEnvPath] = useState("~/.hermes/.env");
+  const [envPath, setEnvPath] = useState("~/.youtab-agent-runtime/.env");
   const [gatewayStartCommand, setGatewayStartCommand] = useState(
-    "hermes gateway start",
+    "youtab gateway start",
   );
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
@@ -163,8 +163,8 @@ export default function ChannelsPage() {
       .getMessagingPlatforms()
       .then((res) => {
         setPlatforms(res.platforms);
-        setEnvPath(res.env_path || "~/.hermes/.env");
-        setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
+        setEnvPath(res.env_path || "~/.youtab-agent-runtime/.env");
+        setGatewayStartCommand(res.gateway_start_command || "youtab gateway start");
       })
       .catch((e) => showToast(`Error: ${e}`, "error"));
   }, [showToast]);
@@ -262,11 +262,22 @@ export default function ChannelsPage() {
   const handleRestart = async () => {
     setRestarting(true);
     try {
-      await api.restartGateway();
+      const accepted = await api.restartGateway();
       showToast("Gateway restarting…", "success");
-      setRestartNeeded(false);
       // Give the gateway a moment to come up, then refresh status.
       setTimeout(() => void load(), 4000);
+      // The banner clears only once the backend confirms the gateway is
+      // actually back; a failed restart leaves "restart needed" standing.
+      const job = await pollGatewayJob(accepted.job_id, { attempts: 40 });
+      if (job.state === "succeeded") {
+        setRestartNeeded(false);
+      } else {
+        const suffix = job.exit_code != null ? `, exit ${job.exit_code}` : "";
+        showToast(
+          `Gateway restart failed (${job.reason ?? "unknown"}${suffix})`,
+          "error",
+        );
+      }
     } catch (e) {
       showToast(`Failed to restart: ${e}`, "error");
     } finally {
@@ -440,7 +451,7 @@ export default function ChannelsPage() {
                     </a>
                   </div>
                   <p className="text-xs">
-                    You can leave allowed users blank. Hermes will then send new DM
+                    You can leave allowed users blank. Youtab will then send new DM
                     users a code that you approve from the Pairing page.
                   </p>
                 </div>
@@ -786,23 +797,23 @@ function WhatsAppOnboardingPanel({
     resetSetup();
   };
 
-  const watchRestartOutcome = async () => {
-    for (let i = 0; i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      try {
-        const st = await api.getActionStatus("gateway-restart", 5);
-        if (st.running) continue;
-        if (st.exit_code !== 0 && st.exit_code !== null) {
-          onRestartNeeded();
-          showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
-            "error",
-          );
-        }
-        return;
-      } catch {
-        // transient fetch error; keep polling
+  // Reads the lifecycle job, not the child's exit status: a restart that
+  // exits 0 without leaving a running gateway is a failure, and this banner
+  // used to stay cleared for exactly that case.
+  const watchRestartOutcome = async (jobId: string) => {
+    try {
+      const job = await pollGatewayJob(jobId, { attempts: 40 });
+      if (job.state === "failed") {
+        onRestartNeeded();
+        const suffix = job.exit_code != null ? `, exit ${job.exit_code}` : "";
+        showToast(
+          `Gateway restart failed (${job.reason ?? "unknown"}${suffix}) — restart manually`,
+          "error",
+        );
       }
+    } catch {
+      // The dashboard briefly loses its connection *because* the gateway is
+      // restarting; that is not evidence the restart failed.
     }
   };
 
@@ -816,11 +827,11 @@ function WhatsAppOnboardingPanel({
         allowed_users: allowedUsers,
       });
       resetSetup();
-      if (result.restart_started) {
+      if (result.restart_started && result.restart_job_id) {
         showToast("WhatsApp saved; gateway restarting…", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
-        void watchRestartOutcome();
+        void watchRestartOutcome(result.restart_job_id);
       } else {
         onRestartNeeded();
         const detail = result.restart_error ? `: ${result.restart_error}` : "";
@@ -847,7 +858,7 @@ function WhatsAppOnboardingPanel({
         : "waiting";
   const setupHelp =
     phase === "connected" || phase === "applying"
-      ? "WhatsApp is linked but Hermes is not listening yet. Save and restart the gateway to finish setup."
+      ? "WhatsApp is linked but Youtab is not listening yet. Save and restart the gateway to finish setup."
       : setup?.status === "installing"
         ? "Preparing the WhatsApp bridge. The QR code will appear here when it is ready."
         : setup?.status === "starting"
@@ -858,24 +869,24 @@ function WhatsAppOnboardingPanel({
     : setup?.account_name || setup?.account_id || "";
   const linkedAccountDetail =
     setup?.account_phone || setup?.account_id
-      ? "This is the WhatsApp account Hermes is now logged into."
-      : "Hermes is logged into the WhatsApp account that scanned the QR code.";
+      ? "This is the WhatsApp account Youtab is now logged into."
+      : "Youtab is logged into the WhatsApp account that scanned the QR code.";
   const linkedAccountChatUrl = setup?.account_phone
     ? `https://wa.me/${setup.account_phone}`
     : "";
   const messageInstruction =
     mode === "self-chat"
-      ? "After the restart, open Message Yourself on the linked account and send Hermes a message."
-      : "After the restart, start a chat from another WhatsApp account with the linked account and send Hermes a message.";
+      ? "After the restart, open Message Yourself on the linked account and send Youtab a message."
+      : "After the restart, start a chat from another WhatsApp account with the linked account and send Youtab a message.";
   const hasSavedAllowedUsers = Boolean(platform.whatsapp_setup?.allowed_users_set);
   const pairingInstruction =
     mode === "self-chat" && !allowedUsers.trim()
       ? hasSavedAllowedUsers
-        ? "Hermes will keep the saved WhatsApp allowlist."
+        ? "Youtab will keep the saved WhatsApp allowlist."
         : "Self-chat mode will allow the linked account automatically when you save."
       : !allowedUsers.trim() && hasSavedAllowedUsers
-        ? "Hermes will keep the saved WhatsApp allowlist."
-        : "If no allowed numbers were entered, Hermes replies with a pairing code. Approve it from the dashboard Pairing page.";
+        ? "Youtab will keep the saved WhatsApp allowlist."
+        : "If no allowed numbers were entered, Youtab replies with a pairing code. Approve it from the dashboard Pairing page.";
 
   return (
     <div className="rounded-sm border border-border bg-background/35 p-4">
@@ -957,7 +968,7 @@ function WhatsAppOnboardingPanel({
 
               {phase === "waiting" && (
                 <div className="text-xs text-muted-foreground">
-                  After saving, unknown DMs use Hermes pairing codes unless their
+                  After saving, unknown DMs use Youtab pairing codes unless their
                   number is already allowed.
                 </div>
               )}
@@ -1148,7 +1159,7 @@ function TelegramOnboardingPanel({
     setDetectedOwnerId(null);
     setNewAllowedId("");
     try {
-      const res = await api.startTelegramOnboarding({ bot_name: "Hermes Agent" });
+      const res = await api.startTelegramOnboarding({ bot_name: "Youtab Agent Runtime" });
       const dataUrl = await QRCode.toDataURL(res.qr_payload, {
         errorCorrectionLevel: "M",
         margin: 1,
@@ -1185,29 +1196,29 @@ function TelegramOnboardingPanel({
     setNewAllowedId("");
   };
 
-  // restart_started only means the `hermes gateway restart` child spawned —
+  // restart_started only means the `youtab gateway restart` child spawned —
   // not that the restart will succeed (e.g. systemd linger missing, service
   // manager failure). Poll the action status briefly and surface a non-zero
   // exit via the manual-restart banner. Note: in no-service installs the
   // child becomes the foreground gateway and never exits, so "still running
   // when the window closes" counts as success.
-  const watchRestartOutcome = async () => {
-    for (let i = 0; i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      try {
-        const st = await api.getActionStatus("gateway-restart", 5);
-        if (st.running) continue;
-        if (st.exit_code !== 0 && st.exit_code !== null) {
-          onRestartNeeded();
-          showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
-            "error",
-          );
-        }
-        return;
-      } catch {
-        // transient fetch error; keep polling
+  // Reads the lifecycle job, not the child's exit status: a restart that
+  // exits 0 without leaving a running gateway is a failure, and this banner
+  // used to stay cleared for exactly that case.
+  const watchRestartOutcome = async (jobId: string) => {
+    try {
+      const job = await pollGatewayJob(jobId, { attempts: 40 });
+      if (job.state === "failed") {
+        onRestartNeeded();
+        const suffix = job.exit_code != null ? `, exit ${job.exit_code}` : "";
+        showToast(
+          `Gateway restart failed (${job.reason ?? "unknown"}${suffix}) — restart manually`,
+          "error",
+        );
       }
+    } catch {
+      // The dashboard briefly loses its connection *because* the gateway is
+      // restarting; that is not evidence the restart failed.
     }
   };
 
@@ -1224,17 +1235,18 @@ function TelegramOnboardingPanel({
         allowed_user_ids: allowedIds,
       });
       resetSetup();
-      if (result.restart_started) {
+      if (result.restart_started && result.restart_job_id) {
         showToast("Telegram saved; gateway restarting…", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
-        void watchRestartOutcome();
+        void watchRestartOutcome(result.restart_job_id);
       } else if (result.restart_started === undefined && result.needs_restart) {
         try {
-          await api.restartGateway();
+          const accepted = await api.restartGateway();
           showToast("Telegram saved; gateway restarting…", "success");
           setRestartNeeded(false);
           setTimeout(() => void onChanged(), 4000);
+          void watchRestartOutcome(accepted.job_id);
         } catch (restartError) {
           onRestartNeeded();
           showToast(`Telegram saved; gateway restart failed: ${restartError}`, "error");
@@ -1266,7 +1278,7 @@ function TelegramOnboardingPanel({
         </span>
         <span className="text-xs text-muted-foreground">
           Both options connect a bot you control and save its credentials only to
-          this Hermes installation.
+          this Youtab installation.
         </span>
       </div>
 
@@ -1279,7 +1291,7 @@ function TelegramOnboardingPanel({
             <Badge tone="success">recommended</Badge>
           </div>
           <p className="text-xs text-muted-foreground">
-            Scan a QR code and confirm in Telegram. Hermes creates the bot and
+            Scan a QR code and confirm in Telegram. Youtab creates the bot and
             detects your Telegram user ID automatically.
           </p>
           <Button

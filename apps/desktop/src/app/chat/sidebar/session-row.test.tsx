@@ -3,11 +3,11 @@ import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { SessionInfo } from '@/hermes'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import type * as SessionStatesStore from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
+import type { SessionInfo } from '@/youtab'
 
 import { SidebarSessionRow } from './session-row'
 
@@ -127,7 +127,7 @@ describe('SidebarSessionRow', () => {
         onDelete={noop}
         onPin={noop}
         onResume={noop}
-        session={makeSession({ title: 'Hermes doctor health check results' })}
+        session={makeSession({ title: 'Youtab doctor health check results' })}
       />
     )
 

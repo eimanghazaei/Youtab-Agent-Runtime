@@ -1,0 +1,5 @@
+name: youtab-provider
+kind: model-provider
+version: 1.0.0
+description: Youtab B.V. Portal
+author: Youtab B.V.

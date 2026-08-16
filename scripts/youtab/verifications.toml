@@ -1,0 +1,62 @@
+# ============================================================================
+# Governed verification registry
+# ============================================================================
+#
+# The completion gate executes verifications from THIS file and from nowhere
+# else. A task spec names a verification by `id`; it cannot supply a command.
+#
+# The kit this replaces did the opposite: its gate read `verify_by` out of the
+# task spec and ran it through `subprocess.run(cmd, shell=True)`. That is
+# arbitrary command execution driven by task-spec content, and a task spec is
+# exactly the kind of document a model writes. The verdict-producing component
+# must not be programmable by the thing it is judging.
+#
+# Rules for every entry:
+#   * `argv` is an argument array. There is no shell, so no quoting, globbing,
+#     substitution, pipe or `;` is interpreted.
+#   * `argv[0]` is resolved against the repository, or is the running Python.
+#     Nothing is looked up on PATH by an attacker-influenced name.
+#   * `network` defaults to false. A verification that needs egress must say
+#     so and name its destinations, so the sandbox can allow exactly those.
+#   * `timeout_s` is mandatory and bounded.
+#
+# Adding an entry is a reviewed commit. That is the point: the set of things
+# that may execute inside the verifier is a governed list, not an input.
+# ============================================================================
+
+schema_version = 1
+
+[[verification]]
+id = "runtime-suite"
+description = "The Youtab runtime suite plus the gateway lifecycle contract."
+argv = ["{python}", "-m", "pytest", "tests/youtab_runtime", "tests/youtab_agent_cli/test_gateway_lifecycle.py", "-q"]
+timeout_s = 1800
+network = false
+
+[[verification]]
+id = "youtab-gates"
+description = "Every Youtab gate: branding, secrets, dependencies, SAST, OWASP, tests, compileall, ruff, lock, whitespace."
+argv = ["bash", "scripts/youtab/run_all_gates.sh"]
+timeout_s = 3600
+network = false
+
+[[verification]]
+id = "deployment-topology"
+description = "The single-container topology the lifecycle controls require."
+argv = ["{python}", "-m", "pytest", "tests/youtab_runtime/test_deployment_topology.py", "-q"]
+timeout_s = 300
+network = false
+
+[[verification]]
+id = "ruff"
+description = "Lint the Youtab-owned surface."
+argv = ["{python}", "-m", "ruff", "check", "youtab_runtime", "scripts/youtab", "tests/youtab_runtime", "--output-format", "concise"]
+timeout_s = 300
+network = false
+
+[[verification]]
+id = "secret-scan"
+description = "No credential-shaped literal in tracked source."
+argv = ["{python}", "scripts/youtab/secret_gate.py", "--root", ".", "--output", ".youtab/evidence/gate-secrets.json"]
+timeout_s = 600
+network = false

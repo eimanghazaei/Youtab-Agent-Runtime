@@ -32,8 +32,8 @@ def _reset_registry():
 
 @pytest.fixture
 def matrix_env(tmp_path, monkeypatch):
-    """Set up HERMES_HOME, stub fal_client + httpx, force plugin discovery."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    """Set up YOUTAB_AGENT_HOME, stub fal_client + httpx, force plugin discovery."""
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
     monkeypatch.setenv("FAL_KEY", "test-key")
     monkeypatch.setenv("XAI_API_KEY", "test-key")
 
@@ -59,6 +59,12 @@ def matrix_env(tmp_path, monkeypatch):
     fake_fal.submit = _submit  # type: ignore
 
     monkeypatch.setitem(__import__("sys").modules, "fal_client", fake_fal)
+    # …and the lazy-install gate in front of that import. ensure() decides from
+    # installed distribution metadata, not sys.modules, so the stub above never
+    # satisfied it: on a host without the optional `fal-client` extra the
+    # plugin correctly returned its `missing_dependency` error response and
+    # every routing assertion in this matrix failed for the wrong reason.
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
 
     # httpx stub for xAI
     import httpx
@@ -105,7 +111,7 @@ def matrix_env(tmp_path, monkeypatch):
     fal_plugin._fal_client = None
 
     # Force discovery
-    from hermes_cli.plugins import _ensure_plugins_discovered
+    from youtab_agent_cli.plugins import _ensure_plugins_discovered
     _ensure_plugins_discovered(force=True)
 
     return tmp_path, fal_calls, xai_calls
@@ -114,7 +120,7 @@ def matrix_env(tmp_path, monkeypatch):
 def _invoke_tool(home, cfg: dict, args: dict, tool_name: str = "video_generate") -> dict:
     """Write config, invoke the registered tool handler, return parsed JSON."""
     (home / "config.yaml").write_text(yaml.safe_dump(cfg))
-    import hermes_cli.config as cfg_mod
+    import youtab_agent_cli.config as cfg_mod
     if hasattr(cfg_mod, "_invalidate_load_config_cache"):
         cfg_mod._invalidate_load_config_cache()
 

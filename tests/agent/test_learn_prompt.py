@@ -46,10 +46,10 @@ class TestBuildLearnPrompt:
         assert "count" in std and "60" in std
         # #3 platforms gating against OS-bound primitives.
         assert "platforms" in std
-        # author is always the literal Hermes, never the host/OS identity (#52368).
-        assert "author: always the literal value `hermes`" in std
+        # author is always the literal Youtab, never the host/OS identity (#52368).
+        assert "author: always the literal value `youtab`" in std
         assert "never fill it from the host" in std
-        # #2 Hermes-tool framing names the wrapped tools, not shell utilities.
+        # #2 Youtab-tool framing names the wrapped tools, not shell utilities.
         for tool in ("read_file", "search_files", "patch", "write_file"):
             assert tool in std
         # #6 scripts/references/templates layout.
@@ -58,7 +58,7 @@ class TestBuildLearnPrompt:
 
 class TestLearnRegistryWiring:
     def test_learn_is_registered_and_resolves(self):
-        from hermes_cli.commands import resolve_command
+        from youtab_agent_cli.commands import resolve_command
 
         cmd = resolve_command("learn")
         assert cmd is not None
@@ -67,6 +67,6 @@ class TestLearnRegistryWiring:
 
 
     def test_learn_is_not_cli_only(self):
-        from hermes_cli.commands import resolve_command
+        from youtab_agent_cli.commands import resolve_command
 
         assert not resolve_command("learn").cli_only

@@ -1,4 +1,4 @@
-"""Tests for tools.wake_word — the "Hey Hermes" hotword detector.
+"""Tests for tools.wake_word — the "Hey Youtab" hotword detector.
 
 No live audio or network: the sounddevice import is faked, engines are stubbed,
 and lazy-dep availability is monkeypatched. Covers config resolution, engine
@@ -35,8 +35,8 @@ def test_config_defaults_and_clamping():
     # Invalid input falls back to the configured default, not a hardcoded 0.5.
     assert ww._sensitivity({"sensitivity": "nope"}) == ww._DEFAULTS["sensitivity"]
     assert ww._sensitivity({}) == ww._DEFAULTS["sensitivity"]
-    assert ww.wake_phrase({"phrase": "hey hermes"}) == "hey hermes"
-    assert ww.wake_phrase({}) == "hey hermes"
+    assert ww.wake_phrase({"phrase": "hey youtab"}) == "hey youtab"
+    assert ww.wake_phrase({}) == "hey youtab"
 
 
 def test_wake_surface_enabled_gate():
@@ -55,7 +55,7 @@ def test_wake_surface_enabled_gate():
 
 
 def test_looks_like_path():
-    assert ww._looks_like_path("models/hey_hermes.onnx")
+    assert ww._looks_like_path("models/hey_youtab.onnx")
     assert ww._looks_like_path("custom.ppn")
     assert not ww._looks_like_path("hey_jarvis")
 
@@ -70,7 +70,7 @@ def test_load_wake_word_config_is_a_dict_with_defaults():
 
 def test_load_wake_word_config_guards_non_dict(monkeypatch):
     monkeypatch.setattr(
-        "hermes_cli.config.load_config", lambda: {"wake_word": "oops"}
+        "youtab_agent_cli.config.load_config", lambda: {"wake_word": "oops"}
     )
     assert ww.load_wake_word_config() == {}
 
@@ -102,11 +102,11 @@ def test_requirements_openwakeword_available(monkeypatch):
     monkeypatch.setattr(ww, "_audio_available", lambda: True)
     monkeypatch.setattr("tools.lazy_deps.is_available", lambda f: True)
     r = ww.check_wake_word_requirements(
-        {"provider": "openwakeword", "phrase": "hey hermes"}
+        {"provider": "openwakeword", "phrase": "hey youtab"}
     )
     assert r["available"] is True
     assert r["provider"] == "openwakeword"
-    assert r["phrase"] == "hey hermes"
+    assert r["phrase"] == "hey youtab"
 
 
 def test_tts_ready_is_a_probe_never_an_installer(monkeypatch):
@@ -192,10 +192,10 @@ def _install_fake_openwakeword(monkeypatch):
     class _FakeModel:
         def __init__(self, wakeword_models, inference_framework="onnx"):
             self.wakeword_models = list(wakeword_models)
-            self.models = {"hey_hermes": object()}
+            self.models = {"hey_youtab": object()}
 
         def predict(self, frame):
-            return {"hey_hermes": 0.0}
+            return {"hey_youtab": 0.0}
 
         def reset(self):
             pass
@@ -219,14 +219,14 @@ def test_openwakeword_ensures_base_models_for_custom_path(monkeypatch):
     # The base feature models must be ensured for a custom path too.
     calls = _install_fake_openwakeword(monkeypatch)
     eng = ww._OpenWakeWordEngine(
-        {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_hermes.onnx"}}
+        {"provider": "openwakeword", "openwakeword": {"model": "/models/hey_youtab.onnx"}}
     )
-    assert calls["download"] == [["/models/hey_hermes.onnx"]]
-    assert eng._labels == ["hey_hermes"]
+    assert calls["download"] == [["/models/hey_youtab.onnx"]]
+    assert eng._labels == ["hey_youtab"]
 
 
-def test_bundled_hey_hermes_model_ships_on_disk():
-    # The "hey hermes" wake word works out of the box only if the model is
+def test_bundled_hey_youtab_model_ships_on_disk():
+    # The "hey youtab" wake word works out of the box only if the model is
     # actually bundled. Both framework artifacts must exist and be non-trivial.
     for framework in ("onnx", "tflite"):
         path = ww._bundled_wakeword_path(framework)
@@ -273,10 +273,10 @@ def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
 
     class _ScriptedModel:
         def __init__(self, wakeword_models, inference_framework="onnx"):
-            self.models = {"hey_hermes": object()}
+            self.models = {"hey_youtab": object()}
 
         def predict(self, frame):
-            return {"hey_hermes": next(seq)}
+            return {"hey_youtab": next(seq)}
 
         def reset(self):
             pass

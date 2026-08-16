@@ -9,21 +9,21 @@ import {
   Webhook,
   X,
 } from "lucide-react";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { H2 } from "@nous-research/ui/ui/components/typography/h2";
-import { api } from "@/lib/api";
+import { Badge } from "@youtab/ui/ui/components/badge";
+import { Button } from "@youtab/ui/ui/components/button";
+import { Select, SelectOption } from "@youtab/ui/ui/components/select";
+import { Spinner } from "@youtab/ui/ui/components/spinner";
+import { H2 } from "@youtab/ui/ui/components/typography/h2";
+import { api, pollGatewayJob } from "@/lib/api";
 import type { WebhookRoute, WebhooksResponse } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
+import { useToast } from "@youtab/ui/hooks/use-toast";
+import { useConfirmDelete } from "@youtab/ui/hooks/use-confirm-delete";
 import { useModalBehavior } from "@/hooks/useModalBehavior";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { Card, CardContent } from "@nous-research/ui/ui/components/card";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
+import { Toast } from "@youtab/ui/ui/components/toast";
+import { Card, CardContent } from "@youtab/ui/ui/components/card";
+import { Input } from "@youtab/ui/ui/components/input";
+import { Label } from "@youtab/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 
@@ -103,43 +103,47 @@ export default function WebhooksPage() {
     loadWebhooks();
   }, [loadWebhooks]);
 
-  const watchRestartOutcome = useCallback(async () => {
-    for (let i = 0; i < 20; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+  // Reads the lifecycle job, not the child's exit status. A restart that
+  // exits 0 without leaving a running gateway is a failure, and this page
+  // used to clear the "restart needed" banner for exactly that case.
+  const watchRestartOutcome = useCallback(
+    async (jobId: string) => {
       try {
-        const st = await api.getActionStatus("gateway-restart", 5);
-        if (st.running) continue;
-        if (st.exit_code !== 0 && st.exit_code !== null) {
-          setRestartMessage(null);
-          setRestartNeeded(true);
-          setRestartError(`Gateway restart failed with exit ${st.exit_code}.`);
-          showToast(
-            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
-            "error",
-          );
-        } else {
-          setRestartMessage(null);
+        const job = await pollGatewayJob(jobId, { attempts: 40 });
+        setRestartMessage(null);
+        if (job.state === "succeeded") {
           setRestartNeeded(false);
           setRestartError(null);
+          return;
         }
-        return;
+        if (job.state === "failed") {
+          setRestartNeeded(true);
+          const suffix = job.exit_code != null ? ` (exit ${job.exit_code})` : "";
+          setRestartError(
+            `Gateway restart failed: ${job.reason ?? "unknown"}${suffix}.`,
+          );
+          showToast(
+            `Gateway restart failed: ${job.reason ?? "unknown"}${suffix} — restart manually`,
+            "error",
+          );
+        }
       } catch {
-        // The dashboard may briefly lose its connection while the gateway restarts.
+        setRestartMessage(null);
       }
-    }
-    setRestartMessage(null);
-  }, [showToast]);
+    },
+    [showToast],
+  );
 
   const handleRestart = useCallback(async () => {
     setRestarting(true);
     try {
-      await api.restartGateway();
-      setRestartNeeded(false);
+      const accepted = await api.restartGateway();
       setRestartError(null);
       setRestartMessage("Gateway restarting…");
-      showToast("Gateway restarting…", "success");
       setTimeout(() => void loadWebhooks(), 4000);
-      void watchRestartOutcome();
+      // The banner clears only when the job says the gateway is actually
+      // back, so a failed restart leaves "restart needed" standing.
+      void watchRestartOutcome(accepted.job_id);
     } catch (e) {
       setRestartNeeded(true);
       setRestartError(String(e));
@@ -156,11 +160,10 @@ export default function WebhooksPage() {
     try {
       const result = await api.enableWebhooks();
       await loadWebhooks();
-      if (result.restart_started) {
+      if (result.restart_started && result.restart_job_id) {
         setRestartMessage("Webhooks enabled; gateway restarting…");
-        showToast("Webhooks enabled; gateway restarting…", "success");
         setTimeout(() => void loadWebhooks(), 4000);
-        void watchRestartOutcome();
+        void watchRestartOutcome(result.restart_job_id);
       } else {
         const detail = result.restart_error ? `: ${result.restart_error}` : ".";
         setRestartMessage(null);

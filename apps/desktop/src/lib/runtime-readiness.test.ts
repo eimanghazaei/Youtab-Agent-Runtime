@@ -82,9 +82,12 @@ describe('fetchRuntimeReadinessSignals', () => {
       throw new Error(`unexpected method: ${method}`)
     }
 
-    await fetchRuntimeReadinessSignals(requestGateway, 'nous')
+    await fetchRuntimeReadinessSignals(requestGateway, 'youtab')
 
-    expect(calls).toEqual([{ method: 'setup.status' }, { method: 'setup.runtime_check', params: { provider: 'nous' } }])
+    expect(calls).toEqual([
+      { method: 'setup.status' },
+      { method: 'setup.runtime_check', params: { provider: 'youtab' } }
+    ])
   })
 })
 
@@ -96,7 +99,7 @@ describe('evaluateRuntimeReadiness', () => {
       }
 
       if (method === 'setup.runtime_check') {
-        expect(params).toEqual({ provider: 'nous' })
+        expect(params).toEqual({ provider: 'youtab' })
 
         return { ok: true } as T
       }
@@ -104,7 +107,7 @@ describe('evaluateRuntimeReadiness', () => {
       throw new Error(`unexpected method: ${method}`)
     }
 
-    const result = await evaluateRuntimeReadiness(requestGateway, { requestedProvider: 'nous' })
+    const result = await evaluateRuntimeReadiness(requestGateway, { requestedProvider: 'youtab' })
 
     expect(result.ready).toBe(true)
   })

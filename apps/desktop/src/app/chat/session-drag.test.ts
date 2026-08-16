@@ -60,7 +60,7 @@ function mountStackedTabs() {
 }
 
 /** Press on `source`, drag to (x, y), release. The drag session flushes its
- *  pending move synchronously on release, so no frame wait is needed. */
+ *  pending move synchroyoutably on release, so no frame wait is needed. */
 function dragTo(source: HTMLElement, x: number, y: number) {
   startSessionDrag({ id: 'dragged', profile: 'default', title: 'Dragged chat' }, {
     button: 0,

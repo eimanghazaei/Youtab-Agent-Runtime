@@ -3,7 +3,6 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSession } from '@/hermes'
 import { textPart } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
@@ -23,13 +22,14 @@ import {
 } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/youtab'
+import { getSession } from '@/youtab'
 
 import type { SubmitTextOptions } from './utils'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/youtab', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   getSession: vi.fn(),
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS: 1_800_000,
@@ -64,7 +64,7 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 // Wrap render() in act() so the Harness's useEffect (onReady callback +
-// internal state from usePromptActions) flushes synchronously instead of
+// internal state from usePromptActions) flushes synchroyoutably instead of
 // spilling async state updates outside act().
 async function actRender(ui: React.ReactElement) {
   let result: ReturnType<typeof render>
@@ -447,7 +447,7 @@ describe('usePromptActions /wake', () => {
       if (method === 'wake.start') {
         return {
           owner_surface: 'gui',
-          phrase: 'hey hermes',
+          phrase: 'hey youtab',
           provider: 'openwakeword',
           started: true
         } as never
@@ -465,7 +465,7 @@ describe('usePromptActions /wake', () => {
           },
           listening: true,
           owner_surface: 'gui',
-          phrase: 'hey hermes',
+          phrase: 'hey youtab',
           provider: 'openwakeword'
         } as never
       }
@@ -505,7 +505,7 @@ describe('usePromptActions /wake', () => {
           enabled: statusCalls === 1,
           listening: statusCalls === 1,
           owner_surface: statusCalls === 1 ? 'gui' : null,
-          phrase: 'hey hermes',
+          phrase: 'hey youtab',
           provider: 'openwakeword'
         } as never
       }
@@ -814,7 +814,7 @@ describe('usePromptActions /compress', () => {
       />
     )
 
-    // Start the request in a synchronous act. The async `submitText` harness
+    // Start the request in a synchroyoutab act. The async `submitText` harness
     // helper cannot be used here: this test intentionally keeps its promise
     // pending while the user switches sessions, which would leave React's
     // async act scope open and overlap the wait below.
@@ -2389,7 +2389,7 @@ describe('usePromptActions file attachment sync', () => {
     // not the original /Users/... path (which would dead-end as "outside the
     // allowed workspace").
     $connection.set({ mode: 'remote' } as never)
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
     })
@@ -2402,8 +2402,8 @@ describe('usePromptActions file attachment sync', () => {
       if (method === 'file.attach') {
         return {
           attached: true,
-          path: '/remote/work/.hermes/desktop-attachments/report.txt',
-          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          path: '/remote/work/.youtab-agent-runtime/desktop-attachments/report.txt',
+          ref_text: '@file:.youtab-agent-runtime/desktop-attachments/report.txt',
           uploaded: true
         } as never
       }
@@ -2428,7 +2428,7 @@ describe('usePromptActions file attachment sync', () => {
     })
     expect(calls[1]?.params).toEqual({
       session_id: RUNTIME_SESSION_ID,
-      text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
+      text: '@file:.youtab-agent-runtime/desktop-attachments/report.txt\n\nconvert this to epub'
     })
   })
 
@@ -2436,7 +2436,7 @@ describe('usePromptActions file attachment sync', () => {
     $connection.set({ mode: 'local' } as never)
     $currentCwd.set('/root')
     const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,aGVsbG8=')
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: { readFileDataUrl }
     })
@@ -2455,8 +2455,8 @@ describe('usePromptActions file attachment sync', () => {
       if (method === 'file.attach') {
         return {
           attached: true,
-          path: '/root/.hermes/desktop-attachments/report.txt',
-          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          path: '/root/.youtab-agent-runtime/desktop-attachments/report.txt',
+          ref_text: '@file:.youtab-agent-runtime/desktop-attachments/report.txt',
           uploaded: true
         } as never
       }
@@ -2482,13 +2482,16 @@ describe('usePromptActions file attachment sync', () => {
     })
     expect(calls[1]).toEqual({
       method: 'prompt.submit',
-      params: { session_id: RUNTIME_SESSION_ID, text: '@file:.hermes/desktop-attachments/report.txt\n\nsummarize' }
+      params: {
+        session_id: RUNTIME_SESSION_ID,
+        text: '@file:.youtab-agent-runtime/desktop-attachments/report.txt\n\nsummarize'
+      }
     })
   })
 
   it('uses image.attach_bytes for a Windows image when the local backend cwd is POSIX', async () => {
     const readFileDataUrl = vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=')
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: { readFileDataUrl }
     })
@@ -2538,7 +2541,7 @@ describe('usePromptActions file attachment sync', () => {
     // path-less inline ref. See partitionDroppedFiles in use-composer-actions.
     $connection.set({ mode: 'remote' } as never)
     const readFileDataUrl = vi.fn(async () => 'data:application/pdf;base64,JVBERi0=')
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: { readFileDataUrl }
     })
@@ -2577,7 +2580,7 @@ describe('usePromptActions file attachment sync', () => {
     $connection.set({ mode: 'local' } as never)
     $currentCwd.set('C:\\Users\\alice\\project')
     const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,c2hvdWxkLW5vdC1iZS1yZWFk')
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: { readFileDataUrl }
     })
@@ -2635,10 +2638,10 @@ describe('usePromptActions eager-upload races', () => {
   it('joins an in-flight eager upload at submit instead of staging the file twice', async () => {
     // Drop-then-immediately-Enter: the drop kicks off an eager file.attach; if
     // submit doesn't join it, both calls stage the file and leave a duplicate
-    // under .hermes/desktop-attachments/. Submit must await the in-flight upload
+    // under .youtab-agent-runtime/desktop-attachments/. Submit must await the in-flight upload
     // and reuse its gateway-side ref.
     $connection.set({ mode: 'remote' } as never)
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
     })
@@ -2655,7 +2658,11 @@ describe('usePromptActions eager-upload races', () => {
           releaseAttach = resolve
         })
 
-        return { attached: true, ref_text: '@file:.hermes/desktop-attachments/doc.pdf', uploaded: true } as never
+        return {
+          attached: true,
+          ref_text: '@file:.youtab-agent-runtime/desktop-attachments/doc.pdf',
+          uploaded: true
+        } as never
       }
 
       return {} as never
@@ -3631,7 +3638,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     // createBackendSessionForSend awaits once more (armed-YOLO apply) AFTER
     // committing the refs and returning a real id, so a switch in that window
     // escapes its internal null-return drift check. The active ref is the
-    // tell: every switch path retargets it synchronously, so it no longer
+    // tell: every switch path retargets it synchroyoutably, so it no longer
     // equals the id create returned. The submit must abort, not adopt the
     // switched-to context as its re-pinned baseline.
     const calls: { method: string; params?: Record<string, unknown> }[] = []
@@ -3810,7 +3817,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     let releaseAttach: () => void = () => {}
 
     $connection.set({ mode: 'remote' } as never)
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
     })
@@ -3897,7 +3904,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
     let releaseFileAttach: () => void = () => {}
 
     $connection.set({ mode: 'remote' } as never)
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
     })
@@ -3923,7 +3930,7 @@ describe('usePromptActions new-chat first-send delivery (#63078)', () => {
 
         return {
           attached: true,
-          ref_text: '@file:.hermes/desktop-attachments/test.pdf',
+          ref_text: '@file:.youtab-agent-runtime/desktop-attachments/test.pdf',
           uploaded: true
         } as never
       }
@@ -4083,7 +4090,7 @@ describe('usePromptActions busy-gateway churn tolerance (#64327)', () => {
     await waitFor(() => expect(calls.some(c => c.method === 'session.resume')).toBe(true))
 
     // A genuine switch: the user clicks another chat, which retargets
-    // selection and route synchronously.
+    // selection and route synchroyoutably.
     selectedStoredSessionIdRef.current = 'stored-other-chat'
     routeToken = '/stored-other-chat::'
     releaseResume()
@@ -4108,7 +4115,7 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
     // waiting for submit.
     $connection.set({ mode: 'remote' } as never)
     const readFileDataUrl = vi.fn(async () => 'data:application/pdf;base64,JVBERi0=')
-    Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: { readFileDataUrl } })
+    Object.defineProperty(window, 'youtabDesktop', { configurable: true, value: { readFileDataUrl } })
 
     const calls: string[] = []
 
@@ -4118,7 +4125,7 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
       if (method === 'file.attach') {
         return {
           attached: true,
-          ref_text: '@file:.hermes/desktop-attachments/DEVIS_signed.pdf',
+          ref_text: '@file:.youtab-agent-runtime/desktop-attachments/DEVIS_signed.pdf',
           uploaded: true
         } as never
       }
@@ -4138,14 +4145,14 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
     await waitFor(() => expect($composerAttachments.get()[0]?.attachedSessionId).toBe(RUNTIME_SESSION_ID))
 
     const chip = $composerAttachments.get()[0]!
-    expect(chip.refText).toBe('@file:.hermes/desktop-attachments/DEVIS_signed.pdf')
+    expect(chip.refText).toBe('@file:.youtab-agent-runtime/desktop-attachments/DEVIS_signed.pdf')
     expect(chip.uploadState).toBeUndefined()
     expect(readFileDataUrl).toHaveBeenCalledWith('/Users/mahmoud/Downloads/DEVIS_signed.pdf')
   })
 
   it('flags the chip uploadState=error when the eager upload fails, keeping the path so submit can retry', async () => {
     $connection.set({ mode: 'remote' } as never)
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
     })
@@ -4201,7 +4208,7 @@ describe('uploadComposerAttachment remote read failures', () => {
   it('turns the raw 16MB IPC cap error into a friendly remote-gateway message', async () => {
     // electron/hardening.ts rejects the readFileDataUrl IPC with this exact
     // shape when a file exceeds the configured data-URL read cap.
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: {
         readFileDataUrl: vi.fn(async () => {
@@ -4224,7 +4231,7 @@ describe('uploadComposerAttachment remote read failures', () => {
   })
 
   it('passes non-cap read errors through unchanged', async () => {
-    Object.defineProperty(window, 'hermesDesktop', {
+    Object.defineProperty(window, 'youtabDesktop', {
       configurable: true,
       value: {
         readFileDataUrl: vi.fn(async () => {

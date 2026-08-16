@@ -54,7 +54,7 @@ class WhatsAppBehaviorMixin:
     MAX_MESSAGE_LENGTH: int = 4096
     supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
 
-    DEFAULT_REPLY_PREFIX: str = "⚕ *Hermes Agent*\n────────────\n"
+    DEFAULT_REPLY_PREFIX: str = "⚕ *Youtab Agent Runtime*\n────────────\n"
 
     _OUTBOUND_INVISIBLE_CHARS_RE = re.compile(r"[\u200b\u2060\u2063\ufeff]")
     _OUTBOUND_ODD_SPACE_RE = re.compile(r"[\u00a0\u1680\u180e\u2000-\u200a\u202f\u205f\u3000]")
@@ -462,10 +462,10 @@ class WhatsAppBehaviorMixin:
 # ---------------------------------------------------------------------------
 
 def resolve_whatsapp_bridge_dir() -> Path:
-    """Resolve the WhatsApp bridge directory, mirroring to HERMES_HOME if needed.
+    """Resolve the WhatsApp bridge directory, mirroring to YOUTAB_AGENT_HOME if needed.
 
-    When the install tree is read-only (e.g., Docker /opt/hermes), this function
-    mirrors the bridge source to a writable HERMES_HOME location and returns that
+    When the install tree is read-only (e.g., Docker /opt/youtab), this function
+    mirrors the bridge source to a writable YOUTAB_AGENT_HOME location and returns that
     path. This ensures npm install works in Docker environments.
 
     Returns the resolved bridge directory path.
@@ -474,12 +474,12 @@ def resolve_whatsapp_bridge_dir() -> Path:
     from pathlib import Path as _Path
 
     # Default location in install tree (may be read-only)
-    from hermes_constants import get_hermes_home
+    from youtab_constants import get_youtab_home
     install_bridge = _Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
 
-    # Try HERMES_HOME location first
-    hermes_home = get_hermes_home()
-    hermes_home_bridge = hermes_home / "scripts" / "whatsapp-bridge"
+    # Try YOUTAB_AGENT_HOME location first
+    youtab_home = get_youtab_home()
+    youtab_home_bridge = youtab_home / "scripts" / "whatsapp-bridge"
 
     # Check if install dir is writable
     try:
@@ -493,18 +493,18 @@ def resolve_whatsapp_bridge_dir() -> Path:
     if install_writable:
         return install_bridge
 
-    # Install dir is read-only, mirror to HERMES_HOME if needed
-    if hermes_home_bridge.exists():
-        return hermes_home_bridge
+    # Install dir is read-only, mirror to YOUTAB_AGENT_HOME if needed
+    if youtab_home_bridge.exists():
+        return youtab_home_bridge
 
-    # Mirror the bridge source to HERMES_HOME
+    # Mirror the bridge source to YOUTAB_AGENT_HOME
     try:
-        hermes_home_bridge.parent.mkdir(parents=True, exist_ok=True)
+        youtab_home_bridge.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(
             install_bridge,
-            hermes_home_bridge,
+            youtab_home_bridge,
             dirs_exist_ok=False,
         )
-        return hermes_home_bridge
+        return youtab_home_bridge
     except Exception:
         return install_bridge

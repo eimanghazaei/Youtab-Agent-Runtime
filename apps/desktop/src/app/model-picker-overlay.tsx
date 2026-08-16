@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 
 import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { ModelPickerDialog } from '@/components/model-picker'
-import type { HermesGateway } from '@/hermes'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import {
   $activeSessionId,
@@ -13,9 +12,10 @@ import {
   setModelPickerOpen
 } from '@/store/session'
 import { $focusedRuntimeId, $focusedSessionState } from '@/store/session-states'
+import type { YoutabGateway } from '@/youtab'
 
 interface ModelPickerOverlayProps {
-  gateway?: HermesGateway
+  gateway?: YoutabGateway
   onSelect: (selection: ModelSelection) => void
   profile: string
 }

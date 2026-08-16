@@ -24,7 +24,7 @@ from agent.transports.codex_app_server_session import (
 
 class FakeClient:
     """Stand-in for CodexAppServerClient that records calls and lets the test
-    drive the notification / server-request streams synchronously."""
+    drive the notification / server-request streams synchroyoutably."""
 
     def __init__(self, *, codex_bin: str = "codex", codex_home=None) -> None:
         self.codex_bin = codex_bin

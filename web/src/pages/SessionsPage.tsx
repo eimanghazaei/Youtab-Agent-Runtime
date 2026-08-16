@@ -48,17 +48,17 @@ import type {
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
-import { Segmented } from "@nous-research/ui/ui/components/segmented";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { Toast } from "@youtab/ui/ui/components/toast";
+import { Button } from "@youtab/ui/ui/components/button";
+import { Checkbox } from "@youtab/ui/ui/components/checkbox";
+import { ListItem } from "@youtab/ui/ui/components/list-item";
+import { Segmented } from "@youtab/ui/ui/components/segmented";
+import { Spinner } from "@youtab/ui/ui/components/spinner";
+import { Badge } from "@youtab/ui/ui/components/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@youtab/ui/ui/components/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
-import { Input } from "@nous-research/ui/ui/components/input";
+import { useConfirmDelete } from "@youtab/ui/hooks/use-confirm-delete";
+import { Input } from "@youtab/ui/ui/components/input";
 import {
   Dialog,
   DialogContent,
@@ -66,9 +66,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@nous-research/ui/ui/components/dialog";
+} from "@youtab/ui/ui/components/dialog";
 import { useSystemActions } from "@/contexts/useSystemActions";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { useToast } from "@youtab/ui/hooks/use-toast";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -91,7 +91,7 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     tool: { icon: Play, color: "text-warning" },
     api_server: { icon: Globe, color: "text-muted-foreground" },
     acp: { icon: Database, color: "text-muted-foreground" },
-    hermes_flow: { icon: Play, color: "text-warning" },
+    youtab_flow: { icon: Play, color: "text-warning" },
     vulcan_delegate: { icon: Play, color: "text-warning" },
     webhook: { icon: Globe, color: "text-warning" },
   };
@@ -101,12 +101,12 @@ const AUTOMATION_SESSION_SOURCES = [
   "tool",
   "api_server",
   "acp",
-  "hermes_flow",
+  "youtab_flow",
   "vulcan_delegate",
   "webhook",
 ];
 const AUTOMATION_SESSION_SOURCE_SET = new Set(AUTOMATION_SESSION_SOURCES);
-const NO_MATCHING_SESSION_SOURCE = "__hermes_dashboard_no_matching_source__";
+const NO_MATCHING_SESSION_SOURCE = "__youtab_dashboard_no_matching_source__";
 
 type SessionFilterCategory = "chats" | "automation" | "all";
 type SourceSelectionsByCategory = Record<SessionFilterCategory, string[] | null>;
@@ -150,8 +150,8 @@ function sourceLabel(source: string): string {
       return "Cron";
     case "tool":
       return "Tool";
-    case "hermes_flow":
-      return "Hermes Flow";
+    case "youtab_flow":
+      return "Youtab Flow";
     case "vulcan_delegate":
       return "Vulcan delegate";
     case "webhook":
@@ -699,10 +699,10 @@ function SessionRow({
                 )}
               </div>
               <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                {session.model && (
+                {session.agent_label && (
                   <>
                     <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
-                      {session.model.split("/").pop()}
+                      {session.agent_label}
                     </span>
                     <span className="text-border">&#183;</span>
                   </>
@@ -1470,9 +1470,9 @@ export default function SessionsPage() {
         const res = await fetch(api.exportSessionUrl(id), {
           credentials: "include",
           headers: {
-            "X-Hermes-Session-Token":
-              (window as unknown as { __HERMES_SESSION_TOKEN__?: string })
-                .__HERMES_SESSION_TOKEN__ ?? "",
+            "X-Youtab-Session-Token":
+              (window as unknown as { __YOUTAB_AGENT_SESSION_TOKEN__?: string })
+                .__YOUTAB_AGENT_SESSION_TOKEN__ ?? "",
           },
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1755,7 +1755,7 @@ export default function SessionsPage() {
               <span className="text-xs font-mondwest tracking-[0.12em] truncate">
                 {activeAction === "restart"
                   ? t.status.restartGateway
-                  : t.status.updateHermes}
+                  : t.status.updateYoutab}
               </span>
 
               <Badge
@@ -2138,11 +2138,9 @@ export default function SessionsPage() {
                       </span>
 
                       <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        {s.model && (
+                        {s.agent_label && (
                           <>
-                            <span className="font-mono-ui">
-                              {s.model.split("/").pop()}
-                            </span>{" "}
+                            <span>{s.agent_label}</span>{" "}
                             ·{" "}
                           </>
                         )}

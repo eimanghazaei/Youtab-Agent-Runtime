@@ -1,0 +1,2813 @@
+{
+  "counts_by_classification": {
+    "LEGAL_PROVENANCE": 538,
+    "MIGRATION_COMPAT": 636,
+    "PRIVATE_BINDING": 271,
+    "USER_REACHABLE": 273
+  },
+  "images_deferred_to_branding_gate": 69,
+  "matrix_by_surface": {
+    "attribution": {
+      "LEGAL_PROVENANCE": 7
+    },
+    "cli": {
+      "LEGAL_PROVENANCE": 2,
+      "PRIVATE_BINDING": 70,
+      "USER_REACHABLE": 99
+    },
+    "docs.repo": {
+      "LEGAL_PROVENANCE": 1,
+      "USER_REACHABLE": 3
+    },
+    "docs.site": {
+      "LEGAL_PROVENANCE": 54,
+      "MIGRATION_COMPAT": 3,
+      "USER_REACHABLE": 103
+    },
+    "env.example": {
+      "USER_REACHABLE": 1
+    },
+    "legal": {
+      "LEGAL_PROVENANCE": 4
+    },
+    "other": {
+      "LEGAL_PROVENANCE": 1,
+      "PRIVATE_BINDING": 46,
+      "USER_REACHABLE": 6
+    },
+    "runtime.agent": {
+      "PRIVATE_BINDING": 151
+    },
+    "scripts": {
+      "LEGAL_PROVENANCE": 3,
+      "MIGRATION_COMPAT": 5,
+      "USER_REACHABLE": 14
+    },
+    "service.cron": {
+      "USER_REACHABLE": 1
+    },
+    "service.gateway": {
+      "PRIVATE_BINDING": 4
+    },
+    "skills": {
+      "LEGAL_PROVENANCE": 464,
+      "MIGRATION_COMPAT": 3,
+      "USER_REACHABLE": 31
+    },
+    "tests": {
+      "MIGRATION_COMPAT": 625
+    },
+    "tools": {
+      "USER_REACHABLE": 6
+    },
+    "ui.dashboard": {
+      "USER_REACHABLE": 1
+    },
+    "ui.desktop": {
+      "LEGAL_PROVENANCE": 2,
+      "USER_REACHABLE": 4
+    },
+    "ui.plugin": {
+      "USER_REACHABLE": 2
+    },
+    "ui.tui": {
+      "USER_REACHABLE": 2
+    }
+  },
+  "occurrences_total": 1718,
+  "passed": false,
+  "schema_version": 1,
+  "user_reachable": [
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1136,
+      "match": "DeepSeek",
+      "path": "acp_adapter/server.py",
+      "reason": "unclassified occurrence on a other surface",
+      "surface": "other",
+      "text": "canonical field used by DeepSeek / Moonshot and the post-#16892",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 88,
+      "match": "DEEPSEEK",
+      "path": "apps/desktop/src/app/settings/constants.ts",
+      "reason": "unclassified occurrence on a ui.desktop surface",
+      "surface": "ui.desktop",
+      "text": "prefix: 'DEEPSEEK_',",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 89,
+      "match": "DeepSeek",
+      "path": "apps/desktop/src/app/settings/constants.ts",
+      "reason": "unclassified occurrence on a ui.desktop surface",
+      "surface": "ui.desktop",
+      "text": "name: 'DeepSeek',",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 90,
+      "match": "DeepSeek",
+      "path": "apps/desktop/src/app/settings/constants.ts",
+      "reason": "unclassified occurrence on a ui.desktop surface",
+      "surface": "ui.desktop",
+      "text": "description: 'Direct DeepSeek API (V3.x, R1)',",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 91,
+      "match": "deepseek",
+      "path": "apps/desktop/src/app/settings/constants.ts",
+      "reason": "unclassified occurrence on a ui.desktop surface",
+      "surface": "ui.desktop",
+      "text": "docsUrl: 'https://platform.deepseek.com/api_keys',",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 879,
+      "match": "deepseek",
+      "path": "cli-config.yaml.example",
+      "reason": "unclassified occurrence on a env.example surface",
+      "surface": "env.example",
+      "text": "#   \"deepseek/deepseek-v4-pro\": \"xhigh\" # dots and dashes are interchangeable",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 7128,
+      "match": "DeepSeek",
+      "path": "cli.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"Consider using an agentic model (Claude, GPT, Gemini, DeepSeek, etc.).[/]\"",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3298,
+      "match": "DeepSeek",
+      "path": "cron/scheduler.py",
+      "reason": "unclassified occurrence on a service.cron surface",
+      "surface": "service.cron",
+      "text": "# example DeepSeek) for cron jobs that do not pin provider/model.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 126,
+      "match": "Teknium",
+      "path": "docs/design/profile-builder.md",
+      "reason": "unclassified occurrence on a docs.repo surface",
+      "surface": "docs.repo",
+      "text": "## Open product decisions (need Teknium)",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 10,
+      "match": "NousResearch",
+      "path": "docs/relay-connector-contract.md",
+      "reason": "unclassified occurrence on a docs.repo surface",
+      "surface": "docs.repo",
+      "text": "`NousResearch/gateway-gateway`). The connector implementer's first action is to",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 658,
+      "match": "NousResearch",
+      "path": "docs/relay-connector-contract.md",
+      "reason": "unclassified occurrence on a docs.repo surface",
+      "surface": "docs.repo",
+      "text": "(`NousResearch/gateway-gateway`); this section is the gateway-facing summary.",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 355,
+      "match": "DeepSeek",
+      "path": "model_tools.py",
+      "reason": "unclassified occurrence on a tools surface",
+      "surface": "tools",
+      "text": "# (DeepSeek, Xiaomi MiMo, Moonshot Kimi) reject the request with",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 718,
+      "match": "DeepSeek",
+      "path": "model_tools.py",
+      "reason": "unclassified occurrence on a tools surface",
+      "surface": "tools",
+      "text": "declares ``\"type\": \"array\"``.  Open-weight models (DeepSeek, Qwen, GLM)",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 838,
+      "match": "DeepSeek",
+      "path": "model_tools.py",
+      "reason": "unclassified occurrence on a tools surface",
+      "surface": "tools",
+      "text": "Open-weight models (DeepSeek, Qwen, GLM, and others) sometimes emit a",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 16,
+      "match": "DeepSeek",
+      "path": "optional-skills/autonomous-ai-agents/openhands/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "Delegate coding tasks to the [OpenHands CLI](https://github.com/All-Hands-AI/OpenHands) via the `terminal` tool. OpenHands is model-agnostic: any LiteLLM-supported provider (OpenAI, Anthropic, OpenRou",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 23,
+      "match": "DeepSeek",
+      "path": "optional-skills/autonomous-ai-agents/openhands/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "- User wants a coding agent that can run on a non-Anthropic / non-OpenAI provider (DeepSeek, Qwen, Ollama, vLLM, Youtab, etc.) \u2014 sibling skills `claude-code` and `codex` are tied to one vendor.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 17,
+      "match": "NousResearch",
+      "path": "optional-skills/creative/kanban-video-orchestrator/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "https://github.com/NousResearch/kanban-video-pipeline.",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 11,
+      "match": "NousResearch",
+      "path": "optional-skills/creative/kanban-video-orchestrator/scripts/bootstrap_pipeline.py",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "adapted from alt-glitch's NousResearch/kanban-video-pipeline.",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "NousResearch",
+      "path": "optional-skills/gaming/pokemon-player/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "The repo is NousResearch/pokemon-agent on GitHub. Clone it, then",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 89,
+      "match": "DeepSeek",
+      "path": "optional-skills/mlops/obliteratus/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "| 48 GB+   | ~72B+ params    | Qwen2.5-72B, DeepSeek-R1                    |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 90,
+      "match": "DeepSeek",
+      "path": "optional-skills/mlops/obliteratus/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "| Multi-GPU| 200B+ params    | Llama 3.1 405B, DeepSeek-V3 (685B MoE)      |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 116,
+      "match": "DeepSeek",
+      "path": "optional-skills/mlops/obliteratus/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "| MoE model (DeepSeek, Mixtral)     | `nuclear`          | Expert-granular, handles MoE complexity  |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 329,
+      "match": "DeepSeek",
+      "path": "optional-skills/mlops/obliteratus/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "5. **MoE models need special handling** \u2014 use `nuclear` method for Mixtral, DeepSeek-MoE, etc.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 34,
+      "match": "deepseek",
+      "path": "optional-skills/mlops/obliteratus/templates/batch-abliteration.yaml",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "- \"deepseek-ai/DeepSeek-R1-Distill-Qwen-32B\"",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 38,
+      "match": "deepseek",
+      "path": "optional-skills/mlops/obliteratus/templates/batch-abliteration.yaml",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "\"deepseek-ai/DeepSeek-R1-Distill-Qwen-32B\":",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 115,
+      "match": "deepseek",
+      "path": "optional-skills/mlops/simpo/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "model_name_or_path: deepseek-ai/deepseek-math-7b-base",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 24,
+      "match": "DeepSeek",
+      "path": "optional-skills/mlops/slime/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "- Training GLM, Qwen3, DeepSeek V3, or Llama 3 models",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 37,
+      "match": "DeepSeek",
+      "path": "optional-skills/mlops/slime/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "- **Models**: GLM-4.x, Qwen3, DeepSeek V3/R1, Llama 3",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 136,
+      "match": "deepseek",
+      "path": "optional-skills/mlops/slime/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "# glm4-9B.sh, qwen3-4B.sh, qwen3-30B-A3B.sh, deepseek-v3.sh, llama3-8B.sh, ...",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 412,
+      "match": "DeepSeek",
+      "path": "optional-skills/mlops/slime/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "| DeepSeek | V3, V3.1, R1 |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 176,
+      "match": "DeepSeek",
+      "path": "optional-skills/mlops/tensorrt-llm/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "- **DeepSeek**: DeepSeek-V2, DeepSeek-V3",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 358,
+      "match": "DeepSeek",
+      "path": "optional-skills/mlops/torchtitan/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "| DeepSeek V3 | 16B, 236B, 671B (MoE) | Experimental |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 85,
+      "match": "DeepSeek",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "2. **Identifies the model family** (Claude, GPT, Gemini, Grok, Youtab, DeepSeek, etc.)",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 105,
+      "match": "DeepSeek",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "| DeepSeek | parseltongue \u2192 refusal_inversion \u2192 prefill_only |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 332,
+      "match": "DeepSeek",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "| DeepSeek | Parseltongue + multi-attempt | Input classifiers are keyword-based; obfuscation effective |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 382,
+      "match": "DeepSeek",
+      "path": "optional-skills/security/godmode/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "3. **Parseltongue encoding doesn't help against Claude** \u2014 Claude understands leetspeak, bubble text, braille, and morse code. The encoded text is decoded and still refused. Parseltongue is more effec",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 187,
+      "match": "DeepSeek",
+      "path": "optional-skills/security/godmode/scripts/auto_jailbreak.py",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "# DeepSeek \u2014 keyword-based classifiers, parseltongue effective",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 188,
+      "match": "deepseek",
+      "path": "optional-skills/security/godmode/scripts/auto_jailbreak.py",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "\"deepseek\": {",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 215,
+      "match": "DeepSeek",
+      "path": "optional-skills/security/godmode/scripts/auto_jailbreak.py",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "# Qwen \u2014 similar to DeepSeek",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 311,
+      "match": "deepseek",
+      "path": "optional-skills/security/godmode/scripts/auto_jailbreak.py",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "if \"deepseek\" in model_lower:",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 312,
+      "match": "deepseek",
+      "path": "optional-skills/security/godmode/scripts/auto_jailbreak.py",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "return \"deepseek\"",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 38,
+      "match": "deepseek",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "'deepseek/deepseek-chat',",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 50,
+      "match": "deepseek",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "'deepseek/deepseek-v3.2',",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 73,
+      "match": "deepseek",
+      "path": "optional-skills/security/godmode/scripts/godmode_race.py",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "'deepseek/deepseek-r1',",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 5128,
+      "match": "teknium",
+      "path": "plugins/platforms/discord/adapter.py",
+      "reason": "unclassified occurrence on a other surface",
+      "surface": "other",
+      "text": "Users can specify usernames (e.g. \"teknium\") or display names instead of",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 296,
+      "match": "deepseek",
+      "path": "plugins/youtab-achievements/dashboard/plugin_api.py",
+      "reason": "unclassified occurrence on a ui.plugin surface",
+      "surface": "ui.plugin",
+      "text": "for provider in [\"openai\", \"anthropic\", \"google\", \"gemini\", \"mistral\", \"meta\", \"qwen\", \"deepseek\", \"xai\", \"youtab\", \"ollama\", \"groq\", \"openrouter\", \"codex\"]:",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 405,
+      "match": "deepseek",
+      "path": "plugins/youtab-achievements/dashboard/plugin_api.py",
+      "reason": "unclassified occurrence on a ui.plugin surface",
+      "surface": "ui.plugin",
+      "text": "\"model_events\": len(re.findall(r\"model|provider|openrouter|codex|gemini|claude|anthropic|openai|mistral|qwen|deepseek|llama|ollama|vllm|gguf\", full_text, re.I)),",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1391,
+      "match": "DeepSeek",
+      "path": "run_agent.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# DeepSeek R1, Qwen QwQ, xAI Grok reasoning, etc.) whose cloud",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 6463,
+      "match": "deepseek",
+      "path": "run_agent.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# only for models that declare the \"thinking\" capability. deepseek-v4",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 6474,
+      "match": "deepseek",
+      "path": "run_agent.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek/\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 6604,
+      "match": "DeepSeek",
+      "path": "run_agent.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 6621,
+      "match": "deepseek",
+      "path": "run_agent.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "self._needs_deepseek_tool_reasoning()",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 6648,
+      "match": "deepseek",
+      "path": "run_agent.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "def _needs_deepseek_tool_reasoning(self) -> bool:",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 6649,
+      "match": "DeepSeek",
+      "path": "run_agent.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"\"\"Return True when the current provider is DeepSeek thinking mode.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 6651,
+      "match": "DeepSeek",
+      "path": "run_agent.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "DeepSeek V4 thinking mode requires ``reasoning_content`` on every",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 6659,
+      "match": "deepseek",
+      "path": "run_agent.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek\", (self.provider or \"\").lower(), self.model, self.base_url",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2849,
+      "match": "Teknium",
+      "path": "scripts/install.ps1",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "# leaving them to lazy first-use install. Policy change (Teknium, July",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2871,
+      "match": "Teknium",
+      "path": "scripts/install.sh",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "# leaving them to lazy first-use install. Policy change (Teknium, July",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 573,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "# teknium (multiple emails)",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 661,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "\"teknium@youtab.io\": \"teknium1\",",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 887,
+      "match": "DeepSeek",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "# DeepSeek v4 + Kimi thinking-mode reasoning_content salvage (April 2026)",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 888,
+      "match": "deepseek",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "\"luwinyang@deepseek.com\": \"lsdsjy\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1548,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "\"teknium@noreply.github.com\": \"teknium1\",",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1681,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "\"codex@openai.invalid\": \"teknium1\",",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1682,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "\"screenmachine@gmail.com\": \"teknium1\",",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1687,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "\"teknium@youtab.dev\": \"teknium1\",",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1722,
+      "match": "teknium",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "\"teknium@youtab-agent-runtime\": \"teknium1\",",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1836,
+      "match": "deepseek",
+      "path": "scripts/release.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "\"71590782+kriscolab@users.noreply.github.com\": \"kriscolab\",  # PR #26926 (deepseek default_aux_model)",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 41,
+      "match": "DeepSeek",
+      "path": "scripts/youtab/user_reachability_matrix.py",
+      "reason": "unclassified occurrence on a scripts surface",
+      "surface": "scripts",
+      "text": "The DeepSeek credential and the ``deepseek.v4_pro`` binding are Youtab-managed",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 93,
+      "match": "deepseek",
+      "path": "scripts/youtab/user_reachability_matrix.py",
+      "reason": "discloses or implies the Alpha private engine binding",
+      "surface": "scripts",
+      "text": "# The private engine binding for the public Alpha v0.6 profile. `deepseek`",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 17,
+      "match": "DeepSeek",
+      "path": "skills/autonomous-ai-agents/youtab-agent-runtime/SKILL.md",
+      "reason": "unclassified occurrence on a skills surface",
+      "surface": "skills",
+      "text": "Youtab Agent Runtime is an open-source AI agent framework by Youtab B.V. that runs in your terminal, a native desktop app, messaging platforms, and IDEs. It's in the same category as Claude Code (Anth",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1377,
+      "match": "DeepSeek",
+      "path": "tools/delegate_tool.py",
+      "reason": "unclassified occurrence on a tools surface",
+      "surface": "tools",
+      "text": "# (e.g. MiniMax uses anthropic_messages, DeepSeek uses chat_completions).",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 267,
+      "match": "DEEPSEEK",
+      "path": "tools/environments/local.py",
+      "reason": "unclassified occurrence on a tools surface",
+      "surface": "tools",
+      "text": "\"DEEPSEEK_API_KEY\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 40,
+      "match": "Teknium",
+      "path": "tools/x_search_tool.py",
+      "reason": "unclassified occurrence on a tools surface",
+      "surface": "tools",
+      "text": "reworked to honor both auth modes per Teknium's design.",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 342,
+      "match": "deepseek",
+      "path": "tui_gateway/methods_complete.py",
+      "reason": "unclassified occurrence on a ui.tui surface",
+      "surface": "ui.tui",
+      "text": "slug: provider slug (e.g. \"deepseek\", \"xai\")",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 422,
+      "match": "deepseek",
+      "path": "tui_gateway/methods_complete.py",
+      "reason": "unclassified occurrence on a ui.tui surface",
+      "surface": "ui.tui",
+      "text": "slug: provider slug (e.g. \"deepseek\", \"xai\")",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 54,
+      "match": "DEEPSEEK",
+      "path": "web/src/pages/EnvPage.tsx",
+      "reason": "unclassified occurrence on a ui.dashboard surface",
+      "surface": "ui.dashboard",
+      "text": "{ prefix: \"DEEPSEEK_\", name: \"DeepSeek\", priority: 3 },",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 53,
+      "match": "DeepSeek",
+      "path": "website/docs/developer-guide/provider-runtime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- DeepSeek",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 126,
+      "match": "DeepSeek",
+      "path": "website/docs/getting-started/quickstart.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **Hugging Face** | 20+ open models via unified router (Qwen, DeepSeek, Kimi, etc.) | Set `HF_TOKEN` |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 127,
+      "match": "DeepSeek",
+      "path": "website/docs/getting-started/quickstart.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **AWS Bedrock** | Claude, Nova, Llama, DeepSeek via native Converse API | IAM role or `aws configure` ([guide](../guides/aws-bedrock.md)) |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 142,
+      "match": "DeepSeek",
+      "path": "website/docs/getting-started/quickstart.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **DeepSeek** | Direct DeepSeek API access | Set `DEEPSEEK_API_KEY` |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 152,
+      "match": "DeepSeek",
+      "path": "website/docs/getting-started/quickstart.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "Youtab Agent Runtime requires a model with at least **64,000 tokens** of context. Models with smaller windows cannot maintain enough working memory for multi-step tool-calling workflows and will be re",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 110,
+      "match": "DeepSeek",
+      "path": "website/docs/guides/aws-bedrock.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek V3.2 | `deepseek.v3.2` | Strong open model |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 123,
+      "match": "deepseek",
+      "path": "website/docs/guides/aws-bedrock.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "/model deepseek.v3.2",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 50,
+      "match": "DeepSeek",
+      "path": "website/docs/guides/azure-foundry.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- **OpenAI-style** (`api_mode: chat_completions` / `codex_responses`) \u2014 GPT-4/5, Llama, Mistral, DeepSeek, etc.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 104,
+      "match": "deepseek",
+      "path": "website/docs/guides/run-youtab-with-youtab-portal.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "/model deepseek/deepseek-v3.2          # cost-effective coder",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 32,
+      "match": "DeepSeek",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **DeepSeek** | DeepSeek V4 Pro |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 75,
+      "match": "Hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "## A note on Hermes 4",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 79,
+      "match": "Hermes",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "They are **not recommended for use inside Youtab Agent Runtime**, however. Hermes 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for research wor",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 85,
+      "match": "deepseek",
+      "path": "website/docs/integrations/youtab-portal.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "/model deepseek/deepseek-v4-pro        # cost-effective coder",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 854,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "**Custom endpoint** (self-hosted, Ollama, zai, DeepSeek, etc.):",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1098,
+      "match": "deepseek",
+      "path": "website/docs/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/reference/environment-variables) \u2014 `openrouter`, `youtab`, `openai-codex`, `copilot`, `copilot-ac",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1159,
+      "match": "deepseek",
+      "path": "website/docs/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "#     model: deepseek/deepseek-chat",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1224,
+      "match": "deepseek",
+      "path": "website/docs/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "model: deepseek/deepseek-chat",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1470,
+      "match": "deepseek",
+      "path": "website/docs/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| `\"auto\"` (default) | Enabled for models matching: `gpt`, `codex`, `gemini`, `gemma`, `grok`, `glm`, `qwen`, `deepseek`. Disabled for all others (e.g. Claude). |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 101,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/egress/iron-proxy.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "# OpenAI, Anthropic, Google, xAI, Mistral, Groq, Together, DeepSeek,",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 114,
+      "match": "deepseek",
+      "path": "website/docs/user-guide/egress/iron-proxy.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "api.deepseek.com        inference.youtab.io",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 154,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/egress/iron-proxy.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| OpenRouter, OpenAI, Groq, Together, DeepSeek, Mistral, xAI, Youtab | `*_API_KEY` | `Authorization` header |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 61,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/features/fallback-providers.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 84,
+      "match": "deepseek",
+      "path": "website/docs/user-guide/features/mixture-of-agents.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "model: deepseek/deepseek-v4-pro",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 100,
+      "match": "deepseek",
+      "path": "website/docs/user-guide/features/mixture-of-agents.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- reference: `openrouter:deepseek/deepseek-v4-pro`",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 215,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "## Hermes Mod \u2014 Visual Skin Editor",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 262,
+      "match": "Hermes",
+      "path": "website/docs/user-guide/features/skins.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "Hermes Mod respects the `YOUTAB_AGENT_HOME` environment variable, so it works with [profiles](/user-guide/profiles) too.",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 204,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/features/vision.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **Text-only** (DeepSeek V3, smaller open-source models, older chat-only endpoints) | Routed through the `vision_analyze` auxiliary tool \u2014 an auxiliary vision model describes the image, and the text ",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 217,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/features/web-dashboard.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- **LLM Providers** \u2014 OpenRouter, Anthropic, OpenAI, DeepSeek, etc.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 913,
+      "match": "NousResearch",
+      "path": "website/docs/user-guide/features/web-dashboard.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "The provider implements the [Youtab Portal OAuth contract v1](https://github.com/NousResearch/nous-account-service/blob/main/docs/agent-dashboard-oauth-contract.md) \u2014 authorization-code grant with PKC",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-youtab-agent-runtime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 34,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-youtab-agent-runtime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "Youtab Agent Runtime is an open-source AI agent framework by Youtab B.V. that runs in your terminal, a native desktop app, messaging platforms, and IDEs. It's in the same category as Claude Code (Anth",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/creative/creative-popular-web-designs.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Youtab Agent Runtime + Teknium (design systems sourced from VoltAgent/awesome-design-md) |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/bundled/research/research-polymarket.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 34,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "Delegate coding tasks to the [OpenHands CLI](https://github.com/All-Hands-AI/OpenHands) via the `terminal` tool. OpenHands is model-agnostic: any LiteLLM-supported provider (OpenAI, Anthropic, OpenRou",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 41,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-openhands.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- User wants a coding agent that can run on a non-Anthropic / non-OpenAI provider (DeepSeek, Qwen, Ollama, vLLM, Youtab, etc.) \u2014 sibling skills `claude-code` and `codex` are tied to one vendor.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/creative/creative-tldraw-offline.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Teknium + Youtab Agent Runtime |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/devops/devops-pinggy-tunnel.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 40,
+      "match": "NousResearch",
+      "path": "website/docs/user-guide/skills/optional/gaming/gaming-pokemon-player.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "The repo is NousResearch/pokemon-agent on GitHub. Clone it, then",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 107,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-obliteratus.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| 48 GB+   | ~72B+ params    | Qwen2.5-72B, DeepSeek-R1                    |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 108,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-obliteratus.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Multi-GPU| 200B+ params    | Llama 3.1 405B, DeepSeek-V3 (685B MoE)      |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 134,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-obliteratus.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| MoE model (DeepSeek, Mixtral)     | `nuclear`          | Expert-granular, handles MoE complexity  |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 347,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-obliteratus.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "5. **MoE models need special handling** \u2014 use `nuclear` method for Mixtral, DeepSeek-MoE, etc.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 132,
+      "match": "deepseek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-simpo.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "model_name_or_path: deepseek-ai/deepseek-math-7b-base",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 41,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-slime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- Training GLM, Qwen3, DeepSeek V3, or Llama 3 models",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 54,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-slime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- **Models**: GLM-4.x, Qwen3, DeepSeek V3/R1, Llama 3",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 155,
+      "match": "deepseek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-slime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "# glm4-9B.sh, qwen3-4B.sh, qwen3-30B-A3B.sh, deepseek-v3.sh, llama3-8B.sh, ...",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 431,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-slime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek | V3, V3.1, R1 |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 193,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-tensorrt-llm.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- **DeepSeek**: DeepSeek-V2, DeepSeek-V3",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 375,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/mlops/mlops-torchtitan.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek V3 | 16B, 236B, 671B (MoE) | Experimental |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/payments/payments-mpp-agent.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/payments/payments-stripe-link-cli.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/payments/payments-stripe-projects.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/research/research-gitnexus-explorer.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/research/research-qmd.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/security/security-godmode.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 103,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/security/security-godmode.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "2. **Identifies the model family** (Claude, GPT, Gemini, Grok, Youtab, DeepSeek, etc.)",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 123,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/security/security-godmode.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek | parseltongue \u2192 refusal_inversion \u2192 prefill_only |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 350,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/security/security-godmode.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek | Parseltongue + multi-attempt | Input classifiers are keyword-based; obfuscation effective |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 400,
+      "match": "DeepSeek",
+      "path": "website/docs/user-guide/skills/optional/security/security-godmode.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "3. **Parseltongue encoding doesn't help against Claude** \u2014 Claude understands leetspeak, bubble text, braille, and morse code. The encoded text is decoded and still refused. Parseltongue is more effec",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/docs/user-guide/skills/optional/software-development/software-development-code-wiki.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| Author | Teknium (teknium1), Youtab Agent Runtime |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 9,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/model-provider-plugin.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "\u6a21\u578b\u63d0\u4f9b\u5546\u63d2\u4ef6\u58f0\u660e\u4e00\u4e2a\u63a8\u7406\u540e\u7aef\u2014\u2014\u517c\u5bb9 OpenAI \u7684\u7aef\u70b9\u3001Anthropic Messages \u670d\u52a1\u5668\u3001Codex \u98ce\u683c\u7684 Responses API\uff0c\u6216 Bedrock \u539f\u751f\u63a5\u53e3\u2014\u2014Youtab \u53ef\u901a\u8fc7\u8fd9\u4e9b\u540e\u7aef\u8def\u7531 `AIAgent` \u8c03\u7528\u3002\u6bcf\u4e2a\u5185\u7f6e\u63d0\u4f9b\u5546\uff08OpenRouter\u3001Anthropic\u3001GMI\u3001DeepSeek\u3001Nvidia\u2026\u2026\uff09\u90fd\u4ee5\u6b64\u7c7b\u63d2\u4ef6\u5f62\u5f0f\u63d0\u4f9b\u3002\u7b2c\u4e09\u65b9\u53ef\u901a\u8fc7\u5728 `$YOUT",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 53,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/developer-guide/provider-runtime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- DeepSeek",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 117,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/quickstart.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **Hugging Face** | \u901a\u8fc7\u7edf\u4e00\u8def\u7531\u5668\u4f7f\u7528 20+ \u5f00\u6e90\u6a21\u578b\uff08Qwen\u3001DeepSeek\u3001Kimi \u7b49\uff09 | \u8bbe\u7f6e `HF_TOKEN` |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 118,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/quickstart.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **AWS Bedrock** | \u901a\u8fc7\u539f\u751f Converse API \u4f7f\u7528 Claude\u3001Nova\u3001Llama\u3001DeepSeek | IAM \u89d2\u8272\u6216 `aws configure`\uff08[\u6307\u5357](../guides/aws-bedrock.md)\uff09 |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 122,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/quickstart.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **DeepSeek** | \u76f4\u63a5\u8bbf\u95ee DeepSeek API | \u8bbe\u7f6e `DEEPSEEK_API_KEY` |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 132,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/getting-started/quickstart.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "Youtab Agent Runtime \u8981\u6c42\u6a21\u578b\u81f3\u5c11\u5177\u5907 **64,000 \u4e2a token** \u7684\u4e0a\u4e0b\u6587\u7a97\u53e3\u3002\u4e0a\u4e0b\u6587\u7a97\u53e3\u8f83\u5c0f\u7684\u6a21\u578b\u65e0\u6cd5\u4e3a\u591a\u6b65\u9aa4\u5de5\u5177\u8c03\u7528\u5de5\u4f5c\u6d41\u7ef4\u6301\u8db3\u591f\u7684\u5de5\u4f5c\u5185\u5b58\uff0c\u542f\u52a8\u65f6\u5c06\u88ab\u62d2\u7edd\u3002\u5927\u591a\u6570\u6258\u7ba1\u6a21\u578b\uff08Claude\u3001GPT\u3001Gemini\u3001Qwen\u3001DeepSeek\uff09\u5747\u8f7b\u677e\u6ee1\u8db3\u6b64\u8981\u6c42\u3002\u5982\u679c\u4f60\u8fd0\u884c\u672c\u5730\u6a21\u578b\uff0c\u8bf7\u5c06\u5176\u4e0a\u4e0b\u6587\u5927\u5c0f\u8bbe\u7f6e\u4e3a\u81f3\u5c11 64K\uff08\u4f8b\u5982 llama.cpp \u4f7f\u7528 `--ctx-siz",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 102,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/guides/aws-bedrock.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek V3.2 | `deepseek.v3.2` | \u5f3a\u5927\u7684\u5f00\u6e90\u6a21\u578b |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 115,
+      "match": "deepseek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/guides/aws-bedrock.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "/model deepseek.v3.2",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 50,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/guides/azure-foundry.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- **OpenAI \u98ce\u683c**\uff08`api_mode: chat_completions` / `codex_responses`\uff09\u2014 GPT-4/5\u3001Llama\u3001Mistral\u3001DeepSeek \u7b49\u3002",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 104,
+      "match": "deepseek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/guides/run-youtab-with-youtab-portal.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "/model deepseek/deepseek-v3.2          # \u9ad8\u6027\u4ef7\u6bd4\u7f16\u7a0b\u6a21\u578b",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 32,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/youtab-portal.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **DeepSeek** | DeepSeek V3.2\u3001DeepSeek-R1 |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 81,
+      "match": "deepseek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/integrations/youtab-portal.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "/model deepseek/deepseek-v3.2          # \u9ad8\u6027\u4ef7\u6bd4\u4ee3\u7801\u6a21\u578b",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 641,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "**\u81ea\u5b9a\u4e49\u7aef\u70b9**\uff08\u81ea\u6258\u7ba1\u3001Ollama\u3001zai\u3001DeepSeek \u7b49\uff09\uff1a",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 814,
+      "match": "deepseek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "\u8f85\u52a9\u4efb\u52a1\u7684\u53ef\u7528 providers\uff1a`auto`\u3001`main`\uff0c\u4ee5\u53ca[provider \u6ce8\u518c\u8868](/reference/environment-variables)\u4e2d\u7684\u4efb\u4f55 provider \u2014\u2014 `openrouter`\u3001`youtab`\u3001`openai-codex`\u3001`copilot`\u3001`copilot-acp`\u3001`anthropic`\u3001`gemini`\u3001`qwen-oauth`\u3001`zai`\u3001",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 862,
+      "match": "deepseek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "#     model: deepseek/deepseek-chat",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 916,
+      "match": "deepseek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "model: deepseek/deepseek-chat",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1117,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuration.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| `\"auto\"`\uff08\u9ed8\u8ba4\uff09 | \u5bf9\u5339\u914d\u4ee5\u4e0b\u6a21\u578b\u542f\u7528\uff1a`gpt`\u3001`codex`\u3001`gemini`\u3001`gemma`\u3001`grok`\u3002\u5bf9\u6240\u6709\u5176\u4ed6\u6a21\u578b\u7981\u7528\uff08Claude\u3001DeepSeek\u3001Qwen \u7b49\uff09\u3002 |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 57,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuring-models.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **Vision\uff08\u89c6\u89c9\uff09** | \u5f53\u4e3b\u6a21\u578b\u662f\u4e0d\u652f\u6301\u89c6\u89c9\u7684\u7f16\u7a0b\u6a21\u578b\u65f6\uff08\u5982 Kimi\u3001DeepSeek\uff09\u3002\u5c06\u5176\u6307\u5411 `google/gemini-2.5-flash` \u6216 `gpt-4o-mini`\u3002 |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 61,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/fallback-providers.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 215,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "## Hermes Mod \u2014 \u53ef\u89c6\u5316\u76ae\u80a4\u7f16\u8f91\u5668",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 262,
+      "match": "Hermes",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/skins.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "Hermes Mod \u9075\u5faa `YOUTAB_AGENT_HOME` \u73af\u5883\u53d8\u91cf\uff0c\u56e0\u6b64\u4e5f\u9002\u7528\u4e8e[\u914d\u7f6e\u6587\u4ef6](/user-guide/profiles)\u3002",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 200,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/vision.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| **\u7eaf\u6587\u672c\u6a21\u578b**\uff08DeepSeek V3\u3001\u8f83\u5c0f\u7684\u5f00\u6e90\u6a21\u578b\u3001\u65e7\u7248\u7eaf\u5bf9\u8bdd\u7aef\u70b9\uff09 | \u901a\u8fc7 `vision_analyze` \u8f85\u52a9\u5de5\u5177\u8def\u7531\u2014\u2014\u8f85\u52a9\u89c6\u89c9\u6a21\u578b\u63cf\u8ff0\u56fe\u50cf\uff0c\u6587\u672c\u63cf\u8ff0\u6ce8\u5165\u5bf9\u8bdd\u3002 |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 118,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/web-dashboard.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- **LLM Providers** \u2014 OpenRouter\u3001Anthropic\u3001OpenAI\u3001DeepSeek \u7b49",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-youtab-agent-runtime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 34,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-youtab-agent-runtime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "Youtab Agent Runtime \u662f Youtab B.V. \u5f00\u53d1\u7684\u5f00\u6e90 AI agent \u6846\u67b6\uff0c\u53ef\u5728\u7ec8\u7aef\u3001\u6d88\u606f\u5e73\u53f0\u548c IDE \u4e2d\u8fd0\u884c\u3002\u5b83\u4e0e Claude Code\uff08Anthropic\uff09\u3001Codex\uff08OpenAI\uff09\u548c OpenClaw \u540c\u5c5e\u4e00\u7c7b\u2014\u2014\u4f7f\u7528\u5de5\u5177\u8c03\u7528\uff08tool calling\uff09\u4e0e\u7cfb\u7edf\u4ea4\u4e92\u7684\u81ea\u4e3b\u7f16\u7801\u548c\u4efb\u52a1\u6267\u884c agent\u3002Youtab \u652f\u6301\u4efb\u610f LLM \u63d0\u4f9b\u5546\uff08OpenRouter",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 393,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-youtab-agent-runtime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek | API key | `DEEPSEEK_API_KEY` |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/creative/creative-popular-web-designs.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium\uff08\u8bbe\u8ba1\u7cfb\u7edf\u6765\u6e90\uff1aVoltAgent/awesome-design-md\uff09 |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/research/research-polymarket.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/devops/devops-pinggy-tunnel.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| \u4f5c\u8005 | Teknium (teknium1), Youtab Agent Runtime |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 132,
+      "match": "deepseek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/mlops/mlops-simpo.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "model_name_or_path: deepseek-ai/deepseek-math-7b-base",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 41,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/mlops/mlops-slime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- \u8bad\u7ec3 GLM\u3001Qwen3\u3001DeepSeek V3 \u6216 Llama 3 \u6a21\u578b",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 54,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/mlops/mlops-slime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- **\u6a21\u578b**\uff1aGLM-4.x\u3001Qwen3\u3001DeepSeek V3/R1\u3001Llama 3",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 155,
+      "match": "deepseek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/mlops/mlops-slime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "# glm4-9B.sh, qwen3-4B.sh, qwen3-30B-A3B.sh, deepseek-v3.sh, llama3-8B.sh, ...",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 431,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/mlops/mlops-slime.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek | V3\u3001V3.1\u3001R1 |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 191,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/mlops/mlops-tensorrt-llm.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "- **DeepSeek**\uff1aDeepSeek-V2\u3001DeepSeek-V3",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 11,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/mlops/mlops-torchtitan.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "\u4f7f\u7528 torchtitan \u63d0\u4f9b PyTorch \u539f\u751f\u5206\u5e03\u5f0f LLM \u9884\u8bad\u7ec3\uff0c\u652f\u6301 4D \u5e76\u884c\uff08FSDP2\u3001TP\u3001PP\u3001CP\uff09\u3002\u9002\u7528\u4e8e\u5728 8 \u5230 512+ GPU \u89c4\u6a21\u4e0b\u9884\u8bad\u7ec3 Llama 3.1\u3001DeepSeek V3 \u6216\u81ea\u5b9a\u4e49\u6a21\u578b\uff0c\u652f\u6301 Float8\u3001torch.compile \u53ca\u5206\u5e03\u5f0f\u68c0\u67e5\u70b9\u3002",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 349,
+      "match": "DeepSeek",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/mlops/mlops-torchtitan.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| DeepSeek V3 | 16B, 236B, 671B (MoE) | \u5b9e\u9a8c\u6027 |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/research/research-gitnexus-explorer.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 20,
+      "match": "Teknium",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/optional/research/research-qmd.md",
+      "reason": "unclassified occurrence on a docs.site surface",
+      "surface": "docs.site",
+      "text": "| \u4f5c\u8005 | Youtab Agent Runtime + Teknium |",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 60,
+      "match": "DeepSeek",
+      "path": "youtab-already-has-routines.md",
+      "reason": "unclassified occurrence on a other surface",
+      "surface": "other",
+      "text": "| **Model choice** | Claude only | **Any model** \u2014 Claude, GPT, Gemini, DeepSeek, Qwen, local |",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 111,
+      "match": "DeepSeek",
+      "path": "youtab-already-has-routines.md",
+      "reason": "unclassified occurrence on a other surface",
+      "surface": "other",
+      "text": "Your nightly triage can run on Claude. Your deploy verification can run on GPT. Your cost-sensitive monitors can run on DeepSeek or a local model. Same automation system, any backend.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 121,
+      "match": "DeepSeek",
+      "path": "youtab-already-has-routines.md",
+      "reason": "unclassified occurrence on a other surface",
+      "surface": "other",
+      "text": "A nightly backlog triage on Sonnet costs roughly $0.02-0.05. A monitoring check on DeepSeek costs fractions of a cent. You control the economics.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1670,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/config_defaults.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "{\"provider\": \"openrouter\", \"model\": \"deepseek/deepseek-v4-pro\"},",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2951,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/config_defaults.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# Together, DeepSeek, Youtab).  Wildcards (`*.foo.com`) are supported.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3269,
+      "match": "DEEPSEEK",
+      "path": "youtab_agent_cli/config_defaults.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"DEEPSEEK_API_KEY\": {",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3270,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/config_defaults.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"description\": \"DeepSeek API key for direct DeepSeek access\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3271,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/config_defaults.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"prompt\": \"DeepSeek API Key\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3272,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/config_defaults.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"url\": \"https://platform.deepseek.com/api_keys\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3276,
+      "match": "DEEPSEEK",
+      "path": "youtab_agent_cli/config_defaults.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"DEEPSEEK_BASE_URL\": {",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3277,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/config_defaults.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"description\": \"Custom DeepSeek API base URL (advanced)\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3278,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/config_defaults.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"prompt\": \"DeepSeek Base URL\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 58,
+      "match": "DEEPSEEK",
+      "path": "youtab_agent_cli/doctor.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"DEEPSEEK_API_KEY\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 602,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/doctor.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "(\"DeepSeek\",         (\"DEEPSEEK_API_KEY\",),                          \"https://api.deepseek.com/v1/models\",  \"DEEPSEEK_BASE_URL\", True),",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 623,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/doctor.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"Arcee AI\": \"arcee\", \"GMI Cloud\": \"gmi\", \"DeepSeek\": \"deepseek\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1065,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/doctor.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# aggregator (e.g. custom:hpc-ai serving deepseek/deepseek-v4-flash) requires the prefix.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 50,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/goals.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# reasoning models (deepseek-v4, qwq, etc.) burn tokens on hidden reasoning",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 64,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/goals.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# against small models (e.g. deepseek-v4-flash) that cannot follow the strict",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1535,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/goals.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"      provider: deepseek\\n\"",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1536,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/goals.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"      model: deepseek-v4-flash\\n\"",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 253,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/inventory.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# catalog (minimax-m3, glm-5, deepseek-v4-flash, ...) is silently",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3421,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/main.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 10446,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/main.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"nvidia\", \"deepseek\", \"alibaba\", \"qwen-oauth\", \"opencode-zen\", \"opencode-go\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 16,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/moa_config.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "{\"provider\": \"openrouter\", \"model\": \"deepseek/deepseek-v4-pro\"},",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2449,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/model_setup_flows.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek.v3\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2769,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/model_setup_flows.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"   Alternatives with workable free usage: DeepSeek, \"",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2852,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/model_setup_flows.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# released models (e.g. deepseek v4 flash, kimi k2.6) the moment",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 182,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"Hermes 3 & 4 are third-party chat models resold through the Youtab \"",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 185,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"model instead (Claude, GPT, Gemini, DeepSeek, etc.).\"",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 188,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# Match only the real third-party Hermes 3 / Hermes 4 chat families. These are",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 192,
+      "match": "hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# The previous substring check (`\"hermes\" in name.lower()`) false-positived on",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 193,
+      "match": "hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# unrelated local Modelfiles like ``hermes-brain:qwen3-14b-ctx16k`` that just",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 201,
+      "match": "hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "r\"(?:^|[/:])hermes[-_ ]?[34](?:[-_.:]|$)\",",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 252,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"\"\"Return True if *model_name* is a real third-party Hermes 3/4 chat model.",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 264,
+      "match": "Hermes",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"\"\"Return a warning string if *model_name* is a Hermes 3/4 chat model.\"\"\"",
+      "token_family": "legacy_brand"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 298,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# DeepSeek",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 299,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek\":  ModelIdentity(\"deepseek\", \"deepseek-chat\"),",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 371,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "and converts simple string entries (``ds-flash: deepseek/deepseek-v4-flash``)",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1429,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# whose live /v1/models returns bare IDs (e.g. \"deepseek-v4-flash\") that",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1752,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/model_switch.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# model.base_url broke every later chat_completions model (glm, deepseek,",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 65,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# DeepSeek",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 66,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "(\"deepseek/deepseek-v4-pro\",               \"\"),",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 67,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "(\"deepseek/deepseek-v4-flash\",             \"\"),",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 236,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# DeepSeek",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 237,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek/deepseek-v4-pro\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 238,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek/deepseek-v4-flash\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 407,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek\": [",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 408,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-v4-pro\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 409,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-v4-flash\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 428,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-ai/DeepSeek-V3.2\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 476,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-v4-pro\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 477,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-v4-flash\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 478,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-v4-flash-free\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 503,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-v4-pro\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 504,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-v4-flash\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 554,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-ai/DeepSeek-V3.2\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 574,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek.v3.2\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 602,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek/deepseek-v3-0324\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 603,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek/deepseek-r1-0528\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1126,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "ProviderEntry(\"deepseek\",       \"DeepSeek\",                 \"DeepSeek (V3, R1, coder, direct API)\"),",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1141,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "ProviderEntry(\"bedrock\",        \"AWS Bedrock\",              \"AWS Bedrock (Claude, Nova, Llama, DeepSeek; IAM or API key)\"),",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1312,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deep-seek\": \"deepseek\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2261,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# DeepSeek cut these off on 2026-07-24; model_normalize remaps them on the wire.",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2263,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek\": (\"deepseek-chat\", \"deepseek-reasoner\"),",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2454,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "(e.g. bare ``deepseek-chat`` \u2192 ``deepseek/deepseek-chat`` for OpenRouter).",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2491,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "- Bare name: ``deepseek-chat`` \u2192 ``deepseek/deepseek-chat``",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2698,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2774,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "(opencode-go/zen, xiaomi, deepseek, smaller inference providers, etc.),",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 3744,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "``deepseek-v4-pro`` \u2192 ``[\"completion\", \"tools\", \"thinking\"]`` while",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 4014,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "- GLM / Kimi / DeepSeek / MiMo on Go use ``/v1/chat/completions``",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 4016,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "- Other Zen models (Gemini, GLM, Kimi, MiniMax, DeepSeek, etc.) use",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 4063,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/models.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "to a chat_completions model (glm, deepseek, kimi) then inherited the",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 117,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/observability/schemas/youtab.shared_metrics.v1.schema.json",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 101,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/observability/shared_metrics_contract.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 133,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/providers.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek\": YoutabOverlay(",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 135,
+      "match": "DEEPSEEK",
+      "path": "youtab_agent_cli/providers.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "base_url_env_var=\"DEEPSEEK_BASE_URL\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 334,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/providers.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# deepseek",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 335,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/providers.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deep-seek\": \"deepseek\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 549,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/providers.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# IDs (\"deepseek-v4-flash\") rather than ``vendor/model`` routing slugs \u2014 the",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 168,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "https://api.deepseek.com/v1   \u2192 DEEPSEEK_API_KEY",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 179,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "(``api.deepseek.com`` \u2192 ``deepseek``). Falls back to \"\" for hostnames",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 200,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "#   deepseek.com               \u2192 labels[-2] = \"deepseek\"  \u2713",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 205,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "#   api.deepseek.com.attacker.test \u2192 labels[-2] = \"attacker\"",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 206,
+      "match": "DEEPSEEK",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# so DEEPSEEK_API_KEY stays put and the chain falls through to",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1062,
+      "match": "DEEPSEEK",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1241,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# OPENROUTER_API_KEY to an unrelated custom endpoint (DeepSeek, Groq,",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 1251,
+      "match": "DEEPSEEK",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2135,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# Non-Claude (Nova, DeepSeek, Llama, etc.) \u2192 Converse API",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 2194,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/runtime_provider.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "# deepseek-v4-flash) and switching models via /model would",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 115,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/setup.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"Qwen/Qwen3-Coder-480B-A35B-Instruct\", \"deepseek-ai/DeepSeek-R1-0528\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 116,
+      "match": "deepseek",
+      "path": "youtab_agent_cli/setup.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"deepseek-ai/DeepSeek-V3.2\", \"moonshotai/Kimi-K2.5\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 148,
+      "match": "DeepSeek",
+      "path": "youtab_agent_cli/status.py",
+      "reason": "unclassified occurrence on a cli surface",
+      "surface": "cli",
+      "text": "\"DeepSeek\": \"DEEPSEEK_API_KEY\",",
+      "token_family": "private_engine"
+    },
+    {
+      "classification": "USER_REACHABLE",
+      "line": 920,
+      "match": "deepseek",
+      "path": "youtab_constants.py",
+      "reason": "unclassified occurrence on a other surface",
+      "surface": "other",
+      "text": "'xai', 'cohere', 'perplexity', 'together', 'fireworks', 'deepseek',",
+      "token_family": "private_engine"
+    }
+  ],
+  "user_reachable_total": 273
+}

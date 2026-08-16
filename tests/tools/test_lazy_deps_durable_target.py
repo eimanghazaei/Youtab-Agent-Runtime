@@ -20,6 +20,7 @@ import subprocess
 import sys
 import sysconfig
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -43,35 +44,35 @@ class TestTargetResolution:
 
 
 class TestGatingWithTarget:
-    """``HERMES_DISABLE_LAZY_INSTALLS=1`` must STOP blocking once a durable
+    """``YOUTAB_AGENT_DISABLE_LAZY_INSTALLS=1`` must STOP blocking once a durable
     target is configured — the redirect is the safe path — but the config
     kill switch still wins in every mode."""
 
     def test_disable_env_blocks_without_target(self, monkeypatch):
-        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+        monkeypatch.setenv("YOUTAB_AGENT_DISABLE_LAZY_INSTALLS", "1")
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
         # config unreadable → fails open on the config check, but the sealed
         # env var with no target still blocks.
         monkeypatch.setattr(
-            "hermes_cli.config.load_config", lambda: {}, raising=False
+            "youtab_agent_cli.config.load_config", lambda: {}, raising=False
         )
         assert ld._allow_lazy_installs() is False
 
     def test_disable_env_allows_with_target(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
+        monkeypatch.setenv("YOUTAB_AGENT_DISABLE_LAZY_INSTALLS", "1")
         monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path))
         monkeypatch.setattr(
-            "hermes_cli.config.load_config", lambda: {}, raising=False
+            "youtab_agent_cli.config.load_config", lambda: {}, raising=False
         )
         assert ld._allow_lazy_installs() is True
 
 
     def test_normal_mode_unaffected(self, monkeypatch):
         # No sealed env, no target → default allow (unchanged behaviour).
-        monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+        monkeypatch.delenv("YOUTAB_AGENT_DISABLE_LAZY_INSTALLS", raising=False)
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
         monkeypatch.setattr(
-            "hermes_cli.config.load_config", lambda: {}, raising=False
+            "youtab_agent_cli.config.load_config", lambda: {}, raising=False
         )
         assert ld._allow_lazy_installs() is True
 
@@ -91,18 +92,44 @@ class TestAbiStamp:
         assert stamp.read_text().strip() == ld._python_abi_tag()
 
 
-    def test_readonly_target_reports_error(self, tmp_path):
-        # A path under a non-writable parent should surface a clean error,
-        # not raise.
-        ro_parent = tmp_path / "ro"
-        ro_parent.mkdir()
-        os.chmod(ro_parent, 0o500)
-        try:
-            err = ld._ensure_target_ready(ro_parent / "lazy")
-            assert err is not None
-            assert "not writable" in err
-        finally:
-            os.chmod(ro_parent, 0o700)  # let pytest clean up
+    def test_unwritable_target_reports_error(self, tmp_path):
+        # A target that cannot be created should surface a clean error, not
+        # raise.
+        #
+        # This used to induce that with chmod(0o500) on the parent, which uid 0
+        # ignores: under root — the default in this project's container images
+        # — the directory was created anyway, _ensure_target_ready returned
+        # None, and the assertion below failed while the production code was
+        # behaving correctly. A parent that is a regular file is refused by the
+        # kernel for every uid and on Windows too, so the ENOTDIR path is
+        # reached wherever the suite runs.
+        blocking_file = tmp_path / "not-a-dir"
+        blocking_file.write_text("occupied")
+
+        err = ld._ensure_target_ready(blocking_file / "lazy")
+
+        assert err is not None
+        assert "not writable" in err
+
+    def test_permission_denied_target_reports_error(self, tmp_path):
+        """The named scenario from the docstring: a read-only mount.
+
+        Injected at the mkdir boundary rather than via file modes, so it holds
+        for root and for Windows, where the bits mean something different.
+        """
+        target = tmp_path / "lazy"
+        real_mkdir = Path.mkdir
+
+        def deny(self, *args, **kwargs):
+            if self == target:
+                raise PermissionError(13, "Permission denied", str(target))
+            return real_mkdir(self, *args, **kwargs)
+
+        with mock.patch.object(Path, "mkdir", deny):
+            err = ld._ensure_target_ready(target)
+
+        assert err is not None
+        assert "not writable" in err
 
 
 # ---------------------------------------------------------------------------
@@ -199,8 +226,8 @@ class TestInstallArgConstruction:
 
 
 @pytest.mark.skipif(
-    os.environ.get("HERMES_RUN_NETWORK_TESTS") != "1",
-    reason="opt-in real-install test (set HERMES_RUN_NETWORK_TESTS=1); CI runs "
+    os.environ.get("YOUTAB_AGENT_RUN_NETWORK_TESTS") != "1",
+    reason="opt-in real-install test (set YOUTAB_AGENT_RUN_NETWORK_TESTS=1); CI runs "
     "the network-free arg-construction + synthetic-shadow tests instead",
 )
 class TestRealInstallCoreWins:

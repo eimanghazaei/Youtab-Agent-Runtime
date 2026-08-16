@@ -3,9 +3,9 @@
 
 Usage (via cron with --no-agent):
 
-    hermes cron create my-feed \\
+    youtab cron create my-feed \\
       --schedule "*/15 * * * *" --no-agent \\
-      --script "$HERMES_HOME/skills/devops/watchers/scripts/watch_rss.py" \\
+      --script "$YOUTAB_AGENT_HOME/skills/devops/watchers/scripts/watch_rss.py" \\
       --script-args "--name hn --url https://news.ycombinator.com/rss"
 
 First run records a baseline (emits nothing).  Subsequent runs emit only
@@ -19,7 +19,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
-from xml.etree import ElementTree as ET
+from defusedxml import ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).parent))
 from _watermark import Watermark, format_items_as_markdown  # type: ignore
@@ -88,7 +88,7 @@ def main() -> int:
     args = p.parse_args()
 
     try:
-        req = urllib.request.Request(args.url, headers={"User-Agent": "Hermes-Watcher/1.0"})
+        req = urllib.request.Request(args.url, headers={"User-Agent": "Youtab-Watcher/1.0"})
         with urllib.request.urlopen(req, timeout=args.timeout) as resp:
             xml_bytes = resp.read()
     except urllib.error.HTTPError as e:

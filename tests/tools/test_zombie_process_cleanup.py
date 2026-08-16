@@ -365,12 +365,12 @@ class TestDelegationCleanup:
     def test_run_single_child_calls_close(self, monkeypatch, tmp_path):
         """_run_single_child finally block should call close() on child."""
         from unittest.mock import MagicMock
-        from hermes_constants import (
-            get_hermes_home,
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from youtab_constants import (
+            get_youtab_home,
+            reset_youtab_home_override,
+            set_youtab_home_override,
         )
-        from hermes_cli.observability import relay_runtime
+        from youtab_agent_cli.observability import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
@@ -383,7 +383,7 @@ class TestDelegationCleanup:
         observed = {}
 
         def run_conversation(**_kwargs):
-            observed["hermes_home"] = get_hermes_home()
+            observed["youtab_home"] = get_youtab_home()
             raise RuntimeError("test abort")
 
         child.run_conversation.side_effect = run_conversation
@@ -393,7 +393,7 @@ class TestDelegationCleanup:
         parent._active_children.append(child)
 
         profile_home = tmp_path / "profile-a"
-        token = set_hermes_home_override(profile_home)
+        token = set_youtab_home_override(profile_home)
         try:
             result = _run_single_child(
                 task_index=0,
@@ -402,10 +402,10 @@ class TestDelegationCleanup:
                 parent_agent=parent,
             )
         finally:
-            reset_hermes_home_override(token)
+            reset_youtab_home_override(token)
 
         child.close.assert_called_once()
-        assert observed["hermes_home"] == profile_home
+        assert observed["youtab_home"] == profile_home
         relay_host.unregister_subagent.assert_called_once_with(
             {"child_session_id": "child-session"}
         )
@@ -415,7 +415,7 @@ class TestDelegationCleanup:
     def test_active_child_turn_owns_relay_scope_cleanup(self, monkeypatch):
         from unittest.mock import MagicMock
 
-        from hermes_cli.observability import relay_runtime
+        from youtab_agent_cli.observability import relay_runtime
         from tools.delegate_tool import _run_single_child
 
         parent = MagicMock()
@@ -450,15 +450,15 @@ class TestDelegationCleanup:
         from unittest.mock import MagicMock
 
         from agent import relay_runtime
-        from hermes_constants import (
-            reset_hermes_home_override,
-            set_hermes_home_override,
+        from youtab_constants import (
+            reset_youtab_home_override,
+            set_youtab_home_override,
         )
         from tools.delegate_tool import _run_single_child
 
         relay_runtime._reset_for_tests()
         profile_home = tmp_path / "profile-timeout"
-        profile_token = set_hermes_home_override(profile_home)
+        profile_token = set_youtab_home_override(profile_home)
         child_started = threading.Event()
         release_child = threading.Event()
         child_finished = threading.Event()
@@ -504,6 +504,38 @@ class TestDelegationCleanup:
                 child_finished.set()
 
         child.run_conversation.side_effect = run_conversation
+
+        # Hold `submit()` open until the child has actually registered its
+        # turn, so the timeout below is racing nothing.
+        #
+        # `_run_single_child` submits the child and then waits
+        # `_get_child_timeout()` seconds for it. That cap has to be short or
+        # the test would take as long as it, and a short cap leaves the wait
+        # racing three things that are not instant: spawning the pool's worker
+        # thread, acquiring the conversation lease, and registering the turn.
+        # On a loaded machine the wait wins and `run_conversation` has not run
+        # at all — six of twelve concurrent runs, measured. Nothing about that
+        # is the behaviour under test: the invariant here is that a child which
+        # times out *mid-turn* keeps its relay session until its own turn
+        # exits, and a child that never started has no turn to keep.
+        #
+        # Gating submit orders the two without changing either. The timeout
+        # still fires, on a child provably inside its turn.
+        from tools import daemon_pool
+
+        real_executor = daemon_pool.DaemonThreadPoolExecutor
+
+        class _StartGatedExecutor(real_executor):
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                if not child_started.wait(timeout=30):
+                    raise AssertionError(
+                        "child worker never began its turn within 30s"
+                    )
+                return future
+
+        monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", _StartGatedExecutor)
+
         try:
             result = _run_single_child(
                 task_index=0,
@@ -528,5 +560,5 @@ class TestDelegationCleanup:
             )
         finally:
             release_child.set()
-            reset_hermes_home_override(profile_token)
+            reset_youtab_home_override(profile_token)
             relay_runtime._reset_for_tests()

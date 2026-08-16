@@ -5,7 +5,7 @@ import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $currentBranch, $currentCwd, setCurrentBranch, setCurrentCwd } from '@/store/session'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/youtab'
 
 import {
   appendLiveSessionProjection,

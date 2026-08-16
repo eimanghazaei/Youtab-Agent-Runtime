@@ -55,7 +55,7 @@ export default function ({ editor, helpers, signal }) {
 
 	// --- 2. Add reactive behavior: recolor the last node based on arrow count.
 	// store.listen fires on the tick AFTER a commit — never read state you just
-	// wrote synchronously and expect the listener to have run yet.
+	// wrote synchroyoutably and expect the listener to have run yet.
 	const targetId = nodes[2].id
 	function update() {
 		const hasArrows = editor.getCurrentPageShapes().some((s) => s.type === 'arrow')

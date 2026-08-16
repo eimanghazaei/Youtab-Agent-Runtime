@@ -23,7 +23,7 @@ def tmp_files(tmp_path):
     return files
 
 
-def _make_get_files(tmp_files, remote_base="/root/.hermes"):
+def _make_get_files(tmp_files, remote_base="/root/.youtab-agent-runtime"):
     """Return a get_files_fn that maps local files to remote paths."""
     mapping = [(hp, f"{remote_base}/{name}") for name, hp in tmp_files.items()]
 
@@ -33,7 +33,7 @@ def _make_get_files(tmp_files, remote_base="/root/.hermes"):
     return get_files
 
 
-def _make_manager(tmp_files, remote_base="/root/.hermes", upload=None, delete=None):
+def _make_manager(tmp_files, remote_base="/root/.youtab-agent-runtime", upload=None, delete=None):
     """Create a FileSyncManager with test callbacks."""
     return FileSyncManager(
         get_files_fn=_make_get_files(tmp_files, remote_base),
@@ -249,7 +249,7 @@ class TestEdgeCases:
 
         upload = MagicMock()
         mgr = FileSyncManager(
-            get_files_fn=lambda: [(str(f), "/root/.hermes/ephemeral.txt")],
+            get_files_fn=lambda: [(str(f), "/root/.youtab-agent-runtime/ephemeral.txt")],
             upload_fn=upload,
             delete_fn=MagicMock(),
         )
@@ -273,13 +273,13 @@ class TestSyncBackSecurity:
             lambda: [
                 {
                     "host_path": str(credential),
-                    "container_path": "/root/.hermes/credentials/token.json",
+                    "container_path": "/root/.youtab-agent-runtime/credentials/token.json",
                 }
             ],
         )
         monkeypatch.setattr(
             "tools.credential_files.iter_skills_files",
-            lambda container_base="/root/.hermes": [
+            lambda container_base="/root/.youtab-agent-runtime": [
                 {
                     "host_path": str(skill),
                     "container_path": f"{container_base}/skills/skill.py",
@@ -288,28 +288,28 @@ class TestSyncBackSecurity:
         )
         monkeypatch.setattr(
             "tools.credential_files.iter_cache_files",
-            lambda container_base="/root/.hermes": [],
+            lambda container_base="/root/.youtab-agent-runtime": [],
         )
 
         def bulk_download(dest: Path) -> None:
             with tarfile.open(dest, "w") as tar:
                 for name, data in {
-                    "root/.hermes/credentials/token.json": b"remote-token",
-                    "root/.hermes/skills/skill.py": b"remote-skill",
+                    "root/.youtab-agent-runtime/credentials/token.json": b"remote-token",
+                    "root/.youtab-agent-runtime/skills/skill.py": b"remote-skill",
                 }.items():
                     info = tarfile.TarInfo(name)
                     info.size = len(data)
                     tar.addfile(info, io.BytesIO(data))
 
         mgr = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files("/root/.hermes"),
+            get_files_fn=lambda: iter_sync_files("/root/.youtab-agent-runtime"),
             upload_fn=MagicMock(),
             delete_fn=MagicMock(),
             bulk_download_fn=bulk_download,
         )
 
         mgr.sync(force=True)
-        mgr.sync_back(hermes_home=tmp_path)
+        mgr.sync_back(youtab_home=tmp_path)
 
         assert credential.read_text(encoding="utf-8") == "host-token"
         assert skill.read_text(encoding="utf-8") == "remote-skill"

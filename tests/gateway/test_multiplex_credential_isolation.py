@@ -20,11 +20,11 @@ def _reset(monkeypatch):
 
 
 class TestRuntimeProviderUsesScope:
-    """hermes_cli.runtime_provider._getenv resolves through the secret scope."""
+    """youtab_agent_cli.runtime_provider._getenv resolves through the secret scope."""
 
 
     def test_getenv_two_profiles_isolated(self, monkeypatch):
-        from hermes_cli.runtime_provider import _getenv
+        from youtab_agent_cli.runtime_provider import _getenv
         ss.set_multiplex_active(True)
 
         tok_a = ss.set_secret_scope({"OPENAI_API_KEY": "sk-A"})

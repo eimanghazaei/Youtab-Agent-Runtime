@@ -2,11 +2,11 @@
 name: tldraw-offline
 description: Drive and script tldraw offline canvases with an agent.
 version: 1.0.0
-author: Teknium + Hermes Agent
+author: Teknium + Youtab Agent Runtime
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
+  youtab:
     tags: [tldraw, canvas, whiteboard, document-script, diagramming]
     category: creative
     related_skills: []
@@ -41,7 +41,7 @@ them. Agents are far better at scripting the canvas than at drawing on it.
 - **Agent skills installed in the app**: `Develop → Install Agent Skills`. The
   app writes its own tldraw skill into `~/.codex/skills/`, `~/.claude/skills/`,
   `~/.cursor/skills/`, and `~/.gemini/skills/` — teaching that agent the `curl`
-  recipes below. (This Hermes skill mirrors that guidance for Hermes.)
+  recipes below. (This Youtab skill mirrors that guidance for Youtab.)
 - **The local control API.** On launch the app writes `server.json` to its config
   dir (Linux `~/.config/tldraw/`, macOS `~/Library/Application Support/tldraw/`,
   Windows `%APPDATA%\tldraw\`) with `port` (default `7236`), a bearer `token`,
@@ -239,7 +239,7 @@ light-red red white`. `font` enum: `draw sans serif mono`.
 
 ## Pitfalls
 
-- **`store.listen` fires on the tick AFTER a commit, not synchronously.** If you
+- **`store.listen` fires on the tick AFTER a commit, not synchroyoutably.** If you
   write a shape and immediately read state expecting the listener to have run, it
   hasn't. Verified live: an in-turn read shows 0 fires; after one `setTimeout`
   tick it shows 1. Same reason the app notes `editor.dispatch` is async — await a

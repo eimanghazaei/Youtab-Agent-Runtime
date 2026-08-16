@@ -1,6 +1,5 @@
 import { type MutableRefObject, useCallback } from 'react'
 
-import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
@@ -29,6 +28,7 @@ import {
   touchSessionActivity
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/youtab'
 
 import type { ClientSessionState } from '../../../types'
 import { sessionContextDrift } from '../session-context-drift'
@@ -562,7 +562,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         // chat: no prompt.submit, no DB row, a stranded route that 404s
         // "Session not found"). The drift signal for this window is the
         // active ref instead: every switch path re-nulls or retargets it
-        // synchronously, so it only still equals the id create returned when
+        // synchroyoutably, so it only still equals the id create returned when
         // nobody re-homed since.
         if (activeSessionIdRef.current !== sessionId) {
           return abortForSessionSwitch(sessionId)

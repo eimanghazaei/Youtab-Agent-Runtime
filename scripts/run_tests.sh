@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Canonical test runner for hermes-agent. Run this instead of calling
+# Canonical test runner for youtab-agent-runtime. Run this instead of calling
 # `pytest` directly to guarantee your local run matches CI behavior.
 #
 # What this script enforces:
@@ -11,7 +11,7 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+#   * Proper venv activation (probes .venv, venv, then ~/.youtab-agent-runtime/...)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -39,11 +39,11 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Locate python ───────────────────────────────────────────────────────────
 # Probe local venvs first; fall back to the Nix devShell's editable venv
-# (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
+# (YOUTAB_AGENT_PYTHON is exported by the devShell hook and ships [dev] extras:
 # pytest, pytest-asyncio, pytest-timeout, ruff, ty).
 #
 # A candidate must have pytest INSTALLED, not merely exist. The release venv
-# at ~/.hermes/hermes-agent/venv has bin/activate but no pytest, so an
+# at ~/.youtab-agent-runtime/youtab-agent-runtime/venv has bin/activate but no pytest, so an
 # existence-only probe selected it in checkouts/worktrees without a local
 # .venv — every file then died with "No module named pytest" and the run
 # reported "0 tests passed" (which reads green at a glance even though the
@@ -51,7 +51,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV=""
 VENV_PYTHON=""
 SKIPPED_VENVS=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.youtab-agent-runtime/youtab-agent-runtime/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
     if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
       VENV="$candidate"
@@ -82,16 +82,16 @@ fi
 
 if [ -n "$VENV" ]; then
   PYTHON="$VENV_PYTHON"
-elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
-    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
-  # Guard with an import check: HERMES_PYTHON may point at the RELEASE
-  # venv (no pytest) when inherited from a wrapped `hermes` binary rather
+elif [ -n "${YOUTAB_AGENT_PYTHON:-}" ] && [ -x "$YOUTAB_AGENT_PYTHON" ] \
+    && "$YOUTAB_AGENT_PYTHON" -c 'import pytest' 2>/dev/null; then
+  # Guard with an import check: YOUTAB_AGENT_PYTHON may point at the RELEASE
+  # venv (no pytest) when inherited from a wrapped `youtab` binary rather
   # than the devShell hook.
-  PYTHON="$HERMES_PYTHON"
-  echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
+  PYTHON="$YOUTAB_AGENT_PYTHON"
+  echo "▶ no local venv — using Nix dev venv via YOUTAB_AGENT_PYTHON: $PYTHON"
 else
   echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
+  echo "       and YOUTAB_AGENT_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
   if [ -n "$SKIPPED_VENVS" ]; then
     echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
   fi
@@ -102,8 +102,8 @@ fi
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────
 EXTRA_PYTHONPATH=""
 EXTRA_PYTEST_PLUGINS=""
-if [ -f "$HOME/.hermes/pytest_live_guard.py" ]; then
-  EXTRA_PYTHONPATH="$HOME/.hermes"
+if [ -f "$HOME/.youtab-agent-runtime/pytest_live_guard.py" ]; then
+  EXTRA_PYTHONPATH="$HOME/.youtab-agent-runtime"
   EXTRA_PYTEST_PLUGINS="pytest_live_guard"
 fi
 
@@ -120,6 +120,39 @@ WIN_ENV=()
 for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT TEMP TMP; do
   if [ -n "${!_win_var:-}" ]; then
     WIN_ENV+=("$_win_var=${!_win_var}")
+  fi
+done
+
+
+# ── Runner configuration variables (computed before we drop env) ───────────
+# `run_tests_parallel.py` advertises each of these in its own --help text
+# ("env: YOUTAB_AGENT_TEST_FILE_RETRIES", "Env: YOUTAB_AGENT_TEST_SLICE (format:
+# I/N)", ...). The `env -i` below starts from an EMPTY environment, so any knob
+# not named here never reaches the runner: it falls back to its built-in
+# default while the caller believes the override took. That is not a cosmetic
+# gap. Setting the retry knob to 0 ahead of this script silently kept
+# `_DEFAULT_FILE_RETRIES = 1`, so a run the operator had labelled
+# "file-retries=0" still re-ran failing files and still reported files that
+# passed only on the retry — a hidden retry produced by the plumbing, not by
+# the flag. Keep this list in sync with the runner; the consistency test in
+# tests/youtab_runtime/test_ci_runner_contract.py fails if it drifts.
+#
+# These are test-runner configuration, not credentials, so forwarding them
+# leaves the isolation intent intact. Each is forwarded only when actually
+# set, so a run with none of them set is byte-for-byte unchanged.
+RUNNER_ENV=()
+for _runner_var in \
+  YOUTAB_AGENT_TEST_FILE_RETRIES \
+  YOUTAB_AGENT_TEST_FILE_TIMEOUT \
+  YOUTAB_AGENT_TEST_IMAGE \
+  YOUTAB_AGENT_TEST_PATHS \
+  YOUTAB_AGENT_TEST_SLICE \
+  YOUTAB_AGENT_TEST_WORKERS
+do
+  # -n (not :+) so an explicit "0" forwards: it is a meaningful value here,
+  # and it is the exact value whose loss caused the hidden retry.
+  if [ -n "${!_runner_var:-}" ]; then
+    RUNNER_ENV+=("$_runner_var=${!_runner_var}")
   fi
 done
 
@@ -149,8 +182,9 @@ exec env -i \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
   PYTHONUTF8=1 \
-  ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
-  ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
+  ${YOUTAB_AGENT_RUN_SLOW_PET_TESTS:+YOUTAB_AGENT_RUN_SLOW_PET_TESTS="$YOUTAB_AGENT_RUN_SLOW_PET_TESTS"} \
+  ${YOUTAB_AGENT_E2E_BROWSER:+YOUTAB_AGENT_E2E_BROWSER="$YOUTAB_AGENT_E2E_BROWSER"} \
+  ${RUNNER_ENV[@]+"${RUNNER_ENV[@]}"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

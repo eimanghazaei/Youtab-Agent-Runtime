@@ -84,7 +84,7 @@ def _allow_setup_validation(monkeypatch, *, root_access: bool = False):
 
 
 def test_openviking_provider_config_loader_uses_readonly_config(monkeypatch):
-    import hermes_cli.config as config_mod
+    import youtab_agent_cli.config as config_mod
 
     calls = []
     backing_config = {
@@ -106,7 +106,7 @@ def test_openviking_provider_config_loader_uses_readonly_config(monkeypatch):
     monkeypatch.setattr(config_mod, "load_config_readonly", load_config_readonly)
     monkeypatch.setattr(config_mod, "load_config", load_config)
 
-    config = openviking_module._load_hermes_openviking_config()
+    config = openviking_module._load_youtab_openviking_config()
 
     assert calls == ["readonly"]
     assert config == {
@@ -207,9 +207,9 @@ def test_link_ovcli_profile_removes_stale_inline_config(tmp_path):
 
 def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tmp_path, monkeypatch):
     _clear_openviking_env(monkeypatch)
-    hermes_home = tmp_path / "hermes"
-    hermes_home.mkdir()
-    env_path = hermes_home / ".env"
+    youtab_home = tmp_path / "youtab"
+    youtab_home.mkdir()
+    env_path = youtab_home / ".env"
     env_path.write_text("OPENVIKING_ENDPOINT=http://old.local\nOTHER_KEY=keep\n", encoding="utf-8")
     openviking_home = tmp_path / ".openviking"
     openviking_home.mkdir()
@@ -220,10 +220,10 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
         json.dumps({"url": "https://vps.example", "api_key": "user-key"}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
     monkeypatch.setattr(openviking_module.Path, "home", staticmethod(lambda: tmp_path))
 
-    from hermes_cli import memory_setup
+    from youtab_agent_cli import memory_setup
 
     validate_calls = []
 
@@ -241,7 +241,7 @@ def test_post_setup_existing_profile_picker_validates_and_links_saved_profile(tm
     monkeypatch.setattr(memory_setup, "_curses_select", lambda *args, **kwargs: next(choices))
     config = {"memory": {}}
 
-    OpenVikingMemoryProvider().post_setup(str(hermes_home), config)
+    OpenVikingMemoryProvider().post_setup(str(youtab_home), config)
 
     assert validate_calls == [{
         "endpoint": "https://vps.example",
@@ -305,7 +305,7 @@ def test_https_local_endpoint_is_not_runtime_autostart_eligible(monkeypatch):
     assert provider._client is None
     assert warnings == [
         "Remote OpenViking server at https://localhost:1934 is not reachable; "
-        "OpenViking memory disabled for this Hermes run. "
+        "OpenViking memory disabled for this Youtab run. "
         "Check the configured endpoint and network connectivity."
     ]
 
@@ -338,7 +338,7 @@ def test_runtime_does_not_autostart_when_local_server_reports_unhealthy(monkeypa
     assert provider._client is None
     assert warnings == [
         "OpenViking server at http://localhost:1934 responded but reported unhealthy status. "
-        "OpenViking memory disabled for this Hermes run."
+        "OpenViking memory disabled for this Youtab run."
     ]
 
 
@@ -393,7 +393,7 @@ def test_initialize_autostarts_local_openviking_in_background_when_runtime_healt
     monkeypatch.setattr(
         openviking_module,
         "_wait_for_openviking_health",
-        MagicMock(side_effect=AssertionError("runtime init should not wait synchronously")),
+        MagicMock(side_effect=AssertionError("runtime init should not wait synchroyoutably")),
     )
 
     provider = OpenVikingMemoryProvider()
@@ -443,14 +443,14 @@ def test_tool_search_sorts_by_raw_score_across_buckets():
     assert result["total"] == 3
 
 
-def test_tool_add_resource_rejects_hermes_credential_file_upload(tmp_path, monkeypatch):
+def test_tool_add_resource_rejects_youtab_credential_file_upload(tmp_path, monkeypatch):
     import agent.file_safety as fs
 
-    hermes_home = tmp_path / "hermes_home"
-    hermes_home.mkdir()
-    auth_json = hermes_home / "auth.json"
+    youtab_home = tmp_path / "youtab_home"
+    youtab_home.mkdir()
+    auth_json = youtab_home / "auth.json"
     auth_json.write_text('{"OPENROUTER_API_KEY":"sk-test-secret"}', encoding="utf-8")
-    monkeypatch.setattr(fs, "_hermes_home_path", lambda: hermes_home)
+    monkeypatch.setattr(fs, "_youtab_home_path", lambda: youtab_home)
 
     provider = OpenVikingMemoryProvider()
     provider._client = MagicMock()
@@ -478,7 +478,7 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
         api_key="test-key",
         account="acct",
         user="alice",
-        agent="hermes",
+        agent="youtab",
     )
     captured = {}
 
@@ -501,7 +501,7 @@ def test_viking_client_delete_uses_identity_headers(monkeypatch):
     assert captured["url"] == "https://example.com/api/v1/fs"
     assert captured["kwargs"]["params"] == {"uri": "viking://user/memories/x.md"}
     assert captured["kwargs"]["headers"]["Authorization"] == "Bearer test-key"
-    assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "hermes"
+    assert captured["kwargs"]["headers"]["X-OpenViking-Actor-Peer"] == "youtab"
 
 
 def test_validate_openviking_reachability_uses_health_only(monkeypatch):
@@ -528,7 +528,7 @@ def test_validate_openviking_reachability_uses_health_only(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# on_session_switch — flush + commit + rotate behavior (hermes-agent#28296)
+# on_session_switch — flush + commit + rotate behavior (youtab-agent-runtime#28296)
 # ---------------------------------------------------------------------------
 
 def _make_provider_with_session(session_id: str, turn_count: int):
@@ -564,7 +564,7 @@ def test_sync_turn_captures_session_id_before_worker_runs():
     provider._api_key = ""
     provider._account = "acct"
     provider._user = "usr"
-    provider._agent = "hermes"
+    provider._agent = "youtab"
     provider._session_id = "old-sid"
 
     started = threading.Event()
@@ -609,7 +609,7 @@ def test_sync_turn_captures_session_id_before_worker_runs():
     assert captured_payloads == [{
         "messages": [
             {"role": "user", "parts": [{"type": "text", "text": "u"}]},
-            {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "hermes"},
+            {"role": "assistant", "parts": [{"type": "text", "text": "a"}], "peer_id": "youtab"},
         ]
     }]
 
@@ -643,7 +643,7 @@ def test_end_then_switch_does_not_double_commit():
 
 
 def test_session_needs_commit_guard_wins_over_stale_turn_count():
-    """Regression for hermes-agent#28296 review (M3): once a session is marked
+    """Regression for youtab-agent-runtime#28296 review (M3): once a session is marked
     committed, _session_needs_commit must return False even if turn_count is
     still positive. A racing sync_turn can re-increment _turn_count after the
     commit+reset; without the guard ordering, a follow-up finalizer would
@@ -722,7 +722,7 @@ def test_concurrent_providers_claim_unlocked_pending_owner_once(
     scan_barrier = threading.Barrier(len(providers))
     for provider in providers:
         provider._client = StubClient()
-        provider._hermes_home = str(tmp_path)
+        provider._youtab_home = str(tmp_path)
         pending_sessions = provider._pending_sessions
 
         def _scan_together(scan=pending_sessions):
@@ -767,7 +767,7 @@ def test_shutdown_waits_for_memory_write_worker(monkeypatch):
     provider._api_key = ""
     provider._account = "acct"
     provider._user = "usr"
-    provider._agent = "hermes"
+    provider._agent = "youtab"
 
     worker_started = threading.Event()
     release_worker = threading.Event()
@@ -813,7 +813,7 @@ def _make_prefetch_provider() -> OpenVikingMemoryProvider:
     provider._api_key = ""
     provider._account = "acct"
     provider._user = "usr"
-    provider._agent = "hermes"
+    provider._agent = "youtab"
     return provider
 
 

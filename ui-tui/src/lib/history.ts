@@ -3,8 +3,8 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const MAX = 1000
-const dir = process.env.HERMES_HOME ?? join(homedir(), '.hermes')
-const file = join(dir, '.hermes_history')
+const dir = process.env.YOUTAB_AGENT_HOME ?? join(homedir(), '.youtab-agent-runtime')
+const file = join(dir, '.youtab_history')
 
 let cache: string[] | null = null
 

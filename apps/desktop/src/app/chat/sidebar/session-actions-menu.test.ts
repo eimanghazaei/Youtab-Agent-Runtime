@@ -14,7 +14,7 @@ import { renameSessionPreferringRpc } from './session-actions-menu'
 // Hoisted so the vi.mock factories below (which vitest lifts to the top of the
 // module) can reference these before the module body runs. This matters because
 // projects.ts subscribes to $gateway at import and nanostores fires the
-// subscriber synchronously — that reaches the @/store/gateway mock's
+// subscriber synchroyoutably — that reaches the @/store/gateway mock's
 // activeGateway() during the transitive import on line 4, before a plain
 // module-level const would be initialized (temporal dead zone).
 const { renameSession, request, activeGateway } = vi.hoisted(() => ({
@@ -26,18 +26,18 @@ const { renameSession, request, activeGateway } = vi.hoisted(() => ({
 // Wire activeGateway's default return to the shared request mock now that it exists.
 activeGateway.mockReturnValue({ request })
 
-vi.mock('@/hermes', () => ({
+vi.mock('@/youtab', () => ({
   renameSession: (...args: unknown[]) => renameSession(...(args as [])),
   // profile.ts calls this at import (its $activeGatewayProfile subscribe fires
   // immediately), pulled in transitively via session-states.
   setApiRequestProfile: () => {},
-  HermesGateway: class {}
+  YoutabGateway: class {}
 }))
 
 vi.mock('@/store/gateway', () => ({
   // projects.ts subscribes to $gateway at module load (its repo-scan sync fires
   // immediately), pulled in transitively via the session store. Provide a real
-  // atom plus the hoisted activeGateway so the synchronous subscriber doesn't
+  // atom plus the hoisted activeGateway so the synchroyoutab subscriber doesn't
   // throw on an incomplete mock or hit an uninitialized reference.
   $gateway: atom(null),
   activeGateway: () => activeGateway()

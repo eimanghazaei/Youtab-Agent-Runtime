@@ -5,7 +5,7 @@ from pathlib import Path
 
 from gateway.config import Platform
 from gateway.run import GatewayRunner
-from hermes_cli import kanban_db as kb
+from youtab_agent_cli import kanban_db as kb
 
 
 class RecordingAdapter:
@@ -76,7 +76,7 @@ def _unseen_terminal_events(tid):
 
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
     db_path = tmp_path / "dm-topic-metadata.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_DB", str(db_path))
     kb.init_db()
 
     conn = kb.connect()
@@ -131,7 +131,7 @@ def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
     rewind the claim forever — silent zero-delivery.
     """
     db_path = tmp_path / "actionable-block.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_DB", str(db_path))
     kb.init_db()
     reason = "AGE-39 — https://linear.example/AGE-39 — publishing verified."
     conn = kb.connect()
@@ -198,7 +198,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
     the adapter.
     """
     db_path = tmp_path / "redeliver-cycle.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_DB", str(db_path))
     kb.init_db()
 
     conn = kb.connect()
@@ -249,7 +249,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
 
 def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
     db_path = tmp_path / "chat-type-wakeup.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_DB", str(db_path))
     kb.init_db()
 
     conn = kb.connect()
@@ -312,7 +312,7 @@ def test_kanban_notifier_isolates_per_subscription_failure(tmp_path, monkeypatch
     delivery for every other subscription.
     """
     db_path = tmp_path / "isolation.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_DB", str(db_path))
     kb.init_db()
 
     # Create two tasks with subscriptions and complete both. The BAD task is
@@ -375,7 +375,7 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     silently.
     """
     db_path = tmp_path / "block-loop.db"
-    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_DB", str(db_path))
     kb.init_db()
 
     conn = kb.connect()

@@ -13,7 +13,7 @@ exchange, and exposes:
 
 The class is designed for async use from a single asyncio event loop.
 The :class:`agent.lsp.manager.LSPService` runs an event loop in a
-background thread so the synchronous file_operations layer can call
+background thread so the synchroyoutab file_operations layer can call
 into it via :func:`agent.lsp.manager.LSPService.touch_file`.
 
 Implementation notes:
@@ -56,7 +56,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 from urllib.parse import quote, unquote
 
-from hermes_cli._subprocess_compat import windows_hide_flags
+from youtab_agent_cli._subprocess_compat import windows_hide_flags
 
 from agent.lsp.protocol import (
     ERROR_CONTENT_MODIFIED,

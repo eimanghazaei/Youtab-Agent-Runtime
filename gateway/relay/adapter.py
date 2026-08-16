@@ -274,7 +274,7 @@ class RelayAdapter(BasePlatformAdapter):
                 self._watch_for_revocation(), name="relay-revocation-monitor"
             )
         except RuntimeError:
-            # No running loop (e.g. a unit test calling connect() synchronously
+            # No running loop (e.g. a unit test calling connect() synchroyoutably
             # via a stub) — nothing to monitor.
             self._revocation_monitor = None
 
@@ -332,7 +332,7 @@ class RelayAdapter(BasePlatformAdapter):
     def _relay_slack_extra(self) -> Dict[str, Any]:
         """The Slack-behavior subset of the RELAY platform config.
 
-        Enterprise knob shape (Hermes-config directed, relay-namespaced):
+        Enterprise knob shape (Youtab-config directed, relay-namespaced):
 
             platforms:
               relay:
@@ -651,7 +651,7 @@ class RelayAdapter(BasePlatformAdapter):
                 event = self._discord_interaction_to_event(forward)
                 if event is not None:
                     self._capture_scope(event)
-                    # Phase 3: a component press carrying a Hermes prompt token
+                    # Phase 3: a component press carrying a Youtab prompt token
                     # resolves its waiting primitive and is consumed (same
                     # gate as _on_inbound's prompt_response arm).
                     if await self._consume_prompt_response(event):
@@ -735,7 +735,7 @@ class RelayAdapter(BasePlatformAdapter):
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
         if itype == 3:
-            # Phase 3: a component press whose custom_id is a Hermes prompt
+            # Phase 3: a component press whose custom_id is a Youtab prompt
             # token (hp1:<prompt_id>:<option_id>) becomes a STRUCTURED prompt
             # answer — _on_inbound's _consume_prompt_response then resolves
             # the waiting approval/confirm/clarify, replacing the bare-
@@ -765,7 +765,7 @@ class RelayAdapter(BasePlatformAdapter):
 
         Mirrors the connector's promptCodec.decodePromptCallback (the token
         alphabet is [A-Za-z0-9_.-], ≤32 per id) so both ends agree on what is
-        — and is not — a Hermes prompt answer.
+        — and is not — a Youtab prompt answer.
         """
         import re
 
@@ -997,7 +997,7 @@ class RelayAdapter(BasePlatformAdapter):
         thread (the reported symptom: DM/home replies arrive flat, no
         progressive edits).
 
-        Native Slack Hermes already suppresses this synthetic DM thread anchor:
+        Native Slack Youtab already suppresses this synthetic DM thread anchor:
         ``SlackAdapter._resolve_thread_ts`` returns ``None`` for a top-level /
         DM message when ``reply_in_thread`` is off. The relay lane has no such
         disambiguation, so we reproduce it here. run.py already encodes the
@@ -1631,7 +1631,7 @@ class RelayAdapter(BasePlatformAdapter):
         # used only as a session-keying fallback). Forwarding it makes the
         # connector thread the prompt card UNDER the triggering message instead
         # of posting it flat at the DM root (the reported bug). Native Slack
-        # Hermes suppresses this synthetic DM thread anchor; drop it here for the
+        # Youtab suppresses this synthetic DM thread anchor; drop it here for the
         # same Slack-DM-with-no-real-thread case, matching _resolve_reply_to_for_send.
         # Prompt metadata is forwarded VERBATIM. The threading mode is decided
         # in exactly one place — run.py's _resolve_progress_thread_id (flat mode

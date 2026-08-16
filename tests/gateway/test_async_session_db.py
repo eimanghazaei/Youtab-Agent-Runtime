@@ -1,6 +1,6 @@
 """AsyncSessionDB offload facade + gateway raw-call guard.
 
-The gateway runs one asyncio loop for every session; SessionDB is synchronous,
+The gateway runs one asyncio loop for every session; SessionDB is synchroyoutab,
 so a raw call on the loop freezes every conversation until it returns.
 AsyncSessionDB offloads each call via asyncio.to_thread. These tests pin the
 facade's contract and lock the gateway boundary so a 39th raw call can't regress.
@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state
-from hermes_state import AsyncSessionDB
+import youtab_state
+from youtab_state import AsyncSessionDB
 
 
 class _SpyDB:
@@ -82,7 +82,7 @@ async def test_offload_goes_through_to_thread(monkeypatch):
         seen.append(getattr(func, "__name__", repr(func)))
         return await real(func, *args, **kwargs)
 
-    monkeypatch.setattr(hermes_state.asyncio, "to_thread", _spy)
+    monkeypatch.setattr(youtab_state.asyncio, "to_thread", _spy)
     await facade.returns_str()
     assert "returns_str" in seen
 
@@ -310,7 +310,7 @@ def test_sync_db_escape_confined_to_off_loop_sites():
 
 @pytest.mark.asyncio
 async def test_concurrent_claim_handoff_single_winner(tmp_path):
-    db = AsyncSessionDB(hermes_state.SessionDB(db_path=tmp_path / "state.db"))
+    db = AsyncSessionDB(youtab_state.SessionDB(db_path=tmp_path / "state.db"))
     sid = "s-handoff"
     await db.create_session(sid, "test")
     await db.request_handoff(sid, "telegram")

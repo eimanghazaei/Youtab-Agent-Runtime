@@ -15,7 +15,7 @@ import { test } from 'vitest'
 
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 
-// Minimal WebSocket double: records listeners synchronously (the probe attaches
+// Minimal WebSocket double: records listeners synchroyoutably (the probe attaches
 // them in its executor) and exposes emit() so the test can replay events.
 function makeFakeWs(): { FakeWs: new (url: string) => any; instances: any[] } {
   const instances = []

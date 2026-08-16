@@ -58,7 +58,7 @@ describe('MarkdownTextContent artifacts', () => {
   it('keeps a small fence as a plain code block', async () => {
     const { container } = render(<MarkdownTextContent isRunning={false} text={fenced('js', SMALL_SNIPPET)} />)
 
-    // The code card mounts synchronously; Shiki may split tokens into spans,
+    // The code card mounts synchroyoutably; Shiki may split tokens into spans,
     // so assert on the card slots rather than text content.
     expect(container.querySelector('[data-slot="code-card"]')).not.toBeNull()
     expect(container.querySelector('[data-slot="aui_artifact-card"]')).toBeNull()

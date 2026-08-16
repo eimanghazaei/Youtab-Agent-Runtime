@@ -57,7 +57,7 @@ class OpenRouterProfile(ProviderProfile):
     ) -> list[str] | None:
         """Fetch from public OpenRouter catalog — no auth required.
 
-        Note: Tool-call capability filtering is applied by hermes_cli/models.py
+        Note: Tool-call capability filtering is applied by youtab_agent_cli/models.py
         via fetch_openrouter_models() → _openrouter_model_supports_tools(), not
         here. The picker early-returns via the dedicated openrouter path before
         reaching this method, so filtering here would be unreachable.
@@ -91,7 +91,7 @@ class OpenRouterProfile(ProviderProfile):
         # calls sent NO sticky key at all and each routed independently of the
         # conversation it belonged to (#70820).
         #
-        # Mirrors the Nous Portal profile, which resolves the same way
+        # Mirrors the Youtab Portal profile, which resolves the same way
         # (f2f4df064d). The ambient value is the session-lineage ROOT, so it
         # also stays stable for installs that opt out of the default
         # ``compression.in_place: true`` and across delegate-subagent trees.
@@ -152,7 +152,7 @@ class OpenRouterProfile(ProviderProfile):
             #     emit ``thinking: {type: "disabled"}`` → the same 400 on every
             #     turn after the first tool call.
             # The only reliable behavior is to omit ``reasoning`` and let the
-            # model default to adaptive. See hermes-agent#42991 (disable case)
+            # model default to adaptive. See youtab-agent-runtime#42991 (disable case)
             # and the tool-replay follow-up.
             #
             # ``reasoning.effort`` being ignored does NOT mean these models have
@@ -160,7 +160,7 @@ class OpenRouterProfile(ProviderProfile):
             # top-level ``verbosity`` field instead (it maps to Anthropic's
             # ``output_config.effort``; ``reasoning.effort`` is accepted but
             # ignored — confirmed by OpenRouter's Claude migration docs and a
-            # live token-spend probe in hermes-agent#43432). Route the existing
+            # live token-spend probe in youtab-agent-runtime#43432). Route the existing
             # ``reasoning_config["effort"]`` (sourced from
             # ``agent.reasoning_effort``) onto ``verbosity`` so the knob the user
             # already sets keeps working for these models. We still send NO

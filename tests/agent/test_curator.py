@@ -16,11 +16,11 @@ import pytest
 
 @pytest.fixture
 def curator_env(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME + freshly reloaded curator + skill_usage modules."""
-    home = tmp_path / ".hermes"
+    """Isolated YOUTAB_AGENT_HOME + freshly reloaded curator + skill_usage modules."""
+    home = tmp_path / ".youtab-agent-runtime"
     (home / "skills").mkdir(parents=True)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
 
     import tools.skill_usage as usage
     importlib.reload(usage)
@@ -40,14 +40,14 @@ def curator_env(tmp_path, monkeypatch):
 
     yield {"home": home, "curator": curator, "usage": usage}
 
-    # Teardown: a curator review launched with synchronous=False spawns a
+    # Teardown: a curator review launched with synchroyoutab=False spawns a
     # daemon "curator-review" thread that calls save_state() when it finishes.
-    # save_state() resolves the state path from HERMES_HOME at write time, so a
+    # save_state() resolves the state path from YOUTAB_AGENT_HOME at write time, so a
     # straggler thread that outlives this test would write into whatever home
-    # the *next* test has configured (or the default ~/.hermes once monkeypatch
+    # the *next* test has configured (or the default ~/.youtab-agent-runtime once monkeypatch
     # restores the env) — corrupting an unrelated test's state file. This race
     # is invisible on a fast machine but flakes under CI load. Join any such
-    # thread here, while HERMES_HOME is still pinned to this test's tmp home
+    # thread here, while YOUTAB_AGENT_HOME is still pinned to this test's tmp home
     # (curator_env depends on monkeypatch, so this teardown runs before the
     # monkeypatch env is restored). See the salvage of #14261 CI flake.
     for t in threading.enumerate():
@@ -285,7 +285,7 @@ def test_run_review_records_state(curator_env):
     _write_skill(skills_dir, "a")
     u.mark_agent_created("a")
 
-    result = c.run_curator_review(synchronous=True)
+    result = c.run_curator_review(synchroyoutab=True)
     assert "started_at" in result
     state = c.load_state()
     assert state["last_run_at"] is not None
@@ -313,14 +313,14 @@ def test_dry_run_injects_report_only_banner(curator_env, monkeypatch):
                 "tool_calls": [], "error": None}
     monkeypatch.setattr(c, "_run_llm_review", _stub)
 
-    c.run_curator_review(synchronous=True, dry_run=True, consolidate=True)
+    c.run_curator_review(synchroyoutab=True, dry_run=True, consolidate=True)
     assert "DRY-RUN" in captured["prompt"]
     assert "DO NOT" in captured["prompt"]
 
 
 
 
-def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
+def test_run_review_synchroyoutab_invokes_llm_stub(curator_env, monkeypatch):
     c = curator_env["curator"]
     u = curator_env["usage"]
     skills_dir = curator_env["home"] / "skills"
@@ -343,7 +343,7 @@ def test_run_review_synchronous_invokes_llm_stub(curator_env, monkeypatch):
     captured = []
     c.run_curator_review(
         on_summary=lambda s: captured.append(s),
-        synchronous=True,
+        synchroyoutab=True,
         consolidate=True,
     )
 
@@ -421,7 +421,7 @@ def test_curator_does_not_instruct_model_to_pin():
 
 
 def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
-    from hermes_cli import curator as cli
+    from youtab_agent_cli import curator as cli
     skills_dir = curator_env["home"] / "skills"
     _write_skill(skills_dir, "ship-skill")
     (skills_dir / ".bundled_manifest").write_text(
@@ -441,7 +441,7 @@ def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
 # curator review-model resolution (canonical auxiliary.curator slot)
 #
 # Curator was unified with the rest of the aux task system in Apr 2026 so
-# `hermes model` → auxiliary picker, the dashboard Models tab, and the full
+# `youtab model` → auxiliary picker, the dashboard Models tab, and the full
 # per-task config (timeout, base_url, api_key, extra_body) all work for it.
 # Voscko report: curator.auxiliary.{provider,model} was advertised but never
 # read. Fix wires curator through auxiliary.curator with a legacy fallback.
@@ -573,9 +573,9 @@ def test_curator_slot_is_canonical_aux_task():
     (test_aux_config.py) for the main tasks — this test pins `curator`
     specifically so the unification doesn't silently regress.
     """
-    from hermes_cli.config import DEFAULT_CONFIG
-    from hermes_cli.main import _AUX_TASKS
-    from hermes_cli.web_server import _AUX_TASK_SLOTS
+    from youtab_agent_cli.config import DEFAULT_CONFIG
+    from youtab_agent_cli.main import _AUX_TASKS
+    from youtab_agent_cli.web_server import _AUX_TASK_SLOTS
 
     # 1. DEFAULT_CONFIG.auxiliary — schema source
     assert "curator" in DEFAULT_CONFIG["auxiliary"], \
@@ -585,11 +585,11 @@ def test_curator_slot_is_canonical_aux_task():
     assert slot["model"] == ""
     assert slot["timeout"] > 0, "curator timeout should be set (reviews run long)"
 
-    # 2. hermes_cli/main.py _AUX_TASKS — CLI picker
+    # 2. youtab_agent_cli/main.py _AUX_TASKS — CLI picker
     aux_keys = {k for k, _name, _desc in _AUX_TASKS}
     assert "curator" in aux_keys, "curator missing from _AUX_TASKS (CLI picker)"
 
-    # 3. hermes_cli/web_server.py _AUX_TASK_SLOTS — REST API allowlist
+    # 3. youtab_agent_cli/web_server.py _AUX_TASK_SLOTS — REST API allowlist
     assert "curator" in _AUX_TASK_SLOTS, \
         "curator missing from _AUX_TASK_SLOTS (dashboard REST API)"
 
@@ -634,15 +634,15 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
             pass
 
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "youtab_agent_cli.config.load_config",
         lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "youtab_agent_cli.config.load_config_readonly",
         lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "youtab_agent_cli.runtime_provider.resolve_runtime_provider",
         _fake_resolve_runtime_provider,
     )
     monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
@@ -661,15 +661,15 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
     captured = {}
 
     monkeypatch.setattr(
-        "hermes_cli.config.load_config",
+        "youtab_agent_cli.config.load_config",
         lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
+        "youtab_agent_cli.config.load_config_readonly",
         lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
     )
     monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        "youtab_agent_cli.runtime_provider.resolve_runtime_provider",
         lambda **_kwargs: {
             "provider": "custom",
             "model": "real-model-id",

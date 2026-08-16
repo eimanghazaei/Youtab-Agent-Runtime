@@ -34,7 +34,7 @@ import pytest
 # Both tests share the same handoff file: the leaker writes here, the
 # verifier reads here. We park it in $TMPDIR with a unique-per-run name
 # so concurrent invocations of the suite don't clobber each other.
-_HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "hermes-isolation-probe"
+_HANDOFF_DIR = Path(os.environ.get("TMPDIR", "/tmp")) / "youtab-isolation-probe"
 _HANDOFF_DIR.mkdir(exist_ok=True)
 
 
@@ -170,7 +170,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
     )
 
     # The grandchild must be gone. Poll for a bit because process-group
-    # SIGKILL + reaping isn't synchronous; on a loaded box it can take
+    # SIGKILL + reaping isn't synchroyoutab; on a loaded box it can take
     # a beat.
     deadline = time.monotonic() + 5.0
     while time.monotonic() < deadline:

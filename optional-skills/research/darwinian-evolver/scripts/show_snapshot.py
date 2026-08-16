@@ -11,7 +11,7 @@ target a different attribute (e.g. `regex_pattern`, `sql_query`, `code_block`).
 from __future__ import annotations
 
 import argparse
-import pickle
+import pickle  # noqa: S403 -- explicit opt-in trusted-file inspection tool
 import sys
 from pathlib import Path
 

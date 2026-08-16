@@ -908,13 +908,13 @@ class TestDefaultInteractionDispatch:
 
     @pytest.mark.asyncio
     async def test_update_prompt_click_writes_response_file(self, tmp_path, monkeypatch):
-        """update_prompt:y click writes 'y' to ~/.hermes/.update_response."""
+        """update_prompt:y click writes 'y' to ~/.youtab-agent-runtime/.update_response."""
         adapter = self._make_adapter()
-        hermes_home = tmp_path / "hermes_home"
-        hermes_home.mkdir()
+        youtab_home = tmp_path / "youtab_home"
+        youtab_home.mkdir()
         monkeypatch.setattr(
-            "hermes_constants.get_hermes_home",
-            lambda: hermes_home,
+            "youtab_constants.get_youtab_home",
+            lambda: youtab_home,
         )
 
         from gateway.platforms.qqbot.keyboards import parse_interaction_event
@@ -924,7 +924,7 @@ class TestDefaultInteractionDispatch:
         })
         await adapter._default_interaction_dispatch(event)
 
-        response = hermes_home / ".update_response"
+        response = youtab_home / ".update_response"
         assert response.exists()
         assert response.read_text() == "y"
 

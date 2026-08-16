@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import type { ActionStatusResponse } from "@/lib/api";
-import { Toast } from "@nous-research/ui/ui/components/toast";
+import type { ActionStatusResponse, GatewayLifecycleJob } from "@/lib/api";
+import { Toast } from "@youtab/ui/ui/components/toast";
 import { useI18n } from "@/i18n";
 import {
   SystemActionsContext,
@@ -10,7 +10,7 @@ import {
 
 const ACTION_NAMES: Record<SystemAction, string> = {
   restart: "gateway-restart",
-  update: "hermes-update",
+  update: "youtab-update",
 };
 
 export function SystemActionsProvider({
@@ -24,6 +24,10 @@ export function SystemActionsProvider({
     null,
   );
   const [toast, setToast] = useState<ToastState | null>(null);
+  // The gateway restart's verdict comes from its job, never from the POST that
+  // started it. `null` while no restart is in flight.
+  const [gatewayJob, setGatewayJob] = useState<GatewayLifecycleJob | null>(null);
+  const [gatewayJobId, setGatewayJobId] = useState<string | null>(null);
   const { t } = useI18n();
 
   useEffect(() => {
@@ -32,6 +36,9 @@ export function SystemActionsProvider({
     return () => clearTimeout(timer);
   }, [toast]);
 
+  // Log tail only. This drives the output panel and nothing else -- in
+  // particular it no longer decides success, because a child's exit status is
+  // only half of the question for a lifecycle operation.
   useEffect(() => {
     if (!activeAction) return;
     const name = ACTION_NAMES[activeAction];
@@ -42,7 +49,9 @@ export function SystemActionsProvider({
         const resp = await api.getActionStatus(name);
         if (cancelled) return;
         setActionStatus(resp);
-        if (!resp.running) {
+        // For the gateway restart, the job decides when we stop polling; the
+        // child can be gone well before the gateway is back.
+        if (!resp.running && activeAction !== "restart") {
           const ok = resp.exit_code === 0;
           setToast({
             type: ok ? "success" : "error",
@@ -64,16 +73,58 @@ export function SystemActionsProvider({
     };
   }, [activeAction, t.status.actionFinished, t.status.actionFailed]);
 
+  // The authoritative restart verdict. Polls until the backend reports a
+  // terminal state, then reports exactly what the backend concluded -- a
+  // failed child is never rendered as a success.
+  useEffect(() => {
+    if (!gatewayJobId) return;
+    let cancelled = false;
+
+    const poll = async () => {
+      try {
+        const job = await api.getGatewayJob(gatewayJobId);
+        if (cancelled) return;
+        setGatewayJob(job);
+        if (job.state !== "pending") {
+          setToast({
+            type: job.state === "succeeded" ? "success" : "error",
+            message:
+              job.state === "succeeded"
+                ? t.status.actionFinished
+                : `${t.status.actionFailed} (${job.reason ?? "unknown"}${
+                    job.exit_code != null ? `, exit ${job.exit_code}` : ""
+                  })`,
+          });
+          return;
+        }
+      } catch {
+        // transient fetch error; keep polling
+      }
+      if (!cancelled) setTimeout(poll, 1500);
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [gatewayJobId, t.status.actionFinished, t.status.actionFailed]);
+
   const runAction = useCallback(
     async (action: SystemAction) => {
       setPendingAction(action);
       setActionStatus(null);
       try {
         if (action === "restart") {
-          await api.restartGateway();
+          setGatewayJob(null);
+          setGatewayJobId(null);
+          // 202 Accepted: this only says the operation was admitted. The
+          // result comes from polling the job it returned.
+          const accepted = await api.restartGateway();
+          setGatewayJobId(accepted.job_id);
+          setGatewayJob(accepted);
           setActiveAction(action);
         } else {
-          const resp = await api.updateHermes();
+          const resp = await api.updateYoutab();
           // Some installs cannot apply updates from inside the dashboard. The
           // endpoint returns a structured {ok:false, message, update_command}
           // envelope instead of spawning the action; surface that guidance
@@ -107,9 +158,17 @@ export function SystemActionsProvider({
   const dismissLog = useCallback(() => {
     setActiveAction(null);
     setActionStatus(null);
+    setGatewayJob(null);
+    setGatewayJobId(null);
   }, []);
 
-  const isRunning = activeAction !== null && actionStatus?.running !== false;
+  // A restart is "running" for as long as its *job* is pending. Deriving this
+  // from the child's liveness would clear the spinner while the gateway was
+  // still down, which is the moment the old UI declared victory.
+  const isRunning =
+    activeAction === "restart"
+      ? gatewayJob === null || gatewayJob.state === "pending"
+      : activeAction !== null && actionStatus?.running !== false;
   const isBusy = pendingAction !== null || isRunning;
 
   return (
@@ -118,6 +177,7 @@ export function SystemActionsProvider({
         actionStatus,
         activeAction,
         dismissLog,
+        gatewayJob,
         isBusy,
         isRunning,
         pendingAction,

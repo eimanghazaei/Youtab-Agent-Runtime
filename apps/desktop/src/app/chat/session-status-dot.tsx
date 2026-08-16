@@ -7,7 +7,7 @@ import { $backgroundRunningSessionIds } from '@/store/composer-status'
 import { $unreadFinishedSessionIds } from '@/store/session'
 import { $sessionColorById, sessionColorFor } from '@/store/session-color'
 import { $attentionSessionIds, $stalledSessionIds, $workingSessionIds } from '@/store/session-states'
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo } from '@/types/youtab'
 
 import { type SessionDotState, sessionDotState } from './sidebar/session-row-state'
 
