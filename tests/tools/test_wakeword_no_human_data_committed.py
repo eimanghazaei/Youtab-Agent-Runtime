@@ -151,6 +151,14 @@ DATASET_PATH = re.compile(
 )
 TRANSCRIPT_PATH = re.compile(r"(?:^|/)[^/]*transcripts?[^/]*\.(?:json|jsonl|csv|tsv|txt)$", re.IGNORECASE)
 
+#: A filled consent record. It is the one artifact in the recording workflow
+#: that contains personal data by design — the speaker's name and a way to
+#: reach them — which is exactly why the audio does not. The blank template
+#: (``scripts/wakeword/CONSENT_RECORD_TEMPLATE.md``) does not match this
+#: pattern and needs no allow-list entry; a filled one is named
+#: ``consent-record-E003.md`` by the template's own instruction.
+CONSENT_RECORD_PATH = re.compile(r"(?:^|/)consent-record-", re.IGNORECASE)
+
 # ── what forbidden content looks like ────────────────────────────────────────
 
 #: Literal markers. Backslashes are normalised to ``/`` and everything is
@@ -212,6 +220,8 @@ def _path_offence(rel: str) -> str | None:
         return "human-speech dataset directory"
     if TRANSCRIPT_PATH.search(rel):
         return "transcript"
+    if CONSENT_RECORD_PATH.search(rel):
+        return "filled consent record"
     return None
 
 
@@ -310,6 +320,7 @@ def test_the_path_rules_catch_what_a_recording_session_actually_produces() -> No
         "recordings/session-1/clip.dat",
         "work/raw_audio/x.dat",
         "tools/wakewords/hey_youtab_r7.onnx",
+        "docs/consent-record-E003.md",
     )
     for rel in must_flag:
         assert _path_offence(rel), f"{rel} is not recognised as human data"
@@ -320,6 +331,9 @@ def test_the_path_rules_catch_what_a_recording_session_actually_produces() -> No
         "tests/tools/test_wake_word.py",
         "website/static/img/docs/tui-session-orchestrator/session-orchestrator-demo.mp4",
         "docs/evidence/transcription-notes.md",
+        # The blank template is tracked on purpose; only a filled record, named
+        # by the convention the template mandates, is forbidden.
+        "scripts/wakeword/CONSENT_RECORD_TEMPLATE.md",
     )
     for rel in must_pass:
         assert _path_offence(rel) is None, f"{rel} is falsely flagged as human data"
@@ -397,6 +411,7 @@ def test_gitignore_stops_the_accident_before_the_gate_has_to() -> None:
         "recordings/session.flac",
         "eval/takes_transcript.json",
         "work/embeddings.npy",
+        "consent-record-E003.md",
     ):
         assert _is_ignored(rel), f"{rel} would be picked up by `git add -A`"
 

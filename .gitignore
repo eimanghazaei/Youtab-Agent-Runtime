@@ -255,6 +255,11 @@ speaker_E*/
 *transcript*.json
 *transcripts*.json
 *.transcript
+# Filled consent records. The blank template
+# (scripts/wakeword/CONSENT_RECORD_TEMPLATE.md) is tracked and does not match
+# this; a filled one carries the speaker's name and contact details, which is
+# the only personal data in the whole workflow.
+consent-record-*
 # Capture roots, if one is ever created inside the checkout by mistake.
 wakeword-human/
 wakeword-build/
