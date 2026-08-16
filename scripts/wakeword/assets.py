@@ -76,6 +76,21 @@ FEATURE_EXTRACTORS: tuple[Asset, ...] = (
         license="Apache-2.0",
         attribution=_OWW,
     ),
+    #: openWakeWord fetches this while loading a model, whether or not VAD is
+    #: enabled — `tools/wake_word.py` never references VAD and it is still
+    #: downloaded. Left unpinned it is a network call in the middle of
+    #: evaluation, and under a ProcessPoolExecutor several workers race to write
+    #: the same path: one loses, raises FeatureUnavailable, and the run dies as
+    #: an unexplained BrokenProcessPool. Pinning it removes the download, so the
+    #: race cannot happen and the measurement does not depend on the network.
+    Asset(
+        name="silero_vad.onnx",
+        url="https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/silero_vad.onnx",
+        sha256="a35ebf52fd3ce5f1469b2a36158dba761bc47b973ea3382b3186ca15b1f5af28",
+        size=1807522,
+        license="MIT (Silero VAD, snakers4/silero-vad), redistributed by openWakeWord",
+        attribution="Silero Team, silero-vad (github.com/snakers4/silero-vad); " + _OWW,
+    ),
     Asset(
         name="embedding_model.tflite",
         url="https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.tflite",
@@ -126,6 +141,121 @@ NEGATIVE_SPEECH = Asset(
 )
 
 ALL_ASSETS: tuple[Asset, ...] = (*FEATURE_EXTRACTORS, TTS_GENERATOR, NEGATIVE_SPEECH)
+
+
+#: The VITS checkpoint's config. piper-sample-generator keeps this inside its
+#: git repository (``models/``) rather than publishing it as a release asset —
+#: the release URL that would mirror the ``.pt`` returns 404 — so it cannot be
+#: fetched like everything else here and is instead copied from the pinned
+#: clone and checked against this hash.
+#:
+#: It is not optional. ``generate_speech._load_generator`` opens
+#: ``f"{model_path.name}.json"`` beside the checkpoint, so without it stage 1
+#: dies on FileNotFoundError before synthesizing a single clip.
+GENERATOR_CONFIG_NAME = "en_US-libritts_r-medium.pt.json"
+GENERATOR_CONFIG_SHA256 = (
+    "119118e510d0b8a7a0c8649a0668640d6db9b00239e874169d964853a8d15848"
+)
+GENERATOR_CONFIG_SOURCE = "piper-sample-generator, models/ (MIT)"
+
+
+def install_pinned(assets: tuple[Asset, ...], source: Path, dest: Path) -> list[Path]:
+    """Copy pinned assets from ``source`` into ``dest``, hashing both ends.
+
+    Both ends on purpose. Hashing the source proves the bytes are the ones this
+    pipeline was built against; hashing the destination after the copy proves
+    the copy itself did not truncate — which a copy onto a nearly-full disk, or
+    across the Windows/WSL filesystem boundary, genuinely can do.
+
+    Idempotent: a destination that already matches is left alone, so this is
+    safe to run at the top of every pipeline invocation.
+    """
+    dest.mkdir(parents=True, exist_ok=True)
+    installed: list[Path] = []
+    for asset in assets:
+        src = source / asset.name
+        if not src.exists():
+            raise FileNotFoundError(
+                f"{asset.name} is not in {source}. Run the fetch step first: "
+                f"it downloads and hash-verifies every pinned asset."
+            )
+        actual = sha256_file(src)
+        if actual != asset.sha256:
+            raise RuntimeError(
+                f"{asset.name}: SHA-256 mismatch at the source\n"
+                f"  expected {asset.sha256}\n"
+                f"  got      {actual}\n"
+                f"  in       {source}"
+            )
+        target = dest / asset.name
+        if not (target.exists() and sha256_file(target) == asset.sha256):
+            shutil.copyfile(src, target)
+            written = sha256_file(target)
+            if written != asset.sha256:
+                target.unlink(missing_ok=True)
+                raise RuntimeError(
+                    f"{asset.name}: SHA-256 mismatch after copying into {dest}\n"
+                    f"  expected {asset.sha256}\n"
+                    f"  got      {written}"
+                )
+        installed.append(target)
+    return installed
+
+
+def openwakeword_models_dir() -> Path:
+    """Where openWakeWord loads its shared front end from.
+
+    ``openwakeword.utils.AudioFeatures`` defaults to this directory, and
+    ``openwakeword.utils.download_models()`` populates it over the network with
+    whatever is current — unpinned. Installing the pinned bytes here replaces
+    that download rather than racing it, which is what keeps the features a
+    model was fit on identical to the features it is scored on.
+    """
+    import openwakeword  # noqa: PLC0415 — optional at import time
+
+    return Path(openwakeword.__file__).parent / "resources" / "models"
+
+
+def install_feature_extractors(source: Path, dest: Path | None = None) -> list[Path]:
+    """Put the pinned melspectrogram/embedding models where openWakeWord looks.
+
+    openWakeWord ships no models in its wheel, so a fresh environment has an
+    empty ``resources/models`` and the first ``AudioFeatures(...)`` fails with
+    ``NO_SUCHFILE``. Pinning the assets in this module was never enough on its
+    own — nothing installed them — so a clean run either crashed or, worse,
+    silently fell back to ``download_models()`` and trained against whatever
+    upstream published that day.
+    """
+    return install_pinned(FEATURE_EXTRACTORS, source, dest or openwakeword_models_dir())
+
+
+def install_generator_config(generator_root: Path, into: Path) -> Path:
+    """Copy the VITS config out of the pinned clone, next to the checkpoint."""
+    src = generator_root / "models" / GENERATOR_CONFIG_NAME
+    if not src.exists():
+        raise FileNotFoundError(
+            f"{GENERATOR_CONFIG_NAME} not found at {src}. It ships inside the "
+            "piper-sample-generator repository; clone it first."
+        )
+    actual = sha256_file(src)
+    if actual != GENERATOR_CONFIG_SHA256:
+        raise RuntimeError(
+            f"{GENERATOR_CONFIG_NAME}: SHA-256 mismatch\n"
+            f"  expected {GENERATOR_CONFIG_SHA256}\n"
+            f"  got      {actual}\n"
+            f"  from     {src}"
+        )
+    into.mkdir(parents=True, exist_ok=True)
+    target = into / GENERATOR_CONFIG_NAME
+    if not (target.exists() and sha256_file(target) == GENERATOR_CONFIG_SHA256):
+        shutil.copyfile(src, target)
+        written = sha256_file(target)
+        if written != GENERATOR_CONFIG_SHA256:
+            target.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"{GENERATOR_CONFIG_NAME}: SHA-256 mismatch after copy into {into}"
+            )
+    return target
 
 
 def sha256_file(path: Path) -> str:

@@ -80,6 +80,65 @@ HARD_NEGATIVES: tuple[str, ...] = (
     "hey you had.",
     "hey you app.",
     "hey youth.",
+    # ---- /eɪ/ without the /h/ onset -------------------------------------
+    # Measured, not guessed. Scoring the first trained model over held-out
+    # RECORDED speech put "eight" at the very top of the tail: 0.9985 against
+    # an operating threshold of 0.9991, so a single utterance of it was what
+    # pinned the threshold that high, and that threshold is what cost half the
+    # wake words. "eight" is /eɪt/ and "hey" is /heɪ/ — the model had learned
+    # the diphthong and not the /h/ that must precede it.
+    #
+    # Everything in this block is that same vowel with no onset, so training
+    # sees the contrast rather than inferring it. The bare digits and words
+    # below are the other Speech Commands entries that scored highest.
+    "eight.",
+    "eighty.",
+    "eighteen.",
+    "eight tabs.",
+    "ate a late lunch.",
+    "wait.",
+    "wait a moment.",
+    "weight.",
+    "great.",
+    "the letter a.",
+    "a tab.",
+    "they take a tab.",
+    "two.",
+    "four.",
+    "zero.",
+    "house.",
+    "visual.",
+    "two tabs.",
+    # ---- /h/ onset that is not "hey" ------------------------------------
+    # Round 2 taught the model that the /eɪ/ diphthong needs an /h/ before it,
+    # and "eight" left the tail completely. What moved into its place was
+    # /h/-initial ordinary speech: "happy" scored 0.999995 on held-out recorded
+    # audio, alongside "down", "stop", "yes", "left" and "no". Having learned
+    # to require the onset, the model now over-trusts it.
+    #
+    # These give it /h/ followed by something that is emphatically not
+    # "youtab", so the onset stops being sufficient on its own.
+    "happy.",
+    "happy to help.",
+    "hello.",
+    "hello there.",
+    "how are you.",
+    "how about it.",
+    "hi.",
+    "help.",
+    "here.",
+    "here you go.",
+    "home.",
+    "head.",
+    "hand.",
+    "hold on.",
+    "hot.",
+    # Measured alongside "happy" in the round-2 tail.
+    "down.",
+    "stop.",
+    "yes.",
+    "left.",
+    "no.",
 )
 
 #: Ordinary speech. Breadth, not precision.
@@ -133,6 +192,40 @@ CONFUSABLE_NEGATIVES: tuple[str, ...] = (
     "hey cab.",
     "hey you talk.",
     "a new tab.",
+    # Round 2 evidence, from scoring the first model over held-out RECORDED
+    # speech rather than over synthesized near misses. Ordered by the highest
+    # score each word reached; only words that were actually measured appear
+    # here, which is why the phonetic neighbours of "eight" ("wait", "great",
+    # "eighty") sit in HARD_NEGATIVES and not in this weighted list.
+    #
+    #   eight   0.9985   <- pinned the operating threshold by itself
+    #   two     0.9832
+    #   visual  0.8568
+    #   four    0.6853
+    #   zero    0.5508
+    #   house   0.5412
+    "eight.",
+    "two.",
+    "visual.",
+    "four.",
+    "zero.",
+    "house.",
+    # Round 3 evidence. After round 2 removed "eight" from the tail entirely,
+    # these are what took its place on held-out recorded speech — /h/-initial
+    # or plosive-final ordinary words, again measured rather than guessed:
+    #
+    #   down    0.999997
+    #   happy   0.999995
+    #   stop    0.992592
+    #   yes     0.987031
+    #   left    0.966623
+    #   no      0.935737
+    "down.",
+    "happy.",
+    "stop.",
+    "yes.",
+    "left.",
+    "no.",
 )
 
 
