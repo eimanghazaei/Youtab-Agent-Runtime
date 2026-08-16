@@ -48,6 +48,11 @@ def _asset(path: Path, name: str) -> assets.Asset:
         size=path.stat().st_size,
         license="Apache-2.0",
         attribution="synthetic fixture",
+        # `source` has no default on purpose (see assets.Asset), so every
+        # construction has to name one -- including this one, which names a key
+        # that is deliberately not in SOURCES because these bytes came from
+        # tmp_path rather than from anybody's project.
+        source="synthetic fixture",
     )
 
 

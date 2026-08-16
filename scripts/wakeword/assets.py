@@ -41,6 +41,55 @@ class Asset:
     license: str
     #: Who holds the copyright, and where the licence text lives.
     attribution: str
+    #: ``Source.key`` of the project or corpus these bytes come from. Required,
+    #: with no default: a file whose origin nobody named is exactly the thing
+    #: ``tests/tools/test_wakeword_asset_licences.py`` exists to prevent, and a
+    #: default would let one be added by forgetting rather than by deciding.
+    source: str
+
+
+@dataclass(frozen=True)
+class Source:
+    """One external project or corpus, and what is known about its licence.
+
+    ``Asset`` records bytes; this records the *provenance* of bytes. They are
+    separate because the two do not correspond one-to-one: openWakeWord's
+    release carries five files from three upstreams, and two of the projects
+    this pipeline depends on (pyroomacoustics, espeak-ng) contribute no
+    redistributed bytes at all — they generate or transform data at build time,
+    which is a different licence question and one that is easy to leave
+    unasked.
+
+    Sources that were considered and *not* used are recorded here too. A corpus
+    that is absent because nobody wanted it and a corpus that is absent because
+    its licence was refused look identical in a dependency list, and only one
+    of those is a decision.
+    """
+
+    #: Stable identifier, referenced by ``Asset.source``.
+    key: str
+    #: Human name, as the upstream writes it.
+    name: str
+    #: ``model`` | ``corpus`` | ``tool``.
+    kind: str
+    #: Project or corpus home.
+    origin: str
+    #: Release tag, version, or commit. Where there is genuinely no pin, this
+    #: must start with ``unpinned:`` and ``notes`` must say what that exposes —
+    #: a vague version is worse than a stated absence, because it reads as one.
+    version: str
+    #: SPDX-style identifier where one applies, else the licence as published.
+    license: str
+    #: Where the licence text can be read.
+    license_url: str
+    #: Copyright holder, and the citation where the corpus asks for one.
+    attribution: str
+    #: ``Asset.name`` values this source provides, if any.
+    provides: tuple[str, ...]
+    #: ``in-use`` | ``planned`` | ``declined``.
+    status: str
+    #: Why it is unpinned, planned or declined. Required for all three.
+    notes: str = ""
 
 
 _OWW = "David Scripka, openWakeWord (github.com/dscripka/openWakeWord)"
@@ -59,6 +108,7 @@ FEATURE_EXTRACTORS: tuple[Asset, ...] = (
         size=1087958,
         license="Apache-2.0",
         attribution=_OWW,
+        source="openwakeword",
     ),
     Asset(
         name="melspectrogram.tflite",
@@ -67,6 +117,7 @@ FEATURE_EXTRACTORS: tuple[Asset, ...] = (
         size=1092516,
         license="Apache-2.0",
         attribution=_OWW,
+        source="openwakeword",
     ),
     Asset(
         name="embedding_model.onnx",
@@ -75,6 +126,7 @@ FEATURE_EXTRACTORS: tuple[Asset, ...] = (
         size=1326578,
         license="Apache-2.0",
         attribution=_OWW,
+        source="openwakeword",
     ),
     #: openWakeWord fetches this while loading a model, whether or not VAD is
     #: enabled — `tools/wake_word.py` never references VAD and it is still
@@ -90,6 +142,7 @@ FEATURE_EXTRACTORS: tuple[Asset, ...] = (
         size=1807522,
         license="MIT (Silero VAD, snakers4/silero-vad), redistributed by openWakeWord",
         attribution="Silero Team, silero-vad (github.com/snakers4/silero-vad); " + _OWW,
+        source="silero-vad",
     ),
     Asset(
         name="embedding_model.tflite",
@@ -98,6 +151,7 @@ FEATURE_EXTRACTORS: tuple[Asset, ...] = (
         size=1330312,
         license="Apache-2.0",
         attribution=_OWW,
+        source="openwakeword",
     ),
 )
 
@@ -119,6 +173,7 @@ TTS_GENERATOR = Asset(
         "(github.com/rhasspy/piper-sample-generator); LibriTTS-R corpus, "
         "Koizumi et al. 2023, CC BY 4.0"
     ),
+    source="piper-sample-generator",
 )
 
 #: Recorded human speech, used only as negatives. 105,829 one-second
@@ -138,9 +193,233 @@ NEGATIVE_SPEECH = Asset(
         "Warden, P. Speech Commands: A Dataset for Limited-Vocabulary Speech "
         "Recognition (2018), arXiv:1804.03209. Google LLC, CC BY 4.0"
     ),
+    source="speech-commands",
 )
 
 ALL_ASSETS: tuple[Asset, ...] = (*FEATURE_EXTRACTORS, TTS_GENERATOR, NEGATIVE_SPEECH)
+
+
+#: Every external project or corpus this pipeline touches, whether or not it
+#: contributes redistributed bytes — and the ones that were considered and
+#: refused.
+#:
+#: The assets above answer "what did we download, and is the hash right". This
+#: answers "whose work is it, which version, under what terms, and can we say
+#: so". Those are different questions, and the second one has no home in a
+#: table of files: two of the entries below ship nothing at all, and one is not
+#: used *at* all.
+#:
+#: ``tests/tools/test_wakeword_asset_licences.py`` is what keeps this honest.
+#: It fails if a pinned asset names a source that is not here, if a source in
+#: use lacks a licence, version or attribution, and if any pipeline script
+#: mentions a known corpus that this table does not account for.
+SOURCES: tuple[Source, ...] = (
+    Source(
+        key="openwakeword",
+        name="openWakeWord",
+        kind="model",
+        origin="https://github.com/dscripka/openWakeWord",
+        version="v0.5.1 (release assets); the runtime package is pinned to 0.6.0 in pyproject",
+        license="Apache-2.0",
+        license_url="https://github.com/dscripka/openWakeWord/blob/main/LICENSE",
+        attribution=_OWW,
+        provides=(
+            "melspectrogram.onnx",
+            "melspectrogram.tflite",
+            "embedding_model.onnx",
+            "embedding_model.tflite",
+        ),
+        status="in-use",
+        notes=(
+            "The shared front end, and therefore an input to training and to "
+            "inference alike. The trained classifier is a derived work of it."
+        ),
+    ),
+    Source(
+        key="silero-vad",
+        name="Silero VAD",
+        kind="model",
+        origin="https://github.com/snakers4/silero-vad",
+        version="the copy redistributed in openWakeWord's v0.5.1 release",
+        license="MIT",
+        license_url="https://github.com/snakers4/silero-vad/blob/master/LICENSE",
+        attribution="Silero Team, silero-vad (github.com/snakers4/silero-vad)",
+        provides=("silero_vad.onnx",),
+        status="in-use",
+        notes=(
+            "Fetched because openWakeWord loads it unconditionally, not because "
+            "anything here wants VAD. Listed separately from openWakeWord "
+            "because the licence and the copyright holder are different, which "
+            "a table keyed by release asset would have hidden."
+        ),
+    ),
+    Source(
+        key="piper-sample-generator",
+        name="piper-sample-generator",
+        kind="model",
+        origin="https://github.com/rhasspy/piper-sample-generator",
+        version=(
+            "v2.0.0 for the checkpoint; unpinned: the working clone is "
+            "`git clone --depth 1` of the default branch"
+        ),
+        license="MIT",
+        license_url="https://github.com/rhasspy/piper-sample-generator/blob/master/LICENSE.md",
+        attribution="Michael Hansen, piper-sample-generator (github.com/rhasspy/piper-sample-generator)",
+        provides=("en_US-libritts_r-medium.pt",),
+        status="in-use",
+        notes=(
+            "Two different pins, deliberately. The checkpoint is a release "
+            "asset fetched by URL and hash-checked. The clone is not pinned to "
+            "a commit — run_pipeline.sh says why: generate_speech.py puts it on "
+            "sys.path, so it is executed code and a moving branch is a real "
+            "exposure. What limits that exposure is that the only file copied "
+            "out of the clone, the VITS config, is itself hash-checked "
+            "(GENERATOR_CONFIG_SHA256); the executed code is not. Pinning the "
+            "clone to a commit is the outstanding hardening."
+        ),
+    ),
+    Source(
+        key="libritts-r",
+        name="LibriTTS-R",
+        kind="corpus",
+        origin="https://www.openslr.org/141/",
+        version="the 2023 release, as distilled into the piper checkpoint above",
+        license="CC BY 4.0",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+        attribution=(
+            "Koizumi et al., LibriTTS-R: A Restored Multi-Speaker Text-to-Speech "
+            "Corpus (2023), arXiv:2305.18802"
+        ),
+        provides=(),
+        status="in-use",
+        notes=(
+            "No bytes of the corpus are fetched: it reaches this pipeline only "
+            "through the 904 speaker embeddings inside the checkpoint. It is "
+            "recorded anyway because every synthesized positive is derived from "
+            "those voices, and CC BY 4.0 asks for the attribution."
+        ),
+    ),
+    Source(
+        key="speech-commands",
+        name="Speech Commands",
+        kind="corpus",
+        origin="https://www.tensorflow.org/datasets/catalog/speech_commands",
+        version="v0.02",
+        license="CC BY 4.0",
+        license_url="https://creativecommons.org/licenses/by/4.0/",
+        attribution=(
+            "Warden, P. Speech Commands: A Dataset for Limited-Vocabulary Speech "
+            "Recognition (2018), arXiv:1804.03209. Google LLC"
+        ),
+        provides=("speech_commands_v0.02.tar.gz",),
+        status="in-use",
+        notes=(
+            "Both the recorded-speech negatives and the six background "
+            "recordings come from this one tarball. That is why no separate "
+            "noise corpus appears in this table."
+        ),
+    ),
+    Source(
+        key="pyroomacoustics",
+        name="pyroomacoustics",
+        kind="tool",
+        origin="https://github.com/LCAV/pyroomacoustics",
+        version="unpinned: installed by the README's Environment block with no version",
+        license="MIT",
+        license_url="https://github.com/LCAV/pyroomacoustics/blob/master/LICENSE",
+        attribution="Scheibler, Bezzam and Dokmanić, pyroomacoustics (2018), arXiv:1710.04196",
+        provides=(),
+        status="in-use",
+        notes=(
+            "Generates the room impulse responses rather than shipping a "
+            "recorded set, which is what keeps reverberation licence-free and "
+            "seeded. The absent version pin is a reproducibility exposure and "
+            "not a licence one: a different release could compute a different "
+            "impulse response from the same seed, which DETERMINISM.md's "
+            "cross-machine caveat already covers in general terms."
+        ),
+    ),
+    Source(
+        key="espeak-ng",
+        name="eSpeak NG",
+        kind="tool",
+        origin="https://github.com/espeak-ng/espeak-ng",
+        version="unpinned: whatever the piper-tts 1.3.0 wheel bundles",
+        license="GPL-3.0-or-later",
+        license_url="https://github.com/espeak-ng/espeak-ng/blob/master/COPYING",
+        attribution="eSpeak NG contributors; Jonathan Duddington's eSpeak",
+        provides=(),
+        status="in-use",
+        notes=(
+            "Reached through piper-sample-generator's get_phonemes, and the "
+            "only GPL component anywhere near this pipeline. It is a build-time "
+            "tool: what leaves it is phoneme strings, and running a GPL program "
+            "over an input does not place the output under the GPL. No espeak-ng "
+            "code or data is redistributed in tools/wakewords/. Recorded "
+            "explicitly because 'a GPL dependency' found later, unexplained, is "
+            "a licence review nobody scheduled."
+        ),
+    ),
+    Source(
+        key="common-voice",
+        name="Mozilla Common Voice",
+        kind="corpus",
+        origin="https://commonvoice.mozilla.org/datasets",
+        version="Corpus 17.0, English — the version scripts/wakeword/COMMON_VOICE.md is written against",
+        license="CC0-1.0",
+        license_url="https://creativecommons.org/publicdomain/zero/1.0/",
+        attribution="Ardila et al., Common Voice: A Massively-Multilingual Speech Corpus (2020), arXiv:1912.06670",
+        provides=(),
+        status="planned",
+        notes=(
+            "Not acquired. Access needs the dataset terms accepted under the "
+            "Owner's account and a read-scope token, neither of which an agent "
+            "can hold. acquire_common_voice.py refuses to run without one and "
+            "downloads nothing until then. See COMMON_VOICE.md for the bound "
+            "and the exact Owner action."
+        ),
+    ),
+    Source(
+        key="musan",
+        name="MUSAN",
+        kind="corpus",
+        origin="https://www.openslr.org/17/",
+        version="n/a — never fetched",
+        license="CC BY 4.0 as published on openslr.org/17; NOT independently verified here",
+        license_url="https://www.openslr.org/17/",
+        attribution="Snyder, Chen and Povey, MUSAN: A Music, Speech, and Noise Corpus (2015), arXiv:1510.08484",
+        provides=(),
+        status="declined",
+        notes=(
+            "Recorded because MUSAN is the obvious corpus for this job and its "
+            "absence reads like an oversight. It is not used: no script "
+            "references it, no byte of it has been fetched, and the noise the "
+            "pipeline mixes in comes from Speech Commands' six background "
+            "recordings plus synthetic impulse responses. The licence above is "
+            "quoted from the publisher and is deliberately not asserted as "
+            "verified — nothing here has ever downloaded the corpus to check. "
+            "If MUSAN is ever adopted, this entry moves to in-use and the "
+            "licence has to be confirmed against the distribution itself."
+        ),
+    ),
+)
+
+
+def source_for(asset: Asset) -> Source:
+    """The Source an asset's bytes come from.
+
+    Raises rather than returning None: an asset whose provenance cannot be
+    resolved is the failure this table exists to make impossible, and a caller
+    that got ``None`` back would most likely print it.
+    """
+    for source in SOURCES:
+        if source.key == asset.source:
+            return source
+    raise KeyError(
+        f"{asset.name} names source {asset.source!r}, which is not in SOURCES. "
+        "Add the project or corpus there — with its licence, version and "
+        "attribution — before pinning bytes from it."
+    )
 
 
 #: The VITS checkpoint's config. piper-sample-generator keeps this inside its
