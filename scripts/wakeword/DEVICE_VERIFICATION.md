@@ -17,18 +17,54 @@ Run it on real hardware, on each OS, and keep the JSON report.
 
 ## Status
 
+"Automated qualification" here means: **on that operating system**, both
+shipped artifacts were loaded, scored over the committed fixtures, checked
+against each other, and timed. Until the `wake-word-backends` job existed this
+column said "done" everywhere while only `ubuntu-latest` had ever executed
+either file.
+
 | platform | automated qualification | device run |
 |---|---|---|
-| Linux (CI) | done — required CI runs both artifacts | n/a, headless |
-| Windows | done | **pending** — needs a physical machine |
-| macOS (Apple Silicon) | done | **pending** — needs a physical machine |
-| macOS (Intel) | done | **pending** — needs a physical machine |
+| Linux (CI) | done — `wake-word-backends (ubuntu-latest)` | n/a, headless |
+| Windows | done — `wake-word-backends (windows-latest)` | **pending** — needs a physical machine |
+| macOS (Apple Silicon) | **pending** — needs a macOS runner (Owner decision) or one local run of step 0 | **pending** — needs a physical machine |
+| macOS (Intel) | **not possible at the shipped pins** — see below | **pending** — needs a physical machine |
+
+macOS Intel is not a scheduling problem. `onnxruntime==1.27.0` and
+`ai-edge-litert==2.1.6`, the versions the `wake` extra pins, publish **no macOS
+x86_64 wheel**: onnxruntime dropped its `universal2` build after 1.22.0 and
+ai-edge-litert has only ever shipped `macosx_*_arm64` for Darwin. `pip install
+-e ".[wake]"` therefore cannot succeed on an Intel Mac, so there is nothing to
+qualify there until that pin changes. That is a product decision, recorded here
+rather than worked around.
 
 The device runs are pending because the build environment has no audio
 hardware: there is no input device to open and no speaker to play at it. Every
 step that does not require a microphone has been completed and is enforced by
 CI. Nothing below is a workaround for a missing model — the model is trained,
 measured and shipping.
+
+## 0. Both artifacts, before any hardware
+
+```bash
+python scripts/wakeword/verify_backends.py --report backend-report.json
+```
+
+No microphone, no speaker, no network. It loads `hey_youtab.onnx` and
+`hey_youtab.tflite`, scores the 33 committed fixtures with each, and fails if
+they disagree, if a positive is missed, if a negative fires, or if p95
+inference latency reaches openWakeWord's 80 ms rescoring interval. It also
+records per-backend load time and peak RSS, which is what makes a device
+budget a measurement rather than an assumption.
+
+Run this first. It is the same code CI runs, so a failure here is about this
+machine — a wheel built for another architecture, a runtime that lowers a
+kernel differently — and not about the capture path everything below tests.
+
+**On an Apple Silicon Mac this is the step that matters most**, because it is
+the only platform where `hey_youtab.tflite` is the file the product loads. Until
+a macOS runner is enabled, one local run of this command, with its
+`backend-report.json` attached to the qualification record, is the evidence.
 
 ## Before you start
 
