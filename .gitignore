@@ -11,6 +11,11 @@ act/
 .venv/
 .venv
 .vscode/
+# Agent scaffolding: local settings, session state and the nested worktrees an
+# agent checks out to work in parallel. It is tooling for whoever is driving
+# the checkout, not part of the product, and the worktrees under it are whole
+# second copies of the repository.
+.claude/
 .env
 .op.env
 .env.local
@@ -203,3 +208,64 @@ native/fts5_cjk/*.so
 # Windows pytest litter: tmp_path (C:\Users\...\AppData\Local\Temp\pytest-*) interpolated
 # into a bash command lands in the repo root with the drive colon mangled to U+F03A.
 *AppDataLocalTemppytest-*
+
+# ── Consented human speech, and everything derived from it ───────────────────
+# Qualifying the wake word needs recordings of real people. Those recordings
+# were given for one purpose, on the promise that they stay on local disk: they
+# are never committed, never uploaded, and never leave the machine that captured
+# them. Neither are the feature tensors cut out of them or the transcripts
+# written from them — a mel/embedding tensor is the speech, resampled, and a
+# transcript is what the speaker said.
+#
+# Datasets belong OUTSIDE the checkout entirely (see
+# scripts/wakeword/SPEAKER_RECORDING_PACKAGE.md). These patterns are the second
+# line of defence for the case where one lands inside it anyway.
+#
+# This stops the accident — `git add -A` after a recording session. It cannot
+# stop `git add -f`, exactly as the infographic rule above records. What
+# actually enforces the rule is
+# tests/tools/test_wakeword_no_human_data_committed.py, which fails on any
+# TRACKED file that looks like human audio, a derived tensor or a transcript,
+# and on any tracked text that names a speaker id or a capture root.
+#
+# No `!` exceptions. The artifacts this repository legitimately ships (the 33
+# synthetic fixtures, samples.npz, jo.wav) are already tracked, and ignore rules
+# do not apply to tracked files — so nothing here has to be re-added in normal
+# work. Regenerating the fixture set is the one case that needs `git add -f`,
+# and that is a deliberate act which should be reviewed rather than swept in by
+# a wildcard: a `!.../audio/*.wav` exception would re-admit any stray recording
+# dropped into that directory.
+*.wav
+*.m4a
+*.m4b
+*.mp3
+*.aac
+*.amr
+*.flac
+*.ogg
+*.opus
+*.aiff
+*.aif
+*.caf
+*.wma
+*.3gp
+# Derived feature tensors. openWakeWord features are a lossy but perfectly
+# recognisable encoding of the audio they came from.
+*.npy
+*.npz
+# Speaker directories, whatever they are nested under. E001, E002, E003…
+speaker_E*/
+**/speaker_E*
+# Transcripts and per-take logs of what a speaker said.
+*transcript*.json
+*transcripts*.json
+*.transcript
+# Filled consent records. The blank template
+# (scripts/wakeword/CONSENT_RECORD_TEMPLATE.md) is tracked and does not match
+# this; a filled one carries the speaker's name and contact details, which is
+# the only personal data in the whole workflow.
+consent-record-*
+# Capture roots, if one is ever created inside the checkout by mistake.
+wakeword-human/
+wakeword-build/
+recordings/

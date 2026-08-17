@@ -168,3 +168,49 @@ def test_resume_can_be_disabled_explicitly() -> None:
         "no --no-resume flag: a stale checkpoint from different data or "
         "hyperparameters would be silently resumed into"
     )
+
+
+def test_real_human_near_misses_carry_the_hard_negative_weight() -> None:
+    """A near miss is a hard negative whether it was synthesised or spoken.
+
+    Round 6 puts speaker E001's deliberate near misses into training under
+    their own category, ``near_phrase_human``, so that a false accept can be
+    attributed to a real voice instead of averaged in with synthesis. That
+    separation has a trap in it: ``class_weights`` used to select hard
+    negatives with ``c == "near_phrase"``, an exact match, which would have
+    silently handed the real near misses the ordinary ``--negative-weight``
+    (3.0) instead of ``--hard-negative-weight`` (6.0) — downweighting the one
+    class the whole round exists to fix, while every count and every log line
+    still looked right.
+
+    Structural for the reason in the module docstring: torch is not installed
+    in required CI, so the weighting is asserted from the source rather than by
+    calling it.
+    """
+    names = {
+        node.targets[0].id
+        for node in ast.walk(TREE)
+        if isinstance(node, ast.Assign)
+        and node.targets
+        and isinstance(node.targets[0], ast.Name)
+    }
+    assert "HARD_NEGATIVE_CATEGORIES" in names, (
+        "HARD_NEGATIVE_CATEGORIES is gone; hard-negative selection is back to "
+        "an inline test that a new near-miss category would not join"
+    )
+
+    fn = _function("class_weights")
+    used = {
+        node.id for node in ast.walk(fn) if isinstance(node, ast.Name)
+    }
+    assert "HARD_NEGATIVE_CATEGORIES" in used, (
+        "class_weights no longer consults HARD_NEGATIVE_CATEGORIES, so the set "
+        "can list a category that never receives the hard-negative weight"
+    )
+
+    source = TRAIN.read_text(encoding="utf-8")
+    for category in ("near_phrase", "near_phrase_human"):
+        assert f'"{category}"' in source, (
+            f"{category!r} is not in the hard-negative set; windows in that "
+            "category would train at the ordinary negative weight"
+        )

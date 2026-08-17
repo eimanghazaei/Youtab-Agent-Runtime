@@ -39,6 +39,14 @@ from torch import nn
 FEATURE_FRAMES = 16
 EMBEDDING_DIM = 96
 
+#: Window categories that carry `--hard-negative-weight` rather than the
+#: ordinary `--negative-weight`. Deliberate near misses are the entire error
+#: surface this model has, whether they were synthesised or spoken by a person,
+#: so both categories belong here. Kept as a set rather than an equality test
+#: because a new near-miss source must be a one-line addition, not a silent
+#: demotion to the ordinary weight.
+HARD_NEGATIVE_CATEGORIES = frozenset({"near_phrase", "near_phrase_human"})
+
 #: The runtime's default `wake_word.sensitivity`. Scores are compared to this
 #: raw threshold, so it is the operating point the model is selected at rather
 #: than an afterthought applied to a finished model.
@@ -212,7 +220,12 @@ def class_weights(categories: list[str], labels: np.ndarray, args) -> np.ndarray
     """
     weights = np.full(len(labels), args.negative_weight, dtype=np.float32)
     weights[labels > 0.5] = 1.0
-    near = np.array([c == "near_phrase" for c in categories])
+    # Real-human near misses are hard negatives too. They arrive under their own
+    # category so a false accept can be attributed to a real voice rather than
+    # averaged in with synthesis -- but an exact match on "near_phrase" would
+    # then quietly demote them to the ordinary negative weight, which is the
+    # opposite of why they were recorded.
+    near = np.array([c in HARD_NEGATIVE_CATEGORIES for c in categories])
     weights[near & (labels < 0.5)] = args.hard_negative_weight
     return weights
 

@@ -31,6 +31,14 @@ Splits are disjoint by source, not by shuffling:
 
 so no voice, no room and no noise recording is shared between fitting and
 measuring.
+
+Recorded human speakers follow the same rule, enforced twice. A speaker's
+manifest declares which side of the line it is on, and ``--human-manifest``
+refuses any split but ``train`` and any manifest that does not declare itself
+``train``. One speaker is a handful of voices at most, so a split that both
+trains and measures on one person reports memorisation as detection — and the
+sealed evaluation speaker exists precisely to be the one voice no candidate has
+heard.
 """
 
 from __future__ import annotations
@@ -92,6 +100,32 @@ POSITIVE_SPEECH_PREFIX_FRACTION = 0.3
 #: plateau the confirmation rule needs, and `evaluate_model.py` measures how
 #: long it actually turns out to be rather than trusting this comment.
 PHRASE_END_JITTER = (0.16, 0.64)
+
+#: The split a human speaker's manifest must declare before any of its clips
+#: may be read. Nothing else is ingestible on any split; a manifest marked
+#: ``eval_sealed`` is the held-out speaker the whole measurement rests on.
+HUMAN_TRAIN_SPLIT = "train"
+
+#: Manifest categories that carry the wake phrase. A prefix rather than one
+#: name because the recording script numbers its positive prompts
+#: (``positive_neutral``, ``positive_far`` ...), and which prompts exist is the
+#: session's business, not this stage's.
+HUMAN_POSITIVE_PREFIX = "positive_"
+
+#: Window category every human positive is emitted under.
+HUMAN_POSITIVE_CATEGORY = "positive_human"
+
+#: Manifest category -> window category, for the human negatives.
+#:
+#: Human windows keep their own category strings rather than joining
+#: ``near_phrase`` or ``recorded_speech`` so `evaluate_model.py` can report
+#: them apart. "The false-accept rate went down" is a different claim from "the
+#: false-accept rate went down on the one person whose speech we trained on",
+#: and a shared category makes the second indistinguishable from the first.
+HUMAN_NEGATIVE_CATEGORIES = {
+    "near_phrase": "near_phrase_human",
+    "free_speech": "free_speech_human",
+}
 
 
 def read_wav16(path: Path) -> np.ndarray:
@@ -291,6 +325,114 @@ def _tts_clips(directory: Path, speakers: tuple[int, int] | None = None) -> list
     return [directory / row["file"] for row in rows]
 
 
+def sha256_file(path: Path) -> str:
+    """The manifest's own hash, so a candidate can name the data it saw.
+
+    A speaker's clips are re-derived — takes get re-cut, a bad one gets
+    excluded — and every one of those edits produces a different training set
+    under the same file name. Recording the hash is what makes "this model was
+    fit on that human data" checkable a month later instead of asserted.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def load_human_clips(
+    manifest_path: Path, split: str
+) -> tuple[dict, list[tuple[Path, str, int]]]:
+    """A human speaker's manifest, reduced to the clips this split may train on.
+
+    Returns the parsed manifest and one ``(path, window category, label)`` per
+    usable clip, in manifest order. Paths are resolved against the manifest's
+    own directory, which is what the manifest stores them relative to.
+
+    Every rejection here is a hard stop rather than a warning. Each one is a
+    way the experiment reads as valid while measuring something else:
+
+    * a human speaker on the validation or evaluation side scores the model
+      against a voice it was fitted on;
+    * a manifest that declares a split other than ``train`` is the sealed
+      evaluation speaker, whose whole purpose is to be unheard;
+    * an ``excluded`` clip is a take somebody listened to and rejected —
+      clipped, coughed through, wrong phrase — and re-deriving that judgement
+      from durations or transcripts would quietly overrule it;
+    * a category this stage does not recognise would otherwise be dropped, and
+      the run would train on part of a manifest while reporting all of it.
+    """
+    if split != HUMAN_TRAIN_SPLIT:
+        raise SystemExit(
+            f"--human-manifest is {HUMAN_TRAIN_SPLIT}-only, but --split {split} "
+            "was requested. One person supplies a handful of voices at most, so "
+            "a validation or evaluation split carrying them measures the model "
+            "against a voice it was fitted on and reports that as a result."
+        )
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for field in ("speaker", "split", "clips"):
+        if field not in manifest:
+            raise SystemExit(f"{manifest_path}: manifest has no {field!r} field")
+
+    declared = manifest["split"]
+    if declared != HUMAN_TRAIN_SPLIT:
+        raise SystemExit(
+            f"{manifest_path}: this manifest declares split {declared!r}, not "
+            f"{HUMAN_TRAIN_SPLIT!r}, so it is refused on every split. A speaker "
+            "sealed for evaluation is the only measurement of whether the model "
+            "generalises to a real voice; train on it and every later number "
+            "about it describes what the model memorised. The seal is not "
+            "overridable from the command line -- re-derive the speaker as a "
+            "training speaker if that is genuinely what is wanted."
+        )
+
+    usable: list[tuple[Path, str, int]] = []
+    for index, clip in enumerate(manifest["clips"]):
+        excluded = clip.get("excluded")
+        if not isinstance(excluded, bool):
+            raise SystemExit(
+                f"{manifest_path}: clips[{index}] has excluded={excluded!r}, "
+                "which is not a boolean. That flag is the only thing keeping a "
+                "rejected take out of training, and a missing one reads as "
+                "false while a string reads as true whatever it spells."
+            )
+        if excluded:
+            continue
+
+        # `clip`, not `path`: the deriver names this key after what it holds,
+        # and a manifest is only ever written by that deriver.
+        relative = clip.get("clip")
+        if not relative:
+            raise SystemExit(f"{manifest_path}: clips[{index}] has no 'clip'")
+        path = manifest_path.parent / relative
+        if not path.is_file():
+            raise SystemExit(
+                f"{manifest_path}: clips[{index}] points at {path}, which is "
+                "not a file. Paths are relative to the manifest's own directory."
+            )
+
+        # Category decides the label, so an unrecognised one cannot be guessed
+        # at: calling an unknown category a negative would put the phrase in
+        # the negatives if it ever named a new positive prompt.
+        declared_category = clip.get("category")
+        category, label = None, 0
+        if isinstance(declared_category, str):
+            if declared_category.startswith(HUMAN_POSITIVE_PREFIX):
+                category, label = HUMAN_POSITIVE_CATEGORY, 1
+            elif declared_category in HUMAN_NEGATIVE_CATEGORIES:
+                category, label = HUMAN_NEGATIVE_CATEGORIES[declared_category], 0
+        if category is None:
+            raise SystemExit(
+                f"{manifest_path}: clips[{index}] has category "
+                f"{declared_category!r}, which this stage cannot label. Expected "
+                f"{HUMAN_POSITIVE_PREFIX}* or one of "
+                f"{sorted(HUMAN_NEGATIVE_CATEGORIES)}."
+            )
+        usable.append((path, category, label))
+    return manifest, usable
+
+
 def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
     """Emit every labelled window for one split into ``sink``.
 
@@ -322,6 +464,30 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
         ):
             seen.extend(_tts_clips(directory, speakers))
         return seen
+
+    # Read the human manifest before anything expensive happens. Every check
+    # inside it is cheap and every one of them is fatal, so finding out after
+    # the impulse-response pool has been synthesized and the sink has
+    # preallocated is minutes wasted for no reason.
+    human_repeats = args.human_positive_repeats
+    if human_repeats < 0:
+        raise SystemExit(
+            f"--human-positive-repeats must be >= 0, got {human_repeats}. A "
+            "negative count would emit nothing at all, which is the control "
+            "arm of the sweep wearing another arm's name."
+        )
+    if args.human_manifest is None:
+        if human_repeats > 0:
+            raise SystemExit(
+                f"--human-positive-repeats {human_repeats} was given without "
+                "--human-manifest, so no human clip would be read. That builds "
+                "a synthetic-only dataset under a name that says otherwise, and "
+                "the sweep would show human positives making no difference."
+            )
+        human_manifest: dict | None = None
+        human: list[tuple[Path, str, int]] = []
+    else:
+        human_manifest, human = load_human_clips(Path(args.human_manifest), args.split)
 
     sc_root = Path(args.speech_commands)
     sc_train, sc_eval = speech_commands_split(sc_root)
@@ -369,6 +535,12 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
     positives = clips("positive")
     wanted = args.recorded_negatives if args.recorded_negatives > 0 else len(recorded)
     chosen = recorded if wanted >= len(recorded) else rng.sample(recorded, wanted)
+    # Human negatives are emitted once each whatever the positive repeat count
+    # is, so they are counted at one apiece here too. The sink preallocates
+    # from this number and refuses to grow, so a term missing from this sum
+    # aborts the run at the overflow -- and a term too large leaves zero-filled
+    # rows that train as silent negatives.
+    human_windows = sum(human_repeats if label == 1 else 1 for _, _, label in human)
     # The total is knowable before a single window exists, which is what lets
     # the sink preallocate instead of growing.
     sink.begin(
@@ -379,6 +551,7 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
         + len(clips("common"))
         + len(chosen)
         + args.noise_only
+        + human_windows
     )
     category = "positive"
     for path in positives:
@@ -389,6 +562,29 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
             if prefix_pool and rng.random() < POSITIVE_SPEECH_PREFIX_FRACTION:
                 prefix = read_wav16(prefix_pool[rng.randrange(len(prefix_pool))])
             emit(place_at_end(audio, rng, prefix), 1, _source(path))
+
+    # Recorded human clips, positive and negative, take the same placement,
+    # prefix draw and augmentation as the synthesized ones directly above. A
+    # separate path would give the model a second way to tell the two apart --
+    # "the clean-sounding voice is the real one" is a rule that fits the
+    # training set perfectly and means nothing at a microphone.
+    #
+    # Their group ids come from the same counter, so no human window ever
+    # shares a group with a synthesized one and every window derived from one
+    # utterance stays together.
+    for path, human_category, label in human:
+        audio = read_wav16(path)
+        category = human_category
+        group_id += 1
+        # The repeat count is a positives-only dial. Repeating the negatives
+        # alongside them would move two variables per sweep step, and the
+        # question the sweep asks is how much of one voice's *positive* speech
+        # the model needs.
+        for _ in range(human_repeats if label == 1 else 1):
+            prefix = None
+            if label == 1 and prefix_pool and rng.random() < POSITIVE_SPEECH_PREFIX_FRACTION:
+                prefix = read_wav16(prefix_pool[rng.randrange(len(prefix_pool))])
+            emit(place_at_end(audio, rng, prefix), label, _source(path))
 
     for group, repeats in (
         ("hardneg", args.hard_negative_repeats),
@@ -440,6 +636,26 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
             name: sink.categories.count(name) for name in sorted(set(sink.categories))
         },
     }
+    if human_manifest is not None:
+        # Counted off what the sink actually holds, not off the plan above, so
+        # this cannot agree with the preallocation while disagreeing with the
+        # dataset. The hash and the speaker are what tie a trained candidate to
+        # one exact derivation of one person's recordings.
+        stats["human_manifest"] = {
+            "path": str(args.human_manifest),
+            "sha256": sha256_file(Path(args.human_manifest)),
+            "speaker": human_manifest["speaker"],
+            "split": human_manifest["split"],
+            "clips_in_manifest": len(human_manifest["clips"]),
+            "clips_excluded": len(human_manifest["clips"]) - len(human),
+            "clips_used": len(human),
+            "positive_repeats": human_repeats,
+            "windows": human_windows,
+            "windows_by_category": {
+                name: sink.categories.count(name)
+                for name in sorted({name for _, name, _ in human})
+            },
+        }
     return stats
 
 
@@ -550,6 +766,20 @@ def main() -> int:
         type=int,
         default=50000,
         help="0 uses every clip on this side of the split",
+    )
+    parser.add_argument(
+        "--human-manifest",
+        type=Path,
+        default=None,
+        help="MANIFEST.json of a derived human speaker; --split train only, and "
+             "only for a manifest that declares itself a training speaker",
+    )
+    parser.add_argument(
+        "--human-positive-repeats",
+        type=int,
+        default=0,
+        help="windows per usable human positive clip (0 disables them). Human "
+             "negatives are always emitted once each, whatever this is set to",
     )
     parser.add_argument("--noise-only", type=int, default=4000)
     parser.add_argument("--rir-count", type=int, default=200)
