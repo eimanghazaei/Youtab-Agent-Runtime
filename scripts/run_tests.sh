@@ -172,6 +172,52 @@ cd "$REPO_ROOT"
 echo "▶ pre-compiling bytecode cache"
 "$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
 
+# ── ...and the installed dependencies, for the same reason ──────────────────
+# The warm-up above stops at the repo boundary, and the workers do not: the
+# first parallel launch has hundreds of subprocesses importing the same
+# dependency trees at the same time, and every one of them that finds a
+# missing .pyc compiles it and writes it into site-packages.
+#
+# Whether that window exists at all depends on which installer built the
+# environment, which is why this is not redundant with the line above.
+# Measured on numpy 2.4.3 into a fresh venv: `pip install` leaves 406 of 406
+# .pyc in place before any test runs, `pip install --no-compile` leaves 0 of
+# 406 (uv likewise does not byte-compile unless asked for it). So a
+# pip-installed CI environment starts warm, while a uv-built or --no-compile
+# venv hands the entire dependency tree to the workers to compile
+# concurrently. Doing it once here means no worker has to write into
+# site-packages at all.
+#
+# Measured cost, 5981 .py files under site-packages, on a 2-CPU cpuset:
+# 3.0s when already compiled (the CI case -- compileall skips up-to-date
+# files, so this is a stat walk), 9.1s from completely cold.
+#
+# purelib+platlib only -- the dependencies, not the stdlib, which every
+# interpreter distribution ships pre-compiled.
+#
+# Strictly best-effort, and quiet about it: a read-only or system-owned
+# site-packages, or a dependency shipping .py files whose syntax this
+# interpreter rejects, is not a reason for the test suite not to run. `-q -q`
+# suppresses the per-error output that would otherwise scroll past, and the
+# exit status is discarded on purpose.
+DEP_DIRS="$(
+  "$PYTHON" -c 'import sysconfig
+paths = sysconfig.get_paths()
+seen = []
+for key in ("purelib", "platlib"):
+    p = paths.get(key)
+    if p and p not in seen:
+        seen.append(p)
+print("\n".join(seen))' 2>/dev/null || true
+)"
+if [ -n "$DEP_DIRS" ]; then
+  echo "▶ pre-compiling dependency bytecode cache"
+  printf '%s\n' "$DEP_DIRS" | while IFS= read -r _dep_dir; do
+    [ -n "$_dep_dir" ] && [ -d "$_dep_dir" ] || continue
+    "$PYTHON" -m compileall -q -q -j 0 -- "$_dep_dir" >/dev/null 2>&1 || true
+  done
+fi
+
 echo "▶ launching test runner"
 exec env -i \
   PATH="$PATH" \

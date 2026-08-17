@@ -358,12 +358,27 @@ class TestRunCommandTts:
 
 
     def test_silent_after_progress_still_times_out_with_stderr(self, tmp_path):
+        """A real interpreter is launched here, so the idle window has to cover
+        the child's startup latency: the deadline starts at ``Popen`` and the
+        "starting tier 1" line must arrive before it expires, or the process is
+        killed with an empty stderr and this assertion fails for a reason that
+        has nothing to do with the timeout logic. Measured startup on this
+        launch path runs 13-19 ms idle, 72-109 ms on a 2-vCPU box with 4-8 busy
+        workers, and 271-478 ms for an interpreter on a Windows mount, so 0.2 s
+        was inside the noise (it fails outright in the last case).
+
+        Window and stall are both scaled 10x from 0.2 s / 1.0 s, so the stall
+        still outlasts the window by the same 5x and the property under test is
+        unchanged, while the startup budget becomes 2 s. Same derivation as
+        ``tests/tools/test_transcription_tools.py::TestRunCommandSttIdleTimeout``,
+        whose runner this one mirrors.
+        """
         script = tmp_path / "progress_then_hang.py"
         script.write_text(
             "\n".join([
                 "import sys, time",
                 "print('starting tier 1', file=sys.stderr, flush=True)",
-                "time.sleep(1.0)",
+                "time.sleep(10.0)",
             ]),
             encoding="utf-8",
         )
@@ -371,7 +386,7 @@ class TestRunCommandTts:
         with pytest.raises(subprocess.TimeoutExpired) as excinfo:
             _run_command_tts(
                 _shell_command(sys.executable, "-u", str(script)),
-                timeout=0.2,
+                timeout=2.0,
             )
 
         assert "starting tier 1" in (excinfo.value.stderr or "")
