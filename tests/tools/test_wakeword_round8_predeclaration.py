@@ -278,6 +278,52 @@ def test_the_offset_grid_is_derived_from_the_pipelines_own_constants() -> None:
     assert len(grid) == 7
 
 
+# ── V6: the predeclaration diverges from the builder that will run ────────────
+
+
+def test_the_predeclared_windowing_diverges_from_the_real_round8_builder() -> None:
+    """Guarded, not reconciled — an Owner decision, made impossible to miss.
+
+    ``check`` derives the offset grid from ``build_dataset.PHRASE_END_JITTER``
+    (the retired synthetic builder) and the config predeclares 7 phrase-anchored
+    offsets, projecting ``near_phrase_human`` as ``utterances x 7``. But Round 8
+    is built by ``build_human_dataset``, whose ``TRAILING_OFFSETS_S`` is a
+    4-offset ladder and which TILES label-0 near-phrase clips into 2 s windows.
+    Reconciling would move frozen predeclared numbers
+    (``offsets_per_phrase_anchored_utterance`` 7->4, every projection window
+    count, and the derived ``loss.negative_weight`` 0.1423), so the divergence is
+    detected and flagged rather than silently 'fixed'. This guard must SEE it.
+    """
+    problems = r8.builder_windowing_divergence()
+    assert problems, "the builder-windowing divergence is no longer detected"
+    joined = " | ".join(problems)
+    assert "TRAILING_OFFSETS_S" in joined
+    assert "offsets_per_phrase_anchored_utterance" in joined
+    assert any("TILES" in problem for problem in problems), (
+        "the label-0 tiling divergence is not reported"
+    )
+    # And the dedicated CLI check exits non-zero on it, without touching --check.
+    assert r8.main(["--check-builder-windowing"]) == 1
+    assert r8.main(["--check"]) == 0
+
+
+def test_the_builder_windowing_check_is_not_vacuous() -> None:
+    """A config pointed at the real ladder and tiled negatives reports nothing.
+
+    Without this, a divergence function that returned a problem unconditionally
+    would 'detect' the divergence above while checking nothing.
+    """
+    reconciled = copy.deepcopy(r8.load())
+    window = reconciled["window_construction"]
+    window["phrase_anchored_offsets_frames"] = [2, 4, 6, 8]
+    window["offsets_per_phrase_anchored_utterance"] = 4
+    # near-phrase negatives are tiled: a variable count, not utterances x offsets.
+    for split in ("train", "validation"):
+        entry = reconciled["dataset_projection"][split]["near_phrase_human"]
+        entry["windows"] = entry["utterances"] * 4 + 1
+    assert r8.builder_windowing_divergence(reconciled) == []
+
+
 # ── policy that is not arithmetic ────────────────────────────────────────────
 
 
