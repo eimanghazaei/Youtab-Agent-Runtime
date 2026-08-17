@@ -152,31 +152,65 @@ CORPUS_PURPOSE: dict[str, str] = {
 #: positive filed as a negative teaches it not to fire on the wake phrase.
 #:
 #: Every name ends in ``_human`` so a Round 8 dataset is self-describing in the
-#: per-category tables ``evaluate_model.py`` prints. The derivation must emit
-#: these exact strings; see MANIFEST_CATEGORY_NOTE.
+#: per-category tables ``evaluate_model.py`` prints. A manifest may declare
+#: either these or the derivation's own names; see DERIVED_CATEGORY_ALIASES.
 HUMAN_CATEGORIES: dict[str, int] = {
     "positive_human": 1,
     "near_phrase_human": 0,
     "free_speech_human": 0,
 }
 
-#: What to tell an operator whose manifest still carries the derivation's
-#: original category names.
+#: The dataset name every ``positive_<condition>`` collapses to.
+HUMAN_POSITIVE_CATEGORY = "positive_human"
+
+#: Category names the *derivation* writes, mapped to the dataset names this
+#: stage emits. ``human_derive.py`` labels a real speaker's clips
+#: ``near_phrase`` / ``free_speech`` / ``positive_<condition>``, and
+#: ``build_dataset.load_human_clips`` already maps those to the ``_human``
+#: names. This stage does the same rather than demanding the manifest be
+#: rewritten.
+#:
+#: Refusing ``near_phrase`` *by name* was the first design here, and it was
+#: wrong in a way worth recording: it made the frozen sealed-evaluation
+#: manifest un-ingestible. That manifest's digest is what a qualification
+#: result is traced to, so it cannot be regenerated to satisfy a naming rule —
+#: and a rule that forces a sealed set to be rewritten has broken the thing it
+#: was protecting.
+#:
+#: Nothing is weakened by accepting the name, because the name was never the
+#: guard. Every row goes through ``_verify_provenance`` unconditionally, and a
+#: synthetic clip declaring ``near_phrase`` is refused there, on where its
+#: audio came from. The mutation test for that is the control: renaming a
+#: synthetic clip to a human category must still be refused.
+DERIVED_CATEGORY_ALIASES = {
+    "near_phrase": "near_phrase_human",
+    "free_speech": "free_speech_human",
+}
+
+#: A derived positive is ``positive_close``, ``positive_far_field``, and so on.
+#: Mirrors ``build_dataset.HUMAN_POSITIVE_PREFIX``; the bare word ``positive``
+#: is NOT covered, because that is the synthetic group's name and no derivation
+#: emits it.
+DERIVED_POSITIVE_PREFIX = "positive_"
+
+#: What to tell an operator whose manifest declares something this stage cannot
+#: place at all.
 MANIFEST_CATEGORY_NOTE = (
-    "Round 8 manifests must declare the '_human' category names "
-    f"({sorted(HUMAN_CATEGORIES)}); re-derive the speaker rather than editing "
-    "the manifest, because the manifest digest is what a candidate is traced to."
+    "Round 8 accepts the '_human' dataset names "
+    f"({sorted(HUMAN_CATEGORIES)}) and the derivation's own names "
+    f"({sorted(DERIVED_CATEGORY_ALIASES)}, plus "
+    f"{DERIVED_POSITIVE_PREFIX}<condition>), which are normalised to them. "
+    "Provenance, not the category string, is what decides whether a row is "
+    "real."
 )
 
-#: Category names from the synthetic era. Every one of these is a hard error
-#: wherever it is declared, including inside an otherwise valid human manifest:
-#: ``near_phrase`` and ``positive`` are what the TTS groups were called, so a
-#: row carrying one is either a synthetic clip or a manifest written by a tool
-#: that does not know this contract. Neither is ingestible.
+#: Category names from the synthetic era with NO real-derivation meaning. A row
+#: carrying one of these was written by the TTS pipeline or by a tool that does
+#: not know this contract, and neither is ingestible. ``near_phrase`` and
+#: ``free_speech`` are deliberately absent — see DERIVED_CATEGORY_ALIASES.
 SYNTHETIC_CATEGORIES = frozenset(
     {
         "positive",
-        "near_phrase",
         "hardneg",
         "confusable",
         "softneg",
@@ -515,11 +549,18 @@ def _require_frozen(path: Path, digest: str) -> None:
 def _check_category(category: object, label: object, where: str) -> tuple[str, int]:
     """The declared category and label, or a refusal.
 
-    Two independent failures. A synthetic-era name is refused outright, because
-    those are what the TTS groups were called and no real derivation emits one.
-    A label that disagrees with the category table is refused too: the label is
-    what training optimises, and a near miss carrying label 1 is a lesson to
-    fire on the speaker's ordinary speech.
+    The derivation's own names are normalised to the dataset names first, so a
+    speaker does not have to be re-derived — and a frozen sealed manifest does
+    not have to be rewritten — to satisfy a naming convention. What makes that
+    safe is that the name was never the guard: every row is provenance-verified
+    unconditionally, so a synthetic clip wearing a human category is refused on
+    where its audio came from.
+
+    Two independent failures remain. A synthetic-era name with no real-
+    derivation meaning is refused outright. A label that disagrees with the
+    category table is refused too: the label is what training optimises, and a
+    near miss carrying label 1 is a lesson to fire on the speaker's ordinary
+    speech.
     """
     if not isinstance(category, str) or not category:
         raise Refused(f"{where} declares no category")
@@ -528,6 +569,10 @@ def _check_category(category: object, label: object, where: str) -> tuple[str, i
             f"{where} declares the synthetic-era category {category!r}, which "
             f"is refused wherever it appears. {MANIFEST_CATEGORY_NOTE}"
         )
+    if category in DERIVED_CATEGORY_ALIASES:
+        category = DERIVED_CATEGORY_ALIASES[category]
+    elif category.startswith(DERIVED_POSITIVE_PREFIX):
+        category = HUMAN_POSITIVE_CATEGORY
     if category not in HUMAN_CATEGORIES:
         raise Refused(
             f"{where} declares category {category!r}, which is not in the "

@@ -79,15 +79,27 @@ FREE = "free_speech_human"
 #: the regression being guarded against, and it would present as a smaller,
 #: still-green test run. So the list is stated independently and the module's
 #: table is checked against it.
+#: TTS-era names with no real-derivation meaning. Refused on sight.
+#:
+#: ``near_phrase`` and ``free_speech`` are deliberately NOT here. They are what
+#: ``human_derive.py`` calls a real speaker's negatives, so refusing them by
+#: name made the frozen sealed-evaluation manifest un-ingestible — and that
+#: manifest cannot be regenerated, because its digest is what a qualification
+#: result is traced to. They are normalised instead, and a synthetic clip
+#: wearing one is caught by provenance; see
+#: ``test_a_derivation_category_is_normalised_not_refused`` and
+#: ``test_a_renamed_synthetic_clip_is_refused_by_provenance_not_by_name``.
 TTS_ERA_CATEGORIES = (
     "positive",
-    "near_phrase",
     "hardneg",
     "confusable",
     "softneg",
     "common",
     "synthesized_speech",
 )
+
+#: Names the derivation writes, which must be accepted and mapped.
+DERIVATION_CATEGORIES = ("near_phrase", "free_speech", "positive_close")
 
 #: (clip path, category, label, original, excluded). Two usable positives, two
 #: usable negatives, one excluded take, spread over three originals — so every
@@ -585,15 +597,55 @@ def test_every_tts_era_category_is_recorded_as_synthetic() -> None:
     # None of them may also be an approved human category, or the two tables
     # would disagree about the same string.
     assert round8.SYNTHETIC_CATEGORIES.isdisjoint(round8.HUMAN_CATEGORIES)
+    # And the two tables must not fight over a derivation name either: an alias
+    # that is also listed as synthetic would be normalised on one path and
+    # refused on the other, depending on evaluation order.
+    assert round8.SYNTHETIC_CATEGORIES.isdisjoint(round8.DERIVED_CATEGORY_ALIASES)
+
+
+@pytest.mark.parametrize("name", DERIVATION_CATEGORIES)
+def test_a_derivation_category_is_normalised_not_refused(
+    build: Build, name: str
+) -> None:
+    """``human_derive.py``'s own names must load, not be rejected.
+
+    Refusing them by name was the first design, and it was wrong: the sealed
+    evaluation manifest declares ``near_phrase`` and is frozen at a digest that
+    a qualification result is traced to, so it cannot be re-derived to satisfy a
+    naming convention. A rule that forces a sealed set to be rewritten has
+    broken the thing it exists to protect.
+
+    Safe because the name was never the guard — every row is provenance-verified
+    unconditionally, which is what the rename test opposite this one proves.
+    """
+    def rename(manifest: dict) -> None:
+        clip = manifest["clips"][3]
+        clip["category"] = name
+        clip["label"] = 1 if name.startswith("positive_") else 0
+
+    path = write_speaker(
+        build.tmp / f"derived_{name}", speaker=TRAIN, split="train", mutate=rename
+    )
+    _, stats = build.run(source=[f"human={path}"])
+
+    # Non-vacuity: it did not merely fail to raise, it emitted the window under
+    # the mapped name.
+    expected = (
+        round8.HUMAN_POSITIVE_CATEGORY
+        if name.startswith("positive_")
+        else round8.DERIVED_CATEGORY_ALIASES[name]
+    )
+    assert expected in stats["samples_by_category"], stats["samples_by_category"]
+    assert stats["synthetic_samples"] == 0
 
 
 @pytest.mark.parametrize("name", TTS_ERA_CATEGORIES)
 def test_a_synthetic_era_category_is_a_hard_error(build: Build, name: str) -> None:
-    """Including ``near_phrase`` and ``positive``, which real derivations used.
+    """A TTS group's name with no real-derivation meaning.
 
-    Those are the names the TTS groups were called, so a row carrying one is
-    either a synthetic clip or a manifest written by a tool that does not know
-    this contract — and a builder that accepted them could not tell which.
+    A row carrying one is either a synthetic clip or a manifest written by a
+    tool that does not know this contract, and a builder that accepted them
+    could not tell which.
     """
     def rename(manifest: dict) -> None:
         manifest["clips"][3]["category"] = name
