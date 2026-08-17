@@ -147,6 +147,31 @@ class ExportNet(nn.Module):
 WINDOW_SECONDS = 2.0
 
 
+def build_validation_masks(val_categories: np.ndarray, y_val: np.ndarray) -> dict:
+    """The per-target validation selection masks, over the negatives only.
+
+    The near-phrase mask is built from ``HARD_NEGATIVE_CATEGORIES`` — the same
+    frozenset the loss weighting reads in ``class_weights`` — rather than the
+    literal ``"near_phrase"``. The Round 8 human builder emits its deliberate
+    near misses under ``near_phrase_human`` (``build_human_dataset``'s category
+    table and its ``near_phrase -> near_phrase_human`` alias), so a mask that
+    recognised only the synthetic-era spelling would be empty on every
+    human-only dataset and silently disable target 3 during epoch and threshold
+    selection: ``scores[empty].mean()`` is ``nan``, ``nan > limit`` is False,
+    and the near-phrase constraint never fires. One definition of "hard
+    negative", reused, so the selection mask and the loss weight can never
+    disagree about what one is.
+    """
+    masks = {
+        name: (val_categories == name) & (y_val == 0)
+        for name in ("recorded_speech", "background_only", "common_speech")
+    }
+    masks["near_phrase"] = np.isin(
+        val_categories, sorted(HARD_NEGATIVE_CATEGORIES)
+    ) & (y_val == 0)
+    return masks
+
+
 def threshold_meeting_targets(
     scores: np.ndarray,
     labels: np.ndarray,
@@ -173,6 +198,16 @@ def threshold_meeting_targets(
     margin = args.validation_margin
     negatives = scores[labels == 0]
     candidates = np.unique(np.concatenate([negatives, [0.0, 1.0 + 1e-6]]))
+    # Target 3 (near-phrase false accepts) can only be *met* if there are
+    # near-phrase windows to meet it on. An empty mask makes the per-threshold
+    # test below `nan > x`, which is False, so every candidate would silently
+    # "pass" a constraint that was never exercised. Untested is not met: refuse
+    # to certify any threshold rather than report a vacuous pass. This is also
+    # the backstop for a dataset whose near misses were labelled under a spelling
+    # `build_validation_masks` does not recognise — that must fail loudly here,
+    # not disappear.
+    if not masks["near_phrase"].any():
+        return float(candidates[-1]), False
     for threshold in candidates:
         if masks["background_only"].any() and (scores[masks["background_only"]] >= threshold).any():
             continue
@@ -260,10 +295,7 @@ def train(args: argparse.Namespace) -> tuple[WakeWordNet, dict]:
     y_fit = torch.from_numpy(y).unsqueeze(1)
     w_fit = torch.from_numpy(weights_all).unsqueeze(1)
     x_val = torch.from_numpy(x_val_raw)
-    val_masks = {
-        name: (val_categories == name) & (y_val == 0)
-        for name in ("near_phrase", "recorded_speech", "background_only", "common_speech")
-    }
+    val_masks = build_validation_masks(val_categories, y_val)
     val_positive = y_val == 1
     recorded_hours = float(val_masks["recorded_speech"].sum()) * WINDOW_SECONDS / 3600.0
 

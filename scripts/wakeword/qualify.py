@@ -1299,6 +1299,63 @@ class SealLedger:
         os.replace(temporary, self.path)
 
 
+def _round8_config_path(config: Path | None) -> Path:
+    return config if config is not None else Path(__file__).resolve().with_name(
+        "round8_config.json"
+    )
+
+
+def known_datasets(config: Path | None = None) -> set[str]:
+    """Every dataset name a measurement is allowed to carry.
+
+    The speaker-split registry (``round8_config.json`` ``splits`` — the same
+    E-ids ``build_human_dataset.SPEAKER_SPLITS`` binds) plus the recorded
+    negative corpora keys. A name outside this set is either a typo or a
+    seal-evasion, and either way cannot be scored into an official result. A
+    config that cannot be read is a refusal, not an empty allow-list, for the
+    same reason it is in ``sealed_datasets``.
+    """
+    path = _round8_config_path(config)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise QualificationError(
+            f"{path.name} is unreadable ({exc}); refusing to validate dataset "
+            "names against a registry that is not there"
+        ) from exc
+    names: set[str] = set()
+    splits = payload.get("splits", {})
+    for role in ("train", "validation", "sealed"):
+        names |= {str(member) for member in splits.get(role, [])}
+    for entry in payload.get("recorded_negative_corpora", []):
+        key = entry.get("key")
+        if key:
+            names.add(str(key))
+    return names
+
+
+def assert_known_dataset(name: str, config: Path | None = None) -> None:
+    """Refuse a ``--dataset`` the split/corpus registry does not recognise.
+
+    The seal check keys on the exact dataset string: ``sealed_datasets``
+    intersects ``splits.sealed`` with ``{u.dataset}``. So an operator-typed name
+    like ``E006_holdout`` — sealed audio under an unregistered label — makes that
+    intersection empty and yields an OFFICIAL report over sealed audio with no
+    freeze and no ledger. Validating the name against the registry before any
+    audio is scored closes that path: a sealed speaker can only be measured under
+    its registered id, which is the id the seal machinery watches.
+    """
+    allowed = known_datasets(config)
+    if name not in allowed:
+        raise QualificationError(
+            f"dataset {name!r} is not a known Round 8 dataset. The registry is "
+            f"{sorted(allowed)}; a name outside it evades the seal machinery "
+            "(naming sealed audio 'E006_holdout' makes sealed_datasets() empty and "
+            "produces an official report over sealed audio with no freeze). "
+            "Refusing before any audio is scored."
+        )
+
+
 def sealed_datasets(measurement: Measurement, config: Path | None = None) -> tuple[str, ...]:
     """Which of the measured datasets are sealed — the union of two sources.
 
@@ -1308,9 +1365,7 @@ def sealed_datasets(measurement: Measurement, config: Path | None = None) -> tup
     that cannot be parsed is a refusal rather than a silently empty list.
     """
     declared = set(measurement.sealed_datasets)
-    path = config if config is not None else Path(__file__).resolve().with_name(
-        "round8_config.json"
-    )
+    path = _round8_config_path(config)
     if path.exists():
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -2005,6 +2060,16 @@ def build_report(
     if diagnostic is not None:
         assert_admissible(diagnostic, registry)
 
+    # Every dataset a report certifies must be a registered split/corpus name.
+    # A hand-crafted bundle labelled 'E006_holdout' would otherwise slip sealed
+    # audio past `sealed_datasets` (which intersects on the exact id) and be
+    # certified with no freeze — the report-side half of the same evasion
+    # `measure` is guarded against above.
+    for source in (official, diagnostic):
+        if source is not None:
+            for name in {u.dataset for u in source.utterances if u.dataset}:
+                assert_known_dataset(name, config)
+
     seals = _check_seals(official, freeze, ledger, config)
     if diagnostic is not None:
         seals.update(_check_seals(diagnostic, freeze, ledger, config))
@@ -2075,7 +2140,33 @@ def _check_seals(
                 f"{name}. A result over bytes nobody hashed is traceable to "
                 "nothing."
             )
-    return {name: ledger.assert_open(name, freeze) for name in names}
+    opened = {name: ledger.assert_open(name, freeze) for name in names}
+
+    # `assert_open` proves the freeze matches the ledger opening; it says nothing
+    # about the measurement. So a sealed measurement taken at a re-tuned
+    # threshold or on a different candidate would report cleanly as long as the
+    # ledger digest matched — the exact escape a sealed set exists to close. The
+    # freeze the report cites is the operating point the measurement had to be
+    # taken at; a measurement at any other threshold or candidate is a
+    # measurement of a different thing and cannot be certified against this
+    # freeze. Compared by hex, because a validation-selected threshold is an
+    # observed score, not a round number.
+    if float(measurement.threshold).hex() != float(freeze.threshold).hex():
+        raise SealedSetConsumedError(
+            f"the sealed measurement was taken at threshold "
+            f"{float(measurement.threshold).hex()} ({measurement.threshold!r}) but "
+            f"the freeze it cites pins {float(freeze.threshold).hex()} "
+            f"({freeze.threshold!r}). A sealed set measures the frozen operating "
+            "point, once; a report at another threshold is a report on another "
+            "candidate."
+        )
+    if str(measurement.candidate_id) != str(freeze.candidate_id):
+        raise SealedSetConsumedError(
+            f"the sealed measurement is candidate {measurement.candidate_id!r} but "
+            f"the freeze it cites is {freeze.candidate_id!r}. The report and the "
+            "freeze must name the same candidate."
+        )
+    return opened
 
 
 # --------------------------------------------------------------------------
@@ -2225,6 +2316,11 @@ def measure_corpus(
     """
     import numpy as np  # noqa: PLC0415
 
+    # Validate the operator-typed dataset name against the split/corpus registry
+    # before a single window is loaded. A seal-evading label must not reach the
+    # engine, let alone a report.
+    assert_known_dataset(dataset)
+
     audio_path = corpus / "audio_eval.npy"
     audio = np.load(audio_path, mmap_mode="r")
     categories = json.loads((corpus / "categories_eval.json").read_text(encoding="utf-8"))
@@ -2249,6 +2345,15 @@ def measure_corpus(
             f"{audio_path.name} is {audio.dtype}; the runtime contract is int16 "
             "1280-sample frames. float32 would arrive 32768x too quiet."
         )
+
+    # The content-address of the tensor these windows were read from. Without
+    # it, `assert_admissible`'s retired-by-content check (`if digest and digest
+    # in retired`) is vacuous on this path: `Utterance.source_sha256` would
+    # default to "" and a retired synthetic `audio_eval.npy` — the registry
+    # lists those by whole-file digest — would score cleanly. Every utterance
+    # from one corpus shares this digest, so the first one to reach the check
+    # refuses the whole bundle.
+    corpus_sha256 = sha256_file(audio_path)
 
     # The tone guard runs before any scoring: audio that is not speech must not
     # reach the engine at all, let alone a report.
@@ -2323,6 +2428,7 @@ def measure_corpus(
                 windows=windows,
                 dataset=dataset,
                 speaker=speaker or dataset,
+                source_sha256=corpus_sha256,
             )
         )
 

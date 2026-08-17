@@ -887,6 +887,37 @@ def test_reporting_under_a_different_freeze_than_the_opening_is_refused(tmp_path
         )
 
 
+def test_a_sealed_report_whose_threshold_or_candidate_disagrees_with_the_freeze_is_refused(
+    tmp_path,
+):
+    """The freeze the report cites must be the one the measurement was taken at.
+
+    ``assert_open`` ties the freeze to the ledger opening, but nothing compared
+    the *measurement* to the freeze — so a sealed measurement re-tuned to another
+    threshold, or exported from another candidate, reported cleanly as long as
+    the ledger digest matched. That is the escape a sealed set exists to close.
+    """
+    import dataclasses
+
+    path = tmp_path / "seals.json"
+    freeze = _freeze()  # threshold 0.9990234375, candidate r8b
+    q.SealLedger(path).open_sealed("E006", freeze)
+    rows = _utterances("pos", "positive_human", 60, framings=7, fired=60, dataset="E006")
+    base = _measurement(rows, sealed=("E006",))  # matches the freeze it cites
+
+    # Non-vacuity: a measurement that agrees with the freeze is certified.
+    ok = q.build_report(base, freeze=freeze, ledger=q.SealLedger(path))
+    assert ok["official"]["targets"]
+
+    retuned = dataclasses.replace(base, threshold=0.6)
+    with pytest.raises(q.SealedSetConsumedError, match="another threshold"):
+        q.build_report(retuned, freeze=freeze, ledger=q.SealLedger(path))
+
+    other_candidate = dataclasses.replace(base, candidate_id="r8c")
+    with pytest.raises(q.SealedSetConsumedError, match="same candidate"):
+        q.build_report(other_candidate, freeze=freeze, ledger=q.SealLedger(path))
+
+
 def test_a_sealed_dataset_named_only_by_the_round_config_is_still_sealed(tmp_path):
     """A bundle that forgets to declare E006 does not thereby unseal it."""
     config = tmp_path / "round8_config.json"
@@ -903,6 +934,38 @@ def test_an_unparseable_round_config_is_a_refusal_not_an_empty_list(tmp_path):
     config.write_text("{ not json", encoding="utf-8")
     with pytest.raises(q.QualificationError, match="refusing to guess"):
         q.sealed_datasets(_measurement(_utterances("pos", "positive_human", 1)), config)
+
+
+def test_a_seal_evading_dataset_name_is_refused_by_measure(tmp_path):
+    """Sealed audio under an unregistered label must not reach the engine.
+
+    ``E006_holdout`` is E006's audio wearing a name the seal machinery does not
+    watch. ``measure`` refuses it against the split/corpus registry before any
+    window is scored.
+    """
+    corpus = _real_corpus(tmp_path / "features", ["u0"] * 9)
+    with pytest.raises(q.QualificationError, match="not a known Round 8 dataset"):
+        q.measure_corpus(
+            corpus, models=tmp_path, dataset="E006_holdout",
+            provenance="recorded-human",
+            scorer=lambda f, a: (np.zeros((9, 16)), np.zeros(9, dtype=bool)),
+            latency_clips=0,
+        )
+
+
+def test_a_seal_evading_dataset_name_is_refused_by_report():
+    """The report-side half: a bundle labelled to dodge the seal check is refused.
+
+    The evasion is real — ``sealed_datasets`` intersects on the exact id, so
+    ``E006_holdout`` is not seen as sealed and (before this guard) an official
+    report was certified over it with no freeze. The report path now validates
+    every present dataset name against the registry.
+    """
+    rows = _utterances("pos", "positive_human", 60, framings=7, fired=60, dataset="E006_holdout")
+    # The mechanism the guard defeats: the seal check does not catch this name.
+    assert q.sealed_datasets(_measurement(rows)) == ()
+    with pytest.raises(q.QualificationError, match="not a known Round 8 dataset"):
+        q.build_report(_measurement(rows))
 
 
 # ---------------------------------------------------------------------------
@@ -1252,6 +1315,53 @@ def test_a_group_that_spans_two_categories_is_refused(tmp_path):
             provenance="recorded-corpus",
             scorer=lambda f, a: (np.zeros((9, 16)), np.zeros(9, bool)),
         )
+
+
+def test_a_retired_synthetic_corpus_is_refused_through_the_measure_path(tmp_path):
+    """The retired-by-content backstop must bite on the qualification path.
+
+    ``measure_corpus`` is the only route from audio to a bundle. If it does not
+    record which bytes it scored, ``assert_admissible``'s content check
+    (``if digest and digest in retired``) compares the empty string, and a
+    relocated, renamed copy of a retired synthetic ``audio_eval.npy`` — which the
+    registry lists by whole-file digest — scores cleanly. Here the corpus's own
+    tensor is declared retired, and the measurement it produces must be refused.
+    """
+    corpus = _real_corpus(tmp_path / "features", ["u0"] * 3 + ["u1"] * 3 + ["u2"] * 3)
+    digest = q.sha256_file(corpus / "audio_eval.npy")
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifacts": [
+                    {
+                        "sha256": digest,
+                        "bytes": 1,
+                        "kind": "synthetic_feature_tensor",
+                        "name": "data/features/audio_eval.npy",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def scorer(framework, audio):
+        return (
+            np.zeros((audio.shape[0], 16), dtype=np.float32),
+            np.zeros(audio.shape[0], dtype=bool),
+        )
+
+    measurement = q.measure_corpus(
+        corpus, models=tmp_path, dataset="speech-commands",
+        provenance="recorded-corpus", scorer=scorer, latency_clips=0,
+    )
+    # Non-vacuity: the produced measurement carries the tensor's digest, not "".
+    assert measurement.utterances
+    assert all(u.source_sha256 == digest for u in measurement.utterances)
+    with pytest.raises(q.SyntheticEvidenceError, match="retired artifact"):
+        q.assert_admissible(measurement, registry=registry)
 
 
 # ---------------------------------------------------------------------------
