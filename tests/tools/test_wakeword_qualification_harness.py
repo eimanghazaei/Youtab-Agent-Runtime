@@ -905,6 +905,38 @@ def test_an_unparseable_round_config_is_a_refusal_not_an_empty_list(tmp_path):
         q.sealed_datasets(_measurement(_utterances("pos", "positive_human", 1)), config)
 
 
+def test_a_seal_evading_dataset_name_is_refused_by_measure(tmp_path):
+    """Sealed audio under an unregistered label must not reach the engine.
+
+    ``E006_holdout`` is E006's audio wearing a name the seal machinery does not
+    watch. ``measure`` refuses it against the split/corpus registry before any
+    window is scored.
+    """
+    corpus = _real_corpus(tmp_path / "features", ["u0"] * 9)
+    with pytest.raises(q.QualificationError, match="not a known Round 8 dataset"):
+        q.measure_corpus(
+            corpus, models=tmp_path, dataset="E006_holdout",
+            provenance="recorded-human",
+            scorer=lambda f, a: (np.zeros((9, 16)), np.zeros(9, dtype=bool)),
+            latency_clips=0,
+        )
+
+
+def test_a_seal_evading_dataset_name_is_refused_by_report():
+    """The report-side half: a bundle labelled to dodge the seal check is refused.
+
+    The evasion is real — ``sealed_datasets`` intersects on the exact id, so
+    ``E006_holdout`` is not seen as sealed and (before this guard) an official
+    report was certified over it with no freeze. The report path now validates
+    every present dataset name against the registry.
+    """
+    rows = _utterances("pos", "positive_human", 60, framings=7, fired=60, dataset="E006_holdout")
+    # The mechanism the guard defeats: the seal check does not catch this name.
+    assert q.sealed_datasets(_measurement(rows)) == ()
+    with pytest.raises(q.QualificationError, match="not a known Round 8 dataset"):
+        q.build_report(_measurement(rows))
+
+
 # ---------------------------------------------------------------------------
 # Official vs diagnostic, kept apart structurally.
 # ---------------------------------------------------------------------------
