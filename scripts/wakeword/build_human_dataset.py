@@ -69,11 +69,44 @@ one is a way a manifest can look valid and mean something else:
   matches that table;
 * every clip carries provenance — a ``source_file`` present in the manifest's
   own ``files`` list, with a matching ``source_sha256`` — and the bytes on disk
-  hash to the recorded digest.
+  hash to the recorded digest;
+* every reference is *direct*: a clip, a full-length decode and a corpus file
+  are named relative to the manifest's own directory, and a reference that is
+  absolute, climbs out with ``..`` or arrives through a symlink is refused,
+  because the bytes it reaches are not the bytes anybody froze;
+* nothing the build touches is a known retired synthetic artifact by content —
+  see below.
 
 A category rename cannot buy admission. ``positive_human`` is checked for
 provenance exactly as ``positive`` is refused by name: the guard that stops a
 synthetic clip is the hash chain back to a real recording, not the string.
+
+Content addressing, and the attack that needed it
+-------------------------------------------------
+Path rules and manifest corroboration are both defeated by a copy. Take one
+synthetic wav out of ``data/tts``, put it in a directory named after an approved
+human category, write a *fresh* manifest that hashes the copy correctly and
+gives it an innocent ``source_file`` with an innocent ``source_sha256``, freeze
+it. Every name reads clean, every hash self-checks, and the build succeeded —
+measured, not assumed; see
+``tests/tools/test_wakeword_synthetic_relocation_guard.py``.
+
+A SHA-256 does not move with the file. So ``retired_synthetic_artifacts.json``
+records the digests of known-synthetic artifacts and every clip, every
+corroborating digest, every corpus file and every initialization checkpoint is
+looked up in it. A byte-identical copy is refused wherever it sits and whatever
+it is called, and a missing or unreadable registry is a refusal rather than a
+pass — a guard that fails open is a guard that reports a clean build on the day
+it breaks.
+
+What that registry covers, and what it does not, is written into the registry
+itself. The honest limit: the retired TTS corpora are 207,300 clips, which is
+not a hash list a source repository can carry, so those are represented by a
+documented sample. For clips the primary guard is still the provenance chain
+above; content addressing is what closes rename-and-move on the artifacts that
+can be enumerated — every rejected candidate checkpoint and export, every
+synthetic feature tensor, the synthetic-era detector this repository ships, and
+the committed synthetic fixtures.
 
 Usage::
 
@@ -91,7 +124,7 @@ import json
 import sys
 import wave
 from collections import Counter, defaultdict
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import numpy as np
 
@@ -283,6 +316,32 @@ TRAILING_OFFSETS_S: tuple[float, ...] = (0.16, 0.32, 0.48, 0.64)
 #: allowed to initialise from.
 CONTRACT_FILENAME = "DATASET_CONTRACT.json"
 
+#: The content-addressed registry of retired synthetic artifacts: SHA-256 plus a
+#: name and a kind, and never a byte of audio.
+#:
+#: Committed data rather than a table in this module, for two reasons. It has to
+#: be reviewable as data — a hash that changed is a one-line diff — and it has to
+#: be *absent-able*: a registry that cannot be read is a refusal, which is a
+#: state a module constant cannot be in.
+RETIRED_ARTIFACTS_FILENAME = "retired_synthetic_artifacts.json"
+
+#: Beside this module, so it travels with the stage that enforces it and is
+#: loadable with no training tree, no network and no dataset mounted.
+RETIRED_ARTIFACTS_PATH = Path(__file__).resolve().parent / RETIRED_ARTIFACTS_FILENAME
+
+#: The registry layout this module knows how to read. A registry written under a
+#: different schema verifies the wrong thing, exactly as a corpus manifest does.
+RETIRED_ARTIFACTS_SCHEMA_VERSION = 1
+
+#: Parsed registries, keyed by path, size and mtime.
+#:
+#: The registry is consulted per clip, per corroborating digest and per corpus
+#: file, so parsing it each time would be thousands of re-reads of one file in a
+#: real build. Keying on the stat rather than on the path alone means a registry
+#: that was rewritten — by an editor, or by a test proving what a broken one
+#: does — is re-read rather than remembered.
+_RETIRED_ARTIFACT_CACHE: dict[tuple[str, int, int], dict[str, dict]] = {}
+
 #: Flags that must abort rather than be ignored. Ignoring one is worse than
 #: rejecting it: a sweep arm that passed ``--rir-count 200`` and got a dataset
 #: with no impulse responses in it would be recorded as an arm that had them.
@@ -424,6 +483,220 @@ def _refuse(value: str | Path, marker: str | None, what: str) -> None:
         )
 
 
+def _hex64(value: object) -> bool:
+    """A SHA-256 in the one spelling everything here records them in.
+
+    Used by the registry loader as well as by the manifest checks, which is why
+    it sits with the refusals that need no manifest.
+    """
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(c in "0123456789abcdef" for c in value.lower())
+    )
+
+
+def load_retired_artifacts(path: Path | None = None) -> dict[str, dict]:
+    """SHA-256 -> the registry's record of that retired synthetic artifact.
+
+    Fails closed on every way of not having a registry, because each of them is
+    a state in which the build would otherwise proceed with the content check
+    silently doing nothing: the file missing, unreadable, not JSON, written under
+    another schema, carrying no artifacts, carrying an entry with no hash, or
+    listing one hash twice under two names. The last one matters more than it
+    looks: a duplicate means one of the two names is wrong, and a registry
+    nobody can trust the names in is a registry whose refusals nobody acts on.
+
+    ``Refused`` rather than a warning. A registry that fails open is worse than
+    no registry at all — it reports a clean build on the day it breaks.
+    """
+    path = RETIRED_ARTIFACTS_PATH if path is None else path
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise Refused(
+            f"the retired-artifact registry {path} cannot be read ({exc}). "
+            "Refusing to build: without it nothing checks whether a clip is a "
+            "renamed copy of retired synthetic material, and a build that "
+            "cannot perform that check must not report having performed it."
+        ) from exc
+
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    cached = _RETIRED_ARTIFACT_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    try:
+        body = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise Refused(
+            f"the retired-artifact registry {path} is not readable as JSON "
+            f"({exc}). A registry that cannot be parsed is not a registry."
+        ) from exc
+    if not isinstance(body, dict):
+        raise Refused(f"{path} does not contain a registry object")
+    version = body.get("schema_version")
+    if version != RETIRED_ARTIFACTS_SCHEMA_VERSION:
+        raise Refused(
+            f"{path} is schema_version {version!r}; this stage reads "
+            f"{RETIRED_ARTIFACTS_SCHEMA_VERSION}. A registry read under the "
+            "wrong schema checks the wrong field and refuses nothing."
+        )
+    rows = body.get("artifacts")
+    if not isinstance(rows, list) or not rows:
+        raise Refused(
+            f"{path} lists no artifacts, so every content check in this build "
+            "would pass by finding nothing. An empty registry is a refusal: it "
+            "is indistinguishable from a registry whose contents were dropped."
+        )
+
+    index: dict[str, dict] = {}
+    for position, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise Refused(f"{path}: artifacts[{position}] is not an object")
+        digest = row.get("sha256")
+        if not _hex64(digest):
+            raise Refused(
+                f"{path}: artifacts[{position}] records sha256={digest!r}, "
+                "which is not a SHA-256. An entry that cannot be compared "
+                "against a file is an entry that refuses nothing."
+            )
+        digest = digest.lower()
+        for field in ("kind", "name"):
+            if not isinstance(row.get(field), str) or not row[field]:
+                raise Refused(
+                    f"{path}: artifacts[{position}] ({digest[:12]}) has no "
+                    f"{field!r}. A refusal has to be able to say what it "
+                    "recognised, or nobody can act on it."
+                )
+        if digest in index:
+            raise Refused(
+                f"{path}: {digest} is listed twice, as {index[digest]['name']!r} "
+                f"and {row['name']!r}. One of those names is wrong."
+            )
+        index[digest] = row
+
+    _RETIRED_ARTIFACT_CACHE[key] = index
+    return index
+
+
+def retired_artifact(digest: str, registry: dict[str, dict] | None = None) -> dict | None:
+    """The registry's record of ``digest``, or None. Loads the registry if needed."""
+    if registry is None:
+        registry = load_retired_artifacts()
+    if not isinstance(digest, str):
+        return None
+    return registry.get(digest.lower())
+
+
+def refuse_retired_artifact(
+    digest: str, what: str, registry: dict[str, dict] | None = None
+) -> None:
+    """Refuse a digest the registry knows, wherever the bytes now live.
+
+    This is the guard a rename and a move cannot get past, and the only one that
+    is not a statement about a name. Renaming a synthetic clip to
+    ``positive_human``, copying it out of ``data/tts`` into a directory called
+    ``clips/positive_human`` and writing a fresh manifest that hashes the copy
+    correctly changes every string and no byte.
+    """
+    entry = retired_artifact(digest, registry)
+    if entry is None:
+        return
+    raise Refused(
+        f"{what} is a retired synthetic artifact. Its SHA-256 {digest} is "
+        f"recorded in {RETIRED_ARTIFACTS_FILENAME} as {entry['name']!r} "
+        f"({entry['kind']}). Round 8 trains, validates and qualifies on real "
+        "recordings only; renaming retired material or moving it to an "
+        "innocent path changes what it is called and not what it is."
+    )
+
+
+def refuse_retired_artifact_bytes(
+    path: Path, what: str, registry: dict[str, dict] | None = None
+) -> str:
+    """Hash the bytes on disk and refuse them if the registry knows them.
+
+    Returns the digest, so a caller that also has a recorded digest to check
+    does not hash the same file twice.
+    """
+    digest = build_dataset.sha256_file(path)
+    refuse_retired_artifact(digest, f"{what} {path}", registry)
+    return digest
+
+
+def refuse_escaping_name(name: str, what: str) -> Path:
+    """A manifest reference has to be relative and has to stay inside its root.
+
+    An absolute reference ignores the root entirely and a ``..`` climbs out of
+    it, so either one reaches bytes that are not part of the frozen derivation
+    while the manifest still reads like a self-contained record of one. The
+    derivation writes ``path.relative_to(root).as_posix()`` for every reference
+    it records, so nothing legitimate is refused here.
+
+    Judged as a Windows path *as well as* a native one, because the platform the
+    build runs on must not decide what the guard sees. ``PureWindowsPath``
+    recognises a drive letter and a UNC root, and splits on both separators — so
+    ``C:/x``, ``\\\\host\\share\\x`` and ``..\\x`` are refused on Linux too,
+    where the native ``Path`` reads all three as one ordinary relative name.
+    """
+    candidate = Path(name)
+    windows = PureWindowsPath(name)
+    if candidate.is_absolute() or candidate.root or candidate.drive or windows.drive:
+        raise Refused(
+            f"{what} {name!r} is an absolute path. Every reference in a manifest "
+            "is relative to that manifest's own root; an absolute one points "
+            "outside the derivation that was frozen and hash-verified."
+        )
+    if ".." in windows.parts:
+        raise Refused(
+            f"{what} {name!r} climbs out of its own directory with '..'. A "
+            "reference that leaves the frozen tree reaches bytes nobody froze, "
+            "which is how retired material is read without ever being named."
+        )
+    return candidate
+
+
+def resolve_within(name: str, base: Path, what: str) -> Path:
+    """``base``/``name``, refusing anything that reaches outside ``base``.
+
+    Three independent checks, because indirection has three shapes and only the
+    first is visible in the manifest:
+
+    * the reference itself is absolute or contains ``..`` (``refuse_escaping_name``);
+    * a component of the path is a symlink — the manifest reads as a relative
+      reference into its own tree and the bytes hashed are somewhere else
+      entirely;
+    * the fully resolved path is not under ``base`` anyway, which is the backstop
+      for whatever the first two do not model (a junction, a mount point, a
+      platform that spells indirection differently).
+
+    The symlink walk is not redundant with the resolve: a symlink whose target
+    happens to be inside ``base`` passes containment, and it is still a
+    reference to bytes the freeze does not cover.
+    """
+    target = base / refuse_escaping_name(name, what)
+
+    probe = target
+    while probe != base and probe.parent != probe:
+        if probe.is_symlink():
+            raise Refused(
+                f"{what} {name!r} is reached through the symlink {probe}. A "
+                "manifest names files in its own frozen tree; a link means the "
+                "bytes that get hashed and trained on are chosen by whoever "
+                "created the link, not by the derivation that was adjudicated."
+            )
+        probe = probe.parent
+
+    if not target.resolve().is_relative_to(base.resolve()):
+        raise Refused(
+            f"{what} {name!r} resolves to {target.resolve()}, which is outside "
+            f"{base}. Refusing: a reference that leaves its own root is not "
+            "part of the derivation the manifest's digest stands for."
+        )
+    return target
+
+
 def refuse_synthetic_initialization(checkpoint: Path) -> None:
     """Refuse a checkpoint that is not provably from a human-only dataset.
 
@@ -435,8 +708,24 @@ def refuse_synthetic_initialization(checkpoint: Path) -> None:
     must sit beside the ``DATASET_CONTRACT.json`` that this stage writes, and
     that contract must assert zero synthetic samples. Absence is a refusal, not
     a benefit of the doubt.
+
+    Evidence beside the file is still evidence *about the file*, and both halves
+    of it are chosen by whoever laid the directory out: copy
+    ``candidates/r7/checkpoint.pt`` into a clean directory as
+    ``round8_pretrained_init.pt``, write a contract next to it that says
+    ``human_only``, and the path check and the contract check both pass on an
+    artifact fitted entirely on synthesized speech. The content address is what
+    recognises it, and it runs before the contract is read — the bytes are judged
+    before anything a copy can bring along with them is.
     """
     refuse_synthetic_tree(checkpoint, "initialization checkpoint")
+    if not checkpoint.is_file():
+        raise Refused(
+            f"{checkpoint} is not a file, so nothing about it can be checked. "
+            "An initialization this stage cannot hash is one it cannot show is "
+            "not a retired candidate."
+        )
+    refuse_retired_artifact_bytes(checkpoint, "initialization checkpoint")
     contract_path = checkpoint.parent / CONTRACT_FILENAME
     if not contract_path.is_file():
         raise Refused(
@@ -496,14 +785,6 @@ def licence_for(source_key: str) -> str:
 
 
 # ── the human manifest ───────────────────────────────────────────────────────
-
-
-def _hex64(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(c in "0123456789abcdef" for c in value.lower())
-    )
 
 
 def _read_manifest(path: Path, what: str) -> tuple[dict, str]:
@@ -604,6 +885,7 @@ def _originals_index(manifest: dict, path: Path) -> dict[str, dict]:
             "against a record of the recording it came from."
         )
     index: dict[str, dict] = {}
+    registry = load_retired_artifacts()
     for position, entry in enumerate(files):
         if not isinstance(entry, dict):
             raise Refused(f"{path}: files[{position}] is not an object")
@@ -618,6 +900,17 @@ def _originals_index(manifest: dict, path: Path) -> dict[str, dict]:
                 "without a hash is an original nobody can verify."
             )
         refuse_synthetic_source(name, f"{path}: files[{position}] source_file")
+        # A ``source_file`` is a name inside the capture root, written by the
+        # derivation as ``relative_to(root)``. An absolute one or a ``..`` names
+        # a recording outside the session that was consented and adjudicated.
+        refuse_escaping_name(name, f"{path}: files[{position}] source_file")
+        # The recording this clip claims to come from is itself a known retired
+        # artifact: the provenance chain is intact and points at the wrong thing.
+        # Checked on the declared digest because the original is often not
+        # mounted, and a declared digest is a claim the manifest cannot withdraw.
+        refuse_retired_artifact(
+            digest, f"{path}: files[{position}] source_file {name}", registry
+        )
         if name in index:
             raise Refused(f"{path}: files lists {name!r} twice")
         index[name] = entry
@@ -643,11 +936,20 @@ def verify_originals(manifest: dict, path: Path, index: dict[str, dict]) -> dict
     """
     source_dir = manifest.get("source_dir")
     root = Path(source_dir) if isinstance(source_dir, str) and source_dir else None
+    registry = load_retired_artifacts()
     counts = {"originals_verified": 0, "originals_offline": 0}
     for name, entry in sorted(index.items()):
-        original = root / name if root is not None else None
+        # ``source_dir`` is the capture root and is legitimately somewhere else
+        # on the machine, so containment here is inside *it*, not inside the
+        # manifest's directory: an original still may not be reached by climbing
+        # out of the session or through a link into a retired tree.
+        original = None
+        if root is not None:
+            original = resolve_within(name, root, f"{path}: original")
         if original is not None and original.is_file():
-            actual = build_dataset.sha256_file(original)
+            actual = refuse_retired_artifact_bytes(
+                original, f"{path}: original", registry
+            )
             if actual != entry["source_sha256"]:
                 raise Refused(
                     f"{path}: the original {name} hashes to {actual}, not the "
@@ -667,13 +969,13 @@ def verify_originals(manifest: dict, path: Path, index: dict[str, dict]) -> dict
                 "('full_16k' + 'full_16k_sha256'). Nothing on this machine can "
                 "establish that the derived clips came from a real recording."
             )
-        decoded = path.parent / relative
+        decoded = resolve_within(relative, path.parent, f"{path}: full_16k")
         if not decoded.is_file():
             raise Refused(
                 f"{path}: {relative} is missing, so original {name} cannot be "
                 "verified at either layer."
             )
-        actual = build_dataset.sha256_file(decoded)
+        actual = refuse_retired_artifact_bytes(decoded, f"{path}: full_16k", registry)
         if actual != digest:
             raise Refused(
                 f"{path}: {relative} hashes to {actual}, not the recorded "
@@ -742,6 +1044,7 @@ def load_human_source(
     }
 
     licence = "consented human recording, retained on local disk only"
+    registry = load_retired_artifacts()
     samples: list[Sample] = []
     excluded = 0
     for position, clip in enumerate(manifest["clips"]):
@@ -768,7 +1071,7 @@ def load_human_source(
         relative = clip.get("clip")
         if not isinstance(relative, str) or not relative:
             raise Refused(f"{where} has no 'clip' path")
-        audio = path.parent / relative
+        audio = resolve_within(relative, path.parent, f"{where} clip")
         if not audio.is_file():
             raise Refused(
                 f"{where} points at {audio}, which is not a file. Clip paths "
@@ -793,7 +1096,11 @@ def load_human_source(
                 f"{where} records sha256={digest!r}, which is not a SHA-256. "
                 "A clip nobody can verify is a clip nobody can attribute."
             )
-        actual = build_dataset.sha256_file(audio)
+        # Hashed once: the same digest answers "are these the adjudicated bytes"
+        # and "are these retired synthetic bytes". The content check runs on what
+        # is actually on disk rather than on what the manifest claims, so a
+        # manifest that lies about its own clip cannot route around it.
+        actual = refuse_retired_artifact_bytes(audio, f"{where} clip", registry)
         if actual != digest:
             raise Refused(
                 f"{where}: {relative} hashes to {actual}, not the recorded "
@@ -909,6 +1216,7 @@ def load_corpus_source(
 
     samples: list[Sample] = []
     generated: list[str] = []
+    registry = load_retired_artifacts()
     for entry in entries:
         relative = entry.get("path")
         digest = entry.get("sha256")
@@ -925,10 +1233,13 @@ def load_corpus_source(
             generated.append(relative)
             continue
         refuse_synthetic_source(relative, f"{path}: {kind} file")
-        audio = root / relative
+        audio = resolve_within(relative, root, f"{path}: {kind} file")
         if not audio.is_file():
             raise Refused(f"{path}: {relative} is listed but missing under {root}")
-        actual = build_dataset.sha256_file(audio)
+        # A recorded corpus is the other place a synthetic wav can be filed under
+        # an innocent name: freeze a directory of them and the manifest is a
+        # perfectly consistent record of the wrong audio.
+        actual = refuse_retired_artifact_bytes(audio, f"{path}: {kind} file", registry)
         if actual != digest:
             raise Refused(
                 f"{path}: {relative} hashes to {actual}, not the frozen "
@@ -1092,9 +1403,24 @@ def is_synthetic(sample: Sample) -> str | None:
     The final assertion runs this over what was actually emitted, so the
     zero-synthetic claim in the stats is a measurement of the dataset on disk
     rather than a restatement of the checks that were supposed to have run.
+
+    The registry lookups are part of that measurement rather than a repeat of
+    the loader's: ``synthetic_samples: 0`` is a claim about the emitted windows,
+    and it should be false if a single one of them is content-addressed retired
+    material by either its own bytes or the recording it names.
     """
     if sample.category in SYNTHETIC_CATEGORIES:
         return f"synthetic-era category {sample.category!r}"
+    for digest, what in (
+        (sample.sha256, "the clip"),
+        (sample.source_sha256, "the recording it came from"),
+    ):
+        entry = retired_artifact(digest)
+        if entry is not None:
+            return (
+                f"{what} is the retired synthetic artifact {entry['name']!r} "
+                f"({entry['kind']}) by SHA-256 {digest}"
+            )
     if not sample.source_file:
         return "no source recording"
     if not _hex64(sample.source_sha256):
