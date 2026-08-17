@@ -20,6 +20,10 @@ Three groups:
     the negative class. Note the deliberate absences: nothing in this list
     *contains* the wake phrase, because labelling an utterance that includes
     "hey youtab" as a negative would teach the model to suppress a real fire.
+    The wake phrase is the carrier *and* the name, so the name on its own is
+    not it — "youtab.", "open youtab." and "okay youtab." are all in the list
+    and none of them breaches that rule. What may never appear in it is "hey"
+    followed by the name.
 
 ``SOFT_NEGATIVES``
     Ordinary sentences. Cheap breadth against everyday speech, complementing
@@ -50,6 +54,27 @@ HARD_NEGATIVES: tuple[str, ...] = (
     "hey.",
     "hey there.",
     "hey, hold on.",
+    # The name under the wrong carrier, and other products' wake words. Owner
+    # decision: all three were once recorded as near phrases with their label
+    # decided beside this contract rather than in it, and they are governed
+    # taxonomy now, so the label is read off this tuple like every other
+    # negative.
+    #
+    # "okay youtab." is our own name behind a carrier that is not "hey". Every
+    # POSITIVE_SPELLINGS entry starts with "hey", and tools/wake_word.py's
+    # docstring calls the configured wake_word.phrase "purely cosmetic; engine
+    # keys detection" — so the product fires on whatever the positives trained
+    # it on, carrier included. It is the phrase that separates a model keyed on
+    # the whole phrase from one keyed on "youtab" alone, with "okay tab." below
+    # as its control.
+    #
+    # "hey google." and "hey siri." are the carrier plus a *competing*
+    # assistant's name: the same construction as "hey utah." and "hey nutmeg."
+    # below, with the two best-known wrong names in it. Firing on either wakes
+    # the agent while its owner is talking to a different device.
+    "okay youtab.",
+    "hey google.",
+    "hey siri.",
     # One phoneme off in the stressed vowel or the coda.
     "hey youtube.",
     "hey you talk.",
@@ -178,6 +203,14 @@ SOFT_NEGATIVES: tuple[str, ...] = (
 #: They are synthesized at a higher rate than the rest of HARD_NEGATIVES so
 #: training sees the contrast often enough to learn it. Every one of them is
 #: already in HARD_NEGATIVES; this is a weighting, not a new class.
+#:
+#: "okay youtab.", "hey google." and "hey siri." are deliberately *not* here,
+#: although the Owner decision that put them in HARD_NEGATIVES could have put
+#: them here too. Nothing has ever measured them: they were never synthesized
+#: and have never been recorded, so an entry would be intuition dressed as
+#: evidence — the one thing this list is defined not to be, and the lesson of
+#: "hey youtube" ranking far below what guesswork predicted. The recording
+#: round that collects them is what can earn them a place.
 CONFUSABLE_NEGATIVES: tuple[str, ...] = (
     "hey you tap.",
     "hey your tab.",

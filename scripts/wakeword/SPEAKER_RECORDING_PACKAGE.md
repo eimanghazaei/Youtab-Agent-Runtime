@@ -594,63 +594,60 @@ Its negative label is read off the contract and is not a judgement call; what
 was missing was a *recording* of it, not a decision about it. Keeping those two
 facts apart is the whole point of the "recorded from E002?" column below.
 
-**Three phrases are in neither tuple, and are decided here rather than
-defaulted.** `okay youtab.`, `hey google.` and `hey siri.` are in no list in
-`phrases.py`. A phrase that is absent from the contract and unlabelled in the
-package is a phrase whose label gets invented by whoever ingests it, so each one
-carries a decision, a basis and a consequence, recorded in
-`speaker_recording_spec.TAXONOMY_DECISIONS` and reproduced here.
+**Three phrases were decided beside the contract, and are in it now.** `okay
+youtab.`, `hey google.` and `hey siri.` were in no list in `phrases.py` when this
+package was written. A phrase that is absent from the contract and unlabelled in
+the package is a phrase whose label gets invented by whoever ingests it, so each
+one carried a decision, a basis and a consequence in
+`speaker_recording_spec.TAXONOMY_DECISIONS`. An Owner decision has since made
+those readings binding: **all three are in `phrases.HARD_NEGATIVES`**,
+`TAXONOMY_DECISIONS` is empty, and the `basis in phrases.py` column below names
+the tuple for them exactly as it does for every other negative row. Nothing else
+about them changed — same three takes each, same position in the recording order,
+same time budget.
 
-### Decision 1 — `okay youtab.` → **negative** (must not fire)
+Their basis is still written down here, because it is now the reason those
+entries are in the contract.
 
-**Basis.** `phrases.HARD_NEGATIVES` already contains the real name under
-carriers other than "hey" — `open youtab.`, `youtab.`, `youtab is running.` and
-`okay tab.` are all in it — and every one of the five
-`phrases.POSITIVE_SPELLINGS` entries starts with the carrier "hey". The carrier
-is part of the trained phrase, not decoration around it: `tools/wake_word.py`
-scores frames against one trained model and its own docstring calls the
-configured `wake_word.phrase` "purely cosmetic; engine keys detection", so what
-the product fires on is whatever `POSITIVE_SPELLINGS` trained it on and nothing
-else. The contract therefore already answers this, by construction: `okay
-youtab.` is a negative. Note that this does not violate the `HARD_NEGATIVES`
-rule that "nothing in this list *contains* the wake phrase" — it contains the
-name, not the carrier-plus-name phrase.
+**`okay youtab.` → negative (must not fire).** `phrases.HARD_NEGATIVES` already
+contained the real name under carriers other than "hey" — `open youtab.`,
+`youtab.`, `youtab is running.` and `okay tab.` were all in it — and every one of
+the five `phrases.POSITIVE_SPELLINGS` entries starts with the carrier "hey". The
+carrier is part of the trained phrase, not decoration around it:
+`tools/wake_word.py` scores frames against one trained model and its own
+docstring calls the configured `wake_word.phrase` "purely cosmetic; engine keys
+detection", so what the product fires on is whatever `POSITIVE_SPELLINGS` trained
+it on and nothing else. Adding it does not violate the `HARD_NEGATIVES` rule that
+"nothing in this list *contains* the wake phrase" — it contains the name, not the
+carrier-plus-name phrase, which is why `youtab.` and `open youtab.` were always
+allowed to be in it. It is the row that separates a model keyed on the whole
+phrase from one keyed on "youtab" alone, which is why `okay tab.` — the same
+carrier with the name removed — is recorded next to it as the control.
 
-**Consequence.** The product must not fire on it, and it becomes a near-phrase
-negative the model has to reject. It is the row that separates a model keyed on
-the whole phrase from one keyed on "youtab" alone, which is why `okay tab.` — the
-same carrier with the name removed — is recorded next to it as the control.
+**`hey google.` → negative (must not fire).** A competing assistant's wake word.
+`phrases.HARD_NEGATIVES` is built from the carrier plus a wrong name
+(`hey utah.`, `hey yoda.`, `hey nutmeg.`, `hey youtube.`) and from the carrier
+alone (`hey.`, `hey there.`); this is the same construction with the best-known
+wrong name in it. Firing here would wake Youtab while its owner is talking to a
+different device, and it is the phrase an always-on microphone in a
+mixed-assistant household hears most often.
 
-### Decision 2 — `hey google.` → **negative** (must not fire)
+**`hey siri.` → negative (must not fire).** Same class as `hey google.`: the
+carrier plus a competing assistant's name. `tools/wake_word.py`'s own module
+docstring names the pattern — "the 'Hey Siri' / 'Alexa' pattern" — so the
+product's framing of these as other products' wake words is already explicit.
+Phonetically it adds a second carrier-plus-name shape with a different stressed
+vowel, so it is not a duplicate of `hey google.`.
 
-**Basis.** A competing assistant's wake word. `phrases.HARD_NEGATIVES` is built
-from the carrier plus a wrong name (`hey utah.`, `hey yoda.`, `hey nutmeg.`,
-`hey youtube.`) and from the carrier alone (`hey.`, `hey there.`); this is the
-same construction with the best-known wrong name in it. Firing here would wake
-Youtab while its owner is talking to a different device.
-
-**Consequence.** The product must not fire on it, and it becomes a near-phrase
-negative. It is also the phrase an always-on microphone in a mixed-assistant
-household hears most often.
-
-### Decision 3 — `hey siri.` → **negative** (must not fire)
-
-**Basis.** Same class as `hey google.`: the carrier plus a competing assistant's
-name. `tools/wake_word.py`'s own module docstring names the pattern — "the 'Hey
-Siri' / 'Alexa' pattern" — so the product's framing of these as other products'
-wake words is already explicit. Phonetically it adds a second
-carrier-plus-name shape with a different stressed vowel, so it is not a
-duplicate of `hey google.`.
-
-**Consequence.** The product must not fire on it, and it becomes a near-phrase
-negative.
-
-**None of the three is added to `phrases.py` here.** Adding a phrase changes what
-the next training run fits, which belongs to whoever owns that run;
-`tests/tools/test_wakeword_recording_package.py` pins the current state so the
-decision stays visible rather than becoming implied. They are recorded as
-evaluation evidence in this round, and promoting them into `HARD_NEGATIVES` is a
-separate, deliberate change.
+**None of the three is in `phrases.CONFUSABLE_NEGATIVES`, deliberately.** That
+list is the *measured* confusable subset, ordered by how often each phrase
+actually fired on held-out audio, and it is what synthesis weighted higher.
+Synthetic generation is retired, so an entry would change no training today —
+but none of these three has ever been measured, by synthesis or by recording, so
+an entry would be intuition dressed as evidence. That is the one thing the list
+is defined not to be: `hey youtube.` was the confusion this inventory was
+designed around and it ranked near the bottom when someone finally measured it.
+This recording round is what can earn them a place.
 
 ### The battery, row by row
 
@@ -672,10 +669,10 @@ column exists so that "we have that already" is never asserted from memory.
 | 1 | `hey you tab` | positive | 5 | `POSITIVE_SPELLINGS` | fragmented | This IS the wake word — the unstressed-carrier spelling, weighted 2 in phrases.POSITIVE_SPELLINGS, and half of the hardest minimal pair in the inventory. It is also the one phrase an earlier speaker lost: every take was spoken with a pause between "you" and "tab". |
 | 2 | `hey you tap` | negative | 5 | `HARD_NEGATIVES` | undocumented | The measured top confusion for the phrase above — one voicing feature away, and it fired on the first trained model's held-out clips more than any other near miss. With the row above fragmented, the hardest confusion in the whole inventory is currently untested in both directions. |
 | 3 | `hey yoo tab` | positive | 5 | `POSITIVE_SPELLINGS` | fragmented | Also the wake word — the hard-/t/ spelling, weighted 2 in phrases.POSITIVE_SPELLINGS. espeak-ng flaps the /t/ in the compound spelling and keeps it hard when the name is split; both are things people say, and this is the one that tests the split form. |
-| 4 | `okay youtab` | negative | 3 | not in phrases.py | no | The only near phrase that carries the real name under a different carrier word, so it is the row that distinguishes a model keyed on the whole phrase from one keyed on "youtab" alone. People say "okay X" out of habit from other assistants, so a model that fires here fires often in the field. Never recorded before this round; see TAXONOMY_DECISIONS for why it is a negative. |
+| 4 | `okay youtab` | negative | 3 | `HARD_NEGATIVES` | no | The only near phrase that carries the real name under a different carrier word, so it is the row that distinguishes a model keyed on the whole phrase from one keyed on "youtab" alone. People say "okay X" out of habit from other assistants, so a model that fires here fires often in the field. Never recorded before this round; phrases.HARD_NEGATIVES decides that it is a negative. |
 | 5 | `okay tab` | negative | 3 | `HARD_NEGATIVES` | undocumented | The other carrier with the bare noun, and the control for the row above: "okay youtab." minus the name. Recorded next to it so a fire can be attributed to the carrier or to the name rather than to the pair of them. |
-| 6 | `hey google` | negative | 3 | not in phrases.py | no | A competing wake word with the same carrier and a stressed vowel in the next syllable. Anyone with another assistant in the house says this near the microphone all day. Never recorded before this round; see TAXONOMY_DECISIONS for why it is a negative. |
-| 7 | `hey siri` | negative | 3 | not in phrases.py | no | Same class as "hey google.", second carrier-plus-name shape, different stressed vowel. Never recorded before this round; see TAXONOMY_DECISIONS for why it is a negative. |
+| 6 | `hey google` | negative | 3 | `HARD_NEGATIVES` | no | A competing wake word with the same carrier and a stressed vowel in the next syllable. Anyone with another assistant in the house says this near the microphone all day. Never recorded before this round; phrases.HARD_NEGATIVES decides that it is a negative. |
+| 7 | `hey siri` | negative | 3 | `HARD_NEGATIVES` | no | Same class as "hey google.", second carrier-plus-name shape, different stressed vowel. Never recorded before this round; phrases.HARD_NEGATIVES decides that it is a negative. |
 | 8 | `hey` | negative | 3 | `HARD_NEGATIVES` | no | The carrier word alone, and the single most common thing an always-on microphone hears that begins like the wake word. It is in phrases.HARD_NEGATIVES already, so its label is not a judgement call — synthesized thousands of times, and never once recorded from a person. |
 | 9 | `hey your tab` | negative | 3 | `HARD_NEGATIVES` | undocumented | Measured as one of the top confusions of the first trained model: the frame "hey <something> tab", which is what actually fires. |
 | 10 | `hey new tab` | negative | 3 | `HARD_NEGATIVES` | undocumented | The same measured frame with an ordinary word in it — and something a browser user says out loud. |
