@@ -126,7 +126,8 @@ class _ScriptedCapture:
 
     def __call__(self, step) -> tuple[np.ndarray, int]:
         self.count += 1
-        duration = 2.5 if step.kind == KIND_FREEFORM else 0.8
+        # Continuous sections must clear the compact validator's freeform floor.
+        duration = 25.0 if step.kind == KIND_FREEFORM else 0.8
         return _sine(duration), core.SAMPLE_RATE_HZ
 
 
@@ -202,26 +203,12 @@ def run_self_test(speaker: str, incoming: Path | None) -> int:
           f"{result.checksum_count} files, consent present={result.consent_present}, "
           f"state file removed={result.state_removed}\n")
 
-    # 6) validator: the compact folder carries only the intended shortfalls.
-    try:
-        import validate_speaker_submission as validator  # noqa: PLC0415
-
-        vr = validator.validate_speaker_directory(root)
-        allowed = [
-            e for e in vr.errors
-            if "need at least" in e or "positive_farfield_loud" in e or "SPEAKER_ASSIGNMENTS" in e
-        ]
-        unexpected = [e for e in vr.errors if e not in allowed]
-        print("validator (full-round tool run against the compact folder):")
-        print(f"  intended shortfalls (fewer takes / dropped far-field-loud / "
-              f"speaker outside the round's table): {len(allowed)}")
-        print(f"  unexpected naming/format/checksum errors: {len(unexpected)}")
-        for line in unexpected:
-            print(f"    UNEXPECTED: {line}")
-        if unexpected:
-            return 1
-    except Exception as exc:  # pragma: no cover - validator import optional
-        print(f"validator not run: {exc}")
+    # 6) the compact validator: a complete, correct compact folder is GREEN.
+    validation = core.validate_compact_submission(root, plan)
+    print(core.format_compact_report(validation, plan))
+    print(f"  (errors: {len(validation.errors)}, warnings: {len(validation.warnings)})")
+    if not validation.ok:
+        return 1
 
     print("\nself-test OK: full pipeline exercised with no microphone and no display.")
     if tmp is not None:
@@ -368,6 +355,14 @@ def run_gui(speaker: str, incoming: Path, consent: Path, tts_enabled: bool,
             "checksum step before handing the drive over. Nothing is uploaded.",
         )
 
+    def on_validate() -> None:
+        result = core.validate_compact_submission(root_dir, plan)
+        report = core.format_compact_report(result, plan)
+        if result.ok:
+            messagebox.showinfo("Validate - GREEN", report)
+        else:
+            messagebox.showwarning("Validate - problems to fix", report)
+
     bar = ttk.Frame(win)
     bar.pack(pady=10)
     for text, cmd in (
@@ -379,6 +374,7 @@ def run_gui(speaker: str, incoming: Path, consent: Path, tts_enabled: bool,
     bottom = ttk.Frame(win)
     bottom.pack(pady=4)
     ttk.Button(bottom, text="Toggle voice guidance", command=on_toggle_tts).pack(side="left", padx=3)
+    ttk.Button(bottom, text="Validate", command=on_validate).pack(side="left", padx=3)
     ttk.Button(bottom, text="Save & handoff note", command=on_finalize).pack(side="left", padx=3)
 
     ttk.Label(

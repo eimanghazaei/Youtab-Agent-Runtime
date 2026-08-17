@@ -108,16 +108,28 @@ never writes audio or consent there.
   quiet, distant, noisy, clipped - is retained. Only an explicit Redo of an
   un-kept take discards audio.
 
+## Validate before handoff
+
+Press **Validate** in the app (or read the tail of `--self-test`) to run the
+**compact validator** - a purpose-built check that holds the folder to the
+compact plan it was recorded from. A complete, correct compact submission comes
+back **GREEN** with zero problems; otherwise it lists *only* real faults - a
+missing or misnamed take, a wrong-format or sub-16 kHz file, a silent / too-short
+/ clipped / unreadable take, a checksum mismatch, or a missing consent/metadata
+file. It opens every WAV to do this, because it runs on the machine that just
+captured the audio.
+
+This is deliberately separate from `scripts/wakeword/validate_speaker_submission.py`,
+which is the **E003-E007 full round's** validator: run against a compact
+E001/E002 folder it reports dozens of canonical-count "shortfalls" that are not
+faults, so it is the wrong tool for this round. Do not use it to check a compact
+folder.
+
 ## Handoff
 
 When the sitting is done, the coordinator fills the metadata form
 (`RECORDING_METADATA.json`), adds the signed `CONSENT.pdf`, and writes the
 `SHA256SUMS` manifest, leaving the speaker folder with exactly the four entries
-the validator accepts. Then:
-
-```
-py scripts/wakeword/validate_speaker_submission.py <incoming-root>/E001
-```
-
-The recording assistant produces the naming and layout that command accepts.
+the compact validator expects. A GREEN result means the auto-named folder is
+complete and ready to hand over. Nothing is uploaded.
 ```
