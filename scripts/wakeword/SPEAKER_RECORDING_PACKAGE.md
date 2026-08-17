@@ -554,6 +554,9 @@ see "The one rule behind everything" above for why.
       the `notes` field of your metadata form rather than re-recording.
 - [ ] `RECORDING_METADATA.json` is filled in completely, with no bracketed
       `<...>` placeholder text left in it.
+- [ ] No hidden litter is left in the folders. `.DS_Store`, `Thumbs.db` and
+      AppleDouble `._name` files that your computer drops in automatically
+      hard-fail the check — delete them from every folder before you hand over.
 - [ ] The consent form is signed, you have your copy, and it has gone to your
       coordinator separately from the audio.
 - [ ] If you're comfortable running a command, run the upload-verification
@@ -814,10 +817,22 @@ voice the model hates.
 
 1. Copy the speaker's handoff into one folder per speaker under the capture
    root, named for the label alone: `E003/`, `E004/`.
-   **Never inside this repository** — the manifest tool refuses a destination
+   **Never inside this repository** — the import tool refuses a destination
    under the checkout, and the commit gate refuses the audio.
-2. Auto-name anything the recorder left in its own naming scheme, before
-   generating checksums against it:
+2. **Delete sync-client and editor litter before anything else touches the
+   folder.** `.DS_Store` (macOS writes one into every folder it opens),
+   `Thumbs.db` and `desktop.ini` (Windows), and AppleDouble `._name` files
+   (macOS writes one beside every file it copies onto an exFAT drive, which is
+   how a removable drive passed between two people is formatted) all hard-fail
+   both the validator and the import — and a stray one counted as a recording
+   would push every real take onto the wrong take number. Clear the whole tree
+   first:
+
+   ```bash
+   find <capture-root>/E003 \( -name '.DS_Store' -o -name 'Thumbs.db' \
+       -o -name 'desktop.ini' -o -name '._*' \) -delete
+   ```
+3. Auto-name anything the recorder left in its own naming scheme:
 
    ```bash
    python scripts/wakeword/validate_speaker_submission.py --rename plan  <capture-root>/E003
@@ -829,17 +844,26 @@ voice the model hates.
    whose file count doesn't match what that section requires is reported and
    left alone rather than guessed at — resolve it with the speaker, then
    re-run. Skip this step for a folder the speaker already named by hand.
-3. File the signed consent record as `E003/CONSENT.pdf`, in the encrypted,
+4. File the signed consent record as `E003/CONSENT.pdf`, in the encrypted,
    access-controlled store described in `CONSENT_RECORD_TEMPLATE.md`. The
    speaker keeps their own copy; the coordinator's copy is what binds the
    recordings to a consent that covers them, which is why it lives in the
    submission folder rather than beside it.
-4. Generate `E003/SHA256SUMS` — coreutils format, `<digest>  <path>`, paths
-   relative to the speaker folder, covering every other file in it. Verify it
-   with `sha256sum -c SHA256SUMS` from inside the folder after any later move;
-   that is the check the validator deliberately does not do, because a digest
-   recomputed on the machine that wrote it says nothing about the transfer.
-5. Validate the layout before anything reads the audio:
+5. Generate `E003/SHA256SUMS`, once the consent record and the final file names
+   are both in place so the listing covers them. Write it with the validator's
+   own mode, so the listing and the check that later reads it are built from one
+   file walk and cannot disagree:
+
+   ```bash
+   python scripts/wakeword/validate_speaker_submission.py --write-checksums <capture-root>/E003
+   ```
+
+   It writes coreutils format — `<digest>  <path>`, two spaces, paths relative
+   to the speaker folder, every other file covered. Verify it with `sha256sum -c
+   SHA256SUMS` from inside the folder after any later move; that is the check the
+   validator deliberately does not do, because a digest recomputed on the machine
+   that wrote it says nothing about the transfer.
+6. Validate the layout before anything reads the audio:
 
    ```bash
    python scripts/wakeword/validate_speaker_submission.py <capture-root>/E003
@@ -851,25 +875,42 @@ voice the model hates.
    back for, not a sentence to puzzle over. Run it while the speaker is still
    reachable: a missing section can be recorded, and a misnamed file can be
    asked about, only until they are not.
-6. Freeze it, before anything reads it:
+7. Ingest it with `import_speaker.py` — a dry run first, then for real:
 
    ```bash
-   python scripts/wakeword/freeze_manifest.py freeze \
-       --root <capture-root>/<label>/originals \
-       --out  <capture-root>/<label>.manifest.json \
-       --dataset <label> --split train --usage training \
-       --note "phone, close+5m, quiet+TV+kitchen, en-GB, mid pitch"
+   python scripts/wakeword/import_speaker.py \
+       --speaker E003 \
+       --submission <capture-root>/E003 \
+       --into <external-data-root> \
+       --note "phone; far-field ~5 m; tv+kitchen; low pitch" \
+       --dry-run
+
+   python scripts/wakeword/import_speaker.py \
+       --speaker E003 \
+       --submission <capture-root>/E003 \
+       --into <external-data-root> \
+       --note "phone; far-field ~5 m; tv+kitchen; low pitch"
    ```
 
-   `--split`/`--usage` come from that speaker's row in
-   `speaker_recording_spec.SPEAKER_ASSIGNMENTS`, not from memory: `--usage
-   validation` for the validation speaker and `--split evaluate --usage
-   sealed-evaluation` for a sealed one. That is not a label —
-   `assert_usable_for` raises if anything later tries to train on a sealed set,
-   and the CLI exits non-zero. Freeze before the first read, so the frozen set is
-   the recorded set and not the set as it stood after somebody tidied it.
-7. Record the coverage cell in `--note`: device, distance, noise, accent, pitch
-   band.
+   Do **not** freeze the manifest by hand. `import_speaker.py` is the one step
+   between the drive and the training set, and it does what a hand-typed
+   `freeze_manifest.py freeze` cannot: it runs the quality inspection, refuses a
+   recording reused within or across speakers, holds a lock on the data root so
+   two concurrent imports cannot both spend a seal, copies every original and
+   reverifies it byte for byte, and only then writes the frozen manifest itself.
+   `--dry-run` runs every one of those checks and writes nothing; run it, read
+   the report, then run the same command again without it.
+
+   **The split and the usage are never typed by a human — there is no `--usage`
+   flag.** `import_speaker.py` reads the role from the predeclared registry
+   (`round8_config.SPLITS`, cross-checked against
+   `speaker_recording_spec.SPEAKER_ASSIGNMENTS`) and refuses if the two disagree,
+   so no slip of the keyboard can import a training speaker as `sealed-evaluation`
+   or a sealed speaker as training. `assert_usable_for` raises if anything later
+   tries to train on a sealed set, and the CLI exits non-zero. The coverage cell
+   — device, far-field distance, noise pair, pitch band — goes in `--note`,
+   which the report and the manifest both record; it is the only place a later
+   measurement can be attributed to a condition.
 8. Confirm the speaker has deleted the recordings from their device, including
    any automatic cloud copy.
 

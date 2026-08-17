@@ -52,6 +52,7 @@ to guess.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -487,6 +488,32 @@ def _check_checksums(root: Path, result: ValidationResult) -> None:
     )
 
 
+def write_checksums(root: Path) -> int:
+    """Write ``root/SHA256SUMS`` over every other file, in coreutils format.
+
+    Returns how many files were listed. The listing is built from the same walk
+    ``_check_checksums`` verifies against (``_submission_files``), so what this
+    writes and what the validator later reads cannot disagree -- the failure a
+    hand-typed ``find | xargs sha256sum`` invites is skipping a dotfile the walk
+    counts, or counting one it skips, and then the folder fails its own listing.
+    Portable where a raw ``find -printf`` is not: BSD/macOS ``find`` has no
+    ``-printf``, and this is the machine a drive handed between two people is
+    plugged into.
+
+    This is *not* the transfer check. A digest taken here, on the machine that
+    holds the files, says nothing about a copy that has not happened yet, which
+    is exactly why ``_check_checksums`` refuses to recompute one. ``sha256sum -c
+    SHA256SUMS``, run by the coordinator after the transfer, is what says the
+    bytes arrived intact.
+    """
+    lines = [
+        f"{hashlib.sha256((root / rel).read_bytes()).hexdigest()}  {rel}\n"
+        for rel in _submission_files(root)
+    ]
+    (root / spec.CHECKSUM_FILE).write_text("".join(lines), encoding="utf-8")
+    return len(lines)
+
+
 def _check_originals(root: Path, result: ValidationResult) -> None:
     originals = root / spec.ORIGINALS_DIR
     if not originals.is_dir():
@@ -784,7 +811,22 @@ def main(argv: list[str] | None = None) -> int:
             "renames. Run the command again with no --rename afterwards to validate."
         ),
     )
+    parser.add_argument(
+        "--write-checksums",
+        action="store_true",
+        help=(
+            "instead of validating, write SHA256SUMS over every other file in the "
+            "folder, in the coreutils format the validator and sha256sum -c read. "
+            "Run it after the consent record is in place and the files are named, "
+            "and never as the transfer check -- that is sha256sum -c after the copy."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.write_checksums:
+        count = write_checksums(args.speaker_dir)
+        print(f"wrote {spec.CHECKSUM_FILE} covering {count} file(s)")
+        return 0
 
     if args.rename:
         actions, result = rename_plan(args.speaker_dir)

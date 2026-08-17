@@ -778,3 +778,56 @@ def test_cli_rename_reports_an_error_for_an_unrecordable_count(
     out = capsys.readouterr().out
     assert "ERROR:" in out
     assert "could not be auto-named" in out
+
+
+# ── writing the checksum listing (G6) ────────────────────────────────────────
+
+
+def test_write_checksums_produces_a_listing_the_validator_accepts(tmp_path: Path) -> None:
+    """The generated SHA256SUMS is exactly what ``_check_checksums`` verifies.
+
+    Built by the same file walk the validator checks against, so a coordinator
+    never has to reverse-engineer a portable ``find | xargs sha256sum`` that
+    might skip or add a file the validator counts differently.
+    """
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    (root / spec.CHECKSUM_FILE).unlink()  # regenerate from scratch, not overwrite
+
+    count = validator.write_checksums(root)
+    assert count == len(validator._submission_files(root)) > 0
+
+    text = (root / spec.CHECKSUM_FILE).read_text(encoding="utf-8")
+    assert spec.CHECKSUM_FILE not in text, "a listing must not try to cover itself"
+    for line in text.splitlines():
+        assert spec.CHECKSUM_LINE.match(line), f"not coreutils format: {line!r}"
+
+    result = validator.validate_speaker_directory(root)
+    assert result.ok, result.errors
+
+
+def test_the_written_digests_are_genuine(tmp_path: Path) -> None:
+    """A digest that does not match its file would pass structure but fail transfer."""
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    validator.write_checksums(root)
+
+    listed = {}
+    for line in (root / spec.CHECKSUM_FILE).read_text(encoding="utf-8").splitlines():
+        match = spec.CHECKSUM_LINE.match(line)
+        assert match
+        listed[match.group(2)] = match.group(1)
+    for rel, digest in listed.items():
+        assert digest == hashlib.sha256((root / rel).read_bytes()).hexdigest()
+
+
+def test_cli_write_checksums_then_validate_round_trips(tmp_path: Path, capsys) -> None:
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    (root / spec.CHECKSUM_FILE).unlink()
+
+    code = validator.main(["--write-checksums", str(root)])
+    assert code == 0
+    assert f"wrote {spec.CHECKSUM_FILE}" in capsys.readouterr().out
+
+    assert validator.main([str(root)]) == 0
