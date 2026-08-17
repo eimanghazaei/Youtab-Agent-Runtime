@@ -480,10 +480,17 @@ def _synthetic_answers() -> dict:
     }
 
 
+class _StepCapture:
+    """Capture callable whose take length suits the step (freeform clears 20 s)."""
+
+    def __call__(self, step) -> tuple[np.ndarray, int]:
+        duration = 25.0 if step.kind == core.KIND_FREEFORM else 0.8
+        return synth_sine(duration), core.SAMPLE_RATE_HZ
+
+
 def _drive_compact_session(root: Path, label: str) -> core.Plan:
     plan = core.build_plan(label)
-    rec = _Recorder(synth_sine(0.8))
-    session = core.Session(plan, root, speak=rec.speak, capture=rec.capture)
+    session = core.Session(plan, root, speak=lambda _text: None, capture=_StepCapture())
     while not session.done:
         session.record()
         session.keep()
@@ -543,3 +550,154 @@ def test_full_spec_folder_built_through_core_writers_validates_green(tmp_path):
     result = validator.validate_speaker_directory(root)
     assert result.ok, f"validator errors: {result.errors}"
     assert not result.warnings, f"validator warnings: {result.warnings}"
+
+
+# ── the purpose-built compact validator ──────────────────────────────────────
+
+
+def _write_raw_wave(path: Path, pcm: np.ndarray, rate: int) -> None:
+    """Write a mono 16-bit WAV at an arbitrary rate, bypassing the 16 kHz floor."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(np.asarray(pcm, dtype=np.int16).tobytes())
+
+
+def _complete_compact_folder(root: Path, label: str) -> core.Plan:
+    """A fully recorded, finalized, correct compact folder (the GREEN baseline)."""
+    plan = _drive_compact_session(root, label)
+    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 synthetic consent placeholder")
+    core.finalize_submission(plan, root, _synthetic_answers())
+    return plan
+
+
+def test_complete_compact_folder_validates_green_e001(tmp_path):
+    root = tmp_path / FIRST_COMPACT
+    plan = _complete_compact_folder(root, FIRST_COMPACT)
+    result = core.validate_compact_submission(root, plan)
+    assert result.ok, f"errors: {result.errors}"
+    assert result.errors == []
+    assert result.warnings == []
+    assert all(s.complete for s in result.sections)
+
+
+def test_complete_compact_folder_validates_green_e002(tmp_path):
+    root = tmp_path / SECOND_COMPACT
+    plan = _complete_compact_folder(root, SECOND_COMPACT)  # street / fan noise
+    result = core.validate_compact_submission(root, plan)
+    assert result.ok, f"errors: {result.errors}"
+    assert result.errors == []
+    assert result.warnings == []
+
+
+def _no_category_noise(errors: list[str], *categories: str) -> bool:
+    return all(all(cat not in e for cat in categories) for e in errors)
+
+
+def test_fault_missing_near_phrase_take_is_caught(tmp_path):
+    root = tmp_path / FIRST_COMPACT
+    plan = _complete_compact_folder(root, FIRST_COMPACT)
+    assert core.validate_compact_submission(root, plan).ok  # non-vacuity
+
+    plan.step_by_key("originals/near_phrase/hey-you-tab_001.wav").path(root).unlink()
+    core.finalize_submission(plan, root, _synthetic_answers())  # re-checksum honestly
+
+    result = core.validate_compact_submission(root, plan)
+    assert not result.ok
+    assert any("missing take" in e and "hey-you-tab_001.wav" in e for e in result.errors)
+    assert _no_category_noise(result.errors, "SHA256SUMS", "RECORDING_METADATA", "CONSENT")
+
+
+def test_fault_renamed_file_is_caught(tmp_path):
+    root = tmp_path / FIRST_COMPACT
+    plan = _complete_compact_folder(root, FIRST_COMPACT)
+    assert core.validate_compact_submission(root, plan).ok  # non-vacuity
+
+    src = plan.step_by_key("originals/near_phrase/hey-you-tab_001.wav").path(root)
+    src.rename(src.with_name("hey-you-tab_009.wav"))
+    core.finalize_submission(plan, root, _synthetic_answers())
+
+    result = core.validate_compact_submission(root, plan)
+    assert not result.ok
+    assert any("missing take" in e and "hey-you-tab_001.wav" in e for e in result.errors)
+    assert any("unexpected file" in e and "hey-you-tab_009.wav" in e for e in result.errors)
+    # every reported problem is about that one rename -- nothing spurious
+    assert all("hey-you-tab" in e for e in result.errors)
+
+
+def test_fault_sub_16k_wav_is_caught(tmp_path):
+    root = tmp_path / FIRST_COMPACT
+    plan = _complete_compact_folder(root, FIRST_COMPACT)
+    assert core.validate_compact_submission(root, plan).ok  # non-vacuity
+
+    step = plan.steps[0]
+    _write_raw_wave(step.path(root), synth_sine(0.8, rate=12000), 12000)
+    core.finalize_submission(plan, root, _synthetic_answers())
+
+    result = core.validate_compact_submission(root, plan)
+    assert not result.ok
+    assert any("16 kHz" in e and step.stem in e for e in result.errors)
+    assert _no_category_noise(result.errors, "SHA256SUMS", "RECORDING_METADATA", "CONSENT")
+
+
+def test_fault_silent_take_kept_is_caught(tmp_path):
+    root = tmp_path / FIRST_COMPACT
+    plan = _complete_compact_folder(root, FIRST_COMPACT)
+    assert core.validate_compact_submission(root, plan).ok  # non-vacuity
+
+    step = plan.steps[0]  # a positive take; silence is a fault here
+    core.write_wave(step.path(root), synth_silence(0.8))
+    core.finalize_submission(plan, root, _synthetic_answers())
+
+    result = core.validate_compact_submission(root, plan)
+    assert not result.ok
+    assert any("silent" in e and step.stem in e for e in result.errors)
+    assert _no_category_noise(result.errors, "SHA256SUMS", "RECORDING_METADATA", "CONSENT")
+
+
+def test_fault_truncated_take_is_caught(tmp_path):
+    root = tmp_path / FIRST_COMPACT
+    plan = _complete_compact_folder(root, FIRST_COMPACT)
+    assert core.validate_compact_submission(root, plan).ok  # non-vacuity
+
+    step = plan.steps[0]
+    core.write_wave(step.path(root), synth_sine(0.2))  # under the 0.30 s floor
+    core.finalize_submission(plan, root, _synthetic_answers())
+
+    result = core.validate_compact_submission(root, plan)
+    assert not result.ok
+    assert any("too short" in e and step.stem in e for e in result.errors)
+    assert _no_category_noise(result.errors, "SHA256SUMS", "RECORDING_METADATA", "CONSENT")
+
+
+def test_fault_wrong_checksum_digest_is_caught(tmp_path):
+    root = tmp_path / FIRST_COMPACT
+    plan = _complete_compact_folder(root, FIRST_COMPACT)
+    assert core.validate_compact_submission(root, plan).ok  # non-vacuity
+
+    sums = root / spec.CHECKSUM_FILE
+    lines = sums.read_text(encoding="utf-8").splitlines()
+    rel = spec.CHECKSUM_LINE.match(lines[0]).group(2)
+    lines[0] = ("0" * 64) + "  " + rel  # syntactically valid, wrong digest
+    sums.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    result = core.validate_compact_submission(root, plan)
+    assert not result.ok
+    assert any("different digest" in e and rel in e for e in result.errors)
+    assert len(result.errors) == 1  # exactly the one seeded fault
+
+
+def test_fault_missing_consent_is_caught(tmp_path):
+    root = tmp_path / FIRST_COMPACT
+    plan = _complete_compact_folder(root, FIRST_COMPACT)
+    assert core.validate_compact_submission(root, plan).ok  # non-vacuity
+
+    (root / spec.CONSENT_FILE).unlink()
+    core.finalize_submission(plan, root, _synthetic_answers())  # re-checksum without it
+
+    result = core.validate_compact_submission(root, plan)
+    assert not result.ok
+    assert any("missing CONSENT.pdf" in e for e in result.errors)
+    assert _no_category_noise(result.errors, "SHA256SUMS", "missing take", "16 kHz")

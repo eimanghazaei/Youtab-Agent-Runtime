@@ -782,3 +782,305 @@ def finalize_submission(
         consent_present=(root / spec.CONSENT_FILE).is_file(),
         state_removed=state_removed,
     )
+
+
+# ── the compact validator (the operator's one-click check) ───────────────────
+#
+# ``validate_speaker_submission.py`` is the E003-E007 round's validator: it holds
+# a folder to the *full* package (canonical take counts, both far-field
+# conditions, the E003-E007 assignment table) and never opens the audio. Run
+# against a correct compact E001/E002 folder it reports dozens of "shortfalls"
+# that are not faults, which would bury a real one.
+#
+# This is the compact round's validator instead. It holds a folder to the
+# *compact plan* the assistant recorded it from, so a complete, correct compact
+# submission is GREEN -- and, because this is a recording-time tool on the same
+# machine that just captured the audio, it *does* open every take to catch a
+# silent, too-short, clipped, unreadable, wrong-format or sub-16 kHz recording
+# that a listing-only check cannot see. E001 and E002 are both valid here.
+
+
+@dataclass
+class CompactValidation:
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    sections: list[SectionStatus] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+_FINDING_PHRASE = {
+    FINDING_UNREADABLE: "will not open as audio (unreadable); re-record this take",
+    FINDING_EMPTY: "silent / empty take; re-record this take",
+    FINDING_TOO_SHORT: "too short; re-record this take",
+    FINDING_CLIPPED: "clipped (input too hot); move back or lower the input and re-record",
+}
+
+
+def _compact_submission_files(root: Path) -> list[str]:
+    """Every file except SHA256SUMS and the transient progress dotfile, sorted."""
+    out: list[str] = []
+    for path in sorted(Path(root).rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel in (spec.CHECKSUM_FILE, STATE_FILENAME):
+            continue
+        out.append(rel)
+    return out
+
+
+def _take_problems(path: Path, step: Step) -> list[str]:
+    """Format and content problems with one recorded take, or an empty list."""
+    rel = step.rel_path
+    try:
+        with wave.open(str(path), "rb") as handle:
+            channels = handle.getnchannels()
+            width = handle.getsampwidth()
+            rate = handle.getframerate()
+    except (wave.Error, EOFError, OSError):
+        return [f"{rel}: {_FINDING_PHRASE[FINDING_UNREADABLE]}"]
+
+    problems: list[str] = []
+    if width != SAMPLE_WIDTH_BYTES:
+        problems.append(f"{rel}: {width * 8}-bit PCM, expected 16-bit")
+    if channels != CHANNELS:
+        problems.append(f"{rel}: {channels} channels, expected mono")
+    if rate < MIN_SAMPLE_RATE_HZ:
+        problems.append(f"{rel}: sample rate {rate} Hz is below the 16 kHz floor")
+
+    # Content findings only make sense once the container is 16-bit mono PCM.
+    if width == SAMPLE_WIDTH_BYTES:
+        inspection = inspect_wav(
+            path,
+            expect_speech=step.expect_speech,
+            min_seconds=step.min_seconds,
+            target_seconds=step.target_seconds,
+        )
+        for finding in inspection.findings:
+            if finding.blocking:
+                phrase = _FINDING_PHRASE.get(finding.code, finding.message)
+                problems.append(f"{rel}: {phrase}")
+    return problems
+
+
+def _check_compact_originals(root: Path, plan: Plan, result: CompactValidation) -> None:
+    originals = root / spec.ORIGINALS_DIR
+    if not originals.is_dir():
+        result.errors.append(f"missing required folder: {spec.ORIGINALS_DIR}/")
+        return
+
+    expected_by_rel = {step.rel_path: step for step in plan.steps}
+    expected_dirs = {step.directory for step in plan.steps}
+
+    # Every planned take must be present, well-formed and not a rejected capture.
+    for step in plan.steps:
+        path = step.path(root)
+        if not path.is_file():
+            result.errors.append(f"missing take: {step.rel_path}")
+            continue
+        if path.stat().st_size == 0:
+            result.errors.append(f"{step.rel_path}: empty file (0 bytes); re-record this take")
+            continue
+        result.errors.extend(_take_problems(path, step))
+
+    # Nothing else may be in the tree: an extra or misnamed file is a fault
+    # because auto-naming hands out take numbers by position.
+    for entry in sorted(originals.iterdir()):
+        if entry.is_dir():
+            if entry.name not in expected_dirs:
+                result.errors.append(
+                    f"unrecognised folder in {spec.ORIGINALS_DIR}/: {entry.name}/ "
+                    "(not part of this speaker's compact plan)"
+                )
+                continue
+            for member in sorted(entry.iterdir()):
+                rel = f"{spec.ORIGINALS_DIR}/{entry.name}/{member.name}"
+                if member.is_dir():
+                    result.errors.append(f"{rel}: expected a file, found a folder")
+                elif rel not in expected_by_rel:
+                    result.errors.append(
+                        f"unexpected file not in the plan: {rel} (a misnamed or extra take)"
+                    )
+        elif entry.is_file():
+            result.errors.append(
+                f"unexpected file directly in {spec.ORIGINALS_DIR}/: {entry.name}"
+            )
+
+
+def _check_compact_consent(root: Path, result: CompactValidation) -> None:
+    path = root / spec.CONSENT_FILE
+    if not path.is_file():
+        result.errors.append(
+            f"missing {spec.CONSENT_FILE}: the signed consent record has to be in the "
+            "folder before the recordings can be handed over"
+        )
+        return
+    if path.stat().st_size == 0:
+        result.errors.append(f"{spec.CONSENT_FILE} is empty")
+
+
+def _check_compact_metadata(root: Path, plan: Plan, result: CompactValidation) -> None:
+    path = root / spec.METADATA_FILE
+    if not path.is_file():
+        result.errors.append(f"missing {spec.METADATA_FILE}")
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        result.errors.append(f"{spec.METADATA_FILE} is not well-formed JSON: {exc}")
+        return
+    if not isinstance(data, dict):
+        result.errors.append(f"{spec.METADATA_FILE} must contain a single JSON object")
+        return
+
+    for name in spec.REQUIRED_METADATA_FIELDS:
+        if name not in data:
+            result.errors.append(f"{spec.METADATA_FILE} is missing required field {name!r}")
+            continue
+        if name == "noise_sources_used":
+            continue  # checked below
+        value = data[name]
+        if not isinstance(value, str) or not value.strip():
+            result.errors.append(
+                f"{spec.METADATA_FILE} field {name!r} must be a non-empty string"
+            )
+        elif value.strip().startswith("<"):
+            result.errors.append(
+                f"{spec.METADATA_FILE} field {name!r} still has the template placeholder "
+                "in it; fill in a real answer"
+            )
+
+    for name in data:
+        if name not in spec.ALL_METADATA_FIELDS:
+            result.errors.append(f"{spec.METADATA_FILE} has an unrecognised field {name!r}")
+
+    declared = data.get("speaker_id")
+    if isinstance(declared, str) and declared.strip() and not declared.strip().startswith("<"):
+        if declared.strip() != plan.speaker:
+            result.errors.append(
+                f"{spec.METADATA_FILE} names {declared.strip()!r} but the folder is "
+                f"{plan.speaker!r}"
+            )
+
+    expected_noise = set(compact_plan.noise_sources_for(plan.speaker))
+    noise = data.get("noise_sources_used")
+    if not isinstance(noise, list) or not noise:
+        result.errors.append(
+            f"{spec.METADATA_FILE} field 'noise_sources_used' must be a non-empty list"
+        )
+    elif set(noise) != expected_noise:
+        result.errors.append(
+            f"{spec.METADATA_FILE} 'noise_sources_used' is {sorted(noise)} but this "
+            f"speaker's compact plan records {sorted(expected_noise)}"
+        )
+
+
+def _check_compact_checksums(root: Path, result: CompactValidation) -> None:
+    path = root / spec.CHECKSUM_FILE
+    if not path.is_file():
+        result.errors.append(
+            f"missing {spec.CHECKSUM_FILE}: without it the folder cannot be shown to have "
+            "survived the transfer intact"
+        )
+        return
+
+    listed: dict[str, str] = {}
+    seen: list[str] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        match = spec.CHECKSUM_LINE.match(line)
+        if not match:
+            result.errors.append(
+                f"{spec.CHECKSUM_FILE} line {number} is not coreutils format "
+                f"(64 hex, two spaces, path): {line.strip()!r}"
+            )
+            continue
+        digest, rel = match.group(1), match.group(2)
+        seen.append(rel)
+        listed[rel] = digest
+
+    for rel in sorted({name for name in seen if seen.count(name) > 1}):
+        result.errors.append(f"{spec.CHECKSUM_FILE} lists {rel!r} more than once")
+
+    present = set(_compact_submission_files(root))
+    # Unlike the full round's listing-only check, verify the digests here: this
+    # runs on the machine that wrote the files, and a wrong digest means the
+    # manifest and the bytes already disagree before any transfer.
+    for rel, digest in listed.items():
+        target = root / rel
+        if not target.is_file():
+            result.errors.append(
+                f"{spec.CHECKSUM_FILE} lists {rel!r}, which is not in the folder"
+            )
+        elif sha256_file(target) != digest:
+            result.errors.append(
+                f"{spec.CHECKSUM_FILE} records a different digest for {rel!r}: the bytes "
+                "changed since the manifest was written"
+            )
+    for rel in sorted(present - set(listed)):
+        result.errors.append(f"{spec.CHECKSUM_FILE} does not list {rel!r}")
+
+
+def validate_compact_submission(root: Path, plan: Plan) -> CompactValidation:
+    """Validate a compact speaker folder against ``plan``. GREEN when complete.
+
+    Returns a result whose ``ok`` is True, with no errors and no warnings, for a
+    complete and correct compact submission: exactly the plan's takes present and
+    correctly named, every WAV mono/16-bit/>=16 kHz and free of a blocking
+    quality finding, ``RECORDING_METADATA.json`` complete, ``CONSENT.pdf``
+    present, and ``SHA256SUMS`` present and internally consistent. Every reported
+    error is a genuine problem the operator can act on -- there is no
+    canonical-count, dropped-section or assignment-table noise.
+    """
+    result = CompactValidation()
+    root = Path(root)
+    if not root.is_dir():
+        result.errors.append(f"{root} is not a directory")
+        return result
+
+    if plan.speaker not in compact_plan.COMPACT_NOISE_ASSIGNMENTS:
+        result.errors.append(
+            f"{plan.speaker!r} is not a compact-round speaker "
+            f"({sorted(compact_plan.COMPACT_NOISE_ASSIGNMENTS)})"
+        )
+    if root.name != plan.speaker:
+        result.errors.append(
+            f"the folder is named {root.name!r} but the plan is for {plan.speaker!r}"
+        )
+
+    tolerated = set(spec.SUBMISSION_ENTRIES) | {STATE_FILENAME}
+    for entry in sorted(root.iterdir()):
+        if entry.name not in tolerated:
+            result.errors.append(
+                f"unrecognised entry in {root.name}/: {entry.name} -- the submission holds "
+                f"exactly {', '.join(spec.SUBMISSION_ENTRIES)} and nothing else"
+            )
+
+    _check_compact_originals(root, plan, result)
+    _check_compact_consent(root, result)
+    _check_compact_metadata(root, plan, result)
+    _check_compact_checksums(root, result)
+
+    result.sections = section_status(plan, load_progress(plan, root))
+    return result
+
+
+def format_compact_report(result: CompactValidation, plan: Plan) -> str:
+    """A short operator-facing summary: GREEN, or only the real problems."""
+    lines = [f"Compact submission check for {plan.speaker}:"]
+    for status in result.sections:
+        marker = "ok" if status.complete else "incomplete"
+        short = status.title.split(" - ")[0]
+        lines.append(f"  {short:<12} {status.have:>3}/{status.need:<3}  {marker}")
+    if result.ok:
+        lines.append("  GREEN: complete and correct -- ready for handoff.")
+    else:
+        lines.append(f"  {len(result.errors)} problem(s) to fix:")
+        lines.extend(f"    - {error}" for error in result.errors)
+    for warning in result.warnings:
+        lines.append(f"  note: {warning}")
+    return "\n".join(lines)
