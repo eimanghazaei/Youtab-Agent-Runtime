@@ -130,6 +130,19 @@ The refusals are the point, and each is a test in
   to, and a checkpoint may only be initialised from if the
   `DATASET_CONTRACT.json` this stage writes sits beside it asserting zero
   synthetic samples;
+* every reference has to be *direct*: a clip, a full-length decode or a corpus
+  file that is named absolutely, climbs out of the manifest's own directory with
+  `..`, or arrives through a symlink is refused, because the bytes it reaches
+  are not the bytes that were frozen;
+* every clip, corroborating original, decode, corpus file and initialization
+  checkpoint is looked up by SHA-256 in `retired_synthetic_artifacts.json`, so a
+  byte-identical copy of retired synthetic material is refused wherever it sits
+  and whatever it is called — a missing or unreadable registry is a refusal, not
+  a pass. Those tests are
+  `tests/tools/test_wakeword_synthetic_relocation_guard.py`. What the registry
+  covers and what it does not is stated inside the registry: the retired TTS
+  corpora are 207,300 clips and are represented by a documented sample, so for
+  clips the provenance chain above is still the primary guard;
 * every retired or synthetic-data flag aborts with a reason rather than being
   ignored;
 * `pink_noise.wav` and `white_noise.wav` are *generated*, not recorded, so they
