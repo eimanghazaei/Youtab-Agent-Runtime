@@ -51,7 +51,27 @@ jobs:
         # environment they describe, not to teach the test to expect a
         # half-installed one. No pyproject change, so `uv lock --check` is
         # unaffected: these pins already live in the `slack` extra.
-        run: python -m pip install -e '.[dev,web,slack]'
+        #
+        # `wakeword-ingest` joins for the same reason and is spelled as the extra
+        # on purpose. This gate collects the whole of `tests/tools`, which
+        # includes the wake-word ingestion suites, and human speaker submissions
+        # arrive as AAC-LC `.m4a` at 48 kHz from phone voice-memo apps:
+        # `scripts/wakeword/import_speaker.py` reads container facts itself but
+        # needs a real decoder (PyAV) for the LEVEL facts -- peak, RMS, clipping
+        # runs, noise floor. Those tests fail rather than skip where the decoder
+        # is missing, deliberately, because a skip is exactly how PyAV stayed an
+        # undocumented host dependency until it was pinned. Named as the extra
+        # rather than as a bare `av==` pin so this job exercises one of the two
+        # install commands `pyproject.toml` documents for an ingestion machine,
+        # and so the pin cannot drift between here and the lock.
+        #
+        # Extended in place rather than added as a second step: the editable
+        # install is governed by
+        # `tests/youtab_runtime/test_framework_version_matches_lock.py`
+        # (`test_required_ci_installs_the_governed_extra`), which requires every
+        # `pip install -e` line here to carry the `web` extra so FastAPI cannot
+        # resolve freely from the core range again.
+        run: python -m pip install -e '.[dev,web,slack,wakeword-ingest]'
       # The branding gate OCRs every shipped image, and this runner had no OCR
       # engine at all -- so it read none of the 61 tracked images and reported
       # that as if the images were at fault.
