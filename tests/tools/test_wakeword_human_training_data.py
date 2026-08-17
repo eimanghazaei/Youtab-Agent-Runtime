@@ -32,6 +32,12 @@ model that trains, and a number that means something other than what it says:
   one array up front from a count computed before any window exists. Too small
   aborts the run; too large leaves zero-filled rows that train as silent
   negatives.
+* **Generated background mixed in as if it were a room.** Two of the six files
+  Speech Commands ships in ``_background_noise_`` are synthesised, not recorded,
+  and a model fitted over synthesised noise has learned a room that does not
+  exist. ``VALIDATION_NOISE`` named one of them for seven rounds while every
+  document said generated audio was prohibited, so the rule is now a constant the
+  builder reads and a test here, on every split.
 
 Every one of those is a guard in ``build_dataset.py`` and a test here.
 
@@ -96,12 +102,34 @@ BASELINE_STATS_KEYS = frozenset(
         "synthesized_positive_clips",
         "recorded_negative_clips",
         "background_recordings",
+        "generated_background_excluded",
         "impulse_responses",
         "window_seconds",
         "source_utterances",
         "categories",
     }
 )
+
+#: Every file Speech Commands ships in ``_background_noise_``. Four are real
+#: recordings and two — ``pink_noise.wav`` and ``white_noise.wav`` — are
+#: generated. All six are written into the fixture, because "the generated ones
+#: are excluded" is only a claim if they were there to exclude.
+BACKGROUND_FILES = (
+    "doing_the_dishes.wav",
+    "dude_miaowing.wav",
+    "exercise_bike.wav",
+    "pink_noise.wav",
+    "running_tap.wav",
+    "white_noise.wav",
+)
+
+#: What each split's background pool must be once the generated files are out:
+#: one real recording for train, one for validation, two held back to evaluate.
+BACKGROUND_BY_SPLIT = {
+    "train": ["exercise_bike.wav"],
+    "validation": ["doing_the_dishes.wav"],
+    "eval": ["dude_miaowing.wav", "running_tap.wav"],
+}
 
 SPEAKER = "human-r6-a"
 
@@ -241,9 +269,13 @@ def _speech_commands(root: Path) -> None:
         _write_wav(root / "yes" / name, seconds=0.4, seed=500 + picked)
         picked += 1
 
-    # Not in EVAL_NOISE and not in VALIDATION_NOISE, so the train split keeps
-    # it; the Augmenter refuses to build with no background recording at all.
-    _write_wav(root / "_background_noise_" / "exercise_bike.wav", seconds=3.0, seed=77)
+    # The whole `_background_noise_` directory, generated files included. Every
+    # split must end up with at least one real recording, because the Augmenter
+    # refuses to build with no background recording at all -- and the two
+    # generated files must end up in no split, which is what the tests below
+    # measure rather than assume.
+    for index, name in enumerate(BACKGROUND_FILES):
+        _write_wav(root / "_background_noise_" / name, seconds=3.0, seed=77 + index)
 
 
 def _write_human_manifest(
@@ -605,6 +637,75 @@ def test_human_positives_go_through_the_same_augmentation(corpus: Corpus) -> Non
     for index, label, _, _ in _human(sink):
         if label == 1:
             assert int(np.abs(sink.windows[index][-4000:]).max()) > 0
+
+
+# ── background noise: real recordings only ──────────────────────────────────
+
+
+def test_the_split_constants_name_no_generated_background() -> None:
+    """The rule at its source, before any split is cut.
+
+    ``VALIDATION_NOISE`` named ``pink_noise.wav`` for seven rounds while every
+    document said generated background was prohibited, because nothing connected
+    the sentence to the tuple. This is that connection: put a generated name back
+    into either constant and this fails.
+    """
+    generated = build_dataset.GENERATED_BACKGROUND_NAMES
+    assert generated == frozenset({"pink_noise.wav", "white_noise.wav"})
+    assert generated < set(BACKGROUND_FILES), "the fixture no longer ships what it excludes"
+
+    for name in ("VALIDATION_NOISE", "EVAL_NOISE"):
+        named = set(getattr(build_dataset, name))
+        assert not named & generated, f"build_dataset.{name} names generated noise"
+        assert named <= set(BACKGROUND_FILES) - generated, (
+            f"build_dataset.{name} names something that is not a real recording"
+        )
+    # Together the two constants have to leave the train split a real recording,
+    # or "no generated noise" would be satisfied by having no noise at all.
+    assert set(BACKGROUND_FILES) - generated - set(build_dataset.EVAL_NOISE) - set(
+        build_dataset.VALIDATION_NOISE
+    ) == {"exercise_bike.wav"}
+
+
+@pytest.mark.parametrize("split", sorted(BACKGROUND_BY_SPLIT))
+def test_no_split_is_handed_generated_background(corpus: Corpus, split: str) -> None:
+    """Measured off a build, not off the constants.
+
+    Train and validation are cut by two different filters and evaluation by a
+    third, so "excluded" has to be checked on each: an exclusion applied to one
+    branch of that ``if`` is exactly the shape of the bug being fixed.
+    """
+    _, stats = corpus.build(split=split)
+
+    assert stats["background_recordings"] == BACKGROUND_BY_SPLIT[split]
+    assert not set(stats["background_recordings"]) & set(
+        build_dataset.GENERATED_BACKGROUND_NAMES
+    )
+    # Named and counted rather than quietly filtered, the same way
+    # ``build_human_dataset`` reports the background it drops -- a shorter list is
+    # not evidence of a decision.
+    assert stats["generated_background_excluded"] == ["pink_noise.wav", "white_noise.wav"]
+
+
+def test_dropping_the_generated_files_cost_one_recording_each_side(corpus: Corpus) -> None:
+    """What the correction actually cost, asserted rather than remembered.
+
+    Train and validation each used to hold two background recordings, one of them
+    generated. Each now holds one real recording; evaluation is untouched at two.
+    Four real recordings is the whole pool, so no real audio was lost -- but a
+    single-room validation background is a real reduction in what target 4 is
+    measured on, and it is bounded here so it cannot be walked back quietly.
+    """
+    per_split = {
+        split: corpus.build(split=split)[1]["background_recordings"]
+        for split in BACKGROUND_BY_SPLIT
+    }
+
+    assert [len(names) for names in (per_split["train"], per_split["validation"])] == [1, 1]
+    assert len(per_split["eval"]) == 2
+    pooled = [name for names in per_split.values() for name in names]
+    assert sorted(pooled) == sorted(set(BACKGROUND_FILES) - build_dataset.GENERATED_BACKGROUND_NAMES)
+    assert len(pooled) == len(set(pooled)), "a recording is used by two splits"
 
 
 # ── stats ───────────────────────────────────────────────────────────────────

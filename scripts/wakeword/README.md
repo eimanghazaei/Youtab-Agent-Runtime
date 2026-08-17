@@ -81,6 +81,26 @@ Synthetic training is retired for this phase: Round 8 and every later candidate
 is trained, validated and qualified exclusively on real human recordings and
 real recorded environmental audio.
 
+Two bounds are worth stating before the mechanics, because both are enforced
+rather than remembered:
+
+* **Real recorded noise only, everywhere.** Speech Commands' `_background_noise_`
+  ships six files and two of them — `pink_noise.wav` and `white_noise.wav` — are
+  *generated*. They are excluded by name from every training, validation and
+  qualification path, and the exclusion is counted rather than silent:
+  `GENERATED_BACKGROUND_NAMES` in both `build_dataset.py` and
+  `build_human_dataset.py` names them, `round8_config.py --check` reads
+  `build_dataset.py`'s noise constants so a config that documents the rule while
+  the builder breaks it fails the build, and
+  `tests/tools/test_wakeword_round8_predeclaration.py` holds the two builders'
+  lists in agreement. Four real recordings, 279.4 s, remain.
+* **Exactly three capacity arms.** Round 8 varies one axis, `--channels`, over
+  the predeclared set {(128, 128, 64), (32, 32, 16), (8, 8, 4)}. Not two, not
+  four: `round8_config.check` refuses any other arm count and quotes
+  `ROUND8_DESIGN.md`'s stop condition — "do not add a fourth width, do not widen
+  the set" — when it does, so the matrix cannot be widened by editing
+  `round8_config.json` before a run.
+
 `build_human_dataset.py` is that stage, and it is a separate module rather than
 a flag on `build_dataset.py` on purpose. `build_dataset.py` requires a TTS tree,
 synthesizes impulse responses, mixes noise at a drawn SNR and re-levels every
@@ -162,7 +182,9 @@ The refusals are the point, and each is a test in
   ignored;
 * `pink_noise.wav` and `white_noise.wav` are *generated*, not recorded, so they
   are excluded from the background pool by name and the exclusion is counted in
-  the stats;
+  the stats — in `build_dataset.py` as well, where the drop lands in
+  `stats.generated_background_excluded`, so the rule does not depend on which
+  builder is running;
 * `synthetic_samples: 0` is written into the stats and the contract, computed
   from what was actually emitted — the build refuses rather than reporting a
   zero it did not measure.
@@ -214,8 +236,9 @@ the pipeline.
 `SOURCES` in `assets.py` is the machine-checked version of this table: every
 project and corpus, its version or release, its licence, its attribution, and —
 for the ones that were considered and refused — why. **MUSAN in particular is
-not used**: the noise this pipeline mixes in is Speech Commands' six background
-recordings plus synthetic impulse responses, and MUSAN is recorded as
+not used**: the noise this pipeline mixes in is Speech Commands' four *real*
+background recordings — its other two are generated and are excluded — plus
+synthetic impulse responses, and MUSAN is recorded as
 `declined` so its absence reads as a decision rather than an omission.
 `tests/tools/test_wakeword_asset_licences.py` fails if a pinned file names a
 source that is not recorded, or if a pipeline script starts referencing a
@@ -286,8 +309,12 @@ Disjoint by source, not by shuffling:
 |---|---|---|---|
 | Synthesized voices | speakers `[0, 600)` | `[600, 700)` | `[700, 904)` |
 | Recorded speech | 1,779 speakers | 333 speakers | 506 speakers (the published `validation_list` + `testing_list`) |
-| Background noise | `exercise_bike`, `white_noise` | `doing_the_dishes`, `pink_noise` | `running_tap`, `dude_miaowing` |
+| Background noise | `exercise_bike` | `doing_the_dishes` | `running_tap`, `dude_miaowing` |
 | Room impulse responses | seeded pool A | seeded pool B | seeded pool C |
+
+The background row is four recordings, not six. `pink_noise.wav` and
+`white_noise.wav` are generated and are dropped before the splits are cut, which
+is why train and validate hold one real recording each rather than two.
 
 Three pools, not two. The middle one exists because **both** the epoch and the
 operating threshold are chosen, and choosing them on a random split of the
@@ -415,8 +442,16 @@ human-only stage the capability is absent rather than gated — it never imports
 the augmenter and has no code path that can reach one.
 
 `generate_speech.py` and `build_dataset.py` remain in the tree as the record of
-rounds 1–7, which are retired and did not qualify. Nothing in the active path
-loads them.
+rounds 1–7, which are retired and did not qualify. `generate_speech.py` is
+unreachable from the active path. `build_dataset.py` is reachable in one narrow
+way — `build_human_dataset.py` imports it for `read_wav16`, `sha256_file`, the
+window geometry and `FeatureSink`, so the feature space is literally the same
+code — but none of its synthetic-era build path, its augmenter or its
+`build_windows` is reached. That is also why the real-recorded-noise-only rule is
+applied to `build_dataset.py`'s own noise constants: a retired file that still
+names a generated source is a trap for whoever reads it next, and its
+`GENERATED_BACKGROUND_NAMES` now sits in the same module the active builder
+imports.
 
 ## Environment
 

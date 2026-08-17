@@ -26,7 +26,10 @@ Splits are disjoint by source, not by shuffling:
 * recorded speech — Speech Commands' own ``validation_list.txt`` and
   ``testing_list.txt``, which are speaker-disjoint by construction, evaluate;
   everything else trains
-* background noise — four of the six recordings train, two evaluate
+* background noise — two of the six files Speech Commands ships are *generated*
+  and are excluded outright; of the four real recordings, ``exercise_bike``
+  trains, ``doing_the_dishes`` validates, ``running_tap`` and ``dude_miaowing``
+  evaluate
 * room impulse responses — independently seeded pools
 
 so no voice, no room and no noise recording is shared between fitting and
@@ -60,13 +63,25 @@ SAMPLE_RATE = 16000
 FEATURE_FRAMES = 16
 EMBEDDING_DIM = 96
 
-#: Background recordings held out for evaluation. Two of the six, chosen as one
+#: Background files in Speech Commands' ``_background_noise_`` that are
+#: *generated* rather than recorded. Two of its six are, and generated
+#: background is prohibited exactly as generated speech is: a model that learns
+#: "phrase over synthesised noise" has learned a room that does not exist.
+#:
+#: Named here, and counted in the stats, rather than being an invisible filter —
+#: the same mechanism ``build_human_dataset.GENERATED_BACKGROUND_NAMES`` applies
+#: to its ``recorded_background`` sources, so one rule holds in both builders.
+GENERATED_BACKGROUND_NAMES = frozenset({"pink_noise.wav", "white_noise.wav"})
+
+#: Real recordings held out for evaluation. Two of the four, chosen as one
 #: broadband stationary source and one non-stationary source, so the held-out
 #: noise is not all of one kind.
 EVAL_NOISE = ("running_tap.wav", "dude_miaowing.wav")
 
-#: Of the four recordings evaluation does not use, these two are validation's.
-VALIDATION_NOISE = ("pink_noise.wav", "doing_the_dishes.wav")
+#: Of the two real recordings evaluation does not use, this one is validation's.
+#: It was two until ``pink_noise.wav`` was recognised as generated; validation
+#: keeps one real room rather than one real room plus a synthesised one.
+VALIDATION_NOISE = ("doing_the_dishes.wav",)
 
 #: Speaker pools, mirrored from generate_speech so a split means the same
 #: thing in both stages.
@@ -501,9 +516,14 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
 
     noise_dir = sc_root / "_background_noise_"
     all_noise = sorted(p for p in noise_dir.glob("*.wav"))
-    noise_files = [p for p in all_noise if (p.name in EVAL_NOISE) == (args.split == "eval")]
+    # Generated noise is removed before any split is cut, so no split can be
+    # given it by an ordering accident, and the drop is reported rather than
+    # inferred from a shorter list.
+    generated_noise = [p for p in all_noise if p.name in GENERATED_BACKGROUND_NAMES]
+    real_noise = [p for p in all_noise if p.name not in GENERATED_BACKGROUND_NAMES]
+    noise_files = [p for p in real_noise if (p.name in EVAL_NOISE) == (args.split == "eval")]
     if args.split == "validation":
-        # Validation gets its own two of the four non-evaluation recordings,
+        # Validation gets its own share of the real non-evaluation recordings,
         # so a threshold chosen on it is not chosen against the same room tone
         # the model trained in.
         noise_files = [p for p in noise_files if p.name in VALIDATION_NOISE]
@@ -629,6 +649,7 @@ def build_windows(args: argparse.Namespace, sink: "FeatureSink") -> dict:
         "synthesized_positive_clips": len(positives),
         "recorded_negative_clips": len(chosen),
         "background_recordings": [p.name for p in noise_files],
+        "generated_background_excluded": [p.name for p in generated_noise],
         "impulse_responses": len(rir_pool),
         "window_seconds": WINDOW_SAMPLES / SAMPLE_RATE,
         "source_utterances": group_id,
