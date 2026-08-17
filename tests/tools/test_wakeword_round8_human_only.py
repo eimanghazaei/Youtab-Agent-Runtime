@@ -71,6 +71,24 @@ POSITIVE = "positive_human"
 NEAR = "near_phrase_human"
 FREE = "free_speech_human"
 
+#: The TTS-era category names, written out here rather than read from the
+#: module under test.
+#:
+#: A test parametrized over ``round8.SYNTHETIC_CATEGORIES`` would silently lose
+#: a case when somebody deleted an entry from that set — the deletion is exactly
+#: the regression being guarded against, and it would present as a smaller,
+#: still-green test run. So the list is stated independently and the module's
+#: table is checked against it.
+TTS_ERA_CATEGORIES = (
+    "positive",
+    "near_phrase",
+    "hardneg",
+    "confusable",
+    "softneg",
+    "common",
+    "synthesized_speech",
+)
+
 #: (clip path, category, label, original, excluded). Two usable positives, two
 #: usable negatives, one excluded take, spread over three originals — so every
 #: expected count below is a literal rather than a formula that could agree with
@@ -555,7 +573,21 @@ def test_the_same_speaker_supplied_twice_is_refused(build: Build) -> None:
 # ── categories, labels and the rename that must not work ─────────────────────
 
 
-@pytest.mark.parametrize("name", sorted(round8.SYNTHETIC_CATEGORIES))
+def test_every_tts_era_category_is_recorded_as_synthetic() -> None:
+    """The module's table has to cover the Owner decision's whole list.
+
+    Paired with the parametrized test below: this fails if a name is dropped
+    from the table, that one fails if a dropped name is then accepted. Either
+    alone would let a deletion pass as a smaller test run.
+    """
+    missing = set(TTS_ERA_CATEGORIES) - round8.SYNTHETIC_CATEGORIES
+    assert not missing, f"these TTS-era names are no longer refused: {sorted(missing)}"
+    # None of them may also be an approved human category, or the two tables
+    # would disagree about the same string.
+    assert round8.SYNTHETIC_CATEGORIES.isdisjoint(round8.HUMAN_CATEGORIES)
+
+
+@pytest.mark.parametrize("name", TTS_ERA_CATEGORIES)
 def test_a_synthetic_era_category_is_a_hard_error(build: Build, name: str) -> None:
     """Including ``near_phrase`` and ``positive``, which real derivations used.
 
