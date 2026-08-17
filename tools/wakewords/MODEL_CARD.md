@@ -137,6 +137,7 @@ frames** (0.48 s), and for
 | `melspectrogram.onnx` | Apache-2.0 | `ba2b0e0f8b7b8753…` | David Scripka, openWakeWord (github.com/dscripka/openWakeWord) |
 | `melspectrogram.tflite` | Apache-2.0 | `96fa0adccb6e8cf9…` | David Scripka, openWakeWord (github.com/dscripka/openWakeWord) |
 | `embedding_model.onnx` | Apache-2.0 | `70d164290c1d095d…` | David Scripka, openWakeWord (github.com/dscripka/openWakeWord) |
+| `silero_vad.onnx` | MIT (Silero VAD, snakers4/silero-vad), redistributed by openWakeWord | `a35ebf52fd3ce5f1…` | Silero Team, silero-vad (github.com/snakers4/silero-vad); David Scripka, openWakeWord (github.com/dscripka/openWakeWord) |
 | `embedding_model.tflite` | Apache-2.0 | `c0aea21eb84a4ce9…` | David Scripka, openWakeWord (github.com/dscripka/openWakeWord) |
 | `en_US-libritts_r-medium.pt` | MIT (generator code) over LibriTTS-R (CC BY 4.0) | `e95ee53770bf598c…` | Michael Hansen, piper-sample-generator (github.com/rhasspy/piper-sample-generator); LibriTTS-R corpus, Koizumi et al. 2023, CC BY 4.0 |
 | `speech_commands_v0.02.tar.gz` | CC BY 4.0 | `af14739ee7dc3114…` | Warden, P. Speech Commands: A Dataset for Limited-Vocabulary Speech Recognition (2018), arXiv:1804.03209. Google LLC, CC BY 4.0 |
@@ -144,7 +145,13 @@ frames** (0.48 s), and for
 The trained artifacts are derived works of the openWakeWord front end
 (Apache-2.0) and of speech from LibriTTS-R and Speech Commands (both CC BY
 4.0); all three permit redistribution with attribution, which this file
-provides.
+provides. `silero_vad.onnx` is listed because the pipeline fetches and installs
+it — openWakeWord loads it whether or not VAD is used — not because the shipped
+model derives from it.
+
+The full provenance record, including the two build-time tools that ship no
+bytes (`pyroomacoustics`, `eSpeak NG`) and the corpora that were considered and
+not used, is `SOURCES` in `scripts/wakeword/assets.py`.
 
 ## Limitations
 
