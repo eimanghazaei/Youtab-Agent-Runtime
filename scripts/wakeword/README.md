@@ -367,12 +367,20 @@ the instructions a speaker follows; [`CONSENT_RECORD_TEMPLATE.md`](CONSENT_RECOR
 is the consent form each one signs. `speaker_recording_spec.py` is the
 machine-readable version of that package — the same phrase list, folder
 names, take counts and metadata fields — and `validate_speaker_submission.py`
-checks a submitted folder against it before it is handed over.
+checks a submitted folder against it before it is handed over. Metadata is
+filled in from `RECORDING_METADATA.template.json`.
 
-This is a data-collection round only. `generate_speech.py` and
-`build_dataset.py` still build the synthetic corpus described above; wiring a
-submitted speaker folder into that pipeline is separate work and is not done
-by anything described in this section.
+`build_human_dataset.py` is what consumes a validated submission. It is a
+separate stage from `build_dataset.py` on purpose: the synthetic builder
+*requires* a TTS root, synthesises impulse responses, mixes background at a
+drawn SNR and re-levels every window, so a flag that switched it to
+"human-only" would leave every prohibited operation one default away. In the
+human-only stage the capability is absent rather than gated — it never imports
+the augmenter and has no code path that can reach one.
+
+`generate_speech.py` and `build_dataset.py` remain in the tree as the record of
+rounds 1–7, which are retired and did not qualify. Nothing in the active path
+loads them.
 
 ## Environment
 
