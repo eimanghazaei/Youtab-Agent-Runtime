@@ -887,6 +887,37 @@ def test_reporting_under_a_different_freeze_than_the_opening_is_refused(tmp_path
         )
 
 
+def test_a_sealed_report_whose_threshold_or_candidate_disagrees_with_the_freeze_is_refused(
+    tmp_path,
+):
+    """The freeze the report cites must be the one the measurement was taken at.
+
+    ``assert_open`` ties the freeze to the ledger opening, but nothing compared
+    the *measurement* to the freeze — so a sealed measurement re-tuned to another
+    threshold, or exported from another candidate, reported cleanly as long as
+    the ledger digest matched. That is the escape a sealed set exists to close.
+    """
+    import dataclasses
+
+    path = tmp_path / "seals.json"
+    freeze = _freeze()  # threshold 0.9990234375, candidate r8b
+    q.SealLedger(path).open_sealed("E006", freeze)
+    rows = _utterances("pos", "positive_human", 60, framings=7, fired=60, dataset="E006")
+    base = _measurement(rows, sealed=("E006",))  # matches the freeze it cites
+
+    # Non-vacuity: a measurement that agrees with the freeze is certified.
+    ok = q.build_report(base, freeze=freeze, ledger=q.SealLedger(path))
+    assert ok["official"]["targets"]
+
+    retuned = dataclasses.replace(base, threshold=0.6)
+    with pytest.raises(q.SealedSetConsumedError, match="another threshold"):
+        q.build_report(retuned, freeze=freeze, ledger=q.SealLedger(path))
+
+    other_candidate = dataclasses.replace(base, candidate_id="r8c")
+    with pytest.raises(q.SealedSetConsumedError, match="same candidate"):
+        q.build_report(other_candidate, freeze=freeze, ledger=q.SealLedger(path))
+
+
 def test_a_sealed_dataset_named_only_by_the_round_config_is_still_sealed(tmp_path):
     """A bundle that forgets to declare E006 does not thereby unseal it."""
     config = tmp_path / "round8_config.json"

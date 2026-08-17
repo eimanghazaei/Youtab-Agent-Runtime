@@ -2140,7 +2140,33 @@ def _check_seals(
                 f"{name}. A result over bytes nobody hashed is traceable to "
                 "nothing."
             )
-    return {name: ledger.assert_open(name, freeze) for name in names}
+    opened = {name: ledger.assert_open(name, freeze) for name in names}
+
+    # `assert_open` proves the freeze matches the ledger opening; it says nothing
+    # about the measurement. So a sealed measurement taken at a re-tuned
+    # threshold or on a different candidate would report cleanly as long as the
+    # ledger digest matched — the exact escape a sealed set exists to close. The
+    # freeze the report cites is the operating point the measurement had to be
+    # taken at; a measurement at any other threshold or candidate is a
+    # measurement of a different thing and cannot be certified against this
+    # freeze. Compared by hex, because a validation-selected threshold is an
+    # observed score, not a round number.
+    if float(measurement.threshold).hex() != float(freeze.threshold).hex():
+        raise SealedSetConsumedError(
+            f"the sealed measurement was taken at threshold "
+            f"{float(measurement.threshold).hex()} ({measurement.threshold!r}) but "
+            f"the freeze it cites pins {float(freeze.threshold).hex()} "
+            f"({freeze.threshold!r}). A sealed set measures the frozen operating "
+            "point, once; a report at another threshold is a report on another "
+            "candidate."
+        )
+    if str(measurement.candidate_id) != str(freeze.candidate_id):
+        raise SealedSetConsumedError(
+            f"the sealed measurement is candidate {measurement.candidate_id!r} but "
+            f"the freeze it cites is {freeze.candidate_id!r}. The report and the "
+            "freeze must name the same candidate."
+        )
+    return opened
 
 
 # --------------------------------------------------------------------------
