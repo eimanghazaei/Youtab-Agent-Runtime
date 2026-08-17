@@ -55,8 +55,14 @@ and the split between them is load-bearing:
 ## What Round 8 varies — exactly one axis
 
 **`--channels`, downward, over the predeclared set
-{(128, 128, 64), (32, 32, 16), (8, 8, 4)}.** Three arms, three training runs.
-Nothing else varies between them.
+{(128, 128, 64), (32, 32, 16), (8, 8, 4)}.** Exactly three arms, three training
+runs. Nothing else varies between them.
+
+Exactly three is a bound, not a budget. `round8_config.check` refuses any other
+arm count and quotes the stop condition below when it does, so a fourth width
+cannot be introduced by editing `round8_config.json` before a run — and a
+two-arm config is refused just as squarely, because dropping an arm turns a
+capacity–accuracy relation into two points and a line drawn through them.
 
 | arm | channels | parameters | ratio to r6c1 | parameters per positive utterance |
 |---|---|---|---|---|
@@ -111,7 +117,8 @@ context-length, optimizer, threshold or architecture-family experiment without
 an explicit Owner decision. This is R5's stop condition, reused for the third
 time.
 
-No blind sweeps. Three arms is the whole matrix.
+No blind sweeps. Three arms is the whole matrix, and the validator holds the
+matrix closed at both ends rather than leaving it to be remembered.
 
 ## What the measured evidence actually says, including where it has been overstated
 
@@ -279,10 +286,26 @@ durations of what remains: `doing_the_dishes.wav` 95.2 s, `dude_miaowing.wav`
 (279.5 s if the rounded figures are added), 0.0776 h, 139 non-overlapping
 windows for all three splits combined.
 
-This has a consequence nobody has had to state before: `VALIDATION_NOISE` is
-currently `("pink_noise.wav", "doing_the_dishes.wav")`, so **one of validation's
-two background recordings is generated and must be dropped**, leaving validation
-with one real recording. Round 8's assignment, disjoint by recording:
+**Real recorded noise only, in every active path.** The rule holds for training,
+for validation and for qualification alike; there is no split, no diagnostic and
+no "just for the baseline" exception. It is enforced in three places rather than
+stated in one: `build_dataset.GENERATED_BACKGROUND_NAMES` drops both files before
+any split is cut and counts the drop in `stats.generated_background_excluded`,
+`build_human_dataset.GENERATED_BACKGROUND_NAMES` does the same for a
+`recorded_background` source, and `round8_config.check` reads `build_dataset.py`'s
+noise constants out of its source so a config that documents the rule while the
+builder breaks it fails the build. The predeclaration test holds the two builders'
+lists in agreement, so there is one definition of "generated" rather than two.
+
+This had a consequence nobody had stated before, and it has now been corrected in
+the code. `VALIDATION_NOISE` was `("pink_noise.wav", "doing_the_dishes.wav")`, so
+**one of validation's two background recordings was generated**. It is now
+`("doing_the_dishes.wav",)`: validation holds one real recording where it held
+one real and one synthesised, and train holds `exercise_bike.wav` where it held
+that plus `white_noise.wav`. No real seconds were lost — the four recordings and
+their 279.4 s were always the whole real pool — and the assignment below is the
+one the projection and the validation gate already assumed. Round 8's assignment,
+disjoint by recording:
 
 | split | recording | seconds | windows |
 |---|---|---|---|
@@ -454,7 +477,11 @@ none of them may be decided during execution.
    from `PHRASE_END_JITTER`, and deterministic non-overlapping tiling for
    non-anchored audio.
 4. **Generated background files excluded** from every split by name, and
-   `VALIDATION_NOISE` corrected.
+   `VALIDATION_NOISE` corrected. **Done.** `build_dataset.GENERATED_BACKGROUND_NAMES`
+   removes both before a split is cut and reports them in
+   `stats.generated_background_excluded`; `VALIDATION_NOISE` is
+   `("doing_the_dishes.wav",)`; `round8_config.check` reads all three constants
+   out of the builder, so reverting it fails the predeclaration.
 5. **Utterance-level selection and reporting.** With seven windows per
    utterance, a window-level rate over 392 near-phrase windows is not 392
    independent trials — it is 56 utterances measured seven ways. Every
