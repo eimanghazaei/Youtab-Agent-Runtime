@@ -138,16 +138,27 @@ import freeze_manifest  # noqa: E402
 WINDOW_SAMPLES = build_dataset.WINDOW_SAMPLES
 SAMPLE_RATE = build_dataset.SAMPLE_RATE
 
-#: Speaker -> the split that speaker is permanently bound to. Immutable: a
-#: speaker who has ever been fitted on cannot become a measurement, and a
-#: speaker held back to measure with is worth exactly its unseenness.
+#: Speaker -> the split that speaker is bound to. The binding is one-way and
+#: only ever *loses* privilege: a speaker who has been fitted on cannot become a
+#: measurement, and a sealed speaker may be spent down into a lesser role by an
+#: explicit Owner decision but can never be re-sealed. The reverse — quietly
+#: promoting a fitted-on voice back into a seal — is what ``SEALED_SPLITS`` and
+#: ``assert_consumed_speakers_not_sealed`` refuse.
+#:
+#: E002 was the round-6/7 sealed *evaluation* holdout. With only two human
+#: speakers ever recorded for the sealed set, the Owner reassigned E002 from
+#: ``eval_sealed`` to ``validation`` so a real held-out voice exists for
+#: threshold/candidate/epoch selection; the decision is recorded, and made
+#: irreversible, in ``CONSUMED_FOR_VALIDATION`` below. The sealed *final*
+#: qualification holdout is now E006/E007 only, and E002 can never be counted
+#: back into it. E001 stays train; E006/E007 stay sealed.
 #:
 #: An explicit table rather than a rule over filenames. A rule would assign a
 #: split to a speaker nobody has decided about yet, which is how the one
 #: unheard voice gets trained on by a run that looked correct.
 SPEAKER_SPLITS: dict[str, str] = {
     "E001": "train",
-    "E002": "eval_sealed",
+    "E002": "validation",  # reassigned from eval_sealed; consumed, see below
     "E003": "train",
     "E004": "train",
     "E005": "validation",
@@ -156,15 +167,79 @@ SPEAKER_SPLITS: dict[str, str] = {
 }
 
 #: Registry splits whose speakers are sealed. Nothing fitted on, nothing
-#: threshold-selected on, nothing mined for hard negatives.
+#: threshold-selected on, nothing mined for hard negatives. ``eval_sealed`` is
+#: kept defined even though no speaker is bound to it any more: it is still the
+#: split name E002's frozen round-6/7 manifest carries, it is still the name
+#: ``build_dataset``/``import_speaker`` read that historical manifest under, and
+#: dropping it would silently make a re-appearance of an ``eval_sealed`` speaker
+#: look like an unknown split rather than a sealed one.
 SEALED_SPLITS = frozenset({"eval_sealed", "qualification_sealed"})
+
+#: Speakers formally *consumed* for a non-sealed role by an Owner decision, and
+#: therefore barred from ever being treated as sealed again. This is the durable,
+#: machine-readable record of a one-way split move: ``assert_consumed_speakers_not_sealed``
+#: turns any later edit that binds one of these back to a ``SEALED_SPLITS`` value
+#: into a hard refusal at import time, so the consumption cannot be undone by a
+#: quiet change to ``SPEAKER_SPLITS`` alone. The same record is mirrored in
+#: ``round8_config.json`` (``splits.consumed``) and ``round8_config.py``.
+CONSUMED_FOR_VALIDATION: dict[str, dict] = {
+    "E002": {
+        "for": "validation",
+        "no_longer_sealed_holdout": True,
+        "reason": (
+            "only two human speakers available; Owner reassigned E002 from "
+            "sealed evaluation to validation"
+        ),
+        "authorized": "owner",
+    },
+}
+
+
+def assert_consumed_speakers_not_sealed(
+    splits: dict[str, str] = SPEAKER_SPLITS,
+    consumed: dict[str, dict] = CONSUMED_FOR_VALIDATION,
+) -> None:
+    """Refuse if any consumed speaker has been (re-)bound to a sealed split.
+
+    The safety net that makes a consumption irreversible in code. A speaker
+    recorded in ``CONSUMED_FOR_VALIDATION`` was spent for a non-sealed role by an
+    explicit Owner decision; re-sealing it would retro-fit a "measured on a voice
+    nothing was fitted on" claim onto a voice that has now been used for
+    selection. That is exactly the silent regression the seal exists to prevent,
+    so it is a hard refusal rather than a warning.
+
+    Runs at import and is callable from a test with a mutated registry, so the
+    proof that re-sealing E002 trips is a unit test, not a code review.
+    """
+    for speaker, record in consumed.items():
+        if speaker not in splits:
+            raise Refused(
+                f"{speaker} is recorded as consumed-for-{record.get('for')!r} but is "
+                f"absent from SPEAKER_SPLITS. A consumed speaker's binding is what the "
+                "consumption is a promise about; it cannot simply disappear."
+            )
+        split = splits[speaker]
+        if split in SEALED_SPLITS:
+            raise Refused(
+                f"{speaker} is bound to the sealed split {split!r} but is recorded in "
+                f"CONSUMED_FOR_VALIDATION as spent for {record.get('for')!r} "
+                f"({record.get('reason')}). A speaker used for a non-sealed role has "
+                "been seen by selection; re-sealing it would claim an unseen-voice "
+                "measurement that is no longer true. This move is one-way by Owner "
+                "decision and is refused here."
+            )
+
 
 #: ``--split`` -> the one registry split whose speakers it may ingest.
 #:
-#: ``eval_sealed`` is deliberately not a value here. E002 is the sealed
-#: evaluation speaker and this stage cannot build it into any tensor at all;
-#: it is measured by streaming its audio through the runtime engine in
-#: ``evaluate_model.py``, which is the only use that does not spend it.
+#: ``eval_sealed`` is deliberately not a value here, and now has no speaker bound
+#: to it: E002 was the sealed evaluation speaker but the Owner reassigned it to
+#: ``validation`` (see ``CONSUMED_FOR_VALIDATION``). As a validation speaker E002
+#: *is* buildable into a validation tensor for threshold/candidate/epoch
+#: selection, on the ``validation`` split below. It remains un-buildable for
+#: training (validation is not training) and for qualification (that is E006 and
+#: E007's sealed job); the general sealed guard in ``load_human_source`` keeps
+#: enforcing both for every speaker still bound to a ``SEALED_SPLITS`` value.
 BUILDABLE_SPLITS: dict[str, str] = {
     "train": "train",
     "validation": "validation",
@@ -389,6 +464,14 @@ class Refused(SystemExit):
     refusals. A named subclass so a test can assert that a build was refused
     rather than that it happened to exit.
     """
+
+
+#: Enforce the consumption record at import: importing this module with a
+#: registry that has E002 (or any consumed speaker) re-sealed is a hard failure,
+#: not a build-time one, so the regression cannot even load. ``Refused`` is only
+#: defined here, which is why the check runs after the class rather than beside
+#: the registry it guards.
+assert_consumed_speakers_not_sealed()
 
 
 @dataclasses.dataclass(frozen=True)
