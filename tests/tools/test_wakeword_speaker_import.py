@@ -386,6 +386,57 @@ def test_every_original_is_preserved_byte_for_byte_and_reverified_after_the_writ
         ).read_bytes()
 
 
+# ── the data-root lock (G7) ──────────────────────────────────────────────────
+
+
+def test_a_second_import_into_a_locked_data_root_is_refused(
+    submission: Path, into: Path
+) -> None:
+    """The publish-window lock, verified: two imports cannot both spend a seal.
+
+    ``_hold_data_root`` drops an ``O_CREAT | O_EXCL`` sentinel for the publish
+    window only, so that while one import is between reading the root and
+    publishing into it, a second import into the same root is refused rather
+    than reading a root the first has not finished writing. Before that lock, two
+    concurrent imports could each freeze the same recording under a different
+    speaker, and if either was sealed the seal was spent with no way back. Here
+    the sentinel is held as the first import's window would hold it, and a real
+    ``execute()`` for a second import is refused -- naming the lock file and the
+    seal it protects.
+
+    This verifies the existing fix and touches none of the lock code.
+    """
+    first = imp.plan(TRAIN_LABEL, submission, into)
+
+    with imp._hold_data_root(into):  # the first import is inside its publish window
+        with pytest.raises(imp.Refused) as excinfo:
+            imp.execute(first, into)
+
+    message = str(excinfo.value)
+    assert imp.LOCK_FILENAME in message, message
+    assert "seal" in message.lower(), message
+
+    # The lock serialises rather than poisons: it is gone once the window closes,
+    # so no automatic breaking is needed and none is done.
+    assert not (into / imp.LOCK_FILENAME).exists()
+
+
+def test_the_data_root_sentinel_admits_one_holder_at_a_time(into: Path) -> None:
+    """The lock primitive itself: exclusive while held, released cleanly after.
+
+    The ``execute()``-level test above proves a real import is refused; this
+    pins the sentinel underneath it directly, so a change to how the lock is
+    taken (an advisory lock that no-ops on exFAT, say) fails here rather than
+    only in the harder-to-read full-import path.
+    """
+    with imp._hold_data_root(into):
+        assert (into / imp.LOCK_FILENAME).exists()
+        with pytest.raises(imp.Refused, match=r"import holds"):
+            with imp._hold_data_root(into):
+                pass  # pragma: no cover -- the second holder never enters the body
+    assert not (into / imp.LOCK_FILENAME).exists()
+
+
 def test_a_source_edited_during_the_import_publishes_nothing(
     submission: Path, into: Path, monkeypatch
 ) -> None:
