@@ -2,8 +2,9 @@
 
 Thank you for helping train and test Youtab's wake word. This document is
 everything you need: what to record, how many times, how to name the files, and
-how to hand them over. It takes about **70 minutes**, done in one sitting
-whenever suits you.
+how to hand them over. It takes about **51 to 71 minutes**, done in one sitting
+whenever suits you — see "Minimum vs expected" under "Time estimate" for what
+the two numbers mean.
 
 Nothing here requires technical skill beyond using your phone's voice recorder.
 If anything is unclear, ask your coordinator before you start rather than
@@ -14,6 +15,64 @@ never leave the machine they are copied to.** That is a promise made to the
 speaker, and it is enforced rather than remembered —
 `tests/tools/test_wakeword_no_human_data_committed.py` fails the build if audio,
 a feature tensor, a transcript or a consent record is ever committed.
+
+## Quick start — the one page
+
+Everything below explains *why*; this page is enough to actually record. Read
+Part A in full at least once before you start — it has the detail behind every
+line here — but if this is the only page you have open while recording, it is
+enough.
+
+**What to say.** The wake phrase is **"Hey Youtab."** Say it the way you'd
+actually get the assistant's attention — not slowly, not performed — and never
+pause *inside* the name: "hey" then "youtab" run together as one word, in
+whatever accent is genuinely yours. A short pause right after "hey" is fine.
+
+**How many times.** Six sections, recorded in the order they're listed, ≈155
+files, ≈51 minutes of actual recording (≈71 minutes counting the paperwork
+around it — see "Time estimate" below). The exact phrase list, in the exact
+order to record it, is "The near-phrase battery" table further down — record
+every row in the order it's printed, including the ones that must *not* wake
+the assistant.
+
+**Where it goes.**
+
+```
+E003/                          your folder, named for your speaker label only
+  originals/                   everything you record, exactly as your recorder wrote it
+  RECORDING_METADATA.json      the device/room form you fill in
+  CONSENT.pdf                  your coordinator adds this
+  SHA256SUMS                   your coordinator adds this
+```
+
+The full layout, with every subfolder, is under "Folder and file naming"
+below.
+
+**What not to do.**
+
+- Don't pause between "you" and "tab" — that one mistake has already ruined a
+  session; see "The single most important instruction in this document" below.
+- Don't delete, trim, denoise or re-record a take because you don't like it —
+  leave it in; see "The one rule behind everything" below for why.
+- Don't manufacture a condition — e.g. turning the volume down in an app
+  instead of actually speaking quietly.
+- Don't put your name, initials or email in any filename or folder name — the
+  speaker label your coordinator gives you is the only identifier that travels
+  with the audio.
+- Turn off cloud sync before you record anything.
+
+**Before you hand it over**, run (or ask your coordinator to run):
+
+```bash
+python scripts/wakeword/validate_speaker_submission.py <your-folder>/E003
+```
+
+It lists exactly what's missing and, section by section, how much has been
+accepted so far. Fix what it flags and re-run it until it says everything is
+present.
+
+Not sure how to type over a hundred filenames without a typo? You don't have
+to — see the automatic renamer under "Folder and file naming".
 
 ## Who this document is for
 
@@ -156,6 +215,39 @@ one that measures the wrong thing.
   recorded.
 * **One take per file**, except in sections 5 and 6, which are one long
   recording each.
+
+### Pronunciation notes, for any first language
+
+The phrase itself never changes — it is always **"Hey Youtab,"** however you
+say it. These notes exist only to show what sound is being aimed for if
+English is not your first language; they are not a correction, and your own
+accent is exactly what this round needs (see "accent and first language" in
+the coverage table in Part B) — do not try to imitate a reference recording or
+flatten out how you naturally speak.
+
+Two parts: "hey" (rhymes with "day"), then "you" and "tab" run together as one
+word, stressed on "you" — "YOO-tab", not "you TAB". `phrases.py`, the
+product's own pronunciation contract, records what a speech synthesizer
+actually produces for it: `hˈeɪ jˈuːɾæb` when said as one word (a soft,
+flapped "t", the way most people say it) and `hˈeɪ jˈuː tˈæb` when the name is
+said in two parts with a hard "t" — both are genuine ways of saying it, which
+is why rows 1 and 3 of the near-phrase battery below ask for both.
+
+A rough guide for a few first-language backgrounds — say it naturally; this is
+not a target to hit exactly:
+
+| First language | A rough guide |
+|---|---|
+| Persian / Farsi (فارسی) | «های یوتَب» — «های» then «یوتب» run together, stress on «یو». |
+| Spanish | "jei yútab" — the "h" as in "jamón", then "yu-tab" as one word, stress on "yu". |
+| Mandarin | 嘿有tab ("hēi yóu-tab") — "hey", then "you" and "tab" run together, no gap. |
+| Hindi / Urdu | "हे यूटैब" (hey yoo-taib) — "yoo" and "tab" said as one connected word. |
+| Arabic | «هاي يوتاب» — "hey", then "yoo-tab" run together as one connected word. |
+| French | "hé you-tab" — breathe out on the "h" (English "h" is aspirated; French "h" is silent); keep "you-tab" as one word. |
+
+Whatever comes out naturally is the point of this round: see "Why this round
+exists" above for why real accented speech, not a corrected version of it, is
+what training and evaluation are missing.
 
 ## What you're recording — six sections
 
@@ -305,6 +397,13 @@ nothing at all) is the point.
 | Self-check and handoff prep |  | 5 min |
 | **Total** | **155 audio files** | **≈ 71 min** |
 
+**Minimum vs expected.** The rows numbered 1–6 above — the recording itself,
+every required take performed once — add up to **≈ 51 min minimum**. The other
+20 minutes (read-through, the consent form, the device form, and the
+self-check before handoff) is paperwork around the recording, not slack inside
+it: budget **≈ 71 min expected** for the whole sitting, and treat the two
+numbers as the same session rather than two different ones.
+
 ## Folder and file naming
 
 Create one folder named with your speaker label — the one your coordinator gave
@@ -364,6 +463,27 @@ files its own way ("Voice Memo 3", "recording_2026-08-17_1"), rename each file t
 match the pattern above before handing your folder over — an unrenamed file is
 exactly the kind of unrecognised file the loader errors on rather than guessing
 about.
+
+**You do not have to type those names by hand, and 155 of them is a lot of
+chances for a typo.** Leave every file exactly as your recorder named it —
+don't reorder or delete anything inside a section's folder — and there is an
+automatic renamer: it sorts each section's files by the order they were
+recorded in (oldest first) and assigns the exact name above, without ever
+opening or reading the audio itself.
+
+```bash
+python scripts/wakeword/validate_speaker_submission.py --rename plan  <capture-root>/E003
+python scripts/wakeword/validate_speaker_submission.py --rename apply <capture-root>/E003
+```
+
+`--rename plan` prints what it would rename each file to, in recording order,
+without touching a single file — read it over first. `--rename apply` does the
+rename. If a folder's file count doesn't match what that section requires
+(one extra take, one missing one), it reports that folder and leaves it
+untouched rather than guessing which file is which — go back and fix the count,
+then run it again. Either you or your coordinator can run this; if typing a
+command isn't something you want to do, hand your folder over exactly as your
+recorder wrote it and ask your coordinator to run it for you.
 
 **You produce `originals/` and `RECORDING_METADATA.json`.** `CONSENT.pdf` and
 `SHA256SUMS` are added by your coordinator when they receive the folder; you do
@@ -425,6 +545,11 @@ see "The one rule behind everything" above for why.
       `<...>` placeholder text left in it.
 - [ ] The consent form is signed, you have your copy, and it has gone to your
       coordinator separately from the audio.
+- [ ] If you're comfortable running a command, run the upload-verification
+      check yourself before handing anything over — it lists exactly what's
+      missing and how much of each section was accepted:
+      `python scripts/wakeword/validate_speaker_submission.py <your-folder>/E003`.
+      If not, your coordinator runs it with you before you finish.
 
 A stumble, a cough mid-sentence, a take you think sounded bad — leave it in. It
 is frequently the most useful recording in the folder: difficult, natural speech
@@ -656,26 +781,42 @@ voice the model hates.
    root, named for the label alone: `E003/`, `E004/`.
    **Never inside this repository** — the manifest tool refuses a destination
    under the checkout, and the commit gate refuses the audio.
-2. File the signed consent record as `E003/CONSENT.pdf`, in the encrypted,
+2. Auto-name anything the recorder left in its own naming scheme, before
+   generating checksums against it:
+
+   ```bash
+   python scripts/wakeword/validate_speaker_submission.py --rename plan  <capture-root>/E003
+   python scripts/wakeword/validate_speaker_submission.py --rename apply <capture-root>/E003
+   ```
+
+   `plan` prints what would change, in the order each file was recorded
+   (oldest first), without touching anything; `apply` performs it. A folder
+   whose file count doesn't match what that section requires is reported and
+   left alone rather than guessed at — resolve it with the speaker, then
+   re-run. Skip this step for a folder the speaker already named by hand.
+3. File the signed consent record as `E003/CONSENT.pdf`, in the encrypted,
    access-controlled store described in `CONSENT_RECORD_TEMPLATE.md`. The
    speaker keeps their own copy; the coordinator's copy is what binds the
    recordings to a consent that covers them, which is why it lives in the
    submission folder rather than beside it.
-3. Generate `E003/SHA256SUMS` — coreutils format, `<digest>  <path>`, paths
+4. Generate `E003/SHA256SUMS` — coreutils format, `<digest>  <path>`, paths
    relative to the speaker folder, covering every other file in it. Verify it
    with `sha256sum -c SHA256SUMS` from inside the folder after any later move;
    that is the check the validator deliberately does not do, because a digest
    recomputed on the machine that wrote it says nothing about the transfer.
-4. Validate the layout before anything reads the audio:
+5. Validate the layout before anything reads the audio:
 
    ```bash
    python scripts/wakeword/validate_speaker_submission.py <capture-root>/E003
    ```
 
-   It reports every problem in one pass and exits non-zero on any of them. Run
-   it while the speaker is still reachable: a missing section can be recorded,
-   and a misnamed file can be asked about, only until they are not.
-5. Freeze it, before anything reads it:
+   It reports every problem in one pass and exits non-zero on any of them, and
+   prints a completion summary — one line per section, how many takes were
+   accepted against how many are required — so a shortfall is a number to go
+   back for, not a sentence to puzzle over. Run it while the speaker is still
+   reachable: a missing section can be recorded, and a misnamed file can be
+   asked about, only until they are not.
+6. Freeze it, before anything reads it:
 
    ```bash
    python scripts/wakeword/freeze_manifest.py freeze \
@@ -692,9 +833,9 @@ voice the model hates.
    `assert_usable_for` raises if anything later tries to train on a sealed set,
    and the CLI exits non-zero. Freeze before the first read, so the frozen set is
    the recorded set and not the set as it stood after somebody tidied it.
-6. Record the coverage cell in `--note`: device, distance, noise, accent, pitch
+7. Record the coverage cell in `--note`: device, distance, noise, accent, pitch
    band.
-7. Confirm the speaker has deleted the recordings from their device, including
+8. Confirm the speaker has deleted the recordings from their device, including
    any automatic cloud copy.
 
 ## If a speaker withdraws

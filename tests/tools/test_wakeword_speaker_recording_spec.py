@@ -538,3 +538,60 @@ def test_the_time_budget_adds_up_and_covers_every_section() -> None:
     assert details["4. Near-phrase battery"] == (
         f"{sum(item.takes for item in spec.NEAR_PHRASE_ITEMS)} takes"
     )
+
+
+def test_minimum_recording_minutes_is_the_numbered_rows_only() -> None:
+    """The floor a rushed session cannot go below: every take, no paperwork."""
+    numbered = sum(row.minutes for row in spec.TIME_BUDGET if row.activity[:1].isdigit())
+    paperwork = sum(row.minutes for row in spec.TIME_BUDGET if not row.activity[:1].isdigit())
+
+    assert spec.MINIMUM_RECORDING_MINUTES == numbered
+    assert spec.MINIMUM_RECORDING_MINUTES == 51
+    assert spec.MINIMUM_RECORDING_MINUTES + paperwork == spec.SESSION_MINUTES
+    assert spec.MINIMUM_RECORDING_MINUTES < spec.SESSION_MINUTES
+
+
+# ── automatic filenames ───────────────────────────────────────────────────────
+
+
+def test_expected_stems_for_a_positive_section_are_slug_condition_and_take() -> None:
+    section = spec.POSITIVE_SECTIONS[0]
+    stems = spec.expected_stems_for_positive_section(section)
+    assert len(stems) == section.takes
+    assert stems[0] == f"{spec.WAKE_PHRASE_SLUG}_{section.condition}_001"
+    assert stems[-1] == f"{spec.WAKE_PHRASE_SLUG}_{section.condition}_{section.takes:03d}"
+    assert len(set(stems)) == len(stems)
+
+
+def test_expected_stems_for_a_noise_section_use_the_noise_condition_token() -> None:
+    section = spec.noise_section("tv")
+    stems = spec.expected_stems_for_positive_section(section)
+    assert stems == tuple(
+        f"{spec.WAKE_PHRASE_SLUG}_noise-tv_{take:03d}" for take in range(1, section.takes + 1)
+    )
+
+
+def test_expected_stems_for_near_phrase_is_108_long_and_in_battery_order() -> None:
+    stems = spec.expected_stems_for_near_phrase()
+    assert len(stems) == sum(item.takes for item in spec.NEAR_PHRASE_ITEMS) == 108
+    assert len(set(stems)) == len(stems), "two rows produced colliding stems"
+
+    first_item = spec.NEAR_PHRASE_ITEMS[0]
+    second_item = spec.NEAR_PHRASE_ITEMS[1]
+    last_item = spec.NEAR_PHRASE_ITEMS[-1]
+    assert stems[0] == f"{first_item.slug}_001"
+    assert stems[first_item.takes - 1] == f"{first_item.slug}_{first_item.takes:03d}"
+    assert stems[first_item.takes] == f"{second_item.slug}_001"
+    assert stems[-1] == f"{last_item.slug}_{last_item.takes:03d}"
+
+
+def test_expected_stems_for_freeform_is_sized_by_the_actual_file_count() -> None:
+    section = spec.FREEFORM_SECTIONS[0]
+    assert spec.expected_stems_for_freeform(section, 1) == (f"{section.prefix}_001",)
+    assert spec.expected_stems_for_freeform(section, 3) == (
+        f"{section.prefix}_001",
+        f"{section.prefix}_002",
+        f"{section.prefix}_003",
+    )
+    with pytest.raises(ValueError):
+        spec.expected_stems_for_freeform(section, 0)
