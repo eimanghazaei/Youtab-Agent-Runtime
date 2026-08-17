@@ -57,6 +57,11 @@ REPO_ROOT = HERE.parents[1]
 CONFIG_PATH = HERE / "round8_config.json"
 DESIGN_PATH = HERE / "ROUND8_DESIGN.md"
 BUILD_DATASET = HERE / "build_dataset.py"
+#: The *active* Round 8 builder. ``check`` derives the window geometry from
+#: ``BUILD_DATASET`` (the retired synthetic builder); this one is what actually
+#: emits the Round 8 tensors, and ``builder_windowing_divergence`` reads it to
+#: catch the predeclaration describing a dataset the builder cannot produce.
+BUILD_HUMAN_DATASET = HERE / "build_human_dataset.py"
 RUNTIME = REPO_ROOT / "tools" / "wake_word.py"
 
 #: The five acceptance targets, by id, exactly as ``ROUND6_DESIGN.md`` fixed
@@ -310,6 +315,126 @@ def offset_grid_from_pipeline() -> list[int]:
     first = round(low / frame_seconds)
     last = round(high / frame_seconds)
     return list(range(first, last + 1))
+
+
+def _module_constants_annotated(path: Path, names: set[str]) -> dict[str, object]:
+    """Like ``_module_constants`` but also reads annotated (``x: T = ...``) ones.
+
+    The Round 8 builder declares ``TRAILING_OFFSETS_S`` and ``HUMAN_CATEGORIES``
+    with type annotations, which ``_module_constants`` skips because it matches
+    only a bare ``Assign``. Read here without importing the builder, for the same
+    reason ``check`` reads the pipeline with ``ast`` — importing it would pull in
+    numpy to inspect a tuple and a dict.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: dict[str, object] = {}
+    for node in tree.body:
+        targets: list[str] = []
+        value: ast.AST | None = None
+        if isinstance(node, ast.Assign):
+            targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets = [node.target.id]
+            value = node.value
+        for name in targets:
+            if name in names and value is not None:
+                try:
+                    found[name] = _literal(value)
+                except ValueError:
+                    pass
+    return found
+
+
+def builder_windowing_divergence(config: dict | None = None) -> list[str]:
+    """Where the predeclared windowing and the *real* Round 8 builder disagree.
+
+    ``check`` derives the phrase-anchored offset grid from
+    ``build_dataset.PHRASE_END_JITTER`` — the retired synthetic builder — and the
+    committed config predeclares seven offsets, projecting ``near_phrase_human``
+    as ``utterances x 7`` phrase-anchored windows. But Round 8 is built by
+    ``build_human_dataset``, whose ``TRAILING_OFFSETS_S`` is a four-offset ladder
+    and which TILES label-0 near-phrase clips into non-overlapping 2 s windows
+    rather than phrase-anchoring them. So the predeclaration validates against a
+    builder that cannot produce the predeclared dataset, and
+    ``loss.negative_weight`` is derived from window counts that will not be
+    emitted.
+
+    This is reported, not reconciled, and deliberately kept out of ``check``.
+    Pointing the config at the real ladder would move
+    ``offsets_per_phrase_anchored_utterance`` (7 -> 4), every
+    ``dataset_projection`` window count, and the derived ``loss.negative_weight``
+    (0.1423) — all frozen predeclared numbers — and the label-0 tiling count is
+    not knowable until the recordings exist. Whether the config moves to the
+    builder or the builder moves to the config is an Owner decision. This
+    function only makes the divergence impossible to miss: it returns the list of
+    disagreements, and an empty list means the two now agree.
+    """
+    if config is None:
+        config = load()
+    problems: list[str] = []
+    window = config.get("window_construction", {})
+
+    consts = _module_constants_annotated(
+        BUILD_HUMAN_DATASET, {"TRAILING_OFFSETS_S", "HUMAN_CATEGORIES"}
+    )
+    ladder = consts.get("TRAILING_OFFSETS_S")
+    if not isinstance(ladder, (tuple, list)) or not ladder:
+        problems.append(
+            "build_human_dataset defines no readable TRAILING_OFFSETS_S, so the "
+            "builder's real trailing-offset ladder cannot be checked against the "
+            "predeclaration"
+        )
+        return problems
+
+    sample_rate = _module_constants(BUILD_DATASET, {"SAMPLE_RATE"}).get("SAMPLE_RATE")
+    frame_samples = _class_attribute(RUNTIME, "_OpenWakeWordEngine", "frame_length")
+    if frame_samples is None:
+        frame_samples = _class_attribute(RUNTIME, "_Engine", "frame_length")
+    frame_seconds = float(frame_samples) / float(sample_rate)  # type: ignore[arg-type]
+    builder_frames = [round(float(offset) / frame_seconds) for offset in ladder]
+
+    declared_frames = window.get("phrase_anchored_offsets_frames")
+    if declared_frames != builder_frames:
+        problems.append(
+            "window_construction.phrase_anchored_offsets_frames is "
+            f"{declared_frames!r}, but build_human_dataset.TRAILING_OFFSETS_S "
+            f"{tuple(ladder)!r} lands on {builder_frames!r} at the runtime frame "
+            "rate. The predeclaration is derived from build_dataset (the retired "
+            "synthetic builder), not the build_human_dataset that will run."
+        )
+    declared_n = window.get("offsets_per_phrase_anchored_utterance")
+    if declared_n != len(ladder):
+        problems.append(
+            "window_construction.offsets_per_phrase_anchored_utterance is "
+            f"{declared_n!r}, but build_human_dataset emits {len(ladder)} offsets "
+            "per positive utterance"
+        )
+
+    # The label-0 windowing method. ``near_phrase_human`` is a hard NEGATIVE
+    # (build_human_dataset.HUMAN_CATEGORIES maps it to 0), and the builder tiles
+    # every label-0 clip — a variable count set by clip length, capped at
+    # --negative-windows — not ``utterances x offsets``. A projection that
+    # multiplies its utterances by the phrase-anchored offset count is describing
+    # windows the builder never emits for it.
+    human_cats = consts.get("HUMAN_CATEGORIES")
+    near_label = human_cats.get("near_phrase_human") if isinstance(human_cats, dict) else None
+    per = window.get("offsets_per_phrase_anchored_utterance", 0)
+    for split_name, block in config.get("dataset_projection", {}).items():
+        if not isinstance(block, dict):
+            continue
+        entry = block.get("near_phrase_human")
+        if not isinstance(entry, dict) or "utterances" not in entry:
+            continue
+        if near_label == 0 and entry.get("windows") == entry["utterances"] * per:
+            problems.append(
+                f"dataset_projection.{split_name}.near_phrase_human is projected as "
+                f"{entry['utterances']} x {per} phrase-anchored offsets = "
+                f"{entry.get('windows')}, but near_phrase_human is a label-0 category "
+                "that build_human_dataset TILES into non-overlapping 2 s windows -- a "
+                "count set by clip length, not utterances x offsets."
+            )
+    return problems
 
 
 # ── the checks ───────────────────────────────────────────────────────────────
@@ -893,10 +1018,35 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="validate round8_config.json and exit non-zero on any problem",
     )
+    parser.add_argument(
+        "--check-builder-windowing",
+        action="store_true",
+        help=(
+            "compare the predeclared offset/window arithmetic against the real "
+            "build_human_dataset ladder and label-0 windowing, and exit non-zero "
+            "on any divergence. Separate from --check because the divergence is a "
+            "known Owner decision, not a config edit to make green (V6)"
+        ),
+    )
     parser.add_argument("--config", type=Path, default=CONFIG_PATH)
     args = parser.parse_args(argv)
 
     config = load(args.config)
+
+    if args.check_builder_windowing:
+        divergences = builder_windowing_divergence(config)
+        if divergences:
+            print(
+                f"builder-windowing reconciliation: {len(divergences)} "
+                "divergence(s) between the predeclaration and build_human_dataset "
+                "(Owner decision — see builder_windowing_divergence):"
+            )
+            for divergence in divergences:
+                print(f"  - {divergence}")
+            return 1
+        print("builder-windowing reconciliation: predeclaration matches the builder")
+        return 0
+
     problems = check(config)
     state = _hash_state(config)
     print(f"round {config.get('round')}: status={config.get('status')} hashes={state}")

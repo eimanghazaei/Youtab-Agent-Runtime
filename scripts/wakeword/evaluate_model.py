@@ -41,6 +41,41 @@ SAMPLE_RATE = 16000
 SWEEP = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)
 
 
+class BackendFallbackRefused(RuntimeError):
+    """A requested backend silently became the other one.
+
+    ``tools.wake_word`` coerces an explicit ``onnx`` to ``tflite`` on macOS
+    ARM64 (openWakeWord #336) and downgrades ``tflite`` to ``onnx`` when the
+    tflite runtime is missing. Either way ``self.inference_framework`` records
+    what ACTUALLY ran. A measurement that labels a tflite run ``onnx`` is a
+    false statement about the thing that ships — and it defeats parity outright:
+    ``measure --backends onnx tflite`` would then be two tflite runs labelled
+    onnx/tflite, agreeing by construction. Named to match
+    ``round8_controller.BackendFallbackRefused``, whose ``engine_inference_-
+    framework`` check this measurement layer is the real producer for.
+    """
+
+
+def engine_inference_framework(engine, requested: str) -> str:
+    """The backend the engine actually built with, refusing a silent fallback.
+
+    ``_OpenWakeWordEngine`` exposes ``inference_framework`` as the truth after
+    both the macOS ARM64 coercion and the missing-runtime downgrade. Reading it
+    back — rather than trusting the value that was requested — is the only thing
+    that knows which library ran, so a coerced run is refused here instead of
+    being scored and labelled with a backend that never executed.
+    """
+    actual = str(getattr(engine, "inference_framework", "") or "")
+    if actual != requested:
+        raise BackendFallbackRefused(
+            f"{requested!r} was requested but the engine ran "
+            f"{actual or 'nothing'!r}. A backend that quietly becomes the other "
+            "one makes every figure labelled with it a statement about a build "
+            "that was never measured, and makes backend parity vacuous."
+        )
+    return actual
+
+
 def _engine(model_path: Path, framework: str, threshold: float, confirmation: int):
     """Construct the product's engine against a specific artifact."""
     from tools import wake_word  # noqa: PLC0415
@@ -146,6 +181,10 @@ def score_clips(
     voice turn, so two adjacent windows cannot bleed into one another.
     """
     engine = _engine(model_path, framework, threshold=threshold, confirmation=confirmation)
+    # Refuse before scoring a single frame if the engine did not build with the
+    # backend that was asked for — a coerced run mislabels every number it
+    # produces and turns parity into a comparison of a backend with itself.
+    engine_inference_framework(engine, framework)
     label = engine._labels[0]
     frames_per_clip = audio.shape[1] // FRAME
     scores = np.zeros((audio.shape[0], frames_per_clip), dtype=np.float32)
@@ -482,6 +521,11 @@ def main() -> int:
         table[operating_key(args.threshold)]["source"] = (
             "tools.wake_word._OpenWakeWordEngine.process"
         )
+        # The backend that actually ran, carried into the record. score_clips
+        # has already refused a mismatch, so this is a checked truth rather than
+        # a restated request — and it is the field round8_controller reads to
+        # refuse a fallback (BackendFallbackRefused).
+        table[operating_key(args.threshold)]["engine_inference_framework"] = framework
         report["backends"][framework] = table
         np.save(args.out.parent / f"frame_scores_{framework}.npy", frame_scores)
         fired_by_backend[framework] = engine_fired
