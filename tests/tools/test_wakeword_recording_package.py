@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections import Counter
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -183,11 +184,11 @@ def test_every_printed_basis_agrees_with_phrases_py() -> None:
     contract = _contract_phrases()
     positives = {text for text, _weight in phrases.POSITIVE_SPELLINGS}
 
-    absent = 0
+    printed: Counter[str] = Counter()
     for row, item in zip(rows, spec.NEAR_PHRASE_ITEMS):
         basis = _unbacktick(row[4])
+        printed[basis] += 1
         if basis == spec.CONTRACT_ABSENT:
-            absent += 1
             assert item.text not in contract, (
                 f"{item.text!r} is printed as absent from phrases.py but is in it now"
             )
@@ -198,10 +199,27 @@ def test_every_printed_basis_agrees_with_phrases_py() -> None:
         else:
             raise AssertionError(f"{item.text!r} prints an unknown basis {basis!r}")
 
-    # Non-vacuity: the column has to discriminate. If every row named a tuple,
-    # the check above would pass while proving nothing about the three phrases
-    # the contract does not decide.
-    assert absent == 3, f"{absent} rows are printed as outside phrases.py, expected 3"
+    # Non-vacuity: the column has to discriminate, and both of the branches it
+    # can still take have to have been taken. A column printing one word for
+    # every row would satisfy the loop above while checking nothing, and the
+    # absent branch no longer stands in for that -- the contract decides every
+    # row now.
+    assert printed == Counter(item.contract for item in spec.NEAR_PHRASE_ITEMS), (
+        f"the printed basis column has drifted from the spec: {printed}"
+    )
+    assert printed[spec.CONTRACT_POSITIVE] >= 2, (
+        "no row is checked against POSITIVE_SPELLINGS, so this loop cannot catch the "
+        "mislabelling it exists for"
+    )
+    assert printed[spec.CONTRACT_NEGATIVE] >= 30, (
+        "almost no row is checked against HARD_NEGATIVES; the battery has shrunk or the "
+        "column has stopped naming it"
+    )
+    assert printed[spec.CONTRACT_ABSENT] == 0, (
+        f"{printed[spec.CONTRACT_ABSENT]} rows are printed as outside phrases.py; the "
+        "contract decides every row now, so either phrases.py lost an entry or this "
+        "table is stale"
+    )
 
 
 def test_the_gaps_from_the_earlier_session_are_all_in_the_list() -> None:
@@ -238,24 +256,39 @@ def test_the_per_speaker_counts_still_clear_the_floors_the_arithmetic_needs() ->
     assert spec.near_phrase_negatives_per_speaker() >= 40, "too few near phrases to bound 2%"
 
 
-def test_the_evaluation_only_phrases_are_the_ones_that_were_missing() -> None:
-    """The three decided phrases are not in phrases.py, and that is a finding.
+def test_the_three_phrases_that_were_missing_are_hard_negatives_now() -> None:
+    """The Owner decision, checked against the contract and against the document.
 
-    They are recorded here as evaluation-only rather than quietly added to the
-    synthesis inventory: adding a phrase changes what the next training run
-    fits, which is a decision for whoever owns that run. This test pins the
-    current state so the decision is visible rather than implied.
+    These three were in no tuple in ``phrases.py`` when this package was
+    written, so they carried a label decided beside the contract. An Owner
+    decision made that reading binding, and the package has to say so: a
+    document still describing them as outside the contract is a second record
+    disagreeing with the first.
     """
-    contract = _contract_phrases()
-    assert "okay youtab." not in contract, (
-        "`okay youtab` is now in phrases.py. Good — but move its basis column off "
-        "'not in phrases.py', and say so, rather than leaving two records disagreeing."
+    hard_negatives = set(phrases.HARD_NEGATIVES)
+    positives = {text for text, _weight in phrases.POSITIVE_SPELLINGS}
+    collapsed = re.sub(r"\s+", " ", _package())
+
+    for text in ("okay youtab.", "hey google.", "hey siri."):
+        assert text in hard_negatives, f"{text!r} is no longer in phrases.HARD_NEGATIVES"
+        assert text not in positives, (
+            f"{text!r} is a positive spelling now, which would train the detector to "
+            "fire on it"
+        )
+
+    assert "all three are in `phrases.HARD_NEGATIVES`" in collapsed, (
+        "the package does not say the three phrases are in the contract now, so a "
+        "coordinator reading it still thinks their labels were decided beside it"
     )
-    assert "hey google." not in contract
-    assert "hey siri." not in contract
-    # The carrier word alone IS in phrases.py; it was the recording that was
-    # missing, not the label. Keeping these two facts apart is the point.
-    assert "hey." in set(phrases.HARD_NEGATIVES)
+    assert "`TAXONOMY_DECISIONS` is empty" in collapsed
+    assert spec.TAXONOMY_DECISIONS == (), (
+        f"the document says TAXONOMY_DECISIONS is empty and it is not: "
+        f"{spec.TAXONOMY_DECISIONS!r}"
+    )
+
+    # The carrier word alone was always in phrases.py; it was the recording that
+    # was missing, not the label. Keeping these two facts apart is the point.
+    assert "hey." in hard_negatives
 
 
 # ── the paragraphs no table can hold ─────────────────────────────────────────
@@ -442,12 +475,24 @@ def test_the_document_does_not_tell_a_speaker_which_split_they_are_in() -> None:
         assert marker in text.lower()
 
 
-# ── the three decisions ──────────────────────────────────────────────────────
+# ── labels decided beside the contract, and the ones folded into it ──────────
 
 
-def test_each_taxonomy_decision_is_written_out_with_its_basis_and_consequence() -> None:
+def test_a_decision_recorded_beside_the_contract_is_written_out_in_full() -> None:
+    """The shape a ``TAXONOMY_DECISIONS`` entry has to be published in.
+
+    Vacuous today, and asserted to be: the tuple is empty, which
+    ``test_the_three_phrases_that_were_missing_are_hard_negatives_now`` checks
+    against the document rather than leaving to be inferred. The requirement is
+    kept because the mechanism is kept -- the next phrase that arrives in
+    neither tuple has to be published with its basis and its consequence, not
+    labelled in a table and left there.
+    """
     text = _package()
-    lowered = text.lower()
+    assert spec.TAXONOMY_DECISIONS == (), (
+        "a decision is recorded beside the contract again; it needs a published "
+        f"heading, basis and consequence: {spec.TAXONOMY_DECISIONS!r}"
+    )
     for decision in spec.TAXONOMY_DECISIONS:
         phrase = _spoken(decision.text)
         heading = re.search(
@@ -456,17 +501,40 @@ def test_each_taxonomy_decision_is_written_out_with_its_basis_and_consequence() 
             re.MULTILINE,
         )
         assert heading, f"{phrase!r} has no decision heading in the package"
-    assert "**basis.**" in lowered
-    assert "**consequence.**" in lowered
+        assert "**Basis.**" in text
+        assert "**Consequence.**" in text
 
-    # The decision section has to say why it is a decision at all, and that the
-    # contract was not quietly extended to make it one.
-    collapsed = re.sub(r"\s+", " ", lowered)
-    assert "in neither tuple" in collapsed or "in neither" in collapsed
-    assert "none of the three is added to `phrases.py` here" in collapsed
+
+def test_the_basis_for_each_governed_addition_survived_the_move() -> None:
+    """Why those three are in ``HARD_NEGATIVES`` has to stay readable.
+
+    The labels are read off the contract now, so the package no longer records
+    a decision. It still has to record the *reason*, because that reason is now
+    the reason three entries exist in the contract, and an entry whose reason
+    nobody can state is the entry a future trim removes.
+    """
+    collapsed = re.sub(r"\s+", " ", _package().lower())
+
+    # How the runtime actually keys detection, which is what makes the carrier
+    # part of the trained phrase rather than decoration around it.
     assert "purely cosmetic; engine keys detection" in collapsed, (
-        "the okay-youtab decision does not cite how the runtime actually keys detection"
+        "the okay-youtab basis does not cite how the runtime actually keys detection"
     )
+    # And why adding it does not breach the HARD_NEGATIVES invariant.
+    assert "it contains the name, not the carrier-plus-name phrase" in collapsed
+    # The competing-assistant class, for the other two.
+    assert "competing assistant" in collapsed
+    assert "talking to a different device" in collapsed
+
+    # The CONFUSABLE_NEGATIVES decision, which went the other way and therefore
+    # needs its reason written down more than the additions do.
+    assert "none of the three is in `phrases.confusable_negatives`" in collapsed
+    assert "has ever been measured" in collapsed
+    for text in ("okay youtab.", "hey google.", "hey siri."):
+        assert text not in set(phrases.CONFUSABLE_NEGATIVES), (
+            f"{text!r} is in phrases.CONFUSABLE_NEGATIVES but the package says none of "
+            "the three is, and nothing has measured them"
+        )
 
 
 def test_the_split_carrier_positive_is_explained_and_not_just_labelled() -> None:
@@ -590,3 +658,154 @@ def test_the_consent_form_and_the_package_agree_on_the_handoff() -> None:
     assert spec.CONSENT_FILE.lower() in package
     assert spec.CONSENT_FILE.lower() in consent
     assert "separate in transit; bound together, under access control, at rest" in consent
+
+
+# ── the one-page quick start ─────────────────────────────────────────────────
+
+
+def test_the_package_has_a_standalone_one_page_quick_start() -> None:
+    """The concise page a speaker actually reads, ahead of the detailed reference.
+
+    It has to cover the four things asked of it -- what to say, how many
+    times, where it goes, what not to do -- and it has to come before the
+    detailed reference starts, so it is genuinely the first thing read rather
+    than a summary bolted on at the end.
+    """
+    text = _package()
+    lowered = re.sub(r"\s+", " ", text.lower())
+
+    quick_start = text.index("## Quick start")
+    part_a = text.index("# Part A")
+    who_for = text.index("## Who this document is for")
+    assert quick_start < who_for < part_a, (
+        "the quick start has to come before the detailed reference, not after it"
+    )
+
+    assert '"hey youtab."' in lowered, "the quick start does not say what to say"
+    assert "≈155\nfiles" in text or "≈155 files" in lowered.replace("\n", " "), (
+        "the quick start does not say how many files"
+    )
+    assert "originals/" in text[quick_start:part_a]
+    assert "consent.pdf" in text[quick_start:part_a].lower()
+    assert "don't pause between" in lowered
+    assert "don't delete, trim, denoise or re-record" in lowered
+    assert "don't put your name, initials or email" in lowered
+    assert "validate_speaker_submission.py" in text[quick_start:part_a]
+
+
+def test_the_quick_start_does_not_use_a_markdown_table() -> None:
+    """A pipe table here would risk colliding with a header set another test matches.
+
+    ``_table()`` asserts exactly one table matches a given header set; a new
+    table sharing headers with an existing one would make that assertion fail
+    somewhere else in this file. The quick start uses a fenced code block and
+    plain lists instead, on purpose.
+    """
+    text = _package()
+    quick_start = text.index("## Quick start")
+    who_for = text.index("## Who this document is for")
+    section = text[quick_start:who_for]
+    assert not _tables(section), "the quick start should not introduce a markdown table"
+
+
+# ── pronunciation guidance ───────────────────────────────────────────────────
+
+
+def test_the_package_has_pronunciation_guidance_that_does_not_change_the_phrase() -> None:
+    text = _package()
+    lowered = re.sub(r"\s+", " ", text.lower())
+
+    assert "pronunciation notes" in lowered
+    assert "the phrase itself never changes" in lowered
+    assert '"hey youtab,"' in lowered
+    assert "your own accent is exactly what this round needs" in lowered
+    assert "do not try to imitate a reference recording" in lowered
+
+    # Grounded in phrases.py's own documented IPA, not independently invented.
+    phrases_text = (WAKEWORD / "phrases.py").read_text(encoding="utf-8")
+    transcriptions = [
+        match for match in re.findall(r"``(h[^`]+)``", phrases_text) if "j" in match
+    ]
+    assert len(transcriptions) == 2, (
+        f"expected the two documented IPA transcriptions in phrases.py, found {transcriptions}"
+    )
+    for transcription in transcriptions:
+        assert transcription in text, (
+            f"the pronunciation notes do not quote phrases.py's own {transcription!r}"
+        )
+
+    # A handful of different first-language backgrounds, not just English ones.
+    for language in ("farsi", "spanish", "mandarin", "hindi", "arabic", "french"):
+        assert language in lowered, f"the pronunciation guide has no entry for {language!r}"
+
+
+def test_the_pronunciation_table_does_not_collide_with_another_tables_headers() -> None:
+    rows = _table(_package(), "First language", "A rough guide")
+    assert len(rows) >= 5
+
+
+# ── minimum vs expected time ─────────────────────────────────────────────────
+
+
+def test_the_minimum_vs_expected_time_is_printed_and_matches_the_spec() -> None:
+    text = _package()
+    assert f"**≈ {spec.MINIMUM_RECORDING_MINUTES} min minimum**" in text
+    assert f"**≈ {spec.SESSION_MINUTES} min expected**" in text
+    assert spec.MINIMUM_RECORDING_MINUTES < spec.SESSION_MINUTES
+
+    lowered = re.sub(r"\s+", " ", text.lower())
+    assert "minimum vs expected" in lowered
+    assert "not slack inside it" in lowered
+
+
+# ── the automatic renamer ────────────────────────────────────────────────────
+
+
+def test_the_package_documents_the_automatic_renamer() -> None:
+    text = _package()
+    lowered = re.sub(r"\s+", " ", text.lower())
+
+    assert "--rename plan" in text
+    assert "--rename apply" in text
+    assert "do not have to type those names by hand" in lowered
+    assert "leaves it\nuntouched rather than guessing which file is which" in text or (
+        "untouched rather than guessing which file is which" in lowered
+    )
+    # Mentioned in both halves of the document: the speaker-facing reference
+    # and the coordinator's assembly steps.
+    assert lowered.count("--rename") >= 4
+
+
+def test_the_prose_count_of_wake_word_rows_matches_the_table() -> None:
+    """A speaker reads the sentence, not the table, and counts on it.
+
+    The prose said "Three of the phrases below -- marked **Wake word**" while the
+    table marked two. Someone following the instructions would look for a third
+    positive that does not exist, and either invent one or stop trusting the
+    document. It drifted because the number was spelled out in prose and the rows
+    were somewhere else, so nothing tied them together.
+
+    Derived rather than pinned: this reads the spelled-out word and the row count
+    and compares them, so adding or removing a positive row fails here instead of
+    leaving a sentence that quietly disagrees.
+    """
+    text = PACKAGE.read_text(encoding="utf-8")
+
+    marker = "**Wake word**"
+    rows = [line for line in text.splitlines()
+            if line.startswith("|") and marker in line]
+    # Non-vacuity: if the marker or the table shape ever changes, this test must
+    # fail loudly rather than compare zero against a word it also cannot find.
+    assert rows, f"no table row carries {marker}; re-anchor this test"
+
+    words = {
+        1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five",
+        6: "Six", 7: "Seven", 8: "Eight", 9: "Nine", 10: "Ten",
+    }
+    expected = words[len(rows)]
+    sentence = f"{expected} of the phrases below — marked {marker} —"
+    assert sentence in text, (
+        f"{len(rows)} table row(s) are marked {marker}, so the prose should read "
+        f"{expected!r}. A speaker counts on that sentence and will look for a "
+        f"positive that is not there."
+    )

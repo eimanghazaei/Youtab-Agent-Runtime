@@ -254,6 +254,60 @@ def test_reset_restores_the_same_feature_buffer_every_time(monkeypatch, framewor
     assert np.array_equal(first, engine._model.preprocessor.feature_buffer)
 
 
+@pytest.mark.parametrize("framework", FRAMEWORKS)
+def test_repeated_resets_are_bit_identical(monkeypatch, framework):
+    """Bit-for-bit, not merely equal.
+
+    ``np.array_equal`` compares values and would accept a buffer that had been
+    reconstructed at a different dtype or in a different memory layout — either
+    of which changes what the classifier reads. The prime is a cached array
+    copied on every reset, so the bytes should be identical, and asserting the
+    bytes is what says so.
+    """
+    engine = _engine(monkeypatch, framework)
+    snapshots = []
+    for _ in range(3):
+        engine.reset()
+        buffer = engine._model.preprocessor.feature_buffer
+        snapshots.append((buffer.dtype.str, buffer.shape, buffer.tobytes()))
+        for f in range(20):                   # displace the prime with real audio
+            engine.process(_clip(13)[f * FRAME:(f + 1) * FRAME])
+
+    assert snapshots[0] == snapshots[1] == snapshots[2]
+    # Non-vacuity: an empty or single-value buffer would be trivially identical.
+    assert snapshots[0][1][0] >= FEATURE_FRAMES
+    assert len(set(np.frombuffer(snapshots[0][2], dtype=snapshots[0][0]))) > 1
+
+
+@pytest.mark.parametrize("framework", FRAMEWORKS)
+def test_the_cached_prime_is_never_the_buffer_that_gets_streamed_into(
+    monkeypatch, framework
+):
+    """The cache must be copied out, not handed out.
+
+    openWakeWord treats ``feature_buffer`` as its own working storage: 0.6.0
+    rebinds it with ``np.vstack`` per frame and re-slices it when it exceeds
+    ``feature_buffer_max_len``, so today it does not write into the array it was
+    given. That is an implementation detail of one version, not a promise. If
+    reset installed the cache object itself, whether the second reset restored
+    the same bytes as the first would depend on whether the version of upstream
+    in use happens to append in place — which is the determinism bug again, one
+    level down, and invisible to a single-reset test.
+    """
+    engine = _engine(monkeypatch, framework)
+    engine.reset()
+    assert engine._prime_cache is not None
+    assert engine._model.preprocessor.feature_buffer is not engine._prime_cache
+
+    before = engine._prime_cache.tobytes()
+    for f in range(20):
+        engine.process(_clip(14)[f * FRAME:(f + 1) * FRAME])
+    assert engine._prime_cache.tobytes() == before, "streaming audio mutated the cache"
+
+    engine.reset()
+    assert engine._model.preprocessor.feature_buffer.tobytes() == before
+
+
 # ── 2. evaluation order does not affect scores ────────────────────────────────
 
 @pytest.mark.parametrize("framework", FRAMEWORKS)

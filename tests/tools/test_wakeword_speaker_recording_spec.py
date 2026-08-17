@@ -11,9 +11,16 @@ split-carrier spelling, in ``phrases.POSITIVE_SPELLINGS`` with weight 2, and it
 has already been treated once as if it were a near miss.
 
 So every claim the spec makes about a label is checked here against the real
-tuple it names, and the three phrases ``phrases.py`` does not contain are
-required to carry a recorded decision -- a label, the basis it was read off,
-and its consequence -- rather than a default.
+tuple it names, and any phrase ``phrases.py`` does not contain is required to
+carry a recorded decision -- a label, the basis it was read off, and its
+consequence -- rather than a default.
+
+There are no such phrases today. "okay youtab.", "hey google." and "hey siri."
+carried a decision beside the contract for one round; an Owner decision has
+since put all three into ``phrases.HARD_NEGATIVES``, so their labels are read
+off the contract like every other negative. The guard is therefore run against
+constructed batteries as well as the real one, so that "nothing is absent"
+stays a finding rather than the reason nothing is checked.
 
 The rest of the file pins the things a hurried edit would move quietly: the
 speaker assignments (which cannot change after recording without either
@@ -25,6 +32,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -149,57 +157,60 @@ def test_confusable_items_are_actually_confusable_negatives_in_phrases_py() -> N
 
 # ── the phrases phrases.py does not decide ───────────────────────────────────
 
+#: A phrase in no tuple in ``phrases.py``, for constructing a battery the guard
+#: below has to reject. Deliberately not a plausible candidate for the
+#: inventory: it is fixture text, not a suggestion.
+NOVEL_PHRASE = "hey placeholder."
 
-def test_items_absent_from_phrases_py_carry_a_recorded_decision() -> None:
-    """No phrase gets a label by default.
 
-    An item marked ``CONTRACT_ABSENT`` must really be absent from every tuple
-    in ``phrases.py``, and must have a ``TAXONOMY_DECISIONS`` entry whose label
-    agrees with its own. Absent-and-unlabelled is how a label gets invented by
-    whoever ingests the audio.
+def _absent_rows_carry_a_recorded_decision(
+    items: Sequence[spec.NearPhraseItem],
+    decisions: Sequence[spec.TaxonomyDecision],
+) -> int:
+    """The ``CONTRACT_ABSENT`` invariant, over any battery and any decision list.
+
+    Raises ``AssertionError`` the way a test body would, and returns how many
+    rows were marked absent so a caller can assert on that too. Written as a
+    function rather than inline because the real battery has nothing absent in
+    it any more: the same guard has to be shown to bite on a constructed
+    battery, or "no row is absent" would be indistinguishable from "no row is
+    checked".
+
+    Both directions. A row marked absent must really be absent from every tuple
+    in ``phrases.py`` and must have a decision whose label agrees with its own;
+    a decision must belong to a row that is still absent. A decision left
+    behind after its phrase entered the contract is two records disagreeing
+    about where the label came from.
     """
     contract = _every_phrase_in_the_contract()
-    decisions = {decision.text: decision for decision in spec.TAXONOMY_DECISIONS}
-    absent = [
-        item for item in spec.NEAR_PHRASE_ITEMS if item.contract == spec.CONTRACT_ABSENT
-    ]
-    assert absent, "no battery item is marked as absent from phrases.py"
+    by_text = {decision.text: decision for decision in decisions}
+    absent = [item for item in items if item.contract == spec.CONTRACT_ABSENT]
 
     for item in absent:
         assert item.text not in contract, (
             f"{item.text!r} is marked as absent from phrases.py but is in it now -- "
             "phrases.py has been extended and this spec's basis is stale"
         )
-        assert item.text in decisions, (
+        assert item.text in by_text, (
             f"{item.text!r} is in neither phrases.py tuple and has no entry in "
             "TAXONOMY_DECISIONS, so its label is a default rather than a decision"
         )
-        assert decisions[item.text].label == item.label, (
+        assert by_text[item.text].label == item.label, (
             f"{item.text!r} is labelled {item.label!r} in the battery and "
-            f"{decisions[item.text].label!r} in TAXONOMY_DECISIONS"
+            f"{by_text[item.text].label!r} in TAXONOMY_DECISIONS"
         )
 
-
-def test_the_recorded_decisions_are_exactly_the_three_absent_phrases() -> None:
-    decided = tuple(decision.text for decision in spec.TAXONOMY_DECISIONS)
-    assert decided == ("okay youtab.", "hey google.", "hey siri."), (
-        f"the recorded taxonomy decisions changed: {decided!r}"
+    assert set(by_text) == {item.text for item in absent}, (
+        "every decision must belong to a battery row the contract does not decide, and "
+        "every such row must have a decision; "
+        f"decided={sorted(by_text)} absent={sorted(item.text for item in absent)}"
     )
 
-    absent = {
-        item.text for item in spec.NEAR_PHRASE_ITEMS if item.contract == spec.CONTRACT_ABSENT
-    }
-    assert set(decided) == absent, (
-        "every decision must belong to a recorded battery row and every absent row must "
-        f"have a decision; decided={sorted(decided)} absent={sorted(absent)}"
-    )
-
-
-def test_every_decision_is_a_negative_with_a_basis_and_a_consequence() -> None:
-    for decision in spec.TAXONOMY_DECISIONS:
+    for decision in decisions:
         assert decision.label == spec.NEGATIVE, (
-            f"{decision.text!r} is recorded as {decision.label!r}; all three of these "
-            "phrases were decided to be phrases the product must not fire on"
+            f"{decision.text!r} is recorded as {decision.label!r}. A phrase the "
+            "contract does not contain cannot be decided positive: a positive is a "
+            "spelling POSITIVE_SPELLINGS trained the model on, and nothing else"
         )
         assert len(decision.basis) > 80, (
             f"{decision.text!r} has no real basis recorded, so the decision cannot be "
@@ -209,6 +220,180 @@ def test_every_decision_is_a_negative_with_a_basis_and_a_consequence() -> None:
         assert "phrases" in decision.basis or "wake_word" in decision.basis, (
             f"{decision.text!r}'s basis cites neither phrases.py nor the runtime"
         )
+
+    return len(absent)
+
+
+def test_no_battery_row_needs_a_decision_beside_the_contract() -> None:
+    """No phrase gets a label by default, and none needs a decision today.
+
+    ``phrases.py`` decides every row. That is a stronger state than the one
+    ``TAXONOMY_DECISIONS`` was built for, not a reason to stop checking: the
+    empty count is asserted, and the reason for it -- every row naming a real
+    tuple -- is asserted alongside, so an emptiness caused by a row losing its
+    ``contract`` field cannot pass as the same thing.
+    """
+    absent = _absent_rows_carry_a_recorded_decision(
+        spec.NEAR_PHRASE_ITEMS, spec.TAXONOMY_DECISIONS
+    )
+    assert absent == 0, f"{absent} battery rows are marked as absent from phrases.py"
+    assert spec.TAXONOMY_DECISIONS == (), (
+        f"a decision is recorded beside the contract: {spec.TAXONOMY_DECISIONS!r}"
+    )
+
+    for item in spec.NEAR_PHRASE_ITEMS:
+        assert item.contract in (spec.CONTRACT_POSITIVE, spec.CONTRACT_NEGATIVE), (
+            f"{item.text!r} names {item.contract!r} rather than a tuple in phrases.py"
+        )
+
+
+def test_the_absent_row_guard_still_bites_with_nothing_left_to_guard() -> None:
+    """Non-vacuity for the check above, on constructed batteries.
+
+    ``CONTRACT_ABSENT`` is unused, not retired, so each way of getting it wrong
+    still has to fail. Every case below is one that happened or nearly
+    happened: a row nobody decided, a row whose basis went stale when the
+    contract grew, and a decision left behind after its phrase moved into
+    ``HARD_NEGATIVES``.
+    """
+    assert NOVEL_PHRASE not in _every_phrase_in_the_contract(), (
+        f"{NOVEL_PHRASE!r} is in phrases.py now; this test needs a phrase that is not"
+    )
+
+    # The shape the mechanism exists for: outside the contract, and decided.
+    assert (
+        _absent_rows_carry_a_recorded_decision(
+            (_constructed_row(NOVEL_PHRASE, spec.CONTRACT_ABSENT),),
+            (_constructed_decision(NOVEL_PHRASE),),
+        )
+        == 1
+    )
+
+    # Outside the contract and undecided -- the default this guard forbids.
+    with pytest.raises(AssertionError):
+        _absent_rows_carry_a_recorded_decision(
+            (_constructed_row(NOVEL_PHRASE, spec.CONTRACT_ABSENT),), ()
+        )
+
+    # Marked absent, but phrases.py decides it now. This is exactly what the
+    # Owner decision did to "okay youtab.", and it must not pass unnoticed.
+    with pytest.raises(AssertionError):
+        _absent_rows_carry_a_recorded_decision(
+            (_constructed_row("okay youtab.", spec.CONTRACT_ABSENT),),
+            (_constructed_decision("okay youtab."),),
+        )
+
+    # A decision whose row is decided by the contract: two records disagreeing.
+    with pytest.raises(AssertionError):
+        _absent_rows_carry_a_recorded_decision(
+            spec.NEAR_PHRASE_ITEMS, (_constructed_decision(NOVEL_PHRASE),)
+        )
+
+    # A phrase outside the contract decided *positive*, which would collect
+    # positives under a spelling nothing was ever trained on.
+    with pytest.raises(AssertionError):
+        _absent_rows_carry_a_recorded_decision(
+            (_constructed_row(NOVEL_PHRASE, spec.CONTRACT_ABSENT, spec.POSITIVE),),
+            (_constructed_decision(NOVEL_PHRASE, spec.POSITIVE),),
+        )
+
+
+def _constructed_row(
+    text: str, contract: str, label: str = spec.NEGATIVE
+) -> spec.NearPhraseItem:
+    return spec.NearPhraseItem(
+        text,
+        label,
+        contract,
+        False,
+        spec.NEAR_PHRASE_REPS,
+        "no",
+        "constructed by test_wakeword_speaker_recording_spec.py; never recorded",
+    )
+
+
+def _constructed_decision(text: str, label: str = spec.NEGATIVE) -> spec.TaxonomyDecision:
+    return spec.TaxonomyDecision(
+        text,
+        label,
+        "constructed by test_wakeword_speaker_recording_spec.py: long enough to clear "
+        "the basis floor, and it cites phrases.HARD_NEGATIVES so the citation check "
+        "has something to find",
+        "constructed by test_wakeword_speaker_recording_spec.py; no consequence in fact",
+    )
+
+
+def test_the_owner_decided_phrases_are_hard_negatives_and_never_positives() -> None:
+    """The Owner decision, asserted one phrase at a time.
+
+    These three were labelled negative beside the contract for one round and
+    are in ``phrases.HARD_NEGATIVES`` now. Both halves are pinned: a future
+    edit that promotes one to a positive spelling would teach the detector to
+    fire on the product's name under the wrong carrier, or on another
+    assistant's wake word, and it would go unnoticed in a diff of a 100-entry
+    tuple.
+    """
+    hard_negatives = set(phrases.HARD_NEGATIVES)
+    positives = _positive_spellings()
+    decided = {decision.text for decision in spec.TAXONOMY_DECISIONS}
+    by_text = {item.text: item for item in spec.NEAR_PHRASE_ITEMS}
+
+    for text in ("okay youtab.", "hey google.", "hey siri."):
+        assert text in hard_negatives, (
+            f"{text!r} is not in phrases.HARD_NEGATIVES; the Owner decision that put it "
+            "in the governed taxonomy has been reverted"
+        )
+        assert text not in positives, (
+            f"{text!r} is in phrases.POSITIVE_SPELLINGS, which would train the detector "
+            "to fire on it -- it is a phrase the product must never wake on"
+        )
+        item = by_text[text]
+        assert item.label == spec.NEGATIVE
+        assert item.contract == spec.CONTRACT_NEGATIVE, (
+            f"{text!r} is in HARD_NEGATIVES but its battery row still claims "
+            f"{item.contract!r} decides it"
+        )
+        assert text not in decided, (
+            f"{text!r} is decided by the contract and also carries a TAXONOMY_DECISIONS "
+            "entry; the entry is a stale second record of the same label"
+        )
+
+
+def test_no_hard_negative_contains_a_spelling_of_the_wake_phrase() -> None:
+    """``HARD_NEGATIVES``'s own documented invariant, made executable.
+
+    ``phrases.py`` states it in prose: nothing in that tuple *contains* the
+    wake phrase, because labelling an utterance that includes "hey youtab" as a
+    negative teaches the model to suppress a real fire. The name on its own is
+    not the wake phrase -- the tuple has carried "youtab.", "open youtab." and
+    now "okay youtab." -- so what this checks is the carrier *and* the name.
+    """
+    spellings = {_words(text) for text in _positive_spellings()}
+    assert spellings, "no positive spellings to check against"
+
+    for negative in phrases.HARD_NEGATIVES:
+        for spelling in spellings:
+            assert spelling not in _words(negative), (
+                f"{negative!r} is in phrases.HARD_NEGATIVES and contains the wake "
+                f"phrase spelling {spelling!r}; training on it as a negative teaches "
+                "the model to suppress a real fire"
+            )
+
+    # Non-vacuity: the same check on a phrase that does contain the wake word.
+    assert any(spelling in _words("hey youtab, hold on.") for spelling in spellings)
+
+
+def _words(phrase: str) -> str:
+    """A phrase reduced to its spoken words, for substring comparison.
+
+    Terminal "." or "!" and internal commas are punctuation a speaker does not
+    say, so "hey, youtab." and "hey youtab!" both reduce to "hey youtab" and
+    both are compared against.
+    """
+    text = phrase.strip()
+    if text.endswith((".", "!")):
+        text = text[:-1]
+    return " ".join(text.replace(",", " ").lower().split())
 
 
 def test_bare_hey_is_decided_by_the_contract_and_not_by_us() -> None:
@@ -538,3 +723,60 @@ def test_the_time_budget_adds_up_and_covers_every_section() -> None:
     assert details["4. Near-phrase battery"] == (
         f"{sum(item.takes for item in spec.NEAR_PHRASE_ITEMS)} takes"
     )
+
+
+def test_minimum_recording_minutes_is_the_numbered_rows_only() -> None:
+    """The floor a rushed session cannot go below: every take, no paperwork."""
+    numbered = sum(row.minutes for row in spec.TIME_BUDGET if row.activity[:1].isdigit())
+    paperwork = sum(row.minutes for row in spec.TIME_BUDGET if not row.activity[:1].isdigit())
+
+    assert spec.MINIMUM_RECORDING_MINUTES == numbered
+    assert spec.MINIMUM_RECORDING_MINUTES == 51
+    assert spec.MINIMUM_RECORDING_MINUTES + paperwork == spec.SESSION_MINUTES
+    assert spec.MINIMUM_RECORDING_MINUTES < spec.SESSION_MINUTES
+
+
+# ── automatic filenames ───────────────────────────────────────────────────────
+
+
+def test_expected_stems_for_a_positive_section_are_slug_condition_and_take() -> None:
+    section = spec.POSITIVE_SECTIONS[0]
+    stems = spec.expected_stems_for_positive_section(section)
+    assert len(stems) == section.takes
+    assert stems[0] == f"{spec.WAKE_PHRASE_SLUG}_{section.condition}_001"
+    assert stems[-1] == f"{spec.WAKE_PHRASE_SLUG}_{section.condition}_{section.takes:03d}"
+    assert len(set(stems)) == len(stems)
+
+
+def test_expected_stems_for_a_noise_section_use_the_noise_condition_token() -> None:
+    section = spec.noise_section("tv")
+    stems = spec.expected_stems_for_positive_section(section)
+    assert stems == tuple(
+        f"{spec.WAKE_PHRASE_SLUG}_noise-tv_{take:03d}" for take in range(1, section.takes + 1)
+    )
+
+
+def test_expected_stems_for_near_phrase_is_108_long_and_in_battery_order() -> None:
+    stems = spec.expected_stems_for_near_phrase()
+    assert len(stems) == sum(item.takes for item in spec.NEAR_PHRASE_ITEMS) == 108
+    assert len(set(stems)) == len(stems), "two rows produced colliding stems"
+
+    first_item = spec.NEAR_PHRASE_ITEMS[0]
+    second_item = spec.NEAR_PHRASE_ITEMS[1]
+    last_item = spec.NEAR_PHRASE_ITEMS[-1]
+    assert stems[0] == f"{first_item.slug}_001"
+    assert stems[first_item.takes - 1] == f"{first_item.slug}_{first_item.takes:03d}"
+    assert stems[first_item.takes] == f"{second_item.slug}_001"
+    assert stems[-1] == f"{last_item.slug}_{last_item.takes:03d}"
+
+
+def test_expected_stems_for_freeform_is_sized_by_the_actual_file_count() -> None:
+    section = spec.FREEFORM_SECTIONS[0]
+    assert spec.expected_stems_for_freeform(section, 1) == (f"{section.prefix}_001",)
+    assert spec.expected_stems_for_freeform(section, 3) == (
+        f"{section.prefix}_001",
+        f"{section.prefix}_002",
+        f"{section.prefix}_003",
+    )
+    with pytest.raises(ValueError):
+        spec.expected_stems_for_freeform(section, 0)

@@ -2,8 +2,9 @@
 
 Thank you for helping train and test Youtab's wake word. This document is
 everything you need: what to record, how many times, how to name the files, and
-how to hand them over. It takes about **70 minutes**, done in one sitting
-whenever suits you.
+how to hand them over. It takes about **51 to 71 minutes**, done in one sitting
+whenever suits you — see "Minimum vs expected" under "Time estimate" for what
+the two numbers mean.
 
 Nothing here requires technical skill beyond using your phone's voice recorder.
 If anything is unclear, ask your coordinator before you start rather than
@@ -14,6 +15,64 @@ never leave the machine they are copied to.** That is a promise made to the
 speaker, and it is enforced rather than remembered —
 `tests/tools/test_wakeword_no_human_data_committed.py` fails the build if audio,
 a feature tensor, a transcript or a consent record is ever committed.
+
+## Quick start — the one page
+
+Everything below explains *why*; this page is enough to actually record. Read
+Part A in full at least once before you start — it has the detail behind every
+line here — but if this is the only page you have open while recording, it is
+enough.
+
+**What to say.** The wake phrase is **"Hey Youtab."** Say it the way you'd
+actually get the assistant's attention — not slowly, not performed — and never
+pause *inside* the name: "hey" then "youtab" run together as one word, in
+whatever accent is genuinely yours. A short pause right after "hey" is fine.
+
+**How many times.** Six sections, recorded in the order they're listed, ≈155
+files, ≈51 minutes of actual recording (≈71 minutes counting the paperwork
+around it — see "Time estimate" below). The exact phrase list, in the exact
+order to record it, is "The near-phrase battery" table further down — record
+every row in the order it's printed, including the ones that must *not* wake
+the assistant.
+
+**Where it goes.**
+
+```
+E003/                          your folder, named for your speaker label only
+  originals/                   everything you record, exactly as your recorder wrote it
+  RECORDING_METADATA.json      the device/room form you fill in
+  CONSENT.pdf                  your coordinator adds this
+  SHA256SUMS                   your coordinator adds this
+```
+
+The full layout, with every subfolder, is under "Folder and file naming"
+below.
+
+**What not to do.**
+
+- Don't pause between "you" and "tab" — that one mistake has already ruined a
+  session; see "The single most important instruction in this document" below.
+- Don't delete, trim, denoise or re-record a take because you don't like it —
+  leave it in; see "The one rule behind everything" below for why.
+- Don't manufacture a condition — e.g. turning the volume down in an app
+  instead of actually speaking quietly.
+- Don't put your name, initials or email in any filename or folder name — the
+  speaker label your coordinator gives you is the only identifier that travels
+  with the audio.
+- Turn off cloud sync before you record anything.
+
+**Before you hand it over**, run (or ask your coordinator to run):
+
+```bash
+python scripts/wakeword/validate_speaker_submission.py <your-folder>/E003
+```
+
+It lists exactly what's missing and, section by section, how much has been
+accepted so far. Fix what it flags and re-run it until it says everything is
+present.
+
+Not sure how to type over a hundred filenames without a typo? You don't have
+to — see the automatic renamer under "Folder and file naming".
 
 ## Who this document is for
 
@@ -157,6 +216,39 @@ one that measures the wrong thing.
 * **One take per file**, except in sections 5 and 6, which are one long
   recording each.
 
+### Pronunciation notes, for any first language
+
+The phrase itself never changes — it is always **"Hey Youtab,"** however you
+say it. These notes exist only to show what sound is being aimed for if
+English is not your first language; they are not a correction, and your own
+accent is exactly what this round needs (see "accent and first language" in
+the coverage table in Part B) — do not try to imitate a reference recording or
+flatten out how you naturally speak.
+
+Two parts: "hey" (rhymes with "day"), then "you" and "tab" run together as one
+word, stressed on "you" — "YOO-tab", not "you TAB". `phrases.py`, the
+product's own pronunciation contract, records what a speech synthesizer
+actually produces for it: `hˈeɪ jˈuːɾæb` when said as one word (a soft,
+flapped "t", the way most people say it) and `hˈeɪ jˈuː tˈæb` when the name is
+said in two parts with a hard "t" — both are genuine ways of saying it, which
+is why rows 1 and 3 of the near-phrase battery below ask for both.
+
+A rough guide for a few first-language backgrounds — say it naturally; this is
+not a target to hit exactly:
+
+| First language | A rough guide |
+|---|---|
+| Persian / Farsi (فارسی) | «های یوتَب» — «های» then «یوتب» run together, stress on «یو». |
+| Spanish | "jei yútab" — the "h" as in "jamón", then "yu-tab" as one word, stress on "yu". |
+| Mandarin | 嘿有tab ("hēi yóu-tab") — "hey", then "you" and "tab" run together, no gap. |
+| Hindi / Urdu | "हे यूटैब" (hey yoo-taib) — "yoo" and "tab" said as one connected word. |
+| Arabic | «هاي يوتاب» — "hey", then "yoo-tab" run together as one connected word. |
+| French | "hé you-tab" — breathe out on the "h" (English "h" is aspirated; French "h" is silent); keep "you-tab" as one word. |
+
+Whatever comes out naturally is the point of this round: see "Why this round
+exists" above for why real accented speech, not a corrected version of it, is
+what training and evaluation are missing.
+
 ## What you're recording — six sections
 
 | # | Section | Covers |
@@ -217,7 +309,7 @@ anywhere in it, and in particular, **no pause inside the name**.
 pause after "hey" is fine and is how people actually say it; a pause between
 "you" and "tab" is not.
 
-Three of the phrases below — marked **Wake word** — are genuine ways of saying
+Two of the phrases below — marked **Wake word** — are genuine ways of saying
 "hey youtab" itself, so they *should* trigger the assistant. The rest are marked
 **Should NOT wake it**: say them exactly as an ordinary sentence, the way you'd
 actually say them, not as a trap or a trick.
@@ -305,6 +397,13 @@ nothing at all) is the point.
 | Self-check and handoff prep |  | 5 min |
 | **Total** | **155 audio files** | **≈ 71 min** |
 
+**Minimum vs expected.** The rows numbered 1–6 above — the recording itself,
+every required take performed once — add up to **≈ 51 min minimum**. The other
+20 minutes (read-through, the consent form, the device form, and the
+self-check before handoff) is paperwork around the recording, not slack inside
+it: budget **≈ 71 min expected** for the whole sitting, and treat the two
+numbers as the same session rather than two different ones.
+
 ## Folder and file naming
 
 Create one folder named with your speaker label — the one your coordinator gave
@@ -364,6 +463,27 @@ files its own way ("Voice Memo 3", "recording_2026-08-17_1"), rename each file t
 match the pattern above before handing your folder over — an unrenamed file is
 exactly the kind of unrecognised file the loader errors on rather than guessing
 about.
+
+**You do not have to type those names by hand, and 155 of them is a lot of
+chances for a typo.** Leave every file exactly as your recorder named it —
+don't reorder or delete anything inside a section's folder — and there is an
+automatic renamer: it sorts each section's files by the order they were
+recorded in (oldest first) and assigns the exact name above, without ever
+opening or reading the audio itself.
+
+```bash
+python scripts/wakeword/validate_speaker_submission.py --rename plan  <capture-root>/E003
+python scripts/wakeword/validate_speaker_submission.py --rename apply <capture-root>/E003
+```
+
+`--rename plan` prints what it would rename each file to, in recording order,
+without touching a single file — read it over first. `--rename apply` does the
+rename. If a folder's file count doesn't match what that section requires
+(one extra take, one missing one), it reports that folder and leaves it
+untouched rather than guessing which file is which — go back and fix the count,
+then run it again. Either you or your coordinator can run this; if typing a
+command isn't something you want to do, hand your folder over exactly as your
+recorder wrote it and ask your coordinator to run it for you.
 
 **You produce `originals/` and `RECORDING_METADATA.json`.** `CONSENT.pdf` and
 `SHA256SUMS` are added by your coordinator when they receive the folder; you do
@@ -425,6 +545,11 @@ see "The one rule behind everything" above for why.
       `<...>` placeholder text left in it.
 - [ ] The consent form is signed, you have your copy, and it has gone to your
       coordinator separately from the audio.
+- [ ] If you're comfortable running a command, run the upload-verification
+      check yourself before handing anything over — it lists exactly what's
+      missing and how much of each section was accepted:
+      `python scripts/wakeword/validate_speaker_submission.py <your-folder>/E003`.
+      If not, your coordinator runs it with you before you finish.
 
 A stumble, a cough mid-sentence, a take you think sounded bad — leave it in. It
 is frequently the most useful recording in the folder: difficult, natural speech
@@ -469,63 +594,60 @@ Its negative label is read off the contract and is not a judgement call; what
 was missing was a *recording* of it, not a decision about it. Keeping those two
 facts apart is the whole point of the "recorded from E002?" column below.
 
-**Three phrases are in neither tuple, and are decided here rather than
-defaulted.** `okay youtab.`, `hey google.` and `hey siri.` are in no list in
-`phrases.py`. A phrase that is absent from the contract and unlabelled in the
-package is a phrase whose label gets invented by whoever ingests it, so each one
-carries a decision, a basis and a consequence, recorded in
-`speaker_recording_spec.TAXONOMY_DECISIONS` and reproduced here.
+**Three phrases were decided beside the contract, and are in it now.** `okay
+youtab.`, `hey google.` and `hey siri.` were in no list in `phrases.py` when this
+package was written. A phrase that is absent from the contract and unlabelled in
+the package is a phrase whose label gets invented by whoever ingests it, so each
+one carried a decision, a basis and a consequence in
+`speaker_recording_spec.TAXONOMY_DECISIONS`. An Owner decision has since made
+those readings binding: **all three are in `phrases.HARD_NEGATIVES`**,
+`TAXONOMY_DECISIONS` is empty, and the `basis in phrases.py` column below names
+the tuple for them exactly as it does for every other negative row. Nothing else
+about them changed — same three takes each, same position in the recording order,
+same time budget.
 
-### Decision 1 — `okay youtab.` → **negative** (must not fire)
+Their basis is still written down here, because it is now the reason those
+entries are in the contract.
 
-**Basis.** `phrases.HARD_NEGATIVES` already contains the real name under
-carriers other than "hey" — `open youtab.`, `youtab.`, `youtab is running.` and
-`okay tab.` are all in it — and every one of the five
-`phrases.POSITIVE_SPELLINGS` entries starts with the carrier "hey". The carrier
-is part of the trained phrase, not decoration around it: `tools/wake_word.py`
-scores frames against one trained model and its own docstring calls the
-configured `wake_word.phrase` "purely cosmetic; engine keys detection", so what
-the product fires on is whatever `POSITIVE_SPELLINGS` trained it on and nothing
-else. The contract therefore already answers this, by construction: `okay
-youtab.` is a negative. Note that this does not violate the `HARD_NEGATIVES`
-rule that "nothing in this list *contains* the wake phrase" — it contains the
-name, not the carrier-plus-name phrase.
+**`okay youtab.` → negative (must not fire).** `phrases.HARD_NEGATIVES` already
+contained the real name under carriers other than "hey" — `open youtab.`,
+`youtab.`, `youtab is running.` and `okay tab.` were all in it — and every one of
+the five `phrases.POSITIVE_SPELLINGS` entries starts with the carrier "hey". The
+carrier is part of the trained phrase, not decoration around it:
+`tools/wake_word.py` scores frames against one trained model and its own
+docstring calls the configured `wake_word.phrase` "purely cosmetic; engine keys
+detection", so what the product fires on is whatever `POSITIVE_SPELLINGS` trained
+it on and nothing else. Adding it does not violate the `HARD_NEGATIVES` rule that
+"nothing in this list *contains* the wake phrase" — it contains the name, not the
+carrier-plus-name phrase, which is why `youtab.` and `open youtab.` were always
+allowed to be in it. It is the row that separates a model keyed on the whole
+phrase from one keyed on "youtab" alone, which is why `okay tab.` — the same
+carrier with the name removed — is recorded next to it as the control.
 
-**Consequence.** The product must not fire on it, and it becomes a near-phrase
-negative the model has to reject. It is the row that separates a model keyed on
-the whole phrase from one keyed on "youtab" alone, which is why `okay tab.` — the
-same carrier with the name removed — is recorded next to it as the control.
+**`hey google.` → negative (must not fire).** A competing assistant's wake word.
+`phrases.HARD_NEGATIVES` is built from the carrier plus a wrong name
+(`hey utah.`, `hey yoda.`, `hey nutmeg.`, `hey youtube.`) and from the carrier
+alone (`hey.`, `hey there.`); this is the same construction with the best-known
+wrong name in it. Firing here would wake Youtab while its owner is talking to a
+different device, and it is the phrase an always-on microphone in a
+mixed-assistant household hears most often.
 
-### Decision 2 — `hey google.` → **negative** (must not fire)
+**`hey siri.` → negative (must not fire).** Same class as `hey google.`: the
+carrier plus a competing assistant's name. `tools/wake_word.py`'s own module
+docstring names the pattern — "the 'Hey Siri' / 'Alexa' pattern" — so the
+product's framing of these as other products' wake words is already explicit.
+Phonetically it adds a second carrier-plus-name shape with a different stressed
+vowel, so it is not a duplicate of `hey google.`.
 
-**Basis.** A competing assistant's wake word. `phrases.HARD_NEGATIVES` is built
-from the carrier plus a wrong name (`hey utah.`, `hey yoda.`, `hey nutmeg.`,
-`hey youtube.`) and from the carrier alone (`hey.`, `hey there.`); this is the
-same construction with the best-known wrong name in it. Firing here would wake
-Youtab while its owner is talking to a different device.
-
-**Consequence.** The product must not fire on it, and it becomes a near-phrase
-negative. It is also the phrase an always-on microphone in a mixed-assistant
-household hears most often.
-
-### Decision 3 — `hey siri.` → **negative** (must not fire)
-
-**Basis.** Same class as `hey google.`: the carrier plus a competing assistant's
-name. `tools/wake_word.py`'s own module docstring names the pattern — "the 'Hey
-Siri' / 'Alexa' pattern" — so the product's framing of these as other products'
-wake words is already explicit. Phonetically it adds a second
-carrier-plus-name shape with a different stressed vowel, so it is not a
-duplicate of `hey google.`.
-
-**Consequence.** The product must not fire on it, and it becomes a near-phrase
-negative.
-
-**None of the three is added to `phrases.py` here.** Adding a phrase changes what
-the next training run fits, which belongs to whoever owns that run;
-`tests/tools/test_wakeword_recording_package.py` pins the current state so the
-decision stays visible rather than becoming implied. They are recorded as
-evaluation evidence in this round, and promoting them into `HARD_NEGATIVES` is a
-separate, deliberate change.
+**None of the three is in `phrases.CONFUSABLE_NEGATIVES`, deliberately.** That
+list is the *measured* confusable subset, ordered by how often each phrase
+actually fired on held-out audio, and it is what synthesis weighted higher.
+Synthetic generation is retired, so an entry would change no training today —
+but none of these three has ever been measured, by synthesis or by recording, so
+an entry would be intuition dressed as evidence. That is the one thing the list
+is defined not to be: `hey youtube.` was the confusion this inventory was
+designed around and it ranked near the bottom when someone finally measured it.
+This recording round is what can earn them a place.
 
 ### The battery, row by row
 
@@ -547,10 +669,10 @@ column exists so that "we have that already" is never asserted from memory.
 | 1 | `hey you tab` | positive | 5 | `POSITIVE_SPELLINGS` | fragmented | This IS the wake word — the unstressed-carrier spelling, weighted 2 in phrases.POSITIVE_SPELLINGS, and half of the hardest minimal pair in the inventory. It is also the one phrase an earlier speaker lost: every take was spoken with a pause between "you" and "tab". |
 | 2 | `hey you tap` | negative | 5 | `HARD_NEGATIVES` | undocumented | The measured top confusion for the phrase above — one voicing feature away, and it fired on the first trained model's held-out clips more than any other near miss. With the row above fragmented, the hardest confusion in the whole inventory is currently untested in both directions. |
 | 3 | `hey yoo tab` | positive | 5 | `POSITIVE_SPELLINGS` | fragmented | Also the wake word — the hard-/t/ spelling, weighted 2 in phrases.POSITIVE_SPELLINGS. espeak-ng flaps the /t/ in the compound spelling and keeps it hard when the name is split; both are things people say, and this is the one that tests the split form. |
-| 4 | `okay youtab` | negative | 3 | not in phrases.py | no | The only near phrase that carries the real name under a different carrier word, so it is the row that distinguishes a model keyed on the whole phrase from one keyed on "youtab" alone. People say "okay X" out of habit from other assistants, so a model that fires here fires often in the field. Never recorded before this round; see TAXONOMY_DECISIONS for why it is a negative. |
+| 4 | `okay youtab` | negative | 3 | `HARD_NEGATIVES` | no | The only near phrase that carries the real name under a different carrier word, so it is the row that distinguishes a model keyed on the whole phrase from one keyed on "youtab" alone. People say "okay X" out of habit from other assistants, so a model that fires here fires often in the field. Never recorded before this round; phrases.HARD_NEGATIVES decides that it is a negative. |
 | 5 | `okay tab` | negative | 3 | `HARD_NEGATIVES` | undocumented | The other carrier with the bare noun, and the control for the row above: "okay youtab." minus the name. Recorded next to it so a fire can be attributed to the carrier or to the name rather than to the pair of them. |
-| 6 | `hey google` | negative | 3 | not in phrases.py | no | A competing wake word with the same carrier and a stressed vowel in the next syllable. Anyone with another assistant in the house says this near the microphone all day. Never recorded before this round; see TAXONOMY_DECISIONS for why it is a negative. |
-| 7 | `hey siri` | negative | 3 | not in phrases.py | no | Same class as "hey google.", second carrier-plus-name shape, different stressed vowel. Never recorded before this round; see TAXONOMY_DECISIONS for why it is a negative. |
+| 6 | `hey google` | negative | 3 | `HARD_NEGATIVES` | no | A competing wake word with the same carrier and a stressed vowel in the next syllable. Anyone with another assistant in the house says this near the microphone all day. Never recorded before this round; phrases.HARD_NEGATIVES decides that it is a negative. |
+| 7 | `hey siri` | negative | 3 | `HARD_NEGATIVES` | no | Same class as "hey google.", second carrier-plus-name shape, different stressed vowel. Never recorded before this round; phrases.HARD_NEGATIVES decides that it is a negative. |
 | 8 | `hey` | negative | 3 | `HARD_NEGATIVES` | no | The carrier word alone, and the single most common thing an always-on microphone hears that begins like the wake word. It is in phrases.HARD_NEGATIVES already, so its label is not a judgement call — synthesized thousands of times, and never once recorded from a person. |
 | 9 | `hey your tab` | negative | 3 | `HARD_NEGATIVES` | undocumented | Measured as one of the top confusions of the first trained model: the frame "hey <something> tab", which is what actually fires. |
 | 10 | `hey new tab` | negative | 3 | `HARD_NEGATIVES` | undocumented | The same measured frame with an ordinary word in it — and something a browser user says out loud. |
@@ -656,26 +778,42 @@ voice the model hates.
    root, named for the label alone: `E003/`, `E004/`.
    **Never inside this repository** — the manifest tool refuses a destination
    under the checkout, and the commit gate refuses the audio.
-2. File the signed consent record as `E003/CONSENT.pdf`, in the encrypted,
+2. Auto-name anything the recorder left in its own naming scheme, before
+   generating checksums against it:
+
+   ```bash
+   python scripts/wakeword/validate_speaker_submission.py --rename plan  <capture-root>/E003
+   python scripts/wakeword/validate_speaker_submission.py --rename apply <capture-root>/E003
+   ```
+
+   `plan` prints what would change, in the order each file was recorded
+   (oldest first), without touching anything; `apply` performs it. A folder
+   whose file count doesn't match what that section requires is reported and
+   left alone rather than guessed at — resolve it with the speaker, then
+   re-run. Skip this step for a folder the speaker already named by hand.
+3. File the signed consent record as `E003/CONSENT.pdf`, in the encrypted,
    access-controlled store described in `CONSENT_RECORD_TEMPLATE.md`. The
    speaker keeps their own copy; the coordinator's copy is what binds the
    recordings to a consent that covers them, which is why it lives in the
    submission folder rather than beside it.
-3. Generate `E003/SHA256SUMS` — coreutils format, `<digest>  <path>`, paths
+4. Generate `E003/SHA256SUMS` — coreutils format, `<digest>  <path>`, paths
    relative to the speaker folder, covering every other file in it. Verify it
    with `sha256sum -c SHA256SUMS` from inside the folder after any later move;
    that is the check the validator deliberately does not do, because a digest
    recomputed on the machine that wrote it says nothing about the transfer.
-4. Validate the layout before anything reads the audio:
+5. Validate the layout before anything reads the audio:
 
    ```bash
    python scripts/wakeword/validate_speaker_submission.py <capture-root>/E003
    ```
 
-   It reports every problem in one pass and exits non-zero on any of them. Run
-   it while the speaker is still reachable: a missing section can be recorded,
-   and a misnamed file can be asked about, only until they are not.
-5. Freeze it, before anything reads it:
+   It reports every problem in one pass and exits non-zero on any of them, and
+   prints a completion summary — one line per section, how many takes were
+   accepted against how many are required — so a shortfall is a number to go
+   back for, not a sentence to puzzle over. Run it while the speaker is still
+   reachable: a missing section can be recorded, and a misnamed file can be
+   asked about, only until they are not.
+6. Freeze it, before anything reads it:
 
    ```bash
    python scripts/wakeword/freeze_manifest.py freeze \
@@ -692,9 +830,9 @@ voice the model hates.
    `assert_usable_for` raises if anything later tries to train on a sealed set,
    and the CLI exits non-zero. Freeze before the first read, so the frozen set is
    the recorded set and not the set as it stood after somebody tidied it.
-6. Record the coverage cell in `--note`: device, distance, noise, accent, pitch
+7. Record the coverage cell in `--note`: device, distance, noise, accent, pitch
    band.
-7. Confirm the speaker has deleted the recordings from their device, including
+8. Confirm the speaker has deleted the recordings from their device, including
    any automatic cloud copy.
 
 ## If a speaker withdraws

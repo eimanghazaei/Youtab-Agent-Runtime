@@ -117,6 +117,107 @@ def test_the_arms_go_down_and_span_two_orders_of_magnitude(config: dict) -> None
     assert len(arms) == 3
 
 
+# ── exactly three arms, and the bound is exact at both ends ──────────────────
+
+
+def _with_arms(config: dict, widths: list[list[int]]) -> dict:
+    """A copy of the config whose capacity set is ``widths``, otherwise valid.
+
+    Every other field the arms imply is kept consistent — parameter counts are
+    recomputed, ``runs`` matches, the order stays downward — so a refusal below is
+    the arm *count* and nothing else. A four-arm config that also miscounted its
+    parameters would be refused for the wrong reason and would prove nothing
+    about the bound.
+    """
+    edited = copy.deepcopy(config)
+    edited["variation"]["arms"] = [
+        {
+            "id": f"r8{chr(ord('a') + index)}",
+            "channels": width,
+            "parameters": r8.parameter_count(width),
+        }
+        for index, width in enumerate(widths)
+    ]
+    edited["variation"]["runs"] = len(widths)
+    return edited
+
+
+def test_the_committed_config_declares_exactly_the_three_predeclared_widths(
+    config: dict,
+) -> None:
+    declared = [tuple(arm["channels"]) for arm in config["variation"]["arms"]]
+    assert tuple(declared) == r8.ARMS == ((128, 128, 64), (32, 32, 16), (8, 8, 4))
+    assert config["variation"]["runs"] == 3
+    assert config["variation"]["arm_count_is_exact"] is True
+
+
+def test_a_fourth_capacity_arm_is_refused(config: dict) -> None:
+    """The edit the Owner decision names: a fourth width added before a run.
+
+    It used to validate, because the validator accepted "2 to 4 arms" while the
+    design said "do not add a fourth width". A config edit is not an Owner
+    decision, so the count is the bound and the refusal has to say which decision
+    it is enforcing.
+    """
+    four = _with_arms(config, [[128, 128, 64], [32, 32, 16], [8, 8, 4], [4, 4, 2]])
+    problems = r8.check(four)
+
+    assert problems, "a four-arm config validated"
+    named = [p for p in problems if r8.STOP_CONDITION in p]
+    assert named, (
+        "the refusal does not quote the stop condition it enforces; a bare count "
+        f"mismatch reads as a typo to fix: {problems}"
+    )
+    assert "exactly 3" in named[0], named[0]
+    assert "Owner decision" in named[0], named[0]
+
+
+def test_a_two_arm_config_is_refused_too(config: dict) -> None:
+    """The bound is exact, not an upper limit.
+
+    The narrowest arm is dropped rather than the control, so the (128, 128, 64)
+    baseline is still present and the refusal cannot be the missing control. Two
+    arms would still produce a "capacity–accuracy relation" — two points and a
+    line through them — which is the failure mode a lower bound prevents.
+    """
+    two = _with_arms(config, [[128, 128, 64], [32, 32, 16]])
+    problems = r8.check(two)
+
+    assert problems, "a two-arm config validated"
+    assert not [p for p in problems if "192,961" in p], (
+        f"the control is still present, so this is not why it was refused: {problems}"
+    )
+    named = [p for p in problems if r8.STOP_CONDITION in p]
+    assert named, f"the refusal does not quote the stop condition: {problems}"
+    assert "has 2 arms" in named[0], named[0]
+
+
+def test_the_three_widths_themselves_are_pinned_not_only_their_number(
+    config: dict,
+) -> None:
+    """Three arms of the wrong widths is a different experiment.
+
+    Swapping (32, 32, 16) for (64, 64, 32) keeps the count, the order and the
+    control, and halves the range the slope is measured over. The widths are part
+    of the predeclaration, so they are checked as well as counted.
+    """
+    swapped = _with_arms(config, [[128, 128, 64], [64, 64, 32], [8, 8, 4]])
+    problems = r8.check(swapped)
+
+    assert problems, "an arm width was changed and the config still validated"
+    assert [p for p in problems if "bounds which widths run" in p], problems
+
+
+def test_the_stop_condition_the_refusals_quote_is_in_the_config_and_the_document(
+    config: dict,
+) -> None:
+    """A validator that quoted a clause nothing carried would be citing itself."""
+    assert r8.STOP_CONDITION in config["variation"]["stop_condition"].lower()
+    assert r8.STOP_CONDITION in DESIGN_PATH.read_text(encoding="utf-8").lower()
+    # And the document states the bound as exact, in the words the code enforces.
+    assert "Exactly three arms" in DESIGN_PATH.read_text(encoding="utf-8")
+
+
 def test_the_clean_run_bound_agrees_with_the_rule_of_three() -> None:
     """The rule of three is the approximation the recording package reasons in.
 
@@ -304,6 +405,69 @@ def test_generated_noise_is_out_and_the_background_split_is_disjoint(config: dic
         assigned.extend(names)
     assert sorted(assigned) == sorted(usable)
     assert len(assigned) == len(set(assigned))
+    # The correction the config used to demand of the builder is done, so the
+    # field that demanded it is gone. Leaving it would say the rule is pending
+    # while the code already enforces it.
+    assert "correction_required" not in background
+    assert "VALIDATION_NOISE" in background["correction_applied"]
+
+
+def test_the_builder_hands_no_generated_noise_to_any_split() -> None:
+    """The rule lives in ``build_dataset.py``'s constants, so that is what is read.
+
+    ``VALIDATION_NOISE`` named ``pink_noise.wav`` for seven rounds while every
+    document said generated noise was prohibited, because no guard connected the
+    two. This is that guard, and it reads the builder's source with ``ast`` for
+    the same reason ``round8_config`` does — importing it would pull numpy in to
+    check three tuples.
+    """
+    consts = r8._module_constants(
+        r8.BUILD_DATASET,
+        {"GENERATED_BACKGROUND_NAMES", "VALIDATION_NOISE", "EVAL_NOISE"},
+    )
+    generated = consts["GENERATED_BACKGROUND_NAMES"]
+    assert generated == frozenset({"pink_noise.wav", "white_noise.wav"})
+    for name in ("VALIDATION_NOISE", "EVAL_NOISE"):
+        assert not set(consts[name]) & generated, f"build_dataset.{name} names generated noise"
+    assert consts["VALIDATION_NOISE"] == ("doing_the_dishes.wav",)
+
+    # Non-vacuity: the reader has to be able to see a generated name if one were
+    # there, or "no generated name in the tuple" would be a statement about a
+    # broken ast walk.
+    assert set(consts["VALIDATION_NOISE"] + consts["EVAL_NOISE"]) == {
+        "doing_the_dishes.wav",
+        "running_tap.wav",
+        "dude_miaowing.wav",
+    }
+
+
+def test_both_builders_name_the_same_generated_files() -> None:
+    """One rule, one list.
+
+    ``build_human_dataset.py`` is the active Round 8 builder and
+    ``build_dataset.py`` is the retired one; a second, disagreeing definition of
+    "generated" would mean the exclusion depended on which stage ran.
+
+    Either shape passes: the same literal in both files, or the active builder
+    taking the retired module's constant directly — it already imports that
+    module for the window geometry. Insisting on the literal would fail the
+    better of the two, so what is asserted is agreement, not duplication.
+    """
+    retired = r8._module_constants(r8.BUILD_DATASET, {"GENERATED_BACKGROUND_NAMES"})[
+        "GENERATED_BACKGROUND_NAMES"
+    ]
+    human = WAKEWORD / "build_human_dataset.py"
+    active = r8._module_constants(human, {"GENERATED_BACKGROUND_NAMES"}).get(
+        "GENERATED_BACKGROUND_NAMES"
+    )
+    if active is None:
+        source = human.read_text(encoding="utf-8")
+        assert "GENERATED_BACKGROUND_NAMES = build_dataset.GENERATED_BACKGROUND_NAMES" in source, (
+            "build_human_dataset defines GENERATED_BACKGROUND_NAMES as something "
+            "this cannot read and does not take it from build_dataset either"
+        )
+    else:
+        assert active == retired
 
 
 def test_the_design_document_and_the_config_agree_on_the_headline_claims() -> None:
@@ -405,7 +569,22 @@ MUTATIONS = {
         [{"id": f"x{i}", "channels": [i, i, i], "parameters": r8.parameter_count([i, i, i])}
          for i in range(120, 108, -1)],
     ),
+    "a fourth width is added": lambda c: c["variation"].update(
+        {
+            "arms": [
+                *c["variation"]["arms"],
+                {"id": "r8d", "channels": [4, 4, 2], "parameters": r8.parameter_count([4, 4, 2])},
+            ],
+            "runs": 4,
+        }
+    ),
+    "an arm is dropped": lambda c: c["variation"].update(
+        {"arms": c["variation"]["arms"][:-1], "runs": 2}
+    ),
     "the stop condition is emptied": lambda c: c["variation"].__setitem__("stop_condition", ""),
+    "the stop condition stops forbidding a fourth width": lambda c: c["variation"].__setitem__(
+        "stop_condition", "If no arm meets all five targets on E005 validation, stop."
+    ),
     "initialization comes from a synthetic checkpoint": lambda c: c["initialization"].__setitem__(
         "from_synthetic_checkpoint", True
     ),
@@ -448,6 +627,9 @@ MUTATIONS = {
     "generated noise is used as background": lambda c: c["background_recordings"][
         "real_and_usable"
     ].__setitem__("pink_noise.wav", 60.0),
+    "the generated-noise exclusion list is trimmed": lambda c: c[
+        "background_recordings"
+    ].__setitem__("generated_and_therefore_excluded", ["pink_noise.wav"]),
     "a background recording is used by two splits": lambda c: c["background_recordings"][
         "assignment_disjoint_by_recording"
     ].__setitem__("train", ["exercise_bike.wav", "doing_the_dishes.wav"]),

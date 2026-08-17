@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -288,6 +289,23 @@ def train(args: argparse.Namespace) -> tuple[WakeWordNet, dict]:
     start_epoch = 0
     checkpoint = args.checkpoint or (args.out / "checkpoint.pt")
     if checkpoint.exists() and not args.no_resume:
+        # Refuse a retired synthetic checkpoint before loading it.
+        #
+        # `build_human_dataset.refuse_synthetic_initialization` existed, was
+        # tested, and had no production caller — so `--checkpoint <a rejected
+        # round's checkpoint.pt>` was a synthetic warm start that produced an
+        # artifact looking entirely human-only at the end. A guard nothing calls
+        # reads as protection while enforcing nothing, which is worse than no
+        # guard, because it stops anyone looking again.
+        #
+        # Imported here rather than at module scope: this module is the synthetic
+        # era's trainer and is still used to reproduce historical rounds, so it
+        # must not fail to import when the human-only stage's dependencies are
+        # absent. A missing guard is a hard error at the point of use instead.
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import build_human_dataset as human_only
+
+        human_only.refuse_synthetic_initialization(checkpoint)
         start_epoch, best, history = load_checkpoint(
             checkpoint, model=model, optimizer=optimizer, scheduler=scheduler, rng=rng
         )

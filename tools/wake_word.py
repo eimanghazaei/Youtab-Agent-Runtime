@@ -153,6 +153,25 @@ def resolve_inference_framework(cfg: Dict[str, Any]) -> str:
 
 
 
+def resolve_model_reference(cfg: Dict[str, Any], framework: Optional[str] = None) -> str:
+    """The model reference openWakeWord will be handed for ``cfg``.
+
+    A bundled alias resolves to the shipped artifact for ``framework``; a
+    built-in openWakeWord name or a custom path is passed through untouched.
+
+    Split out of the engine so that a status surface or a verification report
+    can name the artifact that will *actually* be loaded rather than
+    reconstruct it. ``scripts/wakeword/verify_on_device.py`` printed
+    ``_bundled_wakeword_path(...)`` unconditionally, which is a different file
+    from the one the engine loads whenever ``openwakeword.model`` is set.
+    """
+    sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
+    model_ref = str(sub.get("model") or _BUNDLED_MODEL_NAME).strip()
+    if model_ref.lower() in _BUNDLED_MODEL_ALIASES:
+        return _bundled_wakeword_path(framework or resolve_inference_framework(cfg))
+    return model_ref
+
+
 def ensure_tflite_runtime() -> bool:
     """Make ``import tflite_runtime.interpreter`` resolve, returning success.
 
@@ -404,7 +423,12 @@ class _Engine:
     #: configured phrase / active profile).
     last_match: Optional[tuple[str, str]] = None
 
-    def process(self, frame) -> bool:  # frame: 1-D int16 ndarray
+    def process(self, frame) -> bool:
+        """Score one frame of ``frame_length`` RAW int16 samples at 16 kHz.
+
+        ``frame`` is a 1-D int16 sequence, NOT normalised float — see
+        :data:`FRAME_DTYPE`. Returns True when the wake phrase fired.
+        """
         raise NotImplementedError
 
     def reset(self) -> None:
@@ -421,6 +445,52 @@ def _looks_like_path(value: str) -> bool:
         or value.endswith((".onnx", ".tflite", ".ppn"))
         or os.path.exists(value)
     )
+
+
+#: The engines are fed RAW int16 samples — never normalised floats.
+#:
+#: This module owns the /32768 conversion itself: ``_SherpaKwsEngine.process``
+#: does it explicitly, and openWakeWord's melspectrogram front end expects the
+#: same int16 scale. So a caller that hands over float32 in the conventional
+#: -1.0..1.0 range delivers a signal 32768x too quiet, and *nothing raises*: the
+#: front end simply sees near-silence, every score collapses into a flat band
+#: near zero, and the symptom is indistinguishable from a dead model or a dead
+#: microphone. It has cost debugging time before.
+#:
+#: The capture path pins the contract at its source — ``InputStream(dtype=
+#: "int16")`` in :meth:`WakeWordDetector._run` — but ``process()`` is a boundary
+#: that offline callers reach directly (``scripts/wakeword/evaluate_model.py``,
+#: ``scripts/wakeword/verify_on_device.py``), so it is also checked here.
+FRAME_DTYPE = "int16"
+
+_warned_frame_dtype = False
+
+
+def frame_dtype_ok(frame) -> bool:
+    """True when ``frame`` honours the int16 contract; logs once when it does not.
+
+    Warn-and-continue, deliberately, rather than raise: dropping the frame would
+    turn a mis-scaled feed into a listener that hears nothing, which is the very
+    failure this is meant to explain. Objects with no ``dtype`` — plain lists,
+    and the test doubles — are accepted; the check is about float feeds, not
+    about typing.
+    """
+    global _warned_frame_dtype
+
+    dtype = getattr(frame, "dtype", None)
+    if dtype is None or str(dtype) == FRAME_DTYPE:
+        return True
+    if not _warned_frame_dtype:
+        _warned_frame_dtype = True
+        logger.error(
+            "wake word: audio frames arrived as %s, not %s. tools/wake_word.py "
+            "scales int16 itself, so float samples in -1..1 are 32768x too "
+            "quiet: every score collapses into a flat band near zero and the "
+            "wake word looks completely broken. Feed raw int16 "
+            "(sounddevice InputStream(dtype='int16')).",
+            dtype, FRAME_DTYPE,
+        )
+    return False
 
 
 #: Seed for the fixed audio that primes openWakeWord's feature buffer.
@@ -462,8 +532,6 @@ class _OpenWakeWordEngine(_Engine):
         import openwakeword
         from openwakeword.model import Model
 
-        sub = cfg.get("openwakeword") if isinstance(cfg.get("openwakeword"), dict) else {}
-        model_ref = str(sub.get("model") or _BUNDLED_MODEL_NAME).strip()
         framework = resolve_inference_framework(cfg)
         # openWakeWord returns a 0..1 score per frame; sensitivity IS the raw
         # threshold a score must clear. Higher = stricter (fewer false fires).
@@ -494,10 +562,21 @@ class _OpenWakeWordEngine(_Engine):
                 logger.warning("wake word: no tflite runtime available — falling back to onnx")
                 framework = "onnx"
 
-        # Default (or explicit "hey_youtab") → the bundled model; a built-in name
-        # or custom path is used as-is.
-        if model_ref.lower() in _BUNDLED_MODEL_ALIASES:
-            model_ref = _bundled_wakeword_path(framework)
+        # Default (or explicit "hey_youtab") → the bundled model for whichever
+        # backend survived the check above; a built-in name or custom path is
+        # used as-is.
+        model_ref = resolve_model_reference(cfg, framework)
+
+        #: The backend and artifact this engine ACTUALLY built with, after both
+        #: the macOS ARM64 coercion and the missing-runtime downgrade above.
+        #: openWakeWord's ``Model`` records neither — it keeps no
+        #: ``inference_framework`` attribute at all (0.6.0 model.py), and its own
+        #: fallback will even swap a ``.tflite`` path for the ``.onnx`` sitting
+        #: beside it, which both do in ``tools/wakewords/``. Without these two
+        #: fields a report that says "tflite" cannot be falsified, and a
+        #: measurement nobody can falsify is not evidence.
+        self.inference_framework = framework
+        self.model_reference = model_ref
 
         # openWakeWord needs its shared feature models (melspectrogram + embedding)
         # for ANY model — download_models() fetches those first on every call, so a
@@ -571,6 +650,7 @@ class _OpenWakeWordEngine(_Engine):
         self._prime_deterministic = True
 
     def process(self, frame) -> bool:
+        frame_dtype_ok(frame)  # int16 contract; see FRAME_DTYPE
         scores = self._model.predict(frame)
         over = any(score >= self._threshold for score in scores.values())
         # Require N consecutive over-threshold frames: a real phrase holds the
@@ -726,6 +806,9 @@ class _SherpaKwsEngine(_Engine):
     def process(self, frame) -> bool:
         import numpy as np
 
+        # This division IS the int16 contract: float32 input in -1..1 arrives
+        # 32768x too quiet and sherpa hears silence. See FRAME_DTYPE.
+        frame_dtype_ok(frame)
         samples = np.asarray(frame, dtype=np.float32) / 32768.0
         self._stream.accept_waveform(SAMPLE_RATE, samples)
         fired = False
@@ -1054,6 +1137,12 @@ class WakeWordDetector:
             self.input_device_details.get("default_samplerate") or "unknown",
             SAMPLE_RATE,
         )
+        # The capture format is REQUESTED here and converted by PortAudio/the OS,
+        # never by this module: 16 kHz (the rate both the model front end and
+        # Whisper want), one channel, and int16 samples — see FRAME_DTYPE for why
+        # the dtype is load-bearing rather than a preference. blocksize pins the
+        # device's delivery size to exactly one engine frame.
+        stream = None
         try:
             stream = sd.InputStream(
                 device=self.input_device,
@@ -1065,6 +1154,16 @@ class WakeWordDetector:
             stream.start()
         except Exception as e:
             logger.error("wake word: failed to open microphone: %s", e)
+            # InputStream() can construct fine and start() still fail — a device
+            # that opens but cannot run at 16 kHz mono, or one another process
+            # grabbed in between. That half-open stream holds the device until it
+            # is closed, so leaving it would make the *next* attempt fail for a
+            # reason this attempt created.
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
             startup_errors.append(e)
             ready.set()
             return
@@ -1091,6 +1190,10 @@ class WakeWordDetector:
                     logger.warning("wake word: stream read error: %s", e)
                     failed = not self._stop.is_set()
                     break
+                # sounddevice returns (frames, channels) — 2-D even for mono —
+                # so this is the normal path, not an edge case. Channel 0 is
+                # taken as-is: nothing here downmixes, because channels=1 was
+                # requested and PortAudio is the thing that honours it.
                 frame = data[:, 0] if getattr(data, "ndim", 1) == 2 else data
                 try:
                     peak = int(abs(frame).max()) if len(frame) else 0

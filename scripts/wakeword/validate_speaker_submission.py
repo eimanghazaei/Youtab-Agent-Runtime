@@ -33,6 +33,20 @@ covering every file exactly once -- and not by recomputing digests: a digest
 recomputed on the machine that wrote it says nothing about the transfer that
 has not happened yet. ``sha256sum -c SHA256SUMS``, run by the coordinator
 after the transfer, is what says that.
+
+Run with no flags, this is the upload-verification command a speaker or their
+coordinator runs before handing a folder over. Its output has two parts: every
+problem found (as before), and a completion summary -- one line per section
+showing how many takes were accepted against how many are required, so a
+shortfall reads as numbers to go back and record rather than a wall of error
+text.
+
+Run with ``--rename plan`` or ``--rename apply``, it does something different:
+it mechanically renames whatever a recorder app called its files into the
+exact names this package specifies, using the order the files were recorded in
+(their modification time) rather than asking anyone to type a slug. See
+``rename_plan()`` below for how that ordering is decided and where it refuses
+to guess.
 """
 
 from __future__ import annotations
@@ -52,6 +66,23 @@ _SLUG_PATTERN = r"[a-z0-9-]+"
 
 
 @dataclass
+class SectionStatus:
+    """One accepted/required count -- one line of the completion summary.
+
+    Counts, not a pass/fail flag: "3 of 5 near-phrase takes" tells a speaker
+    which two to go back and record, where a bare "incomplete" would not.
+    """
+
+    label: str
+    have: int
+    need: int
+
+    @property
+    def complete(self) -> bool:
+        return self.have >= self.need
+
+
+@dataclass
 class ValidationResult:
     """Every problem found, collected rather than stopping at the first.
 
@@ -59,10 +90,15 @@ class ValidationResult:
     one pass, not one error per run -- re-running after every single fix is
     exactly the friction that turns "record it again" into "delete the hard
     one and hope nobody notices".
+
+    ``sections`` is the same walk, kept as counts instead of sentences, so it
+    can drive a completion summary (``format_completion_summary``) alongside
+    the error list rather than instead of it.
     """
 
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    sections: list[SectionStatus] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -87,6 +123,7 @@ def _check_condition_dir(
     rel = f"{spec.ORIGINALS_DIR}/{section.directory}"
     if not directory.is_dir():
         result.errors.append(f"missing required folder: {rel}/")
+        result.sections.append(SectionStatus(rel, 0, section.takes))
         return
 
     pattern = re.compile(
@@ -110,6 +147,7 @@ def _check_condition_dir(
         result.errors.append(
             f"{rel}/: found {matched} correctly named recording(s), need at least {section.takes}"
         )
+    result.sections.append(SectionStatus(rel, matched, section.takes))
 
 
 def _check_near_phrase_dir(originals: Path, result: ValidationResult) -> None:
@@ -117,6 +155,8 @@ def _check_near_phrase_dir(originals: Path, result: ValidationResult) -> None:
     rel = f"{spec.ORIGINALS_DIR}/near_phrase"
     if not directory.is_dir():
         result.errors.append(f"missing required folder: {rel}/")
+        for item in spec.NEAR_PHRASE_ITEMS:
+            result.sections.append(SectionStatus(f"{rel}/{item.slug}", 0, item.takes))
         return
 
     known = {item.slug: item for item in spec.NEAR_PHRASE_ITEMS}
@@ -150,6 +190,7 @@ def _check_near_phrase_dir(originals: Path, result: ValidationResult) -> None:
                 f"{rel}/: only {counts[slug]} take(s) of {item.text!r} ({slug}), "
                 f"need at least {item.takes}"
             )
+        result.sections.append(SectionStatus(f"{rel}/{slug}", counts[slug], item.takes))
 
 
 def _check_freeform_dir(
@@ -160,6 +201,7 @@ def _check_freeform_dir(
     rel = f"{spec.ORIGINALS_DIR}/{section.directory}"
     if not directory.is_dir():
         result.errors.append(f"missing required folder: {rel}/")
+        result.sections.append(SectionStatus(rel, 0, section.min_files))
         return
 
     pattern = re.compile(rf"^{re.escape(section.prefix)}_{_TAKE_PATTERN}$")
@@ -180,29 +222,36 @@ def _check_freeform_dir(
         result.errors.append(
             f"{rel}/: found {matched} recording(s), need at least {section.min_files}"
         )
+    result.sections.append(SectionStatus(rel, matched, section.min_files))
 
 
 def _check_metadata(root: Path, result: ValidationResult) -> None:
     path = root / spec.METADATA_FILE
+    needed = len(spec.REQUIRED_METADATA_FIELDS)
     if not path.is_file():
         result.errors.append(f"missing {spec.METADATA_FILE}")
+        result.sections.append(SectionStatus(f"{spec.METADATA_FILE} fields", 0, needed))
         return
 
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         result.errors.append(f"{spec.METADATA_FILE} is not well-formed JSON: {exc}")
+        result.sections.append(SectionStatus(f"{spec.METADATA_FILE} fields", 0, needed))
         return
     if not isinstance(data, dict):
         result.errors.append(f"{spec.METADATA_FILE} must contain a single JSON object")
+        result.sections.append(SectionStatus(f"{spec.METADATA_FILE} fields", 0, needed))
         return
 
+    filled = 0
     for name in spec.REQUIRED_METADATA_FIELDS:
         if name not in data:
             result.errors.append(f"{spec.METADATA_FILE} is missing required field {name!r}")
             continue
         if name == "noise_sources_used":
-            continue  # a list, checked separately below
+            filled += 1  # a list, checked in detail by _check_noise_sources below
+            continue
         value = data[name]
         if not isinstance(value, str) or not value.strip():
             result.errors.append(
@@ -213,6 +262,9 @@ def _check_metadata(root: Path, result: ValidationResult) -> None:
                 f"{spec.METADATA_FILE} field {name!r} still has the template placeholder "
                 "text in it; fill in a real answer"
             )
+        else:
+            filled += 1
+    result.sections.append(SectionStatus(f"{spec.METADATA_FILE} fields", filled, needed))
 
     for name in data:
         if name not in spec.ALL_METADATA_FIELDS:
@@ -312,9 +364,12 @@ def _check_consent(root: Path, result: ValidationResult) -> None:
             f"missing {spec.CONSENT_FILE}: the signed consent record has to be in the "
             "folder before the recordings can be ingested"
         )
+        result.sections.append(SectionStatus(spec.CONSENT_FILE, 0, 1))
         return
-    if path.stat().st_size == 0:
+    empty = path.stat().st_size == 0
+    if empty:
         result.errors.append(f"{spec.CONSENT_FILE} is empty")
+    result.sections.append(SectionStatus(spec.CONSENT_FILE, 0 if empty else 1, 1))
 
 
 def _submission_files(root: Path) -> list[str]:
@@ -337,6 +392,9 @@ def _check_checksums(root: Path, result: ValidationResult) -> None:
         result.errors.append(
             f"missing {spec.CHECKSUM_FILE}: without it the folder cannot be shown to have "
             "survived the transfer intact"
+        )
+        result.sections.append(
+            SectionStatus(spec.CHECKSUM_FILE, 0, len(_submission_files(root)))
         )
         return
 
@@ -366,6 +424,9 @@ def _check_checksums(root: Path, result: ValidationResult) -> None:
         result.errors.append(
             f"{spec.CHECKSUM_FILE} lists {name!r}, which is not in the folder"
         )
+    result.sections.append(
+        SectionStatus(spec.CHECKSUM_FILE, len(present & listed_set), len(present))
+    )
 
 
 def _check_originals(root: Path, result: ValidationResult) -> None:
@@ -437,18 +498,260 @@ def validate_speaker_directory(root: Path) -> ValidationResult:
     return result
 
 
+# ── completion summary ───────────────────────────────────────────────────────
+
+
+def format_completion_summary(root: Path, result: ValidationResult) -> str:
+    """A per-section accepted/required breakdown -- the completion summary.
+
+    ``result.errors`` already says what is wrong, as sentences; this turns the
+    same walk into counts, because "3 problems found" does not tell a speaker
+    which three takes to go back and record, and a coordinator deciding
+    whether five folders are ready to merge needs the shape of what is short
+    at a glance rather than a wall of error text.
+    """
+    lines = [f"Completion summary for {root.name}:"]
+    if not result.sections:
+        lines.append("  (nothing could be counted -- see the errors above)")
+        return "\n".join(lines)
+
+    for section in sorted(result.sections, key=lambda item: item.label):
+        marker = "ok" if section.complete else "MISSING"
+        lines.append(f"  {section.label:<48} {section.have:>3}/{section.need:<3}  {marker}")
+
+    have = sum(section.have for section in result.sections)
+    need = sum(section.need for section in result.sections)
+    lines.append(f"  {'TOTAL':<48} {have:>3}/{need:<3}")
+    return "\n".join(lines)
+
+
+# ── automatic renaming ───────────────────────────────────────────────────────
+
+
+@dataclass
+class RenameAction:
+    """One file, and the canonical name it should have.
+
+    ``changed`` is false for a file that is already correctly named, so a plan
+    or an apply only ever reports the files that actually need to move.
+    """
+
+    old_path: Path
+    new_name: str
+
+    @property
+    def changed(self) -> bool:
+        return self.old_path.name != self.new_name
+
+
+#: Sync-client and editor litter, by the same list freeze_manifest skips and
+#: import_speaker records as litter, so what is given a take number here and
+#: what is copied there cannot disagree.
+LITTER_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini", spec.CHECKSUM_FILE})
+
+
+def _partition(directory: Path) -> tuple[list[Path], list[str], list[str]]:
+    """Recordings, recognised litter, and files nobody here can classify.
+
+    A take number is a claim about *which* recording a file is, and auto-naming
+    assigns it by position. So a file that is not a recording does not merely
+    acquire a canonical name of its own: it shifts every real take onto the
+    wrong take number -- and the rename is in place, on originals that cannot be
+    recorded again, with the recorder own names gone afterwards and no record of
+    them anywhere.
+
+    This is the normal case rather than the exotic one. macOS writes
+    .DS_Store into every folder it opens and an AppleDouble ._name.m4a
+    beside every file it copies onto exFAT, which is how a removable drive
+    handed between two people is formatted.
+    """
+    recordings: list[Path] = []
+    litter: list[str] = []
+    strangers: list[str] = []
+    for entry in sorted(directory.iterdir()):
+        if not entry.is_file():
+            continue
+        if entry.name in LITTER_NAMES or entry.name.startswith("."):
+            litter.append(entry.name)
+        elif entry.suffix.lower() in spec.AUDIO_EXTENSIONS:
+            recordings.append(entry)
+        else:
+            strangers.append(entry.name)
+    return recordings, litter, strangers
+
+
+def _ordered_files(directory: Path) -> list[Path]:
+    """Recordings directly inside directory, oldest recording first.
+
+    Sorted by modification time -- the order a recorder actually wrote them in
+    -- with the original filename as a tie-breaker, so the order stays the
+    same across repeated runs even if a transfer flattens timestamps to the
+    same second.
+    """
+    return sorted(
+        _partition(directory)[0],
+        key=lambda entry: (entry.stat().st_mtime, entry.name),
+    )
+
+
+def _plan_for_directory(
+    directory: Path, rel: str, stems: tuple[str, ...], result: ValidationResult
+) -> list[RenameAction]:
+    """The rename for one folder, or an error if its file count cannot be trusted.
+
+    A count that does not match what the folder requires is refused rather
+    than guessed at: renaming file 4 of 3 would assign a take number to a file
+    that should not be in this folder at all -- the same "never guess a label"
+    rule ``validate_speaker_directory`` already follows for a misnamed file.
+    """
+    _recordings, litter, strangers = _partition(directory)
+    if strangers:
+        result.errors.append(
+            f"{rel}/: {sorted(strangers)} is not a recorder audio file "
+            f"({sorted(spec.AUDIO_EXTENSIONS)}) and is not recognised litter. "
+            "Auto-naming hands out take numbers by position, so a file nobody can "
+            "classify pushes every real take onto the wrong number -- and the "
+            "rename is in place, on recordings that cannot be made again. Remove "
+            "it, or name the folder by hand"
+        )
+        return []
+    if litter:
+        result.warnings.append(f"{rel}/: ignoring {sorted(litter)} when numbering takes")
+    files = _ordered_files(directory)
+    if len(files) != len(stems):
+        result.errors.append(
+            f"{rel}/: {len(files)} file(s) found but {len(stems)} expected -- record "
+            "the missing take(s) (or remove the extra file) before auto-naming; this "
+            "will not guess which file is which"
+        )
+        return []
+    return [RenameAction(path, f"{stem}{path.suffix}") for path, stem in zip(files, stems)]
+
+
+def rename_plan(root: Path) -> tuple[list[RenameAction], ValidationResult]:
+    """The mechanical rename every ``originals/`` folder needs, from recording order.
+
+    Every file is renamed from whatever the recorder called it into the exact
+    name ``SPEAKER_RECORDING_PACKAGE.md`` specifies, using the order it was
+    recorded in -- file modification time -- rather than asking anyone to type
+    a slug. A folder whose file count does not match what it requires is
+    reported in the returned ``ValidationResult`` and left untouched; a folder
+    that does not exist yet is silently skipped (``validate_speaker_directory``
+    is what reports a missing folder).
+    """
+    result = ValidationResult()
+    if not root.is_dir():
+        result.errors.append(f"{root} is not a directory")
+        return [], result
+
+    originals = root / spec.ORIGINALS_DIR
+    if not originals.is_dir():
+        result.errors.append(f"missing required folder: {spec.ORIGINALS_DIR}/")
+        return [], result
+
+    actions: list[RenameAction] = []
+
+    for section in spec.POSITIVE_SECTIONS:
+        directory = originals / section.directory
+        if directory.is_dir():
+            rel = f"{spec.ORIGINALS_DIR}/{section.directory}"
+            stems = spec.expected_stems_for_positive_section(section)
+            actions += _plan_for_directory(directory, rel, stems, result)
+
+    for source in sorted(spec.NOISE_SOURCE_VOCAB):
+        section = spec.noise_section(source)
+        directory = originals / section.directory
+        if directory.is_dir():
+            rel = f"{spec.ORIGINALS_DIR}/{section.directory}"
+            stems = spec.expected_stems_for_positive_section(section)
+            actions += _plan_for_directory(directory, rel, stems, result)
+
+    near_phrase_dir = originals / "near_phrase"
+    if near_phrase_dir.is_dir():
+        stems = spec.expected_stems_for_near_phrase()
+        actions += _plan_for_directory(
+            near_phrase_dir, f"{spec.ORIGINALS_DIR}/near_phrase", stems, result
+        )
+
+    for section in spec.FREEFORM_SECTIONS:
+        directory = originals / section.directory
+        if directory.is_dir():
+            # The same partition as every other section. Here the count decides
+            # how many stems exist, so a counted sync artefact does not merely
+            # take a slot from a real take -- it guarantees one.
+            count = len(_partition(directory)[0])
+            if count >= 1:
+                rel = f"{spec.ORIGINALS_DIR}/{section.directory}"
+                stems = spec.expected_stems_for_freeform(section, count)
+                actions += _plan_for_directory(directory, rel, stems, result)
+
+    return actions, result
+
+
+def apply_rename_plan(actions: list[RenameAction]) -> int:
+    """Perform every rename that actually changes a name. Returns how many moved.
+
+    Two passes, through a temporary name first: a folder that is already
+    partly canonical (take 3 needs to become take 1, say) would otherwise risk
+    two files colliding on the same name mid-rename.
+    """
+    changed = [action for action in actions if action.changed]
+    staged: list[tuple[Path, Path]] = []
+    for index, action in enumerate(changed):
+        temp = action.old_path.with_name(f".rename-tmp-{index}{action.old_path.suffix}")
+        action.old_path.rename(temp)
+        staged.append((temp, action.old_path.parent / action.new_name))
+    for temp, final in staged:
+        temp.rename(final)
+    return len(changed)
+
+
+# ── the command line ─────────────────────────────────────────────────────────
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "speaker_dir", type=Path, help="one assembled speaker folder, e.g. E003/"
     )
+    parser.add_argument(
+        "--rename",
+        choices=("plan", "apply"),
+        default=None,
+        help=(
+            "instead of validating, mechanically rename every file under "
+            "originals/ from recording order (oldest first) to the exact name "
+            "SPEAKER_RECORDING_PACKAGE.md specifies -- no slug typed by hand. "
+            "'plan' prints what would change without touching a file; 'apply' "
+            "renames. Run the command again with no --rename afterwards to validate."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.rename:
+        actions, result = rename_plan(args.speaker_dir)
+        for error in result.errors:
+            print(f"ERROR: {error}")
+        changed = [action for action in actions if action.changed]
+        if args.rename == "plan":
+            for action in changed:
+                print(f"RENAME: {action.old_path.name} -> {action.new_name}")
+            if not changed:
+                print("nothing to rename -- every file already has its canonical name")
+        else:
+            count = apply_rename_plan(actions)
+            print(f"renamed {count} file(s)")
+        if result.errors:
+            print(f"{args.speaker_dir}: {len(result.errors)} folder(s) could not be auto-named")
+            return 1
+        return 0
 
     result = validate_speaker_directory(args.speaker_dir)
     for warning in result.warnings:
         print(f"WARNING: {warning}")
     for error in result.errors:
         print(f"ERROR: {error}")
+    print(format_completion_summary(args.speaker_dir, result))
 
     if result.ok:
         print(f"{args.speaker_dir}: all required sections present and well-named")

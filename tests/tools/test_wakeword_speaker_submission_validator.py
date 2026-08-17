@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -49,6 +51,56 @@ UNASSIGNED_LABEL = "E" + "999"
 
 def _write_audio(path: Path) -> None:
     path.write_bytes(b"placeholder bytes standing in for a real recording")
+
+
+def _set_ascending_mtimes(paths: list[Path]) -> None:
+    """Give a list of files strictly increasing modification times.
+
+    Files created back to back in the same test can land on the same
+    filesystem-reported mtime, which would make "recording order" ambiguous
+    by construction rather than by an actual bug in the tool under test.
+    """
+    base = time.time() - len(paths)
+    for index, path in enumerate(paths):
+        stamp = base + index
+        os.utime(path, (stamp, stamp))
+
+
+def _recorder_named(directory: Path, count: int, ext: str = ".m4a") -> list[Path]:
+    """``count`` placeholder files, named the way a phone's own app would name them."""
+    paths = [directory / f"Voice Memo {n}{ext}" for n in range(1, count + 1)]
+    for path in paths:
+        _write_audio(path)
+    _set_ascending_mtimes(paths)
+    return paths
+
+
+def _stamp_submission_in_canonical_order(root: Path) -> None:
+    """Set every already-canonically-named file's mtime to match its own take order.
+
+    ``_build_valid_submission`` writes files in canonical order already, but a
+    coarse filesystem clock can report the same mtime for several of them,
+    which would leave the *tie-break* (alphabetical by name) to decide
+    ``_ordered_files``'s order instead -- and ``near_phrase``'s canonical
+    order is not alphabetical. Stamping explicitly removes that ambiguity from
+    the "nothing needs renaming" tests below, rather than trusting how fast
+    the test happened to run.
+    """
+    originals = root / spec.ORIGINALS_DIR
+    for section in spec.POSITIVE_SECTIONS:
+        stems = spec.expected_stems_for_positive_section(section)
+        _set_ascending_mtimes([originals / section.directory / f"{s}.m4a" for s in stems])
+    for source in ("tv", "kitchen"):
+        section = spec.noise_section(source)
+        stems = spec.expected_stems_for_positive_section(section)
+        _set_ascending_mtimes([originals / section.directory / f"{s}.m4a" for s in stems])
+    near_phrase_stems = spec.expected_stems_for_near_phrase()
+    _set_ascending_mtimes(
+        [originals / "near_phrase" / f"{s}.m4a" for s in near_phrase_stems]
+    )
+    for section in spec.FREEFORM_SECTIONS:
+        stems = spec.expected_stems_for_freeform(section, section.min_files)
+        _set_ascending_mtimes([originals / section.directory / f"{s}.m4a" for s in stems])
 
 
 def _valid_metadata() -> dict:
@@ -484,3 +536,187 @@ def test_cli_main_returns_nonzero_for_a_broken_submission(submission: Path, caps
     out = capsys.readouterr().out
     assert "ERROR:" in out
     assert "problem(s) found" in out
+
+
+# ── the completion summary ───────────────────────────────────────────────────
+
+
+def test_completion_summary_reports_accepted_counts_and_a_total(submission: Path) -> None:
+    result = validator.validate_speaker_directory(submission)
+    text = validator.format_completion_summary(submission, result)
+    assert f"{spec.ORIGINALS_DIR}/positive_normal" in text
+    assert "5/5" in text
+    assert "TOTAL" in text
+    assert spec.METADATA_FILE in text
+    assert spec.CONSENT_FILE in text
+    assert spec.CHECKSUM_FILE in text
+
+
+def test_completion_summary_shows_a_missing_section_as_zero_of_its_floor(
+    submission: Path,
+) -> None:
+    shutil.rmtree(submission / spec.ORIGINALS_DIR / "background_only")
+    result = validator.validate_speaker_directory(submission)
+    text = validator.format_completion_summary(submission, result)
+    assert f"{spec.ORIGINALS_DIR}/background_only" in text
+    assert "0/1" in text
+    assert "MISSING" in text
+
+
+def test_completion_summary_names_the_short_near_phrase_slug(submission: Path) -> None:
+    target = sorted(
+        (submission / spec.ORIGINALS_DIR / "near_phrase").glob("hey-you-tap_*")
+    )[0]
+    target.unlink()
+    result = validator.validate_speaker_directory(submission)
+    text = validator.format_completion_summary(submission, result)
+    assert "near_phrase/hey-you-tap" in text
+    assert "4/5" in text
+
+
+def test_cli_prints_the_completion_summary_by_default(submission: Path, capsys) -> None:
+    code = validator.main([str(submission)])
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "Completion summary" in out
+    assert "TOTAL" in out
+
+
+# ── automatic renaming ───────────────────────────────────────────────────────
+
+
+def test_rename_plan_proposes_canonical_names_in_recording_order(tmp_path: Path) -> None:
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    section = spec.POSITIVE_SECTIONS[0]
+    directory = root / spec.ORIGINALS_DIR / section.directory
+    for entry in list(directory.iterdir()):
+        entry.unlink()
+    _recorder_named(directory, section.takes)
+
+    actions, result = validator.rename_plan(root)
+    assert result.errors == []
+    this_folder = [action for action in actions if action.old_path.parent == directory]
+    expected = spec.expected_stems_for_positive_section(section)
+    assert [action.new_name for action in this_folder] == [f"{stem}.m4a" for stem in expected]
+
+
+def test_rename_plan_orders_near_phrase_across_the_whole_battery(tmp_path: Path) -> None:
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    directory = root / spec.ORIGINALS_DIR / "near_phrase"
+    for entry in list(directory.iterdir()):
+        entry.unlink()
+    _recorder_named(directory, sum(item.takes for item in spec.NEAR_PHRASE_ITEMS))
+
+    actions, result = validator.rename_plan(root)
+    assert result.errors == []
+    this_folder = [action for action in actions if action.old_path.parent == directory]
+    expected = spec.expected_stems_for_near_phrase()
+    assert [action.new_name for action in this_folder] == [f"{stem}.m4a" for stem in expected]
+
+
+def test_rename_plan_refuses_to_guess_when_a_folder_has_the_wrong_count(
+    tmp_path: Path,
+) -> None:
+    """A folder with an extra (or missing) file is reported, never guessed at."""
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    directory = root / spec.ORIGINALS_DIR / "positive_slow"
+    _recorder_named(directory, 1)  # one extra file on top of the 5 already there
+
+    actions, result = validator.rename_plan(root)
+    assert any(
+        "positive_slow" in error and "expected" in error for error in result.errors
+    )
+    assert not any(action.old_path.parent == directory for action in actions)
+
+
+def test_rename_plan_leaves_an_already_canonical_folder_unchanged(tmp_path: Path) -> None:
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    _stamp_submission_in_canonical_order(root)
+
+    actions, result = validator.rename_plan(root)
+    assert result.errors == []
+    assert actions  # non-vacuity: the fixture has files to plan over
+    assert all(not action.changed for action in actions)
+
+
+def test_apply_rename_plan_renames_and_the_result_then_validates_clean(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    originals = root / spec.ORIGINALS_DIR
+
+    for section in spec.POSITIVE_SECTIONS:
+        directory = originals / section.directory
+        for entry in list(directory.iterdir()):
+            entry.unlink()
+        _recorder_named(directory, section.takes)
+    for source in ("tv", "kitchen"):
+        directory = originals / f"positive_noise_{source}"
+        for entry in list(directory.iterdir()):
+            entry.unlink()
+        _recorder_named(directory, spec.NOISE_REPS)
+    directory = originals / "near_phrase"
+    for entry in list(directory.iterdir()):
+        entry.unlink()
+    _recorder_named(directory, sum(item.takes for item in spec.NEAR_PHRASE_ITEMS))
+    for section in spec.FREEFORM_SECTIONS:
+        directory = originals / section.directory
+        for entry in list(directory.iterdir()):
+            entry.unlink()
+        _recorder_named(directory, section.min_files)
+
+    actions, result = validator.rename_plan(root)
+    assert result.errors == []
+    renamed = validator.apply_rename_plan(actions)
+    assert renamed == len(actions) > 0
+
+    _write_checksums(root)  # filenames changed; SHA256SUMS has to be regenerated
+    final = validator.validate_speaker_directory(root)
+    assert final.errors == [], final.errors
+
+
+def test_cli_rename_plan_reports_nothing_to_rename_for_a_canonical_submission(
+    tmp_path: Path, capsys
+) -> None:
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    _stamp_submission_in_canonical_order(root)
+
+    code = validator.main(["--rename", "plan", str(root)])
+    assert code == 0
+    assert "nothing to rename" in capsys.readouterr().out
+
+
+def test_cli_rename_apply_then_validate_round_trips(tmp_path: Path, capsys) -> None:
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    section = spec.POSITIVE_SECTIONS[0]
+    directory = root / spec.ORIGINALS_DIR / section.directory
+    for entry in list(directory.iterdir()):
+        entry.unlink()
+    _recorder_named(directory, section.takes)
+
+    code = validator.main(["--rename", "apply", str(root)])
+    assert code == 0
+    assert "renamed" in capsys.readouterr().out
+
+    names = sorted(path.name for path in directory.iterdir())
+    expected = sorted(f"{stem}.m4a" for stem in spec.expected_stems_for_positive_section(section))
+    assert names == expected
+
+
+def test_cli_rename_reports_an_error_for_an_unrecordable_count(
+    submission: Path, capsys
+) -> None:
+    directory = submission / spec.ORIGINALS_DIR / "positive_slow"
+    _recorder_named(directory, 1)
+    code = validator.main(["--rename", "plan", str(submission)])
+    assert code == 1
+    out = capsys.readouterr().out
+    assert "ERROR:" in out
+    assert "could not be auto-named" in out

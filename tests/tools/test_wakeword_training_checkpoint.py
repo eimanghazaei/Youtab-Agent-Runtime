@@ -214,3 +214,43 @@ def test_real_human_near_misses_carry_the_hard_negative_weight() -> None:
             f"{category!r} is not in the hard-negative set; windows in that "
             "category would train at the ordinary negative weight"
         )
+
+
+def test_the_resume_path_refuses_a_retired_synthetic_checkpoint() -> None:
+    """A guard with no caller reads as protection while enforcing nothing.
+
+    ``build_human_dataset.refuse_synthetic_initialization`` was written, tested
+    and never called from production. `--checkpoint <a rejected round's
+    checkpoint.pt>` therefore warm-started Round 8 from synthetic weights and
+    produced an artifact that looked entirely human-only at the end — the one
+    outcome the whole retirement exists to prevent. An adversarial audit found
+    it by grepping for callers rather than by reading the guard.
+
+    Structural for the reason in the module docstring: torch is not installed in
+    required CI, so this asserts from the AST that the refusal is invoked on the
+    resume path, before the checkpoint is loaded. Order matters: refusing after
+    the load would still have read the file.
+    """
+    fn = _function("train")
+    calls = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "refuse_synthetic_initialization"
+    ]
+    assert calls, (
+        "train() never calls refuse_synthetic_initialization, so a retired "
+        "synthetic checkpoint can warm-start a human-only round"
+    )
+
+    source = TRAIN.read_text(encoding="utf-8")
+    guard_at = source.find("refuse_synthetic_initialization(")
+    load_at = source.find("load_checkpoint(")
+    # Non-vacuity: both anchors must exist, or the ordering claim is vacuous.
+    assert guard_at != -1 and load_at != -1, "re-anchor this test"
+    resume_load = source.find("load_checkpoint(", guard_at)
+    assert resume_load != -1 and guard_at < resume_load, (
+        "the refusal does not precede the resume load; a retired checkpoint "
+        "would be read before it was judged"
+    )

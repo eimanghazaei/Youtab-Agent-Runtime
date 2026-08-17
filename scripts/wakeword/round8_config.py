@@ -14,12 +14,22 @@ inputs:
 * the window projection, from the utterance counts and the offset grid;
 * the clean-run bounds, from the sample sizes;
 * the offset grid itself, from ``build_dataset.PHRASE_END_JITTER`` and the
-  runtime's frame length.
+  runtime's frame length;
+* the background pool, from ``build_dataset``'s own noise constants, so
+  "generated noise is excluded" is a fact about the builder rather than a
+  sentence in the config.
 
-The last one is the reason this reads the pipeline's own source with ``ast``
+The last two are the reason this reads the pipeline's own source with ``ast``
 rather than importing it: a check that restates a constant proves nothing, and
 importing ``build_dataset`` would pull in numpy for a job that is arithmetic on
 integers.
+
+Two bounds here are deliberately *exact* rather than generous. The capacity set
+is three arms — not two, not four — because ``ROUND8_DESIGN.md``'s stop condition
+closes the matrix at both ends, and a range would let a pre-run config edit widen
+the experiment without an Owner decision. And no split may be handed generated
+background, because a rule with no guard is how ``VALIDATION_NOISE`` went on
+naming ``pink_noise.wav`` through seven rounds.
 
 The other half of the job is the *state* of the hashes. A predeclared config
 must have every hash field empty — inventing one in advance is exactly the
@@ -105,6 +115,20 @@ REQUIRED_SECTIONS: tuple[str, ...] = (
     "prerequisite_code_changes",
     "grounding_evidence",
 )
+
+#: The predeclared capacity set: three widths, downward. Hard-coded for the same
+#: reason as TARGETS — "Round 8 runs exactly these three arms" is the claim under
+#: test, and a config that added a fourth would otherwise validate itself.
+#:
+#: The set is *exact*, not an upper limit. ``ROUND8_DESIGN.md``'s stop condition
+#: forbids adding a width; dropping one is the same edit to the same predeclared
+#: matrix, and it would silently turn the capacity–accuracy relation into two
+#: points and a line through them. Both are refused here.
+ARMS: tuple[tuple[int, ...], ...] = ((128, 128, 64), (32, 32, 16), (8, 8, 4))
+
+#: The clause a refusal quotes, so the failure names the decision it enforces
+#: rather than a count nobody can trace to a document.
+STOP_CONDITION = "do not add a fourth width, do not widen the set"
 
 #: Immutable split membership. Also hard-coded, for the same reason as TARGETS.
 SPLITS: dict[str, tuple[str, ...]] = {
@@ -212,6 +236,26 @@ def hours_for_poisson_bound(rate_per_hour: float, alpha: float = 0.05) -> float:
 # ── reading the pipeline's own constants ─────────────────────────────────────
 
 
+def _literal(node: ast.AST) -> object:
+    """``ast.literal_eval``, extended to the one call these constants use.
+
+    ``frozenset({...})`` is a call, so ``literal_eval`` refuses it — and reading
+    the pipeline's constants *without importing the pipeline* is the whole point
+    of doing this with ``ast``. Only a single positional literal argument is
+    unwrapped; anything else is still refused, because a constant this cannot
+    read must fail loudly rather than be silently approximated.
+    """
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"frozenset", "set"}
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        return frozenset(ast.literal_eval(node.args[0]))
+    return ast.literal_eval(node)
+
+
 def _module_constants(path: Path, names: set[str]) -> dict[str, object]:
     """Module-level literal assignments, without importing the module."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -222,7 +266,7 @@ def _module_constants(path: Path, names: set[str]) -> dict[str, object]:
         for target in node.targets:
             if isinstance(target, ast.Name) and target.id in names:
                 try:
-                    found[target.id] = ast.literal_eval(node.value)
+                    found[target.id] = _literal(node.value)
                 except ValueError:
                     pass
     return found
@@ -363,12 +407,34 @@ def check(config: dict) -> list[str]:
     if variation.get("axis") != "channels":
         bad(f"variation.axis is {variation.get('axis')!r}, not 'channels'")
     arms = variation.get("arms", [])
-    if not 2 <= len(arms) <= 4:
-        bad(f"{len(arms)} arms; a bounded predeclared set is 2 to 4")
+    widths = [tuple(arm["channels"]) for arm in arms]
+    if len(arms) != len(ARMS):
+        bad(
+            f"variation.arms has {len(arms)} arms; Round 8 predeclares exactly "
+            f"{len(ARMS)}. ROUND8_DESIGN.md's stop condition is \"{STOP_CONDITION}\", "
+            "so the matrix is closed at both ends: a fourth width and a dropped arm "
+            "are the same edit to the same predeclaration, and changing it takes an "
+            "Owner decision rather than a config edit."
+        )
+    if set(widths) != set(ARMS):
+        bad(
+            f"variation.arms declares the widths {[list(w) for w in widths]!r}; the "
+            f"predeclared capacity set is {[list(w) for w in ARMS]!r}. "
+            f"\"{STOP_CONDITION}\" bounds which widths run, not only how many."
+        )
     if variation.get("runs") != len(arms):
         bad(f"variation.runs is {variation.get('runs')!r} for {len(arms)} arms")
-    if not str(variation.get("stop_condition", "")).strip():
+    stop_condition = str(variation.get("stop_condition", ""))
+    if not stop_condition.strip():
         bad("variation.stop_condition is empty")
+    elif STOP_CONDITION not in stop_condition.lower():
+        # The refusals above quote this clause. If the config's own stop
+        # condition no longer carries it, they would be quoting a document the
+        # config had already walked away from.
+        bad(
+            f"variation.stop_condition no longer says {STOP_CONDITION!r}, which is "
+            "the clause that makes the capacity set exact"
+        )
     baseline = None
     for arm in arms:
         recomputed = parameter_count(arm["channels"])
@@ -384,7 +450,6 @@ def check(config: dict) -> list[str]:
             "the (128, 128, 64) control is missing or does not reproduce r6c1's "
             f"recorded 192,961 (got {baseline})"
         )
-    widths = [tuple(arm["channels"]) for arm in arms]
     if len(set(widths)) != len(widths):
         bad("two arms have the same channel widths")
     if sorted(widths, reverse=True) != widths:
@@ -471,6 +536,48 @@ def check(config: dict) -> list[str]:
             f"background_recordings.total_real_seconds is "
             f"{background.get('total_real_seconds')!r}, the durations sum to {total}"
         )
+
+    # -- and the builder's own constants, not just the config's prose ---------
+    #
+    # The config can only say generated noise is excluded. Whether a split
+    # actually receives it is decided by three constants in ``build_dataset.py``,
+    # so those are read here — a config that documents the rule while the builder
+    # still names ``pink_noise.wav`` is exactly the drift this file exists to
+    # catch, and it is how the rule stayed broken for seven rounds.
+    noise_consts = _module_constants(
+        BUILD_DATASET,
+        {"GENERATED_BACKGROUND_NAMES", "VALIDATION_NOISE", "EVAL_NOISE"},
+    )
+    builder_generated = noise_consts.get("GENERATED_BACKGROUND_NAMES")
+    if builder_generated is None:
+        bad(
+            "build_dataset.py defines no GENERATED_BACKGROUND_NAMES, so nothing in "
+            "the builder names the generated background files that are excluded"
+        )
+    elif set(builder_generated) != excluded:
+        bad(
+            f"build_dataset.GENERATED_BACKGROUND_NAMES is {sorted(builder_generated)!r}; "
+            "background_recordings.generated_and_therefore_excluded is "
+            f"{sorted(excluded)!r}. One list, or the exclusion means two things."
+        )
+    for const_name in ("VALIDATION_NOISE", "EVAL_NOISE"):
+        names = noise_consts.get(const_name)
+        if names is None:
+            bad(f"build_dataset.py defines no {const_name}")
+            continue
+        smuggled = sorted(set(names) & excluded)
+        if smuggled:
+            bad(
+                f"build_dataset.{const_name} names {smuggled!r}, which is generated "
+                "rather than recorded. Round 8 trains, validates and qualifies on "
+                "real recorded noise only."
+            )
+        unlisted = sorted(set(names) - set(usable))
+        if unlisted:
+            bad(
+                f"build_dataset.{const_name} names {unlisted!r}, which is not among "
+                "the real recordings background_recordings.real_and_usable lists"
+            )
 
     # -- the projected dataset, recomputed -----------------------------------
     projection = config.get("dataset_projection", {})

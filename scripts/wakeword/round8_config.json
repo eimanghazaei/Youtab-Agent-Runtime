@@ -181,7 +181,8 @@
       "validation": ["doing_the_dishes.wav"],
       "sealed": ["dude_miaowing.wav", "running_tap.wav"]
     },
-    "correction_required": "VALIDATION_NOISE in build_dataset.py currently names pink_noise.wav, which is generated; it must be replaced before Round 8 runs."
+    "correction_applied": "VALIDATION_NOISE in build_dataset.py named pink_noise.wav, which is generated. It is now ('doing_the_dishes.wav',), and build_dataset.GENERATED_BACKGROUND_NAMES drops both generated files before any split is cut, counting the drop in stats.generated_background_excluded. That is the same named-and-counted exclusion build_human_dataset.GENERATED_BACKGROUND_NAMES applies to its recorded_background sources. round8_config.check reads all three constants out of the builder, so the correction cannot be reverted silently.",
+    "what_the_correction_cost": "Validation and train each held two background recordings, one of them generated. Each now holds one real recording. No real seconds were lost - the four real recordings and their 279.4 s were always the whole real pool - but validation's background evidence is one room, 95.2 s, 47 windows, which is what dataset_projection.validation and validation_gate target 4 already assume."
   },
 
   "window_construction": {
@@ -241,7 +242,9 @@
 
   "variation": {
     "axis": "channels",
-    "kind": "small explicit predeclared set",
+    "kind": "exactly three predeclared widths; a closed set, not a range, not a minimum and not a maximum",
+    "arm_count_is_exact": true,
+    "why_exact": "A range would let a pre-run config edit add a fourth width or drop one without an Owner decision, which is the stop condition being widened by the file it constrains. round8_config.check refuses any arm count but three, and names the stop condition when it does.",
     "arms": [
       {"id": "r8a", "channels": [128, 128, 64], "parameters": 192961, "ratio_to_r6c1": 1.0},
       {"id": "r8b", "channels": [32, 32, 16], "parameters": 28369, "ratio_to_r6c1": 0.14702},
@@ -462,6 +465,7 @@
       "excluding difficult recordings",
       "widening the capacity set",
       "running a fourth arm",
+      "dropping a predeclared arm, which turns the capacity-accuracy relation into two points and a line through them",
       "re-sweeping any hyperparameter this config holds fixed",
       "reporting a window-level rate in place of an utterance-level one"
     ],
@@ -472,7 +476,7 @@
     "a no-augmentation build path: Augmenter.apply (gain, synthesized RIR at REVERB_FRACTION 0.5, additive background at a drawn SNR in SNR_RANGE) is unconditional today and all three are prohibited; build_rir_pool synthesizes impulse responses with pyroomacoustics and must not run",
     "POSITIVE_SPEECH_PREFIX_FRACTION set to 0: splicing an unrelated recorded word in front of the wake phrase manufactures an utterance that never happened, from two rooms and two speakers",
     "the deterministic seven-offset window grid, replacing the random draw from PHRASE_END_JITTER, and deterministic non-overlapping tiling for non-anchored audio",
-    "generated background files excluded by name from every split, and VALIDATION_NOISE corrected",
+    "generated background files excluded by name from every split, and VALIDATION_NOISE corrected - DONE: build_dataset.GENERATED_BACKGROUND_NAMES drops both before any split is cut, VALIDATION_NOISE is ('doing_the_dishes.wav',), and round8_config.check reads those constants out of the builder rather than trusting this list",
     "utterance-level selection and reporting, aggregated on the source-utterance group id",
     "a synthetic-input refusal guard: any TTS directory, any previous feature tensor, any r1-r7 checkpoint is a fatal error"
   ],

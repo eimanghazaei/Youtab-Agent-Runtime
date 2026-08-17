@@ -19,12 +19,17 @@ The phrase taxonomy
 get a second opinion about it. Every phrase in the near-phrase battery below
 carries a ``contract`` field naming the ``phrases.py`` tuple that decides its
 label, and ``tests/tools/test_wakeword_speaker_recording_spec.py`` checks the
-claim against the real tuple. Three phrases in the battery are in *neither*
-tuple; those carry ``CONTRACT_ABSENT`` and a matching entry in
-``TAXONOMY_DECISIONS``, which records the decision, the basis it was read off,
-and what follows from it. A phrase may not be absent from ``phrases.py`` and
-label-free: defaulting is how "hey you tab." — the wake word's own
-split-carrier spelling — was once recorded as if it were a near miss.
+claim against the real tuple. Every row is decided by the contract today.
+"okay youtab.", "hey google." and "hey siri." were once in neither tuple and
+carried their label here, beside the contract rather than in it; an Owner
+decision has since put all three into ``phrases.HARD_NEGATIVES``, so they are
+read off the contract like every other negative.
+
+``CONTRACT_ABSENT`` and ``TAXONOMY_DECISIONS`` stay as the route for the next
+phrase that arrives undecided — empty now, and required to be — because a
+phrase may not be absent from ``phrases.py`` and label-free: defaulting is how
+"hey you tab." — the wake word's own split-carrier spelling — was once recorded
+as if it were a near miss.
 """
 
 from __future__ import annotations
@@ -120,26 +125,31 @@ def slugify(phrase: str) -> str:
     return text.replace(" ", "-")
 
 
-# ── the three phrases phrases.py does not decide ─────────────────────────────
+# ── the phrases phrases.py does not decide ───────────────────────────────────
 
 
 @dataclass(frozen=True)
 class TaxonomyDecision:
     """A label for a phrase the wake-phrase contract does not contain.
 
-    ``phrases.py`` decides every other row in the battery. These three are in
-    neither ``POSITIVE_SPELLINGS`` nor ``HARD_NEGATIVES``, so somebody has to
-    decide, and the decision has to be written down where the next round can
-    read it: an unrecorded decision gets re-litigated, or worse, defaulted.
+    ``phrases.py`` decides every row in the battery today, so this is empty.
+    It is not retired: the moment a round wants a phrase that is in neither
+    ``POSITIVE_SPELLINGS`` nor ``HARD_NEGATIVES``, somebody has to decide, and
+    the decision has to be written down where the next round can read it — an
+    unrecorded decision gets re-litigated, or worse, defaulted.
 
     ``basis`` is what the decision was read off — a tuple in ``phrases.py``,
     an existing entry in it, or how ``tools/wake_word.py`` actually keys
     detection. ``consequence`` is what follows for this package.
 
-    None of the three is added to ``phrases.py`` here. Adding a phrase changes
-    what the next training run fits, which belongs to whoever owns that run;
-    ``test_wakeword_recording_package.py`` pins the current state so the
-    decision stays visible instead of becoming implied.
+    An entry here is a stopgap and not a resting place. "okay youtab.", "hey
+    google." and "hey siri." sat here for one round: each label was read off
+    how the contract is constructed, and once the Owner made that reading
+    binding the three moved into ``phrases.HARD_NEGATIVES`` and their entries
+    left. ``test_wakeword_speaker_recording_spec.py`` requires this tuple and
+    the set of ``CONTRACT_ABSENT`` rows to be equal in both directions, so an
+    entry cannot outlive the row it decides, and a row cannot outlive its
+    entry.
     """
 
     text: str
@@ -148,53 +158,9 @@ class TaxonomyDecision:
     consequence: str
 
 
-TAXONOMY_DECISIONS: tuple[TaxonomyDecision, ...] = (
-    TaxonomyDecision(
-        "okay youtab.",
-        NEGATIVE,
-        "phrases.HARD_NEGATIVES already contains the real name under carriers "
-        'other than "hey" — "open youtab.", "youtab.", "youtab is running." '
-        'and "okay tab." are all in it — and every one of the five '
-        "phrases.POSITIVE_SPELLINGS entries starts with the carrier "
-        '"hey". The carrier is part of the trained phrase, not decoration '
-        "around it: tools/wake_word.py scores frames against one trained "
-        "model and its own docstring calls the configured wake_word.phrase "
-        '"purely cosmetic; engine keys detection", so what the product fires '
-        "on is whatever POSITIVE_SPELLINGS trained it on and nothing else. "
-        'The contract therefore already answers this: "okay youtab." is a '
-        "negative. Note that it does not violate the HARD_NEGATIVES rule "
-        'that "nothing in this list contains the wake phrase" — it contains '
-        "the name, not the carrier-plus-name phrase.",
-        "The product must not fire on it. It is recorded as a near-phrase "
-        "negative the model has to reject, and it is the row that separates a "
-        'model keyed on the whole phrase from one keyed on "youtab" alone.',
-    ),
-    TaxonomyDecision(
-        "hey google.",
-        NEGATIVE,
-        "A competing assistant's wake word. phrases.HARD_NEGATIVES is built "
-        'from the carrier plus a wrong name ("hey utah.", "hey yoda.", "hey '
-        'nutmeg.", "hey youtube.") and from the carrier alone ("hey.", "hey '
-        'there."); this is the same construction with the best-known wrong '
-        "name in it. Firing here would wake Youtab while its owner is talking "
-        "to a different device.",
-        "The product must not fire on it. Recorded as a near-phrase negative; "
-        "it is also the one an always-on microphone in a mixed-assistant "
-        "household hears most often.",
-    ),
-    TaxonomyDecision(
-        "hey siri.",
-        NEGATIVE,
-        "Same class as \"hey google.\": the carrier plus a competing "
-        "assistant's name. tools/wake_word.py's own module docstring names "
-        'the pattern — "the \'Hey Siri\' / \'Alexa\' pattern" — so the '
-        "product's framing of these as other products' wake words is already "
-        "explicit. Phonetically it adds a second carrier-plus-name shape with "
-        "a different stressed vowel, so it is not a duplicate of "
-        '"hey google.".',
-        "The product must not fire on it. Recorded as a near-phrase negative.",
-    ),
-)
+#: Empty, because every battery row's label is now read off ``phrases.py``.
+#: The dataclass above says what goes here and when.
+TAXONOMY_DECISIONS: tuple[TaxonomyDecision, ...] = ()
 
 # ── the near-phrase battery ──────────────────────────────────────────────────
 
@@ -204,11 +170,12 @@ class NearPhraseItem:
     """One row of the near-phrase battery a speaker records.
 
     ``label`` is what the detector must do; ``contract`` is the ``phrases.py``
-    tuple that decides it, or ``CONTRACT_ABSENT`` for the three phrases that
-    tuple does not contain. Recording "hey you tab." as a negative or "hey you
-    tap." as a positive would collect evidence for the opposite of what each
-    phrase is; that is the mistake this dataclass exists to make impossible to
-    state by accident, and
+    tuple that decides it, or ``CONTRACT_ABSENT`` for a phrase neither tuple
+    contains, which then needs a ``TAXONOMY_DECISIONS`` entry to carry its
+    label. Recording "hey you tab." as a negative or "hey you tap." as a
+    positive would collect evidence for the opposite of what each phrase is;
+    that is the mistake this dataclass exists to make impossible to state by
+    accident, and
     ``tests/tools/test_wakeword_speaker_recording_spec.py`` cross-checks every
     label against the real tuple it claims.
 
@@ -303,7 +270,7 @@ NEAR_PHRASE_ITEMS: tuple[NearPhraseItem, ...] = (
     NearPhraseItem(
         "okay youtab.",
         NEGATIVE,
-        CONTRACT_ABSENT,
+        CONTRACT_NEGATIVE,
         False,
         NEAR_PHRASE_REPS,
         "no",
@@ -311,8 +278,8 @@ NEAR_PHRASE_ITEMS: tuple[NearPhraseItem, ...] = (
         "carrier word, so it is the row that distinguishes a model keyed on "
         'the whole phrase from one keyed on "youtab" alone. People say '
         '"okay X" out of habit from other assistants, so a model that fires '
-        "here fires often in the field. Never recorded before this round; see "
-        "TAXONOMY_DECISIONS for why it is a negative.",
+        "here fires often in the field. Never recorded before this round; "
+        "phrases.HARD_NEGATIVES decides that it is a negative.",
     ),
     NearPhraseItem(
         "okay tab.",
@@ -329,25 +296,25 @@ NEAR_PHRASE_ITEMS: tuple[NearPhraseItem, ...] = (
     NearPhraseItem(
         "hey google.",
         NEGATIVE,
-        CONTRACT_ABSENT,
+        CONTRACT_NEGATIVE,
         False,
         NEAR_PHRASE_REPS,
         "no",
         "A competing wake word with the same carrier and a stressed vowel in "
         "the next syllable. Anyone with another assistant in the house says "
         "this near the microphone all day. Never recorded before this round; "
-        "see TAXONOMY_DECISIONS for why it is a negative.",
+        "phrases.HARD_NEGATIVES decides that it is a negative.",
     ),
     NearPhraseItem(
         "hey siri.",
         NEGATIVE,
-        CONTRACT_ABSENT,
+        CONTRACT_NEGATIVE,
         False,
         NEAR_PHRASE_REPS,
         "no",
         "Same class as \"hey google.\", second carrier-plus-name shape, "
-        "different stressed vowel. Never recorded before this round; see "
-        "TAXONOMY_DECISIONS for why it is a negative.",
+        "different stressed vowel. Never recorded before this round; "
+        "phrases.HARD_NEGATIVES decides that it is a negative.",
     ),
     NearPhraseItem(
         "hey.",
@@ -973,3 +940,65 @@ TIME_BUDGET: tuple[TimeBudgetRow, ...] = (
 )
 
 SESSION_MINUTES = sum(row.minutes for row in TIME_BUDGET)
+
+# ── automatic filenames ───────────────────────────────────────────────────────
+#
+# A speaker never has to type a slug like ``hey-your-tab_003.m4a`` by hand and
+# risk getting it wrong: the position of a file inside its section, in the
+# order it was recorded, already determines its canonical name, because every
+# section's name and order is fixed by this module.
+# ``validate_speaker_submission.py``'s ``--rename`` mode turns this into a
+# tool that sorts a folder's files by modification time and assigns the name
+# at that position -- never by reading the audio, and never by asking anyone
+# to spell a slug.
+
+
+def expected_stems_for_positive_section(section: PositiveSection) -> tuple[str, ...]:
+    """Canonical filename stems (no extension), in take order, for one condition folder."""
+    return tuple(
+        f"{WAKE_PHRASE_SLUG}_{section.condition}_{take:0{TAKE_DIGITS}d}"
+        for take in range(1, section.takes + 1)
+    )
+
+
+def expected_stems_for_near_phrase() -> tuple[str, ...]:
+    """Canonical stems for every take of the near-phrase battery, as one flat series.
+
+    In ``NEAR_PHRASE_ITEMS`` order -- the same order
+    ``SPEAKER_RECORDING_PACKAGE.md`` asks a speaker to record in -- so a
+    ``near_phrase/`` folder recorded straight through, in order, can be
+    auto-named from recording order alone.
+    """
+    stems: list[str] = []
+    for item in NEAR_PHRASE_ITEMS:
+        stems.extend(
+            f"{item.slug}_{take:0{TAKE_DIGITS}d}" for take in range(1, item.takes + 1)
+        )
+    return tuple(stems)
+
+
+def expected_stems_for_freeform(section: FreeformSection, count: int) -> tuple[str, ...]:
+    """Canonical stems for a continuous section, sized to the files actually present.
+
+    A freeform section asks for a minimum file count, not an exact one -- a
+    recorder app may split one long recording into several files -- so this is
+    sized by ``count`` rather than by ``section.min_files``.
+    """
+    if count < 1:
+        raise ValueError("count must be at least 1")
+    return tuple(f"{section.prefix}_{take:0{TAKE_DIGITS}d}" for take in range(1, count + 1))
+
+
+# ── minimum vs expected time ─────────────────────────────────────────────────
+#
+# Every ``TIME_BUDGET`` row whose activity is *not* numbered ("Read-through and
+# setup", "Consent form", "Device and environment form", "Self-check and
+# handoff prep") is paperwork around the session, not a take that has to be
+# performed. The numbered rows ("1." through "6.") are the recording itself:
+# every required take, once, back to back. That is the floor a rushed session
+# cannot go below without skipping something required -- as distinct from
+# ``SESSION_MINUTES``, the realistic total including the paperwork around it.
+
+MINIMUM_RECORDING_MINUTES = sum(
+    row.minutes for row in TIME_BUDGET if row.activity[:1].isdigit()
+)

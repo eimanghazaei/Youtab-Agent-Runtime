@@ -94,17 +94,18 @@ measured, not assumed; see
 A SHA-256 does not move with the file. So ``retired_synthetic_artifacts.json``
 records the digests of known-synthetic artifacts and every clip, every
 corroborating digest, every corpus file and every initialization checkpoint is
-looked up in it. A byte-identical copy is refused wherever it sits and whatever
-it is called, and a missing or unreadable registry is a refusal rather than a
-pass — a guard that fails open is a guard that reports a clean build on the day
+looked up in it. A byte-identical copy of anything *listed there* is refused
+wherever it sits and whatever it is called, and a missing or unreadable registry
+is a refusal rather than a pass — a guard that fails open is a guard that reports a clean build on the day
 it breaks.
 
 What that registry covers, and what it does not, is written into the registry
-itself. The honest limit: the retired TTS corpora are 207,300 clips, which is
-not a hash list a source repository can carry, so those are represented by a
-documented sample. For clips the primary guard is still the provenance chain
-above; content addressing is what closes rename-and-move on the artifacts that
-can be enumerated — every rejected candidate checkpoint and export, every
+itself. The honest limit, in numbers: the retired TTS corpora are 207,300 clips
+and 90 of them are listed -- 0.043%, a documented sample and not corpus
+coverage, because a hash list of the rest is not something a source repository
+can carry. For clips the primary guard is therefore still the provenance chain
+above; content addressing closes rename-and-move only on the artifacts that can
+be enumerated — every rejected candidate checkpoint and export, every
 synthetic feature tensor, the synthetic-era detector this repository ships, and
 the committed synthetic fixtures.
 
@@ -463,8 +464,18 @@ def refuse_synthetic_tree(path: str | Path, what: str) -> None:
     tensor would train on synthesized speech, and writing into that directory
     would leave a Round 8 dataset indistinguishable from the synthetic one
     beside it.
+
+    Judged as written *and* as resolved, because a marker in a string is only a
+    marker in the string somebody typed. Point ``inbox/E00x`` at a speaker
+    directory inside ``data/tts`` and the manifest path, every clip path under it
+    and ``--out`` all read clean while every byte comes out of the retired tree.
+    ``resolve_within``'s symlink walk cannot see that one either: it stops at the
+    root it is handed, and the root *is* the link.
     """
     _refuse(path, synthetic_tree_marker(path), what)
+    resolved = Path(path).resolve()
+    if resolved != Path(path):
+        _refuse(resolved, synthetic_tree_marker(resolved), f"the resolved {what}")
 
 
 def refuse_synthetic_source(name: str, what: str) -> None:
@@ -501,9 +512,10 @@ def load_retired_artifacts(path: Path | None = None) -> dict[str, dict]:
 
     Fails closed on every way of not having a registry, because each of them is
     a state in which the build would otherwise proceed with the content check
-    silently doing nothing: the file missing, unreadable, not JSON, written under
-    another schema, carrying no artifacts, carrying an entry with no hash, or
-    listing one hash twice under two names. The last one matters more than it
+    silently doing nothing: the file missing, unreadable, not JSON, written in
+    something other than UTF-8, written under another schema, carrying no
+    artifacts, carrying an entry with no hash, or listing one hash twice under
+    two names. The last one matters more than it
     looks: a duplicate means one of the two names is wrong, and a registry
     nobody can trust the names in is a registry whose refusals nobody acts on.
 
@@ -528,7 +540,7 @@ def load_retired_artifacts(path: Path | None = None) -> dict[str, dict]:
 
     try:
         body = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise Refused(
             f"the retired-artifact registry {path} is not readable as JSON "
             f"({exc}). A registry that cannot be parsed is not a registry."
@@ -736,7 +748,7 @@ def refuse_synthetic_initialization(checkpoint: Path) -> None:
         )
     try:
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise Refused(f"{contract_path} is not readable as JSON: {exc}") from exc
     if contract.get("human_only") is not True or contract.get("synthetic_samples") != 0:
         raise Refused(
@@ -793,7 +805,18 @@ def _read_manifest(path: Path, what: str) -> tuple[dict, str]:
     if not path.is_file():
         raise Refused(f"{what} manifest {path} does not exist")
     try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise Refused(
+            f"{what} manifest {path} is not text at all ({exc}), so it is not a "
+            "manifest. A submission delivered as a zip or a tar, or a tensor "
+            "handed over as one, is not unpacked here: this stage has no unpacker, "
+            "because an archive's members are chosen at extraction time and "
+            "nothing frozen covers them. Extract it, freeze the extracted tree, "
+            "and pass that manifest."
+        ) from exc
+    try:
+        manifest = json.loads(text)
     except json.JSONDecodeError as exc:
         raise Refused(f"{path} is not valid JSON: {exc}") from exc
     if not isinstance(manifest, dict):
@@ -936,6 +959,15 @@ def verify_originals(manifest: dict, path: Path, index: dict[str, dict]) -> dict
     """
     source_dir = manifest.get("source_dir")
     root = Path(source_dir) if isinstance(source_dir, str) and source_dir else None
+    if root is not None:
+        # ``source_dir`` is the one input path this stage is handed *inside* a
+        # manifest rather than on a command line, and it was the one path nothing
+        # judged. A manifest naming a directory in ``data/tts`` as its capture
+        # root has its originals hashed out of the retired tree and then reports
+        # ``originals_verified: N`` -- a positive verification claim, made
+        # against synthesized speech, in the field that is supposed to be the
+        # evidence that a person was recorded.
+        refuse_synthetic_tree(root, f"{path}: source_dir")
     registry = load_retired_artifacts()
     counts = {"originals_verified": 0, "originals_offline": 0}
     for name, entry in sorted(index.items()):
@@ -1202,6 +1234,23 @@ def load_corpus_source(
             f"and reads {freeze_manifest.SCHEMA_VERSION}. A manifest read under "
             "the wrong schema verifies the wrong thing."
         )
+    # A human manifest is frozen by a sidecar. A corpus manifest has no sidecar
+    # and no second record of it anywhere, so the digest it carries over its own
+    # canonical body is the only thing between a frozen corpus and an edited one:
+    # flipping ``usage`` from ``sealed-evaluation`` to ``training``, adding a file
+    # to the list or correcting a digest is otherwise invisible. Computed with
+    # ``freeze_manifest``'s own canonicalisation, so this cannot disagree with the
+    # tool that wrote the field.
+    recorded = manifest.get("manifest_sha256")
+    computed = freeze_manifest.manifest_digest(manifest)
+    if recorded != computed:
+        raise Refused(
+            f"{path} records manifest_sha256={recorded!r} but its own body "
+            f"hashes to {computed}. Refusing to build from a corpus manifest that "
+            "has changed since it was frozen: the usage gate below is worth "
+            "exactly what the record it reads is worth."
+        )
+
     try:
         # The usage gate, not a reimplementation of it: this is what refuses a
         # corpus the model was fitted on being used to qualify it.
@@ -1225,13 +1274,6 @@ def load_corpus_source(
                 f"{path}: a file entry records path={relative!r} "
                 f"sha256={digest!r}; both are required and the hash must be one."
             )
-        name = Path(relative).name
-        if kind == "recorded_background" and name in GENERATED_BACKGROUND_NAMES:
-            # Named, counted and excluded rather than quietly filtered: two of
-            # Speech Commands' six background files are synthesised noise, and
-            # generated background is prohibited exactly as generated speech is.
-            generated.append(relative)
-            continue
         refuse_synthetic_source(relative, f"{path}: {kind} file")
         audio = resolve_within(relative, root, f"{path}: {kind} file")
         if not audio.is_file():
@@ -1246,6 +1288,18 @@ def load_corpus_source(
                 f"{digest}. Refusing to build from a corpus that has drifted "
                 "from the manifest measurements refer to."
             )
+        if kind == "recorded_background" and audio.name in GENERATED_BACKGROUND_NAMES:
+            # Named, counted and excluded rather than quietly filtered: two of
+            # Speech Commands' six background files are synthesised noise, and
+            # generated background is prohibited exactly as generated speech is.
+            #
+            # Excluded *after* the file has been resolved and hashed, not instead
+            # of resolving and hashing it. Deciding on the name first made the
+            # name a way to skip the content check: a retired artifact delivered
+            # as ``pink_noise.wav`` was dropped-and-counted, and the build then
+            # reported ``synthetic_samples: 0`` having never hashed it.
+            generated.append(relative)
+            continue
         samples.append(
             Sample(
                 path=audio,
@@ -1294,11 +1348,26 @@ def _corpus_root(path: Path, manifest: dict) -> Path:
     name = manifest.get("root_name")
     if not isinstance(name, str) or not name:
         raise Refused(f"{path}: the frozen manifest records no 'root_name'")
+    # ``freeze_manifest`` records ``root.resolve().name``: one component, never a
+    # path. Anything else is a reference that leaves the manifest's own directory
+    # -- and it is the *root*, so every per-file containment check below would
+    # then be performed against a tree the manifest was never frozen over.
+    # ``root_name: "../../data/tts/positive_close"`` reads as a frozen,
+    # internally consistent, fully hash-verified manifest of synthesized speech.
+    refuse_escaping_name(name, f"{path}: root_name")
+    if len(PureWindowsPath(name).parts) != 1:
+        raise Refused(
+            f"{path}: root_name {name!r} is not a single directory name. "
+            "freeze_manifest.py records the dataset root's basename and nothing "
+            "else, so a root_name carrying a separator names a directory "
+            "somebody chose after the freeze rather than the one that was frozen."
+        )
     candidates = [path.parent / name]
     if path.parent.name == name:
         candidates.append(path.parent)
     for candidate in candidates:
         if candidate.is_dir():
+            refuse_synthetic_tree(candidate, f"{path}: the corpus root")
             return candidate
     raise Refused(
         f"{path}: the dataset root {name!r} is not beside the manifest. Looked "
