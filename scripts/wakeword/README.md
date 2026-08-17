@@ -70,8 +70,79 @@ exported files are plain matrix multiplies with no backend-specific ops.
 | — | `verify_backends.py` | Runs both shipped artifacts on the current OS: parity, latency and memory. No hardware, no network. |
 | — | `freeze_manifest.py` | Freezes a recorded dataset — hashes every file, hashes the list, records split and usage. Not part of the build. |
 | — | `acquire_common_voice.py` | Bounded Common Voice negative acquisition. Blocked on an Owner credential; see `COMMON_VOICE.md`. |
+| 2r8 | `build_human_dataset.py` | Round 8's stage 2. Builds the same windows and the same features from **real recordings only**, and refuses everything else. Replaces `build_dataset.py` for this phase; see below. |
 
 `phrases.py` holds the phrase inventory shared by stages 1 and 4.
+
+## Round 8: real recordings only
+
+Rounds 1-7 were fitted on synthesized speech and none of them qualified.
+Synthetic training is retired for this phase: Round 8 and every later candidate
+is trained, validated and qualified exclusively on real human recordings and
+real recorded environmental audio.
+
+`build_human_dataset.py` is that stage, and it is a separate module rather than
+a flag on `build_dataset.py` on purpose. `build_dataset.py` requires a TTS tree,
+synthesizes impulse responses, mixes noise at a drawn SNR and re-levels every
+window; a gated mode inside it would leave every prohibited operation one flag
+away. The new module has no code path that can do any of those, so the
+prohibition is structural rather than conditional. What it *does* reuse is
+`read_wav16`, `sha256_file`, the window geometry and `FeatureSink`, so the
+feature space is byte-for-byte the one the runtime uses, and the output file
+names are unchanged so `train_model.py` consumes it as-is.
+
+What it accepts, and only this:
+
+| source | `--source` type | role |
+|---|---|---|
+| an approved human speaker's frozen manifest | `human=` | positives, human near phrases, human free speech |
+| a frozen Speech Commands manifest | `speech_commands=` | recorded negatives |
+| a frozen governed Common Voice subset | `common_voice=` | recorded negatives |
+| a frozen manifest of real recorded room tone | `recorded_background=` | background-only windows |
+
+Processing is limited to decode, the derivation's fixed resample and mono fold,
+deterministic trimming/padding/window extraction, the production feature
+extractor, and the fixed int16 scaling. There is no augmentation: no reverb, no
+mixed noise, no gain, no pitch or speed change, and no random draw anywhere —
+two builds of one input are bit-identical. Positives are windowed at a fixed
+ladder of trailing offsets (160-640 ms), which is the same trailing-context
+coverage `build_dataset.py` gets from jitter without inventing a condition.
+
+The refusals are the point, and each is a test in
+`tests/tools/test_wakeword_round8_human_only.py`:
+
+* speaker split assignment comes from an explicit registry, never from a
+  filename, and a manifest whose declared split disagrees with it is refused in
+  either direction;
+* a sealed speaker is refused in training and in validation on any combination
+  of flags, and the sealed *evaluation* speaker is not buildable into a tensor
+  at all — it is measured by streaming its audio through the runtime engine;
+* every original is hash-verified against the manifest, at the recording itself
+  where the capture drive is mounted and at the full-length decode where it is
+  not, and the report says which;
+* every clip carries provenance — a `source_file` corroborated by the
+  manifest's own `files` list — so a synthetic clip renamed `positive_human`
+  is still refused, because the name was never what was checked;
+* the synthetic-era category names (`positive`, `near_phrase`, `hardneg`,
+  `confusable`, `softneg`, `common`, `synthesized_speech`) are hard errors
+  wherever they appear;
+* nothing under `data/features*` or `data/tts` can be read, extended or written
+  to, and a checkpoint may only be initialised from if the
+  `DATASET_CONTRACT.json` this stage writes sits beside it asserting zero
+  synthetic samples;
+* every retired or synthetic-data flag aborts with a reason rather than being
+  ignored;
+* `pink_noise.wav` and `white_noise.wav` are *generated*, not recorded, so they
+  are excluded from the background pool by name and the exclusion is counted in
+  the stats;
+* `synthetic_samples: 0` is written into the stats and the contract, computed
+  from what was actually emitted — the build refuses rather than reporting a
+  zero it did not measure.
+
+A Round 8 human manifest has to declare the `_human` category names
+(`positive_human`, `near_phrase_human`, `free_speech_human`) and carry a
+`MANIFEST.json.sha256` sidecar. The bare names the earlier derivations wrote are
+refused, because they are indistinguishable from the TTS group names.
 
 ## Datasets that are recorded rather than downloaded
 
