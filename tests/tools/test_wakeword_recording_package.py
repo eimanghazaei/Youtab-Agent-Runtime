@@ -590,3 +590,119 @@ def test_the_consent_form_and_the_package_agree_on_the_handoff() -> None:
     assert spec.CONSENT_FILE.lower() in package
     assert spec.CONSENT_FILE.lower() in consent
     assert "separate in transit; bound together, under access control, at rest" in consent
+
+
+# ── the one-page quick start ─────────────────────────────────────────────────
+
+
+def test_the_package_has_a_standalone_one_page_quick_start() -> None:
+    """The concise page a speaker actually reads, ahead of the detailed reference.
+
+    It has to cover the four things asked of it -- what to say, how many
+    times, where it goes, what not to do -- and it has to come before the
+    detailed reference starts, so it is genuinely the first thing read rather
+    than a summary bolted on at the end.
+    """
+    text = _package()
+    lowered = re.sub(r"\s+", " ", text.lower())
+
+    quick_start = text.index("## Quick start")
+    part_a = text.index("# Part A")
+    who_for = text.index("## Who this document is for")
+    assert quick_start < who_for < part_a, (
+        "the quick start has to come before the detailed reference, not after it"
+    )
+
+    assert '"hey youtab."' in lowered, "the quick start does not say what to say"
+    assert "≈155\nfiles" in text or "≈155 files" in lowered.replace("\n", " "), (
+        "the quick start does not say how many files"
+    )
+    assert "originals/" in text[quick_start:part_a]
+    assert "consent.pdf" in text[quick_start:part_a].lower()
+    assert "don't pause between" in lowered
+    assert "don't delete, trim, denoise or re-record" in lowered
+    assert "don't put your name, initials or email" in lowered
+    assert "validate_speaker_submission.py" in text[quick_start:part_a]
+
+
+def test_the_quick_start_does_not_use_a_markdown_table() -> None:
+    """A pipe table here would risk colliding with a header set another test matches.
+
+    ``_table()`` asserts exactly one table matches a given header set; a new
+    table sharing headers with an existing one would make that assertion fail
+    somewhere else in this file. The quick start uses a fenced code block and
+    plain lists instead, on purpose.
+    """
+    text = _package()
+    quick_start = text.index("## Quick start")
+    who_for = text.index("## Who this document is for")
+    section = text[quick_start:who_for]
+    assert not _tables(section), "the quick start should not introduce a markdown table"
+
+
+# ── pronunciation guidance ───────────────────────────────────────────────────
+
+
+def test_the_package_has_pronunciation_guidance_that_does_not_change_the_phrase() -> None:
+    text = _package()
+    lowered = re.sub(r"\s+", " ", text.lower())
+
+    assert "pronunciation notes" in lowered
+    assert "the phrase itself never changes" in lowered
+    assert '"hey youtab,"' in lowered
+    assert "your own accent is exactly what this round needs" in lowered
+    assert "do not try to imitate a reference recording" in lowered
+
+    # Grounded in phrases.py's own documented IPA, not independently invented.
+    phrases_text = (WAKEWORD / "phrases.py").read_text(encoding="utf-8")
+    transcriptions = [
+        match for match in re.findall(r"``(h[^`]+)``", phrases_text) if "j" in match
+    ]
+    assert len(transcriptions) == 2, (
+        f"expected the two documented IPA transcriptions in phrases.py, found {transcriptions}"
+    )
+    for transcription in transcriptions:
+        assert transcription in text, (
+            f"the pronunciation notes do not quote phrases.py's own {transcription!r}"
+        )
+
+    # A handful of different first-language backgrounds, not just English ones.
+    for language in ("farsi", "spanish", "mandarin", "hindi", "arabic", "french"):
+        assert language in lowered, f"the pronunciation guide has no entry for {language!r}"
+
+
+def test_the_pronunciation_table_does_not_collide_with_another_tables_headers() -> None:
+    rows = _table(_package(), "First language", "A rough guide")
+    assert len(rows) >= 5
+
+
+# ── minimum vs expected time ─────────────────────────────────────────────────
+
+
+def test_the_minimum_vs_expected_time_is_printed_and_matches_the_spec() -> None:
+    text = _package()
+    assert f"**≈ {spec.MINIMUM_RECORDING_MINUTES} min minimum**" in text
+    assert f"**≈ {spec.SESSION_MINUTES} min expected**" in text
+    assert spec.MINIMUM_RECORDING_MINUTES < spec.SESSION_MINUTES
+
+    lowered = re.sub(r"\s+", " ", text.lower())
+    assert "minimum vs expected" in lowered
+    assert "not slack inside it" in lowered
+
+
+# ── the automatic renamer ────────────────────────────────────────────────────
+
+
+def test_the_package_documents_the_automatic_renamer() -> None:
+    text = _package()
+    lowered = re.sub(r"\s+", " ", text.lower())
+
+    assert "--rename plan" in text
+    assert "--rename apply" in text
+    assert "do not have to type those names by hand" in lowered
+    assert "leaves it\nuntouched rather than guessing which file is which" in text or (
+        "untouched rather than guessing which file is which" in lowered
+    )
+    # Mentioned in both halves of the document: the speaker-facing reference
+    # and the coordinator's assembly steps.
+    assert lowered.count("--rename") >= 4

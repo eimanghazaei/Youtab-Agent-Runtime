@@ -973,3 +973,65 @@ TIME_BUDGET: tuple[TimeBudgetRow, ...] = (
 )
 
 SESSION_MINUTES = sum(row.minutes for row in TIME_BUDGET)
+
+# ── automatic filenames ───────────────────────────────────────────────────────
+#
+# A speaker never has to type a slug like ``hey-your-tab_003.m4a`` by hand and
+# risk getting it wrong: the position of a file inside its section, in the
+# order it was recorded, already determines its canonical name, because every
+# section's name and order is fixed by this module.
+# ``validate_speaker_submission.py``'s ``--rename`` mode turns this into a
+# tool that sorts a folder's files by modification time and assigns the name
+# at that position -- never by reading the audio, and never by asking anyone
+# to spell a slug.
+
+
+def expected_stems_for_positive_section(section: PositiveSection) -> tuple[str, ...]:
+    """Canonical filename stems (no extension), in take order, for one condition folder."""
+    return tuple(
+        f"{WAKE_PHRASE_SLUG}_{section.condition}_{take:0{TAKE_DIGITS}d}"
+        for take in range(1, section.takes + 1)
+    )
+
+
+def expected_stems_for_near_phrase() -> tuple[str, ...]:
+    """Canonical stems for every take of the near-phrase battery, as one flat series.
+
+    In ``NEAR_PHRASE_ITEMS`` order -- the same order
+    ``SPEAKER_RECORDING_PACKAGE.md`` asks a speaker to record in -- so a
+    ``near_phrase/`` folder recorded straight through, in order, can be
+    auto-named from recording order alone.
+    """
+    stems: list[str] = []
+    for item in NEAR_PHRASE_ITEMS:
+        stems.extend(
+            f"{item.slug}_{take:0{TAKE_DIGITS}d}" for take in range(1, item.takes + 1)
+        )
+    return tuple(stems)
+
+
+def expected_stems_for_freeform(section: FreeformSection, count: int) -> tuple[str, ...]:
+    """Canonical stems for a continuous section, sized to the files actually present.
+
+    A freeform section asks for a minimum file count, not an exact one -- a
+    recorder app may split one long recording into several files -- so this is
+    sized by ``count`` rather than by ``section.min_files``.
+    """
+    if count < 1:
+        raise ValueError("count must be at least 1")
+    return tuple(f"{section.prefix}_{take:0{TAKE_DIGITS}d}" for take in range(1, count + 1))
+
+
+# ── minimum vs expected time ─────────────────────────────────────────────────
+#
+# Every ``TIME_BUDGET`` row whose activity is *not* numbered ("Read-through and
+# setup", "Consent form", "Device and environment form", "Self-check and
+# handoff prep") is paperwork around the session, not a take that has to be
+# performed. The numbered rows ("1." through "6.") are the recording itself:
+# every required take, once, back to back. That is the floor a rushed session
+# cannot go below without skipping something required -- as distinct from
+# ``SESSION_MINUTES``, the realistic total including the paperwork around it.
+
+MINIMUM_RECORDING_MINUTES = sum(
+    row.minutes for row in TIME_BUDGET if row.activity[:1].isdigit()
+)
