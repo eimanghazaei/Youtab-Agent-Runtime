@@ -468,6 +468,64 @@ def test_a_directory_where_a_take_belongs_is_reported(submission: Path) -> None:
     assert any("expected a file, found a directory" in e for e in result.errors)
 
 
+# ── recorder formats ingestion cannot read (G2) ──────────────────────────────
+
+
+def test_a_recording_in_an_unreadable_format_is_refused_with_the_fix(submission: Path) -> None:
+    """A .opus take is a real audio file the loader has no parser for.
+
+    ``.opus`` is in ``spec.AUDIO_EXTENSIONS`` -- a phone app can genuinely write
+    it -- but ``import_speaker`` dispatches by magic bytes and reads none of it,
+    so a whole folder of these would be rejected wholesale, weeks later, once
+    the speaker is no longer at the microphone. The validator has to catch it
+    now, name the format, and say what to switch the recorder to.
+    """
+    directory = submission / spec.ORIGINALS_DIR / "positive_normal"
+    _write_audio(directory / f"{spec.WAKE_PHRASE_SLUG}_normal_006.opus")
+    _write_checksums(submission)  # so the only complaint left is the format itself
+
+    result = validator.validate_speaker_directory(submission)
+    assert not result.ok
+    offending = [e for e in result.errors if "_006.opus" in e]
+    assert offending, result.errors
+    message = offending[0]
+    assert ".opus" in message, message
+    assert "M4A" in message or "WAV" in message, message
+    assert "re-record" in message.lower() or "record this again" in message.lower(), message
+
+
+def test_an_unreadable_format_in_the_near_phrase_folder_is_refused(submission: Path) -> None:
+    """The same refusal reaches the phrase-keyed folder, not only the fixed ones."""
+    directory = submission / spec.ORIGINALS_DIR / "near_phrase"
+    item = spec.NEAR_PHRASE_ITEMS[0]
+    _write_audio(directory / f"{item.slug}_{item.takes + 1:03d}.ogg")
+    _write_checksums(submission)
+    result = validator.validate_speaker_directory(submission)
+    assert any(".ogg" in e and "ingestion cannot" in e for e in result.errors), result.errors
+
+
+def test_the_refused_formats_are_derived_from_what_ingestion_can_read(submission: Path) -> None:
+    """The refuse set comes from ``import_speaker``'s table, so it cannot drift.
+
+    Every extension the spec accepts but the loader has no parser for is refused;
+    every extension the loader can read passes; a non-audio extension falls
+    through to the naming check instead of this one.
+    """
+    import import_speaker
+
+    ingestible = validator._ingestible_extensions()
+    assert ingestible == frozenset(
+        ext for exts in import_speaker.CONTAINER_EXTENSIONS.values() for ext in exts
+    )
+    refused = set(spec.AUDIO_EXTENSIONS) - ingestible
+    assert refused == {".amr", ".mp3", ".ogg", ".opus", ".webm"}, refused
+    for ext in refused:
+        assert validator._unreadable_format_error(f"take{ext}") is not None
+    for ext in ingestible:
+        assert validator._unreadable_format_error(f"take{ext}") is None
+    assert validator._unreadable_format_error("notes.txt") is None
+
+
 # ── the checksum listing ─────────────────────────────────────────────────────
 
 
@@ -720,3 +778,56 @@ def test_cli_rename_reports_an_error_for_an_unrecordable_count(
     out = capsys.readouterr().out
     assert "ERROR:" in out
     assert "could not be auto-named" in out
+
+
+# ── writing the checksum listing (G6) ────────────────────────────────────────
+
+
+def test_write_checksums_produces_a_listing_the_validator_accepts(tmp_path: Path) -> None:
+    """The generated SHA256SUMS is exactly what ``_check_checksums`` verifies.
+
+    Built by the same file walk the validator checks against, so a coordinator
+    never has to reverse-engineer a portable ``find | xargs sha256sum`` that
+    might skip or add a file the validator counts differently.
+    """
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    (root / spec.CHECKSUM_FILE).unlink()  # regenerate from scratch, not overwrite
+
+    count = validator.write_checksums(root)
+    assert count == len(validator._submission_files(root)) > 0
+
+    text = (root / spec.CHECKSUM_FILE).read_text(encoding="utf-8")
+    assert spec.CHECKSUM_FILE not in text, "a listing must not try to cover itself"
+    for line in text.splitlines():
+        assert spec.CHECKSUM_LINE.match(line), f"not coreutils format: {line!r}"
+
+    result = validator.validate_speaker_directory(root)
+    assert result.ok, result.errors
+
+
+def test_the_written_digests_are_genuine(tmp_path: Path) -> None:
+    """A digest that does not match its file would pass structure but fail transfer."""
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    validator.write_checksums(root)
+
+    listed = {}
+    for line in (root / spec.CHECKSUM_FILE).read_text(encoding="utf-8").splitlines():
+        match = spec.CHECKSUM_LINE.match(line)
+        assert match
+        listed[match.group(2)] = match.group(1)
+    for rel, digest in listed.items():
+        assert digest == hashlib.sha256((root / rel).read_bytes()).hexdigest()
+
+
+def test_cli_write_checksums_then_validate_round_trips(tmp_path: Path, capsys) -> None:
+    root = tmp_path / FIXTURE_LABEL
+    _build_valid_submission(root)
+    (root / spec.CHECKSUM_FILE).unlink()
+
+    code = validator.main(["--write-checksums", str(root)])
+    assert code == 0
+    assert f"wrote {spec.CHECKSUM_FILE}" in capsys.readouterr().out
+
+    assert validator.main([str(root)]) == 0

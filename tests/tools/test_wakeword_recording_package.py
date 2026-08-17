@@ -475,6 +475,39 @@ def test_the_document_does_not_tell_a_speaker_which_split_they_are_in() -> None:
         assert marker in text.lower()
 
 
+def test_the_per_speaker_coverage_assignments_are_printed_from_the_spec() -> None:
+    """G3: the coordinator gets a printed spread, not five default cells.
+
+    Printed from ``COVERAGE_ASSIGNMENTS`` row for row, so a change to who covers
+    which device / distance / noise pair / pitch band cannot leave the document
+    describing the old spread. Unlike the role table, coverage carries no split
+    information, so it is safe to show per speaker.
+    """
+    rows = _table(
+        _package(), "Speaker", "Device", "Far-field target", "Noise sources", "Voice-pitch band"
+    )
+    assert len(rows) == len(spec.COVERAGE_ASSIGNMENTS)
+    by_label = {c.label: c for c in spec.COVERAGE_ASSIGNMENTS}
+
+    for row in rows:
+        label = _unbacktick(row[0])
+        assert label in by_label, f"{label!r} is printed but has no COVERAGE_ASSIGNMENTS row"
+        cell = by_label[label]
+        assert _unbacktick(row[1]) == cell.device, f"{label}: device drifted"
+        assert row[2] == cell.farfield_distance, f"{label}: far-field target drifted"
+        for source in cell.noise_sources:
+            assert source in row[3], f"{label}: {source!r} missing from printed noise cell"
+        assert row[4] == cell.pitch_band, f"{label}: pitch band drifted"
+
+    assert {_unbacktick(row[0]) for row in rows} == set(by_label), (
+        "the printed coverage table and COVERAGE_ASSIGNMENTS name different speakers"
+    )
+    assert "COVERAGE_ASSIGNMENTS" in _package(), (
+        "the document does not say where the coverage table lives, so a coordinator "
+        "has nowhere to look it up"
+    )
+
+
 # ── labels decided beside the contract, and the ones folded into it ──────────
 
 

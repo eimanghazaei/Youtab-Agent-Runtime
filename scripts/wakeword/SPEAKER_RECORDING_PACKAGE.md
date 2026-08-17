@@ -59,6 +59,9 @@ below.
 - Don't put your name, initials or email in any filename or folder name — the
   speaker label your coordinator gives you is the only identifier that travels
   with the audio.
+- Check your recorder's format setting first — M4A/AAC or WAV are fine; if it
+  saves in `.ogg`, `.opus`, `.amr`, `.mp3` or `.webm`, switch it before you
+  record, or the whole session has to be recorded again.
 - Turn off cloud sync before you record anything.
 
 **Before you hand it over**, run (or ask your coordinator to run):
@@ -168,8 +171,15 @@ recordings.
    fan.
 7. **Use your phone's own voice recorder app** (Voice Memos, the built-in Android
    recorder, or similar), or whatever device your coordinator asks you to use.
-   Whatever it produces — `.m4a`, `.wav`, whatever your app writes by default —
-   is fine and should be left exactly as it is.
+   **Check its format setting once, before you record anything.** M4A/AAC and WAV
+   are the readable formats and are what most apps write by default: if yours
+   already saves in one of those, leave every file exactly as it is and never
+   convert it (`.m4a`, `.wav`, `.caf`, `.aac`, `.flac`, `.aiff` are all read as
+   written). A few apps default instead to `.ogg`, `.opus`, `.amr`, `.mp3` or
+   `.webm`, which our loader cannot read — switch the recorder to M4A/AAC (or
+   WAV) *first*, because a whole session captured in one of those has to be
+   recorded again from scratch. `validate_speaker_submission.py` refuses such a
+   file by name, so you find out at your own desk rather than after handover.
 
 ## The one rule behind everything
 
@@ -410,8 +420,9 @@ Create one folder named with your speaker label — the one your coordinator gav
 you, never your name — and put everything inside it. **Names matter exactly as
 written**: our loader maps a file to what it contains by its name and folder
 alone, and an unrecognised name is treated as an error, not a guess. Keep
-whatever file extension your recorder produces (`.m4a`, `.wav`, `.caf` —
-whatever it is); never convert it.
+whatever file extension your recorder produces (`.m4a`, `.wav`, `.caf` — any of
+the readable formats from the format check in "Before you start"); never
+convert it.
 
 ```
 E003/                                        one folder per speaker, named for the label alone
@@ -543,6 +554,9 @@ see "The one rule behind everything" above for why.
       the `notes` field of your metadata form rather than re-recording.
 - [ ] `RECORDING_METADATA.json` is filled in completely, with no bracketed
       `<...>` placeholder text left in it.
+- [ ] No hidden litter is left in the folders. `.DS_Store`, `Thumbs.db` and
+      AppleDouble `._name` files that your computer drops in automatically
+      hard-fail the check — delete them from every folder before you hand over.
 - [ ] The consent form is signed, you have your copy, and it has gone to your
       coordinator separately from the audio.
 - [ ] If you're comfortable running a command, run the upload-verification
@@ -725,6 +739,33 @@ condition.
 | pitch range | at least one low (≈85–120 Hz), one mid, one high (≈200–255 Hz) fundamental | The front end is a mel spectrogram, so fundamental frequency moves where the harmonics land under every filter. The synthetic voice pool is wide but it is a pool of *interpolated* speaker embeddings, which tends to fill the middle and thin out the extremes. |
 | noise condition | quiet room, background speech or television, kitchen or street noise | An always-on microphone spends its whole life in the last two. Background *speech* matters most: it is the condition where a false activation is most likely and the one the current negatives — single words and read sentences — represent least. |
 
+### Per-speaker coverage assignments
+
+Each speaker is handed one row of the table below by their coordinator, next to
+their label. It is guidance, not a gate: nothing refuses a submission for not
+matching its row, and what a speaker actually used is what their
+`RECORDING_METADATA.json` records. The rows live in
+`speaker_recording_spec.COVERAGE_ASSIGNMENTS` and are chosen to spread all four
+dimensions across the group — all three devices, far-field distances fanning
+out from about 5 m to 10 m, five distinct noise pairs that cover each of the
+four sources at least twice, and pitch bands stepping from low to high — so that
+five people handed identical instructions do not all record the same corner
+(phone, living room, television). Far-field is always captured on a device set
+down at the listed distance; a headset speaker removes the headset and uses the
+host device's built-in microphone for that one section.
+
+| Speaker | Device | Far-field target | Noise sources | Voice-pitch band |
+|---|---|---|---|---|
+| `E003` | phone | about 5 m, an adjoining room with the door open | tv, kitchen | low |
+| `E004` | laptop-built-in | about 6 m, across one open-plan room | street, fan | low-mid |
+| `E005` | wired-headset | about 7 m, an adjoining room | tv, street | mid |
+| `E006` | laptop-built-in | about 8 m, two rooms with the door open | kitchen, fan | mid-high |
+| `E007` | phone | about 10 m, a far corner or the next room | tv, fan | high |
+
+The pitch band is a selection target the coordinator fills when deciding which
+volunteer records as which label — it is not something a speaker performs — so
+it is the one dimension read as "who fits here" rather than "do this".
+
 ## Why these counts, not round numbers
 
 The shipping targets for this model include a false-accept rate on deliberate
@@ -776,10 +817,22 @@ voice the model hates.
 
 1. Copy the speaker's handoff into one folder per speaker under the capture
    root, named for the label alone: `E003/`, `E004/`.
-   **Never inside this repository** — the manifest tool refuses a destination
+   **Never inside this repository** — the import tool refuses a destination
    under the checkout, and the commit gate refuses the audio.
-2. Auto-name anything the recorder left in its own naming scheme, before
-   generating checksums against it:
+2. **Delete sync-client and editor litter before anything else touches the
+   folder.** `.DS_Store` (macOS writes one into every folder it opens),
+   `Thumbs.db` and `desktop.ini` (Windows), and AppleDouble `._name` files
+   (macOS writes one beside every file it copies onto an exFAT drive, which is
+   how a removable drive passed between two people is formatted) all hard-fail
+   both the validator and the import — and a stray one counted as a recording
+   would push every real take onto the wrong take number. Clear the whole tree
+   first:
+
+   ```bash
+   find <capture-root>/E003 \( -name '.DS_Store' -o -name 'Thumbs.db' \
+       -o -name 'desktop.ini' -o -name '._*' \) -delete
+   ```
+3. Auto-name anything the recorder left in its own naming scheme:
 
    ```bash
    python scripts/wakeword/validate_speaker_submission.py --rename plan  <capture-root>/E003
@@ -791,17 +844,26 @@ voice the model hates.
    whose file count doesn't match what that section requires is reported and
    left alone rather than guessed at — resolve it with the speaker, then
    re-run. Skip this step for a folder the speaker already named by hand.
-3. File the signed consent record as `E003/CONSENT.pdf`, in the encrypted,
+4. File the signed consent record as `E003/CONSENT.pdf`, in the encrypted,
    access-controlled store described in `CONSENT_RECORD_TEMPLATE.md`. The
    speaker keeps their own copy; the coordinator's copy is what binds the
    recordings to a consent that covers them, which is why it lives in the
    submission folder rather than beside it.
-4. Generate `E003/SHA256SUMS` — coreutils format, `<digest>  <path>`, paths
-   relative to the speaker folder, covering every other file in it. Verify it
-   with `sha256sum -c SHA256SUMS` from inside the folder after any later move;
-   that is the check the validator deliberately does not do, because a digest
-   recomputed on the machine that wrote it says nothing about the transfer.
-5. Validate the layout before anything reads the audio:
+5. Generate `E003/SHA256SUMS`, once the consent record and the final file names
+   are both in place so the listing covers them. Write it with the validator's
+   own mode, so the listing and the check that later reads it are built from one
+   file walk and cannot disagree:
+
+   ```bash
+   python scripts/wakeword/validate_speaker_submission.py --write-checksums <capture-root>/E003
+   ```
+
+   It writes coreutils format — `<digest>  <path>`, two spaces, paths relative
+   to the speaker folder, every other file covered. Verify it with `sha256sum -c
+   SHA256SUMS` from inside the folder after any later move; that is the check the
+   validator deliberately does not do, because a digest recomputed on the machine
+   that wrote it says nothing about the transfer.
+6. Validate the layout before anything reads the audio:
 
    ```bash
    python scripts/wakeword/validate_speaker_submission.py <capture-root>/E003
@@ -813,25 +875,42 @@ voice the model hates.
    back for, not a sentence to puzzle over. Run it while the speaker is still
    reachable: a missing section can be recorded, and a misnamed file can be
    asked about, only until they are not.
-6. Freeze it, before anything reads it:
+7. Ingest it with `import_speaker.py` — a dry run first, then for real:
 
    ```bash
-   python scripts/wakeword/freeze_manifest.py freeze \
-       --root <capture-root>/<label>/originals \
-       --out  <capture-root>/<label>.manifest.json \
-       --dataset <label> --split train --usage training \
-       --note "phone, close+5m, quiet+TV+kitchen, en-GB, mid pitch"
+   python scripts/wakeword/import_speaker.py \
+       --speaker E003 \
+       --submission <capture-root>/E003 \
+       --into <external-data-root> \
+       --note "phone; far-field ~5 m; tv+kitchen; low pitch" \
+       --dry-run
+
+   python scripts/wakeword/import_speaker.py \
+       --speaker E003 \
+       --submission <capture-root>/E003 \
+       --into <external-data-root> \
+       --note "phone; far-field ~5 m; tv+kitchen; low pitch"
    ```
 
-   `--split`/`--usage` come from that speaker's row in
-   `speaker_recording_spec.SPEAKER_ASSIGNMENTS`, not from memory: `--usage
-   validation` for the validation speaker and `--split evaluate --usage
-   sealed-evaluation` for a sealed one. That is not a label —
-   `assert_usable_for` raises if anything later tries to train on a sealed set,
-   and the CLI exits non-zero. Freeze before the first read, so the frozen set is
-   the recorded set and not the set as it stood after somebody tidied it.
-7. Record the coverage cell in `--note`: device, distance, noise, accent, pitch
-   band.
+   Do **not** freeze the manifest by hand. `import_speaker.py` is the one step
+   between the drive and the training set, and it does what a hand-typed
+   `freeze_manifest.py freeze` cannot: it runs the quality inspection, refuses a
+   recording reused within or across speakers, holds a lock on the data root so
+   two concurrent imports cannot both spend a seal, copies every original and
+   reverifies it byte for byte, and only then writes the frozen manifest itself.
+   `--dry-run` runs every one of those checks and writes nothing; run it, read
+   the report, then run the same command again without it.
+
+   **The split and the usage are never typed by a human — there is no `--usage`
+   flag.** `import_speaker.py` reads the role from the predeclared registry
+   (`round8_config.SPLITS`, cross-checked against
+   `speaker_recording_spec.SPEAKER_ASSIGNMENTS`) and refuses if the two disagree,
+   so no slip of the keyboard can import a training speaker as `sealed-evaluation`
+   or a sealed speaker as training. `assert_usable_for` raises if anything later
+   tries to train on a sealed set, and the CLI exits non-zero. The coverage cell
+   — device, far-field distance, noise pair, pitch band — goes in `--note`,
+   which the report and the manifest both record; it is the only place a later
+   measurement can be attributed to a condition.
 8. Confirm the speaker has deleted the recordings from their device, including
    any automatic cloud copy.
 
