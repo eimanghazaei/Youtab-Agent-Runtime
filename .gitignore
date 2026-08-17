@@ -11,6 +11,11 @@ act/
 .venv/
 .venv
 .vscode/
+# Agent scaffolding: local settings, session state and the nested worktrees an
+# agent checks out to work in parallel. It is tooling for whoever is driving
+# the checkout, not part of the product, and the worktrees under it are whole
+# second copies of the repository.
+.claude/
 .env
 .op.env
 .env.local
