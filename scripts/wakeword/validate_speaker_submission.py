@@ -52,6 +52,7 @@ to guess.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -109,6 +110,52 @@ def _extension_ok(name: str) -> bool:
     return Path(name).suffix.lower() in spec.AUDIO_EXTENSIONS
 
 
+def _ingestible_extensions() -> frozenset[str]:
+    """Extensions ingestion can actually read, from ``import_speaker``'s own table.
+
+    Derived from ``import_speaker.CONTAINER_EXTENSIONS`` -- the container
+    families that tool dispatches on by magic bytes -- rather than kept as a
+    second copy here, so the format a speaker is held to at handover cannot
+    drift from the format the loader will accept. Imported inside the function
+    on purpose: ``import_speaker`` imports this module at its own top, and
+    reading its table at *our* import time would read a half-initialised module
+    mid-cycle.
+    """
+    import import_speaker
+
+    return frozenset(
+        ext for exts in import_speaker.CONTAINER_EXTENSIONS.values() for ext in exts
+    )
+
+
+def _unreadable_format_error(name: str) -> str | None:
+    """A refusal for a real audio file in a format ingestion cannot read, else ``None``.
+
+    ``spec.AUDIO_EXTENSIONS`` exists only to catch a name with no audio
+    extension at all, and its own docstring says it is not a format gate. The
+    format gate is here, and it is derived from what ingestion actually reads: a
+    file whose extension is a genuine recorder format (``.opus``, ``.ogg``,
+    ``.amr``, ``.mp3``, ``.webm``) that ``import_speaker`` has no parser for is
+    refused locally, now, with the speaker still at the microphone and able to
+    change the recorder's setting and record again -- rather than weeks later,
+    when the loader rejects the folder and nobody can ask the speaker to redo a
+    session they have long since finished. A hard error, not a warning: an
+    unreadable take cannot enter the dataset, and pretending otherwise defers
+    the same refusal to a point where it can no longer be fixed.
+    """
+    suffix = Path(name).suffix.lower()
+    if suffix not in spec.AUDIO_EXTENSIONS:
+        return None  # not an audio extension at all -- the naming check reports it
+    if suffix in _ingestible_extensions():
+        return None  # a container the loader can read
+    return (
+        f"its {suffix} format is one some recorder apps write but ingestion cannot "
+        "read, and nothing here converts a recording to another format. Set the "
+        "recording app to record in M4A/AAC (or WAV) and record this again before "
+        f"handing the folder over -- a {suffix} file is a re-record, not an ingest"
+    )
+
+
 def _assigned_labels() -> tuple[str, ...]:
     return tuple(a.label for a in spec.SPEAKER_ASSIGNMENTS)
 
@@ -133,6 +180,10 @@ def _check_condition_dir(
     for entry in sorted(directory.iterdir()):
         if not entry.is_file():
             result.errors.append(f"{rel}/{entry.name}: expected a file, found a directory")
+            continue
+        fmt_error = _unreadable_format_error(entry.name)
+        if fmt_error is not None:
+            result.errors.append(f"{rel}/{entry.name}: {fmt_error}")
             continue
         if not pattern.match(entry.stem) or not _extension_ok(entry.name):
             result.errors.append(
@@ -166,6 +217,10 @@ def _check_near_phrase_dir(originals: Path, result: ValidationResult) -> None:
     for entry in sorted(directory.iterdir()):
         if not entry.is_file():
             result.errors.append(f"{rel}/{entry.name}: expected a file, found a directory")
+            continue
+        fmt_error = _unreadable_format_error(entry.name)
+        if fmt_error is not None:
+            result.errors.append(f"{rel}/{entry.name}: {fmt_error}")
             continue
         match = pattern.match(entry.stem)
         if not match or not _extension_ok(entry.name):
@@ -209,6 +264,10 @@ def _check_freeform_dir(
     for entry in sorted(directory.iterdir()):
         if not entry.is_file():
             result.errors.append(f"{rel}/{entry.name}: expected a file, found a directory")
+            continue
+        fmt_error = _unreadable_format_error(entry.name)
+        if fmt_error is not None:
+            result.errors.append(f"{rel}/{entry.name}: {fmt_error}")
             continue
         if not pattern.match(entry.stem) or not _extension_ok(entry.name):
             result.errors.append(
@@ -427,6 +486,32 @@ def _check_checksums(root: Path, result: ValidationResult) -> None:
     result.sections.append(
         SectionStatus(spec.CHECKSUM_FILE, len(present & listed_set), len(present))
     )
+
+
+def write_checksums(root: Path) -> int:
+    """Write ``root/SHA256SUMS`` over every other file, in coreutils format.
+
+    Returns how many files were listed. The listing is built from the same walk
+    ``_check_checksums`` verifies against (``_submission_files``), so what this
+    writes and what the validator later reads cannot disagree -- the failure a
+    hand-typed ``find | xargs sha256sum`` invites is skipping a dotfile the walk
+    counts, or counting one it skips, and then the folder fails its own listing.
+    Portable where a raw ``find -printf`` is not: BSD/macOS ``find`` has no
+    ``-printf``, and this is the machine a drive handed between two people is
+    plugged into.
+
+    This is *not* the transfer check. A digest taken here, on the machine that
+    holds the files, says nothing about a copy that has not happened yet, which
+    is exactly why ``_check_checksums`` refuses to recompute one. ``sha256sum -c
+    SHA256SUMS``, run by the coordinator after the transfer, is what says the
+    bytes arrived intact.
+    """
+    lines = [
+        f"{hashlib.sha256((root / rel).read_bytes()).hexdigest()}  {rel}\n"
+        for rel in _submission_files(root)
+    ]
+    (root / spec.CHECKSUM_FILE).write_text("".join(lines), encoding="utf-8")
+    return len(lines)
 
 
 def _check_originals(root: Path, result: ValidationResult) -> None:
@@ -726,7 +811,22 @@ def main(argv: list[str] | None = None) -> int:
             "renames. Run the command again with no --rename afterwards to validate."
         ),
     )
+    parser.add_argument(
+        "--write-checksums",
+        action="store_true",
+        help=(
+            "instead of validating, write SHA256SUMS over every other file in the "
+            "folder, in the coreutils format the validator and sha256sum -c read. "
+            "Run it after the consent record is in place and the files are named, "
+            "and never as the transfer check -- that is sha256sum -c after the copy."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.write_checksums:
+        count = write_checksums(args.speaker_dir)
+        print(f"wrote {spec.CHECKSUM_FILE} covering {count} file(s)")
+        return 0
 
     if args.rename:
         actions, result = rename_plan(args.speaker_dir)

@@ -44,6 +44,7 @@ import sys
 import time
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -383,6 +384,57 @@ def test_every_original_is_preserved_byte_for_byte_and_reverified_after_the_writ
         assert (destination / row.path).read_bytes() == (
             submission / spec.ORIGINALS_DIR / row.path
         ).read_bytes()
+
+
+# ── the data-root lock (G7) ──────────────────────────────────────────────────
+
+
+def test_a_second_import_into_a_locked_data_root_is_refused(
+    submission: Path, into: Path
+) -> None:
+    """The publish-window lock, verified: two imports cannot both spend a seal.
+
+    ``_hold_data_root`` drops an ``O_CREAT | O_EXCL`` sentinel for the publish
+    window only, so that while one import is between reading the root and
+    publishing into it, a second import into the same root is refused rather
+    than reading a root the first has not finished writing. Before that lock, two
+    concurrent imports could each freeze the same recording under a different
+    speaker, and if either was sealed the seal was spent with no way back. Here
+    the sentinel is held as the first import's window would hold it, and a real
+    ``execute()`` for a second import is refused -- naming the lock file and the
+    seal it protects.
+
+    This verifies the existing fix and touches none of the lock code.
+    """
+    first = imp.plan(TRAIN_LABEL, submission, into)
+
+    with imp._hold_data_root(into):  # the first import is inside its publish window
+        with pytest.raises(imp.Refused) as excinfo:
+            imp.execute(first, into)
+
+    message = str(excinfo.value)
+    assert imp.LOCK_FILENAME in message, message
+    assert "seal" in message.lower(), message
+
+    # The lock serialises rather than poisons: it is gone once the window closes,
+    # so no automatic breaking is needed and none is done.
+    assert not (into / imp.LOCK_FILENAME).exists()
+
+
+def test_the_data_root_sentinel_admits_one_holder_at_a_time(into: Path) -> None:
+    """The lock primitive itself: exclusive while held, released cleanly after.
+
+    The ``execute()``-level test above proves a real import is refused; this
+    pins the sentinel underneath it directly, so a change to how the lock is
+    taken (an advisory lock that no-ops on exFAT, say) fails here rather than
+    only in the harder-to-read full-import path.
+    """
+    with imp._hold_data_root(into):
+        assert (into / imp.LOCK_FILENAME).exists()
+        with pytest.raises(imp.Refused, match=r"import holds"):
+            with imp._hold_data_root(into):
+                pass  # pragma: no cover -- the second holder never enters the body
+    assert not (into / imp.LOCK_FILENAME).exists()
 
 
 def test_a_source_edited_during_the_import_publishes_nothing(
@@ -939,6 +991,70 @@ def test_quiet_distant_noisy_and_fast_takes_are_never_excluded(
     assert not row_for(state, "positive_fast/" + fast.name).excluded
     assert state.ok, {check.name: check.problems for check in state.failures}
     assert [row for row in state.originals if row.excluded] == []
+
+
+def test_a_short_continuous_section_take_is_a_finding_not_an_exclusion(
+    submission: Path, into: Path
+) -> None:
+    """G4: a free-speech/background take far under its target is flagged, not cut.
+
+    A continuous section carries a file-count floor but no duration floor -- the
+    validator never opens the audio -- so a take minutes short of its target
+    (the fixture's are seconds long against 5- and 3-minute targets) passes
+    every gate while giving the false-activation-per-hour estimate almost
+    nothing to measure. import_speaker reports it as a finding, which is
+    non-excluding: the take is real and kept.
+    """
+    state = imp.plan(TRAIN_LABEL, submission, into)
+
+    free = row_for(state, "negative_freespeech/freespeech_001.wav")
+    background = row_for(state, "background_only/background_001.wav")
+    assert "short_continuous_section" in free.findings
+    assert "short_continuous_section" in background.findings
+    # A finding, never an exclusion: still usable, nothing failed.
+    assert not free.excluded and not background.excluded
+    assert state.ok, {check.name: check.problems for check in state.failures}
+
+    # Scoped to the continuous sections: a discrete positive take of a short
+    # length does not carry it (its own "short_take"/"long_take" logic is separate).
+    normal = row_for(state, f"positive_normal/{spec.WAKE_PHRASE_SLUG}_normal_001.wav")
+    assert "short_continuous_section" not in normal.findings
+
+
+def test_short_continuous_section_fires_only_below_the_target_fraction() -> None:
+    """The threshold and its controls, without minutes of generated audio.
+
+    ``_level_findings`` reads ``levels.duration_s`` and the row's
+    section/category, so a ``SimpleNamespace`` stands in for the row and the
+    format facts and the control cases -- a take at the target, a discrete take,
+    a prior-layout section -- cost nothing to exercise.
+    """
+
+    def findings(category: str, section: str, duration_s: float) -> list[str]:
+        row = SimpleNamespace(category=category, section=section)
+        facts = SimpleNamespace(duration_s=None)
+        levels = SimpleNamespace(
+            peak_dbfs=-10.0,
+            clipping_runs=0,
+            noise_floor_dbfs=-70.0,
+            dc_offset=0.0,
+            duration_s=duration_s,
+        )
+        return imp._level_findings(row, facts, levels)
+
+    target = imp.CONTINUOUS_TARGET_SECONDS["negative_freespeech"]
+    # Materially under the target -> fires.
+    assert "short_continuous_section" in findings("free_speech", "negative_freespeech", 45.0)
+    # At/above the target fraction -> does not.
+    just_over = target * imp.CONTINUOUS_SHORT_TAKE_FRACTION + 1.0
+    assert "short_continuous_section" not in findings(
+        "free_speech", "negative_freespeech", just_over
+    )
+    # A discrete positive section is never subject to this floor.
+    assert "short_continuous_section" not in findings("positive", "positive_normal", 0.5)
+    # The prior (E001/E002) layout's continuous section is not the package's, so
+    # it is not matched -- this floor belongs to the package the five record to.
+    assert "short_continuous_section" not in findings("free_speech", "06_free_speech", 5.0)
 
 
 def test_digital_silence_is_excluded_with_its_rule_and_still_kept(
