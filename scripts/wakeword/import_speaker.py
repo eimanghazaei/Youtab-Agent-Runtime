@@ -192,6 +192,18 @@ DURATION_TOLERANCE_FRACTION = 0.02
 #: off", it is missing, which is what a truncated transfer looks like.
 DURATION_TRUNCATION_FRACTION = 0.9
 
+#: Below this fraction of a continuous section's ``target_minutes`` a take is
+#: *materially* short of what the package asked for, not a few seconds under.
+#: A 45-second "free speech" take against a 5-minute target is the case this
+#: exists for: it passes every gate (there is no duration floor on a continuous
+#: section, deliberately -- the validator never opens the audio) yet gives the
+#: false-activation-per-hour estimate almost nothing to measure. Reported as a
+#: finding, never an exclusion: the recording is real and kept, and if the
+#: recorder split one long take into several files the derivation sums them --
+#: this only flags the file so nobody discovers the shortfall after the speaker
+#: has gone.
+CONTINUOUS_SHORT_TAKE_FRACTION = 0.5
+
 #: Label values, as the frozen manifests and ``build_human_dataset`` record
 #: them. The word forms live in ``speaker_recording_spec``; this is the
 #: translation and the only place it happens.
@@ -1450,11 +1462,27 @@ FINDINGS: dict[str, str] = {
     "below_production_rate": f"sampled below {PRODUCTION_SAMPLE_RATE_HZ} Hz",
     "duration_disagreement": "the decoded duration differs from the container's",
     "container_note": "the container parser recorded something about the header",
+    "short_continuous_section": (
+        f"a continuous section take under {CONTINUOUS_SHORT_TAKE_FRACTION:.0%} of its "
+        "section's target duration"
+    ),
 }
 
 #: Sections whose takes are one continuous recording rather than one utterance,
 #: so the "long take" finding does not apply to them.
 CONTINUOUS_CATEGORIES: frozenset[str] = frozenset({"free_speech", "background_only"})
+
+#: The package-layout continuous sections keyed by their directory name, mapped
+#: to the target length the package asks for. Read off ``speaker_recording_spec``
+#: rather than restated, so the floor the finding uses is the same number the
+#: package prints. Keyed by ``directory`` because that is what an ``Original``
+#: carries in ``section``; the prior (E001/E002) layout uses different directory
+#: names and is therefore not matched here, which is intended -- this floor is a
+#: property of the package the five new speakers record to.
+CONTINUOUS_TARGET_SECONDS: dict[str, float] = {
+    section.directory: section.target_minutes * 60.0
+    for section in spec.FREEFORM_SECTIONS
+}
 
 
 # ── one discovered recording ─────────────────────────────────────────────────
@@ -1873,6 +1901,13 @@ def _level_findings(row: Original, facts: FormatFacts, levels: LevelFacts) -> li
         and levels.duration_s > MAX_TAKE_SECONDS
     ):
         findings.append("long_take")
+    target_s = CONTINUOUS_TARGET_SECONDS.get(row.section)
+    if (
+        row.category in CONTINUOUS_CATEGORIES
+        and target_s is not None
+        and levels.duration_s < target_s * CONTINUOUS_SHORT_TAKE_FRACTION
+    ):
+        findings.append("short_continuous_section")
     if facts.duration_s:
         tolerance = max(
             DURATION_TOLERANCE_S, facts.duration_s * DURATION_TOLERANCE_FRACTION
