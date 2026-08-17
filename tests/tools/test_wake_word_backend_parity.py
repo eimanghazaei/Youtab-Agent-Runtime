@@ -205,24 +205,54 @@ def test_ci_runs_this_on_every_os_a_runner_exists_for():
     assert "tests/tools/test_wake_word_backend_parity.py" in body
 
 
-def test_the_macos_runner_is_documented_as_an_owner_decision():
-    """macOS ARM64 is the platform that most needs this and is not enabled.
+def test_the_macos_arm_runner_is_active_and_the_intel_trap_is_still_recorded():
+    """macOS ARM64 must actually run, because it is the only platform that loads
+    the tflite artifact.
 
-    It is the only one where the tflite artifact is what users load. Enabling
-    it costs macOS runner minutes, billed at 10x on a private repository, which
-    is an Owner decision and not a repository fact. Leaving it silently absent
-    would read as "covered"; this pins the reason and the one-line change.
+    This test used to assert the opposite: that the leg was absent and that the
+    absence was recorded as an Owner action. That was right while it was off,
+    and it is why enabling the leg turned every wake-word job red on this one
+    assertion. The decision has since been taken and the leg is on, so what
+    needs pinning has inverted -- but not weakened. It is now an error for the
+    leg to be *missing*, which is a stronger claim than the one it replaces.
+
+    `default_inference_framework()` returns tflite on Darwin ARM64 and onnx
+    everywhere else, so without this leg the shipped `.tflite` is never executed
+    on the OS that loads it, and the parity claim rests on two platforms that
+    both load the other file.
     """
     text = WORKFLOW.read_text(encoding="utf-8")
     job = text[text.find("\n  wake-word-backends:") : text.find("\n  javascript:")]
-    assert "macos-latest" in job, "no macOS runner named anywhere in the job"
-    assert "OWNER ACTION" in job, "the macOS gap is not recorded as an Owner action"
+
+    # Non-vacuity: prove we sliced the real job before judging its contents.
+    assert "verify_backends.py" in job, (
+        "the wake-word-backends slice does not contain the verifier; this test "
+        "is reading the wrong part of the workflow and must be re-anchored"
+    )
+
+    assert "macos-latest" in job, (
+        "the macOS ARM64 leg is gone. The shipped .tflite is then never loaded "
+        "on the only OS that loads it in production."
+    )
+
+    # It has to be in the *matrix*, not merely mentioned in a comment -- which
+    # is exactly the state this test used to describe.
+    matrix = re.search(r"^\s*os:\s*\[(?P<list>[^\]]*)\]", job, re.MULTILINE)
+    include = re.search(r"^\s*include:\s*$(?P<body>(?:\n\s+.*)+?)(?=\n\s*#|\n\s*\w+:)",
+                        job, re.MULTILINE)
+    active = (matrix.group("list") if matrix else "") + (
+        include.group("body") if include else "")
+    assert "macos-latest" in active, (
+        "macos-latest is named in the job but not in the active matrix or its "
+        "include: block, so no macOS job is produced"
+    )
+
     # macos-13 is Intel, and neither pinned wheel exists for macOS x86_64:
     # onnxruntime dropped universal2 after 1.22.0 and ai-edge-litert has only
-    # ever shipped arm64 for Darwin. Enabling it would fail at pip install.
+    # ever shipped arm64 for Darwin. Enabling it would fail at pip install, so
+    # the trap stays documented even though the leg is now on.
     assert "macos-13" in job, "the Intel-runner trap is not recorded"
-    matrix = re.search(r"^\s*os:\s*\[(?P<list>[^\]]*)\]", job, re.MULTILINE)
-    assert "macos-13" not in matrix.group("list"), (
+    assert "macos-13" not in active, (
         "macos-13 is in the active matrix; that runner is Intel and cannot "
         "install either pinned backend"
     )
