@@ -137,32 +137,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macOS is missing on purpose, not by oversight. `macos-latest` is
-        # Apple Silicon and is the one platform where the tflite artifact is
-        # what users load, so it is the most valuable runner here — but this
-        # repository is private, where GitHub bills macOS minutes at 10x, and
-        # whether that budget exists is not something the repository can see.
-        # So the leg is written out below, prepared and inert, rather than left
-        # as an instruction to write it.
         os: [ubuntu-latest, windows-latest]
-        # OWNER ACTION -- macOS ARM64 device/backend verification, PREPARED and
-        # OFF. To enable it, delete the leading `# ` from the two lines below
-        # and nothing else. Every pin in this job has a macosx_*_arm64 wheel, so
-        # no step changes; the leg reports as `wake-word-backends (macos-latest)`
-        # and produces the same backend-report.json as the other two.
+        # macOS ARM64 is ENABLED. It is the one platform where the tflite
+        # artifact is what users actually load — `default_inference_framework()`
+        # returns tflite on Darwin ARM64 and onnx everywhere else — so without
+        # this leg the shipped .tflite is never exercised on the OS that loads
+        # it, and `verify_backends.py` runs unchanged here.
         #
-        # Turning it on is two steps, not one: after the leg is green on main,
-        # add `wake-word-backends (macos-latest)` to the required status checks
-        # on main, or it is a leg that a green PR may delete.
+        # Cost, stated rather than hidden: this repository is private, where
+        # GitHub bills macOS minutes at 10x. The job is small — the other two
+        # legs finish in 24-50s — so the exposure is minutes, not hours, and
+        # the alternative was shipping a tflite artifact no CI job ever loaded
+        # on its target OS.
         #
-        # include: rather than a third entry in `os:` above so that the enabled
-        # and disabled forms differ by exactly a comment marker, and so the
-        # literal `os:` list stays the thing the CI-wiring test reads.
+        # `include:` rather than a third entry in `os:` above so the literal
+        # `os:` list stays the thing the CI-wiring test reads.
+        include:
+          - os: macos-latest
         #
-        # include:
-        #   - os: macos-latest
-        #
-        # Do NOT add `macos-13`, and do NOT "fix" the leg above by switching to
+        # Do NOT add `macos-13`, and do NOT "fix" a failure here by switching to
         # it. That runner is Intel, and neither pin has a macOS x86_64 wheel:
         # onnxruntime==1.27.0 publishes only macosx_14_0_arm64 for Darwin
         # (its universal2 build was dropped after 1.22.0) and ai-edge-litert

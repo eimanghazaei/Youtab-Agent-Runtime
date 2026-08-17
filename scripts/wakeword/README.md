@@ -123,9 +123,15 @@ The refusals are the point, and each is a test in
 * every clip carries provenance — a `source_file` corroborated by the
   manifest's own `files` list — so a synthetic clip renamed `positive_human`
   is still refused, because the name was never what was checked;
-* the synthetic-era category names (`positive`, `near_phrase`, `hardneg`,
-  `confusable`, `softneg`, `common`, `synthesized_speech`) are hard errors
-  wherever they appear;
+* the synthetic-era category names with no real-derivation meaning
+  (`positive`, `hardneg`, `confusable`, `softneg`, `common`,
+  `synthesized_speech`) are hard errors wherever they appear. `near_phrase` and
+  `free_speech` are *not* in that list: those are what the deriver calls a real
+  speaker's negatives, so refusing them by name made the frozen sealed manifest
+  un-ingestible — and that manifest cannot be regenerated, because its digest is
+  what a qualification result is traced to. They are normalised to the `_human`
+  names instead, and what refuses a synthetic clip wearing one is the provenance
+  and content check, never the string;
 * nothing under `data/features*` or `data/tts` can be read, extended or written
   to, and a checkpoint may only be initialised from if the
   `DATASET_CONTRACT.json` this stage writes sits beside it asserting zero
@@ -152,10 +158,18 @@ The refusals are the point, and each is a test in
   from what was actually emitted — the build refuses rather than reporting a
   zero it did not measure.
 
-A Round 8 human manifest has to declare the `_human` category names
-(`positive_human`, `near_phrase_human`, `free_speech_human`) and carry a
-`MANIFEST.json.sha256` sidecar. The bare names the earlier derivations wrote are
-refused, because they are indistinguishable from the TTS group names.
+A Round 8 human manifest carries a `MANIFEST.json.sha256` sidecar and declares
+either the `_human` dataset names (`positive_human`, `near_phrase_human`,
+`free_speech_human`) or the deriver's own names (`near_phrase`, `free_speech`,
+`positive_<condition>`), which are normalised to them. Accepting both is what
+lets an already-frozen speaker be read without rewriting it; the guard is
+provenance plus content addressing, not the category string.
+
+Every reference must also be *direct*: relative to the manifest, free of `..`,
+and free of symlinks. A relocated synthetic clip with a perfectly self-consistent
+manifest — correct digests, an innocent `source_file` corroborated in `files` —
+used to build cleanly, and `retired_synthetic_artifacts.json` is what refuses it
+now: the bytes are recognised wherever they sit and whatever they are called.
 
 ## Datasets that are recorded rather than downloaded
 
