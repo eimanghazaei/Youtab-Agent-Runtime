@@ -365,23 +365,21 @@ def builder_windowing_divergence(config: dict | None = None) -> list[str]:
     ``check`` derives the phrase-anchored offset grid from
     ``build_dataset.PHRASE_END_JITTER`` — the retired synthetic builder — and the
     committed config predeclares seven offsets, projecting ``near_phrase_human``
-    as ``utterances x 7`` phrase-anchored windows. But Round 8 is built by
-    ``build_human_dataset``, whose ``TRAILING_OFFSETS_S`` is a four-offset ladder
-    and which TILES label-0 near-phrase clips into non-overlapping 2 s windows
-    rather than phrase-anchoring them. So the predeclaration validates against a
-    builder that cannot produce the predeclared dataset, and
-    ``loss.negative_weight`` is derived from window counts that will not be
-    emitted.
+    as ``utterances x 7`` phrase-anchored windows, with ``loss.negative_weight``
+    derived from those counts. This function checks that the builder that will
+    actually run, ``build_human_dataset``, produces exactly that: its
+    ``TRAILING_OFFSETS_S`` ladder must land on the predeclared offset frames, and
+    ``near_phrase_human`` — a label-0 hard negative that carries the wake phrase —
+    must be phrase-anchored with the same ladder rather than tiled, so that its
+    projected ``utterances x offsets`` count is the count the builder emits.
 
-    This is reported, not reconciled, and deliberately kept out of ``check``.
-    Pointing the config at the real ladder would move
-    ``offsets_per_phrase_anchored_utterance`` (7 -> 4), every
-    ``dataset_projection`` window count, and the derived ``loss.negative_weight``
-    (0.1423) — all frozen predeclared numbers — and the label-0 tiling count is
-    not knowable until the recordings exist. Whether the config moves to the
-    builder or the builder moves to the config is an Owner decision. This
-    function only makes the divergence impossible to miss: it returns the list of
-    disagreements, and an empty list means the two now agree.
+    V6 raised the builder to this predeclaration: the seven-offset ladder and
+    ``PHRASE_ANCHORED_NEGATIVES = {near_phrase_human}`` are what make the two
+    agree. This is no longer a standing Owner-deferred divergence — ``check``
+    calls this function, so any future drift (a shortened ladder, near-phrase
+    reverted to tiling) fails validation instead of being discovered at build
+    time. It returns the list of disagreements; an empty list means the
+    predeclaration and the builder agree.
     """
     if config is None:
         config = load()
@@ -389,7 +387,8 @@ def builder_windowing_divergence(config: dict | None = None) -> list[str]:
     window = config.get("window_construction", {})
 
     consts = _module_constants_annotated(
-        BUILD_HUMAN_DATASET, {"TRAILING_OFFSETS_S", "HUMAN_CATEGORIES"}
+        BUILD_HUMAN_DATASET,
+        {"TRAILING_OFFSETS_S", "HUMAN_CATEGORIES", "PHRASE_ANCHORED_NEGATIVES"},
     )
     ladder = consts.get("TRAILING_OFFSETS_S")
     if not isinstance(ladder, (tuple, list)) or not ladder:
@@ -425,13 +424,21 @@ def builder_windowing_divergence(config: dict | None = None) -> list[str]:
         )
 
     # The label-0 windowing method. ``near_phrase_human`` is a hard NEGATIVE
-    # (build_human_dataset.HUMAN_CATEGORIES maps it to 0), and the builder tiles
-    # every label-0 clip — a variable count set by clip length, capped at
-    # --negative-windows — not ``utterances x offsets``. A projection that
-    # multiplies its utterances by the phrase-anchored offset count is describing
-    # windows the builder never emits for it.
+    # (build_human_dataset.HUMAN_CATEGORIES maps it to 0). The builder phrase-
+    # anchors it — with the same trailing-offset ladder as positives — exactly
+    # when it is listed in build_human_dataset.PHRASE_ANCHORED_NEGATIVES, which is
+    # the one switch its windows_for and emit loop both read. When it is anchored,
+    # ``utterances x offsets`` is precisely what the builder emits and the
+    # projection must equal it; when it is not, the builder tiles the clip into a
+    # variable count set by clip length, so ``utterances x offsets`` is a count
+    # the builder never emits for it.
     human_cats = consts.get("HUMAN_CATEGORIES")
     near_label = human_cats.get("near_phrase_human") if isinstance(human_cats, dict) else None
+    anchored = consts.get("PHRASE_ANCHORED_NEGATIVES")
+    near_is_anchored = (
+        isinstance(anchored, (set, frozenset, list, tuple))
+        and "near_phrase_human" in anchored
+    )
     per = window.get("offsets_per_phrase_anchored_utterance", 0)
     for split_name, block in config.get("dataset_projection", {}).items():
         if not isinstance(block, dict):
@@ -439,7 +446,18 @@ def builder_windowing_divergence(config: dict | None = None) -> list[str]:
         entry = block.get("near_phrase_human")
         if not isinstance(entry, dict) or "utterances" not in entry:
             continue
-        if near_label == 0 and entry.get("windows") == entry["utterances"] * per:
+        if near_label != 0:
+            continue
+        expected = entry["utterances"] * per
+        if near_is_anchored:
+            if entry.get("windows") != expected:
+                problems.append(
+                    f"dataset_projection.{split_name}.near_phrase_human projects "
+                    f"{entry.get('windows')} windows, but build_human_dataset "
+                    f"phrase-anchors it (PHRASE_ANCHORED_NEGATIVES) as "
+                    f"{entry['utterances']} x {per} offsets = {expected}."
+                )
+        elif entry.get("windows") == expected:
             problems.append(
                 f"dataset_projection.{split_name}.near_phrase_human is projected as "
                 f"{entry['utterances']} x {per} phrase-anchored offsets = "
@@ -1004,6 +1022,15 @@ def check(config: dict) -> list[str]:
     for needle in ("augment", "prefix", "offset", "utterance-level", "refusal"):
         if needle not in prerequisites:
             bad(f"prerequisite_code_changes omits {needle!r}")
+
+    # -- the predeclaration against the real builder (V6) --------------------
+    # Folded in so the predeclared windowing and build_human_dataset can never
+    # silently drift again: once V6 raised the builder to the seven-offset
+    # phrase-anchored design, an empty divergence is an invariant of a valid
+    # config, and any regression on either side fails --check rather than
+    # surfacing hours into a build. --check-builder-windowing runs the same
+    # function on its own for a focused report.
+    problems.extend(builder_windowing_divergence(config))
 
     return problems
 

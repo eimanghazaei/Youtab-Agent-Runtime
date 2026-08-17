@@ -1141,10 +1141,13 @@ def test_the_stats_assert_zero_synthetic_samples_and_count_every_axis(
         POSITIVE: 2, NEAR: 1, FREE: 1, "recorded_speech": 3
     }
     assert stats["samples_by_split"] == {"train": 7}
+    # near_phrase_human is phrase-anchored like a positive (V6), so it yields one
+    # window per --positive-windows offset, not a single tiled window; the
+    # continuous negatives (free speech, recorded speech) still tile.
     assert stats["windows_by_category"] == {
-        POSITIVE: 4, NEAR: 1, FREE: 1, "recorded_speech": 3
+        POSITIVE: 4, NEAR: 2, FREE: 1, "recorded_speech": 3
     }
-    assert stats["windows"] == 9 and stats["positives"] == 4
+    assert stats["windows"] == 10 and stats["positives"] == 4
 
     contract = json.loads((build.out / round8.CONTRACT_FILENAME).read_text(encoding="utf-8"))
     assert contract == stats["contract"]
@@ -1189,9 +1192,10 @@ def test_the_preallocation_counts_every_window(build: Build) -> None:
     """
     for positives, negatives in ((1, 1), (2, 1), (4, 3)):
         sink, stats = build.run(positive_windows=positives, negative_windows=negatives)
-        # The near-phrase take is 0.9 s and tiles once whatever is asked for;
-        # the free-speech take is 4.5 s and tiles up to `negatives` times.
-        expected = USABLE_POSITIVES * positives + 1 + min(negatives, 2)
+        # The near-phrase take is phrase-anchored (V6), so it yields one window
+        # per positive offset just like a positive; the free-speech take is 4.5 s
+        # and tiles up to `negatives` times (capped at its two whole windows).
+        expected = USABLE_POSITIVES * positives + positives + min(negatives, 2)
         assert sink.planned == expected == len(sink.labels)
         assert stats["windows"] == expected
 

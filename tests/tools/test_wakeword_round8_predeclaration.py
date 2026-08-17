@@ -278,50 +278,50 @@ def test_the_offset_grid_is_derived_from_the_pipelines_own_constants() -> None:
     assert len(grid) == 7
 
 
-# ── V6: the predeclaration diverges from the builder that will run ────────────
+# ── V6: the predeclaration is reconciled with the builder that will run ───────
 
 
-def test_the_predeclared_windowing_diverges_from_the_real_round8_builder() -> None:
-    """Guarded, not reconciled — an Owner decision, made impossible to miss.
+def test_the_predeclared_windowing_matches_the_real_round8_builder() -> None:
+    """V6 raised the builder to the predeclaration, so they now agree.
 
     ``check`` derives the offset grid from ``build_dataset.PHRASE_END_JITTER``
     (the retired synthetic builder) and the config predeclares 7 phrase-anchored
-    offsets, projecting ``near_phrase_human`` as ``utterances x 7``. But Round 8
-    is built by ``build_human_dataset``, whose ``TRAILING_OFFSETS_S`` is a
-    4-offset ladder and which TILES label-0 near-phrase clips into 2 s windows.
-    Reconciling would move frozen predeclared numbers
-    (``offsets_per_phrase_anchored_utterance`` 7->4, every projection window
-    count, and the derived ``loss.negative_weight`` 0.1423), so the divergence is
-    detected and flagged rather than silently 'fixed'. This guard must SEE it.
+    offsets, projecting ``near_phrase_human`` as ``utterances x 7`` with
+    ``loss.negative_weight`` 0.1423 derived from those counts. Round 8 is built
+    by ``build_human_dataset``: V6 set its ``TRAILING_OFFSETS_S`` to the seven
+    offsets that land on frames [2..8] and listed ``near_phrase_human`` in
+    ``PHRASE_ANCHORED_NEGATIVES`` so the builder phrase-anchors it with that same
+    ladder instead of tiling it. The predeclared numbers did not move — the
+    builder rose to them — so the divergence is now empty.
     """
     problems = r8.builder_windowing_divergence()
-    assert problems, "the builder-windowing divergence is no longer detected"
-    joined = " | ".join(problems)
-    assert "TRAILING_OFFSETS_S" in joined
-    assert "offsets_per_phrase_anchored_utterance" in joined
-    assert any("TILES" in problem for problem in problems), (
-        "the label-0 tiling divergence is not reported"
-    )
-    # And the dedicated CLI check exits non-zero on it, without touching --check.
-    assert r8.main(["--check-builder-windowing"]) == 1
+    assert problems == [], f"builder still diverges from the predeclaration: {problems}"
+    # The dedicated CLI check passes, and it is folded into --check too, so the
+    # reconciliation can never silently drift again.
+    assert r8.main(["--check-builder-windowing"]) == 0
     assert r8.main(["--check"]) == 0
 
 
 def test_the_builder_windowing_check_is_not_vacuous() -> None:
-    """A config pointed at the real ladder and tiled negatives reports nothing.
+    """A config that no longer matches the real builder is reported.
 
-    Without this, a divergence function that returned a problem unconditionally
-    would 'detect' the divergence above while checking nothing.
+    Without this, a divergence function that returned ``[]`` unconditionally
+    would 'agree' with the builder above while checking nothing. Pointing the
+    predeclaration back at the retired four-offset ladder must diverge from the
+    builder's real seven-offset one.
     """
-    reconciled = copy.deepcopy(r8.load())
-    window = reconciled["window_construction"]
+    drifted = copy.deepcopy(r8.load())
+    window = drifted["window_construction"]
     window["phrase_anchored_offsets_frames"] = [2, 4, 6, 8]
     window["offsets_per_phrase_anchored_utterance"] = 4
-    # near-phrase negatives are tiled: a variable count, not utterances x offsets.
     for split in ("train", "validation"):
-        entry = reconciled["dataset_projection"][split]["near_phrase_human"]
-        entry["windows"] = entry["utterances"] * 4 + 1
-    assert r8.builder_windowing_divergence(reconciled) == []
+        entry = drifted["dataset_projection"][split]["near_phrase_human"]
+        entry["windows"] = entry["utterances"] * 4
+    problems = r8.builder_windowing_divergence(drifted)
+    assert problems, "a config that disagrees with the real builder reported nothing"
+    joined = " | ".join(problems)
+    assert "TRAILING_OFFSETS_S" in joined
+    assert "offsets_per_phrase_anchored_utterance" in joined
 
 
 # ── policy that is not arithmetic ────────────────────────────────────────────
