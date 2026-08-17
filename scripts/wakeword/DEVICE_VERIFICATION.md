@@ -27,8 +27,27 @@ either file.
 |---|---|---|
 | Linux (CI) | done — `wake-word-backends (ubuntu-latest)` | n/a, headless |
 | Windows | done — `wake-word-backends (windows-latest)` | **pending** — needs a physical machine |
-| macOS (Apple Silicon) | **pending** — needs a macOS runner (Owner decision) or one local run of step 0 | **pending** — needs a physical machine |
+| macOS (Apple Silicon) | **prepared, off** — the `macos-latest` leg is written into `wake-word-backends` and commented out; enabling it is deleting two comment markers (Owner decision, see below) | **pending** — needs a physical machine |
 | macOS (Intel) | **not possible at the shipped pins** — see below | **pending** — needs a physical machine |
+
+The Apple-Silicon leg is no longer a paragraph the Owner has to translate into
+YAML. `.github/workflows/youtab-ci.yml` carries it as a commented `include:`
+entry inside the `wake-word-backends` matrix; deleting the two `# ` markers is
+the whole change, and no step needs editing because every pin in that job has a
+`macosx_*_arm64` wheel. `verify_backends.py` needs nothing either: it already
+reads Darwin's `ru_maxrss` as bytes rather than kilobytes, and the one field of
+the report that legitimately differs there — `environment.runtime_framework`,
+which resolves to `tflite` on Apple Silicon and `onnx` elsewhere — is asserted
+against `tools.wake_word.default_inference_framework()` rather than a hardcoded
+value. So the leg produces the same `backend-report.json` schema as the other
+two, on the same fixtures, with the same nine checks.
+
+Two things gate it. The first is cost: this repository is private, where GitHub
+bills macOS minutes at 10x, and whether that budget exists is not something the
+repository can see. The second is that turning it on is two steps — once the leg
+is green on `main`, `wake-word-backends (macos-latest)` has to be added to the
+required status checks in the `main-required-gates` ruleset, or it is a leg a
+green PR is free to delete again.
 
 macOS Intel is not a scheduling problem. `onnxruntime==1.27.0` and
 `ai-edge-litert==2.1.6`, the versions the `wake` extra pins, publish **no macOS
