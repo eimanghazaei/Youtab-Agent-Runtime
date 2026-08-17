@@ -394,7 +394,7 @@ some are not, because a half-frozen config looks frozen and is not.
 | E003 | train | `training` | 36 | 56 | 60 s | *(empty — not recorded)* |
 | E004 | train | `training` | 36 | 56 | 60 s | *(empty — not recorded)* |
 | E005 | validation | `validation` | 36 | 56 | 60 s | *(empty — not recorded)* |
-| E002 | sealed | `sealed-evaluation` | — | — | — | *(empty — pending freeze)* |
+| E002 | validation | `validation` | — | — | — | *(reassigned from sealed-evaluation; consumed for validation)* |
 | E006 | sealed | `sealed-evaluation` | 36 | 56 | 60 s | *(empty — not recorded)* |
 | E007 | sealed | `sealed-evaluation` | 36 | 56 | 60 s | *(empty — not recorded)* |
 
@@ -434,12 +434,13 @@ Non-speaker inputs, same treatment:
 | role | members | what it may be used for |
 |---|---|---|
 | train | E001, E003, E004 | fitting only |
-| validation | E005 | threshold selection, candidate selection, epoch selection — nothing else |
-| sealed | E002, E006, E007 | one measurement, after freeze |
+| validation | E005, E002 | threshold selection, candidate selection, epoch selection — nothing else |
+| sealed | E006, E007 | one measurement, after freeze |
 
-E005 is never fitted on. E002, E006 and E007 are never fitted on, never used for
-threshold selection, never used for hard-negative mining, never used for
-candidate or epoch selection. `freeze_manifest.assert_usable_for` raises on any
+E005 and E002 are never fitted on — as validation speakers they are used only
+for threshold, candidate and epoch selection. E006 and E007 are never fitted on,
+never used for threshold selection, never used for hard-negative mining, never
+used for candidate or epoch selection. `freeze_manifest.assert_usable_for` raises on any
 attempt, and `build_dataset.load_human_clips` refuses any manifest that does not
 declare itself `train` and any split but `train`.
 

@@ -45,9 +45,24 @@
 
   "splits": {
     "train": ["E001", "E003", "E004"],
-    "validation": ["E005"],
-    "sealed": ["E002", "E006", "E007"],
+    "validation": ["E005", "E002"],
+    "sealed": ["E006", "E007"],
     "immutable": true,
+    "amendment": {
+      "version": 2,
+      "change": "E002 moved from sealed to validation",
+      "authorized": "owner",
+      "reason": "Only two human speakers were ever recorded for the sealed set. The Owner reassigned E002 from the sealed final holdout to validation so a real held-out voice exists for threshold, candidate and epoch selection. E006 and E007 remain the sealed final-qualification set, pending future recordings.",
+      "immutability_note": "splits stays immutable:true. This amendment was not a silent data edit: the same move had to be made in the hard-coded round8_config.SPLITS constant, whose check() refuses any round8_config.json whose splits disagree with it. Bumping this version records that a reviewed code change, not a config-only edit, made the move."
+    },
+    "consumed": {
+      "E002": {
+        "for": "validation",
+        "no_longer_sealed_holdout": true,
+        "reason": "only two human speakers available; Owner reassigned E002 from sealed evaluation to validation",
+        "authorized": "owner"
+      }
+    },
     "validation_may_be_used_for": [
       "threshold selection",
       "candidate selection",
@@ -105,12 +120,12 @@
     },
     {
       "dataset": "E002",
-      "role": "sealed",
-      "usage": "sealed-evaluation",
+      "role": "validation",
+      "usage": "validation",
       "recorded": true,
       "manifest_sha256": "",
       "hash_state": "pending-freeze",
-      "note": "Exists. Deliberately not read, listed or counted while writing this design. Its near set lacks 'okay youtab', 'hey google' and bare 'hey', and its 'hey you tab' takes carry a pause inside the name, so it cannot carry the near-phrase claim on its own."
+      "note": "Reassigned from sealed evaluation to validation by Owner decision (see splits.amendment / splits.consumed). Now a held-out voice for threshold, candidate and epoch selection, and no longer the sealed final holdout. A validation build needs a manifest declaring the 'validation' split; its round-6/7 frozen manifest declares 'eval_sealed' and must be re-derived/re-frozen for validation before it can be built. Its near set lacks 'okay youtab', 'hey google' and bare 'hey', and its 'hey you tab' takes carry a pause inside the name."
     },
     {
       "dataset": "E006",
@@ -336,7 +351,7 @@
       "why": "1.0 pt is below the 1.84 pt effect that 300 real windows bought, so inside the noise this pipeline has ever resolved; smaller is preferred because memorising three training speakers is invisible on a single-speaker validation set"
     },
     "selected_on": "validation only",
-    "never_selected_on": ["E002", "E006", "E007", "any eval split"]
+    "never_selected_on": ["E006", "E007", "any eval split"]
   },
 
   "targets": [

@@ -356,7 +356,7 @@ SEQUENCE: tuple[State, ...] = (
     State(
         3,
         "prove_seals_intact",
-        "E002, E006 and E007 are registry-sealed, unopened, and named nowhere upstream",
+        "E006 and E007 are registry-sealed, unopened, and named nowhere upstream",
         ("registry_split", "sealed_splits", "seal_status"),
     ),
     State(

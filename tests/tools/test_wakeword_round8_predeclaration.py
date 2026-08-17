@@ -329,12 +329,39 @@ def test_the_builder_windowing_check_is_not_vacuous() -> None:
 
 def test_the_splits_are_the_immutable_ones(config: dict) -> None:
     assert config["splits"]["train"] == ["E001", "E003", "E004"]
-    assert config["splits"]["validation"] == ["E005"]
-    assert config["splits"]["sealed"] == ["E002", "E006", "E007"]
+    # E002 was reassigned from sealed to validation by Owner decision; the sealed
+    # final holdout is E006/E007 only.
+    assert config["splits"]["validation"] == ["E005", "E002"]
+    assert config["splits"]["sealed"] == ["E006", "E007"]
     members = (
         config["splits"]["train"] + config["splits"]["validation"] + config["splits"]["sealed"]
     )
     assert len(members) == len(set(members)), "a dataset is in two splits"
+
+
+def test_the_e002_reassignment_is_recorded_as_an_amendment_and_a_consumption(
+    config: dict,
+) -> None:
+    """The move stays immutable-with-a-record, not silently mutated.
+
+    ``splits.immutable`` is still true, and the amendment names the Owner
+    decision and its reason. The consumption record marks E002 permanently out of
+    the sealed set, mirroring ``build_human_dataset.CONSUMED_FOR_VALIDATION``.
+    """
+    splits = config["splits"]
+    assert splits["immutable"] is True
+    amendment = splits["amendment"]
+    assert amendment["authorized"] == "owner"
+    assert "E002" in amendment["change"]
+    assert amendment["version"] >= 2
+
+    consumed = splits["consumed"]["E002"]
+    assert consumed["for"] == "validation"
+    assert consumed["no_longer_sealed_holdout"] is True
+    assert consumed["authorized"] == "owner"
+    # E002 is no longer named as a never-selected-on speaker: as validation it
+    # is selected on.
+    assert "E002" not in config["selection"]["never_selected_on"]
 
 
 def test_validation_selects_and_nothing_else_does(config: dict) -> None:

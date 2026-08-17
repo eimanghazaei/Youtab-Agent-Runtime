@@ -228,12 +228,21 @@ ROLE_SPLITS: dict[str, str] = {
     spec.ROLE_SEALED: "qualification_sealed",
 }
 
-#: The two speakers recorded before this round, whose split names predate it.
-#: E002 is the round-6/7 sealed *evaluation* speaker rather than a Round 8
-#: qualification speaker, and its frozen manifest says so; renaming its split
-#: here would make the record of a measurement that has already been taken
-#: disagree with itself.
-PRIOR_SPLITS: dict[str, str] = {"E001": "train", "E002": "eval_sealed"}
+#: Speakers whose Round 8 split name differs from the role default in
+#: ``ROLE_SPLITS``. E001 is training, and ``ROLE_SPLITS[training]`` is already
+#: "train", so it is here only for symmetry.
+#:
+#: E002 used to be here, mapped to ``eval_sealed``, because it was the round-6/7
+#: sealed *evaluation* speaker. The Owner has since reassigned E002 to
+#: ``validation`` (recorded in ``build_human_dataset.CONSUMED_FOR_VALIDATION``
+#: and ``round8_config.json``), so it now takes the plain role default —
+#: ``ROLE_SPLITS[validation]`` = "validation" — and a fresh import declares that
+#: split. Its round-6/7 frozen manifest still carries ``eval_sealed`` in its own
+#: bytes; that historical split is read through ``SPLIT_ROLES`` below, which is
+#: why ``eval_sealed`` stays defined there. Keeping E002 pinned to
+#: ``eval_sealed`` here would make ``registry()`` hand back a validation-role
+#: speaker bound to a sealed split — a contradiction the reassignment removes.
+PRIOR_SPLITS: dict[str, str] = {"E001": "train"}
 
 #: Every split name that may appear in a manifest already on disk, and the role
 #: it means. Used when reading what is already imported — including the two

@@ -704,7 +704,9 @@ def test_the_stereo_128kbps_delivery_imports_with_its_near_phrases_apart(
     """
     root = build_e002_shape(generated / E002_LABEL)
     state = imp.plan(E002_LABEL, root, into)
-    assert state.assignment.role == spec.ROLE_SEALED
+    # E002 was reassigned from sealed evaluation to validation (consumed); a
+    # fresh import binds it to the live registry role, not its round-6/7 seal.
+    assert state.assignment.role == spec.ROLE_VALIDATION
     assert state.ok, {check.name: check.problems for check in state.failures}
     assert len(state.originals) == len(PRIOR_FLAT_SECTIONS) - 1 + E002_NEAR_PHRASES
 
@@ -728,7 +730,7 @@ def test_the_stereo_128kbps_delivery_imports_with_its_near_phrases_apart(
         if entry["path"].startswith("05_near_phrases/")
     }
     assert len(frozen) == E002_NEAR_PHRASES
-    assert body["role"] == spec.ROLE_SEALED
+    assert body["role"] == spec.ROLE_VALIDATION
 
 
 # ── and what happens when the decoder is not there ───────────────────────────

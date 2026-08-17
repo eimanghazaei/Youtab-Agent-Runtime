@@ -128,11 +128,12 @@ def _utterances(
     and the neighbouring framings of the same phrase may or may not also clear
     it. Tests that care about the difference set it explicitly.
 
-    ``E005`` by default, deliberately. It is the validation speaker, and
-    ``round8_config.json`` lists E002, E006 and E007 as sealed — so a fixture
-    named E006 drags every unrelated test through the freeze-and-ledger
-    machinery, which is the harness working correctly and not what most of these
-    tests are about. The sealed-set tests name E006 explicitly.
+    ``E005`` by default, deliberately. It is a validation speaker, and
+    ``round8_config.json`` lists E006 and E007 as sealed (E002 was reassigned
+    from sealed to validation by Owner decision) — so a fixture named E006 drags
+    every unrelated test through the freeze-and-ledger machinery, which is the
+    harness working correctly and not what most of these tests are about. The
+    sealed-set tests name E006 explicitly.
     """
     rows = []
     tflite_count = fired if tflite_fired is None else tflite_fired

@@ -390,7 +390,10 @@ def test_the_registry_is_the_owner_approved_assignment() -> None:
     """
     assert round8.SPEAKER_SPLITS == {
         FIRST_TRAIN: "train",
-        SEALED_EVAL: "eval_sealed",
+        # E002 was the sealed evaluation holdout; the Owner reassigned it to
+        # validation (see the consumption tests below). It is now a held-out
+        # validation voice, not a sealed one.
+        SEALED_EVAL: "validation",
         TRAIN: "train",
         OTHER_TRAIN: "train",
         VALIDATION: "validation",
@@ -399,13 +402,64 @@ def test_the_registry_is_the_owner_approved_assignment() -> None:
     }
     sealed = {name for name, split in round8.SPEAKER_SPLITS.items()
               if split in round8.SEALED_SPLITS}
-    assert sealed == {SEALED_EVAL, *SEALED_QUALIFICATION}
+    # E002 has left the sealed set; the sealed final holdout is E006/E007 only.
+    assert sealed == {*SEALED_QUALIFICATION}
 
     # No speaker may be reachable from two splits, which is what makes the
     # registry a function rather than a suggestion.
     assert len(round8.SPEAKER_SPLITS) == len(set(round8.SPEAKER_SPLITS))
-    # The sealed evaluation speaker is not buildable into any tensor at all.
+    # ``eval_sealed`` stays defined but now binds no speaker, and is still not a
+    # buildable tensor split.
     assert "eval_sealed" not in round8.BUILDABLE_SPLITS.values()
+    assert "eval_sealed" in round8.SEALED_SPLITS
+
+
+def test_e002_is_a_validation_speaker_reachable_on_the_validation_split() -> None:
+    """The Owner-approved reassignment, asserted directly.
+
+    E002 is bound to ``validation``, and ``validation`` is a buildable split
+    whose one accepted registry split is exactly ``validation`` — so E002 is
+    reachable as a validation tensor, which is what selection needs.
+    """
+    assert round8.SPEAKER_SPLITS[SEALED_EVAL] == "validation"
+    assert round8.BUILDABLE_SPLITS["validation"] == "validation"
+    assert round8.SPEAKER_SPLITS[SEALED_EVAL] not in round8.SEALED_SPLITS
+
+
+def test_the_consumption_record_marks_e002_no_longer_sealed() -> None:
+    """A durable, machine-readable record that E002 is spent for validation.
+
+    The record is what makes the move a governed one-way decision rather than a
+    line in a diff: it names the role E002 was spent for, asserts it is no longer
+    a sealed holdout, and carries the reason and the authorization.
+    """
+    record = round8.CONSUMED_FOR_VALIDATION[SEALED_EVAL]
+    assert record["for"] == "validation"
+    assert record["no_longer_sealed_holdout"] is True
+    assert record["authorized"] == "owner"
+    assert "sealed" in record["reason"] and "validation" in record["reason"]
+
+
+def test_re_sealing_a_consumed_speaker_is_refused_by_the_guard() -> None:
+    """The safety net: a consumed speaker can never be bound back to a seal.
+
+    Proved by mutation. A registry that re-binds E002 to a sealed split — the
+    exact silent regression the consumption exists to prevent — must trip the
+    guard, and the guard is the same one that runs at import.
+    """
+    # The live registry is consistent, so the guard is silent on it.
+    round8.assert_consumed_speakers_not_sealed()
+
+    for sealed_split in sorted(round8.SEALED_SPLITS):
+        mutated = dict(round8.SPEAKER_SPLITS)
+        mutated[SEALED_EVAL] = sealed_split
+        with pytest.raises(round8.Refused, match="one-way|re-sealing|consumed"):
+            round8.assert_consumed_speakers_not_sealed(mutated)
+
+    # A consumed speaker vanishing from the registry is refused too: the
+    # consumption is a promise about a binding, so the binding cannot disappear.
+    with pytest.raises(round8.Refused, match="absent from SPEAKER_SPLITS"):
+        round8.assert_consumed_speakers_not_sealed({})
 
 
 def test_an_unapproved_speaker_is_refused(build: Build, tmp_path: Path) -> None:
@@ -445,16 +499,19 @@ def test_an_unfrozen_or_edited_manifest_is_refused(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("split", ["train", "validation"])
-@pytest.mark.parametrize("speaker", [SEALED_EVAL, *SEALED_QUALIFICATION])
+@pytest.mark.parametrize("speaker", [*SEALED_QUALIFICATION])
 def test_a_sealed_speaker_is_refused_in_training_and_validation(
     tmp_path: Path, speaker: str, split: str
 ) -> None:
     """The seal is the only measurement of a voice nothing was fitted on.
 
-    Checked against the registry rather than against the manifest's own word,
-    and on every flag combination: ``--split train`` is exactly the invocation
-    that would ingest it, so the refusal cannot depend on the caller having
-    passed the right flag.
+    E006 and E007 only: E002 left the sealed set by Owner decision, so it is no
+    longer refused here (see ``test_the_reassigned_speaker_builds_on_validation``).
+    The sealed machinery is unchanged for every speaker still bound to a sealed
+    split. Checked against the registry rather than against the manifest's own
+    word, and on every flag combination: ``--split train`` is exactly the
+    invocation that would ingest it, so the refusal cannot depend on the caller
+    having passed the right flag.
     """
     sealed = write_speaker(
         tmp_path / "sealed",
@@ -466,27 +523,49 @@ def test_a_sealed_speaker_is_refused_in_training_and_validation(
     assert speaker in message and "not overridable" in message
 
 
-def test_the_sealed_evaluation_speaker_is_not_buildable_at_all(tmp_path: Path) -> None:
-    """Not even on the qualification split.
+def test_the_reassigned_speaker_builds_on_validation_and_nowhere_else(tmp_path: Path) -> None:
+    """E002 was the sealed evaluation speaker and is now validation.
 
-    E002 is the sealed *evaluation* speaker; qualification is E006 and E007's
-    job. Refusing it everywhere in this stage means the only way to consume it
-    is streaming its audio through the runtime engine, which is the one use that
-    does not spend it.
+    The refusal that used to block it on every split is gone on the *validation*
+    path — E002 builds into a validation tensor for selection — and is still
+    present everywhere else: training (validation is not training) and
+    qualification (that is E006 and E007's sealed job) both still refuse it.
     """
     build = Build(tmp_path / "work")
-    sealed = write_speaker(tmp_path / "sealed", speaker=SEALED_EVAL, split="eval_sealed")
-    build.refuse("may not ingest it", source=[f"human={sealed}"], split="qualification")
+    e002 = write_speaker(tmp_path / "e002", speaker=SEALED_EVAL, split="validation")
 
-    # Non-vacuity: a qualification-sealed speaker *is* buildable on that split,
-    # so the refusal above is about which speaker it is and not about the split
-    # being unimplemented.
+    # The reassignment: E002 builds as a validation tensor, where before it was
+    # refused on sight.
+    sink, stats = build.run(source=[f"human={e002}"], split="validation")
+    assert stats["samples_by_speaker"] == {SEALED_EVAL: 4}
+    assert sink.labels
+
+    # But only there. Validation is not training, and qualification is sealed.
+    build.refuse("may not ingest it", source=[f"human={e002}"], split="train")
+    build.refuse("may not ingest it", source=[f"human={e002}"], split="qualification")
+
+
+def test_a_qualification_sealed_speaker_is_still_buildable_only_on_qualification(
+    tmp_path: Path,
+) -> None:
+    """E006/E007's sealed machinery is untouched by E002 leaving it.
+
+    A qualification-sealed speaker builds on the qualification split and is
+    refused on train/validation — the guarantee the seal is worth.
+    """
+    build = Build(tmp_path / "work")
     ok = write_speaker(
         tmp_path / "qual", speaker=SEALED_QUALIFICATION[0], split="qualification_sealed"
     )
     sink, stats = build.run(source=[f"human={ok}"], split="qualification")
     assert stats["samples_by_speaker"] == {SEALED_QUALIFICATION[0]: 4}
     assert sink.labels
+
+    for refused_split in ("train", "validation"):
+        message = build.refuse(
+            "sealed", source=[f"human={ok}"], split=refused_split
+        )
+        assert SEALED_QUALIFICATION[0] in message and "not overridable" in message
 
 
 @pytest.mark.parametrize(

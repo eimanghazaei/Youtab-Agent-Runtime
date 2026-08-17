@@ -135,11 +135,24 @@ ARMS: tuple[tuple[int, ...], ...] = ((128, 128, 64), (32, 32, 16), (8, 8, 4))
 #: rather than a count nobody can trace to a document.
 STOP_CONDITION = "do not add a fourth width, do not widen the set"
 
-#: Immutable split membership. Also hard-coded, for the same reason as TARGETS.
+#: Split membership, hard-coded for the same reason as TARGETS: ``check`` refuses
+#: any ``round8_config.json`` whose ``splits`` disagree with this constant, so the
+#: JSON cannot be edited alone. That is what ``splits.immutable`` means in
+#: practice — not "never changes" but "changes only through a reviewed edit to
+#: this file".
+#:
+#: Amendment (SPLITS_VERSION 2, Owner-authorized): E002 moved from ``sealed`` to
+#: ``validation``. Only two human speakers were ever recorded for the sealed set;
+#: the Owner spent E002 as a held-out validation voice so threshold/candidate/
+#: epoch selection has a real unseen speaker, leaving E006/E007 as the sealed
+#: final holdout. The move is one-way and recorded as consumed in
+#: ``build_human_dataset.CONSUMED_FOR_VALIDATION`` and ``round8_config.json``
+#: (``splits.consumed``); it can never be reversed back into ``sealed``.
+SPLITS_VERSION = 2
 SPLITS: dict[str, tuple[str, ...]] = {
     "train": ("E001", "E003", "E004"),
-    "validation": ("E005",),
-    "sealed": ("E002", "E006", "E007"),
+    "validation": ("E005", "E002"),
+    "sealed": ("E006", "E007"),
 }
 
 #: Every field that must be empty in a predeclared config and filled in an
