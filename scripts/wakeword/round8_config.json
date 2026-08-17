@@ -1,0 +1,547 @@
+{
+  "round": 8,
+  "status": "predeclared-not-executed",
+  "design_document": "scripts/wakeword/ROUND8_DESIGN.md",
+  "written_before_data_exists": true,
+  "note": "Every hash field in this file is deliberately empty. Hashes are filled and frozen before execution, never invented in advance. validate_round8_config.py --check refuses to report the config as executable while any required hash is empty.",
+
+  "policy": {
+    "training_data": "human-only",
+    "prohibited": [
+      "TTS speech",
+      "Piper voices",
+      "LibriTTS",
+      "LibriTTS-R",
+      "VCTK",
+      "voice conversion",
+      "artificial speaker mixing",
+      "synthetic positives",
+      "synthetic near phrases",
+      "synthetic hard negatives",
+      "generated background noise",
+      "generated impulse responses",
+      "artificial reverberation",
+      "pitch shift",
+      "time stretch",
+      "speed augmentation",
+      "gain augmentation",
+      "artificially mixed speech-noise composites",
+      "any previous synthetic feature tensor",
+      "any synthetic candidate as an initialization"
+    ],
+    "allowed_processing": [
+      "decode",
+      "fixed resample to 16000 Hz",
+      "fixed mono conversion",
+      "deterministic trim, pad and window extraction",
+      "production-identical feature extraction",
+      "fixed numeric scaling the runtime requires"
+    ],
+    "recorded_corpora_permitted_as_negatives_only": [
+      "speech-commands",
+      "common-voice"
+    ]
+  },
+
+  "splits": {
+    "train": ["E001", "E003", "E004"],
+    "validation": ["E005"],
+    "sealed": ["E002", "E006", "E007"],
+    "immutable": true,
+    "validation_may_be_used_for": [
+      "threshold selection",
+      "candidate selection",
+      "epoch selection"
+    ],
+    "sealed_may_be_used_for": ["one post-freeze measurement"]
+  },
+
+  "manifests": [
+    {
+      "dataset": "E001",
+      "role": "train",
+      "usage": "training",
+      "recorded": true,
+      "positive_utterances": 75,
+      "near_phrase_utterances": 90,
+      "free_speech_clips": 51,
+      "excluded_clips": 4,
+      "manifest_sha256": "",
+      "manifest_sidecar": "MANIFEST.json.sha256",
+      "hash_state": "pending-freeze"
+    },
+    {
+      "dataset": "E003",
+      "role": "train",
+      "usage": "training",
+      "recorded": false,
+      "positive_utterances": 36,
+      "near_phrase_utterances": 56,
+      "free_speech_seconds": 60,
+      "manifest_sha256": "",
+      "hash_state": "pending-recording"
+    },
+    {
+      "dataset": "E004",
+      "role": "train",
+      "usage": "training",
+      "recorded": false,
+      "positive_utterances": 36,
+      "near_phrase_utterances": 56,
+      "free_speech_seconds": 60,
+      "manifest_sha256": "",
+      "hash_state": "pending-recording"
+    },
+    {
+      "dataset": "E005",
+      "role": "validation",
+      "usage": "validation",
+      "recorded": false,
+      "positive_utterances": 36,
+      "near_phrase_utterances": 56,
+      "free_speech_seconds": 60,
+      "manifest_sha256": "",
+      "hash_state": "pending-recording"
+    },
+    {
+      "dataset": "E002",
+      "role": "sealed",
+      "usage": "sealed-evaluation",
+      "recorded": true,
+      "manifest_sha256": "",
+      "hash_state": "pending-freeze",
+      "note": "Exists. Deliberately not read, listed or counted while writing this design. Its near set lacks 'okay youtab', 'hey google' and bare 'hey', and its 'hey you tab' takes carry a pause inside the name, so it cannot carry the near-phrase claim on its own."
+    },
+    {
+      "dataset": "E006",
+      "role": "sealed",
+      "usage": "sealed-evaluation",
+      "recorded": false,
+      "positive_utterances": 36,
+      "near_phrase_utterances": 56,
+      "free_speech_seconds": 60,
+      "manifest_sha256": "",
+      "hash_state": "pending-recording"
+    },
+    {
+      "dataset": "E007",
+      "role": "sealed",
+      "usage": "sealed-evaluation",
+      "recorded": false,
+      "positive_utterances": 36,
+      "near_phrase_utterances": 56,
+      "free_speech_seconds": 60,
+      "manifest_sha256": "",
+      "hash_state": "pending-recording"
+    }
+  ],
+
+  "recorded_negative_corpora": [
+    {
+      "key": "speech-commands",
+      "name": "speech_commands_v0.02.tar.gz",
+      "licence": "CC BY 4.0",
+      "archive_sha256": "af14739ee7dc311471de98f5f9d2c9191b18aedfe957f4a6ff791c709868ff58",
+      "pinned_in": "scripts/wakeword/assets.py",
+      "real_human_recordings": true,
+      "role": "real negatives only, never a positive speaker",
+      "clips_total": 105829,
+      "partition_clips": {"train": 70577, "validation": 14266, "eval": 20986},
+      "partition_hours_of_window_time": {"train": 39.209, "validation": 7.926, "eval": 11.659},
+      "partitioned_by": "the corpus's own validation_list.txt and testing_list.txt, then a speaker-id hash bucket"
+    },
+    {
+      "key": "common-voice",
+      "name": "mozilla-foundation/common_voice_17_0 (en)",
+      "licence": "CC0-1.0",
+      "revision": "",
+      "lock_sha256": "",
+      "manifest_sha256": "",
+      "hash_state": "pending-acquisition",
+      "planned_hours": 20.0,
+      "blocked_on": "one Owner action: accept the gated dataset terms while signed in, and export a read-scope HF token",
+      "role": "real negatives only, never a positive speaker",
+      "why": "the only pool with the hours to demonstrate the 0.2/h target at all"
+    }
+  ],
+
+  "background_recordings": {
+    "source": "speech_commands_v0.02 _background_noise_",
+    "generated_and_therefore_excluded": ["pink_noise.wav", "white_noise.wav"],
+    "real_and_usable": {
+      "doing_the_dishes.wav": 95.2,
+      "dude_miaowing.wav": 61.8,
+      "exercise_bike.wav": 61.3,
+      "running_tap.wav": 61.2
+    },
+    "total_real_seconds": 279.5,
+    "total_real_seconds_note": "sum of the rounded per-file durations; the unrounded sum measures 279.4 s",
+    "assignment_disjoint_by_recording": {
+      "train": ["exercise_bike.wav"],
+      "validation": ["doing_the_dishes.wav"],
+      "sealed": ["dude_miaowing.wav", "running_tap.wav"]
+    },
+    "correction_required": "VALIDATION_NOISE in build_dataset.py currently names pink_noise.wav, which is generated; it must be replaced before Round 8 runs."
+  },
+
+  "window_construction": {
+    "sample_rate": 16000,
+    "window_samples": 32000,
+    "window_seconds": 2.0,
+    "feature_frames": 16,
+    "embedding_dim": 96,
+    "frame_samples": 1280,
+    "frame_seconds": 0.08,
+    "phrase_anchored_offsets_frames": [2, 3, 4, 5, 6, 7, 8],
+    "offsets_per_phrase_anchored_utterance": 7,
+    "offsets_derivation": "integer-frame enumeration of build_dataset.PHRASE_END_JITTER (0.16-0.64 s of trailing context) at the runtime's 80 ms frame rate; derived, not tuned",
+    "non_anchored": "deterministic non-overlapping 2.00 s tiling",
+    "augmentation": "none",
+    "positive_speech_prefix_fraction": 0.0,
+    "reverb_fraction": 0.0,
+    "rir_count": 0,
+    "snr_mixing": false,
+    "gain_augmentation": false
+  },
+
+  "dataset_projection": {
+    "note": "Projected from the recording package's take list. Recomputed from the frozen manifests before execution; the projection is recorded so a discrepancy is visible.",
+    "train": {
+      "positive_human": {"utterances": 147, "windows": 1029},
+      "near_phrase_human": {"utterances": 202, "windows": 1414},
+      "free_speech_human": {"windows": 111},
+      "recorded_speech": {"windows": 70577},
+      "background_only": {"windows": 30},
+      "total_windows": 73161
+    },
+    "validation": {
+      "positive_human": {"utterances": 36, "windows": 252},
+      "near_phrase_human": {"utterances": 56, "windows": 392},
+      "free_speech_human": {"windows": 30},
+      "recorded_speech": {"windows": 14266, "hours": 7.926},
+      "background_only": {"windows": 47},
+      "total_windows": 14987
+    },
+    "retired_categories": ["positive", "near_phrase", "synthesized_speech", "common_speech"],
+    "retired_because": "all four were synthesized from TTS voices"
+  },
+
+  "architecture": {
+    "family": "three Conv1d layers over the frame axis, then a small dense head",
+    "input_shape": [1, 16, 96],
+    "output_shape": [1, 1],
+    "output_activation": "sigmoid",
+    "kernels": [5, 5, 3],
+    "frames_surviving_kernels": 6,
+    "head_units": 64,
+    "output_units": 1,
+    "normalization": "per-embedding-dimension mean/std, folded into the first convolution at export",
+    "unchanged_from": "r1 through r7"
+  },
+
+  "variation": {
+    "axis": "channels",
+    "kind": "small explicit predeclared set",
+    "arms": [
+      {"id": "r8a", "channels": [128, 128, 64], "parameters": 192961, "ratio_to_r6c1": 1.0},
+      {"id": "r8b", "channels": [32, 32, 16], "parameters": 28369, "ratio_to_r6c1": 0.14702},
+      {"id": "r8c", "channels": [8, 8, 4], "parameters": 5941, "ratio_to_r6c1": 0.03078}
+    ],
+    "runs": 3,
+    "sweeps_forbidden": [
+      "optimizer",
+      "learning rate",
+      "threshold rule",
+      "architecture family",
+      "loss",
+      "dropout",
+      "epochs",
+      "batch size",
+      "class weights beyond the one derived rule"
+    ],
+    "stop_condition": "If no arm meets all five targets on E005 validation, stop and report the measured capacity-accuracy relation. Do not add a fourth width, do not widen the set, do not begin any other variation without an explicit Owner decision.",
+    "why": "It is the one hyperparameter the 113x collapse of the positive class leaves undefined, and the only direction R5 never measured. R5 measured capacity up as harmful: 6.31x parameters, 6.4x false rejects at each candidate's own selected threshold."
+  },
+
+  "initialization": {
+    "fresh": true,
+    "seed": 20260818,
+    "torch_manual_seed": 20260818,
+    "numpy_default_rng": 20260818,
+    "from_synthetic_checkpoint": false,
+    "resume_allowed": "only from this round's own crash checkpoint; each arm's output directory must be empty at launch",
+    "epoch0_checkpoint_sha256": "",
+    "hash_state": "pending-execution",
+    "why_a_new_seed": "20260807 belonged to the synthetic era; the draw order is entirely different, and reusing the seed would imply draw-for-draw comparability that does not exist"
+  },
+
+  "loss": {
+    "base": "torch.nn.BCELoss(reduction='none')",
+    "focal_gamma": 2.0,
+    "focal_form": "per * (1 - p_t) ** gamma, p_t = pred for positives and 1 - pred for negatives",
+    "negative_weight": 0.1423,
+    "hard_negative_weight": 0.2846,
+    "hard_negative_categories": ["near_phrase", "near_phrase_human"],
+    "weights_are_derived_not_chosen": true,
+    "derivation_rule": "Choose w so the positive class's share of total loss mass equals r6c1's measured 8.953%, with negative_weight = w and hard_negative_weight = 2w, preserving r6c1's exact 6:3 hard-to-ordinary ratio. Recomputed from the frozen manifest counts before the first epoch.",
+    "r6c1_anchor": {
+      "train_windows": 346441,
+      "positive_windows": 116300,
+      "hard_negative_windows": 164090,
+      "other_negative_windows": 66051,
+      "negative_weight": 3.0,
+      "hard_negative_weight": 6.0,
+      "positive_loss_mass_share": 0.08953
+    },
+    "what_carrying_3_and_6_over_would_give": 0.0046,
+    "rejected_alternative": "cap the recorded negatives instead; matching r6c1's window ratio would use about 530 of 70577 permitted real negatives and would destroy the hours the 0.2/h target needs"
+  },
+
+  "optimizer": {
+    "name": "AdamW",
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "unchanged_from": "r6c1"
+  },
+
+  "schedule": {
+    "epochs": 60,
+    "batch_size": 512,
+    "lr_schedule": "cosine",
+    "scheduler": "CosineAnnealingLR(T_max=60)",
+    "dropout": 0.15,
+    "projected_steps_per_epoch": 143,
+    "projected_total_steps": 8580,
+    "r6c1_total_steps": 40620,
+    "epochs_deliberately_not_scaled": "Restoring the step count would mean 284 passes over 1029 positive windows instead of 60. Sixty passes over three voices is already the memorisation risk."
+  },
+
+  "selection": {
+    "unit_of_evidence": "utterance",
+    "utterance_aggregation": {
+      "positive": "a miss if none of its 7 windows fires",
+      "near_phrase": "a false accept if any of its 7 windows fires",
+      "group_key": "the source-utterance group id build_dataset already assigns"
+    },
+    "threshold_rule": "lowest threshold on E005 validation at which every false-accept target, tightened by validation_margin, is met; candidates are the observed negative scores themselves, so the search is exact",
+    "validation_margin": 0.5,
+    "epoch_rule": "per epoch, the lowest threshold meeting the tightened targets and the utterance-level false-reject rate it buys; an epoch where no threshold satisfies the targets cannot be selected; lowest false-reject rate wins",
+    "candidate_rule": "lowest utterance-level false-reject rate on E005 at each arm's own validation-selected threshold",
+    "candidate_tie_break": {
+      "window_percentage_points": 1.0,
+      "prefer": "fewer parameters",
+      "why": "1.0 pt is below the 1.84 pt effect that 300 real windows bought, so inside the noise this pipeline has ever resolved; smaller is preferred because memorising three training speakers is invisible on a single-speaker validation set"
+    },
+    "selected_on": "validation only",
+    "never_selected_on": ["E002", "E006", "E007", "any eval split"]
+  },
+
+  "targets": [
+    {"id": 1, "name": "false rejects", "limit": 0.05, "comparison": "<=", "unit": "fraction of positive utterances"},
+    {"id": 2, "name": "recorded-human-speech false activations", "limit": 0.2, "comparison": "<=", "unit": "per hour"},
+    {"id": 3, "name": "deliberate near-miss false accepts", "limit": 0.02, "comparison": "<=", "unit": "fraction of near-phrase utterances"},
+    {"id": 4, "name": "background-only false accepts", "limit": 0, "comparison": "==", "unit": "count"},
+    {"id": 5, "name": "ONNX/TFLite numerical and detection parity", "limit": 0, "comparison": "==", "unit": "detection disagreements, with latency and memory measured"}
+  ],
+  "targets_unchanged_from": "ROUND6_DESIGN.md",
+
+  "runtime_contract": {
+    "engine": "tools.wake_word._OpenWakeWordEngine",
+    "frame_length_samples": 1280,
+    "confirmation_frames": 3,
+    "sensitivity_is_the_raw_threshold": true,
+    "default_sensitivity": 0.6,
+    "unchanged": true
+  },
+
+  "export_and_parity": {
+    "both_artifacts_from_one_frozen_candidate": true,
+    "onnx": "hey_youtab.onnx",
+    "tflite": "hey_youtab.tflite",
+    "exported_by": ["train_model.export_onnx", "train_model.export_tflite"],
+    "evaluated_independently_through_the_product_runtime": true,
+    "required_detection_disagreements": 0,
+    "detection_disagreement_is_fatal": true,
+    "frame_score_delta": "reported, not gated; r7 measured max 8.225e-06, mean 6.46e-08 over 31986 windows",
+    "also_measured": ["latency p50/p90/p95/p99", "real-time factor", "peak RSS", "model bytes"]
+  },
+
+  "validation_gate": {
+    "rule": "A candidate must pass 5/5 on E005 validation, on both backends independently, with zero detection-parity disagreements, BEFORE any sealed dataset is opened.",
+    "if_no_arm_passes": "the sealed sets stay sealed and Round 8 reports a failure",
+    "per_target_e005_form": [
+      {"id": 1, "n": 36, "unit": "positive utterances", "passes_if": "<= 5%, i.e. <= 1 miss", "clean_run_bound": 0.0798, "demonstrates_target": false},
+      {"id": 2, "hours": 7.926, "unit": "hours of recorded speech", "passes_if": "0 fires", "clean_run_bound_per_hour": 0.378, "demonstrates_target": false},
+      {"id": 3, "n": 56, "unit": "near-phrase utterances", "passes_if": "<= 2%, i.e. <= 1", "clean_run_bound": 0.0521, "demonstrates_target": false},
+      {"id": 4, "n": 47, "unit": "background windows", "passes_if": "0", "clean_run_bound": 0.06175, "demonstrates_target": false},
+      {"id": 5, "n": 14987, "unit": "windows compared", "passes_if": "0 disagreements", "clean_run_bound": 0.0002, "demonstrates_target": true}
+    ],
+    "reporting_rule": "Targets 2, 3 and 4 are passed as 'not contradicted' on E005 and are never reported as demonstrated. Every figure is printed next to the bound its sample size supports."
+  },
+
+  "statistical_power": {
+    "method": "rule of three (0 events in n trials bounds the rate at about 3/n at 95%) with exact Clopper-Pearson bounds; Poisson for per-hour rates",
+    "unit_of_evidence": "utterance, never window; 7 deterministic framings of one utterance are one trial",
+    "target_1": {
+      "clean_run_bound_by_n": {"36": 0.0798, "60": 0.0487, "72": 0.0408, "144": 0.0206},
+      "minimum_n_for_a_clean_run_to_demonstrate_5_percent": 60,
+      "sealed_n_available": 72,
+      "n_for_wilson_half_width": {"0.05": 73, "0.025": 292, "0.02": 456, "0.01": 1825},
+      "at_144_positives_observed_4.86_percent_ci": [0.0237, 0.0969],
+      "shortfall": "the programme can demonstrate '<=5% on a clean run' and cannot distinguish 5% from 9.7%; about 2x short of +-2.5 pts and 12x short of +-1 pt",
+      "speaker_level_caveat": "4-6 speakers is 4-6 draws from the population of voices; clustered on speaker the effective n for a claim about people is 2 sealed speakers plus E002, and no utterance count changes that"
+    },
+    "target_2": {
+      "poisson_requirement": "rate * hours >= 2.9957 for a clean run to bound the rate at 95%",
+      "hours_needed_at_0.2_per_hour": 14.98,
+      "clean_run_bound_by_source": {
+        "consented free conversation, 1 min x 3 sealed speakers": {"hours": 0.05, "bound_per_hour": 59.9},
+        "speech commands validation partition": {"hours": 7.926, "bound_per_hour": 0.378},
+        "speech commands eval partition": {"hours": 11.659, "bound_per_hour": 0.257},
+        "governed common voice subset": {"hours": 20.0, "bound_per_hour": 0.15}
+      },
+      "demonstrable": false,
+      "demonstrable_only_with": "common-voice",
+      "shortfall_hours_of_consented_conversation": 14.93,
+      "correction_to_the_record": "This target has never been demonstrated in any previous round either. The eval split's recorded-speech partition is 11.659 h, so a perfect clean run there bounds the rate at 0.257/h, above the 0.2/h target. Every 0.000/h in evidence/frontier.txt was one observed event away from 0.086/h."
+    },
+    "target_3": {
+      "clean_run_bound_by_n": {"56": 0.0521, "112": 0.0264, "150": 0.0198, "168": 0.0177},
+      "minimum_n": 150,
+      "sealed_n_available": 112,
+      "shortfall_utterances": 38,
+      "remedy": "a third sealed speaker recording the take list, or more takes of rows 6-13 from E006 and E007; an Owner decision about the recording programme"
+    },
+    "target_4": {
+      "real_background_hours_in_total": 0.0776,
+      "clean_run_bound_by_n": {"30": 0.095034, "47": 0.06175, "61": 0.047924, "139": 0.021321},
+      "sealed_windows": 61,
+      "clean_run_bound_per_window": 0.047924,
+      "demonstrable_as_a_rate": false,
+      "note": "met or not met as a count; it is a claim about one or two rooms"
+    },
+    "target_5": {
+      "clean_run_bound_by_n": {"1000": 0.002991, "3000": 0.000998, "10000": 0.0003, "31986": 0.000094},
+      "requirement": "compare every window of every category on both backends, including the full recorded-negative pool, because the real negative corpora are what keep n large once synthetic positives are gone"
+    },
+    "honest_summary": "Targets 2 and 4 cannot be demonstrated by anything the recording programme will produce. Target 3 is 38 utterances short. Target 1 can be demonstrated on a clean run and cannot be estimated better than about +-5 points. Round 8 is worth running as the first measurement of a human-only model and for the capacity-accuracy relation on real data, not because 5/5 would prove the product is ready."
+  },
+
+  "sealed_opening_rule": {
+    "precondition": "one arm has passed 5/5 on E005 validation, on both backends, with zero detection-parity disagreements",
+    "freeze_before_open": [
+      "the selected checkpoint",
+      "hey_youtab.onnx",
+      "hey_youtab.tflite",
+      "the validation-selected threshold at full float64 precision",
+      "every training manifest and its manifest_sha256",
+      "the E005 validation manifest",
+      "each sealed manifest",
+      "the speech-commands asset sha256",
+      "the common-voice lock and manifest if acquired",
+      "the runtime version and the repository commit SHA",
+      "round8_config.json and its sha256"
+    ],
+    "measure": "once, through the real ONNX and TFLite product runtimes, independently, at the frozen threshold",
+    "after": [
+      "the threshold is not re-tuned on a sealed set",
+      "difficult samples are not excluded",
+      "nothing is retried",
+      "each sealed speaker is reported separately as well as pooled",
+      "a measured sealed set is spent and may not be reused for a different candidate"
+    ]
+  },
+
+  "if_validation_fails": {
+    "step_1": "diagnose by real recording category using the validation manifest's own categories: close mic, varied rate and loudness, far field, real background noise; report confirmed-fire and peak-only rates for each so a plateau failure is distinguishable from a discrimination failure",
+    "step_2": "exactly one evidence-backed structural correction, naming the measurement that motivates it, predeclared in a Round 9 design document before it is executed",
+    "step_3_forbidden": "returning to synthetic data of any kind",
+    "step_3_precedent": "R7 added 26000 clips from a genuinely disjoint TTS corpus and made false rejects 8.58 points worse, CI [7.66, 9.54]",
+    "also_forbidden": [
+      "re-tuning the threshold on any sealed set",
+      "excluding difficult recordings",
+      "widening the capacity set",
+      "running a fourth arm",
+      "re-sweeping any hyperparameter this config holds fixed",
+      "reporting a window-level rate in place of an utterance-level one"
+    ],
+    "expected_outcome_stated_in_advance": "r6c1, trained on 116000 synthetic positives and E001's own 300 real windows, confirms only 53.33% of E001's positives - a speaker it was fitted on. An arm trained on 147 utterances from three speakers and measured on an unseen fourth is unlikely to reach 5% false rejects, and targets 2 and 4 are undemonstrable regardless."
+  },
+
+  "prerequisite_code_changes": [
+    "a no-augmentation build path: Augmenter.apply (gain, synthesized RIR at REVERB_FRACTION 0.5, additive background at a drawn SNR in SNR_RANGE) is unconditional today and all three are prohibited; build_rir_pool synthesizes impulse responses with pyroomacoustics and must not run",
+    "POSITIVE_SPEECH_PREFIX_FRACTION set to 0: splicing an unrelated recorded word in front of the wake phrase manufactures an utterance that never happened, from two rooms and two speakers",
+    "the deterministic seven-offset window grid, replacing the random draw from PHRASE_END_JITTER, and deterministic non-overlapping tiling for non-anchored audio",
+    "generated background files excluded by name from every split, and VALIDATION_NOISE corrected",
+    "utterance-level selection and reporting, aggregated on the source-utterance group id",
+    "a synthetic-input refusal guard: any TTS directory, any previous feature tensor, any r1-r7 checkpoint is a fatal error"
+  ],
+
+  "grounding_evidence": {
+    "r5_capacity": {
+      "claim": "capacity up is worse",
+      "at_each_candidates_own_selected_threshold": {
+        "r4": {"parameters": 192961, "false_reject": 0.0756},
+        "r5c1": {"parameters": 369249, "false_reject": 0.1476},
+        "r5c2": {"parameters": 598785, "false_reject": 0.188},
+        "r5c3": {"parameters": 1217601, "false_reject": 0.4842}
+      },
+      "parameter_ratio": 6.31,
+      "false_reject_ratio": 6.4
+    },
+    "r6_real_positives": {
+      "claim": "real human positives help, by 1.19x rather than the 2.4x on record",
+      "coarse_nine_point_bound": {"r4": 0.2314, "r6c1": 0.0978},
+      "dense_bound": {"r4": 0.1166, "r6c1": 0.0982, "r6c2": 0.1924, "r6c3": 0.117, "r7": 0.184},
+      "paired_difference_r4_minus_r6c1_points": 1.84,
+      "cluster_bootstrap_ci_points": [1.1, 2.58],
+      "discordant_windows": {"r4_only_miss": 216, "r6c1_only_miss": 124},
+      "correction": "the 2.4x on record is an artifact of the nine-point threshold grid: r4's grid steps from 0.60 (near-phrase FA 2.02%, which fails) straight to 0.70 (false rejects 23.14%), while r6c1 sat at 1.98% at exactly 0.60"
+    },
+    "r7_second_tts_family": {
+      "claim": "a second, genuinely disjoint TTS corpus made it worse",
+      "paired_difference_r6c1_minus_r7_points": -8.58,
+      "cluster_bootstrap_ci_points": [-9.54, -7.66],
+      "discordant_windows": {"r6c1_only_miss": 59, "r7_only_miss": 488},
+      "figures_on_record_not_reproducible": [0.097, 0.1016]
+    },
+    "channel_gap": {
+      "source": "channel_gap_diagnostic.json",
+      "threshold": 0.5561035871505737,
+      "fire_rates": {
+        "clean_synthetic": 0.9275,
+        "resample_only_null": 0.9275,
+        "band_limited_7k": 0.9275,
+        "aac_64k": 0.9025,
+        "aac_24k": 0.895,
+        "real_human": 0.5333333333333333
+      },
+      "gap_points": 39.42,
+      "fraction_of_gap_closed": {"resample_only": 0.0, "band_limited_7k": 0.0, "aac_64k": 0.063, "aac_24k": 0.082},
+      "conclusion": "the gap is the speech, not the channel"
+    },
+    "confirmation_rule_cost_points": {
+      "clean_synthetic": 6.0,
+      "resample_only_null": 6.0,
+      "aac_64k": 7.75,
+      "raw_tts": 1.5,
+      "real_human": 22.67,
+      "real_human_peak_over_threshold": 0.76,
+      "real_human_confirmed": 0.5333333333333333,
+      "conclusion": "real utterances cross the threshold and fall back off it; the plateau is the binding defect"
+    },
+    "per_condition_profile_of_the_one_measured_training_speaker": {
+      "close_mic_normal": {"n": 15, "confirmed": 1.0, "peak_over_threshold": 1.0, "median_peak": 0.8597, "median_rms_dbfs": -25.8},
+      "varied_rate_and_loudness": {"n": 30, "confirmed": 0.367, "peak_over_threshold": 0.533, "median_peak": 0.6198, "median_rms_dbfs": -33.4},
+      "far_field": {"n": 15, "confirmed": 0.533, "peak_over_threshold": 0.8, "median_peak": 0.6722, "median_rms_dbfs": -25.7},
+      "over_real_background_noise": {"n": 15, "confirmed": 0.4, "peak_over_threshold": 0.933, "median_peak": 0.7657, "median_rms_dbfs": -14.8}
+    }
+  },
+
+  "discrepancies_found_while_writing_this": [
+    "SPEAKER_RECORDING_PACKAGE.md states '40 near x 4 speakers = 160'; the take list sums to 56 near-phrase utterances plus one conversation block per speaker. The document understates its own package.",
+    "The 23.14% -> 9.78% figure in ROUND7_DESIGN.md is a nine-point-grid artifact; the dense-grid effect is 11.66% -> 9.82%.",
+    "The 9.70% -> 10.16% R7 figures are not reproducible from the stored artifacts; R7 was materially worse than r6c1, not neutral.",
+    "The 0.2/h target has never been demonstrable on the eval split: 11.659 h bounds a clean run at 0.257/h."
+  ]
+}

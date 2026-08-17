@@ -1,0 +1,507 @@
+"""Round 8 is predeclared, and the predeclaration cannot rot into a document.
+
+Background
+----------
+Rounds 6 and 7 were written before their data existed, and that is the only
+reason their negative results are trustworthy: every decision that could have
+been influenced by seeing a result was fixed in advance. Round 8 gets the same
+treatment, with one difference — the design is also machine-readable
+(``scripts/wakeword/round8_config.json``), so the parts of it that are
+arithmetic can be *checked* rather than reviewed.
+
+This file does three jobs, and they are different jobs:
+
+1. It runs ``round8_config.check`` over the committed config, so a config that
+   drifted out of internal consistency fails the build.
+2. It proves ``check`` has teeth, by mutating a loaded copy in each of the ways
+   a hurried edit would and asserting that each mutation is caught. Without
+   this, a refactor that broke every check would leave job 1 quietly green.
+3. It pins the things that are *policy* rather than arithmetic — the immutable
+   splits, the five unchanged targets, fresh initialization, the
+   5/5-before-sealed gate, the ban on returning to synthetic data — against both
+   the config and the design document, because those are the parts a later
+   round would be tempted to soften.
+
+The hash fields are asserted **empty**. Round 8 has not run; the recordings it
+needs do not exist. A filled hash in this file's state would mean either that
+somebody invented one, or that the round executed and nobody updated the status.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+WAKEWORD = REPO / "scripts" / "wakeword"
+CONFIG_PATH = WAKEWORD / "round8_config.json"
+DESIGN_PATH = WAKEWORD / "ROUND8_DESIGN.md"
+
+sys.path.insert(0, str(WAKEWORD))
+
+import round8_config as r8  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def config() -> dict:
+    return r8.load(CONFIG_PATH)
+
+
+# ── the committed config ─────────────────────────────────────────────────────
+
+
+def test_the_committed_config_is_complete_and_self_consistent(config: dict) -> None:
+    problems = r8.check(config)
+    assert not problems, "\n  ".join(["round8_config.json has problems:", *problems])
+
+
+def test_the_config_is_valid_json_and_stable_to_reserialize() -> None:
+    """A config that is going to be hashed has to be a file, not a formatting.
+
+    ``freeze_manifest`` hashes canonical JSON, so the config being re-serializable
+    without loss is what makes "the config we ran" a checkable claim later.
+    """
+    raw = CONFIG_PATH.read_text(encoding="utf-8")
+    parsed = json.loads(raw)
+    assert json.loads(json.dumps(parsed)) == parsed
+
+
+def test_every_hash_field_is_empty_because_round_8_has_not_run(config: dict) -> None:
+    assert r8._hash_state(config) == "empty"
+    assert config["status"] == "predeclared-not-executed"
+    for entry in config["manifests"]:
+        assert entry["manifest_sha256"] == "", entry["dataset"]
+        assert "hash_state" in entry, entry["dataset"]
+    assert config["initialization"]["epoch0_checkpoint_sha256"] == ""
+    # And the config says so in words as well as in structure, because the
+    # person who fills these in reads the note, not the schema.
+    assert "filled and frozen before execution" in config["note"]
+
+
+def test_the_cli_check_exits_zero_on_the_committed_config() -> None:
+    result = subprocess.run(
+        [sys.executable, str(WAKEWORD / "round8_config.py"), "--check"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "all checks passed" in result.stdout
+
+
+# ── the arithmetic ───────────────────────────────────────────────────────────
+
+
+def test_the_parameter_formula_reproduces_the_recorded_candidate() -> None:
+    """192,961 is a measured number from r1-r7, not a derivation.
+
+    If the formula does not reproduce it, every parameter count in the design is
+    a guess, including the ones that justify the capacity axis.
+    """
+    assert r8.parameter_count([128, 128, 64]) == 192961
+    assert r8.parameter_count([192, 192, 96]) == 369249
+    assert r8.parameter_count([256, 256, 128]) == 598785
+    assert r8.parameter_count([384, 384, 192]) == 1217601
+
+
+def test_the_arms_go_down_and_span_two_orders_of_magnitude(config: dict) -> None:
+    arms = config["variation"]["arms"]
+    counts = [arm["parameters"] for arm in arms]
+    assert counts == sorted(counts, reverse=True)
+    assert counts[0] == 192961, "the only measured architecture is not the control"
+    assert counts[0] / counts[-1] > 30, "the capacity set is too narrow to measure a slope"
+    assert len(arms) == 3
+
+
+def test_the_clean_run_bound_agrees_with_the_rule_of_three() -> None:
+    """The rule of three is the approximation the recording package reasons in.
+
+    It has to agree with the exact bound to within a few percent, or the
+    package's arithmetic and this config's arithmetic are two different claims.
+    """
+    for n in (36, 56, 60, 72, 112, 144, 150):
+        exact = r8.clean_run_upper_bound(n)
+        approximate = 3.0 / n
+        assert exact < approximate, n
+        assert abs(exact - approximate) / approximate < 0.05, n
+    assert r8.clean_run_upper_bound(60) == pytest.approx(0.0487, abs=5e-4)
+    assert r8.clean_run_upper_bound(150) == pytest.approx(0.0198, abs=5e-4)
+
+
+def test_fifteen_hours_is_what_the_point_two_per_hour_target_needs() -> None:
+    """The number that decides whether target 2 is measurable at all."""
+    assert r8.hours_for_poisson_bound(0.2) == pytest.approx(14.98, abs=0.01)
+    # And what the corpora on hand actually bound, which is the finding.
+    assert 3.0 / 11.659 > 0.2, "the eval partition would have demonstrated 0.2/h"
+    assert r8.hours_for_poisson_bound(0.2) > 7.926, "validation hours would suffice"
+
+
+def test_the_loss_weight_rule_is_arithmetic_with_no_free_choice(config: dict) -> None:
+    anchor = config["loss"]["r6c1_anchor"]
+    share = r8.positive_loss_mass_share(
+        anchor["positive_windows"],
+        anchor["hard_negative_windows"],
+        anchor["other_negative_windows"],
+        negative_weight=anchor["negative_weight"],
+        hard_negative_weight=anchor["hard_negative_weight"],
+    )
+    assert share == pytest.approx(anchor["positive_loss_mass_share"], abs=5e-5)
+
+    train = config["dataset_projection"]["train"]
+    positives = train["positive_human"]["windows"]
+    hard = train["near_phrase_human"]["windows"]
+    other = train["total_windows"] - positives - hard
+    weight = r8.derived_negative_weight(positives, hard, other, anchor_share=share)
+    assert weight == pytest.approx(config["loss"]["negative_weight"], abs=5e-4)
+    # The rule is a fixed point: applying the derived weights must return the
+    # anchor share. That is what makes it a derivation rather than a fitted
+    # number.
+    assert r8.positive_loss_mass_share(
+        positives, hard, other, negative_weight=weight, hard_negative_weight=2 * weight
+    ) == pytest.approx(share, abs=1e-6)
+
+
+def test_the_offset_grid_is_derived_from_the_pipelines_own_constants() -> None:
+    """Seven offsets is a consequence, not a choice.
+
+    If either ``PHRASE_END_JITTER`` or the runtime's frame length ever moves,
+    this fails rather than letting the config keep a stale grid that nothing
+    points at any more.
+    """
+    grid = r8.offset_grid_from_pipeline()
+    assert grid == [2, 3, 4, 5, 6, 7, 8]
+    assert len(grid) == 7
+
+
+# ── policy that is not arithmetic ────────────────────────────────────────────
+
+
+def test_the_splits_are_the_immutable_ones(config: dict) -> None:
+    assert config["splits"]["train"] == ["E001", "E003", "E004"]
+    assert config["splits"]["validation"] == ["E005"]
+    assert config["splits"]["sealed"] == ["E002", "E006", "E007"]
+    members = (
+        config["splits"]["train"] + config["splits"]["validation"] + config["splits"]["sealed"]
+    )
+    assert len(members) == len(set(members)), "a dataset is in two splits"
+
+
+def test_validation_selects_and_nothing_else_does(config: dict) -> None:
+    selection = config["selection"]
+    assert selection["selected_on"] == "validation only"
+    for sealed in config["splits"]["sealed"]:
+        assert sealed in selection["never_selected_on"]
+    allowed = config["splits"]["validation_may_be_used_for"]
+    assert set(allowed) == {"threshold selection", "candidate selection", "epoch selection"}
+
+
+def test_initialization_is_fresh_and_names_no_synthetic_ancestor(config: dict) -> None:
+    init = config["initialization"]
+    assert init["fresh"] is True
+    assert init["from_synthetic_checkpoint"] is False
+    assert init["seed"] == init["torch_manual_seed"] == init["numpy_default_rng"]
+    assert init["seed"] != 20260807, "the synthetic era's seed is reused"
+
+
+def test_the_five_targets_are_unchanged(config: dict) -> None:
+    limits = {entry["id"]: entry["limit"] for entry in config["targets"]}
+    assert limits == {1: 0.05, 2: 0.2, 3: 0.02, 4: 0, 5: 0}
+    assert config["targets_unchanged_from"] == "ROUND6_DESIGN.md"
+
+
+def test_both_artifacts_come_from_one_candidate_and_parity_is_absolute(config: dict) -> None:
+    export = config["export_and_parity"]
+    assert export["both_artifacts_from_one_frozen_candidate"] is True
+    assert export["evaluated_independently_through_the_product_runtime"] is True
+    assert export["required_detection_disagreements"] == 0
+    assert export["detection_disagreement_is_fatal"] is True
+    assert set(export["exported_by"]) == {
+        "train_model.export_onnx",
+        "train_model.export_tflite",
+    }
+
+
+def test_no_sealed_set_opens_before_five_of_five_on_validation(config: dict) -> None:
+    gate = config["validation_gate"]
+    assert "5/5" in gate["rule"]
+    assert "BEFORE any sealed dataset is opened" in gate["rule"]
+    assert "5/5" in config["sealed_opening_rule"]["precondition"]
+    # And the honest half: three of the five cannot be demonstrated on E005, so
+    # the gate has to say which ones it is only failing to contradict.
+    forms = {entry["id"]: entry for entry in gate["per_target_e005_form"]}
+    assert forms[2]["demonstrates_target"] is False
+    assert forms[3]["demonstrates_target"] is False
+    assert forms[4]["demonstrates_target"] is False
+    assert "not contradicted" in gate["reporting_rule"]
+
+
+def test_returning_to_synthetic_data_is_forbidden_not_discouraged(config: dict) -> None:
+    failure = config["if_validation_fails"]
+    assert "synthetic" in failure["step_3_forbidden"].lower()
+    lowered = " ".join(str(v).lower() for v in failure.values())
+    assert "one evidence-backed structural correction" in lowered
+    for forbidden in ("re-tuning the threshold on any sealed set", "excluding difficult recordings"):
+        assert forbidden in " | ".join(failure["also_forbidden"])
+
+
+def test_the_prohibition_list_covers_the_owner_decision(config: dict) -> None:
+    prohibited = " | ".join(config["policy"]["prohibited"]).lower()
+    for needle in (
+        "tts",
+        "libritts",
+        "vctk",
+        "voice conversion",
+        "pitch shift",
+        "time stretch",
+        "speed augmentation",
+        "gain augmentation",
+        "generated background noise",
+        "generated impulse responses",
+        "artificial reverberation",
+        "any previous synthetic feature tensor",
+    ):
+        assert needle in prohibited, needle
+    allowed = " | ".join(config["policy"]["allowed_processing"]).lower()
+    assert "resample" in allowed and "mono" in allowed and "deterministic" in allowed
+
+
+def test_recorded_corpora_are_negatives_only_and_carry_a_licence(config: dict) -> None:
+    """Speech Commands is real human audio, so it is permitted — as negatives.
+
+    The distinction is the whole point: a recorded corpus may be a negative and
+    may never be a positive speaker, and each one has to carry licence, hash and
+    source or the human-only claim is unverifiable.
+    """
+    corpora = config["recorded_negative_corpora"]
+    keys = {entry["key"] for entry in corpora}
+    assert keys == {"speech-commands", "common-voice"}
+    for entry in corpora:
+        assert "negatives only" in entry["role"]
+        assert "never a positive speaker" in entry["role"]
+        assert entry["licence"]
+    speech_commands = next(e for e in corpora if e["key"] == "speech-commands")
+    assert speech_commands["real_human_recordings"] is True
+    assert len(speech_commands["archive_sha256"]) == 64, "the pinned corpus has no digest"
+    # The one that is not fetched yet has empty hash fields, and says why.
+    common_voice = next(e for e in corpora if e["key"] == "common-voice")
+    assert common_voice["lock_sha256"] == ""
+    assert common_voice["manifest_sha256"] == ""
+    assert common_voice["blocked_on"]
+
+
+def test_generated_noise_is_out_and_the_background_split_is_disjoint(config: dict) -> None:
+    background = config["background_recordings"]
+    excluded = set(background["generated_and_therefore_excluded"])
+    assert excluded == {"pink_noise.wav", "white_noise.wav"}
+    usable = set(background["real_and_usable"])
+    assert not excluded & usable
+    assigned: list[str] = []
+    for names in background["assignment_disjoint_by_recording"].values():
+        assigned.extend(names)
+    assert sorted(assigned) == sorted(usable)
+    assert len(assigned) == len(set(assigned))
+
+
+def test_the_design_document_and_the_config_agree_on_the_headline_claims() -> None:
+    """The document is the argument; the config is what runs. They must match."""
+    text = DESIGN_PATH.read_text(encoding="utf-8")
+    config = r8.load(CONFIG_PATH)
+    assert "human-only" in text.lower()
+    # The one varied axis, named as one.
+    assert "exactly one axis" in text
+    for arm in config["variation"]["arms"]:
+        assert f"{arm['parameters']:,}" in text, arm["id"]
+    # The stop condition, the gate, and the ban.
+    assert "Stop condition" in text
+    assert "before any sealed dataset is opened" in text.lower()
+    assert "forbidden" in text.lower()
+    # The two numbers that decide whether the targets are measurable at all.
+    assert "14.98" in text
+    assert "not demonstrable" in text.lower()
+
+
+def test_no_hash_is_invented_in_advance() -> None:
+    """The one digest either file may contain is the corpus that is already pinned.
+
+    A predeclaration whose hashes were guessed would be worse than one with none:
+    it would look frozen. So the whole-file check is "no 64-hex string anywhere
+    except the Speech Commands archive digest, which was pinned long before this
+    round and lives in ``assets.py``".
+    """
+    import re
+
+    sys.path.insert(0, str(WAKEWORD))
+    import assets  # noqa: PLC0415
+
+    permitted = {asset.sha256 for asset in assets.ALL_ASSETS}
+    digest = re.compile(r"\b[0-9a-f]{64}\b")
+    for path in (DESIGN_PATH, CONFIG_PATH):
+        found = set(digest.findall(path.read_text(encoding="utf-8")))
+        invented = found - permitted
+        assert not invented, f"{path.name} carries a digest nothing has produced: {invented}"
+    # Non-vacuity: the pattern has to find the one digest that is legitimately
+    # there, or "no invented hashes" would be a statement about a broken regex.
+    assert digest.findall(CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def test_the_design_document_carries_no_speaker_keyed_record() -> None:
+    """The commit gate's own pattern, applied here so the failure is local.
+
+    ``tests/tools/test_wakeword_no_human_data_committed.py`` would catch a
+    speaker-keyed record or a capture-root marker anywhere in the repository,
+    but it reports it as "some tracked file". These files are the ones most
+    likely to acquire one, so they are checked where the fix is obvious.
+
+    The forbidden markers are assembled from fragments, the same convention the
+    gate's own control test uses, so this file does not become a tracked file
+    containing them.
+    """
+    import re
+
+    keyed = re.compile(r"\bspeaker_?(?:id)?[\"']?\s*[:=]\s*[\"']?E\d{3}\b", re.IGNORECASE)
+    directory_marker = "speaker" + "_e0"
+    for path in (DESIGN_PATH, CONFIG_PATH, WAKEWORD / "round8_config.py", Path(__file__)):
+        text = path.read_text(encoding="utf-8")
+        assert not keyed.search(text), f"{path.name} contains a speaker-keyed record"
+        assert directory_marker not in text.replace("\\", "/").lower(), path.name
+
+    # Non-vacuity: the two patterns have to match the things they forbid.
+    assert keyed.search('{"speaker_id": "E00' + '2"}')
+    assert directory_marker in ("datasets/" + directory_marker.upper() + "01/take.m4a").lower()
+    assert not keyed.search("the package is handed to speaker E005 before the session")
+
+
+# ── proof that the checks have teeth ─────────────────────────────────────────
+
+
+def _mutate(config: dict, mutate) -> list[str]:
+    broken = copy.deepcopy(config)
+    mutate(broken)
+    return r8.check(broken)
+
+
+MUTATIONS = {
+    "a target limit is loosened": lambda c: c["targets"].__setitem__(
+        0, {**c["targets"][0], "limit": 0.10}
+    ),
+    "a sealed dataset is moved into training": lambda c: c["splits"].__setitem__(
+        "train", ["E001", "E003", "E004", "E006"]
+    ),
+    "the validation speaker is changed": lambda c: c["splits"].__setitem__(
+        "validation", ["E002"]
+    ),
+    "a parameter count is wrong": lambda c: c["variation"]["arms"][1].__setitem__(
+        "parameters", 12345
+    ),
+    "the control architecture is dropped": lambda c: c["variation"].__setitem__(
+        "arms", c["variation"]["arms"][1:]
+    ),
+    "the arms become an open sweep": lambda c: c["variation"].__setitem__(
+        "arms",
+        [{"id": f"x{i}", "channels": [i, i, i], "parameters": r8.parameter_count([i, i, i])}
+         for i in range(120, 108, -1)],
+    ),
+    "the stop condition is emptied": lambda c: c["variation"].__setitem__("stop_condition", ""),
+    "initialization comes from a synthetic checkpoint": lambda c: c["initialization"].__setitem__(
+        "from_synthetic_checkpoint", True
+    ),
+    "the synthetic era's seed is reused": lambda c: c["initialization"].update(
+        {"seed": 20260807, "torch_manual_seed": 20260807, "numpy_default_rng": 20260807}
+    ),
+    "one hash is invented in advance": lambda c: c["manifests"][0].__setitem__(
+        "manifest_sha256", "0" * 64
+    ),
+    "augmentation is switched back on": lambda c: c["window_construction"].__setitem__(
+        "reverb_fraction", 0.5
+    ),
+    "the speech prefix is switched back on": lambda c: c["window_construction"].__setitem__(
+        "positive_speech_prefix_fraction", 0.3
+    ),
+    "the offset grid drifts from the pipeline": lambda c: c["window_construction"].__setitem__(
+        "phrase_anchored_offsets_frames", [4]
+    ),
+    "the window projection stops adding up": lambda c: c["dataset_projection"]["train"][
+        "positive_human"
+    ].__setitem__("windows", 9999),
+    "the derived loss weight is hand-edited": lambda c: c["loss"].__setitem__(
+        "negative_weight", 3.0
+    ),
+    "the hard-to-ordinary ratio is broken": lambda c: c["loss"].__setitem__(
+        "hard_negative_weight", 1.0
+    ),
+    "epochs are scaled up to restore the step count": lambda c: c["schedule"].__setitem__(
+        "epochs", 339
+    ),
+    "a parity disagreement becomes a tolerance": lambda c: c["export_and_parity"].__setitem__(
+        "detection_disagreement_is_fatal", False
+    ),
+    "the parity denominator is inflated": lambda c: c["validation_gate"][
+        "per_target_e005_form"
+    ][4].__setitem__("n", 72000),
+    "the sealed gate is softened": lambda c: c["validation_gate"].__setitem__(
+        "rule", "open the sealed sets when the candidate looks promising"
+    ),
+    "generated noise is used as background": lambda c: c["background_recordings"][
+        "real_and_usable"
+    ].__setitem__("pink_noise.wav", 60.0),
+    "a background recording is used by two splits": lambda c: c["background_recordings"][
+        "assignment_disjoint_by_recording"
+    ].__setitem__("train", ["exercise_bike.wav", "doing_the_dishes.wav"]),
+    "a prohibition is dropped": lambda c: c["policy"].__setitem__(
+        "prohibited", [p for p in c["policy"]["prohibited"] if "pitch" not in p.lower()]
+    ),
+    "pitch shift is smuggled into allowed processing": lambda c: c["policy"][
+        "allowed_processing"
+    ].append("small pitch shift"),
+    "target 2 is declared demonstrable": lambda c: c["statistical_power"][
+        "target_2"
+    ].__setitem__("demonstrable", True),
+    "a clean-run bound is overstated": lambda c: c["statistical_power"]["target_1"][
+        "clean_run_bound_by_n"
+    ].__setitem__("36", 0.05),
+    "the target 3 shortfall is hidden": lambda c: c["statistical_power"]["target_3"].__setitem__(
+        "shortfall_utterances", 0
+    ),
+    "the tie-break starts preferring bigger": lambda c: c["selection"][
+        "candidate_tie_break"
+    ].__setitem__("prefer", "more parameters"),
+    "selection moves off validation": lambda c: c["selection"].__setitem__(
+        "selected_on", "eval"
+    ),
+    "the validation margin is dropped": lambda c: c["selection"].__setitem__(
+        "validation_margin", 1.0
+    ),
+    "the freeze list loses the artifacts": lambda c: c["sealed_opening_rule"].__setitem__(
+        "freeze_before_open", ["the checkpoint"]
+    ),
+    "returning to synthetic data becomes allowed": lambda c: c["if_validation_fails"].__setitem__(
+        "step_3_forbidden", "nothing in particular"
+    ),
+    "a prerequisite code change is dropped": lambda c: c.__setitem__(
+        "prerequisite_code_changes", ["nothing to do"]
+    ),
+    "a required section disappears": lambda c: c.pop("statistical_power"),
+    "the human-only policy is relaxed": lambda c: c["policy"].__setitem__(
+        "training_data", "mostly human"
+    ),
+}
+
+
+@pytest.mark.parametrize("description", sorted(MUTATIONS))
+def test_check_catches_the_edit(config: dict, description: str) -> None:
+    problems = _mutate(config, MUTATIONS[description])
+    assert problems, f"check() did not notice: {description}"
+
+
+def test_the_mutation_battery_is_not_vacuous(config: dict) -> None:
+    """A no-op mutation must produce no problems.
+
+    Without this, a ``check`` that returned a problem unconditionally would pass
+    every case above while checking nothing.
+    """
+    assert not _mutate(config, lambda c: None)
+    assert len(MUTATIONS) >= 30, f"only {len(MUTATIONS)} mutations"
