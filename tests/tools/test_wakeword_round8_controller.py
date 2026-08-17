@@ -73,16 +73,20 @@ def _spk(number: int) -> str:
     return f"{_LABEL_PREFIX}{number:03d}"
 
 
+# E002 was reassigned from the sealed set to validation by Owner decision, so
+# validation carries two voices and the sealed final holdout is E006/E007. These
+# tuples track the order of ``round8_config.json`` so ``plan.validation`` and
+# ``plan.sealed`` match.
 TRAIN = (_spk(1), _spk(3), _spk(4))
-VALIDATION = (_spk(5),)
-SEALED = (_spk(2), _spk(6), _spk(7))
+VALIDATION = (_spk(5), _spk(2))
+SEALED = (_spk(6), _spk(7))
 
 #: What the fake registry claims, mirroring ``build_human_dataset.SPEAKER_SPLITS``.
 #: Asserted against the committed table in
 #: ``test_the_faked_split_registry_is_the_committed_one``.
 REGISTRY: Mapping[str, str] = {
     _spk(1): "train",
-    _spk(2): "eval_sealed",
+    _spk(2): "validation",
     _spk(3): "train",
     _spk(4): "train",
     _spk(5): "validation",
@@ -940,7 +944,7 @@ def test_state_3_refuses_a_sealed_set_already_on_the_ledger(
 def test_state_3_refuses_when_the_registry_and_the_config_disagree(
     controller_module, scenario
 ):
-    case = scenario(splits={**REGISTRY, SEALED[2]: "train"})
+    case = scenario(splits={**REGISTRY, SEALED[1]: "train"})
     case.controller.advance(to=2)
     with pytest.raises(controller_module.SealedSpeakerLeakRefused, match="disagree"):
         case.controller.run_state(3)
@@ -1411,7 +1415,7 @@ def test_one_detection_disagreement_is_fatal(controller_module, scenario):
 
 
 def test_a_gate_computed_over_a_sealed_set_is_refused(controller_module, scenario):
-    case = scenario(report_kwargs={"datasets": (*VALIDATION, SEALED[2])})
+    case = scenario(report_kwargs={"datasets": (*VALIDATION, SEALED[1])})
     case.controller.advance(to=8)
     with pytest.raises(controller_module.SealedSpeakerLeakRefused, match="may be opened"):
         case.controller.run_state(9)
@@ -1432,11 +1436,12 @@ def test_the_real_harness_refuses_round_8s_projected_quantities(
 
     Fabricated outcomes and no audio: what is under test is that the controller
     reports the harness's ``REFUSED`` rather than a 5/5 it liked the look of.
-    The evidence is labelled with the validation dataset because that is the set
-    the gate is computed on; the sample sizes are the projected ones the brief
+    The evidence is labelled across the validation set because that is what the
+    gate is computed on; since E002 was reassigned into validation it is two
+    speakers now, so utterances are spread over both while the category totals —
+    the only thing the target math reads — are the projected ones the brief
     names.
     """
-    dataset = VALIDATION[0]
 
     def window(index: int, fired: bool) -> object:
         return qualify.Window(
@@ -1459,7 +1464,10 @@ def test_the_real_harness_refuses_round_8s_projected_quantities(
                     provenance=provenance,
                     audio_seconds=seconds,
                     windows=tuple(window(w, fired) for w in range(windows)),
-                    dataset=dataset,
+                    # Spread across the validation set so the gate sees the whole
+                    # of plan.validation; the split is by index and leaves every
+                    # category total unchanged.
+                    dataset=VALIDATION[index % len(VALIDATION)],
                 )
             )
 
@@ -1645,13 +1653,15 @@ def test_opening_a_sealed_set_requires_the_phrase_that_names_it(
 ):
     """The mutation case for the barrier itself."""
     case = _completed(scenario, stop=10)
+    # Target SEALED[0] (E006); the wrong phrases are the right one mis-cased and
+    # the correct-cased phrase for the other sealed set (E007).
     for wrong in ("", "yes", "OPEN SEALED", "open sealed E006", "OPEN SEALED E007"):
         with pytest.raises(
             controller_module.SealBarrierRefused, match="requires the exact authorization"
         ):
-            case.controller.open_sealed(SEALED[1], authorization=wrong)
+            case.controller.open_sealed(SEALED[0], authorization=wrong)
     assert case.controller.journal.status(11) is None
-    assert case.fakes.seal_status(SEALED[1]) is None
+    assert case.fakes.seal_status(SEALED[0]) is None
 
 
 def test_a_dataset_that_is_not_sealed_cannot_be_opened(controller_module, scenario):
@@ -1688,9 +1698,9 @@ def test_opening_a_sealed_set_spends_it(controller_module, scenario):
     ledger = case.fakes.seal_status(SEALED[1])
     assert ledger["status"] == "CONSUMED"
     assert ledger["freeze_digest"] == case.controller.journal.sealed["freeze_digest"]
-    # The other two are untouched.
+    # The other sealed set is untouched (E002 is no longer sealed; E006/E007 are
+    # the two-member sealed final holdout).
     assert case.fakes.seal_status(SEALED[0]) is None
-    assert case.fakes.seal_status(SEALED[2]) is None
 
 
 def test_a_retuned_threshold_cannot_open_a_sealed_set(controller_module, scenario):
@@ -1757,7 +1767,7 @@ def test_a_sealed_set_already_spent_under_another_freeze_is_refused(
 
 def test_the_whole_order_records_eleven_gated_transitions(controller_module, scenario):
     case = _completed(scenario, stop=10)
-    for dataset in (SEALED[1], SEALED[2]):
+    for dataset in (SEALED[0], SEALED[1]):
         case.controller.open_sealed(
             dataset,
             authorization=controller_module.AUTHORIZATION_TEMPLATE.format(dataset=dataset),

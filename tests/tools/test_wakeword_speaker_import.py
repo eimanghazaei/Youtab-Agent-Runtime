@@ -1544,25 +1544,34 @@ def test_the_flat_session_layout_imports_as_train_only(
             freeze_manifest.assert_usable_for(manifest, purpose)
 
 
-def test_the_sealed_speaker_is_recognised_as_sealed_and_refused_for_any_other_use(
+def test_the_reassigned_prior_speaker_is_recognised_as_validation_and_refused_elsewhere(
     tmp_path: Path, into: Path
 ) -> None:
+    """E002 was the sealed evaluation speaker; the Owner reassigned it to
+    validation (recorded in ``build_human_dataset.CONSUMED_FOR_VALIDATION`` and
+    ``round8_config.json``). Its group-layout submission now imports as a
+    validation speaker: usable for validation, and refused for training and for
+    the sealed final measurement. The refusal is now the ordinary
+    wrong-purpose ``ValueError`` rather than ``SealedDatasetError``, because the
+    speaker is no longer sealed — but a fitted-on or evaluation use is still
+    blocked.
+    """
     root = build_prior_group_submission(tmp_path / PRIOR_SEALED_LABEL, PRIOR_SEALED_LABEL)
     state = imp.plan(PRIOR_SEALED_LABEL, root, into)
-    assert state.assignment.role == spec.ROLE_SEALED
-    assert state.assignment.split == "eval_sealed"
+    assert state.assignment.role == spec.ROLE_VALIDATION
+    assert state.assignment.split == "validation"
     assert state.ok, {check.name: check.problems for check in state.failures}
 
     imp.execute(state, into)
     manifest = freeze_manifest.load(
         into / (imp.SPEAKER_DIR_PREFIX + PRIOR_SEALED_LABEL) / imp.MANIFEST_FILENAME
     )
-    assert manifest["usage"] == spec.ROLE_SEALED
-    freeze_manifest.assert_usable_for(manifest, "evaluation")
-    for purpose in ("training", "validation"):
-        with pytest.raises(freeze_manifest.SealedDatasetError):
+    assert manifest["usage"] == spec.ROLE_VALIDATION
+    freeze_manifest.assert_usable_for(manifest, "validation")
+    for purpose in ("training", "evaluation"):
+        with pytest.raises(ValueError):
             freeze_manifest.assert_usable_for(manifest, purpose)
-        with pytest.raises(freeze_manifest.SealedDatasetError):
+        with pytest.raises(ValueError):
             imp.assert_usable_for(PRIOR_SEALED_LABEL, purpose)
 
 
@@ -1702,11 +1711,30 @@ def test_the_frozen_human_manifests_agree_with_this_registry() -> None:
             "against"
         )
         manifest = json.loads(path.read_text(encoding="utf-8"))
-
-        # The registry, the manifest and the role reader all say the same thing.
         assert manifest["speaker"] == label
-        assert manifest["split"] == table[label].split
-        assert imp._manifest_role(path.name, manifest) == table[label].role
+
+        if label == PRIOR_SEALED_LABEL:
+            # E002's round-6/7 manifest is the historical *sealed* artifact, kept
+            # byte-for-byte — its digest is pinned above. The Owner reassigned
+            # E002 to validation, so the registry deliberately no longer agrees
+            # with these bytes: the manifest still declares eval_sealed and reads
+            # as sealed, while the registry now binds E002 to validation. That
+            # divergence is the record of the reassignment, and it is one-way —
+            # build_human_dataset marks E002 consumed-for-validation, and it can
+            # never be counted back into the sealed holdout.
+            assert manifest["split"] == "eval_sealed"
+            assert imp._manifest_role(path.name, manifest) == spec.ROLE_SEALED
+            assert table[label].split == "validation"
+            assert table[label].role == spec.ROLE_VALIDATION
+            consumed = _module_constant(
+                WAKEWORD / "build_human_dataset.py", "CONSUMED_FOR_VALIDATION"
+            )
+            assert consumed[label]["for"] == "validation"
+            assert consumed[label]["no_longer_sealed_holdout"] is True
+        else:
+            # E001 still agrees with the registry outright.
+            assert manifest["split"] == table[label].split
+            assert imp._manifest_role(path.name, manifest) == table[label].role
 
         # Every section that manifest was derived from is one this tool knows,
         # so the same discovery code would classify that tree.
@@ -1740,12 +1768,15 @@ def test_the_frozen_human_manifests_agree_with_this_registry() -> None:
             assert set(members) == {"05_near_phrases"}
             assert len(members["05_near_phrases"]) == PRIOR_GROUP_PHRASES
 
-    # The reuse ledger reads both of them, and every digest is attributed.
+    # The reuse ledger reads both of them by their own bytes and attributes every
+    # digest: E001 as training, E002 as the sealed evaluation it was recorded for
+    # — even though the registry has since reassigned E002 to validation, the
+    # historical originals were spent under a seal and the ledger records that.
     known = imp.imported_originals(data)
     assert known
     assert {role for _, role, _ in known.values()} == {
-        table[PRIOR_TRAIN_LABEL].role,
-        table[PRIOR_SEALED_LABEL].role,
+        spec.ROLE_TRAINING,
+        spec.ROLE_SEALED,
     }
 
 
