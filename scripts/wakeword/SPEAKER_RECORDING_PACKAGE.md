@@ -309,7 +309,7 @@ anywhere in it, and in particular, **no pause inside the name**.
 pause after "hey" is fine and is how people actually say it; a pause between
 "you" and "tab" is not.
 
-Three of the phrases below — marked **Wake word** — are genuine ways of saying
+Two of the phrases below — marked **Wake word** — are genuine ways of saying
 "hey youtab" itself, so they *should* trigger the assistant. The rest are marked
 **Should NOT wake it**: say them exactly as an ordinary sentence, the way you'd
 actually say them, not as a trap or a trick.

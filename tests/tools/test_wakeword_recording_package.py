@@ -774,3 +774,38 @@ def test_the_package_documents_the_automatic_renamer() -> None:
     # Mentioned in both halves of the document: the speaker-facing reference
     # and the coordinator's assembly steps.
     assert lowered.count("--rename") >= 4
+
+
+def test_the_prose_count_of_wake_word_rows_matches_the_table() -> None:
+    """A speaker reads the sentence, not the table, and counts on it.
+
+    The prose said "Three of the phrases below -- marked **Wake word**" while the
+    table marked two. Someone following the instructions would look for a third
+    positive that does not exist, and either invent one or stop trusting the
+    document. It drifted because the number was spelled out in prose and the rows
+    were somewhere else, so nothing tied them together.
+
+    Derived rather than pinned: this reads the spelled-out word and the row count
+    and compares them, so adding or removing a positive row fails here instead of
+    leaving a sentence that quietly disagrees.
+    """
+    text = PACKAGE.read_text(encoding="utf-8")
+
+    marker = "**Wake word**"
+    rows = [line for line in text.splitlines()
+            if line.startswith("|") and marker in line]
+    # Non-vacuity: if the marker or the table shape ever changes, this test must
+    # fail loudly rather than compare zero against a word it also cannot find.
+    assert rows, f"no table row carries {marker}; re-anchor this test"
+
+    words = {
+        1: "One", 2: "Two", 3: "Three", 4: "Four", 5: "Five",
+        6: "Six", 7: "Seven", 8: "Eight", 9: "Nine", 10: "Ten",
+    }
+    expected = words[len(rows)]
+    sentence = f"{expected} of the phrases below — marked {marker} —"
+    assert sentence in text, (
+        f"{len(rows)} table row(s) are marked {marker}, so the prose should read "
+        f"{expected!r}. A speaker counts on that sentence and will look for a "
+        f"positive that is not there."
+    )
