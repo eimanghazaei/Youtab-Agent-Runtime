@@ -19,6 +19,83 @@ import pytest
 import tools.wake_word as ww
 
 
+# ── Waiting for other schedulables ───────────────────────────────────────
+#
+# Several tests below wait on a detector thread or on a spawned interpreter.
+# Those waits used 2 s and 10 s deadlines, and the 10 s one flaked: one run in
+# six failed at `assert ready.wait(10)` under CPU contention, and because the
+# assertion was a bare `assert` on a timed-out wait, its whole diagnosis was
+# `assert False`.
+#
+# Measured rather than guessed, on a 12-core host at 4x CPU oversubscription:
+#
+#   bare spawn + `from tools import wake_word`, in isolation   1.58 - 3.28 s
+#   the same test's whole call phase, inside the suite         4.18 - 6.97 s
+#
+# So the old bound had ~1.4x headroom over the loaded worst case. That is what
+# made it flake; a slightly busier host misses it. The ceiling below is ~8.6x
+# that worst case.
+#
+# A ceiling this generous costs nothing when the code works: every wait here
+# returns the instant its event fires or its predicate holds, so the ceiling is
+# only ever reached on a genuine hang — where a slow, well-labelled failure is
+# strictly better than a fast, mysterious one. The tests stay fast because
+# nothing sleeps *until* the ceiling; they poll.
+_SCHEDULING_CEILING_S = 60.0
+
+#: Poll granularity. Small enough that a passing test is not measurably slowed,
+#: large enough not to spin a core while the thing it waits for needs one.
+_POLL_S = 0.01
+
+
+def _poll_until(predicate, what: str, timeout: float = _SCHEDULING_CEILING_S):
+    """Block until ``predicate()`` is true, or fail naming what never happened.
+
+    Replaces the `while not cond and time.monotonic() < deadline: sleep` idiom
+    followed by a bare assert. That idiom cannot distinguish "the code is wrong"
+    from "the machine was busy", and reports neither.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(_POLL_S)
+    raise AssertionError(
+        f"waited {timeout:.0f}s for {what} and it never happened. That is a "
+        f"hang, not a slow machine: the bound is ~8.6x the measured worst case "
+        f"under 4x CPU oversubscription."
+    )
+
+
+def _await_child_event(event, process, what: str,
+                       timeout: float = _SCHEDULING_CEILING_S):
+    """Wait for a spawned child's event, but stop early if the child dies.
+
+    Two failures wear the same clothes when you only wait on the event: a child
+    that crashed before signalling, and a child that has not been scheduled
+    yet. Checking liveness separates them, so a real crash fails in
+    milliseconds with an exit code instead of burning the whole ceiling.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if event.wait(_POLL_S):
+            return
+        if not process.is_alive():
+            # It may have set the event on its way out; re-check before blaming
+            # it, or this races the child's own exit.
+            if event.is_set():
+                return
+            raise AssertionError(
+                f"the child process exited with code {process.exitcode} "
+                f"without signalling {what}"
+            )
+    raise AssertionError(
+        f"waited {timeout:.0f}s for {what}; child is "
+        f"{'alive' if process.is_alive() else 'dead'} "
+        f"(exitcode {process.exitcode})"
+    )
+
+
 # ── Config helpers ───────────────────────────────────────────────────────
 
 
@@ -496,9 +573,7 @@ def test_detector_flags_silent_stream_and_recovers(monkeypatch):
     det = ww.WakeWordDetector(_FakeEngine(fire=False), lambda: None)
     det.start()
     try:
-        deadline = time.monotonic() + 2.0
-        while not det.audio_silent and time.monotonic() < deadline:
-            time.sleep(0.01)
+        _poll_until(lambda: det.audio_silent, "the detector to flag silence")
         assert det.audio_silent is True
         assert ww.audio_is_silent() is False  # module accessor needs the singleton
 
@@ -509,9 +584,10 @@ def test_detector_flags_silent_stream_and_recovers(monkeypatch):
         det.pause()
         stream_cls["cls"] = _LoudStream
         det.resume()
-        deadline = time.monotonic() + 2.0
-        while det.audio_silent and time.monotonic() < deadline:
-            time.sleep(0.01)
+        _poll_until(
+            lambda: not det.audio_silent,
+            "the detector to clear the silence flag once audio returned",
+        )
         assert det.audio_silent is False
     finally:
         monkeypatch.setattr(ww, "_detector", None)
@@ -541,7 +617,7 @@ def test_detection_callback_can_pause_and_close_stream(monkeypatch, tmp_path):
             paused.set()
 
     ww.start_listening(_on_wake, owner=owner, config={})
-    assert paused.wait(2)
+    _poll_until(paused.is_set, "the wake callback to pause listening")
     assert ww.is_listening() is False
     assert streams[0].closed is True
     assert ww.stop_listening(owner=owner) is True
@@ -581,9 +657,10 @@ def test_stream_failure_releases_owner_and_machine_lock(monkeypatch, tmp_path):
     owner = object()
 
     ww.start_listening(lambda: None, owner=owner, config={})
-    deadline = time.time() + 2
-    while ww.owns_listener(owner) and time.time() < deadline:
-        time.sleep(0.01)
+    _poll_until(
+        lambda: not ww.owns_listener(owner),
+        "the stream read error to release the owner",
+    )
 
     assert ww.owns_listener(owner) is False
     assert engine.closed is True
@@ -596,7 +673,12 @@ def _hold_machine_lock(path: str, ready, release) -> None:
 
     handle = wake_word._acquire_machine_lock(Path(path))
     ready.set()
-    release.wait(10)
+    # The child must outlive the parent's WakeWordInUse check, so it waits on
+    # the ceiling rather than a short deadline. At 10 s a loaded parent could
+    # still be getting to that check when the child gave up, released the lock
+    # and exited zero — and the parent would then fail on the *contention*
+    # assertion, blaming the lock for a scheduling delay.
+    release.wait(_SCHEDULING_CEILING_S)
     assert handle is not None
 
 
@@ -611,16 +693,33 @@ def test_machine_lock_is_released_when_owner_process_exits(tmp_path):
     )
     process.start()
     try:
-        assert ready.wait(10)
+        _await_child_event(ready, process, "the child to take the machine lock")
         with pytest.raises(ww.WakeWordInUse):
             ww._acquire_machine_lock(lock_path)
         release.set()
-        process.join(10)
-        assert process.exitcode == 0
+        process.join(_SCHEDULING_CEILING_S)
+        assert process.exitcode == 0, (
+            f"child did not exit cleanly: exitcode={process.exitcode} "
+            f"(None means it was still running after "
+            f"{_SCHEDULING_CEILING_S:.0f}s)"
+        )
         handle = ww._acquire_machine_lock(lock_path)
         ww._release_machine_lock(handle)
     finally:
+        # Cleanup must not become the reported failure. When this test failed
+        # under load, the timed-out wait raised, then `process.terminate()`
+        # raised too and *replaced* it — so the traceback blamed a blocked
+        # os.kill and the real cause was invisible. `release` plus a ceilinged
+        # join is what actually ends the child; terminate is a last resort, and
+        # its own failure is only raised when nothing else is propagating.
         release.set()
+        process.join(_SCHEDULING_CEILING_S)
+        cleanup_error = None
         if process.is_alive():
-            process.terminate()
-        process.join(10)
+            try:
+                process.terminate()
+                process.join(_SCHEDULING_CEILING_S)
+            except BaseException as exc:  # noqa: BLE001 - see above
+                cleanup_error = exc
+        if cleanup_error is not None and sys.exc_info()[0] is None:
+            raise cleanup_error
