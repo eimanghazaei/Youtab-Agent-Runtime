@@ -14,8 +14,8 @@
 
 فرمت ضبط: **WAV، mono، ۱۶٬۰۰۰ Hz یا بالاتر**. هیچ فایلی بعد از ضبط تبدیل/نرمال‌سازی/برش نمی‌شود.
 
-مسیر خروجی (بیرون از git): `G:\Youtab-Wakeword-Human\incoming\E001` و `...\E002`
-(معادل WSL: `/mnt/g/Youtab-Wakeword-Human/incoming/E001`).
+مسیر خروجی (بیرون از git): پوشهٔ `incoming\E001` و `incoming\E002` زیر ریشهٔ ضبط
+(capture root) که هماهنگ‌کننده مشخص می‌کند؛ برنامه خودش همان‌جا می‌نویسد و کسی مسیر را دستی تایپ نمی‌کند.
 
 ---
 
@@ -98,7 +98,7 @@
 ## ساختار پوشه (برنامه خودکار می‌سازد)
 
 ```
-G:\Youtab-Wakeword-Human\incoming\E001\
+incoming\E001\        ← زیر ریشهٔ ضبط که هماهنگ‌کننده می‌دهد
   originals\
     positive_normal\   hey-youtab_normal_001.wav  ...002
     positive_slow\     hey-youtab_slow_001.wav    ...
