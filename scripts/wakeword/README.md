@@ -258,6 +258,21 @@ committed ones. The committed hashes identify *these* files, which is what
 `tests/tools/test_wake_word_model_assets.py` verifies; they are not a claim
 that training is bitwise deterministic.
 
+## Real-speaker recordings
+
+Round 8 retires synthetic positives and near misses in favour of real human
+recordings. [`SPEAKER_RECORDING_PACKAGE.md`](SPEAKER_RECORDING_PACKAGE.md) is
+the instructions a speaker follows; [`CONSENT_RECORD_TEMPLATE.md`](CONSENT_RECORD_TEMPLATE.md)
+is the consent form each one signs. `speaker_recording_spec.py` is the
+machine-readable version of that package — the same phrase list, folder
+names, take counts and metadata fields — and `validate_speaker_submission.py`
+checks a submitted folder against it before it is handed over.
+
+This is a data-collection round only. `generate_speech.py` and
+`build_dataset.py` still build the synthetic corpus described above; wiring a
+submitted speaker folder into that pipeline is separate work and is not done
+by anything described in this section.
+
 ## Environment
 
 The pipeline runs in its own virtual environment, outside the repository and
