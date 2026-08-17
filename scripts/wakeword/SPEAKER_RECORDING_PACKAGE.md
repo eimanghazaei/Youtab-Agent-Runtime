@@ -59,6 +59,9 @@ below.
 - Don't put your name, initials or email in any filename or folder name — the
   speaker label your coordinator gives you is the only identifier that travels
   with the audio.
+- Check your recorder's format setting first — M4A/AAC or WAV are fine; if it
+  saves in `.ogg`, `.opus`, `.amr`, `.mp3` or `.webm`, switch it before you
+  record, or the whole session has to be recorded again.
 - Turn off cloud sync before you record anything.
 
 **Before you hand it over**, run (or ask your coordinator to run):
@@ -168,8 +171,15 @@ recordings.
    fan.
 7. **Use your phone's own voice recorder app** (Voice Memos, the built-in Android
    recorder, or similar), or whatever device your coordinator asks you to use.
-   Whatever it produces — `.m4a`, `.wav`, whatever your app writes by default —
-   is fine and should be left exactly as it is.
+   **Check its format setting once, before you record anything.** M4A/AAC and WAV
+   are the readable formats and are what most apps write by default: if yours
+   already saves in one of those, leave every file exactly as it is and never
+   convert it (`.m4a`, `.wav`, `.caf`, `.aac`, `.flac`, `.aiff` are all read as
+   written). A few apps default instead to `.ogg`, `.opus`, `.amr`, `.mp3` or
+   `.webm`, which our loader cannot read — switch the recorder to M4A/AAC (or
+   WAV) *first*, because a whole session captured in one of those has to be
+   recorded again from scratch. `validate_speaker_submission.py` refuses such a
+   file by name, so you find out at your own desk rather than after handover.
 
 ## The one rule behind everything
 
@@ -410,8 +420,9 @@ Create one folder named with your speaker label — the one your coordinator gav
 you, never your name — and put everything inside it. **Names matter exactly as
 written**: our loader maps a file to what it contains by its name and folder
 alone, and an unrecognised name is treated as an error, not a guess. Keep
-whatever file extension your recorder produces (`.m4a`, `.wav`, `.caf` —
-whatever it is); never convert it.
+whatever file extension your recorder produces (`.m4a`, `.wav`, `.caf` — any of
+the readable formats from the format check in "Before you start"); never
+convert it.
 
 ```
 E003/                                        one folder per speaker, named for the label alone

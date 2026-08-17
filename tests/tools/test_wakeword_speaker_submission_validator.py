@@ -468,6 +468,64 @@ def test_a_directory_where_a_take_belongs_is_reported(submission: Path) -> None:
     assert any("expected a file, found a directory" in e for e in result.errors)
 
 
+# ── recorder formats ingestion cannot read (G2) ──────────────────────────────
+
+
+def test_a_recording_in_an_unreadable_format_is_refused_with_the_fix(submission: Path) -> None:
+    """A .opus take is a real audio file the loader has no parser for.
+
+    ``.opus`` is in ``spec.AUDIO_EXTENSIONS`` -- a phone app can genuinely write
+    it -- but ``import_speaker`` dispatches by magic bytes and reads none of it,
+    so a whole folder of these would be rejected wholesale, weeks later, once
+    the speaker is no longer at the microphone. The validator has to catch it
+    now, name the format, and say what to switch the recorder to.
+    """
+    directory = submission / spec.ORIGINALS_DIR / "positive_normal"
+    _write_audio(directory / f"{spec.WAKE_PHRASE_SLUG}_normal_006.opus")
+    _write_checksums(submission)  # so the only complaint left is the format itself
+
+    result = validator.validate_speaker_directory(submission)
+    assert not result.ok
+    offending = [e for e in result.errors if "_006.opus" in e]
+    assert offending, result.errors
+    message = offending[0]
+    assert ".opus" in message, message
+    assert "M4A" in message or "WAV" in message, message
+    assert "re-record" in message.lower() or "record this again" in message.lower(), message
+
+
+def test_an_unreadable_format_in_the_near_phrase_folder_is_refused(submission: Path) -> None:
+    """The same refusal reaches the phrase-keyed folder, not only the fixed ones."""
+    directory = submission / spec.ORIGINALS_DIR / "near_phrase"
+    item = spec.NEAR_PHRASE_ITEMS[0]
+    _write_audio(directory / f"{item.slug}_{item.takes + 1:03d}.ogg")
+    _write_checksums(submission)
+    result = validator.validate_speaker_directory(submission)
+    assert any(".ogg" in e and "ingestion cannot" in e for e in result.errors), result.errors
+
+
+def test_the_refused_formats_are_derived_from_what_ingestion_can_read(submission: Path) -> None:
+    """The refuse set comes from ``import_speaker``'s table, so it cannot drift.
+
+    Every extension the spec accepts but the loader has no parser for is refused;
+    every extension the loader can read passes; a non-audio extension falls
+    through to the naming check instead of this one.
+    """
+    import import_speaker
+
+    ingestible = validator._ingestible_extensions()
+    assert ingestible == frozenset(
+        ext for exts in import_speaker.CONTAINER_EXTENSIONS.values() for ext in exts
+    )
+    refused = set(spec.AUDIO_EXTENSIONS) - ingestible
+    assert refused == {".amr", ".mp3", ".ogg", ".opus", ".webm"}, refused
+    for ext in refused:
+        assert validator._unreadable_format_error(f"take{ext}") is not None
+    for ext in ingestible:
+        assert validator._unreadable_format_error(f"take{ext}") is None
+    assert validator._unreadable_format_error("notes.txt") is None
+
+
 # ── the checksum listing ─────────────────────────────────────────────────────
 
 

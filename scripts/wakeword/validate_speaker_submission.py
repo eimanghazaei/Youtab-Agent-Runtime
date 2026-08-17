@@ -109,6 +109,52 @@ def _extension_ok(name: str) -> bool:
     return Path(name).suffix.lower() in spec.AUDIO_EXTENSIONS
 
 
+def _ingestible_extensions() -> frozenset[str]:
+    """Extensions ingestion can actually read, from ``import_speaker``'s own table.
+
+    Derived from ``import_speaker.CONTAINER_EXTENSIONS`` -- the container
+    families that tool dispatches on by magic bytes -- rather than kept as a
+    second copy here, so the format a speaker is held to at handover cannot
+    drift from the format the loader will accept. Imported inside the function
+    on purpose: ``import_speaker`` imports this module at its own top, and
+    reading its table at *our* import time would read a half-initialised module
+    mid-cycle.
+    """
+    import import_speaker
+
+    return frozenset(
+        ext for exts in import_speaker.CONTAINER_EXTENSIONS.values() for ext in exts
+    )
+
+
+def _unreadable_format_error(name: str) -> str | None:
+    """A refusal for a real audio file in a format ingestion cannot read, else ``None``.
+
+    ``spec.AUDIO_EXTENSIONS`` exists only to catch a name with no audio
+    extension at all, and its own docstring says it is not a format gate. The
+    format gate is here, and it is derived from what ingestion actually reads: a
+    file whose extension is a genuine recorder format (``.opus``, ``.ogg``,
+    ``.amr``, ``.mp3``, ``.webm``) that ``import_speaker`` has no parser for is
+    refused locally, now, with the speaker still at the microphone and able to
+    change the recorder's setting and record again -- rather than weeks later,
+    when the loader rejects the folder and nobody can ask the speaker to redo a
+    session they have long since finished. A hard error, not a warning: an
+    unreadable take cannot enter the dataset, and pretending otherwise defers
+    the same refusal to a point where it can no longer be fixed.
+    """
+    suffix = Path(name).suffix.lower()
+    if suffix not in spec.AUDIO_EXTENSIONS:
+        return None  # not an audio extension at all -- the naming check reports it
+    if suffix in _ingestible_extensions():
+        return None  # a container the loader can read
+    return (
+        f"its {suffix} format is one some recorder apps write but ingestion cannot "
+        "read, and nothing here converts a recording to another format. Set the "
+        "recording app to record in M4A/AAC (or WAV) and record this again before "
+        f"handing the folder over -- a {suffix} file is a re-record, not an ingest"
+    )
+
+
 def _assigned_labels() -> tuple[str, ...]:
     return tuple(a.label for a in spec.SPEAKER_ASSIGNMENTS)
 
@@ -133,6 +179,10 @@ def _check_condition_dir(
     for entry in sorted(directory.iterdir()):
         if not entry.is_file():
             result.errors.append(f"{rel}/{entry.name}: expected a file, found a directory")
+            continue
+        fmt_error = _unreadable_format_error(entry.name)
+        if fmt_error is not None:
+            result.errors.append(f"{rel}/{entry.name}: {fmt_error}")
             continue
         if not pattern.match(entry.stem) or not _extension_ok(entry.name):
             result.errors.append(
@@ -166,6 +216,10 @@ def _check_near_phrase_dir(originals: Path, result: ValidationResult) -> None:
     for entry in sorted(directory.iterdir()):
         if not entry.is_file():
             result.errors.append(f"{rel}/{entry.name}: expected a file, found a directory")
+            continue
+        fmt_error = _unreadable_format_error(entry.name)
+        if fmt_error is not None:
+            result.errors.append(f"{rel}/{entry.name}: {fmt_error}")
             continue
         match = pattern.match(entry.stem)
         if not match or not _extension_ok(entry.name):
@@ -209,6 +263,10 @@ def _check_freeform_dir(
     for entry in sorted(directory.iterdir()):
         if not entry.is_file():
             result.errors.append(f"{rel}/{entry.name}: expected a file, found a directory")
+            continue
+        fmt_error = _unreadable_format_error(entry.name)
+        if fmt_error is not None:
+            result.errors.append(f"{rel}/{entry.name}: {fmt_error}")
             continue
         if not pattern.match(entry.stem) or not _extension_ok(entry.name):
             result.errors.append(
