@@ -736,6 +736,33 @@ condition.
 | pitch range | at least one low (≈85–120 Hz), one mid, one high (≈200–255 Hz) fundamental | The front end is a mel spectrogram, so fundamental frequency moves where the harmonics land under every filter. The synthetic voice pool is wide but it is a pool of *interpolated* speaker embeddings, which tends to fill the middle and thin out the extremes. |
 | noise condition | quiet room, background speech or television, kitchen or street noise | An always-on microphone spends its whole life in the last two. Background *speech* matters most: it is the condition where a false activation is most likely and the one the current negatives — single words and read sentences — represent least. |
 
+### Per-speaker coverage assignments
+
+Each speaker is handed one row of the table below by their coordinator, next to
+their label. It is guidance, not a gate: nothing refuses a submission for not
+matching its row, and what a speaker actually used is what their
+`RECORDING_METADATA.json` records. The rows live in
+`speaker_recording_spec.COVERAGE_ASSIGNMENTS` and are chosen to spread all four
+dimensions across the group — all three devices, far-field distances fanning
+out from about 5 m to 10 m, five distinct noise pairs that cover each of the
+four sources at least twice, and pitch bands stepping from low to high — so that
+five people handed identical instructions do not all record the same corner
+(phone, living room, television). Far-field is always captured on a device set
+down at the listed distance; a headset speaker removes the headset and uses the
+host device's built-in microphone for that one section.
+
+| Speaker | Device | Far-field target | Noise sources | Voice-pitch band |
+|---|---|---|---|---|
+| `E003` | phone | about 5 m, an adjoining room with the door open | tv, kitchen | low |
+| `E004` | laptop-built-in | about 6 m, across one open-plan room | street, fan | low-mid |
+| `E005` | wired-headset | about 7 m, an adjoining room | tv, street | mid |
+| `E006` | laptop-built-in | about 8 m, two rooms with the door open | kitchen, fan | mid-high |
+| `E007` | phone | about 10 m, a far corner or the next room | tv, fan | high |
+
+The pitch band is a selection target the coordinator fills when deciding which
+volunteer records as which label — it is not something a speaker performs — so
+it is the one dimension read as "who fits here" rather than "do this".
+
 ## Why these counts, not round numbers
 
 The shipping targets for this model include a false-accept rate on deliberate

@@ -658,6 +658,78 @@ def test_the_roles_are_the_usages_freeze_manifest_enforces() -> None:
     assert set(spec.ROLES) == set(freeze_manifest.USAGES)
 
 
+# ── coverage assignments (G3) ────────────────────────────────────────────────
+
+
+def test_every_assigned_speaker_has_a_fully_filled_coverage_cell() -> None:
+    """Guidance, but complete guidance: no speaker defaults a dimension.
+
+    An empty cell is exactly the gap this table exists to close -- an
+    unassigned dimension is the one five independent recorders all fill the same
+    way. Each cell names a device from the vocabulary, a far-field distance, at
+    least ``MIN_NOISE_SOURCES`` of the four noise sources, a pitch band and a
+    reason.
+    """
+    assigned = {a.label for a in spec.SPEAKER_ASSIGNMENTS}
+    covered = {c.label for c in spec.COVERAGE_ASSIGNMENTS}
+    assert covered == assigned, (
+        f"coverage is assigned to {covered}, but the round's speakers are {assigned}"
+    )
+    assert len(covered) == len(spec.COVERAGE_ASSIGNMENTS), "a speaker has two coverage cells"
+
+    for cell in spec.COVERAGE_ASSIGNMENTS:
+        assert spec.SPEAKER_ID_PATTERN.match(cell.label)
+        assert cell.device in spec.COVERAGE_DEVICE_VOCAB, (
+            f"{cell.label} names device {cell.device!r}, not one of "
+            f"{sorted(spec.COVERAGE_DEVICE_VOCAB)}"
+        )
+        assert cell.farfield_distance.strip(), f"{cell.label} has no far-field distance"
+        assert cell.pitch_band.strip(), f"{cell.label} has no pitch band"
+        assert cell.why.strip(), f"{cell.label} has no recorded reason"
+
+        assert set(cell.noise_sources) <= spec.NOISE_SOURCE_VOCAB, (
+            f"{cell.label} names a noise source outside {sorted(spec.NOISE_SOURCE_VOCAB)}"
+        )
+        assert len(set(cell.noise_sources)) >= spec.MIN_NOISE_SOURCES, (
+            f"{cell.label} names fewer than {spec.MIN_NOISE_SOURCES} distinct noise sources"
+        )
+
+
+def test_the_coverage_assignments_actually_spread_the_dimensions() -> None:
+    """Non-vacuity: the point of the table is diversity, not just completeness.
+
+    A table that named "phone, living room, tv" for all five would pass the
+    completeness check above while defeating the reason the table exists.
+    """
+    cells = spec.COVERAGE_ASSIGNMENTS
+
+    # All three devices are used.
+    assert {c.device for c in cells} == spec.COVERAGE_DEVICE_VOCAB
+
+    # The noise pairs are distinct, and every one of the four sources is covered
+    # by at least two speakers.
+    pairs = [frozenset(c.noise_sources) for c in cells]
+    assert len(set(pairs)) == len(pairs), f"two speakers share a noise pair: {pairs}"
+    from collections import Counter
+
+    counts = Counter(source for c in cells for source in set(c.noise_sources))
+    assert set(counts) == spec.NOISE_SOURCE_VOCAB, (
+        f"a noise source is never assigned: {sorted(spec.NOISE_SOURCE_VOCAB - set(counts))}"
+    )
+    assert min(counts.values()) >= 2, f"a noise source is covered only once: {counts}"
+
+    # The pitch bands are distinct, so the five span the range rather than pile
+    # up in the middle the synthetic pool already over-represents.
+    bands = [c.pitch_band for c in cells]
+    assert len(set(bands)) == len(bands), f"two speakers fill the same pitch band: {bands}"
+
+
+def test_coverage_for_raises_for_an_unassigned_label() -> None:
+    assert spec.coverage_for("E003").label == "E003"
+    with pytest.raises(ValueError):
+        spec.coverage_for("E999")
+
+
 # ── the arithmetic the counts are sized by ───────────────────────────────────
 
 

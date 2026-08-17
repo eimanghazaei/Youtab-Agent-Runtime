@@ -865,6 +865,113 @@ def labels_for_role(role: str) -> tuple[str, ...]:
     return tuple(a.label for a in SPEAKER_ASSIGNMENTS if a.role == role)
 
 
+# ── who covers which corner of the signal ────────────────────────────────────
+
+#: The capture devices a coverage cell may name. Three microphone channels, not
+#: three brands: a headset boom sits centimetres from the lips with almost no
+#: room in it, a laptop array is half a metre away and applies its own
+#: beamforming and noise suppression, and a handheld phone is the common case.
+COVERAGE_DEVICE_VOCAB = frozenset({"phone", "laptop-built-in", "wired-headset"})
+
+
+@dataclass(frozen=True)
+class CoverageAssignment:
+    """One speaker's slice of the coverage the group has to span between them.
+
+    Guidance, never a gate. Nothing in ``validate_speaker_submission.py`` or
+    ``import_speaker.py`` refuses a submission for not matching its cell: what a
+    speaker actually used is recorded in their ``RECORDING_METADATA.json`` and
+    read from there. This table exists because five people handed the same
+    instructions, with no assignment, all default to the same corner --
+    phone, living room, television -- and five recordings of one cell measure
+    one cell five times. Fixed here so the coordinator hands each speaker a
+    *different* corner: a device, a far-field distance band, two of the four
+    noise sources, and the voice-pitch band that speaker is chosen to fill.
+
+    ``pitch_band`` is not something a speaker performs -- fundamental frequency
+    is a property of their voice -- so it is a selection target: the band this
+    slot is meant to fill, used when the coordinator decides which volunteer
+    records as which label, not an instruction to the speaker. It carries none
+    of the role information ``SpeakerAssignment`` does, so unlike that table it
+    is printed per speaker in the package.
+    """
+
+    label: str
+    device: str
+    farfield_distance: str
+    noise_sources: tuple[str, ...]
+    pitch_band: str
+    why: str
+
+
+#: Chosen to spread all four dimensions across the five speakers rather than to
+#: read well in isolation: all three devices appear, the far-field distances
+#: fan out from ~5 m to ~10 m, the five noise pairs are distinct and cover each
+#: of the four sources at least twice, and the pitch bands step from low to
+#: high. ``noise_sources`` is always at least ``MIN_NOISE_SOURCES`` of
+#: ``NOISE_SOURCE_VOCAB`` so the guidance can never ask for fewer than the
+#: package requires. Far-field is captured on a device set down at the listed
+#: distance; a headset speaker removes the headset and uses the host device's
+#: built-in microphone for that one section.
+COVERAGE_ASSIGNMENTS: tuple[CoverageAssignment, ...] = (
+    CoverageAssignment(
+        "E003",
+        "phone",
+        "about 5 m, an adjoining room with the door open",
+        ("tv", "kitchen"),
+        "low",
+        "The common default -- handheld phone, living room, television -- "
+        "recorded deliberately as one cell of five rather than five times over.",
+    ),
+    CoverageAssignment(
+        "E004",
+        "laptop-built-in",
+        "about 6 m, across one open-plan room",
+        ("street", "fan"),
+        "low-mid",
+        "A laptop array's own beamforming and noise suppression at ~50 cm, "
+        "against outdoor street noise and a fan -- what a desk user actually has.",
+    ),
+    CoverageAssignment(
+        "E005",
+        "wired-headset",
+        "about 7 m, an adjoining room",
+        ("tv", "street"),
+        "mid",
+        "A headset boom centimetres from the lips, the cleanest channel, so a "
+        "miss here cannot be blamed on the microphone.",
+    ),
+    CoverageAssignment(
+        "E006",
+        "laptop-built-in",
+        "about 8 m, two rooms with the door open",
+        ("kitchen", "fan"),
+        "mid-high",
+        "The second laptop, near the far end of the distance range, with the "
+        "kitchen and a fan running.",
+    ),
+    CoverageAssignment(
+        "E007",
+        "phone",
+        "about 10 m, a far corner or the next room",
+        ("tv", "fan"),
+        "high",
+        "A phone again but at the greatest distance and the top of the pitch "
+        "range, so the two phone cells do not land on top of each other.",
+    ),
+)
+
+
+def coverage_for(label: str) -> CoverageAssignment:
+    """The coverage cell assigned to ``label``, or a refusal naming the table."""
+    for assignment in COVERAGE_ASSIGNMENTS:
+        if assignment.label == label:
+            return assignment
+    raise ValueError(
+        f"{label!r} has no COVERAGE_ASSIGNMENTS entry ({[a.label for a in COVERAGE_ASSIGNMENTS]})"
+    )
+
+
 # ── how much a speaker records, and why that is enough ───────────────────────
 
 #: The shipping targets this round is sized against, from README.md's target
