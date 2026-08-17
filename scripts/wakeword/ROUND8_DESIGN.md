@@ -36,11 +36,21 @@ production-identical feature extraction; the fixed numeric scaling the runtime
 requires. None of these invents a speech condition or acoustically alters the
 speaker.
 
-Real *recorded* corpora are real human audio. Speech Commands v0.02 (105,829
-clips of 35 words from 2,618 speakers, CC BY 4.0, pinned by sha256 in
-`assets.py`) and the governed Common Voice subset described in `COMMON_VOICE.md`
-may serve as **real negatives**, with licence, hash and source recorded. Neither
-may ever be a positive speaker, and neither is allowed to delay recording.
+Real *recorded* corpora are real human audio and may serve as **real negatives**,
+with licence, hash and source recorded. Neither may ever be a positive speaker,
+and neither is allowed to delay recording. They are not interchangeable, though,
+and the split between them is load-bearing:
+
+* **Speech Commands v0.02** (105,829 clips of 35 words from 2,618 speakers,
+  CC BY 4.0, pinned by sha256 in `assets.py`) is the **training** negative
+  source.
+* **The governed Common Voice subset** (`COMMON_VOICE.md`) is frozen
+  `usage="sealed-evaluation"` and is **qualification only** — `build_human_dataset.py`
+  refuses it on `--split train` and `--split validation`. Target 2 bounds
+  recorded-speech false activations at 0.2/h, and a negative set the model was
+  fitted on cannot bound its own false-activation rate. Using it for training,
+  or for hard-negative mining, would destroy the one measurement it exists to
+  provide.
 
 ## What Round 8 varies — exactly one axis
 

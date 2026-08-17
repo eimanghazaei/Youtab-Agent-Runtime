@@ -97,8 +97,17 @@ What it accepts, and only this:
 |---|---|---|
 | an approved human speaker's frozen manifest | `human=` | positives, human near phrases, human free speech |
 | a frozen Speech Commands manifest | `speech_commands=` | recorded negatives |
-| a frozen governed Common Voice subset | `common_voice=` | recorded negatives |
+| a frozen governed Common Voice subset | `common_voice=` | recorded negatives — **qualification only**, see below |
 | a frozen manifest of real recorded room tone | `recorded_background=` | background-only windows |
+
+**The Common Voice subset is sealed-evaluation, not training data.** It is frozen
+with `usage="sealed-evaluation"`, so `build_human_dataset.py` refuses it on
+`--split train` and `--split validation` and accepts it only for qualification.
+That is not caution, it is the only thing that makes it useful: acceptance target
+2 bounds recorded-speech false activations at 0.2/h, a negative set the model was
+fitted on cannot bound its own false-activation rate, and bounding that rate is
+the entire reason this corpus is acquired. Training negatives come from Speech
+Commands, which is 105,835 real human recordings and is permitted for training.
 
 Processing is limited to decode, the derivation's fixed resample and mono fold,
 deterministic trimming/padding/window extraction, the production feature

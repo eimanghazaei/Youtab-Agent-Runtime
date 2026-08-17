@@ -80,9 +80,12 @@ def _sha256(path: Path) -> str:
 def _peak_rss_bytes() -> int:
     """High-water-mark resident set size of this process, in bytes.
 
-    Stdlib only, because this script has to run on a bare machine that is not
-    a training environment: ``psutil`` is not a dependency of this repository
-    and installing one to measure memory would change the thing being measured.
+    Stdlib only, because this script has to run on a bare machine that is not a
+    training environment. ``psutil`` *is* a dependency (``pyproject.toml`` pins
+    ``psutil==7.2.2``), so the original justification for avoiding it was wrong —
+    but the conclusion still holds for a different and better reason: this script
+    is the evidence that the shipped artifacts load on a fresh machine, so it
+    must not require the project's dependency set to be installed first.
 
     The high-water mark rather than the current RSS: it is the number available
     on every platform without a native call per sample, it is monotonic, so a
@@ -211,10 +214,23 @@ def _time_backend(run_one, features, repeats: int) -> dict:
             run_one(frame)
             per_call.append((time.perf_counter() - start) * 1000.0)
     per_call.sort()
+
+    def _pct(fraction: float) -> float:
+        return per_call[min(len(per_call) - 1, int(fraction * len(per_call)))]
+
+    # p90 and p99 are here because the predeclared design asks for
+    # "latency p50/p90/p95/p99" and this function reported median/p95/max only —
+    # so a backend-report.json could not satisfy acceptance target 5 on its own
+    # terms. p99 needs the sample to be large enough to have a 99th percentile
+    # at all; DEFAULT_REPEATS over every fixture frame is thousands of calls, and
+    # `inferences` is reported so a reader can judge the tail rather than trust it.
     return {
         "inferences": len(per_call),
         "median_ms": statistics.median(per_call),
-        "p95_ms": per_call[min(len(per_call) - 1, int(0.95 * len(per_call)))],
+        "p50_ms": statistics.median(per_call),
+        "p90_ms": _pct(0.90),
+        "p95_ms": _pct(0.95),
+        "p99_ms": _pct(0.99),
         "max_ms": per_call[-1],
     }
 
