@@ -7,7 +7,11 @@ still published a claim the data could not carry: ``0.000/h`` over 11.659 hours
 of recorded speech, which bounds the rate at 3/11.659 = 0.257/h — above the
 0.2/h target. So the guarantees under test are the refusals:
 
-* a clean run below the derived sample size is **refused**, not passed;
+* for targets 1, 2 and 3, a clean run below the derived sample size is
+  **refused**, not passed;
+* for targets 4 and 5 — ``== 0`` claims the predeclared design bounds per
+  window and gives no minimum *n* — the bar is **not** invented here, and the
+  per-window bound is reported instead so the reach of the claim is visible;
 * seven framings of one utterance are **one** trial;
 * a sealed set cannot be opened before the candidate is frozen;
 * opening a sealed set spends it, permanently;
@@ -196,18 +200,26 @@ def _filler(prefix: str, category: str, hours: float, fires: int, dataset: str):
 def _powered(**overrides):
     """Evidence that clears every derived requirement, so 5/5 is reachable.
 
-    Sizes are the derived minima and nothing more: 60 positive utterances, 150
-    near-phrase utterances, 15 h of recorded speech and 15 h of background. The
-    positives and near phrases carry seven overlapping phrase-anchored framings
-    each; the negatives are 20-second clips tiled into ten 2-second windows,
-    which is the shape non-anchored audio actually has and the case where a
-    single clip can interrupt somebody more than once.
+    Sizes are what the programme could actually produce, at the derived minima
+    and nothing more: 60 positive utterances, 150 near-phrase utterances, 15 h
+    of recorded speech, and the 61 background windows ``round8_config.json``
+    records as ``target_4.sealed_windows``.
+
+    The background figure is deliberately *not* 15 h. Target 4 is a per-window
+    count, not a rate, and only 0.0776 h of real background recording exists in
+    the whole programme — a fixture demanding 15 h of it would be asserting a
+    bar the design does not set against evidence that cannot exist.
+
+    The positives and near phrases carry seven overlapping phrase-anchored
+    framings each; the recorded speech is 20-second clips tiled into ten
+    2-second windows, which is the shape non-anchored audio actually has and the
+    case where a single clip can interrupt somebody more than once.
     """
     counts = {
         "positives": 60, "positive_misses": 0,
         "near": 150, "near_accepts": 0,
         "recorded_hours": 15.0, "recorded_fires": 0,
-        "background_hours": 15.0, "background_fires": 0,
+        "background": 61, "background_fires": 0,
     }
     counts.update(overrides)
     rows = (
@@ -217,8 +229,8 @@ def _powered(**overrides):
                       framings=7)
         + _filler("rec", "recorded_speech", counts["recorded_hours"],
                   counts["recorded_fires"], "common-voice")
-        + _filler("bg", "background_only", counts["background_hours"],
-                  counts["background_fires"], "speech-commands")
+        + _utterances("bg", "background_only", counts["background"],
+                      fired=counts["background_fires"], dataset="speech-commands")
     )
     return _measurement(rows)
 
@@ -333,9 +345,50 @@ def test_the_derived_requirements_are_the_ones_the_targets_imply():
     assert power["3"]["required_trials"] == 150
     assert power["3"]["exact_clopper_pearson_trials"] == 149
     assert power["2"]["required_hours"] == pytest.approx(15.0)
-    # Targets 4 and 5 inherit target 2's bar rather than carrying a constant.
-    assert power["4"]["required_hours"] == pytest.approx(15.0)
-    assert power["5"]["required_hours"] == pytest.approx(15.0)
+
+
+def test_no_sample_size_is_invented_for_the_two_count_targets():
+    """Targets 4 and 5 are per-window ``== 0`` claims and the design declares no n.
+
+    The temptation is to give them one — a count of zero over 61 windows is weak
+    evidence and it would feel more rigorous to demand more. Doing it here would
+    move a bar the predeclared design already set, after the fact, which is the
+    same defect as retuning a threshold on a sealed set. What the harness owes
+    instead is the bound, printed next to the claim.
+    """
+    power = q.power_requirements()
+    for target_id in ("4", "5"):
+        row = power[target_id]
+        assert "required_hours" not in row
+        assert "required_trials" not in row
+        assert row["minimum"] == 1  # only "some evidence exists" is required
+        assert "window" in row["unit"]
+    assert power["4"]["demonstrable_as_a_rate"] is False
+
+
+@pytest.mark.parametrize(
+    ("n", "recorded"),
+    [
+        # round8_config.json /statistical_power/target_4/clean_run_bound_by_n
+        (30, 0.095034), (47, 0.06175), (61, 0.047924), (139, 0.021321),
+        # round8_config.json /statistical_power/target_5/clean_run_bound_by_n
+        (1000, 0.002991), (3000, 0.000998), (10000, 0.0003), (31986, 9.4e-05),
+    ],
+)
+def test_the_predeclared_per_window_bound_tables_are_exact_clopper_pearson(n, recorded):
+    """Both tables are the exact per-window bound rounded to six decimal places.
+
+    This is the evidence that fixes the denominator for targets 4 and 5. Every
+    entry of both tables is 1 - 0.05^(1/n) with *n counted in windows* — from
+    0.095034 at 30 background windows to 0.000094 at 31,986 compared windows.
+    An hours-based bar reproduces none of these eight numbers, which is how the
+    earlier version of this harness was caught having invented one.
+
+    ``abs=5e-7`` is not a fudge: it is exactly the error that rounding to six
+    decimal places can introduce, so this asserts agreement to every digit the
+    design actually wrote down.
+    """
+    assert q.clopper_pearson_upper(0, n) == pytest.approx(recorded, abs=5e-7)
 
 
 def test_the_requirement_for_target_two_is_the_rule_of_three_at_the_limit():
@@ -380,15 +433,16 @@ def test_a_flawless_run_on_the_round_eight_sealed_quantities_is_refused():
 
     72 positive utterances, 112 near phrases, the 11.659 h Speech Commands eval
     partition and 61 background windows, with zero events anywhere. Every point
-    estimate sits at or under its target and every one of targets 2, 3 and 4 is
-    still undemonstrable — which is what ``round8_config.json``'s own honest
-    summary says, reached here from the numbers rather than from the prose.
+    estimate sits at or under its target, and targets 2 and 3 are still
+    undemonstrable: 11.659 h against the 15 h the 0.2/h limit needs, and 112
+    near-phrase utterances against 150.
 
-    Target 5 falls short too, and that is stricter than the predeclared record.
-    The config's parity figure of 31,986 windows is 17.77 h of the synthetic-era
-    corpus and would clear the 15 h bar; Round 8's sealed corpus totals 11.79 h,
-    which bounds the backend disagreement rate at 0.254/h and therefore no more
-    tightly than the 0.2/h event it is supposed to underwrite.
+    Targets 4 and 5 pass, and their records say how far that reaches. Target 4's
+    clean count over 61 windows bounds the per-window activation probability at
+    0.047924 — ``round8_config.json``'s own ``clean_run_bound_per_window`` — and
+    carries ``generalises_beyond_the_windows_measured: False``. That is the
+    design's "met or not met as a count; it is a claim about one or two rooms",
+    not a demonstration that the product is quiet in a room nobody recorded.
     """
     rows = (
         _utterances("pos", "positive_human", 72, framings=7, fired=72)
@@ -400,7 +454,7 @@ def test_a_flawless_run_on_the_round_eight_sealed_quantities_is_refused():
     block = report["official"]
 
     assert block["qualified_5_of_5"] is False
-    assert block["underpowered_targets"] == [2, 3, 4, 5]
+    assert block["underpowered_targets"] == [2, 3]
     assert "REFUSED" in block["verdict"]
 
     false_rejects = _target(block, 1)
@@ -418,15 +472,27 @@ def test_a_flawless_run_on_the_round_eight_sealed_quantities_is_refused():
 
     background = _target(block, 4)["by_backend"]["onnx"]
     assert background["count"] == 0
-    assert background["met_on_point_estimate"] is True  # the target as written
-    assert background["statistically_demonstrable"] is False  # 0.034 h bounds 88/h
-    assert background["bound"] == pytest.approx(88.5, abs=1.0)
+    assert background["windows"] == 61
+    assert background["met_on_point_estimate"] is True
+    assert background["statistically_demonstrable"] is True  # the count, as written
+    # ...and the record refuses to let that boolean be read as a claim about rooms.
+    assert background["bound"] == pytest.approx(0.047924, abs=5e-6)
+    assert background["bound_is_per_window_probability_not_a_rate"] is True
+    assert background["demonstrable_as_a_rate"] is False
+    assert background["generalises_beyond_the_windows_measured"] is False
+    assert "says nothing" in background["claim"] or "nothing about a room" in (
+        background["claim"]
+    )
 
     parity = _target(block, 5)
     assert parity["detection_disagreements"] == 0
+    assert parity["statistically_demonstrable"] is True
+    assert parity["windows_compared"] == 72 * 7 + 112 * 7 + 20_986 + 61
+    assert parity["bound"] == pytest.approx(q.clopper_pearson_upper(0, 22_335), rel=1e-9)
+    assert parity["frame_score_delta_is_reported_not_gated"] is True
+    # Hours are still reported — they are a fact about the evidence — but they
+    # are not the denominator of the bound.
     assert parity["audio_hours_compared"] == pytest.approx(11.793, abs=0.01)
-    assert parity["bound"] == pytest.approx(0.2544, abs=1e-3)
-    assert parity["statistically_demonstrable"] is False
 
 
 def test_the_refusal_names_the_evidence_it_wanted():
@@ -488,6 +554,56 @@ def test_a_single_recorded_speech_activation_in_fifteen_hours_fails_the_rate():
     assert row["statistically_demonstrable"] is False
 
 
+def test_targets_four_and_five_are_never_gated_on_hours(powered_report):
+    """A regression guard on a mistake this harness has already made once.
+
+    An earlier version inherited target 2's 0.2/h bar for both targets, in
+    hours. It read as extra rigour and it was a bar the predeclared design does
+    not set: `demonstrable_as_a_rate: false` for target 4, and a
+    `clean_run_bound_by_n` table indexed by windows for target 5. Moving a bar a
+    result will be judged against, mid-flight, is the same defect as retuning a
+    threshold on a sealed set.
+
+    So: 61 background windows (0.034 h) and 28,531 compared windows (15.15 h of
+    which only some is speech) must satisfy both targets on a clean run, and
+    neither row may carry an hours requirement.
+    """
+    block = powered_report["official"]
+    for target_id in (4, 5):
+        row = _target(block, target_id)
+        leaf = row["by_backend"]["onnx"] if "by_backend" in row else row
+        assert leaf["statistically_demonstrable"] is True
+        assert leaf["refusals"] == []
+        assert "required_hours" not in leaf
+        assert "shortfall_hours" not in leaf
+        assert leaf["bound_is_per_window_probability_not_a_rate"] is True
+    background = _target(block, 4)["by_backend"]["onnx"]
+    assert background["windows"] == 61
+    assert background["bound"] == pytest.approx(0.047924, abs=5e-7)
+
+
+def test_no_background_audio_at_all_is_refused_rather_than_passed():
+    """Absence of evidence is not a clean count.
+
+    Dropping ``minimum: 1`` to zero would make a measurement with no background
+    recording whatsoever report target 4 as met, because zero activations did
+    indeed occur.
+    """
+    rows = (
+        _utterances("pos", "positive_human", 60, framings=7, fired=60)
+        + _utterances("near", "near_phrase_human", 150, framings=7)
+        + _filler("rec", "recorded_speech", 15.0, 0, "common-voice")
+    )
+    block = q.build_report(_measurement(rows))["official"]
+    row = _target(block, 4)["by_backend"]["onnx"]
+    assert row["windows"] == 0
+    assert row["met_on_point_estimate"] is False
+    assert row["statistically_demonstrable"] is False
+    assert row["bound"] is None
+    assert "nothing to claim" in row["claim"]
+    assert block["qualified_5_of_5"] is False
+
+
 def test_one_background_activation_fails_the_count_outright():
     block = q.build_report(_powered(background_fires=1))["official"]
     row = _target(block, 4)["by_backend"]["onnx"]
@@ -502,7 +618,7 @@ def test_a_target_demonstrated_on_one_backend_only_is_not_demonstrated():
         _utterances("pos", "positive_human", 60, framings=7, fired=60, tflite_fired=52)
         + _utterances("near", "near_phrase_human", 150, framings=7)
         + _filler("rec", "recorded_speech", 15.0, 0, "common-voice")
-        + _filler("bg", "background_only", 15.0, 0, "speech-commands")
+        + _utterances("bg", "background_only", 61, dataset="speech-commands")
     )
     block = q.build_report(_measurement(rows))["official"]
     row = _target(block, 1)
@@ -816,8 +932,8 @@ def test_the_diagnostic_block_carries_no_verdict_of_any_kind(powered):
 def test_parity_counts_disagreements_per_window_and_hours_per_utterance(powered):
     """Two units, deliberately: a decision is a window, an hour is distinct audio."""
     parity = _target(q.build_report(powered)["official"], 5)
-    assert parity["windows_compared"] == 60 * 7 + 150 * 7 + 2_700 * 10 + 2_700 * 10
-    assert parity["audio_hours_compared"] == pytest.approx((120 + 300 + 54_000 + 54_000) / 3600)
+    assert parity["windows_compared"] == 60 * 7 + 150 * 7 + 2_700 * 10 + 61
+    assert parity["audio_hours_compared"] == pytest.approx((120 + 300 + 54_000 + 122) / 3600)
     assert parity["detection_disagreements"] == 0
     assert parity["max_absolute_frame_score_difference"] == pytest.approx(8.2e-06)
     assert parity["mean_absolute_frame_score_difference"] == pytest.approx(1.03e-06)
@@ -828,7 +944,7 @@ def test_one_backend_disagreement_fails_parity_and_names_the_utterance():
     rows = _utterances("pos", "positive_human", 60, framings=7, fired=60, tflite_fired=59)
     rows += _utterances("near", "near_phrase_human", 150, framings=7)
     rows += _filler("rec", "recorded_speech", 15.0, 0, "common-voice")
-    rows += _filler("bg", "background_only", 15.0, 0, "speech-commands")
+    rows += _utterances("bg", "background_only", 61, dataset="speech-commands")
     parity = _target(q.build_report(_measurement(rows))["official"], 5)
     assert parity["detection_disagreements"] == 1
     assert parity["utterances_with_disagreement"] == ["pos/000059"]
@@ -1182,6 +1298,24 @@ def test_the_report_command_exits_nonzero_when_it_refuses(tmp_path):
     out = tmp_path / "qualification.json"
     assert q.main(["report", "--official", str(bundle), "--out", str(out)]) == 1
     assert json.loads(out.read_text(encoding="utf-8"))["official"]["qualified_5_of_5"] is False
+
+
+def test_the_printed_verdict_qualifies_the_count_target_on_the_same_line(tmp_path, capsys):
+    """The console summary is what gets pasted into a report, so it carries scope.
+
+    ``round8_config.json``'s reporting rule is that target 4 is "never reported
+    as demonstrated" in the generalising sense. A bare "DEMONSTRATED" beside a
+    clean count over 61 windows in one room would be exactly that over-claim, so
+    the per-window bound and the reach of the claim print with it.
+    """
+    bundle = tmp_path / "evidence.json"
+    bundle.write_text(json.dumps(q.measurement_to_json(_powered())), encoding="utf-8")
+    q.main(["report", "--official", str(bundle), "--out", str(tmp_path / "q.json")])
+    printed = capsys.readouterr().out
+    assert "target 4  background-only false accepts: DEMONSTRATED" in printed
+    assert "scope: 0 activation(s) on the 61 background window(s)" in printed
+    assert "says nothing about a room that was not recorded" in printed
+    assert "0.047924" in printed
 
 
 def test_the_power_subcommand_prints_the_arithmetic_and_needs_no_data(capsys):

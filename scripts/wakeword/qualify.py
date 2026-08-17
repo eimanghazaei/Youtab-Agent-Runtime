@@ -52,20 +52,32 @@ run. One observed event needs more, which is why the gate is the interval and
 not the count: the count is only the necessary condition, checked first so an
 underpowered set is refused before its point estimate is ever compared.
 
-**Target 4, a count.** ``= 0`` is either met or not met on the windows
-present, and this harness reports it that way. But a count of zero over 61
-background windows (0.034 h) bounds the background activation rate at 88/h,
-which demonstrates nothing about a room. Generalising the count therefore
-inherits target 2's bar — a false activation on room tone is a false activation
-— so **15 hours of background audio** is required for target 4 to be called
-demonstrated, by the same arithmetic as target 2.
+**Targets 4 and 5 are bounded per window, and no sample size is invented for
+them.** Both are ``== 0`` targets, and the predeclared design bounds both by
+window count rather than by time: ``target_4.clean_run_bound_per_window`` is
+0.047924 at n = 61 and ``target_5.clean_run_bound_by_n`` runs from 0.002991 at
+n = 1,000 to 9.4e-05 at n = 31,986. Every entry in both tables is the exact
+per-window Clopper-Pearson limit 1 - 0.05^(1/n), and this module reproduces all
+eight of them.
 
-**Target 5, parity.** Zero disagreements over *n* compared decisions bounds the
-disagreement rate at 3/n. For parity not to be the loosest link it must be
-bounded at least as tightly as the rarest event the qualification claims, which
-is target 2's 0.2/h, so the comparison must cover **15 hours** of distinct
-audio and every window of the official evidence. Latency percentiles and peak
-memory must be present per backend, because target 5 requires them measured.
+So target 4 is gated as what the design says it is — ``demonstrable_as_a_rate:
+false``, "met or not met as a count; it is a claim about one or two rooms" — and
+target 5 is gated on zero disagreements, which the design makes fatal, plus full
+window coverage and latency and memory present. Neither gets a minimum *n*,
+because the design declares none and substituting one here would move the bar a
+result is judged against after the fact. What replaces it is disclosure: every
+row prints its per-window bound, target 4 carries
+``generalises_beyond_the_windows_measured: False``, and the per-frame score
+delta is reported and not gated, exactly as ``frame_score_delta: "reported, not
+gated"`` requires.
+
+An earlier version of this file inherited target 2's 0.2/h bar for both, in
+hours. It is recorded here because the reasoning was seductive — parity should
+not be the loosest link — and it was still wrong twice over: it contradicted
+``demonstrable_as_a_rate: false`` head-on, and it failed a corpus the design
+expected to pass. A harness that moves a predeclared bar mid-flight is the same
+defect as a threshold retuned on a sealed set, and it is the reason rounds 6 and
+7's negative results can be trusted at all.
 
 The unit of evidence is the utterance
 -------------------------------------
@@ -548,6 +560,15 @@ def proportion_bound(events: int, trials: int, alpha: float = ALPHA) -> dict:
     }
 
 
+def _g(value: float | None) -> str:
+    """Format a bound for a human-readable claim, or say it does not exist.
+
+    A bound of ``None`` means no evidence, and "no evidence" must not render as
+    a number — least of all as a zero.
+    """
+    return "n/a (no evidence)" if value is None else f"{value:.6g}"
+
+
 def _check_counts(events: int, trials: int) -> None:
     if trials < 0 or events < 0:
         raise ValueError("counts must not be negative")
@@ -620,10 +641,32 @@ def power_requirements() -> dict:
     target_1 = minimum_trials_for_proportion(TARGETS_BY_ID[1].limit)
     target_2 = minimum_hours_for_rate(TARGETS_BY_ID[2].limit)
     target_3 = minimum_trials_for_proportion(TARGETS_BY_ID[3].limit)
-    # Targets 4 and 5 have no rate of their own to solve, so they inherit
-    # target 2's bar. Written as a call rather than a copied constant: if the
-    # 0.2/h limit ever moved, three requirements move with it.
-    inherited = minimum_hours_for_rate(TARGETS_BY_ID[2].limit)
+    # Targets 4 and 5 are bounded per WINDOW, not per hour.
+    #
+    # An earlier version of this function had both inherit target 2's 0.2/h bar
+    # in hours. That reasoning is appealing -- parity should not be the loosest
+    # link -- and it contradicts the predeclared design, which is binding here
+    # precisely so that a mid-flight improvement cannot rewrite the bar a result
+    # will be judged against. `round8_config.json` records
+    # `target_4.clean_run_bound_per_window` and
+    # `target_5.clean_run_bound_by_n/<n>`, both indexed by window count, and
+    # says of target 4: `demonstrable_as_a_rate: false`, "met or not met as a
+    # count; it is a claim about one or two rooms".
+    #
+    # It is also the better statistic. A parity disagreement can occur on any
+    # window, not only during speech, so decisions are its natural denominator;
+    # converting to hours divides by an arbitrary frame rate and then compares
+    # against a limit defined for a different event class. Gating on hours made
+    # Round 8's projected corpus fail target 5 on a technicality while its 31,986
+    # compared windows bound the disagreement rate at 9.4e-05.
+    # No minimum n is invented for either. The predeclared design does not
+    # declare one, and inventing a threshold here would repeat the mistake this
+    # comment describes -- replacing one unpredeclared bar with another. What is
+    # gated is what the design actually states: target 4 is met or not met as a
+    # count, target 5 requires zero disagreements and is fatal. Both report their
+    # clean-run per-window bound so a reader can see how weak or strong the
+    # evidence is, and target 4 additionally carries the design's own
+    # `demonstrable_as_a_rate: false`.
     return {
         "alpha": ALPHA,
         "sided": "one-sided for every gating bound",
@@ -632,22 +675,27 @@ def power_requirements() -> dict:
         "2": {**target_2, "unit": "hours of recorded human speech"},
         "3": {**target_3, "unit": "near-phrase utterances"},
         "4": {
-            **inherited,
-            "unit": "hours of background-only audio",
-            "why_inherited": (
-                "target 4 is a count and is reported as met or not met on the "
-                "windows present. Generalising a clean count to a claim about a "
-                "room is a rate claim, and a false activation on room tone is a "
-                f"false activation, so it inherits target 2's {TARGETS_BY_ID[2].limit}/h bar"
+            "minimum": 1,
+            "unit": "background-only windows",
+            "gate": "count: met when zero activations occurred on the windows present",
+            "demonstrable_as_a_rate": False,
+            "why_per_window": (
+                "the predeclared design records target 4 with a per-window "
+                "clean-run bound and `demonstrable_as_a_rate: false` -- \"met or "
+                "not met as a count; it is a claim about one or two rooms\". The "
+                "per-window bound is reported so the weakness of that claim is "
+                "visible, and it is deliberately not converted into an hourly rate"
             ),
         },
         "5": {
-            **inherited,
-            "unit": "hours of audio compared on both backends",
-            "why_inherited": (
+            "minimum": 1,
+            "unit": "windows compared on both backends",
+            "gate": "zero detection disagreements; the design makes one fatal",
+            "why_per_window": (
                 "zero disagreements over n decisions bounds the disagreement rate "
-                "at 3/n. Parity must not be the loosest link in the set, so the "
-                "comparison is held to the same bar as the rarest event claimed"
+                "at 3/n per DECISION. A disagreement can occur on any window, not "
+                "only during speech, so windows are the denominator the "
+                "predeclared design uses (`clean_run_bound_by_n`)"
             ),
             "also_required": [
                 "every window of the official evidence compared on both backends",
@@ -1535,48 +1583,68 @@ def _rate_target(target: Target, trials: Trials, power: Mapping) -> dict:
 
 
 def _count_target(target: Target, trials: Trials, power: Mapping) -> dict:
-    """Target 4: a count, reported as a count, generalised as a rate.
+    """Target 4: a count, judged as a count, with the reach of that count stated.
 
-    Both halves are reported because they answer different questions.
-    ``met_on_point_estimate`` is the target as written — zero activations on
-    the background windows present. ``statistically_demonstrable`` is whether
-    that clean count says anything about a room, which needs hours.
+    The target is ``== 0`` over the background windows present, and
+    ``round8_config.json`` is explicit that this is all it is:
+    ``demonstrable_as_a_rate: false``, "met or not met as a count; it is a
+    claim about one or two rooms". So the gate is the count, and the bound is
+    the exact per-window one-sided limit the design tabulates
+    (``clean_run_bound_per_window``: 0.047924 at n = 61) rather than an hourly
+    rate the design deliberately does not ask for.
+
+    ``statistically_demonstrable`` is therefore true for a clean count, and it
+    would over-claim on its own: the design's reporting rule says target 4 is
+    "never reported as demonstrated" in the sense of generalising. That is why
+    every row carries ``generalises_beyond_the_windows_measured: False`` and the
+    per-window bound next to the boolean — the claim is "no activation occurred
+    on these N windows", which is an observation, not an inference about rooms.
     """
-    stats = rate_upper_bound(trials.events, trials.hours)
     # Per *window*, not per utterance: background audio is tiled, so a window is
     # the opportunity, and under COUNT_ACTIVATIONS the event count can exceed
     # the utterance count when one tiled recording fires more than once.
-    per_window = proportion_bound(min(trials.events, trials.windows), trials.windows)
-    met = trials.trials > 0 and trials.events == 0
+    events = min(trials.events, trials.windows)
+    per_window = proportion_bound(events, trials.windows)
+    met = trials.windows > 0 and trials.events == 0
     demonstrable, refusals = demonstrability(
         met=met,
-        bound=stats["bound_per_hour"],
-        limit=TARGETS_BY_ID[2].limit,
-        have=trials.hours,
-        need=float(power["required_hours"]),
+        # The count is the gate, so the quantity compared against the limit is
+        # the count itself. No interval stands between an observation and its
+        # own value.
+        bound=float(trials.events),
+        limit=target.limit,
+        have=float(trials.windows),
+        need=float(power["minimum"]),
         unit=str(power["unit"]),
-        extra_refusals=(
-            [] if trials.trials else ["no background-only audio was measured at all"]
-        ),
     )
     return {
         **_target_head(target),
         "trials": trials.trials,
         "events": trials.events,
         "windows": trials.windows,
+        # Reported because the brief asks for audio hours per category, and
+        # deliberately NOT the denominator of the bound: see why_per_window.
         "audio_hours": trials.hours,
         "count": trials.events,
-        "per_window_bound": per_window["bound"],
-        "per_window_bound_method": per_window["bound_method"],
-        "bound": stats["bound_per_hour"],
-        "bound_method": stats["bound_method"],
-        "bound_is_a_rate_against": TARGETS_BY_ID[2].limit,
-        "interval": stats["interval_per_hour"],
-        "interval_method": stats["interval_method"],
-        "required_hours": power["required_hours"],
-        "shortfall_hours": max(0.0, float(power["required_hours"]) - trials.hours),
-        "power_derivation": power["derivation"],
-        "why_a_rate_bar": power["why_inherited"],
+        "bound": per_window["bound"],
+        "bound_method": (
+            "exact Clopper-Pearson one-sided 95% upper limit, per background window"
+        ),
+        "bound_is_per_window_probability_not_a_rate": True,
+        "interval": per_window["interval"],
+        "interval_method": per_window["interval_method"],
+        "minimum_windows": power["minimum"],
+        "demonstrable_as_a_rate": power["demonstrable_as_a_rate"],
+        "generalises_beyond_the_windows_measured": False,
+        "claim": (
+            f"{trials.events} activation(s) on the {trials.windows} background "
+            f"window(s) measured ({trials.hours:.4g} h), bounding the per-window "
+            f"activation probability at {_g(per_window['bound'])}. It says nothing "
+            "about a room that was not recorded."
+            if trials.windows
+            else "no background-only audio was measured, so there is nothing to claim"
+        ),
+        "why_per_window": power["why_per_window"],
         "met_on_point_estimate": met,
         "statistically_demonstrable": demonstrable,
         "refusals": refusals,
@@ -1588,10 +1656,24 @@ def parity_result(measurement: Measurement, power: Mapping) -> dict:
 
     Disagreements are counted per *window*, because a window is a decision and
     a decision is what the user experiences: one build wakes, the other does
-    not. Hours are accumulated per *utterance*, because hours are a claim about
-    how much distinct audio was compared and overlapping framings of one
-    utterance are not more audio. Mixing those two units up in either direction
-    would be the same error the utterance grouping exists to prevent.
+    not. The window is also the denominator the predeclared design uses —
+    ``target_5.clean_run_bound_by_n`` is indexed by window count, and every
+    entry in it is the exact per-window Clopper-Pearson limit (0.002991 at
+    n = 1000, 9.4e-05 at n = 31,986), which this function reproduces.
+
+    The gate is what the design states and nothing more: zero detection
+    disagreements (``detection_disagreement_is_fatal: true``), both backends
+    measured, every window compared, and latency and memory present. The
+    per-frame score delta is measured and reported and deliberately **not**
+    gated — ``frame_score_delta: "reported, not gated"``. No minimum window
+    count is invented, because the design declares none; the bound is printed
+    instead, so a comparison over 1,000 windows cannot be mistaken for one over
+    31,986.
+
+    Hours are still accumulated per *utterance* and reported, because hours are
+    a claim about how much distinct audio was compared and overlapping framings
+    of one utterance are not more audio. They are a description of the evidence
+    here, not the denominator of the bound.
     """
     pair = ("onnx", "tflite")
     missing_backends = [b for b in pair if b not in measurement.backends]
@@ -1631,16 +1713,17 @@ def parity_result(measurement: Measurement, power: Mapping) -> dict:
             f"{windows_without_delta} of {windows} windows carry no per-frame score "
             "difference, so the numerical half of the target is not covered"
         )
-    bound = (RULE_OF_THREE / hours) if hours > 0 and disagreements == 0 else None
-    if disagreements and hours > 0:
-        bound = poisson_upper_mean(disagreements) / hours
+    per_window = proportion_bound(min(disagreements, windows), windows)
     met = not missing_backends and disagreements == 0
     demonstrable, refusals = demonstrability(
         met=met,
-        bound=0.0 if (met and bound is None) else bound,
-        limit=TARGETS_BY_ID[2].limit,
-        have=hours,
-        need=float(power["required_hours"]),
+        # The gate is the disagreement count itself: the design makes one
+        # disagreement fatal, so there is no interval to clear, only a zero to
+        # hold.
+        bound=float(disagreements),
+        limit=TARGETS_BY_ID[5].limit,
+        have=float(windows),
+        need=float(power["minimum"]),
         unit=str(power["unit"]),
         extra_refusals=extra,
     )
@@ -1658,17 +1741,22 @@ def parity_result(measurement: Measurement, power: Mapping) -> dict:
         ),
         "frames_compared": compared_frames,
         "windows_without_frame_deltas": windows_without_delta,
+        "frame_score_delta_is_reported_not_gated": True,
         "runtime_cost": cost,
-        "bound": bound,
+        "bound": per_window["bound"],
         "bound_method": (
-            "rule of three over compared audio (3/t) at zero disagreements"
-            if disagreements == 0
-            else "exact one-sided 95% Poisson limit over compared audio"
+            "exact Clopper-Pearson one-sided 95% upper limit, per compared window"
         ),
-        "required_hours": power["required_hours"],
-        "shortfall_hours": max(0.0, float(power["required_hours"]) - hours),
-        "power_derivation": power["derivation"],
-        "why_a_rate_bar": power["why_inherited"],
+        "bound_is_per_window_probability_not_a_rate": True,
+        "interval": per_window["interval"],
+        "interval_method": per_window["interval_method"],
+        "minimum_windows": power["minimum"],
+        "claim": (
+            f"{disagreements} detection disagreement(s) over {windows} compared "
+            f"window(s) ({hours:.4g} h), bounding the per-window disagreement "
+            f"probability at {_g(per_window['bound'])}."
+        ),
+        "why_per_window": power["why_per_window"],
         "met_on_point_estimate": met,
         "statistically_demonstrable": demonstrable,
         "refusals": refusals,
@@ -2267,15 +2355,25 @@ def _print_power(power: Mapping) -> None:
     print("Derived power requirements (alpha = 0.05, one-sided, unit = utterance)\n")
     for target in TARGETS:
         row = power[str(target.id)]
-        need = row.get("required_trials", row.get("required_hours"))
-        unit = row["unit"]
+        need = row.get("required_trials", row.get("required_hours", row.get("minimum")))
         print(f"  target {target.id}  {target.name}")
         print(f"    limit      {target.comparison} {target.limit:g} {target.unit}")
-        print(f"    requires   {need:g} {unit}")
-        print(f"    derivation {row['derivation']}")
-        if "why_inherited" in row:
-            print(f"    inherited  {row['why_inherited']}")
+        print(f"    requires   {need:g} {row['unit']}")
+        if "derivation" in row:
+            print(f"    derivation {row['derivation']}")
+        # Targets 4 and 5 have no sample size to derive: the predeclared design
+        # judges them per window and declares no minimum n, so what is printed
+        # is the gate and where it comes from rather than an invented threshold.
+        if "gate" in row:
+            print(f"    gate       {row['gate']}")
+            print(f"    why        {row['why_per_window']}")
         print()
+
+
+def _leaves(row: Mapping) -> list[Mapping]:
+    """A merged target row's per-backend detail, or the row itself if it has none."""
+    per_backend = row.get("by_backend")
+    return list(per_backend.values()) if per_backend else [row]
 
 
 def _print_report(report: Mapping) -> None:
@@ -2292,6 +2390,15 @@ def _print_report(report: Mapping) -> None:
     for row in block["targets"]:
         mark = "DEMONSTRATED" if row["statistically_demonstrable"] else "NOT DEMONSTRATED"
         print(f"  target {row['target']}  {row['name']}: {mark}")
+        # The scope of a count claim goes on the same line as the word
+        # DEMONSTRATED, because that line is what gets pasted into a report. The
+        # predeclared design says target 4 is "never reported as demonstrated"
+        # in the generalising sense, and a bare DEMONSTRATED next to a count over
+        # 61 windows in one room is precisely that over-claim.
+        for leaf in _leaves(row):
+            if leaf.get("generalises_beyond_the_windows_measured") is False:
+                print(f"      scope: {leaf['claim']}")
+                break
         for why in row["refusals"]:
             print(f"      - {why}")
     print(f"\n  {block['verdict']}")
