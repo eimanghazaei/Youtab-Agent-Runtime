@@ -2250,6 +2250,15 @@ def measure_corpus(
             "1280-sample frames. float32 would arrive 32768x too quiet."
         )
 
+    # The content-address of the tensor these windows were read from. Without
+    # it, `assert_admissible`'s retired-by-content check (`if digest and digest
+    # in retired`) is vacuous on this path: `Utterance.source_sha256` would
+    # default to "" and a retired synthetic `audio_eval.npy` — the registry
+    # lists those by whole-file digest — would score cleanly. Every utterance
+    # from one corpus shares this digest, so the first one to reach the check
+    # refuses the whole bundle.
+    corpus_sha256 = sha256_file(audio_path)
+
     # The tone guard runs before any scoring: audio that is not speech must not
     # reach the engine at all, let alone a report.
     for index in range(total):
@@ -2323,6 +2332,7 @@ def measure_corpus(
                 windows=windows,
                 dataset=dataset,
                 speaker=speaker or dataset,
+                source_sha256=corpus_sha256,
             )
         )
 

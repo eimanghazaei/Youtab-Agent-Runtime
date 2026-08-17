@@ -1254,6 +1254,53 @@ def test_a_group_that_spans_two_categories_is_refused(tmp_path):
         )
 
 
+def test_a_retired_synthetic_corpus_is_refused_through_the_measure_path(tmp_path):
+    """The retired-by-content backstop must bite on the qualification path.
+
+    ``measure_corpus`` is the only route from audio to a bundle. If it does not
+    record which bytes it scored, ``assert_admissible``'s content check
+    (``if digest and digest in retired``) compares the empty string, and a
+    relocated, renamed copy of a retired synthetic ``audio_eval.npy`` — which the
+    registry lists by whole-file digest — scores cleanly. Here the corpus's own
+    tensor is declared retired, and the measurement it produces must be refused.
+    """
+    corpus = _real_corpus(tmp_path / "features", ["u0"] * 3 + ["u1"] * 3 + ["u2"] * 3)
+    digest = q.sha256_file(corpus / "audio_eval.npy")
+    registry = tmp_path / "registry.json"
+    registry.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "artifacts": [
+                    {
+                        "sha256": digest,
+                        "bytes": 1,
+                        "kind": "synthetic_feature_tensor",
+                        "name": "data/features/audio_eval.npy",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def scorer(framework, audio):
+        return (
+            np.zeros((audio.shape[0], 16), dtype=np.float32),
+            np.zeros(audio.shape[0], dtype=bool),
+        )
+
+    measurement = q.measure_corpus(
+        corpus, models=tmp_path, dataset="speech-commands",
+        provenance="recorded-corpus", scorer=scorer, latency_clips=0,
+    )
+    # Non-vacuity: the produced measurement carries the tensor's digest, not "".
+    assert measurement.utterances
+    assert all(u.source_sha256 == digest for u in measurement.utterances)
+    with pytest.raises(q.SyntheticEvidenceError, match="retired artifact"):
+        q.assert_admissible(measurement, registry=registry)
+
+
 # ---------------------------------------------------------------------------
 # The persisted record, and the command line.
 # ---------------------------------------------------------------------------
