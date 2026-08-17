@@ -80,6 +80,7 @@ metadata form are the three things that must never reach git or CI.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
 import hashlib
 import json
@@ -89,6 +90,7 @@ import re
 import shutil
 import struct
 import sys
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -122,6 +124,13 @@ JOURNAL_FILENAME = "INGESTION_JOURNAL.json"
 #: it were a recording or be skipped silently. Neither is acceptable, so nothing
 #: unfinished is ever inside it.
 STAGING_DIR = ".import-staging"
+
+#: Held for the publish window only, in the data root, so two imports cannot
+#: both read the root before either has published into it. Deliberately not held
+#: across the copy: that is the long phase, an interruption there is already
+#: recoverable from the journal, and a lock spanning it would turn a killed run
+#: into a root nobody can import into without deleting a file by hand.
+LOCK_FILENAME = ".import-lock"
 
 #: The rate the production front end runs at (``build_dataset.SAMPLE_RATE``, and
 #: ``tools/wake_word.py``'s stream rate). Nothing is resampled here; this is the
@@ -161,6 +170,17 @@ DC_OFFSET_LIMIT = 0.01
 HEAVY_CLIPPING_RUNS = 10
 MIN_TAKE_SECONDS = 0.25
 MAX_TAKE_SECONDS = 30.0
+
+#: The largest single take this will read into memory. Decoding expands a take
+#: to roughly 15x its size on disk -- float32 samples, plus the overlapping
+#: window view the noise-floor estimate builds at 16 bytes per sample -- and
+#: nothing in the container parsers bounds the *real* length of a file, only a
+#: header that lies about it. A recorder left running produces a multi-gigabyte
+#: WAV, and reading one exhausts the machine instead of reporting a finding
+#: about it. Far above any real take: MAX_TAKE_SECONDS of 48 kHz 24-bit stereo
+#: is under 9 MB, and the longest continuous section either earlier speaker
+#: recorded is minutes, not hours.
+MAX_TAKE_BYTES = 512 * 1024 * 1024
 
 #: How far a decoded duration may sit from the container's declared duration
 #: before it is worth reporting. Encoder priming and trailing padding are
@@ -1740,6 +1760,23 @@ def describe(root: Path, row: Original) -> Original:
     problems: list[str] = []
     findings: list[str] = []
 
+    if size > MAX_TAKE_BYTES:
+        # Refused rather than excluded: an exclusion keeps a take in the manifest
+        # under a predeclared rule, and "too big for this machine to read" is a
+        # question for a person rather than a property of the recording.
+        return _replace(
+            row,
+            bytes=size,
+            sha256=digest,
+            problems=(
+                f"{row.path}: {size} bytes, past the {MAX_TAKE_BYTES}-byte ceiling "
+                "this tool will decode. Decoding expands a take by roughly 15x, so "
+                "reading this one would exhaust the machine rather than report "
+                "anything about it. A file this size is a recorder left running "
+                "rather than a take",
+            ),
+        )
+
     try:
         facts = format_facts(path)
     except FormatError as exc:
@@ -2148,6 +2185,8 @@ def plan(
         raise Refused(f"the submission {submission.name!r} is not a directory")
     _refuse_label_mismatch(label, submission)
 
+    _refuse_overlapping_ends(submission, into / f"{SPEAKER_DIR_PREFIX}{label}")
+
     root = _originals_root(submission)
     chosen = _choose_layout(label, root, layout)
     state = Plan(label, where, chosen, submission, root, submission.name)
@@ -2499,25 +2538,65 @@ def _refuse_repo_path(path: Path, what: str) -> None:
         )
 
 
+def _refuse_overlapping_ends(submission: Path, derived: Path) -> None:
+    """An import has to have two ends.
+
+    --into pointed at the submission itself makes this speaker destination a
+    subdirectory of the folder being read: the copy of recordings that cannot be
+    made again lands on the same removable drive, inside the tree it was copied
+    from, and one drive failure loses both while the report says
+    byte_for_byte: True. The mirror case -- a destination that *is* the
+    submission -- is worse, because every original is found already present at
+    its target, so nothing is copied at all and the report still reads as a
+    completed import of a preserved copy that does not exist.
+    """
+    left, right = submission.resolve(), derived.resolve()
+    if left == right or right.is_relative_to(left) or left.is_relative_to(right):
+        raise Refused(
+            f"the submission {left.name!r} and this speaker destination "
+            f"{right.name!r} are the same directory, or one is inside the other. "
+            "An import copies from one tree into another: a copy inside the folder "
+            "it came from is not a second copy of an irreplaceable recording, and "
+            "a destination that is already the source reports every original as "
+            "present without copying one"
+        )
+
+
 _ABSOLUTE_PATH = re.compile(r"^(?:[A-Za-z]:[\\/]|[\\/]{1,2})")
+
+#: A POSIX absolute path anywhere in a string, not only at its start. The
+#: anchor above misses the shape a leak actually has -- an --note or an
+#: OSError message that names a path mid-sentence -- and outside /mnt
+#: (a Linux CI box, a mac, /media, /home) nothing else here caught one.
+_EMBEDDED_POSIX_PATH = re.compile(r"(?<![\w.])/[\w.@+-]+/[\w.@+-]+")
 
 
 def _privacy_problems(body: dict) -> list[str]:
     """Every value in a report body that would leak a path or an identity."""
     problems: list[str] = []
 
+    def text(node: str, trail: str) -> None:
+        if _ABSOLUTE_PATH.match(node):
+            problems.append(f"{trail} is an absolute path")
+        elif "/mnt/" in node or re.search(r"[A-Za-z]:[\\/]", node):
+            problems.append(f"{trail} names a host path")
+        elif _EMBEDDED_POSIX_PATH.search(node):
+            problems.append(f"{trail} names a host path")
+
     def walk(node, trail: str) -> None:
         if isinstance(node, dict):
             for key, value in node.items():
+                # The key as well as the value: a body keyed by path reads as
+                # structure rather than as data, and a scan that only visited
+                # leaves would publish a whole capture tree as dictionary keys.
+                if isinstance(key, str):
+                    text(key, f"{trail}.<key>")
                 walk(value, f"{trail}.{key}")
         elif isinstance(node, list):
             for index, value in enumerate(node):
                 walk(value, f"{trail}[{index}]")
         elif isinstance(node, str):
-            if _ABSOLUTE_PATH.match(node):
-                problems.append(f"{trail} is an absolute path")
-            elif "/mnt/" in node or re.search(r"[A-Za-z]:[\\/]", node):
-                problems.append(f"{trail} names a host path")
+            text(node, trail)
 
     walk(body, "report")
     return problems
@@ -2668,7 +2747,14 @@ def _section_rows(state: Plan) -> list[dict]:
 
 def _write_atomic(path: Path, payload: bytes) -> None:
     """Write ``payload`` to ``path`` so no reader ever sees half of it."""
-    temporary = path.with_name(path.name + ".writing")
+    # Unique per writer, not per path: two writers sharing one temporary name
+    # means the first os.replace consumes the file the second staged, and the
+    # second then fails with a bare FileNotFoundError after its own caller has
+    # been told the write succeeded. Process *and* thread, because two imports
+    # are two processes and a test that drives them is two threads.
+    temporary = path.with_name(
+        f"{path.name}.writing.{os.getpid()}.{threading.get_ident()}"
+    )
     with temporary.open("wb") as handle:
         handle.write(payload)
         handle.flush()
@@ -2752,6 +2838,60 @@ def _open_journal(derived: Path, state: Plan, digest: str) -> dict:
     derived.mkdir(parents=True, exist_ok=True)
     _write_atomic(path, json.dumps(journal, indent=2, sort_keys=True).encode("utf-8") + b"\n")
     return journal
+
+
+@contextlib.contextmanager
+def _hold_data_root(into: Path):
+    """Serialise the publish window against one data root, or refuse.
+
+    O_CREAT | O_EXCL rather than an advisory lock: a data root is a
+    removable drive, which arrives as exFAT under drvfs or as a network mount,
+    and flock on those is either unsupported or silently a no-op. A lock
+    that does nothing is worse than no lock, because it reads in the source as
+    though the race were handled.
+
+    Never broken automatically. Breaking a lock is the one action that
+    reintroduces exactly the race this exists to stop, so a stale one is named
+    and left for a person to remove.
+    """
+    path = into / LOCK_FILENAME
+    try:
+        handle = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise Refused(
+            f"another import holds {LOCK_FILENAME} in this data root. Two imports "
+            "that both read the root before either publishes each see a root "
+            "without the other files in it, so one recording present in two "
+            "submissions is frozen under both speakers -- and if either of them "
+            "is sealed, that seal has been spent and re-recording cannot restore "
+            f"it. Wait for the other import; if none is running, remove "
+            f"{LOCK_FILENAME} deliberately"
+        ) from None
+    try:
+        os.write(handle, f"{os.getpid()}\n".encode("utf-8"))
+        os.close(handle)
+        yield
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _refuse_a_root_that_moved(state: Plan, into: Path) -> None:
+    """Re-adjudicate reuse and duplication against the root as it is now.
+
+    Everything plan concluded about what is already imported was true when
+    it read the root. Between then and here another import may have published,
+    or the same operator may have imported the other speaker in a second
+    terminal. Re-reading costs one pass over the manifests, and it is the only
+    verdict whose staleness cannot be undone afterwards: a digest frozen under
+    two speakers on opposite sides of a seal is not repaired by deleting a
+    file, because the sealed speaker has now been seen.
+    """
+    for check in (_duplicate_check(state, into), _reuse_check(state, into)):
+        if not check.ok:
+            raise Refused(
+                "refusing to publish: the data root changed after this import was "
+                f"planned and {check.name!r} no longer holds: {list(check.problems)}"
+            )
 
 
 def _copy_originals(state: Plan, staging: Path, destination: Path) -> dict:
@@ -2906,8 +3046,13 @@ def execute(state: Plan, into: Path, *, note: str = "") -> dict:
         raise Refused(f"the data root {into.name!r} is not a directory")
 
     derived = into / f"{SPEAKER_DIR_PREFIX}{state.label}"
+    _refuse_overlapping_ends(state.submission, derived)
     originals_root = derived / ORIGINALS_DIR
-    staging = derived / STAGING_DIR
+    # One staging directory per run, not one per speaker. Two imports of the
+    # same speaker share derived, so a fixed name means both stage a copy at
+    # the same path and the first os.replace consumes the file the second
+    # staged. It also narrows the cleanup below to exactly what this run wrote.
+    staging = derived / f"{STAGING_DIR}-{os.getpid()}-{threading.get_ident()}"
     if (derived / MANIFEST_FILENAME).is_file():
         raise Refused(
             f"{MANIFEST_FILENAME} already exists for {state.label}; this speaker is "
@@ -2929,10 +3074,15 @@ def execute(state: Plan, into: Path, *, note: str = "") -> dict:
             "refusing to write a report that would leak a host path or an "
             f"identity: {problems}"
         )
-    published = _publish_report(staging, derived, body)
-    fresh = _publish_manifest(
-        state, staging, derived, originals_root, published["content_sha256"]
-    )
+    # The publish window, and only it, is serialised against the data root. The
+    # reuse verdict is re-taken inside the lock: it is the one that reads the
+    # whole root, and the only one that cannot be corrected afterwards.
+    with _hold_data_root(into):
+        _refuse_a_root_that_moved(state, into)
+        published = _publish_report(staging, derived, body)
+        fresh = _publish_manifest(
+            state, staging, derived, originals_root, published["content_sha256"]
+        )
 
     journal.update(
         {

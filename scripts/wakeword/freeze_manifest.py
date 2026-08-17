@@ -132,7 +132,11 @@ def scan(root: Path, include: tuple[str, ...] = ()) -> list[Entry]:
     content.
     """
     if not root.is_dir():
-        raise NotADirectoryError(f"dataset root does not exist: {root}")
+        # The basename, like every other path this module emits. An absolute
+        # capture root in an exception is the same leak as one in a manifest,
+        # and it is the form that actually reaches a log: the drive is not
+        # mounted, so this is the first thing that fails.
+        raise NotADirectoryError(f"dataset root {root.name!r} does not exist")
     entries: list[Entry] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
@@ -287,6 +291,22 @@ def _refuse_repo_destination(out: Path, allow_in_repo: bool) -> None:
         )
 
 
+def _coreutils_line(digest: str, path: str) -> str:
+    """One sha256sum line, escaped the way coreutils escapes one.
+
+    GNU coreutils prefixes the whole line with a backslash and escapes a
+    backslash and a newline in the filename when either is present; sha256sum
+    -c reverses exactly that. Writing the raw bytes instead emits a listing
+    with more lines than the manifest has files, so the independent check --
+    which is the entire reason this sidecar exists -- reports "FAILED open or
+    read" on a tree that is intact.
+    """
+    if "\\" in path or "\n" in path:
+        escaped = path.replace("\\", "\\\\").replace("\n", "\\n")
+        return "\\" + digest + "  " + escaped + "\n"
+    return digest + "  " + path + "\n"
+
+
 def _write_sidecars(out: Path, manifest: dict) -> tuple[Path, Path]:
     """coreutils-format checksums, so something other than this tool can check.
 
@@ -296,7 +316,7 @@ def _write_sidecars(out: Path, manifest: dict) -> tuple[Path, Path]:
     """
     sums = out.with_name(out.stem + ".SHA256SUMS")
     sums.write_text(
-        "".join(f"{entry['sha256']}  {entry['path']}\n" for entry in manifest["files"]),
+        "".join(_coreutils_line(entry["sha256"], entry["path"]) for entry in manifest["files"]),
         encoding="utf-8",
         newline="\n",
     )

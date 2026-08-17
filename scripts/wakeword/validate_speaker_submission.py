@@ -544,8 +544,44 @@ class RenameAction:
         return self.old_path.name != self.new_name
 
 
+#: Sync-client and editor litter, by the same list freeze_manifest skips and
+#: import_speaker records as litter, so what is given a take number here and
+#: what is copied there cannot disagree.
+LITTER_NAMES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini", spec.CHECKSUM_FILE})
+
+
+def _partition(directory: Path) -> tuple[list[Path], list[str], list[str]]:
+    """Recordings, recognised litter, and files nobody here can classify.
+
+    A take number is a claim about *which* recording a file is, and auto-naming
+    assigns it by position. So a file that is not a recording does not merely
+    acquire a canonical name of its own: it shifts every real take onto the
+    wrong take number -- and the rename is in place, on originals that cannot be
+    recorded again, with the recorder own names gone afterwards and no record of
+    them anywhere.
+
+    This is the normal case rather than the exotic one. macOS writes
+    .DS_Store into every folder it opens and an AppleDouble ._name.m4a
+    beside every file it copies onto exFAT, which is how a removable drive
+    handed between two people is formatted.
+    """
+    recordings: list[Path] = []
+    litter: list[str] = []
+    strangers: list[str] = []
+    for entry in sorted(directory.iterdir()):
+        if not entry.is_file():
+            continue
+        if entry.name in LITTER_NAMES or entry.name.startswith("."):
+            litter.append(entry.name)
+        elif entry.suffix.lower() in spec.AUDIO_EXTENSIONS:
+            recordings.append(entry)
+        else:
+            strangers.append(entry.name)
+    return recordings, litter, strangers
+
+
 def _ordered_files(directory: Path) -> list[Path]:
-    """Files directly inside ``directory``, oldest recording first.
+    """Recordings directly inside directory, oldest recording first.
 
     Sorted by modification time -- the order a recorder actually wrote them in
     -- with the original filename as a tie-breaker, so the order stays the
@@ -553,7 +589,7 @@ def _ordered_files(directory: Path) -> list[Path]:
     same second.
     """
     return sorted(
-        (entry for entry in directory.iterdir() if entry.is_file()),
+        _partition(directory)[0],
         key=lambda entry: (entry.stat().st_mtime, entry.name),
     )
 
@@ -568,6 +604,19 @@ def _plan_for_directory(
     that should not be in this folder at all -- the same "never guess a label"
     rule ``validate_speaker_directory`` already follows for a misnamed file.
     """
+    _recordings, litter, strangers = _partition(directory)
+    if strangers:
+        result.errors.append(
+            f"{rel}/: {sorted(strangers)} is not a recorder audio file "
+            f"({sorted(spec.AUDIO_EXTENSIONS)}) and is not recognised litter. "
+            "Auto-naming hands out take numbers by position, so a file nobody can "
+            "classify pushes every real take onto the wrong number -- and the "
+            "rename is in place, on recordings that cannot be made again. Remove "
+            "it, or name the folder by hand"
+        )
+        return []
+    if litter:
+        result.warnings.append(f"{rel}/: ignoring {sorted(litter)} when numbering takes")
     files = _ordered_files(directory)
     if len(files) != len(stems):
         result.errors.append(
@@ -627,7 +676,10 @@ def rename_plan(root: Path) -> tuple[list[RenameAction], ValidationResult]:
     for section in spec.FREEFORM_SECTIONS:
         directory = originals / section.directory
         if directory.is_dir():
-            count = sum(1 for entry in directory.iterdir() if entry.is_file())
+            # The same partition as every other section. Here the count decides
+            # how many stems exist, so a counted sync artefact does not merely
+            # take a slot from a real take -- it guarantees one.
+            count = len(_partition(directory)[0])
             if count >= 1:
                 rel = f"{spec.ORIGINALS_DIR}/{section.directory}"
                 stems = spec.expected_stems_for_freeform(section, count)
