@@ -369,6 +369,92 @@ def _openwakeword_engine_with_scores(monkeypatch, cfg_wake, scores):
     return ww._OpenWakeWordEngine({"provider": "openwakeword", **cfg_wake})
 
 
+def test_confirmation_frames_clamped_to_a_sane_range():
+    assert ww._confirmation_frames({}) == ww._DEFAULT_CONFIRMATION_FRAMES == 3
+    assert ww._confirmation_frames({"confirmation_frames": 0}) == 1
+    assert ww._confirmation_frames({"confirmation_frames": -5}) == 1
+    assert ww._confirmation_frames({"confirmation_frames": 99}) == 10
+    assert ww._confirmation_frames({"confirmation_frames": "nope"}) == 3
+
+
+def test_three_consecutive_over_threshold_frames_are_required(monkeypatch):
+    """The default rule: two loud frames are not a wake, the third is.
+
+    This is the primary lever against firing on ambient conversation, and it is
+    the real ``_OpenWakeWordEngine.process`` being driven here — only the model's
+    per-frame score is scripted.
+    """
+    engine = _openwakeword_engine_with_scores(
+        monkeypatch,
+        {"sensitivity": 0.6},
+        # two over, then a third: fire lands exactly on the third frame
+        [0.9, 0.9, 0.9],
+    )
+    assert engine._confirm_needed == 3
+    assert engine.process([0] * 1280) is False
+    assert engine.process([0] * 1280) is False
+    assert engine.process([0] * 1280) is True
+
+
+def test_a_broken_streak_never_fires(monkeypatch):
+    """An ambient blip pattern — two loud, one quiet, two loud — stays silent."""
+    engine = _openwakeword_engine_with_scores(
+        monkeypatch, {"sensitivity": 0.6}, [0.9, 0.9, 0.1, 0.9, 0.9]
+    )
+    assert [engine.process([0] * 1280) for _ in range(5)] == [False] * 5
+    assert engine._confirm_streak == 2  # mid-streak, still not a wake
+
+
+def test_the_threshold_is_inclusive_and_scores_below_it_reset_the_streak(monkeypatch):
+    # `score >= threshold` — a score sitting exactly on sensitivity counts,
+    # and one hair under it breaks the run.
+    engine = _openwakeword_engine_with_scores(
+        monkeypatch, {"sensitivity": 0.6}, [0.6, 0.6, 0.5999999, 0.6, 0.6, 0.6]
+    )
+    assert [engine.process([0] * 1280) for _ in range(6)] == [
+        False, False, False, False, False, True,
+    ]
+
+
+def test_firing_resets_the_streak_so_one_utterance_fires_once(monkeypatch):
+    """After a fire the count restarts: three more frames are needed.
+
+    Without this the cooldown would be the only thing between one held phrase
+    and a fire on every subsequent frame.
+    """
+    engine = _openwakeword_engine_with_scores(
+        monkeypatch, {"sensitivity": 0.6}, [0.9] * 7
+    )
+    assert [engine.process([0] * 1280) for _ in range(7)] == [
+        False, False, True, False, False, True, False,
+    ]
+
+
+def test_confirmation_frames_one_restores_single_frame_firing(monkeypatch):
+    engine = _openwakeword_engine_with_scores(
+        monkeypatch, {"sensitivity": 0.6, "confirmation_frames": 1}, [0.9]
+    )
+    assert engine.process([0] * 1280) is True
+
+
+def test_reset_drops_a_partial_streak(monkeypatch):
+    """pause → resume must not carry two-thirds of a confirmation across.
+
+    ``_run`` calls ``engine.reset()`` on every (re)start, so a phrase that was
+    half-confirmed when the microphone was handed to a voice turn must not
+    complete on the first frame after it comes back.
+    """
+    engine = _openwakeword_engine_with_scores(
+        monkeypatch, {"sensitivity": 0.6}, [0.9, 0.9, 0.9, 0.9]
+    )
+    assert engine.process([0] * 1280) is False
+    assert engine.process([0] * 1280) is False
+    engine.reset()
+    assert engine._confirm_streak == 0
+    assert engine.process([0] * 1280) is False  # was 2/3, now 1/3
+    assert engine.process([0] * 1280) is False
+
+
 # ── sherpa-onnx open-vocabulary engine ───────────────────────────────────
 
 
