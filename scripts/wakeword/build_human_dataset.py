@@ -302,8 +302,8 @@ CORPUS_TYPES: dict[str, tuple[str, str]] = {
 #: Every source type ``--source`` accepts.
 SOURCE_TYPES: tuple[str, ...] = ("human", *sorted(CORPUS_TYPES))
 
-#: Trailing context, in seconds, for a positive window: how much audio follows
-#: the end of the clip inside the window.
+#: Trailing context, in seconds, for a phrase-anchored window: how much audio
+#: follows the end of the clip inside the window.
 #:
 #: A fixed ladder, not a draw. The engine fires only after three consecutive
 #: frames over threshold, so a phrase that finishes exactly at the window edge
@@ -311,7 +311,30 @@ SOURCE_TYPES: tuple[str, ...] = ("human", *sorted(CORPUS_TYPES))
 #: context is the plateau the confirmation rule needs. Enumerating the ladder
 #: gives the same coverage as ``build_dataset``'s jitter while staying inside
 #: deterministic window extraction — nothing here draws a number.
-TRAILING_OFFSETS_S: tuple[float, ...] = (0.16, 0.32, 0.48, 0.64)
+#:
+#: One value per frame across that plateau: at the runtime's 0.08 s frame
+#: (``_OpenWakeWordEngine.frame_length`` = 1280 samples / SAMPLE_RATE 16 kHz)
+#: the seven offsets land on frames [2, 3, 4, 5, 6, 7, 8], which is exactly
+#: ``round8_config``'s ``window_construction.phrase_anchored_offsets_frames``.
+#: ``round8_config.builder_windowing_divergence`` reconciles this ladder against
+#: that predeclaration, so shortening it (e.g. back to the four-offset
+#: [2, 4, 6, 8] ladder) makes ``round8_config --check`` fail (V6).
+TRAILING_OFFSETS_S: tuple[float, ...] = (0.16, 0.24, 0.32, 0.40, 0.48, 0.56, 0.64)
+
+#: The label-0 categories whose windows are phrase-anchored with
+#: ``TRAILING_OFFSETS_S`` rather than tiled. A near-miss carries the wake
+#: phrase, so — exactly like a positive — its score has to peak on the phrase
+#: end, and that only happens when the window is anchored to that end by the
+#: same trailing-offset ladder. A continuous negative (room tone, unrelated
+#: speech, ``free_speech_human``) has no single phrase to anchor to and is tiled
+#: across its whole length instead.
+#:
+#: Both ``windows_for`` and the ``build_windows`` emit loop branch on this set,
+#: so it is the one place that decides phrase-anchoring vs tiling for a negative;
+#: ``round8_config.builder_windowing_divergence`` reads it to keep the
+#: predeclared ``near_phrase_human`` projection (utterances x offsets) and this
+#: windowing choice from silently drifting apart (V6).
+PHRASE_ANCHORED_NEGATIVES: frozenset[str] = frozenset({"near_phrase_human"})
 
 #: Written beside the tensors, and required beside any checkpoint this phase is
 #: allowed to initialise from.
@@ -1542,8 +1565,14 @@ def windows_for(sample: Sample, positive_windows: int, negative_windows: int) ->
     refuses to finish short — so a term that disagrees with what the emitter
     does aborts the run instead of leaving zero-filled rows that train as
     silent negatives.
+
+    A positive and a phrase-anchored negative (``PHRASE_ANCHORED_NEGATIVES``,
+    the near-miss) both yield ``positive_windows`` windows — one per trailing
+    offset. A continuous negative tiles, a count set by its own length and
+    capped at ``negative_windows``. The emit loop in ``build_windows`` branches
+    on the same predicate, so this term is exactly what it produces.
     """
-    if sample.label == 1:
+    if sample.label == 1 or sample.category in PHRASE_ANCHORED_NEGATIVES:
         return positive_windows
     tiles = max(1, frame_count(sample.path) // WINDOW_SAMPLES)
     return min(negative_windows, tiles)
@@ -1613,7 +1642,7 @@ def build_windows(args: argparse.Namespace, sink) -> dict:
         # utterance stays on one side of any later split of this dataset.
         group_id += 1
         for index in range(count):
-            if sample.label == 1:
+            if sample.label == 1 or sample.category in PHRASE_ANCHORED_NEGATIVES:
                 window = place_at_end(audio, TRAILING_OFFSETS_S[index])
             else:
                 window = tile(audio, index)
