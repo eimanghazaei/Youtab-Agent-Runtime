@@ -34,6 +34,17 @@ Environment:
     YOUTAB_AGENT_TEST_WORKERS  Override worker count (default: os.cpu_count() * 2)
     YOUTAB_AGENT_TEST_PATHS    Override discovery roots (colon-sep, default: 'tests')
 
+Import-failure diagnostics:
+    When a per-file pytest subprocess exits non-zero AND its output carries an
+    import-shaped exception header (``ModuleNotFoundError`` / ``ImportError`` at
+    an anchored position — see ``scripts/import_failure_diagnostics.py``), the
+    runner appends a filesystem/interpreter state capture to its output. This is
+    instrumentation for the unresolved ``No module named 'numpy._utils'`` flake
+    (CI run 32003878520) and nothing else: it does not retry, does not re-run
+    the file, does not import the module that failed, and cannot change an exit
+    status. Ordinary assertion failures do not trigger it. ``--no-import-diagnostics``
+    turns it off. A green run never even imports the module.
+
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 """
 
@@ -98,6 +109,109 @@ _DEFAULT_FILE_RETRIES = 1
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+
+# ── Import-failure diagnostics ──────────────────────────────────────────────
+# Captured reports, printed once at the end of the run in the main thread (the
+# worker threads never print — that is what keeps N parallel outputs from
+# interleaving). Additive output only: nothing in this block is allowed to
+# influence a return code, and the four properties are pinned by
+# tests/youtab_runtime/test_import_failure_diagnostics.py.
+_IMPORT_DIAGNOSTICS: List[Tuple[Path, str]] = []
+_diag_lock = threading.Lock()
+# One capture per distinct missing module. If the filesystem hiccups under a
+# fan-out of ~850 workers, dozens of files fail on the SAME module and the
+# report is identical each time; repeating it would bury the tracebacks.
+_diag_seen: set[str] = set()
+_DIAG_SECTION_TITLE = "import-failure diagnostics"
+# Loader state for the lazily imported diagnostics module.
+_diag_module = None
+_diag_module_unavailable = False
+
+
+def _import_diagnostics_module():
+    """Load ``scripts/import_failure_diagnostics.py`` on first use.
+
+    Loaded by file path rather than by module name: this runner is executed as a
+    script from several working directories, and the diagnostics must not depend
+    on ``scripts/`` having landed on ``sys.path``.
+
+    Lazy on purpose. A green run never reaches this function, so the
+    instrumentation costs a passing run exactly zero — no import, no regex, no
+    stat calls.
+
+    Any failure to load is reported once and then ignored: a broken diagnostic
+    must never be the reason a test run behaves differently.
+    """
+    global _diag_module, _diag_module_unavailable  # noqa: PLW0603 — module-level cache
+    if _diag_module is not None or _diag_module_unavailable:
+        return _diag_module
+    import importlib.util
+
+    path = Path(__file__).resolve().parent / "import_failure_diagnostics.py"
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "youtab_import_failure_diagnostics", path
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(f"no loader for {path}")
+        module = importlib.util.module_from_spec(spec)
+        # Register BEFORE exec_module: @dataclass resolves
+        # sys.modules[cls.__module__] while processing the class, and a module
+        # missing from sys.modules makes it raise AttributeError.
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    except Exception as exc:  # noqa: BLE001 — diagnostics are never load-bearing
+        _diag_module_unavailable = True
+        print(
+            f"note: import-failure diagnostics unavailable ({exc!r})",
+            file=sys.stderr,
+        )
+        return None
+    _diag_module = module
+    return module
+
+
+def _capture_import_diagnostics(
+    file: Path, output: str, repo_root: Path
+) -> str | None:
+    """Record a diagnostic capture for *file* if its output is import-shaped.
+
+    Returns a single pointer line to append to the file's captured output, or
+    ``None`` when the failure was not import-shaped (the ordinary case: an
+    assertion failed). The full report is stashed in ``_IMPORT_DIAGNOSTICS`` and
+    printed by ``main()``, so the inline failure tail keeps showing the
+    traceback instead of being pushed off by 70 lines of state dump.
+    """
+    module = _import_diagnostics_module()
+    if module is None:
+        return None
+    source = _format_file(file, repo_root)
+    try:
+        result = module.capture(
+            output, source=source, search_paths=[str(repo_root), *sys.path]
+        )
+    except Exception as exc:  # noqa: BLE001 — see _import_diagnostics_module
+        print(f"note: import-failure diagnostics failed ({exc!r})", file=sys.stderr)
+        return None
+    if result is None:
+        return None
+    signal, report = result
+    key = signal.module or signal.message
+    with _diag_lock:
+        first = key not in _diag_seen
+        if first:
+            _diag_seen.add(key)
+            _IMPORT_DIAGNOSTICS.append((file, report))
+    where = (
+        f"full capture in the '{_DIAG_SECTION_TITLE}' section below"
+        if first
+        else f"same module already captured; see the '{_DIAG_SECTION_TITLE}' section below"
+    )
+    return (
+        f"{module.MARKER} import-shaped failure detected "
+        f"({signal.exc_type}: {key}) -- {where}"
+    )
 
 
 def _approximately_count_tests(
@@ -234,6 +348,7 @@ def _run_one_file(
     repo_root: Path,
     file_timeout: float,
     retries: int = 0,
+    capture_import_diagnostics: bool = True,
 ) -> Tuple[Path, int, str, dict[str, int], float]:
     """Run ``python -m pytest <file> <pytest_args>`` in a fresh subprocess.
 
@@ -266,16 +381,22 @@ def _run_one_file(
     tree so grandchildren (uvicorn servers, async runtimes, etc.) do not
     orphan onto PID 1. This outer timeout exists only to
     bound a pathologically slow or hung file as a whole.
+
+    ``capture_import_diagnostics`` is inspected per ATTEMPT, inside
+    ``_run_one_file_once``. That placement is deliberate: the import flake this
+    instruments is exactly the kind of failure a retry launders into green, and
+    an attempt whose evidence was discarded because attempt 2 passed is the case
+    we most need captured. The capture does not change the retry decision.
     """
     file, rc, output, summary, subproc_wall = _run_one_file_once(
-        file, pytest_args, repo_root, file_timeout
+        file, pytest_args, repo_root, file_timeout, capture_import_diagnostics
     )
     attempt = 0
     while rc != 0 and attempt < retries:
         attempt += 1
         first_output = output
         file, rc, output, summary, subproc_wall2 = _run_one_file_once(
-            file, pytest_args, repo_root, file_timeout
+            file, pytest_args, repo_root, file_timeout, capture_import_diagnostics
         )
         subproc_wall += subproc_wall2
         if rc == 0:
@@ -303,6 +424,7 @@ def _run_one_file_once(
     pytest_args: List[str],
     repo_root: Path,
     file_timeout: float,
+    capture_import_diagnostics: bool = True,
 ) -> Tuple[Path, int, str, dict[str, int], float]:
     """Single attempt of a per-file pytest subprocess (see _run_one_file)."""
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
@@ -368,7 +490,17 @@ def _run_one_file_once(
         # NOTHING was collected across every file, so a broken invocation
         # (venv without pytest, -k that matches nothing) can't report green.
         rc = 0
+    # Parse the summary from the UNMODIFIED pytest output, before any diagnostic
+    # pointer is appended: the parser walks backwards from the last line looking
+    # for the counts line, so anything appended here would be scanned first.
     summary = _parse_pytest_summary(output)
+    if rc != 0 and capture_import_diagnostics:
+        pointer = _capture_import_diagnostics(file, output, repo_root)
+        if pointer is not None:
+            # String concatenation onto text we were already going to print.
+            # ``rc`` is not touched here and must never be: turning a failure
+            # green is the one thing this instrumentation may not do.
+            output = f"{output.rstrip()}\n{pointer}\n"
     subproc_wall = time.monotonic() - subproc_start
     return file, rc, output, summary, subproc_wall
 
@@ -722,6 +854,19 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--no-import-diagnostics",
+        action="store_true",
+        help=(
+            "Do not capture filesystem/interpreter state when a failing file's "
+            "output carries an import-shaped exception header. Diagnostics are "
+            "additive output only — they never change an exit code, never retry "
+            "and never re-run a file — so this switch exists for log volume, "
+            "not for correctness. No environment knob on purpose: an "
+            "instrumentation-only capture should not be silently disable-able "
+            "from the environment of a CI job."
+        ),
+    )
+    parser.add_argument(
         "--slice",
         metavar="I/N",
         help=(
@@ -782,6 +927,7 @@ def main() -> int:
     OUR_FLAGS = {
         "-j", "--jobs", "--paths", "--include-integration",
         "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
+        "--no-import-diagnostics",
     }
     # pytest short flags that consume the NEXT token as their value.
     PYTEST_VALUE_FLAGS = {"-k", "-m", "-p", "-o", "-c", "-r", "-W"}
@@ -1024,6 +1170,7 @@ def main() -> int:
             fut = pool.submit(
                 _run_one_file, file, pytest_passthrough, repo_root,
                 args.file_timeout, args.file_retries,
+                not args.no_import_diagnostics,
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)
@@ -1101,6 +1248,24 @@ def main() -> int:
         print("  Top 10 slowest:")
         for f, t in slowest:
             print(f"    {t:>6.2f}s  {_format_file(f, repo_root)}")
+
+    # Import-failure diagnostics. Printed whenever anything was captured, which
+    # includes the case where the retry laundered the failure into green — that
+    # is the whole point of capturing per attempt. Printed BEFORE the failure
+    # output so the tracebacks stay closest to the summary a reader scrolls to,
+    # and printed from the main thread so parallel workers cannot interleave it.
+    if _IMPORT_DIAGNOSTICS:
+        print()
+        n = len(_IMPORT_DIAGNOSTICS)
+        print(
+            f"=== {n} {_DIAG_SECTION_TITLE} capture{'s' if n != 1 else ''} "
+            "(instrumentation for the unresolved import flake; NOT a fix, "
+            "nothing was retried) ==="
+        )
+        for file, report in _IMPORT_DIAGNOSTICS:
+            print()
+            print(f"--- {_format_file(file, repo_root)} ---")
+            print(report)
 
     if failures:
         print()
