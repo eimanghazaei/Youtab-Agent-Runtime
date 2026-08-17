@@ -203,6 +203,49 @@ wake = [
   # macOS equivalent, bridged in tools/wake_word.py.
   "ai-edge-litert==2.1.6; platform_system == 'Darwin'",
 ]
+# Wake-word INGESTION — the Owner-side step that reads one human speaker's
+# recordings off a drive (`scripts/wakeword/import_speaker.py`), hashes them and
+# freezes a manifest. Deliberately its own extra rather than part of [wake] or
+# of core:
+#
+# * [wake] is the on-device detector, and desktop installs eager-install it.
+#   PyAV bundles a whole FFmpeg (a 19-37 MB wheel carrying every demuxer and
+#   protocol handler it builds), and shipping that to every desktop user for a
+#   script none of them will ever run is blast radius bought for nothing.
+# * ingestion does not run in the product runtime at all. It runs once per
+#   speaker, on the machine the drive is plugged into.
+#
+# It is a real dependency all the same, and not a host detail somebody has to
+# remember: human submissions arrive as AAC-LC `.m4a` at 48 kHz from phone
+# voice-memo apps. `import_speaker` reads container facts itself (RIFF,
+# ISO-BMFF, FLAC, CAF, AIFF) but a compressed payload needs a decoder for the
+# LEVEL facts — peak, RMS, clipping runs, noise floor. Without one it reports a
+# missing decoder as an environment problem and refuses the import, which is the
+# right refusal and also means the first real submission stalls on a machine
+# that cannot measure clipping on the one format the recordings arrive in.
+# Install it with, and only with, a written command:
+#
+#     uv sync --extra wakeword-ingest
+#     pip install -e '.[wakeword-ingest]'
+#
+# The pin is 18.1.0 rather than the 18.0.0 that produced the two frozen human
+# derivations, because the two were measured to be the same instrument: both
+# wheels carry the same bundled FFmpeg (libavcodec 62.28.102, libswresample
+# 6.3.102), and decoding the same AAC-LC 48 kHz m4a bytes under each — mono
+# 64 kbps and stereo 128 kbps, the two shapes E001 and E002 arrived in — gives
+# bit-identical peak, RMS, DC offset and noise floor; the only difference is the
+# version string PyAV writes into `decoded_by`. 18.1.0 is what the governed test
+# environment runs, so the pin is the version the measurements are actually
+# taken under rather than one nobody executes. Wheels: cp311-abi3 for
+# manylinux_2_28_x86_64, win_amd64 and macosx_14_0_arm64 (plus aarch64, musl,
+# armv7l and win_arm64) — every platform a required CI leg runs on, and no
+# source build anywhere. `numpy` is restated at the same pin as [wake]/[voice]
+# because import_speaker computes its level facts with it, so this extra alone
+# is a working ingestion environment.
+wakeword-ingest = [
+  "av==18.1.0",
+  "numpy==2.4.3",
+]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
 # (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the

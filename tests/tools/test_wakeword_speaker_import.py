@@ -835,6 +835,31 @@ CONTAINER_CASES = (
 )
 
 
+def require_pyav():
+    """The decoder, or a failure naming the command that installs it.
+
+    This was ``pytest.importorskip`` while pyav was in no dependency group at
+    all, and a skip was the honest thing then. It is no longer: pyav is pinned in
+    the ``wakeword-ingest`` extra (``uv sync --extra wakeword-ingest``), which
+    exists precisely so the machine an operator ingests a drive on is installed
+    from the project's own metadata. A skip here would be indistinguishable from
+    a pass on the one machine where the decoder has to be present — the one with
+    a speaker's only recording plugged into it.
+
+    ``tests/tools/test_wakeword_compressed_ingestion.py`` is where the pin, the
+    lock entry and the format submissions actually arrive in are asserted.
+    """
+    try:
+        import av
+    except ImportError as exc:  # pragma: no cover - the state the pin forbids
+        pytest.fail(
+            "pyav is not importable. It is a pinned dependency of the "
+            "[wakeword-ingest] extra, not a host detail: install it with "
+            f"`uv sync --extra wakeword-ingest`. ImportError: {exc}"
+        )
+    return av
+
+
 @pytest.mark.parametrize(("name", "codec", "container", "decoder"), CONTAINER_CASES)
 def test_the_container_parsers_read_what_a_real_encoder_wrote(
     tmp_path: Path, name: str, codec: str, container: str, decoder: str
@@ -844,10 +869,9 @@ def test_the_container_parsers_read_what_a_real_encoder_wrote(
     Encoded here with pyav from a generated tone, so each header parser is
     exercised against a file an actual muxer wrote rather than against bytes this
     test hand-assembled — a hand-assembled fixture would only prove the parser
-    agrees with the test's idea of the format. Skipped where pyav is absent: it
-    is not a dependency of this repository, only of an ingestion machine.
+    agrees with the test's idea of the format.
     """
-    av = pytest.importorskip("av")
+    av = require_pyav()
     source = tmp_path / "generated.wav"
     write_wav(source, seconds=1.0, rate=48000)
     target = tmp_path / name
