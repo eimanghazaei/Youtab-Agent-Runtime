@@ -5,11 +5,13 @@
   "purpose": "Content addressing for that decision. Path rules and manifest corroboration are defeated by a copy: rename the category, move the file to an innocent directory, write a fresh manifest that hashes the copy correctly, and every name reads clean. A SHA-256 does not move with the file, so a byte-identical copy of anything listed here is refused wherever it sits and whatever it is called.",
   "enforced_by": "scripts/wakeword/build_human_dataset.py looks up every clip, every corroborating original, every full-length decode, every recorded-corpus file and every initialization checkpoint here, by the SHA-256 of the bytes on disk. A missing, unreadable, wrongly versioned, empty or self-contradicting registry is a refusal and not a pass; the regression tests are tests/tools/test_wakeword_synthetic_relocation_guard.py.",
   "corpus_sample": {
-    "note": "The one group here that is a sample rather than an enumeration. Stated as numbers so the limit is checkable and cannot drift into an over-claim: the test asserts clips_sampled equals the number of synthetic_corpus_sample entries and equals per_category * categories, and that it is a small fraction of clips_in_corpora.",
+    "note": "The one group here that is a sample rather than an enumeration. Stated as numbers so the limit is checkable and cannot drift into an over-claim: the test asserts clips_sampled equals the number of synthetic_corpus_sample entries and equals per_category * categories, and that the recorded coverage_percent is what those two numbers actually are.",
     "clips_in_corpora": 207300,
     "categories": 30,
     "per_category": 3,
     "clips_sampled": 90,
+    "coverage_percent": 0.043,
+    "coverage_claim": "0.043% of the retired TTS corpora, which is a demonstration that content addressing recognises a relocated clip and NOT coverage of the clips. Read as coverage it would license trusting a build for a property it does not have. The percentage is asserted against clips_sampled / clips_in_corpora by tests/tools/test_wakeword_synthetic_relocation_guard.py so it cannot drift.",
     "rule": "the lowest-numbered clips by sorted filename in each category directory under data/tts"
   },
   "covers": [
