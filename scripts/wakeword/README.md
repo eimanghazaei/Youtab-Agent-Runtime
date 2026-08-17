@@ -70,8 +70,106 @@ exported files are plain matrix multiplies with no backend-specific ops.
 | — | `verify_backends.py` | Runs both shipped artifacts on the current OS: parity, latency and memory. No hardware, no network. |
 | — | `freeze_manifest.py` | Freezes a recorded dataset — hashes every file, hashes the list, records split and usage. Not part of the build. |
 | — | `acquire_common_voice.py` | Bounded Common Voice negative acquisition. Blocked on an Owner credential; see `COMMON_VOICE.md`. |
+| 2r8 | `build_human_dataset.py` | Round 8's stage 2. Builds the same windows and the same features from **real recordings only**, and refuses everything else. Replaces `build_dataset.py` for this phase; see below. |
 
 `phrases.py` holds the phrase inventory shared by stages 1 and 4.
+
+## Round 8: real recordings only
+
+Rounds 1-7 were fitted on synthesized speech and none of them qualified.
+Synthetic training is retired for this phase: Round 8 and every later candidate
+is trained, validated and qualified exclusively on real human recordings and
+real recorded environmental audio.
+
+`build_human_dataset.py` is that stage, and it is a separate module rather than
+a flag on `build_dataset.py` on purpose. `build_dataset.py` requires a TTS tree,
+synthesizes impulse responses, mixes noise at a drawn SNR and re-levels every
+window; a gated mode inside it would leave every prohibited operation one flag
+away. The new module has no code path that can do any of those, so the
+prohibition is structural rather than conditional. What it *does* reuse is
+`read_wav16`, `sha256_file`, the window geometry and `FeatureSink`, so the
+feature space is byte-for-byte the one the runtime uses, and the output file
+names are unchanged so `train_model.py` consumes it as-is.
+
+What it accepts, and only this:
+
+| source | `--source` type | role |
+|---|---|---|
+| an approved human speaker's frozen manifest | `human=` | positives, human near phrases, human free speech |
+| a frozen Speech Commands manifest | `speech_commands=` | recorded negatives |
+| a frozen governed Common Voice subset | `common_voice=` | recorded negatives |
+| a frozen manifest of real recorded room tone | `recorded_background=` | background-only windows |
+
+Processing is limited to decode, the derivation's fixed resample and mono fold,
+deterministic trimming/padding/window extraction, the production feature
+extractor, and the fixed int16 scaling. There is no augmentation: no reverb, no
+mixed noise, no gain, no pitch or speed change, and no random draw anywhere —
+two builds of one input are bit-identical. Positives are windowed at a fixed
+ladder of trailing offsets (160-640 ms), which is the same trailing-context
+coverage `build_dataset.py` gets from jitter without inventing a condition.
+
+The refusals are the point, and each is a test in
+`tests/tools/test_wakeword_round8_human_only.py`:
+
+* speaker split assignment comes from an explicit registry, never from a
+  filename, and a manifest whose declared split disagrees with it is refused in
+  either direction;
+* a sealed speaker is refused in training and in validation on any combination
+  of flags, and the sealed *evaluation* speaker is not buildable into a tensor
+  at all — it is measured by streaming its audio through the runtime engine;
+* every original is hash-verified against the manifest, at the recording itself
+  where the capture drive is mounted and at the full-length decode where it is
+  not, and the report says which;
+* every clip carries provenance — a `source_file` corroborated by the
+  manifest's own `files` list — so a synthetic clip renamed `positive_human`
+  is still refused, because the name was never what was checked;
+* the synthetic-era category names with no real-derivation meaning
+  (`positive`, `hardneg`, `confusable`, `softneg`, `common`,
+  `synthesized_speech`) are hard errors wherever they appear. `near_phrase` and
+  `free_speech` are *not* in that list: those are what the deriver calls a real
+  speaker's negatives, so refusing them by name made the frozen sealed manifest
+  un-ingestible — and that manifest cannot be regenerated, because its digest is
+  what a qualification result is traced to. They are normalised to the `_human`
+  names instead, and what refuses a synthetic clip wearing one is the provenance
+  and content check, never the string;
+* nothing under `data/features*` or `data/tts` can be read, extended or written
+  to, and a checkpoint may only be initialised from if the
+  `DATASET_CONTRACT.json` this stage writes sits beside it asserting zero
+  synthetic samples;
+* every reference has to be *direct*: a clip, a full-length decode or a corpus
+  file that is named absolutely, climbs out of the manifest's own directory with
+  `..`, or arrives through a symlink is refused, because the bytes it reaches
+  are not the bytes that were frozen;
+* every clip, corroborating original, decode, corpus file and initialization
+  checkpoint is looked up by SHA-256 in `retired_synthetic_artifacts.json`, so a
+  byte-identical copy of retired synthetic material is refused wherever it sits
+  and whatever it is called — a missing or unreadable registry is a refusal, not
+  a pass. Those tests are
+  `tests/tools/test_wakeword_synthetic_relocation_guard.py`. What the registry
+  covers and what it does not is stated inside the registry: the retired TTS
+  corpora are 207,300 clips and are represented by a documented sample, so for
+  clips the provenance chain above is still the primary guard;
+* every retired or synthetic-data flag aborts with a reason rather than being
+  ignored;
+* `pink_noise.wav` and `white_noise.wav` are *generated*, not recorded, so they
+  are excluded from the background pool by name and the exclusion is counted in
+  the stats;
+* `synthetic_samples: 0` is written into the stats and the contract, computed
+  from what was actually emitted — the build refuses rather than reporting a
+  zero it did not measure.
+
+A Round 8 human manifest carries a `MANIFEST.json.sha256` sidecar and declares
+either the `_human` dataset names (`positive_human`, `near_phrase_human`,
+`free_speech_human`) or the deriver's own names (`near_phrase`, `free_speech`,
+`positive_<condition>`), which are normalised to them. Accepting both is what
+lets an already-frozen speaker be read without rewriting it; the guard is
+provenance plus content addressing, not the category string.
+
+Every reference must also be *direct*: relative to the manifest, free of `..`,
+and free of symlinks. A relocated synthetic clip with a perfectly self-consistent
+manifest — correct digests, an innocent `source_file` corroborated in `files` —
+used to build cleanly, and `retired_synthetic_artifacts.json` is what refuses it
+now: the bytes are recognised wherever they sit and whatever they are called.
 
 ## Datasets that are recorded rather than downloaded
 
@@ -287,6 +385,29 @@ the artifacts to be numerically very close but not hash-identical to the
 committed ones. The committed hashes identify *these* files, which is what
 `tests/tools/test_wake_word_model_assets.py` verifies; they are not a claim
 that training is bitwise deterministic.
+
+## Real-speaker recordings
+
+Round 8 retires synthetic positives and near misses in favour of real human
+recordings. [`SPEAKER_RECORDING_PACKAGE.md`](SPEAKER_RECORDING_PACKAGE.md) is
+the instructions a speaker follows; [`CONSENT_RECORD_TEMPLATE.md`](CONSENT_RECORD_TEMPLATE.md)
+is the consent form each one signs. `speaker_recording_spec.py` is the
+machine-readable version of that package — the same phrase list, folder
+names, take counts and metadata fields — and `validate_speaker_submission.py`
+checks a submitted folder against it before it is handed over. Metadata is
+filled in from `RECORDING_METADATA.template.json`.
+
+`build_human_dataset.py` is what consumes a validated submission. It is a
+separate stage from `build_dataset.py` on purpose: the synthetic builder
+*requires* a TTS root, synthesises impulse responses, mixes background at a
+drawn SNR and re-levels every window, so a flag that switched it to
+"human-only" would leave every prohibited operation one default away. In the
+human-only stage the capability is absent rather than gated — it never imports
+the augmenter and has no code path that can reach one.
+
+`generate_speech.py` and `build_dataset.py` remain in the tree as the record of
+rounds 1–7, which are retired and did not qualify. Nothing in the active path
+loads them.
 
 ## Environment
 

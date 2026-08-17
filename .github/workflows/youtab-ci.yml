@@ -2,6 +2,24 @@ name: Youtab Agent Runtime gates
 
 on:
   pull_request:
+  # `push` to main, because `pull_request` never verifies main itself.
+  #
+  # A `pull_request` run builds a throwaway merge of the PR head onto whatever
+  # main was AT THAT MOMENT, and reports on that ephemeral commit. So two PRs
+  # can each go green against main@X and then be merged minutes apart: the
+  # second merge produces main@Z, a tree no run has ever seen, and nothing in
+  # this workflow notices. That is a mid-air collision, and it is the one way a
+  # repository with four green required checks still ends up with a broken main.
+  # It is not hypothetical here -- this branch's own history contains a
+  # "pin the new job to the checkout main already moved to" commit, which is
+  # what that collision looks like when a human catches it by hand.
+  #
+  # It is also the sequencing that makes the four contexts reportable on the
+  # branch at all. Before this, main's tip carried exactly one check run
+  # (Dependabot) and none of the gates, so branch protection was being asked to
+  # require statuses that had never once been produced for a commit on main.
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -107,29 +125,44 @@ jobs:
   # (dscripka/openWakeWord#336).
   #
   # A separate job because the whole subject is the runner OS — `python-security`
-  # cannot absorb it the way the TLS step was absorbed. That does mean it is not
-  # a required check until someone marks it one, and the note on the TLS step
-  # above says why that matters. OWNER ACTION: add
-  # `wake-word-backends (ubuntu-latest)` and `wake-word-backends (windows-latest)`
-  # to the branch protection required checks.
+  # cannot absorb it the way the TLS step was absorbed. That did mean it was not
+  # a required check, and the note on the TLS step above says why that matters.
+  # Both legs are now required on main by the `main-required-gates` ruleset:
+  # `wake-word-backends (ubuntu-latest)` and
+  # `wake-word-backends (windows-latest)`, alongside `python-security` and
+  # `javascript`. Renaming this job or either matrix entry renames the check
+  # context and the ruleset then waits forever on a status nothing produces --
+  # so a rename is a two-place change, here and in the ruleset.
   wake-word-backends:
     strategy:
       fail-fast: false
       matrix:
-        # macOS is missing on purpose, not by oversight. `macos-latest` is
-        # Apple Silicon and is the one platform where the tflite artifact is
-        # what users load, so it is the most valuable runner here — but this
-        # repository is private, where GitHub bills macOS minutes at 10x, and
-        # whether that budget exists is not something the repository can see.
-        # OWNER ACTION: if macOS minutes are available, add `macos-latest` to
-        # this list. Nothing else needs to change: every pin below has a
-        # macosx_*_arm64 wheel.
-        #
-        # Do NOT add `macos-13`. That runner is Intel, and neither pin has a
-        # macOS x86_64 wheel — onnxruntime dropped its universal2 build after
-        # 1.22.0 and ai-edge-litert has only ever shipped arm64 for Darwin. The
-        # job would fail at `pip install`, and it would be right to.
         os: [ubuntu-latest, windows-latest]
+        # macOS ARM64 is ENABLED. It is the one platform where the tflite
+        # artifact is what users actually load — `default_inference_framework()`
+        # returns tflite on Darwin ARM64 and onnx everywhere else — so without
+        # this leg the shipped .tflite is never exercised on the OS that loads
+        # it, and `verify_backends.py` runs unchanged here.
+        #
+        # Cost, stated rather than hidden: this repository is private, where
+        # GitHub bills macOS minutes at 10x. The job is small — the other two
+        # legs finish in 24-50s — so the exposure is minutes, not hours, and
+        # the alternative was shipping a tflite artifact no CI job ever loaded
+        # on its target OS.
+        #
+        # `include:` rather than a third entry in `os:` above so the literal
+        # `os:` list stays the thing the CI-wiring test reads.
+        include:
+          - os: macos-latest
+        #
+        # Do NOT add `macos-13`, and do NOT "fix" a failure here by switching to
+        # it. That runner is Intel, and neither pin has a macOS x86_64 wheel:
+        # onnxruntime==1.27.0 publishes only macosx_14_0_arm64 for Darwin
+        # (its universal2 build was dropped after 1.22.0) and ai-edge-litert
+        # has only ever shipped arm64 there. The job would fail at
+        # `pip install`, and it would be right to. Apple-Silicon runners
+        # (`macos-latest`, or a pinned `macos-14`/`macos-15`) are the only
+        # viable macOS legs.
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -155,6 +188,32 @@ jobs:
         run: cat backend-report.json
       - name: Parity, latency and memory gate
         run: python -m pytest tests/tools/test_wake_word_backend_parity.py tests/tools/test_wake_word_model_assets.py -q
+      # The real-human ingestion guards, on both operating systems.
+      #
+      # `python-security` above already collects the whole of `tests/tools`, so
+      # these executed -- but only ever on ubuntu-latest. That is not good
+      # enough for this particular file, because every guard in it is about
+      # paths, filesystem reads and manifest bytes: `build_dataset` resolves
+      # each clip against the manifest's own directory, hashes the manifest
+      # bytes into stats, and refuses a manifest whose declared split is not
+      # `train`. Path resolution and byte-exact hashing are precisely where
+      # Windows differs (separators, and the text mode that would turn LF into
+      # CRLF and change the sha256 of the thing being traced). A guard that
+      # protects the sealed evaluation speaker on Linux and has never been
+      # executed on Windows is a guard whose coverage stops at the operator's
+      # choice of laptop.
+      #
+      # In this job rather than a new one, for the reason recorded on the TLS
+      # step in `python-security`: this job's two legs are required checks and a
+      # new job would not be, so a fail-closed guard proved only by a check
+      # nobody has to pass could be removed by a green PR.
+      #
+      # No new dependency. The file needs numpy and pytest, both already
+      # installed above; `pyroomacoustics` and openWakeWord are monkeypatched
+      # out by the tests themselves, and no recorded speech is read -- the
+      # fixtures describe a speaker who does not exist.
+      - name: Real-human ingestion guards (train-split-only, sealed speaker, excluded clips)
+        run: python -m pytest tests/tools/test_wakeword_human_training_data.py -q
 
   javascript:
     runs-on: ubuntu-latest

@@ -1,0 +1,461 @@
+#!/usr/bin/env python3
+"""Check one speaker's submitted folder against the recording package.
+
+``SPEAKER_RECORDING_PACKAGE.md`` tells a speaker exactly what files to produce
+and what to name them, and says plainly that our loader refuses to guess a
+label from an unrecognised file. This is that check, run on the assembled
+folder while the person who can still fix it is reachable -- instead of weeks
+later, when five people's folders are being assembled into one training set
+and nobody remembers whose third take of "hey utah" a stray file was.
+
+What it validates is the layout the package mandates, which is identical for
+every speaker in the round::
+
+    E003/
+      originals/                 the recording tree, exactly as the recorder wrote it
+      CONSENT.pdf                the signed consent record, placed here by the coordinator
+      RECORDING_METADATA.json    the device and environment form
+      SHA256SUMS                 coreutils-format digest of every other file, from the coordinator
+
+Four entries, and a fifth is an error rather than a skip. Refusing an
+unrecognised file is the same rule ingestion follows: a file whose label
+nobody can state is not a file with an unknown label, it is a file that must
+not enter a dataset.
+
+It checks structure and naming only, and deliberately never opens an audio
+file's payload. Duration and clipping are for the speaker's own recorder to
+show and the checklist in SPEAKER_RECORDING_PACKAGE.md to prompt about; this
+round's whole premise is that a raw recording is never trimmed, converted or
+otherwise touched before real labelling and exclusion decisions are made on
+our side, and a validator that inspects audio content would be a first step
+down that road. ``SHA256SUMS`` is checked as a *listing* -- well-formed lines
+covering every file exactly once -- and not by recomputing digests: a digest
+recomputed on the machine that wrote it says nothing about the transfer that
+has not happened yet. ``sha256sum -c SHA256SUMS``, run by the coordinator
+after the transfer, is what says that.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from dataclasses import dataclass, field
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import speaker_recording_spec as spec  # noqa: E402
+
+_TAKE_PATTERN = rf"[0-9]{{{spec.TAKE_DIGITS}}}"
+_SLUG_PATTERN = r"[a-z0-9-]+"
+
+
+@dataclass
+class ValidationResult:
+    """Every problem found, collected rather than stopping at the first.
+
+    A speaker (or their coordinator) fixing a folder needs the whole list in
+    one pass, not one error per run -- re-running after every single fix is
+    exactly the friction that turns "record it again" into "delete the hard
+    one and hope nobody notices".
+    """
+
+    errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+def _extension_ok(name: str) -> bool:
+    return Path(name).suffix.lower() in spec.AUDIO_EXTENSIONS
+
+
+def _assigned_labels() -> tuple[str, ...]:
+    return tuple(a.label for a in spec.SPEAKER_ASSIGNMENTS)
+
+
+def _check_condition_dir(
+    originals: Path,
+    section: spec.PositiveSection,
+    result: ValidationResult,
+) -> None:
+    """A folder holding exactly one ``<slug>_<condition>_NNN`` series."""
+    directory = originals / section.directory
+    rel = f"{spec.ORIGINALS_DIR}/{section.directory}"
+    if not directory.is_dir():
+        result.errors.append(f"missing required folder: {rel}/")
+        return
+
+    pattern = re.compile(
+        rf"^{re.escape(spec.WAKE_PHRASE_SLUG)}_{re.escape(section.condition)}_{_TAKE_PATTERN}$"
+    )
+    matched = 0
+    for entry in sorted(directory.iterdir()):
+        if not entry.is_file():
+            result.errors.append(f"{rel}/{entry.name}: expected a file, found a directory")
+            continue
+        if not pattern.match(entry.stem) or not _extension_ok(entry.name):
+            result.errors.append(
+                f"{rel}/{entry.name}: unrecognised file name; expected "
+                f"{spec.WAKE_PHRASE_SLUG}_{section.condition}_NNN with a recorder "
+                "audio extension"
+            )
+            continue
+        matched += 1
+
+    if matched < section.takes:
+        result.errors.append(
+            f"{rel}/: found {matched} correctly named recording(s), need at least {section.takes}"
+        )
+
+
+def _check_near_phrase_dir(originals: Path, result: ValidationResult) -> None:
+    directory = originals / "near_phrase"
+    rel = f"{spec.ORIGINALS_DIR}/near_phrase"
+    if not directory.is_dir():
+        result.errors.append(f"missing required folder: {rel}/")
+        return
+
+    known = {item.slug: item for item in spec.NEAR_PHRASE_ITEMS}
+    counts: dict[str, int] = dict.fromkeys(known, 0)
+    pattern = re.compile(rf"^({_SLUG_PATTERN})_({_TAKE_PATTERN})$")
+
+    for entry in sorted(directory.iterdir()):
+        if not entry.is_file():
+            result.errors.append(f"{rel}/{entry.name}: expected a file, found a directory")
+            continue
+        match = pattern.match(entry.stem)
+        if not match or not _extension_ok(entry.name):
+            result.errors.append(
+                f"{rel}/{entry.name}: unrecognised file name; expected "
+                "<phrase-slug>_NNN with a recorder audio extension"
+            )
+            continue
+        slug = match.group(1)
+        if slug not in known:
+            result.errors.append(
+                f"{rel}/{entry.name}: {slug!r} is not one of the near-phrase "
+                "slugs in SPEAKER_RECORDING_PACKAGE.md -- this loader refuses to "
+                "guess which phrase a file belongs to"
+            )
+            continue
+        counts[slug] += 1
+
+    for slug, item in known.items():
+        if counts[slug] < item.takes:
+            result.errors.append(
+                f"{rel}/: only {counts[slug]} take(s) of {item.text!r} ({slug}), "
+                f"need at least {item.takes}"
+            )
+
+
+def _check_freeform_dir(
+    originals: Path, section: spec.FreeformSection, result: ValidationResult
+) -> None:
+    """A folder holding one or more continuous ``<prefix>_NNN`` takes."""
+    directory = originals / section.directory
+    rel = f"{spec.ORIGINALS_DIR}/{section.directory}"
+    if not directory.is_dir():
+        result.errors.append(f"missing required folder: {rel}/")
+        return
+
+    pattern = re.compile(rf"^{re.escape(section.prefix)}_{_TAKE_PATTERN}$")
+    matched = 0
+    for entry in sorted(directory.iterdir()):
+        if not entry.is_file():
+            result.errors.append(f"{rel}/{entry.name}: expected a file, found a directory")
+            continue
+        if not pattern.match(entry.stem) or not _extension_ok(entry.name):
+            result.errors.append(
+                f"{rel}/{entry.name}: unrecognised file name; expected "
+                f"{section.prefix}_NNN with a recorder audio extension"
+            )
+            continue
+        matched += 1
+
+    if matched < section.min_files:
+        result.errors.append(
+            f"{rel}/: found {matched} recording(s), need at least {section.min_files}"
+        )
+
+
+def _check_metadata(root: Path, result: ValidationResult) -> None:
+    path = root / spec.METADATA_FILE
+    if not path.is_file():
+        result.errors.append(f"missing {spec.METADATA_FILE}")
+        return
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        result.errors.append(f"{spec.METADATA_FILE} is not well-formed JSON: {exc}")
+        return
+    if not isinstance(data, dict):
+        result.errors.append(f"{spec.METADATA_FILE} must contain a single JSON object")
+        return
+
+    for name in spec.REQUIRED_METADATA_FIELDS:
+        if name not in data:
+            result.errors.append(f"{spec.METADATA_FILE} is missing required field {name!r}")
+            continue
+        if name == "noise_sources_used":
+            continue  # a list, checked separately below
+        value = data[name]
+        if not isinstance(value, str) or not value.strip():
+            result.errors.append(
+                f"{spec.METADATA_FILE} field {name!r} must be a non-empty string"
+            )
+        elif value.strip().startswith("<"):
+            result.errors.append(
+                f"{spec.METADATA_FILE} field {name!r} still has the template placeholder "
+                "text in it; fill in a real answer"
+            )
+
+    for name in data:
+        if name not in spec.ALL_METADATA_FIELDS:
+            result.errors.append(f"{spec.METADATA_FILE} has an unrecognised field {name!r}")
+
+    _check_speaker_identity(root, data, result)
+    _check_noise_sources(root, data, result)
+
+
+def _check_speaker_identity(root: Path, data: dict, result: ValidationResult) -> None:
+    """The folder, the metadata and the assignment table must agree.
+
+    A folder named for one speaker whose metadata names another cannot be
+    ingested at all: the label is what decides whether the audio trains a
+    model or is held back to measure one, so a mismatch is not a typo to
+    resolve later.
+    """
+    declared = data.get("speaker_id")
+    if not isinstance(declared, str) or not declared.strip():
+        return  # already reported as a missing or empty required field
+    declared = declared.strip()
+    if declared.startswith("<"):
+        return  # already reported as unfilled placeholder text
+
+    if not spec.SPEAKER_ID_PATTERN.match(declared):
+        result.errors.append(
+            f"{spec.METADATA_FILE} field 'speaker_id' is {declared!r}, which is not a "
+            "speaker label of the form E0nn -- a name, initials or an email must never "
+            "travel with the audio"
+        )
+        return
+
+    if declared != root.name:
+        result.errors.append(
+            f"{spec.METADATA_FILE} names {declared!r} but the folder is {root.name!r}; "
+            "one of the two is wrong and guessing which would risk mixing a sealed "
+            "speaker into training"
+        )
+
+    if declared not in _assigned_labels():
+        result.errors.append(
+            f"{declared!r} has no entry in speaker_recording_spec.SPEAKER_ASSIGNMENTS, so "
+            "nothing records whether these recordings may be trained on; assign the "
+            "speaker before ingesting the folder"
+        )
+
+
+def _check_noise_sources(root: Path, data: dict, result: ValidationResult) -> None:
+    originals = root / spec.ORIGINALS_DIR
+    noise = data.get("noise_sources_used")
+    valid_noise: set[str] = set()
+    if not isinstance(noise, list) or not noise:
+        result.errors.append(
+            f"{spec.METADATA_FILE} field 'noise_sources_used' must be a non-empty list"
+        )
+    else:
+        for source in noise:
+            if source in spec.NOISE_SOURCE_VOCAB:
+                valid_noise.add(source)
+            else:
+                result.errors.append(
+                    f"{spec.METADATA_FILE} lists noise source {source!r}, which is not one "
+                    f"of {sorted(spec.NOISE_SOURCE_VOCAB)}"
+                )
+        if len(valid_noise) < spec.MIN_NOISE_SOURCES:
+            result.errors.append(
+                f"{spec.METADATA_FILE} must list at least {spec.MIN_NOISE_SOURCES} genuine "
+                "noise sources"
+            )
+
+    for source in sorted(spec.NOISE_SOURCE_VOCAB):
+        declared = source in valid_noise
+        has_dir = (originals / f"positive_noise_{source}").is_dir()
+        if declared and not has_dir:
+            result.errors.append(
+                f"{spec.METADATA_FILE} declares noise source {source!r} but "
+                f"{spec.ORIGINALS_DIR}/positive_noise_{source}/ does not exist"
+            )
+        elif has_dir and not declared:
+            result.warnings.append(
+                f"{spec.ORIGINALS_DIR}/positive_noise_{source}/ exists but "
+                f"{spec.METADATA_FILE} does not list {source!r} in noise_sources_used"
+            )
+
+
+def _check_consent(root: Path, result: ValidationResult) -> None:
+    """The signed consent record has to be in the folder, not promised.
+
+    It is the one entry here that is not audio and not a form the speaker
+    fills in: the coordinator scans the signed original into it. A submission
+    without it cannot be ingested, because nothing then binds the recordings to
+    a consent that covers them.
+    """
+    path = root / spec.CONSENT_FILE
+    if not path.is_file():
+        result.errors.append(
+            f"missing {spec.CONSENT_FILE}: the signed consent record has to be in the "
+            "folder before the recordings can be ingested"
+        )
+        return
+    if path.stat().st_size == 0:
+        result.errors.append(f"{spec.CONSENT_FILE} is empty")
+
+
+def _submission_files(root: Path) -> list[str]:
+    """Every file in the submission except ``SHA256SUMS``, POSIX-relative."""
+    out: list[str] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel == spec.CHECKSUM_FILE:
+            continue
+        out.append(rel)
+    return out
+
+
+def _check_checksums(root: Path, result: ValidationResult) -> None:
+    """``SHA256SUMS`` must list every other file in the folder exactly once."""
+    path = root / spec.CHECKSUM_FILE
+    if not path.is_file():
+        result.errors.append(
+            f"missing {spec.CHECKSUM_FILE}: without it the folder cannot be shown to have "
+            "survived the transfer intact"
+        )
+        return
+
+    listed: list[str] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        match = spec.CHECKSUM_LINE.match(line)
+        if not match:
+            result.errors.append(
+                f"{spec.CHECKSUM_FILE} line {number} is not coreutils format "
+                "(64 lowercase hex digits, two spaces, then the path): "
+                f"{line.strip()!r}"
+            )
+            continue
+        listed.append(match.group(2))
+
+    duplicates = sorted({name for name in listed if listed.count(name) > 1})
+    for name in duplicates:
+        result.errors.append(f"{spec.CHECKSUM_FILE} lists {name!r} more than once")
+
+    present = set(_submission_files(root))
+    listed_set = set(listed)
+    for name in sorted(present - listed_set):
+        result.errors.append(f"{spec.CHECKSUM_FILE} does not list {name!r}")
+    for name in sorted(listed_set - present):
+        result.errors.append(
+            f"{spec.CHECKSUM_FILE} lists {name!r}, which is not in the folder"
+        )
+
+
+def _check_originals(root: Path, result: ValidationResult) -> None:
+    originals = root / spec.ORIGINALS_DIR
+    if not originals.is_dir():
+        result.errors.append(f"missing required folder: {spec.ORIGINALS_DIR}/")
+        return
+
+    for section in spec.POSITIVE_SECTIONS:
+        _check_condition_dir(originals, section, result)
+
+    present_noise_sources = [
+        source
+        for source in sorted(spec.NOISE_SOURCE_VOCAB)
+        if (originals / f"positive_noise_{source}").is_dir()
+    ]
+    if len(present_noise_sources) < spec.MIN_NOISE_SOURCES:
+        result.errors.append(
+            f"found only {len(present_noise_sources)} {spec.ORIGINALS_DIR}/positive_noise_* "
+            f"folder(s), need at least {spec.MIN_NOISE_SOURCES} of "
+            f"{sorted(spec.NOISE_SOURCE_VOCAB)}"
+        )
+    for source in present_noise_sources:
+        _check_condition_dir(originals, spec.noise_section(source), result)
+
+    _check_near_phrase_dir(originals, result)
+    for section in spec.FREEFORM_SECTIONS:
+        _check_freeform_dir(originals, section, result)
+
+    known = {
+        *(section.directory for section in spec.POSITIVE_SECTIONS),
+        *(f"positive_noise_{source}" for source in spec.NOISE_SOURCE_VOCAB),
+        "near_phrase",
+        *(section.directory for section in spec.FREEFORM_SECTIONS),
+    }
+    for entry in sorted(originals.iterdir()):
+        if entry.name not in known:
+            result.errors.append(
+                f"unrecognised entry in {spec.ORIGINALS_DIR}/: {entry.name} -- ingestion "
+                "refuses to guess what a file or folder it does not know is for"
+            )
+
+
+def validate_speaker_directory(root: Path) -> ValidationResult:
+    """Check ``root`` -- one speaker's submission folder -- against the spec."""
+    result = ValidationResult()
+    if not root.is_dir():
+        result.errors.append(f"{root} is not a directory")
+        return result
+
+    if not spec.SPEAKER_ID_PATTERN.match(root.name):
+        result.errors.append(
+            f"the submission folder is named {root.name!r}; it has to be the speaker "
+            "label alone (E0nn), because that label is the only identifier allowed to "
+            "travel with the audio"
+        )
+
+    for entry in sorted(root.iterdir()):
+        if entry.name not in spec.SUBMISSION_ENTRIES:
+            result.errors.append(
+                f"unrecognised entry in {root.name}/: {entry.name} -- the submission holds "
+                f"exactly {', '.join(spec.SUBMISSION_ENTRIES)} and nothing else"
+            )
+
+    _check_consent(root, result)
+    _check_metadata(root, result)
+    _check_originals(root, result)
+    _check_checksums(root, result)
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "speaker_dir", type=Path, help="one assembled speaker folder, e.g. E003/"
+    )
+    args = parser.parse_args(argv)
+
+    result = validate_speaker_directory(args.speaker_dir)
+    for warning in result.warnings:
+        print(f"WARNING: {warning}")
+    for error in result.errors:
+        print(f"ERROR: {error}")
+
+    if result.ok:
+        print(f"{args.speaker_dir}: all required sections present and well-named")
+        return 0
+    print(f"{args.speaker_dir}: {len(result.errors)} problem(s) found")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
