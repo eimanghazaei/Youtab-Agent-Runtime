@@ -1,0 +1,18 @@
+# Operator dependencies for the compact "Hey Youtab" recording assistant.
+#
+# This is a LOCAL operator tool, not part of the shipped runtime. These are
+# deliberately kept OUT of pyproject.toml / uv.lock so recording on an operator's
+# machine never changes the project's locked runtime dependency set.
+#
+# numpy is already provided by the project environment and is not repeated here.
+# tkinter and wave ship with CPython (standard library).
+#
+# Install:  pip install -r requirements-recording-assistant.txt
+
+# Microphone capture and playback (PortAudio bindings).
+sounddevice>=0.4.6
+
+# Offline text-to-speech for spoken guidance (Windows SAPI5). Optional at
+# runtime: if it is absent the on-screen phrase is still shown, the microphone
+# still records, and only the spoken prompt is skipped.
+pyttsx3>=2.90
