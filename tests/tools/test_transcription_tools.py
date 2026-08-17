@@ -1173,7 +1173,46 @@ class TestTranscribeCredentialReadGuard:
 
 
 class TestRunCommandSttIdleTimeout:
-    """_run_command_stt uses a progress-based idle timeout (mirrors TTS runner)."""
+    """_run_command_stt uses a progress-based idle timeout (mirrors TTS runner).
+
+    Both tests below launch a real interpreter through a real shell, so the
+    idle window has to accommodate one cost that has nothing to do with the
+    behaviour under test: the child's *startup* latency. The idle deadline
+    starts at ``Popen`` (transcription_tools.py:746), so the first line of
+    output must arrive within one whole idle window or the runner kills a
+    process that was never idle.
+
+    That is what made these two flaky at ``timeout=0.1``. Measured latency
+    from ``Popen`` to the first stderr chunk, same launch path:
+
+        idle 12-core box, ext4 interpreter      13-19 ms
+        2-vCPU cpuset + 4 busy workers          58-76 ms
+        2-vCPU cpuset + 8 busy workers         72-109 ms   <- over the window
+        WSL interpreter on a Windows mount     271-478 ms
+
+    A 2-vCPU CI runner executing 4 test workers sits in the third row, which
+    is why CI reported ``timed out after 0.1 seconds`` on the progress test.
+
+    So the timings below are scaled by 10x from the original 0.04 s tick /
+    0.1 s window. Tick and window are scaled *together*, so every ratio the
+    tests assert on is unchanged -- the progress test still runs 1.6x its own
+    idle window, the stall test still stalls far past it -- while the absolute
+    budget for startup and scheduling noise grows from 100 ms to 1 s: ~10x the
+    worst CI-like measurement above, and 2x the worst measurement anywhere.
+    Do not shrink these without re-measuring; and do not raise the window
+    alone, which would shorten the progress test relative to its window and
+    quietly stop proving that output extends the timeout.
+    """
+
+    # Scale factor applied to every wall-clock number in this class, relative
+    # to the original 0.04 s tick / 0.1 s idle window (see class docstring).
+    _SLOW_RUNNER_FACTOR = 10
+
+    #: Idle window handed to _run_command_stt (0.1 s * factor).
+    IDLE_TIMEOUT = 0.1 * _SLOW_RUNNER_FACTOR
+    #: Gap between the child's progress lines (0.04 s * factor). Strictly less
+    #: than IDLE_TIMEOUT, or a tick could not reset the deadline at all.
+    TICK_INTERVAL = 0.04 * _SLOW_RUNNER_FACTOR
 
     @staticmethod
     def _shell_command(*args):
@@ -1187,13 +1226,17 @@ class TestRunCommandSttIdleTimeout:
         idle timeout shorter than its total runtime."""
         from tools.transcription_tools import _run_command_stt
 
+        # 4 ticks * TICK_INTERVAL = 1.6x the idle window: the command can only
+        # survive if each tick resets the deadline.
+        assert 4 * self.TICK_INTERVAL > self.IDLE_TIMEOUT > self.TICK_INTERVAL
+
         script = tmp_path / "progress_then_exit.py"
         script.write_text(
             "\n".join([
                 "import sys, time",
                 "for idx in range(4):",
                 "    print(f'tick {idx}', file=sys.stderr, flush=True)",
-                "    time.sleep(0.04)",
+                f"    time.sleep({self.TICK_INTERVAL})",
                 "print('done', flush=True)",
             ]),
             encoding="utf-8",
@@ -1201,7 +1244,7 @@ class TestRunCommandSttIdleTimeout:
 
         result = _run_command_stt(
             self._shell_command(sys.executable, "-u", str(script)),
-            timeout=0.1,
+            timeout=self.IDLE_TIMEOUT,
         )
 
         assert result.returncode == 0
@@ -1213,6 +1256,9 @@ class TestRunCommandSttIdleTimeout:
         and pre-stall output is preserved on the TimeoutExpired."""
         from tools.transcription_tools import _run_command_stt
 
+        # The stall stays at 30 s rather than scaling with the factor: it only
+        # has to outlast the idle window (30x here), and lengthening it would
+        # only lengthen the hang if the kill path ever regressed.
         script = tmp_path / "progress_then_hang.py"
         script.write_text(
             "\n".join([
@@ -1226,7 +1272,7 @@ class TestRunCommandSttIdleTimeout:
         with pytest.raises(subprocess.TimeoutExpired) as excinfo:
             _run_command_stt(
                 self._shell_command(sys.executable, "-u", str(script)),
-                timeout=0.1,
+                timeout=self.IDLE_TIMEOUT,
             )
 
         assert "starting pass 1" in (excinfo.value.stderr or "")
