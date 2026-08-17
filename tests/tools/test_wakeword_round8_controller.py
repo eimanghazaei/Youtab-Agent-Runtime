@@ -587,12 +587,27 @@ def test_a_set_wider_than_the_predeclared_bound_is_refused(controller_module, sc
         ]
     )
     config["variation"]["runs"] = 5
-    with pytest.raises(controller_module.PlanChangedRefused, match="2 to 4"):
+    with pytest.raises(
+        controller_module.PlanChangedRefused, match="predeclares exactly 3"
+    ):
         scenario(config=config)
 
 
-def test_a_fourth_width_added_under_a_run_is_refused(controller_module, scenario):
-    """"Do not add a fourth width" is enforced where it can be: mid-run."""
+def test_a_widened_matrix_is_refused_at_the_predeclaration_not_mid_run(
+    controller_module, scenario
+):
+    """A fourth width no longer survives long enough to be caught mid-run.
+
+    This test used to build a four-arm plan, assert its digest differed, and let
+    `Journal.open` refuse it as plan drift. That path is gone: the arm count is
+    now closed at exactly three, so `build_plan` refuses a fourth arm before a
+    plan object exists. Asserting the old behaviour would assert that the tighter
+    bound is absent.
+
+    So it now pins the *earlier* refusal, which is the stronger one — a matrix
+    that cannot be built cannot be run at all, whereas mid-run drift detection
+    only catches an edit made after a run started.
+    """
     case = scenario()
     case.controller.advance(to=3)
     widened = controller_module.load_config(CONFIG)
@@ -600,10 +615,10 @@ def test_a_fourth_width_added_under_a_run_is_refused(controller_module, scenario
         {"id": "r8d", "channels": [4, 4, 2], "parameters": 2931}
     )
     widened["variation"]["runs"] = 4
-    fourth = controller_module.build_plan(widened, case.fakes.delegates(controller_module))
-    assert fourth.digest() != case.plan.digest()
-    with pytest.raises(controller_module.PlanChangedRefused, match="changed under a run"):
-        controller_module.Journal.open(case.journal_path, fourth)
+    with pytest.raises(
+        controller_module.PlanChangedRefused, match="predeclares exactly 3"
+    ):
+        controller_module.build_plan(widened, case.fakes.delegates(controller_module))
 
 
 def test_arms_that_are_not_ordered_downward_are_refused(controller_module, scenario):
@@ -711,8 +726,19 @@ def test_a_resumed_run_refuses_if_the_plan_changed_under_it(
     case = scenario()
     case.controller.advance(to=3)
     moved = controller_module.load_config(CONFIG)
-    moved["variation"]["arms"].pop()
-    moved["variation"]["runs"] = 2
+    # Changes the plan without leaving the predeclared capacity set. Dropping an
+    # arm used to do this and can no longer: the matrix is closed at exactly
+    # three, so a two-arm config is refused before a plan exists and this test
+    # would stop exercising plan drift at all.
+    #
+    # Changing the seed is what plan drift looks like when the matrix cannot be
+    # widened: the arms are identical, the config still validates, and the run is
+    # nonetheless a different experiment. The schedule is deliberately NOT used
+    # here -- `Plan.body()` covers round, splits, arms, seed, stop condition and
+    # targets, so a batch-size edit validates and leaves the digest untouched,
+    # which would make this test pass for the wrong reason.
+    for field_name in ("seed", "torch_manual_seed", "numpy_default_rng"):
+        moved["initialization"][field_name] = 20260819
     fakes = Fakes(
         tmp=tmp_path, fm=fm, qualify=qualify, config_module=config_module, promote=promote
     )

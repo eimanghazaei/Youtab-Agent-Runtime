@@ -599,10 +599,20 @@ def build_plan(config: Mapping, delegates: Delegates) -> Plan:
         Arm(str(entry["id"]), tuple(int(c) for c in entry["channels"]), int(entry["parameters"]))
         for entry in variation.get("arms", ())
     )
-    if len(arms) < 2 or len(arms) > 4:
+    # Exactly three, quoting the same stop condition `round8_config.check` quotes.
+    # This is the controller's independent copy of the bound: `check_config` runs
+    # first and would already have refused, so this is unreachable in practice --
+    # which is exactly why it drifted. It said "a bounded set of 2 to 4" after the
+    # predeclaration was closed to three, and a second copy of a bound that
+    # disagrees with the first is worse than no second copy, because whichever one
+    # a reader finds is the one they believe.
+    predeclared = _load_wakeword_module("round8_config")
+    if len(arms) != len(predeclared.ARMS):
         raise PlanChangedRefused(
-            f"{len(arms)} arms; the predeclared design is a bounded set of 2 to 4 and "
-            "widening it needs an Owner decision, not a config edit"
+            f"{len(arms)} arms; Round 8 predeclares exactly {len(predeclared.ARMS)}. "
+            f"ROUND8_DESIGN.md's stop condition is {predeclared.STOP_CONDITION!r}, "
+            "so the matrix is closed at both ends and changing it takes an Owner "
+            "decision rather than a config edit"
         )
     if variation.get("runs") != len(arms):
         raise PlanChangedRefused(
