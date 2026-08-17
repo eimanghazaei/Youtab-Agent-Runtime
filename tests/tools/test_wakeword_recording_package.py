@@ -1,32 +1,34 @@
-"""The recording package has to close the gaps that made E002 half-useful.
+"""The recording package has to say what it says, and say the same thing twice.
 
 Background
 ----------
-E002 is a real speaker, recorded once, and three things were missing from the
-session that no amount of re-analysis can recover:
+Two documents and one module describe this round: the speaker-facing package,
+the consent record, and ``speaker_recording_spec.py``. The module is the one
+machine-readable copy, and ``test_wakeword_speaker_recording_spec.py`` checks it
+against ``phrases.py``. This file checks the *documents* against the module, row
+for row, and then checks the paragraphs that no data structure can hold.
+
+E002 is why. Three things were missing from that session that no amount of
+re-analysis can recover:
 
 * ``okay youtab`` was never recorded. It is the only near phrase that carries
   the real keyword under a *different carrier word*, so it is the one that
   distinguishes a model keyed on the whole phrase from a model keyed on
   "youtab" — and "okay X" is what people say out of habit from other
   assistants.
-* ``hey google`` and bare ``hey`` were never recorded. Both are things an
-  always-on microphone hears constantly, and both begin exactly like the wake
-  word.
+* ``hey google``, ``hey siri`` and bare ``hey`` were never recorded. All three
+  are things an always-on microphone hears constantly, and all three begin
+  exactly like the wake word.
 * ``hey you tab`` was spoken with a pause between "you" and "tab", in every
   take. That fragments the phrase into two words the detector was never trained
   on, and it left the hardest confusion in the whole inventory — ``hey you
   tab`` (a positive) against ``hey you tap`` (a negative, one voicing feature
   away) — essentially untested.
 
-A document can drift back into that state silently, so the take list is
-machine-checked rather than trusted: every prompt is cross-referenced against
-``scripts/wakeword/phrases.py``, and the four gaps above are asserted by name.
-
-The other thing checked here is that the package still *says* the things it has
-to say — coverage across five dimensions, and a consent record that covers
-purpose, storage, publication and withdrawal. Those are the parts a hurried
-edit trims first.
+A document can drift back into that state silently, so the tables are
+machine-checked rather than trusted, and the paragraphs a hurried edit trims
+first — coverage across five dimensions, the retention policy, the rule about
+which pause is allowed — are asserted by name.
 """
 
 from __future__ import annotations
@@ -43,93 +45,220 @@ CONSENT = WAKEWORD / "CONSENT_RECORD_TEMPLATE.md"
 sys.path.insert(0, str(WAKEWORD))
 
 import phrases  # noqa: E402
+import speaker_recording_spec as spec  # noqa: E402
 
-#: Rows of the take-list table: `| n | \`prompt\` | class | takes | yes/no | why |`
-_ROW = re.compile(
-    r"^\|\s*(\d+)\s*\|\s*`([^`]+)`[^|]*\|\s*(positive|near)\s*\|\s*(\d+)\s*\|"
-    r"\s*\*{0,2}(yes|no|n/a)\*{0,2}\s*\|(.*)\|\s*$",
-    re.MULTILINE,
-)
+_SEPARATOR = re.compile(r"^\|[\s:|-]+\|$")
 
 
-def _normalise(text: str) -> str:
-    """Compare phrases by what is said, not by punctuation."""
-    return re.sub(r"[^a-z ]", "", text.lower()).strip()
+def _cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
-def _inventory() -> set[str]:
-    """Every phrase the pipeline synthesizes, normalised."""
-    spoken = [text for text, _weight in phrases.POSITIVE_SPELLINGS]
-    spoken += list(phrases.HARD_NEGATIVES)
-    spoken += list(phrases.SOFT_NEGATIVES)
-    spoken += list(phrases.COMMON_PHRASES)
-    spoken += list(phrases.CONFUSABLE_NEGATIVES)
-    return {_normalise(text) for text in spoken}
+def _tables(text: str) -> list[tuple[list[str], list[list[str]]]]:
+    """Every markdown table in ``text``, as (header cells, body rows)."""
+    lines = text.splitlines()
+    tables: list[tuple[list[str], list[list[str]]]] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if (
+            line.startswith("|")
+            and index + 1 < len(lines)
+            and _SEPARATOR.match(lines[index + 1])
+        ):
+            header = _cells(line)
+            rows = []
+            cursor = index + 2
+            while cursor < len(lines) and lines[cursor].startswith("|"):
+                rows.append(_cells(lines[cursor]))
+                cursor += 1
+            tables.append((header, rows))
+            index = cursor
+        else:
+            index += 1
+    return tables
 
 
-def _rows() -> list[dict]:
-    text = PACKAGE.read_text(encoding="utf-8")
-    rows = [
-        {
-            "n": int(match.group(1)),
-            "prompt": match.group(2).strip(),
-            "class": match.group(3),
-            "takes": int(match.group(4)),
-            "synthesized": match.group(5),
-            "why": match.group(6).strip(),
-        }
-        for match in _ROW.finditer(text)
+def _table(text: str, *required_headers: str) -> list[list[str]]:
+    """The one table whose header contains every name in ``required_headers``."""
+    matches = [
+        rows
+        for header, rows in _tables(text)
+        if all(name in header for name in required_headers)
     ]
-    return rows
+    assert len(matches) == 1, (
+        f"expected exactly one table with headers {required_headers}, found {len(matches)}"
+    )
+    return matches[0]
 
 
-# ── the take list ────────────────────────────────────────────────────────────
+def _package() -> str:
+    return PACKAGE.read_text(encoding="utf-8")
 
 
-def test_the_take_list_parses_and_is_not_a_token_list() -> None:
-    """Non-vacuity for everything below, and a floor on the session itself.
+def _consent() -> str:
+    return CONSENT.read_text(encoding="utf-8")
 
-    Every assertion in this file reads the parsed rows. A regex that stopped
-    matching would make all of them pass over an empty list.
+
+def _prose(text: str) -> str:
+    """Lower-cased, whitespace-collapsed, with markdown blockquote markers gone.
+
+    A substring check against the raw text would depend on where a paragraph
+    happens to wrap and on whether the sentence sits inside a ``>`` block.
     """
-    rows = _rows()
-    assert len(rows) >= 20, f"only {len(rows)} take-list rows parsed"
-
-    positives = [row for row in rows if row["class"] == "positive"]
-    near = [row for row in rows if row["class"] == "near"]
-    assert positives and near
-
-    # The counts the package's own arithmetic depends on: 36 positives and 40
-    # near-phrase utterances per speaker are what make four speakers enough to
-    # demonstrate 5% false rejects and 2% near-miss false accepts.
-    assert sum(row["takes"] for row in positives) >= 36, "too few positives to bound 5%"
-    assert sum(row["takes"] for row in near) >= 40, "too few near phrases to bound 2%"
-    for row in rows:
-        assert row["why"].strip(), f"row {row['n']} has no justification"
+    return re.sub(r"\s+", " ", re.sub(r"(?m)^\s*>\s?", "", text).lower())
 
 
-def test_the_four_gaps_from_e002_are_all_in_the_list() -> None:
+def _unbacktick(cell: str) -> str:
+    return cell.strip().strip("`").strip()
+
+
+def _spoken(text: str) -> str:
+    """A phrase as the tables print it: without its terminal punctuation."""
+    return text[:-1] if text.endswith((".", "!")) else text
+
+
+def _contract_phrases() -> set[str]:
+    return (
+        {text for text, _weight in phrases.POSITIVE_SPELLINGS}
+        | set(phrases.HARD_NEGATIVES)
+        | set(phrases.SOFT_NEGATIVES)
+        | set(phrases.COMMON_PHRASES)
+        | set(phrases.CONFUSABLE_NEGATIVES)
+    )
+
+
+# ── the battery, in both of its tables ───────────────────────────────────────
+
+
+def test_the_speaker_facing_table_matches_the_spec_row_for_row() -> None:
+    """What the speaker is asked to say, and how many times, is not a second copy."""
+    rows = _table(_package(), "#", "Phrase", "Must it wake Youtab?", "Takes", "File slug")
+    assert len(rows) == len(spec.NEAR_PHRASE_ITEMS), (
+        f"{len(rows)} rows printed for {len(spec.NEAR_PHRASE_ITEMS)} battery items"
+    )
+    assert len(rows) >= 30, "the battery has shrunk to a token list"
+
+    for number, (row, item) in enumerate(zip(rows, spec.NEAR_PHRASE_ITEMS), start=1):
+        index, phrase, wake, takes, slug, note = row
+        assert int(index) == number
+        assert phrase.strip('"') == _spoken(item.text), (
+            f"row {number} prints {phrase!r} for {item.text!r}"
+        )
+        expected = "**Wake word**" if item.label == spec.POSITIVE else "Should NOT wake it"
+        assert wake == expected, f"row {number} ({item.text!r}) is printed as {wake!r}"
+        assert int(takes) == item.takes
+        assert _unbacktick(slug) == item.slug
+        assert note == item.note, f"row {number} note has drifted from the spec"
+
+
+def test_the_label_table_matches_the_spec_row_for_row() -> None:
+    """Label, basis and justification, printed from the same table they are read from."""
+    rows = _table(_package(), "label", "basis in `phrases.py`", "recorded from E002?")
+    assert len(rows) == len(spec.NEAR_PHRASE_ITEMS)
+
+    for number, (row, item) in enumerate(zip(rows, spec.NEAR_PHRASE_ITEMS), start=1):
+        index, phrase, label, takes, basis, prior, why = row
+        assert int(index) == number
+        assert _unbacktick(phrase) == _spoken(item.text)
+        assert label == item.label, f"row {number} ({item.text!r}) is printed as {label!r}"
+        assert int(takes) == item.takes
+        assert _unbacktick(basis) == item.contract
+        assert prior == item.recorded_from_e002
+        assert why == item.justification, (
+            f"row {number}'s justification has drifted from the spec"
+        )
+        assert why.strip(), f"row {number} has no justification"
+
+
+def test_every_printed_basis_agrees_with_phrases_py() -> None:
+    """The drift check between this document and the contract.
+
+    A row claiming ``HARD_NEGATIVES`` that is not in that tuple is a false
+    statement about where its label came from; a row claiming to be absent from
+    ``phrases.py`` when the phrase has since been added there hides the fact
+    that a gap was closed. Neither is findable by reading.
+    """
+    rows = _table(_package(), "label", "basis in `phrases.py`", "recorded from E002?")
+    contract = _contract_phrases()
+    positives = {text for text, _weight in phrases.POSITIVE_SPELLINGS}
+
+    absent = 0
+    for row, item in zip(rows, spec.NEAR_PHRASE_ITEMS):
+        basis = _unbacktick(row[4])
+        if basis == spec.CONTRACT_ABSENT:
+            absent += 1
+            assert item.text not in contract, (
+                f"{item.text!r} is printed as absent from phrases.py but is in it now"
+            )
+        elif basis == spec.CONTRACT_POSITIVE:
+            assert item.text in positives
+        elif basis == spec.CONTRACT_NEGATIVE:
+            assert item.text in set(phrases.HARD_NEGATIVES)
+        else:
+            raise AssertionError(f"{item.text!r} prints an unknown basis {basis!r}")
+
+    # Non-vacuity: the column has to discriminate. If every row named a tuple,
+    # the check above would pass while proving nothing about the three phrases
+    # the contract does not decide.
+    assert absent == 3, f"{absent} rows are printed as outside phrases.py, expected 3"
+
+
+def test_the_gaps_from_the_earlier_session_are_all_in_the_list() -> None:
     """The whole reason this package exists, asserted one phrase at a time."""
-    by_prompt = {_normalise(row["prompt"]): row for row in _rows()}
+    rows = _table(_package(), "label", "basis in `phrases.py`", "recorded from E002?")
+    by_phrase = {_unbacktick(row[1]): row for row in rows}
 
-    for prompt in ("okay youtab", "hey google", "hey"):
-        assert prompt in by_prompt, f"{prompt!r} is missing — it was missing from E002 too"
-        assert by_prompt[prompt]["class"] == "near", f"{prompt!r} is not marked as a near phrase"
-        assert by_prompt[prompt]["takes"] >= 2, f"{prompt!r} has too few takes to mean anything"
+    for phrase in ("okay youtab", "hey google", "hey siri", "hey"):
+        assert phrase in by_phrase, f"{phrase!r} is missing — it was missing from E002 too"
+        assert by_phrase[phrase][2] == "negative", f"{phrase!r} is not labelled a negative"
+        assert int(by_phrase[phrase][3]) >= 3, f"{phrase!r} has too few takes to mean anything"
+        assert by_phrase[phrase][5] == "no", (
+            f"{phrase!r} is not marked as never recorded, which is the finding"
+        )
 
-    # `hey you tab` is a POSITIVE spelling, not a near phrase -- it is one of
-    # the orthographies the model is trained to fire on. Getting this wrong in
-    # either direction would invert the whole test.
-    assert "hey you tab" in by_prompt
-    assert by_prompt["hey you tab"]["class"] == "positive"
-    assert _normalise("hey you tab.") in {
-        _normalise(text) for text, _ in phrases.POSITIVE_SPELLINGS
-    }
-
+    # `hey you tab` is a POSITIVE spelling, not a near phrase -- it is one of the
+    # orthographies the model is trained to fire on. Getting this wrong in either
+    # direction would invert the whole test.
+    assert by_phrase["hey you tab"][2] == "positive"
+    assert "hey you tab." in {text for text, _ in phrases.POSITIVE_SPELLINGS}
     # And its minimal pair has to be recorded too, or the confusion is still
     # untested: one voicing feature separates them.
-    assert "hey you tap" in by_prompt
-    assert by_prompt["hey you tap"]["class"] == "near"
+    assert by_phrase["hey you tap"][2] == "negative"
+
+
+def test_the_per_speaker_counts_still_clear_the_floors_the_arithmetic_needs() -> None:
+    """36 positives and 40 near-phrase utterances per speaker were the floor.
+
+    They came from what four speakers had to demonstrate between them. This
+    package records more of both, and the floors are kept here so a future trim
+    has something to fail against.
+    """
+    assert spec.positives_per_speaker() >= 36, "too few positives to bound 5%"
+    assert spec.near_phrase_negatives_per_speaker() >= 40, "too few near phrases to bound 2%"
+
+
+def test_the_evaluation_only_phrases_are_the_ones_that_were_missing() -> None:
+    """The three decided phrases are not in phrases.py, and that is a finding.
+
+    They are recorded here as evaluation-only rather than quietly added to the
+    synthesis inventory: adding a phrase changes what the next training run
+    fits, which is a decision for whoever owns that run. This test pins the
+    current state so the decision is visible rather than implied.
+    """
+    contract = _contract_phrases()
+    assert "okay youtab." not in contract, (
+        "`okay youtab` is now in phrases.py. Good — but move its basis column off "
+        "'not in phrases.py', and say so, rather than leaving two records disagreeing."
+    )
+    assert "hey google." not in contract
+    assert "hey siri." not in contract
+    # The carrier word alone IS in phrases.py; it was the recording that was
+    # missing, not the label. Keeping these two facts apart is the point.
+    assert "hey." in set(phrases.HARD_NEGATIVES)
+
+
+# ── the paragraphs no table can hold ─────────────────────────────────────────
 
 
 def test_the_instructions_forbid_pausing_inside_the_name() -> None:
@@ -142,7 +271,7 @@ def test_the_instructions_forbid_pausing_inside_the_name() -> None:
     # Whitespace-collapsed: the rule spans a line break in the rendered
     # markdown, and a substring check against the raw text would depend on
     # where the paragraph happens to wrap.
-    lowered = re.sub(r"\s+", " ", PACKAGE.read_text(encoding="utf-8").lower())
+    lowered = re.sub(r"\s+", " ", _package().lower())
 
     assert "pause" in lowered
     assert "as one unit" in lowered, "the rule is not stated in a form a speaker can follow"
@@ -153,67 +282,28 @@ def test_the_instructions_forbid_pausing_inside_the_name() -> None:
     # And the failure is attributed, so nobody removes the rule as pedantry.
     assert "e002" in lowered
 
-    row = next(row for row in _rows() if _normalise(row["prompt"]) == "hey you tab")
-    assert "pausing" in row["why"].lower() or "pause" in row["why"].lower(), (
-        "the `hey you tab` row does not carry the warning where it will be read"
-    )
 
+def test_the_instructions_forbid_deleting_a_take_or_manufacturing_a_condition() -> None:
+    """Two ways a session quietly becomes worthless than it looks.
 
-def test_every_prompt_is_correctly_marked_against_the_synthesis_inventory() -> None:
-    """The drift check between this document and phrases.py.
-
-    A prompt marked "yes" that training has never synthesized is a false claim
-    about coverage. A prompt marked "no" that *is* in the inventory hides the
-    fact that the gap has been closed. Both are the kind of error nobody finds
-    by reading.
+    A difficult take deleted is the most useful recording in the folder thrown
+    away; a condition produced by processing an existing file is a measurement
+    of the processing.
     """
-    inventory = _inventory()
-    assert len(inventory) > 100, f"the phrase inventory reads as {len(inventory)} phrases"
+    lowered = re.sub(r"\s+", " ", _package().lower())
 
-    wrong: list[str] = []
-    marked_no = 0
-    for row in _rows():
-        if row["synthesized"] == "n/a":
-            continue  # free conversation, which is not a phrase
-        present = _normalise(row["prompt"]) in inventory
-        claimed = row["synthesized"] == "yes"
-        if present != claimed:
-            wrong.append(
-                f"{row['prompt']!r} marked {row['synthesized']!r} but "
-                f"{'is' if present else 'is not'} in phrases.py"
-            )
-        marked_no += int(not claimed)
-    assert not wrong, "\n  ".join(wrong)
-
-    # Non-vacuity: the column has to discriminate. If every row said "yes" the
-    # check above would pass while proving nothing about the gaps.
-    assert marked_no >= 3, "no prompt is marked as outside the synthesis inventory"
-
-
-def test_the_evaluation_only_phrases_are_the_ones_that_were_missing() -> None:
-    """`okay youtab` and `hey google` are not in phrases.py, and that is a finding.
-
-    They are recorded here as evaluation-only rather than quietly added to the
-    synthesis inventory: adding a phrase changes what the next training run
-    fits, which is a decision for whoever owns that run. This test pins the
-    current state so the decision is visible rather than implied.
-    """
-    inventory = _inventory()
-    assert "okay youtab" not in inventory, (
-        "`okay youtab` is now synthesized. Good — but move it to `yes` in the "
-        "package's table, and say so, rather than leaving two records disagreeing."
+    assert "one condition, one genuine recording" in lowered
+    assert "never take a normal recording and turn the volume down in an app" in lowered
+    assert "never generate it by editing another file" in lowered
+    assert "nothing is trimmed, converted, normalised, denoised, deleted, or re-recorded" in (
+        lowered
     )
-    assert "hey google" not in inventory
-    # The carrier word alone IS synthesized; it was the recording that was
-    # missing, not the phrase. Keeping these two facts apart is the point.
-    assert "hey" in inventory
-
-
-# ── coverage ─────────────────────────────────────────────────────────────────
+    assert "do not delete the one you paused in" in lowered
+    assert "leave it in" in lowered
 
 
 def test_the_package_covers_every_dimension_that_changes_the_signal() -> None:
-    text = PACKAGE.read_text(encoding="utf-8").lower()
+    text = _package().lower()
 
     required = {
         "device": ("phone", "laptop", "headset"),
@@ -234,25 +324,168 @@ def test_the_package_covers_every_dimension_that_changes_the_signal() -> None:
 
 
 def test_the_package_says_where_the_audio_lives_and_how_it_is_frozen() -> None:
-    text = PACKAGE.read_text(encoding="utf-8")
+    text = _package()
     assert "freeze_manifest.py" in text
-    assert "--usage sealed-evaluation" in text or "sealed-evaluation" in text
+    assert "sealed-evaluation" in text
     assert "never inside this repository" in text.lower()
+    assert "validate_speaker_submission.py" in text
     # Cloud sync is the leak that actually happens: a voice memo is on somebody
     # else's server before the session ends.
     lowered = text.lower()
     assert "icloud" in lowered and "cloud sync" in lowered
 
 
+def test_the_time_budget_is_printed_from_the_spec_and_adds_up() -> None:
+    rows = _table(_package(), "Section", "What", "Time")
+    budget = list(spec.TIME_BUDGET)
+    assert len(rows) == len(budget) + 1, "the printed budget is missing its total row"
+
+    for row, expected in zip(rows, budget):
+        assert row[0] == expected.activity
+        assert row[1] == expected.detail
+        assert row[2] == f"{expected.minutes} min"
+
+    total = rows[-1]
+    assert total[0] == "**Total**"
+    assert total[1] == f"**{spec.audio_files_per_speaker()} audio files**"
+    assert total[2] == f"**≈ {spec.SESSION_MINUTES} min**"
+
+
+def test_the_wake_phrase_conditions_are_printed_from_the_spec() -> None:
+    rows = _table(_package(), "Folder", "Filename", "Takes", "How")
+    assert len(rows) == len(spec.POSITIVE_SECTIONS)
+    for row, section in zip(rows, spec.POSITIVE_SECTIONS):
+        assert _unbacktick(row[0]) == f"{section.directory}/"
+        assert _unbacktick(row[1]) == f"{spec.WAKE_PHRASE_SLUG}_{section.condition}_NNN.ext"
+        assert int(row[2]) == section.takes
+        assert row[3] == section.instruction
+
+
+def test_the_upload_structure_is_the_four_entry_layout() -> None:
+    text = _package()
+    for entry in spec.SUBMISSION_ENTRIES:
+        assert entry in text, f"the layout does not mention {entry!r}"
+    assert f"{spec.ORIGINALS_DIR}/positive_<condition>/" in text
+    assert f"{spec.ORIGINALS_DIR}/near_phrase/" in text
+    assert "E003/" in text, "the layout is not shown for a real speaker label"
+    # And the rule that makes the layout enforceable rather than advisory.
+    lowered = re.sub(r"\s+", " ", text.lower())
+    assert "an unrecognised name is treated as an error, not a guess" in lowered
+    assert "there is no fifth entry" in lowered
+
+
+def test_the_rule_of_three_numbers_in_the_document_come_from_the_spec() -> None:
+    """The sizing claim is arithmetic, and the arithmetic is checked elsewhere."""
+    rows = _table(_package(), "target", "trials a clean run needs")
+    assert len(rows) == 2
+
+    sealed = len(spec.labels_for_role(spec.ROLE_SEALED))
+    expected = {
+        f"{spec.rule_of_three(spec.FALSE_REJECT_TARGET)} positives": (
+            f"{spec.positives_per_speaker()} × {sealed} = "
+            f"**{sealed * spec.positives_per_speaker()}**"
+        ),
+        f"{spec.rule_of_three(spec.NEAR_MISS_FALSE_ACCEPT_TARGET)} near-phrase utterances": (
+            f"{spec.near_phrase_negatives_per_speaker()} × {sealed} = "
+            f"**{sealed * spec.near_phrase_negatives_per_speaker()}**"
+        ),
+    }
+    printed = {row[1]: row[2] for row in rows}
+    assert printed == expected, f"the printed arithmetic has drifted: {printed}"
+
+
+# ── the assignments, and what the speaker is told about them ─────────────────
+
+
+def test_the_document_states_the_assignment_policy_and_where_the_table_lives() -> None:
+    lowered = re.sub(r"\s+", " ", _package().lower())
+    assert "before any recording begins" in lowered
+    assert "speaker_assignments" in lowered, (
+        "the document does not say where the assignment table actually lives, so a "
+        "coordinator has nowhere to look it up"
+    )
+    assert "never changes afterwards" in lowered
+    assert "your own consent form" in lowered or "on your own consent form" in lowered
+
+
+def test_the_document_does_not_tell_a_speaker_which_split_they_are_in() -> None:
+    """The instructions are identical for every role, and stay that way.
+
+    Knowing you are the final exam changes how you speak, so the per-speaker
+    map is kept in ``speaker_recording_spec.py`` -- which coordinators read and
+    speakers are not handed -- and each speaker learns their own use category
+    from their own consent form, where consent requires it. This checks the
+    document never pairs a label with the role assigned to it.
+    """
+    text = _package()
+    markers = {
+        spec.ROLE_TRAINING: "training",
+        spec.ROLE_VALIDATION: "validation",
+        spec.ROLE_SEALED: "sealed",
+    }
+    paragraphs = re.split(r"\n\s*\n", text)
+
+    for assignment in spec.SPEAKER_ASSIGNMENTS:
+        marker = markers[assignment.role]
+        for paragraph in paragraphs:
+            if assignment.label not in paragraph:
+                continue
+            assert marker not in paragraph.lower(), (
+                f"a paragraph names {assignment.label} and its own role ({marker!r}), "
+                f"which tells that speaker which split they are in:\n{paragraph}"
+            )
+
+    # Non-vacuity: the labels and the role words are both in the document, so
+    # the loop above is looking at something.
+    assert any(a.label in text for a in spec.SPEAKER_ASSIGNMENTS)
+    for marker in markers.values():
+        assert marker in text.lower()
+
+
+# ── the three decisions ──────────────────────────────────────────────────────
+
+
+def test_each_taxonomy_decision_is_written_out_with_its_basis_and_consequence() -> None:
+    text = _package()
+    lowered = text.lower()
+    for decision in spec.TAXONOMY_DECISIONS:
+        phrase = _spoken(decision.text)
+        heading = re.search(
+            rf"^### Decision \d+ — `{re.escape(decision.text)}` → \*\*{decision.label}\*\*",
+            text,
+            re.MULTILINE,
+        )
+        assert heading, f"{phrase!r} has no decision heading in the package"
+    assert "**basis.**" in lowered
+    assert "**consequence.**" in lowered
+
+    # The decision section has to say why it is a decision at all, and that the
+    # contract was not quietly extended to make it one.
+    collapsed = re.sub(r"\s+", " ", lowered)
+    assert "in neither tuple" in collapsed or "in neither" in collapsed
+    assert "none of the three is added to `phrases.py` here" in collapsed
+    assert "purely cosmetic; engine keys detection" in collapsed, (
+        "the okay-youtab decision does not cite how the runtime actually keys detection"
+    )
+
+
+def test_the_split_carrier_positive_is_explained_and_not_just_labelled() -> None:
+    """The mislabelling incident has to be explained where it can be read."""
+    collapsed = re.sub(r"\s+", " ", _package().lower())
+    assert "`hey you tab.` is a positive, not a near miss" in collapsed
+    assert "suppress a real fire" in collapsed
+    assert "bare `hey.` is already decided" in collapsed
+
+
 # ── consent ──────────────────────────────────────────────────────────────────
 
 
 def test_the_consent_record_covers_purpose_storage_publication_and_withdrawal() -> None:
-    text = CONSENT.read_text(encoding="utf-8")
+    text = _consent()
     lowered = text.lower()
 
-    # Purpose, and which of the two purposes -- because "training" and "sealed
-    # evaluation" are materially different things to agree to.
+    # Purpose, and which purpose -- because "training" and "sealed evaluation"
+    # are materially different things to agree to.
     assert "what it will be used for" in lowered
     assert "training" in lowered and "sealed" in lowered
 
@@ -278,6 +511,52 @@ def test_the_consent_record_covers_purpose_storage_publication_and_withdrawal() 
         assert field in lowered, f"the record has no {field} field"
 
 
+def test_the_consent_form_offers_exactly_the_three_uses_a_speaker_can_be_assigned() -> None:
+    """One tick box per role, so the honest answer is available for every speaker."""
+    lowered = _consent().lower()
+    boxes = re.findall(r"^- \[ \] \*\*(.+?)\.\*\*", _consent(), re.MULTILINE)
+    assert len(boxes) == len(spec.ROLES), f"the form offers {boxes}"
+    assert "training" in lowered
+    assert "validation" in lowered
+    assert "sealed final evaluation" in lowered
+    # And a coordinator, not the speaker, is the one who ticks it.
+    assert "coordinator initials" in lowered
+    assert "tick exactly one box" in lowered
+
+
+def test_the_retention_policy_is_written_and_data_minimising() -> None:
+    """The section that used to be a deliberate blank."""
+    collapsed = _prose(_consent())
+
+    # Minimisation: the label travels, identity does not.
+    assert "data minimisation first" in collapsed
+    assert "the dataset holds the speaker label and nothing that identifies the person" in (
+        collapsed
+    )
+    for absent in ("no date of birth", "no address", "no employer"):
+        assert absent in collapsed, f"the form does not rule out {absent!r}"
+
+    # A period, tied to use rather than to a calendar nobody checks.
+    assert "governed use" in collapsed
+    assert "24 months" in collapsed
+    assert "destroyed together with them" in collapsed
+
+    # Protection at rest, and outside git.
+    assert "encrypted and access-controlled" in collapsed
+    assert "outside any code repository" in collapsed
+
+    # Withdrawal is a documented process with a deadline and an honest limit.
+    assert "within 7 days" in collapsed
+    assert "what withdrawal cannot undo" in collapsed
+    assert "retrain" in collapsed
+
+    # Pending legal review, and explicitly not a blocker.
+    assert "pending legal review" in collapsed
+    assert "in force as written" in collapsed
+    assert "nothing in this round waits on that review" in collapsed
+    assert "no speaker is asked to sign a blank" in collapsed
+
+
 def test_a_filled_consent_record_cannot_be_committed() -> None:
     """The template is tracked; a filled one carries the speaker's name.
 
@@ -285,7 +564,7 @@ def test_a_filled_consent_record_cannot_be_committed() -> None:
     personal data by design, so the naming convention the template mandates has
     to be one the commit gate rejects.
     """
-    text = CONSENT.read_text(encoding="utf-8")
+    text = _consent()
     assert "consent-record-" in text, "the template does not mandate a naming convention"
 
     gate = (
@@ -295,3 +574,19 @@ def test_a_filled_consent_record_cannot_be_committed() -> None:
         "the commit gate does not know about consent records, so the naming "
         "convention the template mandates protects nothing"
     )
+
+
+def test_the_consent_form_and_the_package_agree_on_the_handoff() -> None:
+    """The signed form travels separately and is filed into the archive.
+
+    Both statements are true and they look contradictory, so both documents have
+    to make the distinction rather than one of them stating half of it.
+    """
+    package = re.sub(r"\s+", " ", _package().lower())
+    consent = re.sub(r"\s+", " ", _consent().lower())
+
+    assert "hand your **signed consent form separately** from the audio" in package
+    assert "does **not** travel with the audio" in consent
+    assert spec.CONSENT_FILE.lower() in package
+    assert spec.CONSENT_FILE.lower() in consent
+    assert "separate in transit; bound together, under access control, at rest" in consent
