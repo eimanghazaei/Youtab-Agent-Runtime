@@ -1161,8 +1161,12 @@ _AV_SCALES: dict[str, tuple[float, float]] = {
 
 
 def _import_av():
-    # Imported here rather than at the top: pyav is not a dependency of this
-    # repository, and a WAVE submission must be ingestible without it.
+    # Imported here rather than at the top. pyav IS a dependency now -- pinned as
+    # `av==18.1.0` in the `wakeword-ingest` extra -- so the original reason for
+    # the lazy import is gone, but a better one replaces it: a WAVE submission
+    # needs no decoder, and this module must stay importable on a machine that
+    # installed the project without that extra. A hard import would make every
+    # uncompressed ingestion depend on a media stack it never calls.
     try:
         import av
     except ImportError as exc:  # pragma: no cover - environment-dependent
