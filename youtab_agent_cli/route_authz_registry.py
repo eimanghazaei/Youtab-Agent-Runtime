@@ -453,12 +453,13 @@ _PLUGIN_USER_OWNED: Final[tuple[RouteEntry, ...]] = _entries(
         ("/api/plugins/kanban/boards/{}", "DELETE"),
         ("/api/plugins/kanban/boards/{}", "PATCH"),
         ("/api/plugins/kanban/boards/{}/switch", "POST"),
-        # Tasks: the core product capability.
-        ("/api/plugins/kanban/tasks", "POST"),
-        ("/api/plugins/kanban/tasks/bulk", "POST"),
+        # Tasks: the core product capability. The three task *write* routes
+        # that also accept a model/provider override are pulled out into
+        # ``_PLUGIN_TASK_WRITE_ENGINE_GUARDED`` below, where the engine-override
+        # sub-field is refused in-handler; the reads and comment write here
+        # carry no engine authority.
         ("/api/plugins/kanban/tasks/{}", "DELETE"),
         ("/api/plugins/kanban/tasks/{}", "GET"),
-        ("/api/plugins/kanban/tasks/{}", "PATCH"),
         ("/api/plugins/kanban/tasks/{}/comments", "POST"),
         ("/api/plugins/kanban/tasks/{}/log", "GET"),
         # Agent capability: decompose, specify, reassign, reclaim.
@@ -507,6 +508,54 @@ _PLUGIN_USER_OWNED: Final[tuple[RouteEntry, ...]] = _entries(
         ("/api/plugins/youtab-achievements/sessions/{}/badges", "GET"),
     ),
 )
+
+# ---------------------------------------------------------------------------
+# The task-write routes that carry an optional engine override.
+#
+# ``POST /tasks``, ``POST /tasks/bulk`` and ``PATCH /tasks/{}`` are core user
+# capability — creating and editing one's own tasks — and stay user-owned. But
+# each also accepts ``model_override``/``provider_override`` on its body
+# (``CreateTaskBody``/``UpdateTaskBody``/the bulk body), which
+# ``kanban_db.create_task`` / ``kanban_db.set_model_override`` persist verbatim
+# as a raw provider slug + raw model id that the dispatched worker then runs
+# against. That is the same authority ``POST /api/model/set``,
+# ``PUT /api/profiles/{}/model`` and ``PUT /api/tools/toolsets/{}/model`` are
+# each held at ``engine:select`` for: selecting a raw engine identifier rather
+# than a public Youtab profile.
+#
+# CLOSED in the handler, not at the route table — exactly the ``PUT /api/config``
+# pattern. The engine override is one optional sub-field of an otherwise
+# user-owned mutation, so raising the whole route to ``engine:select`` would
+# take task creation away from every ordinary user. Instead the three handlers
+# call ``_require_engine_scope_for_override`` before any DB write, which refuses
+# a caller lacking ``engine:select``/``provider:write`` (via
+# ``web_server._principal_for_request``) when the payload *selects* a non-empty
+# override — while an ordinary create/edit, an explicit clear, or an empty
+# override is untouched, and loopback/local dev resolves to the Owner and
+# passes. The route stays ``plugin:use`` because that is what an override-free
+# task write is; the elevated sub-field is enforced where the route table
+# cannot see it.
+_PLUGIN_TASK_WRITE_ENGINE_GUARDED: Final[tuple[RouteEntry, ...]] = _entries(
+    RouteClass.USER_OWNED_RESOURCE,
+    (
+        ("/api/plugins/kanban/tasks", "POST"),
+        ("/api/plugins/kanban/tasks/bulk", "POST"),
+        ("/api/plugins/kanban/tasks/{}", "PATCH"),
+    ),
+    justification=(
+        "Core user capability (task create/edit) and stays user-owned / "
+        "plugin:use at the route table. Its body also accepts "
+        "model_override/provider_override, which is persisted as a raw "
+        "provider+model the worker runs against — engine:select authority per "
+        "the /api/model/set, /api/profiles/{}/model and "
+        "/api/tools/toolsets/{}/model precedent. That sub-field cannot be "
+        "expressed at the route table (mixed body), so it is CLOSED in the "
+        "handler exactly like PUT /api/config: _require_engine_scope_for_override "
+        "refuses a selection without engine:select/provider:write before any DB "
+        "write. A clear or an override-free write is unaffected."
+    ),
+)
+
 
 _PLUGIN_SOCKETS: Final[tuple[RouteEntry, ...]] = (
     RouteEntry(
@@ -763,6 +812,7 @@ REGISTRY: Final[tuple[RouteEntry, ...]] = (
     *_PRIVILEGED,
     *_PLUGIN_PRIVILEGED,
     *_PLUGIN_USER_OWNED,
+    *_PLUGIN_TASK_WRITE_ENGINE_GUARDED,
     *_PLUGIN_SOCKETS,
     *_PROFILE_PRIVILEGED,
     *_PROFILE_USER_OWNED,

@@ -596,12 +596,53 @@ genuine flake surfaces as a red check instead of a FLAKY note. That is the
 intended behaviour. A red run names the file; fix it at root cause rather than
 restoring the retry.
 
+### `/api/plugins` cluster — body-read, one engine-binding bypass closed
+
+The largest cluster still on the blanket prefix is now classified from its
+handler bodies (47 route+methods + the `events` WebSocket). The two
+provider-catalogue reads keep their `provider:read` correction —
+`kanban/model-options` (provider→model catalogue) and `kanban/profiles` (each
+profile's raw `model`/`provider`). Every other route reads or mutates only the
+caller's own board, task, comment, attachment, profile *name* or achievement
+and is genuinely `plugin:use`; the WebSocket enforces its scope at the upgrade.
+
+**A sixth engine-binding writer, found and closed in the handler.** `POST
+/api/plugins/kanban/tasks`, `PATCH /api/plugins/kanban/tasks/{}` and `POST
+/api/plugins/kanban/tasks/bulk` each accept an optional
+`model_override`/`provider_override`, which `kanban_db.set_model_override`
+persists as the raw provider+model the dispatched worker runs against — the same
+`engine:select` authority as `/api/model/set`, `/api/profiles/{}/model`,
+`/api/tools/toolsets/{}/model` and `/api/config`. It is one optional sub-field
+of an otherwise user-owned mutation, so the route table cannot express it.
+Following the `PUT /api/config` precedent, the three handlers now call
+`_require_engine_scope_for_override` before any DB write: a caller lacking
+`engine:select`/`provider:write` who *selects* a non-empty override is refused
+403, while an override-free write, an explicit clear, an empty override, and
+loopback/local dev (which resolves to the Owner) are untouched. The routes stay
+`plugin:use` at the table; the elevated sub-field is enforced where the table
+cannot see it. Recorded in the registry as `_PLUGIN_TASK_WRITE_ENGINE_GUARDED`.
+
+Proven by `tests/youtab_runtime/test_kanban_engine_override_authz.py`
+(set-vs-clear predicate; positive/negative/fail-closed on all three handlers; a
+mutation that neuters the guard line and turns a named test RED, restored GREEN)
+and the classification pins in `test_plugins_authz_audit.py`. Registry count
+unchanged at **127, 0 stale**; route inventory byte-identical at 294/255/7/1;
+`router_policy_gate.py` PASS.
+
+**Queued follow-up — `tests/plugins/` is not in the required gate.** This
+slice's handler tests were placed in `tests/youtab_runtime/` so the gate runs
+them; the `tests/plugins/` directory itself is still uncollected (the same gap
+`tests/tools` had before it was added) and carries one pre-existing stale-stub
+failure (`test_kanban_dashboard_plugin.py::test_ws_events_rejects_when_token_required`
+stubs `web_server` without the real `_ws_scope_ok`). Bringing `tests/plugins/`
+into the gate, with that one-line stub fix, is a separate slice, not done here.
+
 ### Still outstanding on this row
 
 - `GET`/`PUT /api/config` — **closed**, see defects 3–5 above.
+- `/api/plugins` (47 route+methods) — **closed**, body-read; see above.
 - The registry (`route_authz_registry.py`) remains the body-verified subset and
   is deliberately smaller than the enforced table: **127 classified, 0 stale**.
-- `/api/plugins` (47 route+methods) is the largest cluster not yet body-read.
 
 ## Next permitted slice
 
@@ -615,5 +656,15 @@ malformed entries fail closed, and a newly added route makes CI red until it is
 classified.
 
 Start with `python scripts/youtab/route_inventory.py --json inventory.json
---by-prefix`. The privileged clusters already carry scopes and are the anchor;
-`/api/plugins` at 47 route+methods is the largest unclassified cluster.
+--by-prefix`. The privileged clusters already carry scopes and are the anchor.
+`/api/plugins` — the last large unclassified cluster — is **done** (above), so
+the remaining route-authz work is folding the still-unregistered enforced routes
+into the body-verified registry (127 of 294) and bringing `tests/plugins/` into
+the gate.
+
+With `/api/plugins` closed, Workstream #10 no longer holds the branch's largest
+open exposure, and the next executable slice on the critical path toward the
+governed-capability goals is the **Cognitive-growth & persistent-memory ADR
+(#15)** — the blocking prerequisite the Sandbox (#17), Workspace ingress (#19)
+and memory-sharing-with-Simorgh work all wait on. It is an architecture decision
+and should be written as an ADR before any of those rows opens code.

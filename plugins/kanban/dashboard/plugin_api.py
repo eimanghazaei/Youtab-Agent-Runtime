@@ -44,7 +44,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -101,6 +101,80 @@ def _ws_upgrade_authorized(ws: "WebSocket") -> bool:
     from youtab_agent_cli.authz import PLUGIN_USE
 
     return bool(_ws._ws_scope_ok(ws, PLUGIN_USE))
+
+
+# ---------------------------------------------------------------------------
+# Per-task engine override — refused in-handler for a caller without engine
+# authority, mirroring the ``PUT /api/config`` precedent.
+# ---------------------------------------------------------------------------
+#
+# The task-write routes (``POST /tasks``, ``PATCH /tasks/{}``, ``POST
+# /tasks/bulk``) are core user capability and stay ``plugin:use`` at the route
+# table — task create/edit is the product. But each also accepts
+# ``model_override``/``provider_override``, which ``kanban_db.set_model_override``
+# persists as the raw provider+model the dispatched worker then runs against.
+# That is ``engine:select`` authority, the same act ``POST /api/model/set``,
+# ``PUT /api/profiles/{}/model`` and ``PUT /api/tools/toolsets/{}/model`` are
+# each held to. The route table cannot carve one optional sub-field out of an
+# otherwise user-owned mutation, so — exactly as ``web_server.update_config``
+# does for the engine-binding move inside ``PUT /api/config`` — the selection is
+# refused here, in the handler, before any DB write.
+
+
+def _is_engine_override_selection(payload: Any) -> bool:
+    """True when a task-write payload SELECTS a non-empty per-task engine override.
+
+    Selecting a raw provider/model is engine authority; an explicit clear, or an
+    empty ``model_override`` (which :func:`kanban_db.set_model_override` treats
+    as "clear back to the profile default"), is REMOVING a binding, not
+    selecting one, and is deliberately not guarded so a user can always drop
+    their own override. ``set_model_override`` rejects a provider without a
+    model, so a provider alone can never persist — but supplying one is still an
+    attempt to select, and is refused fail-closed.
+    """
+    if getattr(payload, "clear_model_override", False):
+        return False
+    model = (getattr(payload, "model_override", None) or "").strip()
+    provider = (getattr(payload, "provider_override", None) or "").strip()
+    return bool(model or provider)
+
+
+def _engine_override_refusal_detail() -> str:
+    """The refusal string, reusing core's so the surface speaks with one voice."""
+    try:
+        from youtab_agent_cli.web_server import REFUSAL_DETAIL
+        return REFUSAL_DETAIL
+    except Exception:
+        return (
+            "This account is not authorized to select a model or provider "
+            "for a task."
+        )
+
+
+def _require_engine_scope_for_override(request: "Request", payload: Any) -> None:
+    """Refuse a per-task engine override from a caller without engine authority.
+
+    Loopback/local dev resolves to the Owner role in
+    ``web_server._principal_for_request`` and passes untouched; a hosted normal
+    user supplying an override is refused 403 before the task is written. An
+    ordinary create/edit that carries no override is unaffected.
+
+    Imported lazily, like :func:`_ws_upgrade_authorized`: in the bare-FastAPI
+    unit harness ``web_server`` is absent and there is no session to resolve, so
+    the guard is a no-op there; production always imports it because it is the
+    caller.
+    """
+    if not _is_engine_override_selection(payload):
+        return
+    try:
+        from youtab_agent_cli import web_server as _ws
+        from youtab_agent_cli.authz import ENGINE_SELECT, PROVIDER_WRITE
+    except Exception:
+        return
+    caller = _ws._principal_for_request(request)
+    if not (caller.has(ENGINE_SELECT) or caller.has(PROVIDER_WRITE)):
+        raise HTTPException(
+            status_code=403, detail=_engine_override_refusal_detail())
 
 
 def _resolve_board(board: Optional[str]) -> Optional[str]:
@@ -622,7 +696,8 @@ class CreateTaskBody(BaseModel):
 
 
 @router.post("/tasks")
-def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
+def create_task(request: Request, payload: CreateTaskBody, board: Optional[str] = Query(None)):
+    _require_engine_scope_for_override(request, payload)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -846,7 +921,8 @@ class UpdateTaskBody(BaseModel):
 
 
 @router.patch("/tasks/{task_id}")
-def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
+def update_task(request: Request, task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
+    _require_engine_scope_for_override(request, payload)
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -1206,12 +1282,13 @@ class BulkTaskBody(BaseModel):
 
 
 @router.post("/tasks/bulk")
-def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
+def bulk_update(request: Request, payload: BulkTaskBody, board: Optional[str] = Query(None)):
     """Apply the same patch to every id in ``payload.ids``.
 
     This is an *independent* iteration — per-task failures don't abort
     siblings. Returns per-id outcome so the UI can surface partials.
     """
+    _require_engine_scope_for_override(request, payload)
     ids = [i for i in (payload.ids or []) if i]
     if not ids:
         raise HTTPException(status_code=400, detail="ids is required")
