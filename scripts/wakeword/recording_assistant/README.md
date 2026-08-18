@@ -178,8 +178,12 @@ folder.
 
 If the GUI cannot be used, record the whole sitting as **seven continuous WAV
 files** by hand and let `segment_fallback.py` split the derived copies. Record
-each file in one take, leaving **2-3 seconds of clear silence between responses**;
-keep the same 48 kHz mono 16-bit format and apply no processing.
+each file in one take, leaving **2-3 seconds of clear silence between responses**.
+Format: **PCM WAV, mono, preferably 48 kHz (16 kHz floor), 16- or 24-bit** - no
+MP3/OGG/FLAC, no processing. A 24-bit source is preserved and its derived takes
+stay 24-bit (byte-identical slices; nothing is ever down-converted). Mono is
+required - a stereo->mono downmix would be a conversion, so a stereo file is
+refused rather than converted.
 
 | File | What to record | Responses |
 |------|----------------|----------:|
@@ -191,9 +195,10 @@ keep the same 48 kHz mono 16-bit format and apply no processing.
 | `freespeech.wav` | 2-3 min natural speech, no wake/near phrase | 1 (whole) |
 | `background.wav` | 1-2 min of the room with nobody speaking | 1 (whole) |
 
-Put the seven files in the **sibling** folder `<incoming>/_continuous/E001/`
-(kept outside the submission folder on purpose, so the derived tree validates
-cleanly). Then:
+Put the seven files in `incoming\E001\_continuous` (inside the speaker folder,
+next to `originals/`). The compact validator tolerates this `_continuous/`
+directory as a preserved raw-source archive and excludes it from the take set and
+the manifest, so the derived tree still validates GREEN. Then:
 
 ```
 .\.venv-recorder\Scripts\python.exe -m scripts.wakeword.recording_assistant.segment_fallback --speaker E001 --dry-run
@@ -208,6 +213,14 @@ or per file with `--override near_phrases.wav:min_silence=1.5`. The seven
 originals are **preserved byte-for-byte** (verified by SHA-256 before and after)
 in `_continuous/`, and the 55 derived takes land under `E001/originals/` exactly
 where the validator and importer expect them, with a `SHA256SUMS` manifest.
+
+After splitting, validate the package (GREEN via `validate_compact_submission`)
+and run the ingestion dry-run. Note that `import_speaker.py` is the **full
+E003-E007 round** importer: on a compact E001/E002 package its format, checksum,
+role and classification checks pass, but it reports two expected count
+"shortfalls" ("enough usable takes" / "matches SPEAKER_RECORDING_PACKAGE.md")
+because the compact package carries fewer takes per section by design. The
+authoritative GREEN for this round is the compact validator.
 
 ## Handoff
 

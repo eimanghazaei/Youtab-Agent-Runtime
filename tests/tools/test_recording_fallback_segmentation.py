@@ -18,6 +18,7 @@ gate forbids in tracked text.
 from __future__ import annotations
 
 import sys
+import wave
 from pathlib import Path
 
 import numpy as np
@@ -162,7 +163,7 @@ def test_expected_counts_constant_matches_the_mapping():
 
 
 def _make_continuous(root: Path) -> tuple[Path, dict[str, np.ndarray]]:
-    """Write the seven originals to the sibling continuous folder; return samples."""
+    """Write the seven 16-bit originals to <root>/_continuous; return their samples."""
     cdir = sf.continuous_dir_for(root)
     cdir.mkdir(parents=True, exist_ok=True)
     sources: dict[str, np.ndarray] = {}
@@ -176,6 +177,57 @@ def _make_continuous(root: Path) -> tuple[Path, dict[str, np.ndarray]]:
         core.write_wave(cdir / name, samples, RATE)
         sources[name] = samples
     return cdir, sources
+
+
+# ── 24-bit synthesis (the format the Owner records with an external device) ──
+
+
+def _pack24(ints: np.ndarray) -> bytes:
+    """Little-endian signed 24-bit bytes for an integer sample array."""
+    masked = np.asarray(ints).astype(np.int64) & 0xFFFFFF
+    out = np.empty((masked.size, 3), dtype=np.uint8)
+    out[:, 0] = masked & 0xFF
+    out[:, 1] = (masked >> 8) & 0xFF
+    out[:, 2] = (masked >> 16) & 0xFF
+    return out.tobytes()
+
+
+def tone24(duration_s: float, amp: float = 0.3, freq: float = 220.0, rate: int = RATE) -> np.ndarray:
+    n = max(int(round(duration_s * rate)), 0)
+    t = np.arange(n) / rate
+    return np.round(amp * (2**23 - 1) * np.sin(2 * np.pi * freq * t)).astype(np.int64)
+
+
+def continuous24(n: int, *, seg_s: float = 0.8, gap_s: float = 2.5, pad_s: float = 0.5,
+                 rate: int = RATE) -> np.ndarray:
+    parts = [np.zeros(int(round(pad_s * rate)), dtype=np.int64)]
+    for index in range(n):
+        parts.append(tone24(seg_s, rate=rate))
+        parts.append(np.zeros(int(round((gap_s if index < n - 1 else pad_s) * rate)), dtype=np.int64))
+    return np.concatenate(parts)
+
+
+def _write_wav24(path: Path, ints: np.ndarray, rate: int = RATE) -> None:
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(3)
+        handle.setframerate(rate)
+        handle.writeframes(_pack24(ints))
+
+
+def _make_continuous_24(root: Path, rate: int = RATE) -> Path:
+    """Write the seven 24-bit originals to <root>/_continuous; freeform long enough for GREEN."""
+    cdir = sf.continuous_dir_for(root)
+    cdir.mkdir(parents=True, exist_ok=True)
+    for name, count in sf.EXPECTED_DERIVED_COUNTS.items():
+        if name == sf.ORIGINAL_FREESPEECH:
+            ints = tone24(22.0, rate=rate)  # >= the 20 s freeform floor
+        elif name == sf.ORIGINAL_BACKGROUND:
+            ints = tone24(22.0, amp=0.05, rate=rate)
+        else:
+            ints = continuous24(count, rate=rate)
+        _write_wav24(cdir / name, ints, rate)
+    return cdir
 
 
 def test_end_to_end_writes_all_55_and_preserves_the_originals(tmp_path):
@@ -204,21 +256,23 @@ def test_end_to_end_writes_all_55_and_preserves_the_originals(tmp_path):
     assert (cdir / spec.CHECKSUM_FILE).is_file()
 
 
-def test_submission_root_stays_clean_for_the_compact_validator(tmp_path):
-    # The seven originals are preserved in a sibling folder, never inside the
-    # submission root, so the derived tree is exactly what the compact validator
-    # accepts (it refuses any unrecognised top-level entry).
+def test_continuous_dir_tolerated_and_excluded_from_manifest(tmp_path):
+    # The seven originals live in <root>/_continuous, inside the submission folder.
+    # The compact validator tolerates that directory as a preserved raw-source
+    # archive and excludes it from the manifest, so the derived tree still passes.
     root = tmp_path / FIRST_COMPACT
     _make_continuous(root)
     assert sf.main(["--speaker", FIRST_COMPACT, "--root", str(root), "--yes"]) == 0
 
-    assert sf.continuous_dir_for(root).is_dir(), "originals must be preserved next to the submission"
+    assert sf.continuous_dir_for(root) == root / core.CONTINUOUS_DIRNAME
+    assert sf.continuous_dir_for(root).is_dir(), "originals must be preserved in _continuous/"
     top = sorted(p.name for p in root.iterdir())
-    assert top == sorted([spec.ORIGINALS_DIR, spec.CHECKSUM_FILE]), (
+    assert top == sorted([spec.ORIGINALS_DIR, spec.CHECKSUM_FILE, core.CONTINUOUS_DIRNAME]), (
         f"submission root has stray entries: {top}"
     )
 
-    # the derived manifest lists exactly the 55 takes, all under originals/.
+    # the derived manifest lists exactly the 55 takes, all under originals/ --
+    # the _continuous/ sources are excluded from it.
     listed = [
         line.split("  ", 1)[1]
         for line in (root / spec.CHECKSUM_FILE).read_text(encoding="utf-8").splitlines()
@@ -226,13 +280,14 @@ def test_submission_root_stays_clean_for_the_compact_validator(tmp_path):
     ]
     assert len(listed) == 55
     assert all(rel.startswith(spec.ORIGINALS_DIR + "/") for rel in listed)
+    assert not any(rel.startswith(core.CONTINUOUS_DIRNAME + "/") for rel in listed)
 
     # the validator raises no "unrecognised entry" / _continuous complaint.
     plan = core.build_plan(FIRST_COMPACT)
     result = core.validate_compact_submission(root, plan)
     assert not any(
-        "unrecognised entry" in e or sf.CONTINUOUS_DIRNAME in e for e in result.errors
-    ), f"validator tripped on a preserved-originals artifact: {result.errors}"
+        "unrecognised entry" in e or core.CONTINUOUS_DIRNAME in e for e in result.errors
+    ), f"validator tripped on the preserved _continuous/ archive: {result.errors}"
 
 
 def test_freespeech_and_background_are_copied_whole(tmp_path):
@@ -279,6 +334,66 @@ def test_dry_run_writes_nothing(tmp_path):
     rc = sf.main(["--speaker", FIRST_COMPACT, "--root", str(root), "--dry-run"])
     assert rc == 0
     assert not (root / "originals").exists()
+
+
+def test_end_to_end_24bit_preserves_bytes_writes_24bit_and_validates_green(tmp_path):
+    # The Owner records with an external device at 24-bit PCM. The fallback must
+    # accept it, slice it losslessly (byte-identical), keep the derived takes at
+    # 24-bit (no conversion), preserve the originals, and validate GREEN.
+    root = tmp_path / FIRST_COMPACT
+    cdir = _make_continuous_24(root)
+    before = {n: core.sha256_file(cdir / n) for n in sf.EXPECTED_DERIVED_COUNTS}
+
+    assert sf.main(["--speaker", FIRST_COMPACT, "--root", str(root), "--yes"]) == 0
+
+    plan = core.build_plan(FIRST_COMPACT)
+    present = [s for s in plan.steps if s.path(root).is_file()]
+    assert len(present) == 55, f"only {len(present)}/55 derived takes written"
+
+    # originals byte-for-byte unchanged.
+    after = {n: core.sha256_file(cdir / n) for n in sf.EXPECTED_DERIVED_COUNTS}
+    assert after == before, "a 24-bit original changed during the run"
+
+    # every derived take is mono 24-bit at the source rate -- nothing converted.
+    for step in plan.steps:
+        with wave.open(str(step.path(root)), "rb") as handle:
+            assert handle.getsampwidth() == 3, f"{step.rel_path} is not 24-bit"
+            assert handle.getnchannels() == 1
+            assert handle.getframerate() == RATE
+
+    # the whole-copy freespeech take is byte-identical to its source payload.
+    free_step = next(s for s in plan.steps if s.directory == "negative_freespeech")
+    with wave.open(str(free_step.path(root)), "rb") as handle:
+        derived = handle.readframes(handle.getnframes())
+    with wave.open(str(cdir / sf.ORIGINAL_FREESPEECH), "rb") as handle:
+        original = handle.readframes(handle.getnframes())
+    assert derived == original, "the whole-copy take is not byte-identical to its source"
+
+    # a split take is a contiguous byte slice of its source payload.
+    with wave.open(str(cdir / sf.ORIGINAL_POSITIVE_CLOSE), "rb") as handle:
+        close_raw = handle.readframes(handle.getnframes())
+    first_close = next(s for s in plan.steps if s.directory == "positive_normal")
+    with wave.open(str(first_close.path(root)), "rb") as handle:
+        take_bytes = handle.readframes(handle.getnframes())
+    assert take_bytes and take_bytes in close_raw, "a split take is not a slice of its source"
+
+    # the full package validates GREEN once metadata + consent are in place.
+    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 test consent")
+    answers = {
+        "device_make_model": "external 24-bit recorder",
+        "recording_app": "segment_fallback",
+        "room_name": "a test room",
+        "room_size_approx": "4 by 5 metres",
+        "floor_surface": "wood",
+        "wall_surface": "drywall",
+        "background_sources_present": "a steady fridge hum",
+        "farfield_distance": "about 5 metres, next room",
+        "consent_signed_date": "2020-01-01",
+        "notes": "24-bit fallback end-to-end",
+    }
+    core.finalize_submission(plan, root, answers)
+    result = core.validate_compact_submission(root, plan)
+    assert result.ok, f"24-bit package did not validate GREEN: {result.errors}"
 
 
 def test_unknown_speaker_is_refused(tmp_path):

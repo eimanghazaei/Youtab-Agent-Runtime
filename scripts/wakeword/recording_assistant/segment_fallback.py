@@ -147,14 +147,19 @@ def detect_segments(
     compares ``len(result)`` against it and decides whether to write, so a wrong
     count surfaces to the operator rather than being papered over here.
     """
-    samples = core.to_int16(pcm)
+    samples = np.asarray(pcm)
     n = int(samples.size)
     if n == 0 or rate <= 0:
         return []
 
     frame_len = max(1, int(round(rate * FRAME_MS / 1000.0)))
     frame_s = frame_len / rate
-    scaled = samples.astype(np.float64) / _FULL_SCALE
+    # Accept already-normalised float [-1, 1] (the width-aware fallback path) or a
+    # legacy int16 array (tests); both become float dBFS the same way.
+    if np.issubdtype(samples.dtype, np.floating):
+        scaled = samples.astype(np.float64)
+    else:
+        scaled = samples.astype(np.float64) / _FULL_SCALE
     dbfs = _frame_dbfs(scaled, frame_len)
     silence = dbfs < silence_dbfs
 
@@ -193,11 +198,11 @@ def detect_segments(
     return segments
 
 
-def _peak_dbfs(samples: np.ndarray) -> float:
-    """Peak level of a sample span in dBFS, floored at ``_FLOOR_DBFS``."""
-    if samples.size == 0:
+def _peak_dbfs(scaled: np.ndarray) -> float:
+    """Peak level of a normalised [-1, 1] span in dBFS, floored at ``_FLOOR_DBFS``."""
+    if scaled.size == 0:
         return _FLOOR_DBFS
-    peak = float(np.abs(samples.astype(np.float64)).max()) / _FULL_SCALE
+    peak = float(np.abs(scaled.astype(np.float64)).max())
     if peak <= 0:
         return _FLOOR_DBFS
     return max(20.0 * np.log10(peak), _FLOOR_DBFS)
@@ -339,28 +344,49 @@ def default_speaker_root(speaker: str) -> Path:
 
 
 def continuous_dir_for(speaker_root: Path) -> Path:
-    """Where the seven hand-made originals live for a given speaker root.
+    """Where the seven hand-made originals live: ``<speaker_root>/_continuous``.
 
-    Deliberately a **sibling** of the submission folder, not a child of it:
-    ``<incoming>/_continuous/<speaker>/`` rather than ``<incoming>/<speaker>/_continuous/``.
-    The compact validator (``core.validate_compact_submission``) refuses any
-    top-level entry in the speaker folder that is not part of the submission, so
-    keeping the originals outside that folder lets the derived ``originals/`` tree
-    validate GREEN while the seven sources are still preserved next to it.
+    Inside the speaker folder, next to ``originals/`` -- the location the operator
+    drops the seven files. The compact validator tolerates this ``_continuous/``
+    directory as a preserved raw-source archive (``core.CONTINUOUS_DIRNAME``) and
+    excludes it from the take set and the manifest, so the derived ``originals/``
+    tree still validates GREEN while the seven sources are preserved beside it.
     """
-    speaker_root = Path(speaker_root)
-    return speaker_root.parent / CONTINUOUS_DIRNAME / speaker_root.name
+    return Path(speaker_root) / CONTINUOUS_DIRNAME
 
 
 # ── reading and validating one original ───────────────────────────────────────
 
 
-def _inspect_original(path: Path, expect_speech: bool) -> tuple[np.ndarray | None, int, list[str]]:
-    """Read one original, or return the reasons it may not be split.
+@dataclass
+class _Source:
+    """One continuous original's raw frames plus a mono amplitude view.
 
-    Refuses anything the derived takes could not be written from truthfully:
-    not 16-bit, not mono, below 16 kHz, empty, silent where speech is expected,
-    or clipped throughout. Never resamples or normalises.
+    ``raw`` is the exact PCM payload as read from the file; every derived take is
+    sliced out of it on frame boundaries, so the stored bytes are never rewritten
+    -- a 24-bit source stays 24-bit and byte-identical. ``scaled`` is a mono
+    float [-1, 1] view used only to place silence boundaries and report levels.
+    """
+
+    raw: bytes
+    scaled: np.ndarray
+    channels: int
+    width: int
+    rate: int
+    nframes: int
+
+    @property
+    def frame_bytes(self) -> int:
+        return self.channels * self.width
+
+
+def _read_source(path: Path, expect_speech: bool) -> tuple[_Source | None, list[str]]:
+    """Read one original as raw frames + amplitude, or the reasons it may not split.
+
+    Refuses anything the derived takes could not be written from truthfully: not
+    16- or 24-bit PCM, not mono, below 16 kHz, empty, silent where speech is
+    expected, or clipped throughout. Never resamples, converts, or normalises the
+    stored bytes -- the derived takes are exact byte slices of this payload.
     """
     try:
         with wave.open(str(path), "rb") as handle:
@@ -368,14 +394,18 @@ def _inspect_original(path: Path, expect_speech: bool) -> tuple[np.ndarray | Non
             width = handle.getsampwidth()
             rate = handle.getframerate()
             nframes = handle.getnframes()
+            raw = handle.readframes(nframes)
     except (wave.Error, EOFError, OSError) as exc:
-        return None, 0, [f"{path.name}: will not open as a WAV ({exc})"]
+        return None, [f"{path.name}: will not open as a WAV ({exc})"]
 
     problems: list[str] = []
-    if width != core.SAMPLE_WIDTH_BYTES:
-        problems.append(f"{path.name}: {width * 8}-bit PCM, expected 16-bit")
+    if width not in core.SUPPORTED_SAMPLE_WIDTHS:
+        problems.append(f"{path.name}: {width * 8}-bit PCM, expected 16- or 24-bit")
     if channels != core.CHANNELS:
-        problems.append(f"{path.name}: {channels} channel(s), expected mono")
+        problems.append(
+            f"{path.name}: {channels} channels, expected mono -- record mono "
+            "(a stereo->mono downmix would be a conversion, which this tool never does)"
+        )
     if rate < core.MIN_SAMPLE_RATE_HZ:
         problems.append(
             f"{path.name}: sample rate {rate} Hz is below the {core.MIN_SAMPLE_RATE_HZ} Hz floor"
@@ -383,10 +413,17 @@ def _inspect_original(path: Path, expect_speech: bool) -> tuple[np.ndarray | Non
     if nframes <= 0:
         problems.append(f"{path.name}: empty (0 audio frames)")
     if problems:
-        return None, rate, problems
+        return None, problems
 
-    samples, rate = core.read_wave(path)
-    inspection = core.inspect_pcm(samples, rate, expect_speech=expect_speech)
+    scaled = core._decode_pcm_scaled(raw, width, channels)
+    inspection = core._inspect_scaled(
+        scaled,
+        rate,
+        int(scaled.size),
+        expect_speech=expect_speech,
+        min_seconds=core.MIN_UTTERANCE_SECONDS,
+        target_seconds=None,
+    )
     if core.FINDING_EMPTY in inspection.codes:
         problems.append(f"{path.name}: silent capture -- nothing to split")
     if inspection.clip_fraction >= MAX_CLIP_FRACTION:
@@ -395,8 +432,9 @@ def _inspect_original(path: Path, expect_speech: bool) -> tuple[np.ndarray | Non
             "at full scale); re-record with a lower input level"
         )
     if problems:
-        return None, rate, problems
-    return samples, rate, []
+        return None, problems
+    return _Source(raw=raw, scaled=scaled, channels=channels, width=width,
+                   rate=rate, nframes=nframes), []
 
 
 # ── analysis: read the seven, validate, and propose boundaries ────────────────
@@ -407,9 +445,8 @@ class OriginalOutcome:
     mapping: OriginalMapping
     path: Path
     exists: bool = False
-    samples: np.ndarray | None = None
-    rate: int = 0
-    segments: list[tuple[int, int]] = field(default_factory=list)
+    source: _Source | None = None
+    segments: list[tuple[int, int]] = field(default_factory=list)  # (start_frame, end_frame)
     problems: list[str] = field(default_factory=list)
     sha_before: str | None = None
 
@@ -466,28 +503,27 @@ def analyze(
             continue
         outcome.exists = True
         expect_speech = mapping.steps[0].expect_speech
-        samples, rate, problems = _inspect_original(path, expect_speech)
+        source, problems = _read_source(path, expect_speech)
         if problems:
             outcome.problems = problems
             outcomes.append(outcome)
             continue
-        outcome.samples = samples
-        outcome.rate = rate
+        outcome.source = source
         outcome.sha_before = core.sha256_file(path)
         if mapping.split:
             eff_sil, eff_dbfs, eff_utt = _effective(
                 mapping.name, overrides, min_silence_s, silence_dbfs, min_utterance_s
             )
             outcome.segments = detect_segments(
-                samples,
-                rate,
+                source.scaled,
+                source.rate,
                 expected=mapping.expected,
                 min_silence_s=eff_sil,
                 min_utterance_s=eff_utt,
                 silence_dbfs=eff_dbfs,
             )
         else:
-            outcome.segments = [(0, int(samples.size))]
+            outcome.segments = [(0, int(source.nframes))]
         outcomes.append(outcome)
     return outcomes
 
@@ -495,20 +531,38 @@ def analyze(
 # ── writing the derived takes, and the two manifests ──────────────────────────
 
 
+def _write_wav_bytes(path: Path, payload: bytes, channels: int, width: int, rate: int) -> None:
+    """Write raw PCM ``payload`` as a WAV at the source's channels/width/rate.
+
+    The payload is written unchanged, so a 24-bit slice is stored as 24-bit and
+    a 16-bit slice as 16-bit -- no conversion, no resampling, no re-quantising.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(channels)
+        handle.setsampwidth(width)
+        handle.setframerate(rate)
+        handle.writeframes(payload)
+
+
 def write_derived(speaker_root: Path, outcomes: list[OriginalOutcome]) -> int:
     """Write every derived take to its canonical ``step.path``. Returns the count.
 
-    Byte-for-byte from the source samples: each take is the exact ``int16`` span
-    the boundaries name, written at the original's own sample rate. Assumes the
+    Each take is the exact byte slice its frame boundaries name, written at the
+    original's own channels/width/rate -- so a 24-bit source yields 24-bit takes
+    that are byte-identical to the corresponding span of the original. Assumes the
     outcomes are all matched (the caller refuses to write otherwise).
     """
     root = Path(speaker_root)
     written = 0
     for outcome in outcomes:
-        if outcome.samples is None:
-            raise RuntimeError(f"{outcome.mapping.name}: no samples to write")
+        src = outcome.source
+        if src is None:
+            raise RuntimeError(f"{outcome.mapping.name}: no source to write")
+        frame_bytes = src.frame_bytes
         for step, (start, end) in zip(outcome.mapping.steps, outcome.segments):
-            core.write_wave(step.path(root), outcome.samples[start:end], outcome.rate)
+            payload = src.raw[start * frame_bytes : end * frame_bytes]
+            _write_wav_bytes(step.path(root), payload, src.channels, src.width, src.rate)
             written += 1
     return written
 
@@ -554,20 +608,23 @@ def _print_report(outcomes: list[OriginalOutcome], speaker: str, continuous_dir:
             for problem in outcome.problems:
                 print(f"    - {problem}")
             continue
-        assert outcome.samples is not None
+        src = outcome.source
+        assert src is not None
         if not mapping.split:
-            dur = outcome.samples.size / outcome.rate
-            print(f"{mapping.name}: copied whole, no split -> 1 take ({dur:.1f}s)")
+            dur = src.nframes / src.rate
+            fmt = f"{src.width * 8}-bit {src.rate} Hz"
+            print(f"{mapping.name}: copied whole, no split -> 1 take ({dur:.1f}s, {fmt})")
             continue
         detected = len(outcome.segments)
         status = "OK" if outcome.matched else "MISMATCH"
-        print(f"{mapping.name}: {detected} segment(s) detected (expected {mapping.expected}) {status}")
+        print(f"{mapping.name}: {detected} segment(s) detected (expected {mapping.expected}) "
+              f"[{src.width * 8}-bit {src.rate} Hz] {status}")
         for index, (start, end) in enumerate(outcome.segments):
-            dur = (end - start) / outcome.rate
-            peak = _peak_dbfs(outcome.samples[start:end])
+            dur = (end - start) / src.rate
+            peak = _peak_dbfs(src.scaled[start:end])
             print(
-                f"    [{index:>2}] start={start / outcome.rate:7.2f}s "
-                f"end={end / outcome.rate:7.2f}s dur={dur:5.2f}s peak={peak:6.1f} dBFS"
+                f"    [{index:>2}] start={start / src.rate:7.2f}s "
+                f"end={end / src.rate:7.2f}s dur={dur:5.2f}s peak={peak:6.1f} dBFS"
             )
         if not outcome.matched:
             print(
