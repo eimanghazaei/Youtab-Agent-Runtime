@@ -78,6 +78,12 @@ COMPACT_DELIVERY_DIRECTORIES: tuple[str, ...] = (
 FREESPEECH_TARGET_SECONDS = 150  # ~2.5 min, inside the 2-3 min ask
 BACKGROUND_TARGET_SECONDS = 90  # ~1.5 min, inside the 1-2 min ask
 
+#: A rough wall-clock estimate for the whole compact sitting, shown to the
+#: operator. The compact plan is deliberately far shorter than the full round's
+#: ~51-71 minute package -- this is the 15-20-minutes-per-person ask the Owner
+#: signed off on, resumable in 5-10 minute sections.
+COMPACT_SESSION_MINUTES: tuple[int, int] = (12, 16)
+
 
 # ── section / group model (plain data) ───────────────────────────────────────
 

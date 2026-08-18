@@ -40,6 +40,11 @@ from .compact_plan import KIND_FREEFORM
 # session cannot fill a disk. Well past the longest continuous section.
 MAX_CAPTURE_SECONDS = 8 * 60
 
+# The Owner prefers 48 kHz; the mic negotiates down to the best rate it supports
+# at or above the 16 kHz floor. Nothing is ever resampled -- the take on disk is
+# whatever the hardware delivered at this rate.
+DEFAULT_CAPTURE_RATE_HZ = 48000
+
 _SUPPORTED_SPEAKERS = tuple(compact_plan.COMPACT_NOISE_ASSIGNMENTS)
 
 
@@ -108,9 +113,10 @@ def run_dry(speaker: str) -> int:
             target = f"  ~{step.target_seconds/60:.0f} min" if step.target_seconds else ""
             print(f"    {step.rel_path:<52} say: {step.prompt!r}{target}")
         print()
+    lo, hi = compact_plan.COMPACT_SESSION_MINUTES
     print(
         "Naming is automatic: the speaker never types a filename. Roughly "
-        f"{spec.MINIMUM_RECORDING_MINUTES}-{spec.SESSION_MINUTES} minutes including setup."
+        f"{lo}-{hi} minutes including setup, resumable in 5-10 minute sections."
     )
     return 0
 
@@ -220,7 +226,7 @@ def run_self_test(speaker: str, incoming: Path | None) -> int:
 
 
 def run_gui(speaker: str, incoming: Path, consent: Path, tts_enabled: bool,
-            rate: int) -> int:  # pragma: no cover - requires a display and a mic
+            rate: int, input_device=None) -> int:  # pragma: no cover - requires a display and a mic
     """Wire the seven buttons to ``core.Session`` over the real audio backend.
 
     Not exercised by the automated tests (it needs a display and a microphone);
@@ -234,11 +240,24 @@ def run_gui(speaker: str, incoming: Path, consent: Path, tts_enabled: bool,
 
     from . import audio  # noqa: PLC0415
 
+    # Resolve the microphone and the native rate before opening the window, so a
+    # missing mic is a clear message rather than a failure on the first Record.
+    try:
+        device_index, device_name = audio.resolve_input_device(input_device)
+        rate = audio.negotiate_rate(device_index, rate)
+    except Exception as exc:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("No usable microphone", str(exc))
+        root.destroy()
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
     root_dir = speaker_root(incoming, speaker)
     root_dir.mkdir(parents=True, exist_ok=True)
     plan = core.build_plan(speaker)
 
-    recorder = audio.MicRecorder(rate=rate)
+    recorder = audio.MicRecorder(rate=rate, device=device_index)
     stop_event = threading.Event()
     tts_flag = {"on": tts_enabled}
 
@@ -382,10 +401,129 @@ def run_gui(speaker: str, incoming: Path, consent: Path, tts_enabled: bool,
         text="Use headphones so the voice guidance is never picked up by the microphone.",
         foreground="#777",
     ).pack(side="bottom", pady=6)
+    ttk.Label(
+        win,
+        text=f"Mic: {device_name}  @ {rate} Hz, mono 16-bit  ->  {root_dir}",
+        foreground="#777",
+    ).pack(side="bottom", pady=(0, 2))
 
     refresh()
     win.mainloop()
     return 0
+
+
+# ── device + GUI smoke checks (need hardware/display, not a human) ────────────
+
+
+def run_list_devices(input_device=None) -> int:
+    """Print capture devices and mark which one auto-selection would use."""
+    from . import audio  # noqa: PLC0415
+
+    devices = audio.list_input_devices()
+    if not devices:
+        print("No capture (microphone) devices found. Enable a microphone in "
+              "Windows Sound settings.", file=sys.stderr)
+        return 2
+    try:
+        chosen_idx, chosen_name = audio.resolve_input_device(input_device)
+    except Exception as exc:
+        chosen_idx, chosen_name = None, str(exc)
+    print("Capture devices (input):")
+    for dev in devices:
+        mark = " <= selected" if dev["index"] == chosen_idx else ""
+        kind = "raw mic" if dev["raw"] else "virtual/processed - skipped by auto"
+        print(f"  [{dev['index']:>2}] {dev['name'][:46]:<46} "
+              f"ch={dev['channels']} {int(dev['default_samplerate'])}Hz "
+              f"{dev['hostapi']:<18} ({kind}){mark}")
+    if chosen_idx is None:
+        print(f"\nAuto-selection failed: {chosen_name}", file=sys.stderr)
+        return 2
+    print(f"\nAuto-selected microphone: [{chosen_idx}] {chosen_name}")
+    print("Override with --input-device <index or name fragment>.")
+    return 0
+
+
+def _devicecheck_dir(incoming: Path) -> Path:
+    return Path(incoming) / "_devicecheck"
+
+
+def run_mic_check(speaker: str, incoming: Path, rate: int, input_device=None,
+                  seconds: float = 3.0) -> int:  # pragma: no cover - needs a mic
+    """Record ``seconds`` from the real mic, write a verified WAV, report level.
+
+    Writes to ``<incoming>/_devicecheck`` -- under the incoming root, deliberately
+    *not* inside the speaker's dataset folder, so a device check is never mistaken
+    for a real take. Proves the capture -> write -> read-back path on real hardware.
+    """
+    import datetime as _dt  # noqa: PLC0415
+
+    from . import audio  # noqa: PLC0415
+
+    try:
+        device_index, device_name = audio.resolve_input_device(input_device)
+        rate = audio.negotiate_rate(device_index, rate)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    print(f"mic-check: recording {seconds:.1f}s from [{device_index}] "
+          f"{device_name} at {rate} Hz, mono 16-bit ...")
+    pcm, actual_rate = audio.capture_fixed(seconds, rate, device_index)
+
+    out_dir = _devicecheck_dir(incoming)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_path = out_dir / f"{speaker}-miccheck-{stamp}.wav"
+    core.write_wave(out_path, pcm, actual_rate)
+
+    # Read it back from disk and inspect, so the report reflects the WAV, not the
+    # in-memory buffer.
+    on_disk, disk_rate = core.read_wave(out_path)
+    inspection = core.inspect_pcm(on_disk, disk_rate)
+    sha = core.sha256_file(out_path)
+
+    print(f"  wrote {out_path}")
+    print(f"  format   : {disk_rate} Hz, mono, 16-bit PCM")
+    print(f"  duration : {inspection.duration_s:.2f}s  ({on_disk.size} samples)")
+    print(f"  level    : peak {inspection.peak_dbfs:.1f} dBFS  "
+          f"rms {inspection.rms_dbfs:.1f} dBFS  clip {inspection.clip_fraction*100:.2f}%")
+    print(f"  sha256   : {sha}")
+    if inspection.peak_dbfs < core.EMPTY_RMS_DBFS:
+        print("  WARNING: almost no signal captured -- the mic may be muted or the "
+              "wrong device chosen. Speak during the check, or pass --input-device.")
+    else:
+        print("  OK: real audio captured and written as a valid mono 16-bit WAV.")
+    if inspection.codes:
+        print(f"  findings : {inspection.codes} (informational; nothing deleted)")
+    return 0
+
+
+def run_check_gui(speaker: str) -> int:  # pragma: no cover - needs a display
+    """Open the recorder window, realize it on screen, tear it down. Proves GUI."""
+    import tkinter as tk  # noqa: PLC0415
+    from tkinter import ttk  # noqa: PLC0415
+
+    win = tk.Tk()
+    win.title(f"Hey Youtab - recording assistant ({speaker}) [gui self-check]")
+    win.geometry("640x420")
+    phrase = tk.StringVar(value=spec.WAKE_PHRASE)
+    ttk.Label(win, textvariable=phrase, font=("Segoe UI", 22, "bold")).pack(pady=20)
+    bar = ttk.Frame(win)
+    bar.pack(pady=10)
+    for text in ("Record", "Stop", "Replay", "Keep", "Redo", "Pause", "Resume"):
+        ttk.Button(bar, text=text, width=9).pack(side="left", padx=3)
+    win.update_idletasks()
+    win.update()
+    ok = bool(win.winfo_exists()) and win.winfo_width() > 1
+    width, height = win.winfo_width(), win.winfo_height()
+    win.destroy()
+    if ok:
+        print(f"check-gui OK: window opened and rendered at {width}x{height}. "
+              "The tkinter GUI stack works on this machine.")
+        return 0
+    print("check-gui FAILED: the window did not realize on this display.",
+          file=sys.stderr)
+    return 1
 
 
 # ── command line ─────────────────────────────────────────────────────────────
@@ -398,12 +536,27 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"capture root (default: ${INCOMING_ENV} or the G: incoming folder)")
     parser.add_argument("--consent", type=Path, default=None,
                         help=f"private consent root (default: ${CONSENT_ENV} or the G: folder)")
-    parser.add_argument("--rate", type=int, default=core.SAMPLE_RATE_HZ,
-                        help="capture sample rate in Hz (>= 16000)")
+    parser.add_argument("--rate", type=int, default=DEFAULT_CAPTURE_RATE_HZ,
+                        help="preferred capture sample rate in Hz (>= 16000; the "
+                             "highest rate the mic supports at or below this is used)")
+    parser.add_argument("--input-device", default=None,
+                        help="microphone to record from: a device index or a name "
+                             "fragment (see --list-devices). Default: a raw hardware "
+                             "mic, skipping virtual / noise-cancelling inputs.")
     parser.add_argument("--no-tts", action="store_true", help="start with voice guidance off")
     parser.add_argument("--dry", action="store_true", help="print the plan and exit; no recording")
     parser.add_argument("--self-test", action="store_true",
                         help="run the whole pipeline headless against a generated tone")
+    parser.add_argument("--list-devices", action="store_true",
+                        help="list capture devices, mark the auto-selected mic, and exit")
+    parser.add_argument("--mic-check", nargs="?", type=float, const=3.0, default=None,
+                        metavar="SECONDS",
+                        help="record a few seconds from the real mic, write a verified "
+                             "WAV under the incoming root's _devicecheck folder, and "
+                             "report level/format (proves capture works; no dataset take)")
+    parser.add_argument("--check-gui", action="store_true",
+                        help="open and tear down the recorder window to prove the GUI "
+                             "stack works on this machine, then exit")
     return parser
 
 
@@ -420,10 +573,19 @@ def main(argv: list[str] | None = None) -> int:
         return run_dry(args.speaker)
     if args.self_test:
         return run_self_test(args.speaker, args.incoming)
+    if args.list_devices:
+        return run_list_devices(args.input_device)
 
     incoming = args.incoming or default_incoming_root()
     consent = args.consent or default_consent_root()
-    return run_gui(args.speaker, incoming, consent, not args.no_tts, args.rate)
+
+    if args.mic_check is not None:
+        return run_mic_check(args.speaker, incoming, args.rate, args.input_device,
+                             args.mic_check)
+    if args.check_gui:
+        return run_check_gui(args.speaker)
+    return run_gui(args.speaker, incoming, consent, not args.no_tts, args.rate,
+                   args.input_device)
 
 
 if __name__ == "__main__":

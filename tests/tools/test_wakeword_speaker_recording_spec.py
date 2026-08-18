@@ -620,11 +620,21 @@ def test_a_speaker_label_is_the_only_identifier_that_travels() -> None:
 def test_the_speaker_assignments_are_exactly_the_ones_agreed() -> None:
     """Pinned on purpose: changing this table has to be a review decision.
 
-    Two training voices, one validation voice, two sealed. Promoting a sealed
-    speaker into training spends the only measurement nobody has tuned against;
-    demoting a training speaker into the sealed set retro-fits a measurement to
-    a model that has already seen that voice. Neither is recoverable by
-    re-recording, because the speaker would no longer be unseen.
+    The five recording-round speakers come first, in order: two training voices,
+    one validation voice, two sealed. Promoting a sealed speaker into training
+    spends the only measurement nobody has tuned against; demoting a training
+    speaker into the sealed set retro-fits a measurement to a model that has
+    already seen that voice. Neither is recoverable by re-recording, because the
+    speaker would no longer be unseen.
+
+    E001 and E002 -- the two-speaker compact-round humans -- are appended at the
+    end so those five keep their positions. They record through
+    ``recording_assistant.compact_plan`` rather than the five-speaker package, so
+    they carry no coverage cell and exist here only to give ``import_speaker.py``
+    a training-eligibility record. E002 is validation and consumed: reassigned
+    from the round-6/7 sealed evaluation holdout, it is no longer eligible as a
+    sealed final holdout (recorded in
+    ``build_human_dataset.CONSUMED_FOR_VALIDATION``).
     """
     actual = tuple((a.label, a.role) for a in spec.SPEAKER_ASSIGNMENTS)
     assert actual == (
@@ -633,6 +643,8 @@ def test_the_speaker_assignments_are_exactly_the_ones_agreed() -> None:
         ("E005", "validation"),
         ("E006", "sealed-evaluation"),
         ("E007", "sealed-evaluation"),
+        ("E001", "training"),
+        ("E002", "validation"),
     ), f"the speaker assignments changed: {actual!r}"
 
     for assignment in spec.SPEAKER_ASSIGNMENTS:
@@ -661,19 +673,32 @@ def test_the_roles_are_the_usages_freeze_manifest_enforces() -> None:
 # ── coverage assignments (G3) ────────────────────────────────────────────────
 
 
-def test_every_assigned_speaker_has_a_fully_filled_coverage_cell() -> None:
-    """Guidance, but complete guidance: no speaker defaults a dimension.
+def test_every_recording_round_speaker_has_a_fully_filled_coverage_cell() -> None:
+    """Guidance, but complete guidance: no recording-round speaker defaults a
+    dimension.
 
     An empty cell is exactly the gap this table exists to close -- an
     unassigned dimension is the one five independent recorders all fill the same
     way. Each cell names a device from the vocabulary, a far-field distance, at
     least ``MIN_NOISE_SOURCES`` of the four noise sources, a pitch band and a
     reason.
+
+    Coverage is a five-speaker table. E001 and E002 -- the two compact-round
+    humans -- are assigned a role but take their noise plan from
+    ``recording_assistant.compact_plan``, not this table, so they deliberately
+    carry no cell here. Every *other* assigned speaker, the five recording-round
+    ones, must have exactly one fully filled cell.
     """
+    compact_humans = {"E001", "E002"}
     assigned = {a.label for a in spec.SPEAKER_ASSIGNMENTS}
     covered = {c.label for c in spec.COVERAGE_ASSIGNMENTS}
-    assert covered == assigned, (
-        f"coverage is assigned to {covered}, but the round's speakers are {assigned}"
+    assert covered <= assigned, (
+        f"coverage names {sorted(covered - assigned)}, which are not in "
+        "SPEAKER_ASSIGNMENTS"
+    )
+    assert assigned - covered == compact_humans, (
+        "coverage must cover every recording-round speaker and only them; "
+        f"uncovered={sorted(assigned - covered)}"
     )
     assert len(covered) == len(spec.COVERAGE_ASSIGNMENTS), "a speaker has two coverage cells"
 

@@ -42,9 +42,19 @@ from .compact_plan import KIND_FREEFORM, KIND_NEAR_PHRASE, KIND_POSITIVE
 #: so the app refuses to write one.
 SAMPLE_RATE_HZ = 16000
 MIN_SAMPLE_RATE_HZ = 16000
-SAMPLE_WIDTH_BYTES = 2  # 16-bit PCM
+SAMPLE_WIDTH_BYTES = 2  # 16-bit PCM -- what the in-app recorder writes.
+#: Sample widths the *validation and inspection* path accepts. The GUI recorder
+#: still writes 16-bit, but a take handed in from an external device may be
+#: 24-bit PCM (3 bytes); both are honoured, and neither is ever converted.
+SUPPORTED_SAMPLE_WIDTHS = (2, 3)  # 16-bit and 24-bit PCM
 CHANNELS = 1  # mono
 _INT16_FULL_SCALE = 32768.0
+
+#: A raw-source directory that may sit next to ``originals/`` inside a speaker
+#: folder: the seven continuous recordings a manual submission is split from.
+#: Preserved, never ingested, and tolerated by the compact validator -- it is a
+#: source archive, not part of the submission's take set.
+CONTINUOUS_DIRNAME = "_continuous"
 
 # ── quality thresholds, and why each is where it is ──────────────────────────
 #
@@ -259,6 +269,45 @@ def read_wave(path: Path) -> tuple[np.ndarray, int]:
     return np.ascontiguousarray(samples), rate
 
 
+def _decode_pcm_scaled(raw: bytes, width: int, channels: int) -> np.ndarray:
+    """Interleaved 16- or 24-bit PCM bytes -> mono float64 in [-1, 1]."""
+    if width == 2:
+        samples = np.frombuffer(raw, dtype="<i2").astype(np.float64) / _INT16_FULL_SCALE
+    elif width == 3:
+        # 24-bit little-endian signed: rebuild each 3-byte sample as int32.
+        byts = np.frombuffer(raw, dtype=np.uint8)
+        usable = byts.size - (byts.size % 3)
+        triples = byts[:usable].reshape(-1, 3).astype(np.int32)
+        ints = triples[:, 0] | (triples[:, 1] << 8) | (triples[:, 2] << 16)
+        ints = np.where(ints >= (1 << 23), ints - (1 << 24), ints)
+        samples = ints.astype(np.float64) / float(1 << 23)
+    else:  # pragma: no cover - guarded by read_scaled_any
+        raise wave.Error(f"unsupported sample width {width * 8}-bit")
+    if channels > 1:
+        usable = samples.size - (samples.size % channels)
+        samples = samples[:usable].reshape(-1, channels).mean(axis=1)
+    return np.ascontiguousarray(samples)
+
+
+def read_scaled_any(path: Path) -> tuple[np.ndarray, int, int]:
+    """Read a 16- or 24-bit PCM WAV as mono float64 in [-1, 1]; return (samples, rate, width).
+
+    The amplitude-only reader used by inspection and by the manual fallback: it
+    decodes level for the silence / clipping / duration findings without forcing a
+    bit depth and without writing anything. A 24-bit source is *never* rewritten
+    through this -- the fallback slices the original bytes for its takes, so the
+    stored audio stays byte-identical.
+    """
+    with wave.open(str(path), "rb") as handle:
+        channels = handle.getnchannels()
+        width = handle.getsampwidth()
+        rate = handle.getframerate()
+        raw = handle.readframes(handle.getnframes())
+    if width not in SUPPORTED_SAMPLE_WIDTHS:
+        raise wave.Error(f"expected 16- or 24-bit PCM, found {width * 8}-bit")
+    return _decode_pcm_scaled(raw, width, channels), rate, width
+
+
 # ── per-take quality inspection ──────────────────────────────────────────────
 
 
@@ -319,20 +368,45 @@ def inspect_pcm(
     min_seconds: float = MIN_UTTERANCE_SECONDS,
     target_seconds: float | None = None,
 ) -> TakeInspection:
-    """Findings and measurements for an in-memory capture. Never deletes anything."""
+    """Findings and measurements for an in-memory capture. Never deletes anything.
+
+    Accepts the recorder's native 16-bit take and normalises it; the width-aware
+    path (``inspect_wav`` on a 16- or 24-bit file) shares the same findings via
+    ``_inspect_scaled``, so a 24-bit take is judged by identical rules.
+    """
     samples = to_int16(pcm)
-    inspection = TakeInspection(sample_rate_hz=rate, samples=int(samples.size))
-    if samples.size == 0 or rate <= 0:
+    scaled = samples.astype(np.float64) / _INT16_FULL_SCALE
+    return _inspect_scaled(
+        scaled,
+        rate,
+        int(samples.size),
+        expect_speech=expect_speech,
+        min_seconds=min_seconds,
+        target_seconds=target_seconds,
+    )
+
+
+def _inspect_scaled(
+    scaled: np.ndarray,
+    rate: int,
+    n_samples: int,
+    *,
+    expect_speech: bool,
+    min_seconds: float,
+    target_seconds: float | None,
+) -> TakeInspection:
+    """Shared findings logic over mono float samples in [-1, 1], any bit depth."""
+    inspection = TakeInspection(sample_rate_hz=rate, samples=int(n_samples))
+    if n_samples == 0 or rate <= 0:
         inspection.findings.append(
             Finding(FINDING_EMPTY, "that came out empty -- nothing was captured. Redo?", True)
         )
         return inspection
 
-    scaled = samples.astype(np.float64) / _INT16_FULL_SCALE
     magnitude = np.abs(scaled)
     peak = float(magnitude.max())
     rms = float(np.sqrt(np.mean(np.square(scaled))))
-    inspection.duration_s = samples.size / rate
+    inspection.duration_s = n_samples / rate
     inspection.peak_dbfs = _dbfs(peak)
     inspection.rms_dbfs = _dbfs(rms)
     inspection.clip_fraction = _clip_fraction(magnitude)
@@ -377,18 +451,19 @@ def inspect_wav(
     min_seconds: float = MIN_UTTERANCE_SECONDS,
     target_seconds: float | None = None,
 ) -> TakeInspection:
-    """Inspect a take on disk. An unopenable/unparsable WAV is reported, not raised."""
+    """Inspect a take on disk (16- or 24-bit PCM). Unopenable is reported, not raised."""
     try:
-        samples, rate = read_wave(Path(path))
+        scaled, rate, _width = read_scaled_any(Path(path))
     except (wave.Error, EOFError, OSError, ValueError):
         inspection = TakeInspection(readable=False)
         inspection.findings.append(
             Finding(FINDING_UNREADABLE, "that file will not open as audio -- Redo?", True)
         )
         return inspection
-    return inspect_pcm(
-        samples,
+    return _inspect_scaled(
+        scaled,
         rate,
+        int(scaled.size),
         expect_speech=expect_speech,
         min_seconds=min_seconds,
         target_seconds=target_seconds,
@@ -417,14 +492,15 @@ def submission_files(root: Path) -> list[str]:
 
     The same walk ``validate_speaker_submission.py`` verifies a manifest
     against, so what this lists and what the validator later checks cannot
-    disagree.
+    disagree. The ``_continuous/`` raw-source archive (present only for a manual
+    submission) is excluded: it is preserved next to the takes, not part of them.
     """
     out: list[str] = []
     for path in sorted(Path(root).rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(root).as_posix()
-        if rel == spec.CHECKSUM_FILE:
+        if rel == spec.CHECKSUM_FILE or rel.startswith(f"{CONTINUOUS_DIRNAME}/"):
             continue
         out.append(rel)
     return out
@@ -820,7 +896,7 @@ _FINDING_PHRASE = {
 
 
 def _compact_submission_files(root: Path) -> list[str]:
-    """Every file except SHA256SUMS and the transient progress dotfile, sorted."""
+    """Files in the submission except SHA256SUMS, the progress dotfile, and _continuous/."""
     out: list[str] = []
     for path in sorted(Path(root).rglob("*")):
         if not path.is_file():
@@ -828,6 +904,8 @@ def _compact_submission_files(root: Path) -> list[str]:
         rel = path.relative_to(root).as_posix()
         if rel in (spec.CHECKSUM_FILE, STATE_FILENAME):
             continue
+        if rel.startswith(f"{CONTINUOUS_DIRNAME}/"):
+            continue  # raw source archive, preserved but not part of the take set
         out.append(rel)
     return out
 
@@ -844,15 +922,15 @@ def _take_problems(path: Path, step: Step) -> list[str]:
         return [f"{rel}: {_FINDING_PHRASE[FINDING_UNREADABLE]}"]
 
     problems: list[str] = []
-    if width != SAMPLE_WIDTH_BYTES:
-        problems.append(f"{rel}: {width * 8}-bit PCM, expected 16-bit")
+    if width not in SUPPORTED_SAMPLE_WIDTHS:
+        problems.append(f"{rel}: {width * 8}-bit PCM, expected 16- or 24-bit")
     if channels != CHANNELS:
         problems.append(f"{rel}: {channels} channels, expected mono")
     if rate < MIN_SAMPLE_RATE_HZ:
         problems.append(f"{rel}: sample rate {rate} Hz is below the 16 kHz floor")
 
-    # Content findings only make sense once the container is 16-bit mono PCM.
-    if width == SAMPLE_WIDTH_BYTES:
+    # Content findings only make sense once the container is a supported PCM width.
+    if width in SUPPORTED_SAMPLE_WIDTHS:
         inspection = inspect_wav(
             path,
             expect_speech=step.expect_speech,
@@ -1052,12 +1130,13 @@ def validate_compact_submission(root: Path, plan: Plan) -> CompactValidation:
             f"the folder is named {root.name!r} but the plan is for {plan.speaker!r}"
         )
 
-    tolerated = set(spec.SUBMISSION_ENTRIES) | {STATE_FILENAME}
+    tolerated = set(spec.SUBMISSION_ENTRIES) | {STATE_FILENAME, CONTINUOUS_DIRNAME}
     for entry in sorted(root.iterdir()):
         if entry.name not in tolerated:
             result.errors.append(
                 f"unrecognised entry in {root.name}/: {entry.name} -- the submission holds "
-                f"exactly {', '.join(spec.SUBMISSION_ENTRIES)} and nothing else"
+                f"exactly {', '.join(spec.SUBMISSION_ENTRIES)} (plus an optional "
+                f"{CONTINUOUS_DIRNAME}/ raw-source archive) and nothing else"
             )
 
     _check_compact_originals(root, plan, result)
