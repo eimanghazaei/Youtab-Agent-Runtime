@@ -102,6 +102,7 @@ import freeze_manifest  # noqa: E402
 import round8_config  # noqa: E402
 import speaker_recording_spec as spec  # noqa: E402
 import validate_speaker_submission as submission_validator  # noqa: E402
+from recording_assistant import compact_plan  # noqa: E402
 
 #: Bumped when the report or journal body changes shape. A record carrying a
 #: version this tool does not know is refused, not guessed at — same rule
@@ -391,8 +392,19 @@ LAYOUT_PACKAGE = "package"
 #: the package's section requirements.
 LAYOUT_PRIOR = "prior-session"
 
+#: The compact two-speaker package: the same directory tree and filename grammar
+#: as the full package, but the smaller per-section take counts of the governed
+#: compact plan. Offered only to the compact-round speakers, and only through the
+#: registry (never a caller flag), so it can never weaken the full round.
+LAYOUT_COMPACT = "compact"
+
 #: Labels whose recordings predate ``SPEAKER_RECORDING_PACKAGE.md``.
 PRIOR_LAYOUT_LABELS: tuple[str, ...] = ("E001", "E002")
+
+#: The compact-round speakers, read from the governed compact plan (never a flag
+#: or a folder name). Membership here is what makes a label eligible for the
+#: compact layout; a label outside it can only ever submit in the full package.
+COMPACT_LAYOUT_LABELS: tuple[str, ...] = tuple(sorted(compact_plan.COMPACT_NOISE_ASSIGNMENTS))
 
 
 @dataclass(frozen=True)
@@ -563,14 +575,88 @@ def prior_layout() -> Layout:
     return Layout(LAYOUT_PRIOR, sections, True, False)
 
 
-def layouts_for(label: str) -> tuple[Layout, ...]:
-    """The layouts ``label`` may submit in.
+def compact_layout(label: str) -> Layout:
+    """The compact package's tree for a compact-round speaker, off the governed plan.
 
-    A Round 8 speaker may only use the package layout. Allowing the older one
-    would let an operator satisfy an import with four files while the near-phrase
-    battery, the two far-field conditions and the noise sections — the whole
-    reason this round exists — went unrecorded.
+    Same directories and filename grammar as ``package_layout`` -- a compact
+    folder is still auto-named the canonical way -- but the per-section take
+    counts are the governed compact plan's (delivery x2, far-field x3, each
+    assigned noise source x3, one take per near phrase, one continuous take per
+    freeform section). Speaker-specific only in *which* two noise sources are
+    required, read from ``compact_plan.noise_sources_for`` -- never from a flag.
     """
+    if label not in COMPACT_LAYOUT_LABELS:
+        raise Refused(
+            f"{label} is not a compact-round speaker ({list(COMPACT_LAYOUT_LABELS)}); "
+            "the compact layout is not available to it"
+        )
+    take = _take_pattern()
+    positive_by_dir = {section.directory: section for section in spec.POSITIVE_SECTIONS}
+    sections: list[Section] = []
+
+    def positive(base: spec.PositiveSection, min_files: int) -> Section:
+        return Section(
+            base.directory,
+            re.compile(
+                rf"^{re.escape(spec.WAKE_PHRASE_SLUG)}_{re.escape(base.condition)}_{take}$"
+            ),
+            base.directory,
+            LABEL_VALUES[spec.POSITIVE],
+            min_files,
+            True,
+            False,
+            f"{spec.WAKE_PHRASE_SLUG}_{base.condition}_NNN",
+        )
+
+    for directory in compact_plan.COMPACT_DELIVERY_DIRECTORIES:
+        sections.append(positive(positive_by_dir[directory], compact_plan.COMPACT_DELIVERY_REPS))
+    sections.append(positive(positive_by_dir["positive_farfield"], compact_plan.COMPACT_FARFIELD_REPS))
+    for source in compact_plan.noise_sources_for(label):
+        sections.append(positive(spec.noise_section(source), compact_plan.COMPACT_NOISE_REPS))
+
+    sections.append(
+        Section(
+            "near_phrase",
+            re.compile(rf"^([a-z0-9-]+)_{take}$"),
+            "near_phrase",
+            None,
+            0,  # per-phrase counts checked in _compact_completeness
+            True,
+            True,
+            "<phrase-slug>_NNN",
+        )
+    )
+
+    freeform_categories = {"negative_freespeech": "free_speech", "background_only": "background_only"}
+    for section in spec.FREEFORM_SECTIONS:
+        sections.append(
+            Section(
+                section.directory,
+                re.compile(rf"^{re.escape(section.prefix)}_{take}$"),
+                freeform_categories[section.directory],
+                LABEL_VALUES[spec.NEGATIVE],
+                compact_plan.COMPACT_FREEFORM_FILES,
+                True,
+                False,
+                f"{section.prefix}_NNN",
+            )
+        )
+
+    return Layout(LAYOUT_COMPACT, tuple(sections), False, True)
+
+
+def layouts_for(label: str) -> tuple[Layout, ...]:
+    """The layouts ``label`` may submit in, decided by the registry alone.
+
+    A full Round 8 speaker may only use the package layout: allowing anything
+    smaller would let an import be satisfied while the near-phrase battery, the
+    far-field conditions and the noise sections went unrecorded. The two
+    compact-round speakers may additionally use the compact layout (and their own
+    pre-package session layout); which speakers those are comes from the governed
+    compact plan, not from any flag or folder name.
+    """
+    if label in COMPACT_LAYOUT_LABELS:
+        return (compact_layout(label), prior_layout(), package_layout())
     if label in PRIOR_LAYOUT_LABELS:
         return (prior_layout(), package_layout())
     return (package_layout(),)
@@ -2374,11 +2460,12 @@ def _sections_check(state: Plan) -> Check:
     found: dict[str, list[Original]] = {}
     for row in state.originals:
         found.setdefault(row.section, []).append(row)
-    problems = (
-        _package_completeness(state, found)
-        if state.layout.name == LAYOUT_PACKAGE
-        else _prior_completeness(state)
-    )
+    if state.layout.name == LAYOUT_PACKAGE:
+        problems = _package_completeness(state, found)
+    elif state.layout.name == LAYOUT_COMPACT:
+        problems = _compact_completeness(state, found)
+    else:
+        problems = _prior_completeness(state)
     return Check(
         "sections",
         "every required section is present with enough usable takes",
@@ -2427,6 +2514,47 @@ def _package_completeness(state: Plan, found: dict[str, list[Original]]) -> list
             f"{spec.MIN_NOISE_SOURCES} of "
             f"{sorted('positive_noise_' + source for source in spec.NOISE_SOURCE_VOCAB)}"
         )
+    return problems
+
+
+def _compact_completeness(state: Plan, found: dict[str, list[Original]]) -> list[str]:
+    """The compact package's own completeness: every governed compact count met.
+
+    The same rule as the full package -- an excluded (silent / unusable) take does
+    not count toward its section -- applied to the compact plan's smaller counts.
+    The two assigned noise sections are each required (not "at least two of four"):
+    a compact speaker records exactly the two their registry cell names, and both
+    have to be there. It never relaxes the full round -- that path is untouched.
+    """
+    problems: list[str] = []
+    for section in state.layout.sections:
+        rows = found.get(section.directory, [])
+        usable = [row for row in rows if row.usable]
+        if section.required and not rows:
+            problems.append(f"missing required section {section.directory}/")
+            continue
+        if section.directory == "near_phrase":
+            continue  # per-phrase, below
+        if rows and len(usable) < section.min_files:
+            problems.append(
+                f"{section.directory}/: {len(usable)} usable take(s) of {len(rows)} "
+                f"present, need at least {section.min_files}. An excluded take does "
+                "not count toward a section: a section satisfied by silence is a "
+                "section that was not recorded"
+            )
+
+    items = _phrase_items()
+    counts: dict[str, int] = dict.fromkeys(items, 0)
+    for row in found.get("near_phrase", []):
+        if row.usable and row.phrase:
+            counts[spec.slugify(row.phrase)] += 1
+    need = compact_plan.COMPACT_NEAR_PHRASE_REPS
+    for slug, item in items.items():
+        if counts[slug] < need:
+            problems.append(
+                f"near_phrase/: {counts[slug]} usable take(s) of {item.text!r}, "
+                f"need at least {need}"
+            )
     return problems
 
 
@@ -3189,9 +3317,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--layout",
         default="auto",
-        choices=("auto", LAYOUT_PACKAGE, "prior"),
-        help="how to read the recording tree (the older layout is accepted only for "
-        "the speakers recorded before the package existed)",
+        choices=("auto", LAYOUT_PACKAGE, LAYOUT_COMPACT, "prior"),
+        help="how to read the recording tree; 'auto' picks from the layouts the "
+        "registry allows this speaker. 'compact' and 'prior' are still refused for "
+        "any speaker the registry does not list for them -- the flag selects among "
+        "allowed layouts, it cannot grant one",
     )
     parser.add_argument("--note", default="", help="recorded in the report and the manifest")
     parser.add_argument(

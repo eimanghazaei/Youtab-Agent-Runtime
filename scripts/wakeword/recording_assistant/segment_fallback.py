@@ -217,24 +217,24 @@ CONTINUOUS_DIRNAME = "_continuous"
 
 ORIGINAL_POSITIVE_CLOSE = "positive_close.wav"
 ORIGINAL_POSITIVE_FARFIELD = "positive_farfield.wav"
-ORIGINAL_POSITIVE_NOISE_A = "positive_noise_A.wav"
-ORIGINAL_POSITIVE_NOISE_B = "positive_noise_B.wav"
 ORIGINAL_NEAR_PHRASES = "near_phrases.wav"
 ORIGINAL_FREESPEECH = "freespeech.wav"
 ORIGINAL_BACKGROUND = "background.wav"
 
-#: Exactly how many derived takes each original must expand into. 10/3/3/3/34
-#: are split from silence; 1/1 are copied whole. They sum to the plan's 55.
-EXPECTED_DERIVED_COUNTS: dict[str, int] = {
-    ORIGINAL_POSITIVE_CLOSE: 10,
-    ORIGINAL_POSITIVE_FARFIELD: 3,
-    ORIGINAL_POSITIVE_NOISE_A: 3,
-    ORIGINAL_POSITIVE_NOISE_B: 3,
-    ORIGINAL_NEAR_PHRASES: 34,
-    ORIGINAL_FREESPEECH: 1,
-    ORIGINAL_BACKGROUND: 1,
-}
-TOTAL_DERIVED = sum(EXPECTED_DERIVED_COUNTS.values())  # 55
+
+def noise_original_name(directory: str) -> str:
+    """The continuous original's name for a noise directory: ``positive_noise_tv``
+    -> ``positive_noise_tv.wav``. The two noise originals are named for the source
+    -- matching their derived directory -- so an operator's files are unambiguous
+    (E001 tv + kitchen, E002 street + fan), never a positional A/B."""
+    return f"{directory}.wav"
+
+
+#: Derived-take counts each original must expand into, in recording order: close
+#: 10, far-field 3, each of the two noise sources 3, the 34-phrase battery, one
+#: free-speech, one background. They sum to the plan's 55.
+_ORDERED_EXPECTED_COUNTS: tuple[int, ...] = (10, 3, 3, 3, 34, 1, 1)
+TOTAL_DERIVED = 55
 
 #: Section ids the mapping reads out of the plan, in recording order.
 SECTION_DELIVERY = "section1_delivery"
@@ -298,30 +298,38 @@ def build_original_map(plan: core.Plan) -> list[OriginalMapping]:
     if len(noise_groups) != 3:
         raise ValueError(
             f"{SECTION_POSITION_NOISE} has {len(noise_groups)} directory group(s), "
-            "expected 3 (far-field, noise A, noise B)"
+            "expected 3 (far-field, then the two assigned noise sources)"
         )
 
     mappings = [
         OriginalMapping(ORIGINAL_POSITIVE_CLOSE, by_section[SECTION_DELIVERY].steps, True),
         OriginalMapping(ORIGINAL_POSITIVE_FARFIELD, noise_groups[0][1], True),
-        OriginalMapping(ORIGINAL_POSITIVE_NOISE_A, noise_groups[1][1], True),
-        OriginalMapping(ORIGINAL_POSITIVE_NOISE_B, noise_groups[2][1], True),
+        OriginalMapping(noise_original_name(noise_groups[1][0]), noise_groups[1][1], True),
+        OriginalMapping(noise_original_name(noise_groups[2][0]), noise_groups[2][1], True),
         OriginalMapping(ORIGINAL_NEAR_PHRASES, by_section[SECTION_NEAR_PHRASE].steps, True),
         OriginalMapping(ORIGINAL_FREESPEECH, by_section[SECTION_FREE_SPEECH].steps, False),
         OriginalMapping(ORIGINAL_BACKGROUND, by_section[SECTION_BACKGROUND].steps, False),
     ]
 
-    for mapping in mappings:
-        want = EXPECTED_DERIVED_COUNTS[mapping.name]
-        if mapping.expected != want:
-            raise ValueError(
-                f"{mapping.name}: plan yields {mapping.expected} step(s), expected {want} "
-                "-- the seven-to-55 mapping is out of sync with the plan"
-            )
-    total = sum(mapping.expected for mapping in mappings)
-    if total != TOTAL_DERIVED:
-        raise ValueError(f"mapping expands to {total} takes, expected {TOTAL_DERIVED}")
+    actual = tuple(mapping.expected for mapping in mappings)
+    if actual != _ORDERED_EXPECTED_COUNTS:
+        raise ValueError(
+            f"the seven-to-55 mapping expands to {actual}, expected "
+            f"{_ORDERED_EXPECTED_COUNTS} -- it is out of sync with the plan"
+        )
+    if sum(actual) != TOTAL_DERIVED:
+        raise ValueError(f"mapping expands to {sum(actual)} takes, expected {TOTAL_DERIVED}")
     return mappings
+
+
+def expected_derived_counts(speaker: str) -> dict[str, int]:
+    """The seven continuous originals and their derived-take counts for ``speaker``.
+
+    The noise originals are source-named (``positive_noise_tv.wav`` ...), so the
+    dict is speaker-specific. Single-sourced from ``build_original_map`` so it can
+    never drift from what the tool actually reads.
+    """
+    return {m.name: m.expected for m in build_original_map(core.build_plan(speaker))}
 
 
 # ── default capture root (assembled from parts, never as one literal) ─────────

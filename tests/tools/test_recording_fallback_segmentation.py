@@ -122,11 +122,12 @@ def test_mapping_yields_the_exact_counts_for_both_speakers():
     for speaker in (FIRST_COMPACT, SECOND_COMPACT):
         plan = core.build_plan(speaker)
         mappings = sf.build_original_map(plan)
+        noise = [f"positive_noise_{s}.wav" for s in compact_plan.noise_sources_for(speaker)]
         assert [m.name for m in mappings] == [
             sf.ORIGINAL_POSITIVE_CLOSE,
             sf.ORIGINAL_POSITIVE_FARFIELD,
-            sf.ORIGINAL_POSITIVE_NOISE_A,
-            sf.ORIGINAL_POSITIVE_NOISE_B,
+            noise[0],
+            noise[1],
             sf.ORIGINAL_NEAR_PHRASES,
             sf.ORIGINAL_FREESPEECH,
             sf.ORIGINAL_BACKGROUND,
@@ -134,6 +135,9 @@ def test_mapping_yields_the_exact_counts_for_both_speakers():
         assert [m.expected for m in mappings] == [10, 3, 3, 3, 34, 1, 1]
         assert sum(m.expected for m in mappings) == 55
         assert [m.split for m in mappings] == [True, True, True, True, True, False, False]
+    # noise originals are source-named, so E001 and E002 differ.
+    assert {"positive_noise_tv.wav", "positive_noise_kitchen.wav"} <= set(sf.expected_derived_counts("E001"))
+    assert {"positive_noise_street.wav", "positive_noise_fan.wav"} <= set(sf.expected_derived_counts("E002"))
 
 
 def test_every_mapping_target_is_a_real_plan_step_and_covers_all_55():
@@ -146,17 +150,18 @@ def test_every_mapping_target_is_a_real_plan_step_and_covers_all_55():
     assert len(covered) == 55 and len(set(covered)) == 55, "a step is covered twice or missed"
 
 
-def test_expected_counts_constant_matches_the_mapping():
+def test_expected_derived_counts_match_the_mapping():
     assert sf.TOTAL_DERIVED == 55
-    assert sf.EXPECTED_DERIVED_COUNTS == {
-        sf.ORIGINAL_POSITIVE_CLOSE: 10,
-        sf.ORIGINAL_POSITIVE_FARFIELD: 3,
-        sf.ORIGINAL_POSITIVE_NOISE_A: 3,
-        sf.ORIGINAL_POSITIVE_NOISE_B: 3,
-        sf.ORIGINAL_NEAR_PHRASES: 34,
-        sf.ORIGINAL_FREESPEECH: 1,
-        sf.ORIGINAL_BACKGROUND: 1,
-    }
+    for speaker in (FIRST_COMPACT, SECOND_COMPACT):
+        counts = sf.expected_derived_counts(speaker)
+        assert sum(counts.values()) == 55
+        assert counts[sf.ORIGINAL_POSITIVE_CLOSE] == 10
+        assert counts[sf.ORIGINAL_POSITIVE_FARFIELD] == 3
+        assert counts[sf.ORIGINAL_NEAR_PHRASES] == 34
+        assert counts[sf.ORIGINAL_FREESPEECH] == 1
+        assert counts[sf.ORIGINAL_BACKGROUND] == 1
+        noise = [name for name in counts if name.startswith("positive_noise_")]
+        assert len(noise) == 2 and all(counts[name] == 3 for name in noise)
 
 
 # ── end to end on a temporary _continuous/ folder ─────────────────────────────
@@ -167,7 +172,7 @@ def _make_continuous(root: Path) -> tuple[Path, dict[str, np.ndarray]]:
     cdir = sf.continuous_dir_for(root)
     cdir.mkdir(parents=True, exist_ok=True)
     sources: dict[str, np.ndarray] = {}
-    for name, count in sf.EXPECTED_DERIVED_COUNTS.items():
+    for name, count in sf.expected_derived_counts(root.name).items():
         if name == sf.ORIGINAL_FREESPEECH:
             samples = tone(2.0)  # one continuous take, copied whole
         elif name == sf.ORIGINAL_BACKGROUND:
@@ -219,7 +224,7 @@ def _make_continuous_24(root: Path, rate: int = RATE) -> Path:
     """Write the seven 24-bit originals to <root>/_continuous; freeform long enough for GREEN."""
     cdir = sf.continuous_dir_for(root)
     cdir.mkdir(parents=True, exist_ok=True)
-    for name, count in sf.EXPECTED_DERIVED_COUNTS.items():
+    for name, count in sf.expected_derived_counts(root.name).items():
         if name == sf.ORIGINAL_FREESPEECH:
             ints = tone24(22.0, rate=rate)  # >= the 20 s freeform floor
         elif name == sf.ORIGINAL_BACKGROUND:
@@ -309,7 +314,7 @@ def test_a_count_mismatch_refuses_to_write(tmp_path):
     root = tmp_path / SECOND_COMPACT
     cdir = sf.continuous_dir_for(root)
     cdir.mkdir(parents=True, exist_ok=True)
-    for name, count in sf.EXPECTED_DERIVED_COUNTS.items():
+    for name, count in sf.expected_derived_counts(root.name).items():
         if name == sf.ORIGINAL_POSITIVE_CLOSE:
             # ten responses with only 0.5 s between them: detected as one span.
             parts = [silence(0.5)]
@@ -342,7 +347,7 @@ def test_end_to_end_24bit_preserves_bytes_writes_24bit_and_validates_green(tmp_p
     # 24-bit (no conversion), preserve the originals, and validate GREEN.
     root = tmp_path / FIRST_COMPACT
     cdir = _make_continuous_24(root)
-    before = {n: core.sha256_file(cdir / n) for n in sf.EXPECTED_DERIVED_COUNTS}
+    before = {n: core.sha256_file(cdir / n) for n in sf.expected_derived_counts(root.name)}
 
     assert sf.main(["--speaker", FIRST_COMPACT, "--root", str(root), "--yes"]) == 0
 
@@ -351,7 +356,7 @@ def test_end_to_end_24bit_preserves_bytes_writes_24bit_and_validates_green(tmp_p
     assert len(present) == 55, f"only {len(present)}/55 derived takes written"
 
     # originals byte-for-byte unchanged.
-    after = {n: core.sha256_file(cdir / n) for n in sf.EXPECTED_DERIVED_COUNTS}
+    after = {n: core.sha256_file(cdir / n) for n in sf.expected_derived_counts(root.name)}
     assert after == before, "a 24-bit original changed during the run"
 
     # every derived take is mono 24-bit at the source rate -- nothing converted.
