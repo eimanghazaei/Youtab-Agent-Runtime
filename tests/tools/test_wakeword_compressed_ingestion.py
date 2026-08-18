@@ -337,13 +337,13 @@ def fixture_metadata(label: str) -> dict:
         "background_sources_present": "none: dither, not a room",
         "noise_sources_used": ["tv", "kitchen"],
         "farfield_distance": "not applicable to a generated fixture",
-        "consent_signed_date": "2024-02-20",
     }
 
 
 def _submission_records(root: Path, label: str) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 placeholder consent scan")
+    # Consent-free: no CONSENT.pdf. Authorization is the project-level registry
+    # fact; the metadata form below is diagnostic only.
     (root / spec.METADATA_FILE).write_text(
         json.dumps(fixture_metadata(label), indent=1), encoding="utf-8"
     )

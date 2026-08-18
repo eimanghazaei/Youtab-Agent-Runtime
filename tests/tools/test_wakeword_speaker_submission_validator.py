@@ -5,14 +5,16 @@ Background
 ----------
 The package tells a speaker that our loader "refuses to guess a label" from an
 unrecognised file. Without something that actually enforces that, the first
-place a misnamed file, a missing section, an unsigned consent record or an
-incomplete metadata form would be caught is weeks later, once five speakers'
-folders are being merged into one training set -- at which point nobody can ask
-the speaker what a stray file was supposed to be.
+place a misnamed file or a missing section would be caught is weeks later, once
+five speakers' folders are being merged into one training set -- at which point
+nobody can ask the speaker what a stray file was supposed to be. Acceptance
+depends on audio, naming, structure and checksums; the metadata form is
+diagnostic only, and consent is out of the technical pipeline entirely
+(authorization is the project-level registry fact, not a document).
 
-The layout under test is the one every speaker in the round uses: four entries
-in the speaker folder (``originals/``, ``CONSENT.pdf``,
-``RECORDING_METADATA.json``, ``SHA256SUMS``) and nothing else.
+The layout under test is the one every speaker in the round uses: three entries
+in the speaker folder (``originals/``, ``RECORDING_METADATA.json``,
+``SHA256SUMS``) and nothing else.
 
 All fixtures are built under ``tmp_path`` and contain only synthetic
 placeholder bytes; nothing here reads or writes a real speaker's recordings,
@@ -115,7 +117,6 @@ def _valid_metadata() -> dict:
         "background_sources_present": "refrigerator hum",
         "noise_sources_used": ["tv", "kitchen"],
         "farfield_distance": "about 5 metres, adjoining room, door open",
-        "consent_signed_date": "2026-08-10",
     }
     return {"speaker_id": FIXTURE_LABEL, **metadata}
 
@@ -142,7 +143,8 @@ def _write_checksums(root: Path) -> None:
 
 def _build_valid_submission(root: Path, metadata: dict | None = None) -> None:
     root.mkdir(parents=True, exist_ok=True)
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 placeholder consent scan")
+    # Consent-free by design: no CONSENT.pdf. Authorization is the project-level
+    # registry fact, and the metadata form is diagnostic only.
     _write_metadata(root, metadata if metadata is not None else _valid_metadata())
 
     originals = root / spec.ORIGINALS_DIR
@@ -245,143 +247,91 @@ def test_a_missing_originals_folder_is_reported(submission: Path) -> None:
     assert any("missing required folder: originals/" in e for e in result.errors)
 
 
-# ── consent ──────────────────────────────────────────────────────────────────
+# ── consent is out of the pipeline entirely ──────────────────────────────────
 
 
-def test_a_missing_consent_record_is_reported(submission: Path) -> None:
-    (submission / spec.CONSENT_FILE).unlink()
+def test_the_default_submission_needs_no_consent_document(submission: Path) -> None:
+    # No CONSENT.pdf is present, yet the folder is GREEN: consent is not a gate.
+    # Authorization is the project-level registry fact, not a document.
+    assert not (submission / "CONSENT.pdf").exists()
     result = validator.validate_speaker_directory(submission)
-    assert any("missing CONSENT.pdf" in e for e in result.errors)
+    assert result.ok, f"unexpected errors: {result.errors}"
 
 
-def test_an_empty_consent_record_is_reported(submission: Path) -> None:
-    (submission / spec.CONSENT_FILE).write_bytes(b"")
+def test_a_stray_private_document_is_tolerated_and_never_flagged(submission: Path) -> None:
+    # A stray CONSENT.pdf is the Owner's private document: tolerated (no
+    # "unrecognised entry" error) and never required to be listed in SHA256SUMS.
+    (submission / "CONSENT.pdf").write_bytes(b"%PDF-1.4 private, outside the pipeline")
     result = validator.validate_speaker_directory(submission)
-    assert any("CONSENT.pdf is empty" in e for e in result.errors)
+    assert result.ok, f"unexpected errors: {result.errors}"
+    assert not any("CONSENT.pdf" in e for e in result.errors)
 
 
-# ── the metadata form ────────────────────────────────────────────────────────
+# ── the metadata form is diagnostic, never a gate ────────────────────────────
 
 
-def test_missing_metadata_is_reported(submission: Path) -> None:
+def test_missing_metadata_does_not_block(submission: Path) -> None:
     (submission / spec.METADATA_FILE).unlink()
+    _write_checksums(submission)  # re-list now that the diagnostic form is gone
     result = validator.validate_speaker_directory(submission)
-    assert any("missing RECORDING_METADATA.json" in e for e in result.errors)
+    assert result.ok, f"unexpected errors: {result.errors}"
 
 
-def test_malformed_metadata_is_reported(submission: Path) -> None:
+def test_malformed_metadata_does_not_block(submission: Path) -> None:
     (submission / spec.METADATA_FILE).write_text("{not valid json", encoding="utf-8")
     result = validator.validate_speaker_directory(submission)
-    assert any("not well-formed JSON" in e for e in result.errors)
+    assert result.ok, f"unexpected errors: {result.errors}"
 
 
-def test_metadata_that_is_not_an_object_is_reported(submission: Path) -> None:
+def test_metadata_that_is_not_an_object_does_not_block(submission: Path) -> None:
     (submission / spec.METADATA_FILE).write_text("[]", encoding="utf-8")
     result = validator.validate_speaker_directory(submission)
-    assert any("must contain a single JSON object" in e for e in result.errors)
+    assert result.ok, f"unexpected errors: {result.errors}"
 
 
-def test_a_missing_required_metadata_field_is_reported(submission: Path) -> None:
+def test_a_missing_or_placeholder_metadata_field_does_not_block(submission: Path) -> None:
     metadata = _valid_metadata()
     del metadata["device_make_model"]
-    _write_metadata(submission, metadata)
-    result = validator.validate_speaker_directory(submission)
-    assert any("missing required field 'device_make_model'" in e for e in result.errors)
-
-
-def test_an_unfilled_template_placeholder_is_reported(submission: Path) -> None:
-    metadata = _valid_metadata()
     metadata["room_name"] = "<e.g. living room>"
+    metadata["favourite_colour"] = "blue"  # an unrecognised field is not a gate
     _write_metadata(submission, metadata)
     result = validator.validate_speaker_directory(submission)
-    assert any("template placeholder" in e for e in result.errors)
+    assert result.ok, f"unexpected errors: {result.errors}"
 
 
-def test_an_unrecognised_metadata_field_is_reported(submission: Path) -> None:
+def test_metadata_naming_a_different_speaker_does_not_block(submission: Path) -> None:
+    # The diagnostic form is not authoritative: a speaker_id that disagrees with
+    # the folder (even a name in place of a label) is simply not believed, and
+    # never gates. Role/identity are decided by the registry, not this form.
     metadata = _valid_metadata()
-    metadata["favourite_colour"] = "blue"
-    _write_metadata(submission, metadata)
-    result = validator.validate_speaker_directory(submission)
-    assert any("unrecognised field 'favourite_colour'" in e for e in result.errors)
-
-
-def test_metadata_naming_a_different_speaker_than_the_folder_is_reported(
-    submission: Path,
-) -> None:
-    """The mismatch that could mix a sealed voice into training."""
-    metadata = _valid_metadata()
-    # A sealed speaker named in a training speaker's folder -- the dangerous
-    # case. Pinned to a sealed label rather than SPEAKER_ASSIGNMENTS[-1], which
-    # is now the appended validation speaker E002 and would no longer exercise
-    # "a sealed voice". The folder is FIXTURE_LABEL (the first training speaker),
-    # so this is a valid but different assigned label.
     metadata["speaker_id"] = spec.labels_for_role(spec.ROLE_SEALED)[-1]
     _write_metadata(submission, metadata)
     result = validator.validate_speaker_directory(submission)
-    assert any("but the folder is" in e for e in result.errors)
+    assert result.ok, f"unexpected errors: {result.errors}"
 
-
-def test_a_label_with_no_assignment_is_refused(tmp_path: Path) -> None:
-    """No assignment means nothing records whether this audio may be trained on."""
-    root = tmp_path / UNASSIGNED_LABEL
-    metadata = _valid_metadata()
-    metadata["speaker_id"] = UNASSIGNED_LABEL
-    _build_valid_submission(root, metadata)
-    result = validator.validate_speaker_directory(root)
-    assert any("SPEAKER_ASSIGNMENTS" in e for e in result.errors)
-
-
-def test_a_name_in_place_of_a_label_is_refused(submission: Path) -> None:
-    metadata = _valid_metadata()
     metadata["speaker_id"] = "jane"
     _write_metadata(submission, metadata)
     result = validator.validate_speaker_directory(submission)
-    assert any("not a speaker label of the form" in e for e in result.errors)
+    assert result.ok, f"unexpected errors: {result.errors}"
 
 
-# ── noise sources ────────────────────────────────────────────────────────────
-
-
-def test_too_few_noise_sources_declared_is_reported(submission: Path) -> None:
+def test_noise_source_values_in_the_form_do_not_gate(submission: Path) -> None:
+    # noise_sources_used is diagnostic: a short list, an out-of-vocabulary value
+    # or a value with no matching folder is not an error -- the audio tree, not
+    # the form, is authoritative.
     metadata = _valid_metadata()
-    metadata["noise_sources_used"] = ["tv"]
+    metadata["noise_sources_used"] = ["tv", "dishwasher", "street"]
     _write_metadata(submission, metadata)
-    result = validator.validate_speaker_directory(submission)
-    assert any("at least 2 genuine" in e for e in result.errors)
-
-
-def test_a_noise_source_outside_the_vocabulary_is_reported(submission: Path) -> None:
-    metadata = _valid_metadata()
-    metadata["noise_sources_used"] = ["tv", "dishwasher"]
-    _write_metadata(submission, metadata)
-    result = validator.validate_speaker_directory(submission)
-    assert any("'dishwasher'" in e and "not one of" in e for e in result.errors)
-
-
-def test_a_declared_noise_source_without_a_folder_is_reported(submission: Path) -> None:
-    metadata = _valid_metadata()
-    metadata["noise_sources_used"] = ["tv", "street"]
-    _write_metadata(submission, metadata)
-    result = validator.validate_speaker_directory(submission)
-    assert any("declares noise source 'street'" in e for e in result.errors)
-
-
-def test_an_undeclared_noise_folder_is_a_warning_not_an_error(submission: Path) -> None:
-    section = spec.noise_section("street")
-    directory = submission / spec.ORIGINALS_DIR / section.directory
-    directory.mkdir()
-    for take in range(1, section.takes + 1):
-        _write_audio(
-            directory / f"{spec.WAKE_PHRASE_SLUG}_{section.condition}_{take:03d}.m4a"
-        )
-    _write_checksums(submission)
-
     result = validator.validate_speaker_directory(submission)
     assert result.ok, f"unexpected errors: {result.errors}"
-    assert any("does not list 'street'" in w for w in result.warnings)
+
+
+# ── the recording tree still gates on audio structure, not paperwork ─────────
 
 
 def test_a_submission_with_only_one_noise_folder_is_reported(submission: Path) -> None:
+    # Structural, not paperwork: the audio tree itself must carry at least two
+    # positive_noise_* folders. This still gates -- it is an audio-property check.
     shutil.rmtree(submission / spec.ORIGINALS_DIR / "positive_noise_kitchen")
     result = validator.validate_speaker_directory(submission)
     assert any("need at least 2 of" in e for e in result.errors)
@@ -611,7 +561,8 @@ def test_completion_summary_reports_accepted_counts_and_a_total(submission: Path
     assert "5/5" in text
     assert "TOTAL" in text
     assert spec.METADATA_FILE in text
-    assert spec.CONSENT_FILE in text
+    # No consent line: the consent document is out of the pipeline entirely.
+    assert "CONSENT.pdf" not in text
     assert spec.CHECKSUM_FILE in text
 
 

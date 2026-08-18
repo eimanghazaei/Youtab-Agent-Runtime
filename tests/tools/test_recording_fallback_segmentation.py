@@ -382,8 +382,8 @@ def test_end_to_end_24bit_preserves_bytes_writes_24bit_and_validates_green(tmp_p
         take_bytes = handle.readframes(handle.getnframes())
     assert take_bytes and take_bytes in close_raw, "a split take is not a slice of its source"
 
-    # the full package validates GREEN once metadata + consent are in place.
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 test consent")
+    # the full package validates GREEN with no consent document: authorization
+    # is the project-level registry fact, and the metadata form is diagnostic.
     answers = {
         "device_make_model": "external 24-bit recorder",
         "recording_app": "segment_fallback",
@@ -393,7 +393,6 @@ def test_end_to_end_24bit_preserves_bytes_writes_24bit_and_validates_green(tmp_p
         "wall_surface": "drywall",
         "background_sources_present": "a steady fridge hum",
         "farfield_distance": "about 5 metres, next room",
-        "consent_signed_date": "2020-01-01",
         "notes": "24-bit fallback end-to-end",
     }
     core.finalize_submission(plan, root, answers)

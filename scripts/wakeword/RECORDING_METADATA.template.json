@@ -10,6 +10,5 @@
   "background_sources_present": "<anything usually making noise in this room, even quietly -- e.g. refrigerator hum, street-facing window>",
   "noise_sources_used": ["<pick at least two of: tv, kitchen, street, fan>"],
   "farfield_distance": "<how far you stood for both far-field sections, e.g. about 5 metres, next room, door open>",
-  "consent_signed_date": "<YYYY-MM-DD, the day you signed the consent form>",
   "notes": "<optional -- anything you want us to know, e.g. a recorder quirk or a take you think went badly>"
 }

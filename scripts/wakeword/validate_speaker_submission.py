@@ -13,14 +13,16 @@ every speaker in the round::
 
     E003/
       originals/                 the recording tree, exactly as the recorder wrote it
-      CONSENT.pdf                the signed consent record, placed here by the coordinator
-      RECORDING_METADATA.json    the device and environment form
+      RECORDING_METADATA.json    the device and environment form (diagnostic only)
       SHA256SUMS                 coreutils-format digest of every other file, from the coordinator
 
-Four entries, and a fifth is an error rather than a skip. Refusing an
+Three entries, and any other is an error rather than a skip. Refusing an
 unrecognised file is the same rule ingestion follows: a file whose label
 nobody can state is not a file with an unknown label, it is a file that must
-not enter a dataset.
+not enter a dataset. Authorization to use the recordings is not a file in this
+folder: it is the project-level registry fact (membership of
+``speaker_recording_spec.SPEAKER_ASSIGNMENTS``), so no consent document is
+required, checked or hashed here.
 
 It checks structure and naming only, and deliberately never opens an audio
 file's payload. Duration and clipping are for the speaker's own recorder to
@@ -285,160 +287,60 @@ def _check_freeform_dir(
 
 
 def _check_metadata(root: Path, result: ValidationResult) -> None:
-    path = root / spec.METADATA_FILE
-    needed = len(spec.REQUIRED_METADATA_FIELDS)
-    if not path.is_file():
-        result.errors.append(f"missing {spec.METADATA_FILE}")
-        result.sections.append(SectionStatus(f"{spec.METADATA_FILE} fields", 0, needed))
-        return
+    """Read the device/environment form for diagnostics -- never a gate.
 
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        result.errors.append(f"{spec.METADATA_FILE} is not well-formed JSON: {exc}")
-        result.sections.append(SectionStatus(f"{spec.METADATA_FILE} fields", 0, needed))
-        return
+    The form is recorded when present because it describes the recording
+    environment, but a missing, partial, blank or malformed
+    ``RECORDING_METADATA.json`` is not an error and never blocks acceptance:
+    acceptance depends on audio, labels, role separation and checksums, not on
+    paperwork. The count of filled diagnostic fields is surfaced as a section
+    for the operator's information only. speaker_id and noise-source values are
+    the registry's and the audio's to decide, not the form's, so a form that
+    disagrees is not treated as authoritative and does not block. This function
+    appends nothing to ``result.errors``.
+    """
+    path = root / spec.METADATA_FILE
+    needed = len(spec.DIAGNOSTIC_METADATA_FIELDS)
+    label = f"{spec.METADATA_FILE} fields (diagnostic)"
+
+    data: object = None
+    if path.is_file():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            data = None  # a present-but-unreadable form is diagnostic-only
+
     if not isinstance(data, dict):
-        result.errors.append(f"{spec.METADATA_FILE} must contain a single JSON object")
-        result.sections.append(SectionStatus(f"{spec.METADATA_FILE} fields", 0, needed))
+        result.sections.append(SectionStatus(label, 0, needed))
         return
 
     filled = 0
-    for name in spec.REQUIRED_METADATA_FIELDS:
-        if name not in data:
-            result.errors.append(f"{spec.METADATA_FILE} is missing required field {name!r}")
-            continue
+    for name in spec.DIAGNOSTIC_METADATA_FIELDS:
+        value = data.get(name)
         if name == "noise_sources_used":
-            filled += 1  # a list, checked in detail by _check_noise_sources below
+            if isinstance(value, list) and value:
+                filled += 1
             continue
-        value = data[name]
-        if not isinstance(value, str) or not value.strip():
-            result.errors.append(
-                f"{spec.METADATA_FILE} field {name!r} must be a non-empty string"
-            )
-        elif value.strip().startswith("<"):
-            result.errors.append(
-                f"{spec.METADATA_FILE} field {name!r} still has the template placeholder "
-                "text in it; fill in a real answer"
-            )
-        else:
+        if isinstance(value, str) and value.strip() and not value.strip().startswith("<"):
             filled += 1
-    result.sections.append(SectionStatus(f"{spec.METADATA_FILE} fields", filled, needed))
-
-    for name in data:
-        if name not in spec.ALL_METADATA_FIELDS:
-            result.errors.append(f"{spec.METADATA_FILE} has an unrecognised field {name!r}")
-
-    _check_speaker_identity(root, data, result)
-    _check_noise_sources(root, data, result)
-
-
-def _check_speaker_identity(root: Path, data: dict, result: ValidationResult) -> None:
-    """The folder, the metadata and the assignment table must agree.
-
-    A folder named for one speaker whose metadata names another cannot be
-    ingested at all: the label is what decides whether the audio trains a
-    model or is held back to measure one, so a mismatch is not a typo to
-    resolve later.
-    """
-    declared = data.get("speaker_id")
-    if not isinstance(declared, str) or not declared.strip():
-        return  # already reported as a missing or empty required field
-    declared = declared.strip()
-    if declared.startswith("<"):
-        return  # already reported as unfilled placeholder text
-
-    if not spec.SPEAKER_ID_PATTERN.match(declared):
-        result.errors.append(
-            f"{spec.METADATA_FILE} field 'speaker_id' is {declared!r}, which is not a "
-            "speaker label of the form E0nn -- a name, initials or an email must never "
-            "travel with the audio"
-        )
-        return
-
-    if declared != root.name:
-        result.errors.append(
-            f"{spec.METADATA_FILE} names {declared!r} but the folder is {root.name!r}; "
-            "one of the two is wrong and guessing which would risk mixing a sealed "
-            "speaker into training"
-        )
-
-    if declared not in _assigned_labels():
-        result.errors.append(
-            f"{declared!r} has no entry in speaker_recording_spec.SPEAKER_ASSIGNMENTS, so "
-            "nothing records whether these recordings may be trained on; assign the "
-            "speaker before ingesting the folder"
-        )
-
-
-def _check_noise_sources(root: Path, data: dict, result: ValidationResult) -> None:
-    originals = root / spec.ORIGINALS_DIR
-    noise = data.get("noise_sources_used")
-    valid_noise: set[str] = set()
-    if not isinstance(noise, list) or not noise:
-        result.errors.append(
-            f"{spec.METADATA_FILE} field 'noise_sources_used' must be a non-empty list"
-        )
-    else:
-        for source in noise:
-            if source in spec.NOISE_SOURCE_VOCAB:
-                valid_noise.add(source)
-            else:
-                result.errors.append(
-                    f"{spec.METADATA_FILE} lists noise source {source!r}, which is not one "
-                    f"of {sorted(spec.NOISE_SOURCE_VOCAB)}"
-                )
-        if len(valid_noise) < spec.MIN_NOISE_SOURCES:
-            result.errors.append(
-                f"{spec.METADATA_FILE} must list at least {spec.MIN_NOISE_SOURCES} genuine "
-                "noise sources"
-            )
-
-    for source in sorted(spec.NOISE_SOURCE_VOCAB):
-        declared = source in valid_noise
-        has_dir = (originals / f"positive_noise_{source}").is_dir()
-        if declared and not has_dir:
-            result.errors.append(
-                f"{spec.METADATA_FILE} declares noise source {source!r} but "
-                f"{spec.ORIGINALS_DIR}/positive_noise_{source}/ does not exist"
-            )
-        elif has_dir and not declared:
-            result.warnings.append(
-                f"{spec.ORIGINALS_DIR}/positive_noise_{source}/ exists but "
-                f"{spec.METADATA_FILE} does not list {source!r} in noise_sources_used"
-            )
-
-
-def _check_consent(root: Path, result: ValidationResult) -> None:
-    """The signed consent record has to be in the folder, not promised.
-
-    It is the one entry here that is not audio and not a form the speaker
-    fills in: the coordinator scans the signed original into it. A submission
-    without it cannot be ingested, because nothing then binds the recordings to
-    a consent that covers them.
-    """
-    path = root / spec.CONSENT_FILE
-    if not path.is_file():
-        result.errors.append(
-            f"missing {spec.CONSENT_FILE}: the signed consent record has to be in the "
-            "folder before the recordings can be ingested"
-        )
-        result.sections.append(SectionStatus(spec.CONSENT_FILE, 0, 1))
-        return
-    empty = path.stat().st_size == 0
-    if empty:
-        result.errors.append(f"{spec.CONSENT_FILE} is empty")
-    result.sections.append(SectionStatus(spec.CONSENT_FILE, 0 if empty else 1, 1))
+    result.sections.append(SectionStatus(label, filled, needed))
 
 
 def _submission_files(root: Path) -> list[str]:
-    """Every file in the submission except ``SHA256SUMS``, POSIX-relative."""
+    """Every file in the submission except ``SHA256SUMS``, POSIX-relative.
+
+    The Owner's private documents (``PRIVATE_DOC_NAMES``) are excluded: the
+    pipeline never hashes or lists them, so a stray ``CONSENT.pdf`` is tolerated
+    without ever reaching the manifest or being flagged as unlisted.
+    """
     out: list[str] = []
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(root).as_posix()
         if rel == spec.CHECKSUM_FILE:
+            continue
+        if path.name in spec.PRIVATE_DOC_NAMES:
             continue
         out.append(rel)
     return out
@@ -569,14 +471,17 @@ def validate_speaker_directory(root: Path) -> ValidationResult:
             "travel with the audio"
         )
 
+    # PRIVATE_DOC_NAMES (e.g. CONSENT.pdf) are tolerated so a stray private
+    # document does not become an "unrecognised entry" error. They are never
+    # ingested, hashed or reported -- their presence is simply not an error.
+    tolerated_entries = set(spec.SUBMISSION_ENTRIES) | set(spec.PRIVATE_DOC_NAMES)
     for entry in sorted(root.iterdir()):
-        if entry.name not in spec.SUBMISSION_ENTRIES:
+        if entry.name not in tolerated_entries:
             result.errors.append(
                 f"unrecognised entry in {root.name}/: {entry.name} -- the submission holds "
                 f"exactly {', '.join(spec.SUBMISSION_ENTRIES)} and nothing else"
             )
 
-    _check_consent(root, result)
     _check_metadata(root, result)
     _check_originals(root, result)
     _check_checksums(root, result)
@@ -817,8 +722,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "instead of validating, write SHA256SUMS over every other file in the "
             "folder, in the coreutils format the validator and sha256sum -c read. "
-            "Run it after the consent record is in place and the files are named, "
-            "and never as the transfer check -- that is sha256sum -c after the copy."
+            "Run it once the files are named, and never as the transfer check -- "
+            "that is sha256sum -c after the copy."
         ),
     )
     args = parser.parse_args(argv)

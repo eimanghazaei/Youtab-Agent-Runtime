@@ -73,8 +73,10 @@ Usage::
 ``--dry-run`` runs every check and writes nothing; it is what the Owner runs
 against the drive before anything is copied. ``--into`` is the external data
 root: this refuses to read a submission from inside the repository and refuses
-to write anything into it, because raw audio, a consent scan and a filled
-metadata form are the three things that must never reach git or CI.
+to write anything into it, because raw audio and a filled metadata form must
+never reach git or CI. Authorization to use the recordings is the project-level
+registry fact (membership of ``speaker_recording_spec.SPEAKER_ASSIGNMENTS``),
+not a document: no consent scan is required, ingested, copied or hashed here.
 """
 
 from __future__ import annotations
@@ -1669,7 +1671,6 @@ class Plan:
     submission_name: str
     originals: tuple[Original, ...] = ()
     litter: tuple[str, ...] = ()
-    consent: dict = field(default_factory=dict)
     metadata: dict = field(default_factory=dict)
     checksums: dict = field(default_factory=dict)
     checks: tuple[Check, ...] = ()
@@ -1737,6 +1738,12 @@ def discover(state: Plan) -> tuple[list[Original], list[str], list[str]]:
             continue
         if root == state.submission and relative in records:
             continue  # the records that travel with the tree, not recordings
+        if path.name in spec.PRIVATE_DOC_NAMES:
+            # The Owner's private document (e.g. CONSENT.pdf). Tolerated but
+            # never part of the pipeline: not classified, not copied, not
+            # hashed, not litter, not reported. It stays under the Owner's
+            # private control and cannot block or be published.
+            continue
         if path.name in freeze_manifest._SKIP_NAMES or path.name.startswith("."):
             # Recognised as editor and sync-client litter by the same list the
             # freezer skips, so what is discovered and what is frozen cannot
@@ -2039,94 +2046,57 @@ def _replace(row: Original, **changes) -> Original:
 # ── the records that travel with the recordings ──────────────────────────────
 
 
-def _consent_state(submission: Path) -> tuple[dict, list[str]]:
-    path = submission / spec.CONSENT_FILE
-    if not path.is_file():
-        return {"file": spec.CONSENT_FILE, "present": False}, [
-            f"missing {spec.CONSENT_FILE}: nothing binds these recordings to a "
-            "consent that covers them, and consent is not something ingestion can "
-            "assume was obtained"
-        ]
-    size = path.stat().st_size
-    state = {
-        "file": spec.CONSENT_FILE,
-        "present": True,
-        "bytes": size,
-        "sha256": freeze_manifest.sha256_file(path),
-    }
-    if size == 0:
-        return state, [f"{spec.CONSENT_FILE} is empty"]
-    return state, []
-
-
 def _metadata_state(submission: Path, label: str) -> tuple[dict, list[str]]:
-    """Parse the device form and check every required field is really there.
+    """Read the device/environment form for diagnostics -- never a gate.
 
-    Only closed-vocabulary values are copied into the report. The form is
-    free text a person fills in by hand, and a report is a thing that gets
-    attached to other things: the digest proves which form was read without
-    carrying its prose anywhere.
+    The form is free text a person fills in by hand. It is recorded when
+    present because it describes the recording environment, but a missing,
+    partial, blank or malformed ``RECORDING_METADATA.json`` never blocks
+    import: acceptance depends on audio, labels, role separation and
+    checksums, not on this form. Only closed-vocabulary values are copied into
+    the report, and the digest proves which form was read without carrying its
+    prose anywhere. Cross-checks against the audio (speaker_id, noise sources)
+    are not run here: the registry and the audio are authoritative, not the
+    form. Returns no gating problems, always.
     """
     path = submission / spec.METADATA_FILE
     state: dict = {"file": spec.METADATA_FILE, "present": path.is_file()}
     if not path.is_file():
-        return state, [f"missing {spec.METADATA_FILE}"]
+        state["diagnostic_fields_present"] = []
+        return state, []
 
     state["sha256"] = freeze_manifest.sha256_file(path)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return state, [f"{spec.METADATA_FILE} is not well-formed JSON: {exc}"]
+    except (OSError, json.JSONDecodeError):
+        # A present-but-unreadable form is diagnostic-only: note it is present
+        # and move on. It is not a gate.
+        state["diagnostic_fields_present"] = []
+        return state, []
     if not isinstance(data, dict):
-        return state, [f"{spec.METADATA_FILE} must contain a single JSON object"]
+        state["diagnostic_fields_present"] = []
+        return state, []
 
-    problems: list[str] = []
     present: list[str] = []
-    for name in spec.REQUIRED_METADATA_FIELDS:
+    for name in spec.DIAGNOSTIC_METADATA_FIELDS:
         if name not in data:
-            problems.append(f"{spec.METADATA_FILE} is missing required field {name!r}")
             continue
         value = data[name]
         if name == "noise_sources_used":
-            if not isinstance(value, list) or not value:
-                problems.append(
-                    f"{spec.METADATA_FILE} field 'noise_sources_used' must be a "
-                    "non-empty list"
+            if isinstance(value, list) and value:
+                state["noise_sources_used"] = sorted(
+                    {item for item in value if item in spec.NOISE_SOURCE_VOCAB}
                 )
-                continue
-            unknown = [item for item in value if item not in spec.NOISE_SOURCE_VOCAB]
-            if unknown:
-                problems.append(
-                    f"{spec.METADATA_FILE} lists noise source(s) {unknown!r} outside "
-                    f"{sorted(spec.NOISE_SOURCE_VOCAB)}"
-                )
-            state["noise_sources_used"] = sorted(
-                {item for item in value if item in spec.NOISE_SOURCE_VOCAB}
-            )
-            present.append(name)
+                present.append(name)
             continue
         if not isinstance(value, str) or not value.strip():
-            problems.append(
-                f"{spec.METADATA_FILE} field {name!r} must be a non-empty string"
-            )
             continue
         if value.strip().startswith("<"):
-            problems.append(
-                f"{spec.METADATA_FILE} field {name!r} still holds the template "
-                "placeholder text"
-            )
             continue
         present.append(name)
 
-    declared = data.get("speaker_id")
-    if isinstance(declared, str) and declared.strip() and declared.strip() != label:
-        problems.append(
-            f"{spec.METADATA_FILE} names {declared.strip()!r} and this import is for "
-            f"{label}. Guessing which is right is how a sealed voice reaches training"
-        )
-
-    state["required_fields_present"] = present
-    return state, problems
+    state["diagnostic_fields_present"] = present
+    return state, []
 
 
 def _checksum_state(state: Plan) -> tuple[dict, list[str]]:
@@ -2162,15 +2132,14 @@ def _checksum_state(state: Plan) -> tuple[dict, list[str]]:
         listed[match.group(2)] = match.group(1)
 
     prefix = "" if state.originals_root == state.submission else f"{ORIGINALS_DIR}/"
-    # The consent scan and the metadata form are in the listing too, and both
-    # have already been hashed here. A tampered consent record is exactly as
-    # serious as a tampered take, so it is checked with the same digest.
+    # The metadata form is in the listing too and has already been hashed here,
+    # so a tampered form is caught with the same digest as a tampered take. The
+    # Owner's private documents are never hashed or listed by this pipeline.
     expected: dict[str, str] = {
         f"{prefix}{row.path}": row.sha256 for row in state.originals
     }
-    for record in (state.consent, state.metadata):
-        if record.get("sha256"):
-            expected[record["file"]] = record["sha256"]
+    if state.metadata.get("sha256"):
+        expected[state.metadata["file"]] = state.metadata["sha256"]
 
     mismatched: list[str] = []
     unlisted: list[str] = []
@@ -2331,11 +2300,9 @@ def plan(
     state.originals = tuple(described)
     state.litter = tuple(litter)
 
-    consent, consent_problems = _consent_state(submission)
     metadata, metadata_problems = _metadata_state(submission, label)
-    state.consent = consent
     state.metadata = metadata
-    # After the two records above: the transfer check verifies their digests too.
+    # After the metadata record above: the transfer check verifies its digest too.
     checksums, checksum_problems = _checksum_state(state)
     state.checksums = checksums
 
@@ -2353,18 +2320,13 @@ def plan(
         _sections_check(state),
         _submission_layout_check(state),
         Check(
-            "consent",
-            f"{spec.CONSENT_FILE} is present and not empty",
-            not consent_problems,
-            f"{consent.get('bytes', 0)} bytes" if not consent_problems else "",
-            tuple(consent_problems),
-        ),
-        Check(
             "metadata",
-            f"{spec.METADATA_FILE} parses and carries every required field",
-            not metadata_problems,
-            f"{len(metadata.get('required_fields_present', []))}/"
-            f"{len(spec.REQUIRED_METADATA_FIELDS)} required fields",
+            f"{spec.METADATA_FILE} is diagnostic: recorded if present, never a gate",
+            True,
+            f"{len(metadata.get('diagnostic_fields_present', []))}/"
+            f"{len(spec.DIAGNOSTIC_METADATA_FIELDS)} diagnostic fields filled"
+            if metadata.get("present")
+            else "no metadata form (diagnostic only, not required)",
             tuple(metadata_problems),
         ),
         Check(
@@ -2602,8 +2564,8 @@ def _submission_layout_check(state: Plan) -> Check:
     """Fold in ``validate_speaker_submission``'s verdict on the package layout.
 
     That module owns the question "does this folder match the package?" — the
-    four permitted entries, the naming grammar, the noise declarations, the
-    structure of the checksum listing. Restating its rules here would produce a
+    three permitted entries, the naming grammar and the structure of the
+    checksum listing. Restating its rules here would produce a
     second copy to drift; the older session layout is not folded in because that
     module does not model it, and the completeness check above is what covers it.
     """
@@ -2739,8 +2701,8 @@ def _refuse_repo_path(path: Path, what: str) -> None:
     if resolved == repo or repo in resolved.parents:
         raise Refused(
             f"refusing {what} inside the repository ({resolved.name}). Recorded "
-            "speech, a consent scan and a filled metadata form are the three things "
-            "that must never reach git or CI; keep them on external local disk"
+            "speech and a filled metadata form are the things that must never "
+            "reach git or CI; keep them on external local disk"
         )
 
 
@@ -2912,7 +2874,6 @@ def report_body(
             ],
         },
         "findings_vocabulary": FINDINGS,
-        "consent": state.consent,
         "metadata": state.metadata,
         "transfer_checksums": state.checksums,
         "environment": {
@@ -3121,7 +3082,7 @@ def _copy_originals(state: Plan, staging: Path, destination: Path) -> dict:
             raise Refused(
                 f"{row.path} hashed {digest} on the way in and {row.sha256} on the "
                 "drive. Refusing to publish a copy that is not the recording: "
-                "nothing that follows would describe the audio anybody consented to"
+                "nothing that follows would describe the audio that was recorded"
             )
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(temporary, target)
