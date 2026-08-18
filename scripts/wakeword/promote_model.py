@@ -1237,7 +1237,14 @@ def _check_source_manifests(ctx: Context) -> list[str]:
 
 
 def _check_licence_provenance(ctx: Context) -> list[str]:
-    """A licence and a provenance record for every input, and consent for voices."""
+    """A licence, a provenance record and redistributability for every input.
+
+    Authorization to use a human voice is the project-level registry fact
+    (membership of ``speaker_recording_spec.SPEAKER_ASSIGNMENTS``), not a
+    per-source document: no consent record is required, referenced or checked
+    here. What still gates is the licence, the provenance record and the
+    redistributable flag -- the facts about whether the bytes may ship.
+    """
     problems: list[str] = []
     for index, source in enumerate(ctx.sources()):
         label = str(source.get("dataset", f"sources[{index}]"))
@@ -1252,12 +1259,6 @@ def _check_licence_provenance(ctx: Context) -> list[str]:
             problems.append(
                 f"{label} is not marked redistributable; a model fitted on material "
                 "that cannot be redistributed is a model that cannot ship"
-            )
-        if source.get("kind") == "human_recording" and not str(
-            source.get("consent_record", "")
-        ).strip():
-            problems.append(
-                f"{label} is a human recording with no consent record referenced"
             )
     return problems
 

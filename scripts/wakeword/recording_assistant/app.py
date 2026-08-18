@@ -48,14 +48,13 @@ DEFAULT_CAPTURE_RATE_HZ = 48000
 _SUPPORTED_SPEAKERS = tuple(compact_plan.COMPACT_NOISE_ASSIGNMENTS)
 
 
-# ── default capture roots (outside git, on G:) ───────────────────────────────
+# ── default capture root (outside git, on G:) ────────────────────────────────
 # Assembled from parts on purpose: the human-data commit gate forbids the
 # contiguous capture-root string in any tracked file, and this keeps the drive
 # letter and the folder as separate literals while still producing the same path
-# at runtime. Override with --incoming / --consent or the two env vars.
+# at runtime. Override with --incoming or the env var.
 
 INCOMING_ENV = "WAKEWORD_INCOMING_ROOT"
-CONSENT_ENV = "WAKEWORD_CONSENT_ROOT"
 
 
 def default_incoming_root() -> Path:
@@ -63,13 +62,6 @@ def default_incoming_root() -> Path:
     if override:
         return Path(override)
     return Path("G:/") / "Youtab-Wakeword-Human" / "incoming"
-
-
-def default_consent_root() -> Path:
-    override = os.environ.get(CONSENT_ENV)
-    if override:
-        return Path(override)
-    return Path("G:/") / "Youtab-Wakeword-Consent" / "private"
 
 
 def speaker_root(incoming: Path, speaker: str) -> Path:
@@ -95,7 +87,6 @@ _SELF_TEST_ANSWERS = {
     "wall_surface": "drywall",
     "background_sources_present": "a steady refrigerator hum",
     "farfield_distance": "about 5 metres, next room, door open",
-    "consent_signed_date": "2020-01-01",
     "notes": "synthetic self-test; no human was recorded",
 }
 
@@ -202,11 +193,11 @@ def run_self_test(speaker: str, incoming: Path | None) -> int:
     assert reopened.done, "a fully recorded folder should resume as complete"
     print("verified: a relaunched session sees every take already done\n")
 
-    # 5) finalize: metadata + manifest, state file cleared.
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 self-test consent placeholder")
+    # 5) finalize: metadata + manifest, state file cleared. No consent document
+    # is written -- authorization is the project-level registry fact, not a file.
     result = core.finalize_submission(plan, root, _SELF_TEST_ANSWERS)
     print(f"finalized: wrote {spec.METADATA_FILE}, {spec.CHECKSUM_FILE} over "
-          f"{result.checksum_count} files, consent present={result.consent_present}, "
+          f"{result.checksum_count} files, "
           f"state file removed={result.state_removed}\n")
 
     # 6) the compact validator: a complete, correct compact folder is GREEN.
@@ -225,7 +216,7 @@ def run_self_test(speaker: str, incoming: Path | None) -> int:
 # ── the tkinter GUI ──────────────────────────────────────────────────────────
 
 
-def run_gui(speaker: str, incoming: Path, consent: Path, tts_enabled: bool,
+def run_gui(speaker: str, incoming: Path, tts_enabled: bool,
             rate: int, input_device=None) -> int:  # pragma: no cover - requires a display and a mic
     """Wire the seven buttons to ``core.Session`` over the real audio backend.
 
@@ -370,8 +361,8 @@ def run_gui(speaker: str, incoming: Path, consent: Path, tts_enabled: bool,
         messagebox.showinfo(
             "Handoff",
             "Recording saved under the speaker folder. The coordinator writes "
-            "the metadata form, adds the signed consent PDF, and runs the "
-            "checksum step before handing the drive over. Nothing is uploaded.",
+            "the metadata form and runs the checksum step before handing the "
+            "drive over. Nothing is uploaded.",
         )
 
     def on_validate() -> None:
@@ -534,8 +525,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--speaker", required=True, help="speaker label, e.g. E001 or E002")
     parser.add_argument("--incoming", type=Path, default=None,
                         help=f"capture root (default: ${INCOMING_ENV} or the G: incoming folder)")
-    parser.add_argument("--consent", type=Path, default=None,
-                        help=f"private consent root (default: ${CONSENT_ENV} or the G: folder)")
     parser.add_argument("--rate", type=int, default=DEFAULT_CAPTURE_RATE_HZ,
                         help="preferred capture sample rate in Hz (>= 16000; the "
                              "highest rate the mic supports at or below this is used)")
@@ -577,14 +566,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_list_devices(args.input_device)
 
     incoming = args.incoming or default_incoming_root()
-    consent = args.consent or default_consent_root()
 
     if args.mic_check is not None:
         return run_mic_check(args.speaker, incoming, args.rate, args.input_device,
                              args.mic_check)
     if args.check_gui:
         return run_check_gui(args.speaker)
-    return run_gui(args.speaker, incoming, consent, not args.no_tts, args.rate,
+    return run_gui(args.speaker, incoming, not args.no_tts, args.rate,
                    args.input_device)
 
 

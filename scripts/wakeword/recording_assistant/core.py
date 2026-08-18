@@ -508,7 +508,10 @@ def submission_files(root: Path) -> list[str]:
     The same walk ``validate_speaker_submission.py`` verifies a manifest
     against, so what this lists and what the validator later checks cannot
     disagree. The preserved-source archives (``_continuous/``, ``_extras/``) are
-    excluded: their bytes are kept next to the takes, not part of them.
+    excluded: their bytes are kept next to the takes, not part of them. The
+    Owner's private documents (``PRIVATE_DOC_NAMES``) are excluded too: the
+    pipeline never hashes or lists them, so a stray ``CONSENT.pdf`` is tolerated
+    without ever reaching the manifest.
     """
     out: list[str] = []
     for path in sorted(Path(root).rglob("*")):
@@ -516,6 +519,8 @@ def submission_files(root: Path) -> list[str]:
             continue
         rel = path.relative_to(root).as_posix()
         if rel == spec.CHECKSUM_FILE or _in_preserved_source(rel):
+            continue
+        if path.name in spec.PRIVATE_DOC_NAMES:
             continue
         out.append(rel)
     return out
@@ -547,7 +552,6 @@ _PLACEHOLDER = {
     "wall_surface": "<e.g. drywall, brick, one large window>",
     "background_sources_present": "<anything usually making noise here, even quietly>",
     "farfield_distance": "<how far you stood for the far-field section>",
-    "consent_signed_date": "<YYYY-MM-DD, the day you signed the consent form>",
 }
 
 
@@ -558,11 +562,11 @@ def _today() -> str:
 def draft_metadata(speaker: str, noise_sources: tuple[str, ...] | list[str]) -> dict:
     """A metadata form pre-filled with what the app knows, placeholders for the rest.
 
-    The validator rejects the placeholder text, on purpose: a draft is not a
-    finished form, and the human (or coordinator) fills the ``<...>`` fields
-    before handoff.
+    The form is diagnostic only: the human (or coordinator) may fill the
+    ``<...>`` fields before handoff, but leaving them is not a gate -- a draft,
+    a partial form or no form at all never blocks validation or import.
     """
-    data = {name: _PLACEHOLDER.get(name, "") for name in spec.REQUIRED_METADATA_FIELDS}
+    data = {name: _PLACEHOLDER.get(name, "") for name in spec.DIAGNOSTIC_METADATA_FIELDS}
     data["speaker_id"] = speaker
     data["recording_date"] = _today()
     data["noise_sources_used"] = list(noise_sources)
@@ -595,8 +599,8 @@ def write_metadata(root: Path, data: dict) -> None:
 # ── resumable progress, reconciled against the files on disk ─────────────────
 
 #: Kept as a dotfile in the speaker folder during recording, so the folder the
-#: validator later sees (originals/, CONSENT.pdf, RECORDING_METADATA.json,
-#: SHA256SUMS -- and nothing else) is clean: ``finalize_submission`` removes this
+#: validator later sees (originals/, RECORDING_METADATA.json, SHA256SUMS --
+#: and nothing else) is clean: ``finalize_submission`` removes this
 #: before writing the manifest. On G:, never in git.
 STATE_FILENAME = ".recording_state.json"
 STATE_SCHEMA = 1
@@ -838,7 +842,6 @@ def compose_guidance(step: Step) -> str:
 class FinalizeResult:
     metadata_path: Path
     checksum_count: int
-    consent_present: bool
     state_removed: bool
 
 
@@ -849,12 +852,12 @@ def finalize_submission(
 ) -> FinalizeResult:
     """Write the metadata form and the manifest; clear the recording state file.
 
-    Leaves the speaker folder holding exactly the four entries the validator
-    accepts (``originals/``, ``CONSENT.pdf``, ``RECORDING_METADATA.json``,
-    ``SHA256SUMS``) -- the transient progress dotfile is removed first, and the
-    manifest is written last so it covers the metadata form. The signed
-    ``CONSENT.pdf`` is the coordinator's to place; its presence is reported, not
-    fabricated.
+    Leaves the speaker folder holding exactly the three entries the validator
+    accepts (``originals/``, ``RECORDING_METADATA.json``, ``SHA256SUMS``) -- the
+    transient progress dotfile is removed first, and the manifest is written
+    last so it covers the metadata form. Authorization to use the recordings is
+    the project-level registry fact, not a document, so no consent file is
+    written, required or reported here.
     """
     root = Path(speaker_root)
     state = state_path(root)
@@ -870,7 +873,6 @@ def finalize_submission(
     return FinalizeResult(
         metadata_path=root / spec.METADATA_FILE,
         checksum_count=count,
-        consent_present=(root / spec.CONSENT_FILE).is_file(),
         state_removed=state_removed,
     )
 
@@ -896,6 +898,9 @@ class CompactValidation:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     sections: list[SectionStatus] = field(default_factory=list)
+    #: Diagnostic only: which device/environment metadata fields were filled.
+    #: Never a gate -- an empty list does not affect ``ok``.
+    metadata_fields_present: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -921,6 +926,8 @@ def _compact_submission_files(root: Path) -> list[str]:
             continue
         if _in_preserved_source(rel):
             continue  # _continuous/ or _extras/: preserved, not part of the take set
+        if path.name in spec.PRIVATE_DOC_NAMES:
+            continue  # the Owner's private document: never hashed, listed or gated
         out.append(rel)
     return out
 
@@ -1003,72 +1010,44 @@ def _check_compact_originals(root: Path, plan: Plan, result: CompactValidation) 
             )
 
 
-def _check_compact_consent(root: Path, result: CompactValidation) -> None:
-    path = root / spec.CONSENT_FILE
-    if not path.is_file():
-        result.errors.append(
-            f"missing {spec.CONSENT_FILE}: the signed consent record has to be in the "
-            "folder before the recordings can be handed over"
-        )
-        return
-    if path.stat().st_size == 0:
-        result.errors.append(f"{spec.CONSENT_FILE} is empty")
-
-
 def _check_compact_metadata(root: Path, plan: Plan, result: CompactValidation) -> None:
+    """The device/environment form is diagnostic only -- never a gate.
+
+    A missing, partial, blank, field-short or malformed
+    ``RECORDING_METADATA.json`` is not an error and never blocks GREEN or
+    import: acceptance depends on the take set, names, audio and checksums, not
+    on this form. speaker_id and noise-source values are the registry's and the
+    audio's to decide, not the form's, so a form that disagrees is not treated
+    as authoritative and does not block. This function reads the form
+    tolerantly and intentionally appends nothing to ``result.errors`` (and, so
+    a complete submission stays cleanly GREEN, nothing to ``result.warnings``
+    either); the fields it can read are recorded on the result for the
+    operator's information only.
+    """
     path = root / spec.METADATA_FILE
+    result.metadata_fields_present = []
     if not path.is_file():
-        result.errors.append(f"missing {spec.METADATA_FILE}")
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        result.errors.append(f"{spec.METADATA_FILE} is not well-formed JSON: {exc}")
-        return
+    except json.JSONDecodeError:
+        return  # a present-but-unreadable form is diagnostic-only, not a gate
     if not isinstance(data, dict):
-        result.errors.append(f"{spec.METADATA_FILE} must contain a single JSON object")
         return
 
-    for name in spec.REQUIRED_METADATA_FIELDS:
-        if name not in data:
-            result.errors.append(f"{spec.METADATA_FILE} is missing required field {name!r}")
-            continue
-        if name == "noise_sources_used":
-            continue  # checked below
-        value = data[name]
-        if not isinstance(value, str) or not value.strip():
-            result.errors.append(
-                f"{spec.METADATA_FILE} field {name!r} must be a non-empty string"
+    result.metadata_fields_present = [
+        name
+        for name in spec.DIAGNOSTIC_METADATA_FIELDS
+        if (
+            (name == "noise_sources_used" and isinstance(data.get(name), list) and data[name])
+            or (
+                name != "noise_sources_used"
+                and isinstance(data.get(name), str)
+                and data[name].strip()
+                and not data[name].strip().startswith("<")
             )
-        elif value.strip().startswith("<"):
-            result.errors.append(
-                f"{spec.METADATA_FILE} field {name!r} still has the template placeholder "
-                "in it; fill in a real answer"
-            )
-
-    for name in data:
-        if name not in spec.ALL_METADATA_FIELDS:
-            result.errors.append(f"{spec.METADATA_FILE} has an unrecognised field {name!r}")
-
-    declared = data.get("speaker_id")
-    if isinstance(declared, str) and declared.strip() and not declared.strip().startswith("<"):
-        if declared.strip() != plan.speaker:
-            result.errors.append(
-                f"{spec.METADATA_FILE} names {declared.strip()!r} but the folder is "
-                f"{plan.speaker!r}"
-            )
-
-    expected_noise = set(compact_plan.noise_sources_for(plan.speaker))
-    noise = data.get("noise_sources_used")
-    if not isinstance(noise, list) or not noise:
-        result.errors.append(
-            f"{spec.METADATA_FILE} field 'noise_sources_used' must be a non-empty list"
         )
-    elif set(noise) != expected_noise:
-        result.errors.append(
-            f"{spec.METADATA_FILE} 'noise_sources_used' is {sorted(noise)} but this "
-            f"speaker's compact plan records {sorted(expected_noise)}"
-        )
+    ]
 
 
 def _check_compact_checksums(root: Path, result: CompactValidation) -> None:
@@ -1124,10 +1103,13 @@ def validate_compact_submission(root: Path, plan: Plan) -> CompactValidation:
     Returns a result whose ``ok`` is True, with no errors and no warnings, for a
     complete and correct compact submission: exactly the plan's takes present and
     correctly named, every WAV mono/16-bit/>=16 kHz and free of a blocking
-    quality finding, ``RECORDING_METADATA.json`` complete, ``CONSENT.pdf``
-    present, and ``SHA256SUMS`` present and internally consistent. Every reported
-    error is a genuine problem the operator can act on -- there is no
-    canonical-count, dropped-section or assignment-table noise.
+    quality finding, and ``SHA256SUMS`` present and internally consistent. GREEN
+    no longer requires ``CONSENT.pdf`` or a complete ``RECORDING_METADATA.json``:
+    authorization is the project-level registry fact, not a document, and the
+    metadata form is diagnostic only. A stray ``CONSENT.pdf`` is tolerated and
+    never ingested. Every reported error is a genuine problem the operator can
+    act on -- there is no canonical-count, dropped-section, consent-document or
+    metadata-completeness noise.
     """
     result = CompactValidation()
     root = Path(root)
@@ -1145,7 +1127,14 @@ def validate_compact_submission(root: Path, plan: Plan) -> CompactValidation:
             f"the folder is named {root.name!r} but the plan is for {plan.speaker!r}"
         )
 
-    tolerated = set(spec.SUBMISSION_ENTRIES) | {STATE_FILENAME, *PRESERVED_SOURCE_DIRS}
+    # PRIVATE_DOC_NAMES (e.g. CONSENT.pdf) are tolerated so a stray private
+    # document does not become an "unrecognised entry" error. They are never
+    # ingested, hashed or reported -- their presence is simply not an error.
+    tolerated = (
+        set(spec.SUBMISSION_ENTRIES)
+        | {STATE_FILENAME, *PRESERVED_SOURCE_DIRS}
+        | set(spec.PRIVATE_DOC_NAMES)
+    )
     for entry in sorted(root.iterdir()):
         if entry.name not in tolerated:
             result.errors.append(
@@ -1167,7 +1156,6 @@ def validate_compact_submission(root: Path, plan: Plan) -> CompactValidation:
             )
 
     _check_compact_originals(root, plan, result)
-    _check_compact_consent(root, result)
     _check_compact_metadata(root, plan, result)
     _check_compact_checksums(root, result)
 

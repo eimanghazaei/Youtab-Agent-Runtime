@@ -21,6 +21,7 @@ recording, and no per-speaker record is committed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import wave
@@ -267,9 +268,9 @@ def test_manifest_is_coreutils_format_and_complete(tmp_path):
 # ── metadata form ────────────────────────────────────────────────────────────
 
 
-def test_draft_metadata_has_all_required_fields_with_placeholders():
+def test_draft_metadata_has_all_diagnostic_fields_with_placeholders():
     data = core.draft_metadata(FIRST_COMPACT, ("tv", "kitchen"))
-    for field_name in spec.REQUIRED_METADATA_FIELDS:
+    for field_name in spec.DIAGNOSTIC_METADATA_FIELDS:
         assert field_name in data
     assert data["speaker_id"] == FIRST_COMPACT
     assert data["noise_sources_used"] == ["tv", "kitchen"]
@@ -475,7 +476,6 @@ def _synthetic_answers() -> dict:
         "wall_surface": "drywall",
         "background_sources_present": "a refrigerator hum",
         "farfield_distance": "about 5 metres, next room, door open",
-        "consent_signed_date": "2020-01-01",
         "notes": "synthetic fixture, no human recorded",
     }
 
@@ -510,7 +510,7 @@ def test_compact_folder_carries_only_the_intended_shortfalls(tmp_path):
     """
     root = tmp_path / FIRST_COMPACT
     _drive_compact_session(root, FIRST_COMPACT)
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 synthetic consent placeholder")
+    # Consent-free: no CONSENT.pdf is written; authorization is the registry fact.
     plan = core.build_plan(FIRST_COMPACT)
     core.finalize_submission(plan, root, _synthetic_answers())
 
@@ -548,7 +548,7 @@ def _write_full_spec_folder(root: Path, label: str) -> None:
         for stem in spec.expected_stems_for_freeform(section, section.min_files):
             core.write_wave(originals / section.directory / f"{stem}.wav", synth_sine(0.5))
 
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 synthetic consent placeholder")
+    # Consent-free: no CONSENT.pdf; authorization is the project-level registry fact.
     core.write_metadata(root, core.build_metadata(label, noise_sources, _synthetic_answers()))
     core.write_sha256sums(root)
 
@@ -577,7 +577,7 @@ def _write_raw_wave(path: Path, pcm: np.ndarray, rate: int) -> None:
 def _complete_compact_folder(root: Path, label: str) -> core.Plan:
     """A fully recorded, finalized, correct compact folder (the GREEN baseline)."""
     plan = _drive_compact_session(root, label)
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 synthetic consent placeholder")
+    # Consent-free GREEN baseline: no CONSENT.pdf is written.
     core.finalize_submission(plan, root, _synthetic_answers())
     return plan
 
@@ -698,15 +698,24 @@ def test_fault_wrong_checksum_digest_is_caught(tmp_path):
     assert len(result.errors) == 1  # exactly the one seeded fault
 
 
-def test_fault_missing_consent_is_caught(tmp_path):
+def test_no_consent_document_is_required_and_a_stray_one_is_tolerated(tmp_path):
+    # Consent is out of the pipeline: a folder with no CONSENT.pdf is GREEN, and
+    # a stray CONSENT.pdf dropped in is tolerated -- no error, and it is never
+    # listed or hashed into SHA256SUMS.
     root = tmp_path / FIRST_COMPACT
     plan = _complete_compact_folder(root, FIRST_COMPACT)
-    assert core.validate_compact_submission(root, plan).ok  # non-vacuity
+    assert not (root / "CONSENT.pdf").exists()
+    assert core.validate_compact_submission(root, plan).ok  # GREEN with no consent
 
-    (root / spec.CONSENT_FILE).unlink()
-    core.finalize_submission(plan, root, _synthetic_answers())  # re-checksum without it
-
+    private_bytes = b"%PDF-1.4 the Owner's private document, outside the pipeline"
+    (root / "CONSENT.pdf").write_bytes(private_bytes)
     result = core.validate_compact_submission(root, plan)
-    assert not result.ok
-    assert any("missing CONSENT.pdf" in e for e in result.errors)
-    assert _no_category_noise(result.errors, "SHA256SUMS", "missing take", "16 kHz")
+    assert result.ok, f"a stray private document must not block: {result.errors}"
+    assert not any("CONSENT" in e for e in result.errors)
+
+    # Re-finalising never pulls the private document into the manifest.
+    core.finalize_submission(plan, root, _synthetic_answers())
+    sums = (root / spec.CHECKSUM_FILE).read_text(encoding="utf-8")
+    assert "CONSENT.pdf" not in sums
+    assert hashlib.sha256(private_bytes).hexdigest() not in sums
+    assert core.validate_compact_submission(root, plan).ok

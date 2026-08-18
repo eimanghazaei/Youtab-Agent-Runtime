@@ -381,9 +381,8 @@ class Promotion:
                     "kind": "human_recording",
                     "synthetic": False,
                     "manifest_sha256": "1" * 64,
-                    "licence": "consented personal recording, not redistributed as audio",
-                    "provenance": "recorded 2026-08, consented takes, frozen on the host",
-                    "consent_record": "held offline with the capture drive",
+                    "licence": "owner-authorized project recording, not redistributed as audio",
+                    "provenance": "recorded 2026-08, owner-authorized takes, frozen on the host",
                     "redistributable": True,
                 },
                 {
@@ -393,9 +392,8 @@ class Promotion:
                     "kind": "human_recording",
                     "synthetic": False,
                     "manifest_sha256": "2" * 64,
-                    "licence": "consented personal recording, not redistributed as audio",
-                    "provenance": "recorded 2026-08, consented takes, frozen on the host",
-                    "consent_record": "held offline with the capture drive",
+                    "licence": "owner-authorized project recording, not redistributed as audio",
+                    "provenance": "recorded 2026-08, owner-authorized takes, frozen on the host",
                     "redistributable": True,
                 },
                 {
@@ -915,10 +913,14 @@ def test_a_source_with_no_provenance_is_refused(promotion: Promotion) -> None:
     assert "no provenance recorded" in _refuses(promotion, "licence_provenance")
 
 
-def test_a_human_recording_with_no_consent_record_is_refused(promotion: Promotion) -> None:
-    del promotion.record["sources"][0]["consent_record"]
+def test_a_human_recording_needs_no_consent_record(promotion: Promotion) -> None:
+    # Authorization to use a human voice is the project-level registry fact, not
+    # a per-source document. A human_recording source with no consent_record
+    # referenced still clears the licence/provenance gate.
+    for source in promotion.record["sources"]:
+        source.pop("consent_record", None)
     promotion.seal()
-    assert "no consent record" in _refuses(promotion, "licence_provenance")
+    assert "licence_provenance" not in promotion.failed()
 
 
 def test_a_synthesized_source_has_no_kind_it_can_be_declared_under(

@@ -2,8 +2,7 @@
 
 ``SPEAKER_RECORDING_PACKAGE.md`` tells a speaker what to record and exactly
 what to name each file; ``validate_speaker_submission.py`` checks that a
-submitted folder actually matches; ``CONSENT_RECORD_TEMPLATE.md`` tells the
-speaker what happens to it afterwards. All three are read off this module
+submitted folder actually matches. Both are read off this module
 rather than each keeping its own copy of the phrase list, the folder names,
 the take counts, the speaker assignments and the metadata fields, for the same
 reason ``phrases.py`` gives for being the one place the training and
@@ -729,21 +728,28 @@ FREEFORM_SECTIONS: tuple[FreeformSection, ...] = (
 
 # ── the submission layout ────────────────────────────────────────────────────
 
-#: One speaker's folder holds exactly these four entries and nothing else.
-#: ``originals/`` is the recording tree; the other three are the records that
-#: make it usable. An unrecognised fifth entry is an error, not something to
+#: One speaker's folder holds exactly these three entries and nothing else.
+#: ``originals/`` is the recording tree; the other two are the records that
+#: make it usable. An unrecognised extra entry is an error, not something to
 #: skip: ingestion refuses to guess a label, so it also refuses to guess what
-#: a stray file was for.
+#: a stray file was for -- except for the Owner's private documents named in
+#: ``PRIVATE_DOC_NAMES``, which are tolerated but never ingested.
 ORIGINALS_DIR = "originals"
-CONSENT_FILE = "CONSENT.pdf"
 METADATA_FILE = "RECORDING_METADATA.json"
 CHECKSUM_FILE = "SHA256SUMS"
 SUBMISSION_ENTRIES: tuple[str, ...] = (
     ORIGINALS_DIR,
-    CONSENT_FILE,
     METADATA_FILE,
     CHECKSUM_FILE,
 )
+
+#: The Owner's private documents. The pipeline TOLERATES their presence but
+#: NEVER requires, ingests, copies, hashes, or logs them; they stay under the
+#: Owner's private control, outside this pipeline. Authorization to use the
+#: recordings is not one of these files -- it is the project-level registry
+#: fact in ``PROJECT_RECORDING_AUTHORIZATION`` (membership of
+#: ``SPEAKER_ASSIGNMENTS``), which names no person and carries no document.
+PRIVATE_DOC_NAMES: frozenset[str] = frozenset({"CONSENT.pdf"})
 
 #: ``SHA256SUMS`` is coreutils format — ``<64 hex><two spaces><path>`` — the
 #: same format ``freeze_manifest.py`` writes and ``sha256sum -c`` reads, with
@@ -753,11 +759,14 @@ SUBMISSION_ENTRIES: tuple[str, ...] = (
 #: coordinator verifies it with ``sha256sum -c`` after the transfer.
 CHECKSUM_LINE = re.compile(r"^([0-9a-f]{64})  (\S.*)$")
 
-#: Device / environment metadata every submission carries alongside the
-#: audio. Free-text strings on purpose: a non-technical speaker fills this in
-#: by hand, so it asks for plain descriptions ("about 4 by 5 metres"), not a
-#: fixed unit or enum that would need further parsing.
-REQUIRED_METADATA_FIELDS: tuple[str, ...] = (
+#: Device / environment metadata a submission may carry alongside the audio.
+#: Diagnostic only: recorded if present, never a gate. A missing, partial or
+#: blank ``RECORDING_METADATA.json`` never blocks validation or import --
+#: acceptance depends on audio, labels, role separation and checksums, not on
+#: this form. Free-text strings on purpose: a non-technical speaker fills this
+#: in by hand, so it asks for plain descriptions ("about 4 by 5 metres"), not
+#: a fixed unit or enum that would need further parsing.
+DIAGNOSTIC_METADATA_FIELDS: tuple[str, ...] = (
     "speaker_id",
     "recording_date",
     "device_make_model",
@@ -769,13 +778,12 @@ REQUIRED_METADATA_FIELDS: tuple[str, ...] = (
     "background_sources_present",
     "noise_sources_used",
     "farfield_distance",
-    "consent_signed_date",
 )
 
 #: May be present and blank, but is not required to be present at all.
 OPTIONAL_METADATA_FIELDS: tuple[str, ...] = ("notes",)
 
-ALL_METADATA_FIELDS: tuple[str, ...] = REQUIRED_METADATA_FIELDS + OPTIONAL_METADATA_FIELDS
+ALL_METADATA_FIELDS: tuple[str, ...] = DIAGNOSTIC_METADATA_FIELDS + OPTIONAL_METADATA_FIELDS
 
 #: The one identifier that travels with the audio. No name, no initials, no
 #: email, in any filename, folder name or metadata field. Kept as
@@ -811,14 +819,26 @@ class SpeakerAssignment:
 
     The speaker is not told their role by ``SPEAKER_RECORDING_PACKAGE.md``:
     the recording instructions are identical for every role, and knowing you
-    are the final exam changes how you speak. What the speaker is told, in
-    full and in writing, is on their consent form, which states the use
-    category the coordinator ticked for them.
+    are the final exam changes how you speak. The role lives here in the
+    registry and nowhere the speaker sees, so it cannot leak into how they
+    speak, and cannot be overridden by anything a caller supplies.
     """
 
     label: str
     role: str
     why: str
+
+
+#: The single, non-identifying, project-level authorization fact. Membership
+#: of ``SPEAKER_ASSIGNMENTS`` below IS the authorization: it names no person,
+#: carries no signature or date, and requires no uploaded document. This is the
+#: only authorization the technical pipeline consults; per-speaker consent
+#: documents are outside the pipeline entirely.
+PROJECT_RECORDING_AUTHORIZATION = (
+    "Owner confirms authorization to use the project speaker recordings for "
+    "this project. Non-identifying project-level fact: it names no person, "
+    "carries no signature or date, and requires no uploaded document."
+)
 
 
 SPEAKER_ASSIGNMENTS: tuple[SpeakerAssignment, ...] = (

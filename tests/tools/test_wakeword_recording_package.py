@@ -697,8 +697,10 @@ def test_the_consent_form_and_the_package_agree_on_the_handoff() -> None:
 
     assert "hand your **signed consent form separately** from the audio" in package
     assert "does **not** travel with the audio" in consent
-    assert spec.CONSENT_FILE.lower() in package
-    assert spec.CONSENT_FILE.lower() in consent
+    # The consent document is out of the technical pipeline now, so it is no
+    # longer a spec constant; the Owner's private-process docs still name it.
+    assert "consent.pdf" in package
+    assert "consent.pdf" in consent
     assert "separate in transit; bound together, under access control, at rest" in consent
 
 

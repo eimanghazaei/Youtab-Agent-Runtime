@@ -1181,7 +1181,7 @@ def load_human_source(
         **verify_originals(manifest, path, index),
     }
 
-    licence = "consented human recording, retained on local disk only"
+    licence = "owner-authorized project recording, retained on local disk only"
     registry = load_retired_artifacts()
     samples: list[Sample] = []
     excluded = 0

@@ -555,14 +555,40 @@ def test_reps_and_thresholds_are_positive() -> None:
 # ── the submission layout ────────────────────────────────────────────────────
 
 
-def test_the_submission_holds_exactly_four_named_entries() -> None:
+def test_the_submission_holds_exactly_three_named_entries() -> None:
     assert spec.SUBMISSION_ENTRIES == (
         "originals",
-        "CONSENT.pdf",
         "RECORDING_METADATA.json",
         "SHA256SUMS",
     )
     assert len(set(spec.SUBMISSION_ENTRIES)) == len(spec.SUBMISSION_ENTRIES)
+    # The consent document is gone from the technical pipeline entirely: it is
+    # not a submission entry, and CONSENT_FILE no longer exists on the spec.
+    assert "CONSENT.pdf" not in spec.SUBMISSION_ENTRIES
+    assert not hasattr(spec, "CONSENT_FILE")
+
+
+def test_authorization_is_a_non_identifying_project_level_fact() -> None:
+    # Authorization = membership of the trusted speaker registry, stated as a
+    # non-identifying project-level fact: it affirms no person, no signature,
+    # no date and no uploaded document.
+    text = spec.PROJECT_RECORDING_AUTHORIZATION.lower()
+    assert "authorization" in text
+    assert "names no person" in text
+    assert "no signature or date" in text
+    assert "no uploaded document" in text
+    # It must not embed an actual date (a consent date) or an identifier.
+    import re as _re
+
+    assert not _re.search(r"\d{4}-\d{2}-\d{2}", spec.PROJECT_RECORDING_AUTHORIZATION)
+    assert not spec.SPEAKER_ID_PATTERN.search(spec.PROJECT_RECORDING_AUTHORIZATION)
+
+
+def test_private_documents_are_named_but_never_required() -> None:
+    # CONSENT.pdf is the Owner's private document: tolerated but outside the
+    # pipeline. It must never be a submission entry the pipeline requires.
+    assert "CONSENT.pdf" in spec.PRIVATE_DOC_NAMES
+    assert not (set(spec.PRIVATE_DOC_NAMES) & set(spec.SUBMISSION_ENTRIES))
 
 
 def test_the_checksum_line_pattern_reads_coreutils_output() -> None:
@@ -580,11 +606,14 @@ def test_the_checksum_line_pattern_reads_coreutils_output() -> None:
 
 
 def test_the_metadata_form_keeps_the_speaker_label_and_nothing_identifying() -> None:
-    required = set(spec.REQUIRED_METADATA_FIELDS)
+    diagnostic = set(spec.DIAGNOSTIC_METADATA_FIELDS)
     optional = set(spec.OPTIONAL_METADATA_FIELDS)
-    assert not (required & optional), "a field cannot be both required and optional"
-    assert set(spec.ALL_METADATA_FIELDS) == required | optional
-    assert "speaker_id" in required
+    assert not (diagnostic & optional), "a field cannot be both diagnostic and optional"
+    assert set(spec.ALL_METADATA_FIELDS) == diagnostic | optional
+    assert "speaker_id" in diagnostic
+    # The consent date is gone from the diagnostic metadata entirely: the form
+    # is recording-environment diagnostics only, never paperwork.
+    assert "consent_signed_date" not in spec.ALL_METADATA_FIELDS
     for forbidden in ("name", "email", "phone", "address", "age", "gender"):
         assert forbidden not in spec.ALL_METADATA_FIELDS, (
             f"the form asks for {forbidden!r}, which is identity data the recordings "

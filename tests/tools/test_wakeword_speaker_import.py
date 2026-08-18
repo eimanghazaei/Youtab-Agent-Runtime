@@ -159,7 +159,6 @@ def valid_metadata(label: str) -> dict:
         "background_sources_present": "refrigerator hum",
         "noise_sources_used": ["tv", "kitchen"],
         "farfield_distance": "about 5 metres, adjoining room, door open",
-        "consent_signed_date": "2024-02-20",
     }
     return {"speaker_id": label, **metadata}
 
@@ -180,9 +179,13 @@ def write_checksums(root: Path) -> None:
 
 
 def build_package_submission(root: Path, label: str) -> Path:
-    """One complete submission in the layout the recording package prescribes."""
+    """One complete submission in the layout the recording package prescribes.
+
+    Consent-free by design: authorization is the project-level registry fact,
+    not a document, so no CONSENT.pdf is written -- and the submission still
+    validates and imports clean.
+    """
     root.mkdir(parents=True, exist_ok=True)
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 placeholder consent scan")
     write_metadata(root, valid_metadata(label))
 
     originals = root / spec.ORIGINALS_DIR
@@ -232,7 +235,6 @@ PRIOR_GROUP_PHRASES = 12
 def build_prior_flat_submission(root: Path, label: str) -> Path:
     """The flat session layout: one continuous recording per section."""
     root.mkdir(parents=True, exist_ok=True)
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 placeholder consent scan")
     write_metadata(root, valid_metadata(label))
     for section in PRIOR_FLAT_SECTIONS:
         write_wav(root / f"{section}.wav", seconds=CONTINUOUS_SECONDS)
@@ -242,7 +244,6 @@ def build_prior_flat_submission(root: Path, label: str) -> Path:
 def build_prior_group_submission(root: Path, label: str) -> Path:
     """The session layout with the near phrases recorded one file per phrase."""
     root.mkdir(parents=True, exist_ok=True)
-    (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 placeholder consent scan")
     write_metadata(root, valid_metadata(label))
     originals = root / spec.ORIGINALS_DIR
     for section in PRIOR_FLAT_SECTIONS:
@@ -519,9 +520,10 @@ def test_the_report_names_no_host_path_and_no_identity_beyond_the_label(
     assert body["metadata"]["sha256"] == freeze_manifest.sha256_file(
         submission / spec.METADATA_FILE
     )
-    assert body["consent"]["sha256"] == freeze_manifest.sha256_file(
-        submission / spec.CONSENT_FILE
-    )
+    # The consent document is gone from the pipeline entirely: no consent key,
+    # no consent hash, nothing about a consent file anywhere in the report.
+    assert "consent" not in body
+    assert "consent" not in json.dumps(body).lower()
 
 
 def test_the_privacy_scan_recognises_a_host_path_in_a_report() -> None:
@@ -551,16 +553,33 @@ def test_no_end_of_an_import_may_be_inside_the_repository(
     assert not (REPO / "scripts" / (imp.SPEAKER_DIR_PREFIX + TRAIN_LABEL)).exists()
 
 
-def test_the_consent_file_is_never_copied_into_the_data_root(
+def test_a_stray_private_document_is_tolerated_but_never_ingested(
     submission: Path, into: Path
 ) -> None:
-    """Its digest is evidence; the scan itself stays where it was signed."""
+    """A stray CONSENT.pdf is tolerated: it never blocks, is never copied to the
+
+    data root, is never hashed into evidence, and its bytes appear nowhere in
+    the report. Authorization is the project-level registry fact, not this file.
+    """
+    private_name = next(iter(spec.PRIVATE_DOC_NAMES))
+    private_bytes = b"%PDF-1.4 the Owner's private document, outside the pipeline"
+    (submission / private_name).write_bytes(private_bytes)
+
     state = imp.plan(TRAIN_LABEL, submission, into)
-    imp.execute(state, into)
+    # Its presence blocks nothing.
+    assert state.ok, {check.name: check.problems for check in state.failures}
+
+    body = imp.execute(state, into)
     derived = into / (imp.SPEAKER_DIR_PREFIX + TRAIN_LABEL)
     written = {path.name for path in derived.rglob("*") if path.is_file()}
-    assert spec.CONSENT_FILE not in written
+    assert private_name not in written
     assert spec.METADATA_FILE not in written
+
+    # Never hashed into evidence, never named, never carried in the report.
+    text = json.dumps(body)
+    assert private_name not in text
+    assert hashlib.sha256(private_bytes).hexdigest() not in text
+    assert "consent" not in text.lower()
 
 
 # ── discovery refuses rather than skips ──────────────────────────────────────
@@ -709,50 +728,75 @@ def test_the_wake_phrase_recorded_inside_the_battery_is_still_a_positive(
 # ── the records that travel with the recordings ──────────────────────────────
 
 
-def test_a_missing_consent_record_is_refused(submission: Path, into: Path) -> None:
-    (submission / spec.CONSENT_FILE).unlink()
+def test_a_consent_free_submission_imports_clean(submission: Path, into: Path) -> None:
+    # The default submission carries no CONSENT.pdf. Consent is not a gate:
+    # authorization is the project-level registry fact, so the import passes and
+    # there is no "consent" check at all in the plan.
+    assert not (submission / "CONSENT.pdf").exists()
     state = imp.plan(TRAIN_LABEL, submission, into)
-    assert "consent" in failed(state)
+    assert state.ok, {check.name: check.problems for check in state.failures}
+    assert "consent" not in {check.name for check in state.checks}
 
 
-def test_an_empty_consent_record_is_refused(submission: Path, into: Path) -> None:
-    (submission / spec.CONSENT_FILE).write_bytes(b"")
-    state = imp.plan(TRAIN_LABEL, submission, into)
-    assert "consent" in failed(state)
-    assert any("empty" in problem for problem in problems_of(state, "consent"))
-
-
-def test_metadata_that_does_not_parse_is_refused(submission: Path, into: Path) -> None:
-    (submission / spec.METADATA_FILE).write_text("{not json", encoding="utf-8")
-    state = imp.plan(TRAIN_LABEL, submission, into)
-    assert "metadata" in failed(state)
-    assert any("well-formed" in problem for problem in problems_of(state, "metadata"))
-
-
-def test_a_missing_required_metadata_field_is_refused(
+def test_an_empty_stray_private_document_still_does_not_block(
     submission: Path, into: Path
 ) -> None:
+    # Even an empty stray CONSENT.pdf is tolerated -- it is never a gate.
+    (submission / "CONSENT.pdf").write_bytes(b"")
+    state = imp.plan(TRAIN_LABEL, submission, into)
+    assert state.ok, {check.name: check.problems for check in state.failures}
+
+
+def test_unparseable_metadata_is_diagnostic_not_a_gate(
+    submission: Path, into: Path
+) -> None:
+    # The metadata form is diagnostic only. A form that will not even parse is
+    # not a gate: the import still passes on audio, labels, role and checksums.
+    (submission / spec.METADATA_FILE).write_text("{not json", encoding="utf-8")
+    write_checksums(submission)  # re-list so the diagnostic form's own hash matches
+    state = imp.plan(TRAIN_LABEL, submission, into)
+    assert state.ok, {check.name: check.problems for check in state.failures}
+    assert "metadata" not in failed(state)
+
+
+def test_a_missing_metadata_field_does_not_block(
+    submission: Path, into: Path
+) -> None:
+    # A partial (field-short) form is diagnostic, never a gate.
     metadata = valid_metadata(TRAIN_LABEL)
     del metadata["device_make_model"]
     write_metadata(submission, metadata)
+    write_checksums(submission)
     state = imp.plan(TRAIN_LABEL, submission, into)
-    assert any("device_make_model" in problem for problem in problems_of(state, "metadata"))
+    assert state.ok, {check.name: check.problems for check in state.failures}
 
 
-def test_an_unfilled_template_placeholder_is_refused(submission: Path, into: Path) -> None:
+def test_a_placeholder_metadata_field_does_not_block(
+    submission: Path, into: Path
+) -> None:
+    # An unfilled template placeholder is diagnostic, never a gate.
     metadata = valid_metadata(TRAIN_LABEL)
     metadata["room_name"] = "<e.g. living room>"
     write_metadata(submission, metadata)
+    write_checksums(submission)
     state = imp.plan(TRAIN_LABEL, submission, into)
-    assert any("placeholder" in problem for problem in problems_of(state, "metadata"))
+    assert state.ok, {check.name: check.problems for check in state.failures}
 
 
-def test_metadata_naming_another_speaker_is_refused(submission: Path, into: Path) -> None:
+def test_metadata_naming_another_speaker_cannot_override_the_registry_role(
+    submission: Path, into: Path
+) -> None:
+    # The diagnostic form is not authoritative: a metadata speaker_id naming a
+    # different speaker neither blocks the import nor changes the role, which is
+    # decided by the import label through the registry alone.
     metadata = valid_metadata(TRAIN_LABEL)
     metadata["speaker_id"] = SEALED_LABEL
     write_metadata(submission, metadata)
+    write_checksums(submission)
     state = imp.plan(TRAIN_LABEL, submission, into)
-    assert "metadata" in failed(state)
+    assert state.ok, {check.name: check.problems for check in state.failures}
+    assert state.assignment.role == imp.assignment(TRAIN_LABEL).role
+    assert state.assignment.role != imp.assignment(SEALED_LABEL).role
 
 
 def test_a_folder_named_for_another_speaker_is_refused(
@@ -1835,7 +1879,9 @@ def test_dry_run_writes_nothing_and_reports_every_requirement(
 def test_dry_run_fails_loudly_when_a_requirement_fails(
     submission: Path, into: Path, capsys
 ) -> None:
-    (submission / spec.CONSENT_FILE).unlink()
+    # Remove the source-integrity record: SHA256SUMS is a genuine acceptance
+    # requirement (source integrity), unlike the retired consent document.
+    (submission / spec.CHECKSUM_FILE).unlink()
     code = imp.main(
         [
             "--speaker",

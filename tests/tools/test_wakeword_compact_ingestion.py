@@ -23,9 +23,10 @@ These tests prove exactly that boundary, positively and negatively, at the seam
   a missing assigned noise source -- is refused, and restoring the take passes;
 * the profile cannot be spoofed: the compact layout cannot be *requested* for a
   full-round speaker, a metadata ``speaker_id`` that disagrees with the import
-  label is refused, and asking for the package layout on a compact folder selects
-  the stricter layout and then fails its bigger counts -- the flag can only
-  tighten, never grant a weaker profile;
+  label cannot move the recording into the other speaker's role (the diagnostic
+  form is not authoritative), and asking for the package layout on a compact
+  folder selects the stricter layout and then fails its bigger counts -- the flag
+  can only tighten, never grant a weaker profile;
 * a compact take handed in as mono 24-bit PCM is read and kept as 24-bit; and
 * the manual segment-fallback path leaves the seven continuous originals in a
   ``_continuous/`` archive beside the submission, which ingestion never walks,
@@ -204,9 +205,13 @@ def _write_compact_originals(root: Path, noise_sources: tuple[str, ...], *, widt
 
 
 def build_compact_submission(root: Path, label: str, *, width: int = 2) -> Path:
-    """A complete, correct compact package for a compact-round ``label``."""
+    """A complete, correct compact package for a compact-round ``label``.
+
+    Consent-free by design: no CONSENT.pdf is written. Authorization is the
+    project-level registry fact, so the package is GREEN and imports clean
+    without any consent document.
+    """
     root.mkdir(parents=True, exist_ok=True)
-    (root / spec.CONSENT_FILE).write_bytes(CONSENT_BYTES)
     write_metadata(root, compact_metadata(label))
     _write_compact_originals(root, compact_plan.noise_sources_for(label), width=width)
     write_checksums(root)
@@ -222,7 +227,6 @@ def build_compact_sized_package(root: Path, label: str, noise_sources: tuple[str
     what the full round must reject.
     """
     root.mkdir(parents=True, exist_ok=True)
-    (root / spec.CONSENT_FILE).write_bytes(CONSENT_BYTES)
     metadata = valid_metadata(label)
     metadata["noise_sources_used"] = list(noise_sources)
     write_metadata(root, metadata)
@@ -261,7 +265,7 @@ def build_via_segment_fallback(root: Path, label: str) -> Path:
 
     Drops the seven continuous 24-bit originals into ``root/_continuous/``, runs
     the fallback to expand them into the 55 canonical takes under ``originals/``,
-    adds the consent scan, and finalises the metadata + manifest. Leaves the seven
+    and finalises the metadata + manifest (no consent document). Leaves the seven
     originals preserved in ``_continuous/`` beside the submission.
     """
     root.mkdir(parents=True, exist_ok=True)
@@ -274,8 +278,8 @@ def build_via_segment_fallback(root: Path, label: str) -> Path:
     exit_code = segment_fallback.main(["--speaker", label, "--root", str(root), "--yes"])
     assert exit_code == 0, "the reviewed split did not write cleanly"
 
-    (root / spec.CONSENT_FILE).write_bytes(CONSENT_BYTES)
-    # Real answers, so the finalised metadata form clears the placeholder check.
+    # No consent document is written: authorization is the project-level
+    # registry fact, and the metadata form is diagnostic only.
     core.finalize_submission(core.build_plan(label), root, answers=valid_metadata(label))
     return root
 
@@ -428,16 +432,20 @@ def test_the_compact_layout_cannot_be_requested_for_a_full_round_speaker(
         imp._choose_layout(FULL_ROUND_LABEL, tmp_path, "compact")
 
 
-def test_metadata_naming_another_speaker_is_refused(tmp_path: Path, into: Path) -> None:
-    """(b) A folder whose metadata ``speaker_id`` disagrees with the import label.
+def test_metadata_naming_another_speaker_cannot_override_the_registry_role(
+    tmp_path: Path, into: Path
+) -> None:
+    """(b) A spoofed metadata ``speaker_id`` neither blocks nor changes the role.
 
-    The role is decided by the import label alone; a submission whose
-    ``RECORDING_METADATA.json`` states a *different* speaker is two records
-    disagreeing about whose voice this is, and the metadata check refuses it rather
-    than believing either.
+    The role is decided by the import label through the registry alone. The
+    metadata form is diagnostic, not authoritative: a
+    ``RECORDING_METADATA.json`` that names a *different* speaker is simply not
+    believed. It does not gate the import, and -- crucially -- it cannot move
+    the recording into the other speaker's role. Role separation stays
+    registry-enforced and is not overridable by the metadata manifest.
     """
-    # A neutrally named folder, so the metadata guard is what fails (not the
-    # folder-name guard, which would fire first on a speaker-named folder).
+    # A neutrally named folder, so nothing but the (spoofed) metadata could
+    # possibly suggest the other speaker.
     submission = build_compact_submission(tmp_path / "handoff", COMPACT_TRAINING)
     spoofed = compact_metadata(COMPACT_TRAINING)
     spoofed["speaker_id"] = COMPACT_VALIDATION  # names the other compact speaker
@@ -445,10 +453,11 @@ def test_metadata_naming_another_speaker_is_refused(tmp_path: Path, into: Path) 
     write_checksums(submission)
 
     state = imp.plan(COMPACT_TRAINING, submission, into)
-    assert "metadata" in failed(state)
-    assert any(
-        COMPACT_VALIDATION in problem for problem in problems_of(state, "metadata")
-    )
+    # Not a gate: the diagnostic form does not refuse the import.
+    assert state.ok, {check.name: check.problems for check in state.failures}
+    # And it did not move the recording out of the registry-assigned role.
+    assert state.assignment.role == spec.ROLE_TRAINING
+    assert imp.assignment(COMPACT_TRAINING).role == spec.ROLE_TRAINING
 
 
 def test_requesting_the_package_layout_only_tightens_a_compact_folder(
