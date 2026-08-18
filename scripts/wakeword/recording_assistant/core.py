@@ -56,6 +56,21 @@ _INT16_FULL_SCALE = 32768.0
 #: source archive, not part of the submission's take set.
 CONTINUOUS_DIRNAME = "_continuous"
 
+#: An extras directory holding recordings the operator kept but that are NOT part
+#: of the governed 55-file package: spares, alternate takes, an out-of-plan clip.
+#: Like ``_continuous/`` it is preserved, tolerated by the validator, reported,
+#: and excluded from the take set and the manifest -- never silently ingested.
+EXTRAS_DIRNAME = "_extras"
+
+#: Directories that may sit next to ``originals/`` and are preserved-but-excluded:
+#: their bytes are kept and reported, but they are never part of the package.
+PRESERVED_SOURCE_DIRS: tuple[str, ...] = (CONTINUOUS_DIRNAME, EXTRAS_DIRNAME)
+
+
+def _in_preserved_source(rel: str) -> bool:
+    """True if a POSIX-relative path lives under a preserved-source directory."""
+    return any(rel == d or rel.startswith(f"{d}/") for d in PRESERVED_SOURCE_DIRS)
+
 # ── quality thresholds, and why each is where it is ──────────────────────────
 #
 # These surface findings to the human ("that came out silent -- Redo?"); none of
@@ -492,15 +507,15 @@ def submission_files(root: Path) -> list[str]:
 
     The same walk ``validate_speaker_submission.py`` verifies a manifest
     against, so what this lists and what the validator later checks cannot
-    disagree. The ``_continuous/`` raw-source archive (present only for a manual
-    submission) is excluded: it is preserved next to the takes, not part of them.
+    disagree. The preserved-source archives (``_continuous/``, ``_extras/``) are
+    excluded: their bytes are kept next to the takes, not part of them.
     """
     out: list[str] = []
     for path in sorted(Path(root).rglob("*")):
         if not path.is_file():
             continue
         rel = path.relative_to(root).as_posix()
-        if rel == spec.CHECKSUM_FILE or rel.startswith(f"{CONTINUOUS_DIRNAME}/"):
+        if rel == spec.CHECKSUM_FILE or _in_preserved_source(rel):
             continue
         out.append(rel)
     return out
@@ -896,7 +911,7 @@ _FINDING_PHRASE = {
 
 
 def _compact_submission_files(root: Path) -> list[str]:
-    """Files in the submission except SHA256SUMS, the progress dotfile, and _continuous/."""
+    """Submission files except SHA256SUMS, the progress dotfile, and preserved-source dirs."""
     out: list[str] = []
     for path in sorted(Path(root).rglob("*")):
         if not path.is_file():
@@ -904,8 +919,8 @@ def _compact_submission_files(root: Path) -> list[str]:
         rel = path.relative_to(root).as_posix()
         if rel in (spec.CHECKSUM_FILE, STATE_FILENAME):
             continue
-        if rel.startswith(f"{CONTINUOUS_DIRNAME}/"):
-            continue  # raw source archive, preserved but not part of the take set
+        if _in_preserved_source(rel):
+            continue  # _continuous/ or _extras/: preserved, not part of the take set
         out.append(rel)
     return out
 
@@ -1130,13 +1145,25 @@ def validate_compact_submission(root: Path, plan: Plan) -> CompactValidation:
             f"the folder is named {root.name!r} but the plan is for {plan.speaker!r}"
         )
 
-    tolerated = set(spec.SUBMISSION_ENTRIES) | {STATE_FILENAME, CONTINUOUS_DIRNAME}
+    tolerated = set(spec.SUBMISSION_ENTRIES) | {STATE_FILENAME, *PRESERVED_SOURCE_DIRS}
     for entry in sorted(root.iterdir()):
         if entry.name not in tolerated:
             result.errors.append(
                 f"unrecognised entry in {root.name}/: {entry.name} -- the submission holds "
-                f"exactly {', '.join(spec.SUBMISSION_ENTRIES)} (plus an optional "
-                f"{CONTINUOUS_DIRNAME}/ raw-source archive) and nothing else"
+                f"exactly {', '.join(spec.SUBMISSION_ENTRIES)} (plus optional "
+                f"{'/, '.join(PRESERVED_SOURCE_DIRS)}/ preserved-source archives) and nothing else"
+            )
+
+    # Report -- never silently drop -- any preserved-source recordings kept beside
+    # the package. They are excluded from the take set and the manifest, but their
+    # presence and count are surfaced as warnings so nothing is consumed unseen.
+    for name in PRESERVED_SOURCE_DIRS:
+        preserved = sorted((root / name).rglob("*")) if (root / name).is_dir() else []
+        kept = [p for p in preserved if p.is_file() and p.name != spec.CHECKSUM_FILE]
+        if kept:
+            result.warnings.append(
+                f"{name}/: {len(kept)} preserved recording(s) kept beside the package and "
+                f"excluded from it ({', '.join(sorted(p.name for p in kept))})"
             )
 
     _check_compact_originals(root, plan, result)

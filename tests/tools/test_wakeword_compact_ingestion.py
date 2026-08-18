@@ -549,3 +549,55 @@ def test_continuous_originals_are_preserved_byte_for_byte(
 
     assert after == before
     assert len(sorted(continuous.glob("*.wav"))) == 7
+
+
+# ── _extras: preserved, reported, excluded, never silently consumed ───────────
+
+
+def _write_extra_clip(path: Path) -> None:
+    """A short, distinct 24-bit mono spare clip (not a full take set)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rate = 48000
+    t = np.arange(int(1.2 * rate)) / rate
+    payload = np.round(0.3 * (2**23 - 1) * np.sin(2 * np.pi * 190.0 * t)).astype(np.int64)
+    _write_pcm24(path, payload, rate)
+
+
+def test_extras_are_tolerated_reported_preserved_and_excluded(
+    tmp_path: Path, into: Path
+) -> None:
+    """An ``_extras/`` spare beside the package is kept, reported, and never ingested.
+
+    The operator left an out-of-plan clip in ``_extras/``. The compact validator
+    tolerates the directory (no unrecognised-entry) and reports it; ingestion
+    classifies only ``originals/``, reports the extra as preserved-not-ingested,
+    keeps it out of the verified and published manifests, and leaves its bytes
+    untouched.
+    """
+    root = build_compact_submission(tmp_path / COMPACT_TRAINING, COMPACT_TRAINING)
+    extra = root / core.EXTRAS_DIRNAME / "positive_close.wav"
+    _write_extra_clip(extra)
+    extra_sha = freeze_manifest.sha256_file(extra)
+
+    # compact validator: tolerates and reports _extras, still GREEN.
+    result = core.validate_compact_submission(root, core.build_plan(COMPACT_TRAINING))
+    assert result.ok, result.errors
+    assert not any("unrecognised entry" in error for error in result.errors)
+    assert any(warning.startswith(core.EXTRAS_DIRNAME + "/") for warning in result.warnings)
+
+    # ingestion: passes, classifies only originals, reports the extra, excludes it.
+    state = imp.plan(COMPACT_TRAINING, root, into)
+    assert state.ok, {check.name: check.problems for check in state.failures}
+    assert all(not row.path.startswith(core.EXTRAS_DIRNAME) for row in state.originals)
+    preserved = next(check for check in state.checks if check.name == "preserved_sources")
+    assert preserved.ok
+    assert f"{core.EXTRAS_DIRNAME}/positive_close.wav" in preserved.detail
+    assert core.EXTRAS_DIRNAME not in (root / spec.CHECKSUM_FILE).read_text(encoding="utf-8")
+
+    # execute: the extra is byte-identical afterwards and absent from the frozen manifest.
+    imp.execute(state, into)
+    assert freeze_manifest.sha256_file(extra) == extra_sha
+    published = (
+        into / (imp.SPEAKER_DIR_PREFIX + COMPACT_TRAINING) / "ORIGINALS_MANIFEST.SHA256SUMS"
+    ).read_text(encoding="utf-8")
+    assert core.EXTRAS_DIRNAME not in published

@@ -103,6 +103,7 @@ import round8_config  # noqa: E402
 import speaker_recording_spec as spec  # noqa: E402
 import validate_speaker_submission as submission_validator  # noqa: E402
 from recording_assistant import compact_plan  # noqa: E402
+from recording_assistant import core as rec_core  # noqa: E402
 
 #: Bumped when the report or journal body changes shape. A record carrying a
 #: version this tool does not know is refused, not guessed at — same rule
@@ -2377,6 +2378,7 @@ def plan(
             tuple(checksum_problems),
         ),
         _exclusion_check(state),
+        _preserved_sources_check(state),
         _duplicate_check(state, into),
         _reuse_check(state, into),
     ]
@@ -2405,6 +2407,34 @@ def _refuse_label_mismatch(label: str, submission: Path) -> None:
             "Refusing rather than preferring either: the label decides whether this "
             "audio trains a model or is held back to measure one"
         )
+
+
+def _preserved_sources_check(state: Plan) -> Check:
+    """Report any preserved-but-excluded recordings kept beside the package.
+
+    ``_continuous/`` (a manual submission's seven raw sources) and ``_extras/``
+    (spares and out-of-plan clips) sit next to ``originals/`` and are deliberately
+    NOT ingested: ``discover`` only walks the originals tree, so they never enter
+    the copied set or the frozen manifest. They are surfaced here rather than
+    silently ignored -- uncovered audio is reported and preserved, never consumed.
+    """
+    found: list[str] = []
+    for name in rec_core.PRESERVED_SOURCE_DIRS:
+        directory = state.submission / name
+        if directory.is_dir():
+            found += [
+                f"{name}/{path.name}"
+                for path in sorted(directory.rglob("*"))
+                if path.is_file() and path.name != spec.CHECKSUM_FILE
+            ]
+    return Check(
+        "preserved_sources",
+        "extra audio kept beside the package is preserved, reported, and not ingested",
+        True,
+        f"{len(found)} preserved recording(s) not ingested: {', '.join(found)}"
+        if found
+        else "none",
+    )
 
 
 def _discovery_check(state: Plan, problems: list[str]) -> Check:
