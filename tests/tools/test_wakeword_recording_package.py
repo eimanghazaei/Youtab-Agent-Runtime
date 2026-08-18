@@ -458,7 +458,16 @@ def test_the_document_does_not_tell_a_speaker_which_split_they_are_in() -> None:
     }
     paragraphs = re.split(r"\n\s*\n", text)
 
+    # Only the five recording-round speakers are handed this package, so the rule
+    # is about them. E001 and E002 -- the compact-round humans -- have no coverage
+    # cell, and the "Why this round exists" section states their roles outright
+    # as the motivation for the round; that historical note is not telling a
+    # speaker which split they are recording into.
+    recording_round = {c.label for c in spec.COVERAGE_ASSIGNMENTS}
+
     for assignment in spec.SPEAKER_ASSIGNMENTS:
+        if assignment.label not in recording_round:
+            continue
         marker = markers[assignment.role]
         for paragraph in paragraphs:
             if assignment.label not in paragraph:

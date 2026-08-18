@@ -855,6 +855,31 @@ SPEAKER_ASSIGNMENTS: tuple[SpeakerAssignment, ...] = (
         "pooled sealed set clears the rule-of-three floors for both shipping "
         "targets on its own.",
     ),
+    # E001 and E002 are the two-speaker compact round: the same two people whose
+    # earlier E001/E002 sets are the only real speech this model has ever seen.
+    # They record through recording_assistant.compact_plan rather than the
+    # five-speaker recording package, so they carry no COVERAGE_ASSIGNMENTS cell;
+    # they appear here only so import_speaker.py has a training-eligibility record
+    # to resolve their role against. Appended at the end so the five
+    # recording-round speakers above keep their positions. E002 is now validation
+    # and consumed -- no longer a sealed holdout (see its reason below).
+    SpeakerAssignment(
+        "E001",
+        ROLE_TRAINING,
+        "Training only. The first compact-round human; its real positives are "
+        "learned from, exactly as the two recording-round training voices are.",
+    ),
+    SpeakerAssignment(
+        "E002",
+        ROLE_VALIDATION,
+        "Validation only, and consumed. E002 was the round-6/7 sealed evaluation "
+        "holdout; with only two human voices ever recorded for the sealed set, "
+        "the Owner reassigned it to validation so threshold, candidate and epoch "
+        "selection are made against a real held-out voice. Spending it that way "
+        "is irreversible: it is no longer eligible as a sealed final-qualification "
+        "holdout and can never be counted back into one. That consumption is "
+        "recorded in build_human_dataset.CONSUMED_FOR_VALIDATION.",
+    ),
 )
 
 

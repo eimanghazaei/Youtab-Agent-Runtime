@@ -310,7 +310,12 @@ def test_metadata_naming_a_different_speaker_than_the_folder_is_reported(
 ) -> None:
     """The mismatch that could mix a sealed voice into training."""
     metadata = _valid_metadata()
-    metadata["speaker_id"] = spec.SPEAKER_ASSIGNMENTS[-1].label
+    # A sealed speaker named in a training speaker's folder -- the dangerous
+    # case. Pinned to a sealed label rather than SPEAKER_ASSIGNMENTS[-1], which
+    # is now the appended validation speaker E002 and would no longer exercise
+    # "a sealed voice". The folder is FIXTURE_LABEL (the first training speaker),
+    # so this is a valid but different assigned label.
+    metadata["speaker_id"] = spec.labels_for_role(spec.ROLE_SEALED)[-1]
     _write_metadata(submission, metadata)
     result = validator.validate_speaker_directory(submission)
     assert any("but the folder is" in e for e in result.errors)

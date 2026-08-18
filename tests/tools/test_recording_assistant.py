@@ -498,6 +498,16 @@ def _drive_compact_session(root: Path, label: str) -> core.Plan:
 
 
 def test_compact_folder_carries_only_the_intended_shortfalls(tmp_path):
+    """A compact folder is short the five-speaker sections, and nothing else.
+
+    Validated against the five-speaker package, a compact-round submission is
+    missing the sections the compact plan never records (the far-field-loud
+    condition, the freeform floors) -- those are the intended shortfalls. It is
+    no longer short an assignment: E001 is now in ``SPEAKER_ASSIGNMENTS`` as a
+    training speaker, so the folder does not trip the "not in
+    SPEAKER_ASSIGNMENTS" refusal any more. That record is the ingestion
+    prerequisite the compact speakers were added to satisfy.
+    """
     root = tmp_path / FIRST_COMPACT
     _drive_compact_session(root, FIRST_COMPACT)
     (root / spec.CONSENT_FILE).write_bytes(b"%PDF-1.4 synthetic consent placeholder")
@@ -507,17 +517,16 @@ def test_compact_folder_carries_only_the_intended_shortfalls(tmp_path):
     result = validator.validate_speaker_directory(root)
 
     def allowed(msg: str) -> bool:
-        return (
-            "need at least" in msg
-            or "positive_farfield_loud" in msg
-            or "SPEAKER_ASSIGNMENTS" in msg
-        )
+        return "need at least" in msg or "positive_farfield_loud" in msg
 
     unexpected = [e for e in result.errors if not allowed(e)]
     assert not unexpected, f"unexpected validator errors: {unexpected}"
-    # non-vacuity: the intended shortfalls really are reported
-    assert any("SPEAKER_ASSIGNMENTS" in e for e in result.errors)
+    # non-vacuity: the intended structural shortfalls really are reported
     assert any("need at least" in e for e in result.errors)
+    # and the assignment gap is closed: the compact speaker is recognised now
+    assert not any("SPEAKER_ASSIGNMENTS" in e for e in result.errors), (
+        "E001 is assigned now; the folder must not trip the unassigned-label refusal"
+    )
     # and nothing about a bad name/format/checksum slipped through
     for needle in ("unrecognised", "not coreutils", "does not list", "not well-formed"):
         assert not any(needle in e for e in result.errors)
