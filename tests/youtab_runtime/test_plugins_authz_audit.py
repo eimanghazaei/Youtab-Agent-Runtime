@@ -19,13 +19,14 @@ express:
 
 A correction that is enforced but unproven is one refactor away from being
 advisory. The mutation tests below revert each provider:read correction back to
-the blanket ``plugin:use`` in the real policy file, in a subprocess, and prove a
-named test goes red — then restore it and prove the same test goes green.
+the blanket ``plugin:use`` — in memory, via ``monkeypatch.setattr`` on the real
+policy module, the parallel-safe pattern ``test_router_policy_gate.py`` uses
+(rewriting the file on disk races the gate's workers) — and prove the normal
+user is re-admitted, which is exactly the regression the correction prevents.
 """
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +38,7 @@ if str(REPO) not in sys.path:
 
 from youtab_agent_cli import authz  # noqa: E402
 from youtab_agent_cli.authz import (  # noqa: E402
+    PLUGIN_USE,
     PROVIDER_READ,
     USER_CAPABILITIES,
     Principal,
@@ -49,9 +51,6 @@ from youtab_agent_cli.route_authz_registry import (  # noqa: E402
     RouteClass,
     classify,
 )
-
-#: The path to the real policy module the mutation harness edits in place.
-AUTHZ_PY = REPO / "youtab_agent_cli" / "authz.py"
 
 #: The two ``/api/plugins`` routes the body-audit tightened to ``provider:read``.
 CORRECTED_ROUTES = (
@@ -197,87 +196,39 @@ class TestTaskWriteEngineOverrideIsGuardedInHandler:
         assert "engine:select" in entry.justification
 
 
-# --- mutation harness: revert a correction in the real file, prove it flips -
+# --- mutation: revert a correction in memory, prove it reopens the route ----
+#
+# In-memory ``monkeypatch``, never a file write. The required gate runs its
+# workers in parallel (pytest-xdist), and a mutation written to ``authz.py`` on
+# disk is global: a second worker freshly importing the module mid-mutation
+# would read a half-written policy and fail an unrelated consistency check.
+# ``required_scope``/``authorize`` look ``authz.EXACT_ROUTE_SCOPES`` up by name
+# at call time, so swapping the attribute on the module object reverts the
+# correction for this worker alone — the pattern ``test_router_policy_gate``
+# already uses.
 
 
-def _run_named(node: str) -> subprocess.CompletedProcess:
-    """Run one test node in a fresh interpreter that re-reads ``authz.py``.
+@pytest.mark.parametrize("route", CORRECTED_ROUTES)
+def test_reverting_the_correction_reopens_the_route(route, monkeypatch):
+    """The ``provider:read`` correction is load-bearing.
 
-    A subprocess is the point: it imports the policy module from disk, so a
-    mutation written to the file is what the assertion sees, and no in-process
-    import cache can mask a reverted correction.
+    With the exact override in place the route needs ``provider:read`` and the
+    normal-user baseline is refused. Drop that override and the route falls back
+    to the ``/api/plugins`` → ``plugin:use`` prefix, which the baseline holds —
+    the disclosure reopens. Proven by reverting the policy on the module in
+    memory, so parallel workers never see each other's mutation.
     """
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", f"{Path(__file__).name}::{node}",
-         "-q", "-p", "no:cacheprovider"],
-        cwd=str(Path(__file__).parent),
-        env={**_child_env()},
-        capture_output=True,
-        text=True,
-    )
+    # The correction is in force.
+    assert required_scope(route, "GET") == PROVIDER_READ
+    assert authorize(_normal_user(), route, "GET") is False
 
+    reverted = {
+        path: scope
+        for path, scope in authz.EXACT_ROUTE_SCOPES.items()
+        if path != route
+    }
+    monkeypatch.setattr(authz, "EXACT_ROUTE_SCOPES", reverted)
 
-def _child_env() -> dict[str, str]:
-    import os
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO)
-    return env
-
-
-def _revert_exact_entry(text: str, route: str) -> str:
-    """Delete ``route``'s ``EXACT_ROUTE_SCOPES`` line, reverting it to the prefix.
-
-    With the exact override gone, ``required_scope`` falls through to the
-    ``/api/plugins`` → ``plugin:use`` prefix rule — the blanket the audit
-    tightened away from. Operates line-wise and newline-agnostically so the
-    anchor holds whether the file is checked out CRLF or LF.
-    """
-    needle = f'"{route}": PROVIDER_READ,'
-    lines = text.splitlines(keepends=True)
-    matched = [i for i, ln in enumerate(lines) if ln.strip() == needle]
-    assert len(matched) == 1, (
-        f"expected exactly one EXACT_ROUTE_SCOPES line for {route}; the "
-        f"mutation anchor drifted (found {len(matched)})"
-    )
-    del lines[matched[0]]
-    return "".join(lines)
-
-
-@pytest.mark.parametrize("route,node", [
-    ("/api/plugins/kanban/model-options",
-     "TestModelOptionsCorrectionIsLoadBearing::test_normal_user_is_refused_model_options"),
-    ("/api/plugins/kanban/profiles",
-     "TestProfileRosterCorrectionIsLoadBearing::test_normal_user_is_refused_profiles"),
-])
-def test_reverting_the_correction_turns_a_named_test_red(route, node):
-    """Byte-exact backup, anchored delete, subprocess pytest, restore.
-
-    Proves the ``provider:read`` correction is load-bearing: with it reverted to
-    the blanket ``plugin:use`` the named baseline test goes RED (the normal user
-    is admitted), and with it restored the same test goes GREEN.
-    """
-    original = AUTHZ_PY.read_bytes()
-    try:
-        # Sanity: the correction is in force, so the named test is green now.
-        baseline = _run_named(node)
-        assert baseline.returncode == 0, (
-            "named test was not green before mutation:\n"
-            + baseline.stdout + baseline.stderr
-        )
-
-        mutated = _revert_exact_entry(original.decode("utf-8"), route)
-        AUTHZ_PY.write_bytes(mutated.encode("utf-8"))
-
-        red = _run_named(node)
-        assert red.returncode != 0, (
-            "reverting the correction to plugin:use did NOT turn the named test "
-            "red — the correction is not load-bearing:\n" + red.stdout + red.stderr
-        )
-    finally:
-        AUTHZ_PY.write_bytes(original)
-
-    green = _run_named(node)
-    assert green.returncode == 0, (
-        "restoring the correction did not return the named test to green:\n"
-        + green.stdout + green.stderr
-    )
+    # Reverted to the blanket prefix: the baseline is admitted again.
+    assert required_scope(route, "GET") == PLUGIN_USE
+    assert authorize(_normal_user(), route, "GET") is True

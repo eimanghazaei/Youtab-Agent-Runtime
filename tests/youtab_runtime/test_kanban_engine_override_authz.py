@@ -14,14 +14,14 @@ exactly as ``web_server.update_config`` refuses an engine-binding move inside
 These tests call the handlers the way the config-refusal tests call
 ``update_config``: with a fabricated request whose principal holds exactly the
 scopes under test, on a hosted (``auth_required``) bind. The mutation test at the
-bottom deletes the enforcement in the real plugin file, in a subprocess, and
-proves a named test goes red — then restores it and proves it goes green.
+bottom neuters the enforcement in memory (``monkeypatch.setattr`` the guard to a
+no-op — the parallel-safe pattern, not an on-disk edit) and proves a normal
+user's override is then accepted, which is exactly the bypass the guard prevents.
 """
 
 from __future__ import annotations
 
 import importlib.util
-import subprocess
 import sys
 from pathlib import Path
 
@@ -262,80 +262,38 @@ class TestBulkUpdateEngineOverrideGuard:
 
 
 # ---------------------------------------------------------------------------
-# Mutation: delete the enforcement in the real file, prove a named test flips
+# Mutation: neuter the guard in memory, prove the bypass reopens
 # ---------------------------------------------------------------------------
-
-#: The guard's decision line — unique in the plugin file.
-_GUARD_LINE = "if not (caller.has(ENGINE_SELECT) or caller.has(PROVIDER_WRITE)):"
-
-#: The named test that must go red when the guard stops refusing.
-_NAMED = (
-    "test_kanban_engine_override_authz.py::"
-    "TestCreateTaskEngineOverrideGuard::"
-    "test_a_normal_user_supplying_an_override_is_refused"
-)
-
-
-def _child_env():
-    import os
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(REPO)
-    return env
+#
+# In-memory ``monkeypatch``, never a file write. The required gate runs its
+# workers in parallel (pytest-xdist), and a mutation written to
+# ``plugin_api.py`` on disk is global: a second worker importing the module
+# mid-mutation would read a half-written file and fail an unrelated check.
+# ``create_task`` calls ``_require_engine_scope_for_override`` as a module
+# global, resolved by name at call time, so replacing it on the loaded module
+# disables the guard for this worker alone — the pattern
+# ``test_router_policy_gate`` already uses.
 
 
-def _run_named():
-    return subprocess.run(
-        [sys.executable, "-m", "pytest", _NAMED, "-q", "-p", "no:cacheprovider"],
-        cwd=str(Path(__file__).parent),
-        env=_child_env(),
-        capture_output=True,
-        text=True,
-    )
+def test_neutering_the_handler_guard_reopens_the_bypass(kanban_home, monkeypatch):
+    """The in-handler guard is load-bearing.
 
-
-def _disable_guard(text: str) -> str:
-    """Neuter the guard's refusal while keeping the file syntactically valid.
-
-    ``if not (...)`` becomes ``if False and not (...)`` — always false, so the
-    ``raise`` never runs and a normal user is admitted. One anchored line.
+    A normal user supplying a non-empty override is refused 403 while the guard
+    is in force. Replace the guard with a no-op and the same create is admitted
+    — the engine-selection bypass reopens and the override persists. Proven by
+    monkeypatching the module global in memory, so parallel workers never see
+    each other's mutation.
     """
-    lines = text.splitlines(keepends=True)
-    matched = [i for i, ln in enumerate(lines) if ln.strip() == _GUARD_LINE]
-    assert len(matched) == 1, (
-        f"expected exactly one guard line; anchor drifted (found {len(matched)})"
-    )
-    lines[matched[0]] = lines[matched[0]].replace(
-        "if not (", "if False and not (", 1)
-    return "".join(lines)
+    p = _plugin()
+    kwargs = dict(title="t", model_override="gpt-5", provider_override="openai")
 
+    # Guard in force: the selection is refused before any DB write.
+    with pytest.raises(HTTPException) as ei:
+        p.create_task(_request(), p.CreateTaskBody(**kwargs), board=None)
+    assert ei.value.status_code == 403
 
-def test_deleting_the_handler_guard_turns_a_named_test_red():
-    """Byte-exact backup, disable the guard, subprocess pytest, restore.
-
-    Proves the in-handler refusal is load-bearing: with it neutered the named
-    negative test goes RED (a normal user's override is accepted), and with it
-    restored the same test goes GREEN.
-    """
-    original = PLUGIN_FILE.read_bytes()
-    try:
-        baseline = _run_named()
-        assert baseline.returncode == 0, (
-            "named test was not green before mutation:\n"
-            + baseline.stdout + baseline.stderr
-        )
-
-        PLUGIN_FILE.write_bytes(_disable_guard(original.decode("utf-8")).encode("utf-8"))
-
-        red = _run_named()
-        assert red.returncode != 0, (
-            "disabling the handler guard did NOT turn the named test red — the "
-            "guard is not load-bearing:\n" + red.stdout + red.stderr
-        )
-    finally:
-        PLUGIN_FILE.write_bytes(original)
-
-    green = _run_named()
-    assert green.returncode == 0, (
-        "restoring the guard did not return the named test to green:\n"
-        + green.stdout + green.stderr
-    )
+    # Guard neutered: the identical create is admitted and the override lands.
+    monkeypatch.setattr(
+        p, "_require_engine_scope_for_override", lambda request, payload: None)
+    result = p.create_task(_request(), p.CreateTaskBody(**kwargs), board=None)
+    assert result["task"]["model_override"] == "gpt-5"
