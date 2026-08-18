@@ -808,7 +808,7 @@ class TestStuckLoopEscalation:
         # Simulate counter already at threshold (3 consecutive interrupted
         # restarts).  _suspend_stuck_loop_sessions will flip suspended=True.
         counts_file = tmp_path / ".restart_failure_counts"
-        counts_file.write_text(json.dumps({entry.session_key: 3}))
+        counts_file.write_text(json.dumps({entry.session_key: 3}), encoding="utf-8")
 
         monkeypatch.setattr("gateway.run._youtab_home", tmp_path)
         runner = object.__new__(GatewayRunner)

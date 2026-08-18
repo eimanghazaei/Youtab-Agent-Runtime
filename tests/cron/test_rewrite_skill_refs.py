@@ -244,7 +244,7 @@ class TestRewriteSkillRefsPersistence:
         rewrite_skill_refs(consolidated={"legacy": "umbrella"}, pruned=[])
 
         # Read raw file contents
-        data = json.loads(JOBS_FILE.read_text())
+        data = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
         assert data["jobs"][0]["skills"] == ["umbrella"]
         assert data["jobs"][0]["skill"] == "umbrella"
 

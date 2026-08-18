@@ -255,23 +255,23 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
 
     # Profile-local credential store: blocked
     profile_auth = profile / "auth.json"
-    profile_auth.write_text("x")
+    profile_auth.write_text("x", encoding="utf-8")
     assert "credential store" in (get_read_block_error(str(profile_auth)) or "")
 
     # Root-level credential store: ALSO blocked (this is the widening)
     root_auth = root / "auth.json"
-    root_auth.write_text("x")
+    root_auth.write_text("x", encoding="utf-8")
     assert "credential store" in (get_read_block_error(str(root_auth)) or "")
 
     # Root-level .env: blocked too
     root_env = root / ".env"
-    root_env.write_text("x")
+    root_env.write_text("x", encoding="utf-8")
     assert "credential store" in (get_read_block_error(str(root_env)) or "")
 
     # Root-level Google OAuth token store: blocked too
     root_google_oauth = root / "auth" / "google_oauth.json"
     root_google_oauth.parent.mkdir(parents=True, exist_ok=True)
-    root_google_oauth.write_text("x")
+    root_google_oauth.write_text("x", encoding="utf-8")
     assert "credential store" in (
         get_read_block_error(str(root_google_oauth)) or ""
     )
@@ -279,5 +279,5 @@ def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):
     # Root-level mcp-tokens: blocked
     root_tok = root / "mcp-tokens" / "gh.json"
     root_tok.parent.mkdir(parents=True, exist_ok=True)
-    root_tok.write_text("x")
+    root_tok.write_text("x", encoding="utf-8")
     assert "MCP token" in (get_read_block_error(str(root_tok)) or "")

@@ -96,13 +96,15 @@ def test_user_plugin_overrides_bundled(tmp_path, monkeypatch):
         '    base_url="https://user-override.example.com/v1",\n'
         '    auth_type="api_key",\n'
         ")\n"
-        "register_provider(custom_gmi)\n"
+        "register_provider(custom_gmi)\n",
+        encoding="utf-8",
     )
     (user_gmi / "plugin.yaml").write_text(
         "name: gmi-user-override\n"
         "kind: model-provider\n"
         "version: 0.0.1\n"
-        "description: Test user override\n"
+        "description: Test user override\n",
+        encoding="utf-8",
     )
 
     _clear_provider_caches()

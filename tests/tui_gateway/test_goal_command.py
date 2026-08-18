@@ -131,7 +131,7 @@ def test_pending_input_commands_includes_goal(server):
 
 def _write_moa_config(home, text):
     cfg_path = home / "config.yaml"
-    cfg_path.write_text(text)
+    cfg_path.write_text(text, encoding="utf-8")
 
 
 def test_moa_bare_returns_usage(server, session, youtab_home):

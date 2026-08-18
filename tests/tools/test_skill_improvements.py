@@ -44,7 +44,7 @@ class TestFuzzyPatchSkill:
         _create_skill("test-skill", SKILL_CONTENT)
         result = _patch_skill("test-skill", "Step 1: Do the thing.", "Step 1: Done!")
         assert result["success"] is True
-        content = (self.skills_dir / "test-skill" / "SKILL.md").read_text()
+        content = (self.skills_dir / "test-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "Step 1: Done!" in content
 
     def test_whitespace_trimmed_match(self):
@@ -64,7 +64,7 @@ description: Whitespace test
         # Agent sends patch with no leading whitespace (common LLM behaviour)
         result = _patch_skill("ws-skill", "def hello():\n    print(\"hi\")", "def hello():\n    print(\"hello world\")")
         assert result["success"] is True
-        content = (self.skills_dir / "ws-skill" / "SKILL.md").read_text()
+        content = (self.skills_dir / "ws-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert 'print("hello world")' in content
 
 

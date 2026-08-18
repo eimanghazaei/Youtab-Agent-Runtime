@@ -24,7 +24,8 @@ def _write_enabled_config(home: Path):
         "secrets:\n"
         "  bitwarden:\n"
         "    enabled: true\n"
-        "    project_id: proj\n"
+        "    project_id: proj\n",
+        encoding="utf-8",
     )
 
 
@@ -32,7 +33,7 @@ def test_malformed_config_does_not_permanently_skip(tmp_path, monkeypatch):
     """Config error on first call → fixed config on second call must apply."""
     home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
-    (home / "config.yaml").write_text("secrets: [unclosed")  # malformed YAML
+    (home / "config.yaml").write_text("secrets: [unclosed", encoding="utf-8")  # malformed YAML
 
     env_loader._apply_external_secret_sources(home)
     assert str(home.resolve()) not in env_loader._APPLIED_HOMES
@@ -64,7 +65,7 @@ def test_malformed_config_does_not_permanently_skip(tmp_path, monkeypatch):
 def test_no_secrets_section_does_not_mark_applied(tmp_path):
     home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
-    (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
+    (home / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
     env_loader._apply_external_secret_sources(home)
     assert str(home.resolve()) not in env_loader._APPLIED_HOMES
 
@@ -73,7 +74,8 @@ def test_disabled_sources_do_not_mark_applied(tmp_path):
     home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
     (home / "config.yaml").write_text(
-        "secrets:\n  bitwarden:\n    enabled: false\n    project_id: p\n"
+        "secrets:\n  bitwarden:\n    enabled: false\n    project_id: p\n",
+        encoding="utf-8",
     )
     from agent.secret_sources import registry
     registry._reset_registry_for_tests()

@@ -113,7 +113,7 @@ class TestSetupLogging:
 
         agent_log = youtab_home / "logs" / "agent.log"
         assert agent_log.exists()
-        content = agent_log.read_text()
+        content = agent_log.read_text(encoding="utf-8")
         assert "test message for agent.log" in content
 
 
@@ -123,7 +123,7 @@ class TestSetupLogging:
         """Explicit function params take precedence over config.yaml."""
         import yaml
         config = {"logging": {"level": "DEBUG"}}
-        (youtab_home / "config.yaml").write_text(yaml.dump(config))
+        (youtab_home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
         youtab_logging.setup_logging(youtab_home=youtab_home, log_level="WARNING")
 
@@ -175,7 +175,7 @@ class TestGatewayMode:
 
         gw_log = youtab_home / "logs" / "gateway.log"
         assert gw_log.exists()
-        assert "telegram connected" in gw_log.read_text()
+        assert "telegram connected" in gw_log.read_text(encoding="utf-8")
 
     def test_gateway_log_rejects_non_gateway_records(self, youtab_home):
         """gateway.log does NOT capture records from tools.*, agent.*, etc."""
@@ -191,7 +191,7 @@ class TestGatewayMode:
 
         gw_log = youtab_home / "logs" / "gateway.log"
         if gw_log.exists():
-            content = gw_log.read_text()
+            content = gw_log.read_text(encoding="utf-8")
             assert "running command" not in content
             assert "compressing context" not in content
 
@@ -223,7 +223,7 @@ class TestGuiMode:
 
         gui_log = youtab_home / "logs" / "gui.log"
         assert gui_log.exists()
-        content = gui_log.read_text()
+        content = gui_log.read_text(encoding="utf-8")
         assert "dashboard online" in content
         assert "ws connected" in content
         assert "gateway event" not in content
@@ -243,7 +243,7 @@ class TestSessionContext:
         youtab_logging.flush_log_queue()
 
         agent_log = youtab_home / "logs" / "agent.log"
-        content = agent_log.read_text()
+        content = agent_log.read_text(encoding="utf-8")
         assert "[abc123]" in content
         assert "tagged message" in content
 
@@ -347,7 +347,7 @@ class TestAddRotatingHandler:
         youtab_logging.set_session_context("factory_test")
         logger.info("test msg")
         youtab_logging.flush_log_queue()
-        content = log_path.read_text()
+        content = log_path.read_text(encoding="utf-8")
         assert "[factory_test]" in content
 
         # Clean up
@@ -453,7 +453,7 @@ class TestReadLoggingConfig:
     def test_reads_logging_section(self, youtab_home):
         import yaml
         config = {"logging": {"level": "DEBUG", "max_size_mb": 10, "backup_count": 5}}
-        (youtab_home / "config.yaml").write_text(yaml.dump(config))
+        (youtab_home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
         level, max_size, backup = youtab_logging._read_logging_config()
         assert level == "DEBUG"
@@ -504,7 +504,7 @@ class TestExternalRotationRecovery:
         handler = self._make_handler(log_path)
         try:
             self._emit(handler, "before rotation")
-            assert log_path.read_text() == "before rotation\n"
+            assert log_path.read_text(encoding="utf-8") == "before rotation\n"
 
             # External rotation (NOT via handler.doRollover()).
             os.rename(log_path, rotated)
@@ -515,8 +515,8 @@ class TestExternalRotationRecovery:
             # The new write should land in a freshly recreated gateway.log,
             # not appended to the rotated backup.
             assert log_path.exists(), "handler did not recreate gateway.log"
-            assert log_path.read_text() == "after rotation\n"
-            assert rotated.read_text() == "before rotation\n"
+            assert log_path.read_text(encoding="utf-8") == "after rotation\n"
+            assert rotated.read_text(encoding="utf-8") == "before rotation\n"
         finally:
             handler.close()
 
@@ -536,12 +536,12 @@ class TestExternalRotationRecovery:
             self._emit(handler, "AAAA" * 32)
             assert log_path.stat().st_size > 0
 
-            with open(log_path, "w"):
+            with open(log_path, "w", encoding="utf-8"):
                 pass  # truncate to zero
             assert log_path.stat().st_size == 0
 
             self._emit(handler, "after truncate")
-            assert log_path.read_text() == "after truncate\n"
+            assert log_path.read_text(encoding="utf-8") == "after truncate\n"
         finally:
             handler.close()
 
@@ -563,7 +563,7 @@ class TestExternalRotationRecovery:
 
         logging.getLogger("gateway.run").info("line BEFORE rotation")
         youtab_logging.flush_log_queue()
-        assert "BEFORE rotation" in gw_path.read_text()
+        assert "BEFORE rotation" in gw_path.read_text(encoding="utf-8")
 
         # External actor renames the file out from under us.
         os.rename(gw_path, rotated)
@@ -581,8 +581,8 @@ class TestExternalRotationRecovery:
         # backup.  Allen's logs had everything past the rotation point
         # going into agent.log only, never gateway.log.
         assert gw_path.exists(), "gateway.log was never recreated"
-        assert "AFTER rotation" in gw_path.read_text()
-        assert "AFTER rotation" not in rotated.read_text()
+        assert "AFTER rotation" in gw_path.read_text(encoding="utf-8")
+        assert "AFTER rotation" not in rotated.read_text(encoding="utf-8")
 
 
 class TestSafeStderr:

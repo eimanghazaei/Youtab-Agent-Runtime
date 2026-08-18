@@ -16,7 +16,7 @@ STAGE2_HOOK = REPO_ROOT / "docker" / "stage2-hook.sh"
 def stage2_text() -> str:
     if not STAGE2_HOOK.exists():
         pytest.skip("docker/stage2-hook.sh not present in this checkout")
-    return STAGE2_HOOK.read_text()
+    return STAGE2_HOOK.read_text(encoding="utf-8")
 
 
 def _seed_one_function(text: str) -> str:
@@ -51,7 +51,7 @@ def test_seed_one_refuses_symlinked_destinations(
         (home / ".env").symlink_to(outside_env)
     except (NotImplementedError, OSError):
         pytest.skip("symlinks are not available on this platform")
-    (install_dir / ".env.example").write_text("SECRET=1\n")
+    (install_dir / ".env.example").write_text("SECRET=1\n", encoding="utf-8")
 
     script = (
         "set -e\n"
@@ -63,7 +63,7 @@ def test_seed_one_refuses_symlinked_destinations(
         'seed_one ".env" ".env.example"\n'
     )
     script_path = tmp_path / "harness.sh"
-    script_path.write_text(script)
+    script_path.write_text(script, encoding="utf-8")
 
     proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
@@ -85,12 +85,12 @@ def test_seed_one_is_quiet_for_existing_symlinked_files(
     home.mkdir()
     install_dir.mkdir()
     outside_env = tmp_path / "outside.env"
-    outside_env.write_text("EXISTING=1\n")
+    outside_env.write_text("EXISTING=1\n", encoding="utf-8")
     try:
         (home / ".env").symlink_to(outside_env)
     except (NotImplementedError, OSError):
         pytest.skip("symlinks are not available on this platform")
-    (install_dir / ".env.example").write_text("SECRET=1\n")
+    (install_dir / ".env.example").write_text("SECRET=1\n", encoding="utf-8")
 
     script = (
         "set -e\n"
@@ -102,9 +102,9 @@ def test_seed_one_is_quiet_for_existing_symlinked_files(
         'seed_one ".env" ".env.example"\n'
     )
     script_path = tmp_path / "harness.sh"
-    script_path.write_text(script)
+    script_path.write_text(script, encoding="utf-8")
 
     proc = subprocess.run([bash, str(script_path)], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
-    assert outside_env.read_text() == "EXISTING=1\n"
+    assert outside_env.read_text(encoding="utf-8") == "EXISTING=1\n"
     assert proc.stdout == ""

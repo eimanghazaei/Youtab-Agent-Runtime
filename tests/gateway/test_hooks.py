@@ -14,9 +14,10 @@ def _create_hook(hooks_dir, hook_name, events, handler_code):
     (hook_dir / "HOOK.yaml").write_text(
         f"name: {hook_name}\n"
         f"description: Test hook\n"
-        f"events: {events}\n"
+        f"events: {events}\n",
+        encoding="utf-8",
     )
-    (hook_dir / "handler.py").write_text(handler_code)
+    (hook_dir / "handler.py").write_text(handler_code, encoding="utf-8")
     return hook_dir
 
 
@@ -49,8 +50,8 @@ class TestDiscoverAndLoad:
     def test_skips_no_events(self, tmp_path):
         hook_dir = tmp_path / "empty-hook"
         hook_dir.mkdir()
-        (hook_dir / "HOOK.yaml").write_text("name: empty\nevents: []\n")
-        (hook_dir / "handler.py").write_text("def handle(e, c): pass\n")
+        (hook_dir / "HOOK.yaml").write_text("name: empty\nevents: []\n", encoding="utf-8")
+        (hook_dir / "handler.py").write_text("def handle(e, c): pass\n", encoding="utf-8")
 
         reg = HookRegistry()
         with patch("gateway.hooks.HOOKS_DIR", tmp_path), _patch_no_builtins(reg):
@@ -68,13 +69,15 @@ class TestEmit:
         hook_dir = tmp_path / "async-hook"
         hook_dir.mkdir()
         (hook_dir / "HOOK.yaml").write_text(
-            "name: async-hook\nevents: ['agent:end']\n"
+            "name: async-hook\nevents: ['agent:end']\n",
+            encoding="utf-8",
         )
         (hook_dir / "handler.py").write_text(
             "import asyncio\n"
             "results = []\n"
             "async def handle(event_type, context):\n"
-            "    results.append(event_type)\n"
+            "    results.append(event_type)\n",
+            encoding="utf-8",
         )
 
         reg = HookRegistry()

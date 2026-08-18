@@ -38,8 +38,8 @@ from tools.checkpoint_manager import (
 def work_dir(tmp_path):
     d = tmp_path / "project"
     d.mkdir()
-    (d / "main.py").write_text("print('hello')\n")
-    (d / "README.md").write_text("# Project\n")
+    (d / "main.py").write_text("print('hello')\n", encoding="utf-8")
+    (d / "README.md").write_text("# Project\n", encoding="utf-8")
     return d
 
 
@@ -107,7 +107,7 @@ class TestStoreInit:
         assert (store / "HEAD").exists()
         assert (store / "objects").exists()
         assert (store / "info" / "exclude").exists()
-        assert "node_modules/" in (store / "info" / "exclude").read_text()
+        assert "node_modules/" in (store / "info" / "exclude").read_text(encoding="utf-8")
         # The project dir itself never becomes a git repo.
         assert not (work_dir / ".git").exists()
         # Idempotent.
@@ -122,8 +122,8 @@ class TestStoreInit:
         # Simulate a pre-v2 repo directly under base
         fake_repo = base / "deadbeefcafebabe"
         fake_repo.mkdir()
-        (fake_repo / "HEAD").write_text("ref: refs/heads/main\n")
-        (fake_repo / "YOUTAB_AGENT_WORKDIR").write_text(str(work_dir) + "\n")
+        (fake_repo / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+        (fake_repo / "YOUTAB_AGENT_WORKDIR").write_text(str(work_dir) + "\n", encoding="utf-8")
         (fake_repo / "objects").mkdir()
 
         # Init store — should migrate the fake pre-v2 repo
@@ -166,7 +166,7 @@ class TestTakeCheckpoint:
         # Nothing changed on disk → no commit.
         assert mgr.ensure_checkpoint(str(work_dir), "no changes") is False
         mgr.new_turn()
-        (work_dir / "main.py").write_text("print('modified')\n")
+        (work_dir / "main.py").write_text("print('modified')\n", encoding="utf-8")
         assert mgr.ensure_checkpoint(str(work_dir), "turn 2") is True
 
 
@@ -187,10 +187,10 @@ class TestListCheckpoints:
         assert "timestamp" in result[0]
 
         mgr.new_turn()
-        (work_dir / "main.py").write_text("v2\n")
+        (work_dir / "main.py").write_text("v2\n", encoding="utf-8")
         mgr.ensure_checkpoint(str(work_dir), "second")
         mgr.new_turn()
-        (work_dir / "main.py").write_text("v3\n")
+        (work_dir / "main.py").write_text("v3\n", encoding="utf-8")
         mgr.ensure_checkpoint(str(work_dir), "third")
 
         result = mgr.list_checkpoints(str(work_dir))
@@ -204,10 +204,10 @@ class TestListCheckpoints:
         """Two projects commit to the SAME shared store, isolated per project."""
         a = tmp_path / "proj-a"
         a.mkdir()
-        (a / "f.py").write_text("a\n")
+        (a / "f.py").write_text("a\n", encoding="utf-8")
         b = tmp_path / "proj-b"
         b.mkdir()
-        (b / "g.py").write_text("b\n")
+        (b / "g.py").write_text("b\n", encoding="utf-8")
 
         assert mgr.ensure_checkpoint(str(a), "A-1") is True
         mgr.new_turn()
@@ -235,7 +235,7 @@ class TestRealPruning:
         m = CheckpointManager(enabled=True, max_snapshots=3)
 
         for i in range(6):
-            (work_dir / "main.py").write_text(f"v{i}\n")
+            (work_dir / "main.py").write_text(f"v{i}\n", encoding="utf-8")
             m.new_turn()
             m.ensure_checkpoint(str(work_dir), f"step-{i}")
 
@@ -252,7 +252,7 @@ class TestRealPruning:
         monkeypatch.setattr("tools.checkpoint_manager.CHECKPOINT_BASE", checkpoint_base)
         wd = tmp_path / "proj"
         wd.mkdir()
-        (wd / "small.py").write_text("tiny\n")
+        (wd / "small.py").write_text("tiny\n", encoding="utf-8")
         big = wd / "weights.bin"
         big.write_bytes(b"\0" * (2 * 1024 * 1024))  # 2 MB
 
@@ -289,13 +289,13 @@ class TestRestore:
         project = fake_home / "project"
         project.mkdir()
         file_path = project / "main.py"
-        file_path.write_text("original\n")
+        file_path.write_text("original\n", encoding="utf-8")
 
         tilde = f"~/{project.name}"
         assert m.ensure_checkpoint(tilde, "initial") is True
         m.new_turn()
 
-        file_path.write_text("changed\n")
+        file_path.write_text("changed\n", encoding="utf-8")
         cps = m.list_checkpoints(str(project))
         assert len(cps) == 1
         diff_result = m.diff(tilde, cps[0]["hash"])
@@ -304,7 +304,7 @@ class TestRestore:
 
         restore_result = m.restore(tilde, cps[0]["hash"])
         assert restore_result["success"] is True
-        assert file_path.read_text() == "original\n"
+        assert file_path.read_text(encoding="utf-8") == "original\n"
 
 
 # =========================================================================
@@ -318,7 +318,7 @@ class TestWorkingDirResolution:
         git_proj = tmp_path / "myproject"
         (git_proj / "src").mkdir(parents=True)
         (git_proj / ".git").mkdir()
-        (git_proj / "src" / "main.py").write_text("x\n")
+        (git_proj / "src" / "main.py").write_text("x\n", encoding="utf-8")
         assert m.get_working_dir_for_path(
             str(git_proj / "src" / "main.py")
         ) == str(git_proj)
@@ -326,8 +326,8 @@ class TestWorkingDirResolution:
         # pyproject.toml marker, reached through a ~ path.
         py_proj = fake_home / "pyproj"
         (py_proj / "src").mkdir(parents=True)
-        (py_proj / "pyproject.toml").write_text("[project]\n")
-        (py_proj / "src" / "file.py").write_text("x\n")
+        (py_proj / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+        (py_proj / "src" / "file.py").write_text("x\n", encoding="utf-8")
         assert m.get_working_dir_for_path(
             f"~/{py_proj.name}/src/file.py"
         ) == str(py_proj)
@@ -336,7 +336,7 @@ class TestWorkingDirResolution:
         m = CheckpointManager(enabled=True)
         filepath = tmp_path / "random" / "file.py"
         filepath.parent.mkdir(parents=True)
-        filepath.write_text("x\n")
+        filepath.write_text("x\n", encoding="utf-8")
 
         import pathlib as _pl
         _real_exists = _pl.Path.exists
@@ -509,7 +509,7 @@ class TestSecurity:
         assert result["success"] is True
 
         (work_dir / "subdir").mkdir()
-        (work_dir / "subdir" / "test.txt").write_text("hello")
+        (work_dir / "subdir" / "test.txt").write_text("hello", encoding="utf-8")
         mgr.new_turn()
         mgr.ensure_checkpoint(str(work_dir), "second")
         cps = mgr.list_checkpoints(str(work_dir))
@@ -545,7 +545,8 @@ class TestGpgIsolation:
             "[user]\n    email = real@user.com\n    name = Real User\n"
             "[commit]\n    gpgsign = true\n"
             "[tag]\n    gpgSign = true\n"
-            "[gpg]\n    program = /nonexistent/fake-gpg-binary\n"
+            "[gpg]\n    program = /nonexistent/fake-gpg-binary\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.delenv("GPG_TTY", raising=False)
@@ -564,10 +565,10 @@ def _seed_legacy_repo(base: Path, name: str, workdir: Path, mtime: float = None)
     """Create a minimal pre-v2 shadow repo directly under base."""
     shadow = base / name
     shadow.mkdir(parents=True)
-    (shadow / "HEAD").write_text("ref: refs/heads/main\n")
-    (shadow / "YOUTAB_AGENT_WORKDIR").write_text(str(workdir) + "\n")
+    (shadow / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (shadow / "YOUTAB_AGENT_WORKDIR").write_text(str(workdir) + "\n", encoding="utf-8")
     (shadow / "info").mkdir()
-    (shadow / "info" / "exclude").write_text("node_modules/\n")
+    (shadow / "info" / "exclude").write_text("node_modules/\n", encoding="utf-8")
     if mtime is not None:
         for p in shadow.rglob("*"):
             os.utime(p, (mtime, mtime))
@@ -603,7 +604,7 @@ class TestPruneCheckpointsLegacy:
         base = tmp_path / "checkpoints"
         orphan = _seed_legacy_repo(base, "ffff" * 4, tmp_path / "gone")
         (base / "garbage-dir").mkdir()
-        (base / "garbage-dir" / "random.txt").write_text("hi")
+        (base / "garbage-dir" / "random.txt").write_text("hi", encoding="utf-8")
 
         # delete_orphans=False keeps orphans; non-shadow dirs aren't even scanned.
         result = prune_checkpoints(
@@ -624,10 +625,10 @@ class TestPruneCheckpointsV2:
 
         alive = tmp_path / "alive"
         alive.mkdir()
-        (alive / "f").write_text("a")
+        (alive / "f").write_text("a", encoding="utf-8")
         gone = tmp_path / "was-gone"
         gone.mkdir()
-        (gone / "g").write_text("b")
+        (gone / "g").write_text("b", encoding="utf-8")
 
         m = CheckpointManager(enabled=True)
         assert m.ensure_checkpoint(str(alive), "alive") is True
@@ -655,10 +656,10 @@ class TestPruneCheckpointsV2:
 
         fresh = tmp_path / "fresh"
         fresh.mkdir()
-        (fresh / "f").write_text("f")
+        (fresh / "f").write_text("f", encoding="utf-8")
         stale = tmp_path / "stale"
         stale.mkdir()
-        (stale / "s").write_text("s")
+        (stale / "s").write_text("s", encoding="utf-8")
 
         m = CheckpointManager(enabled=True)
         m.ensure_checkpoint(str(fresh), "fresh")
@@ -668,9 +669,9 @@ class TestPruneCheckpointsV2:
         # Backdate stale's last_touch to 60 days ago
         stale_hash = _project_hash(str(stale))
         meta_path = base / "store" / "projects" / f"{stale_hash}.json"
-        meta = json.loads(meta_path.read_text())
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
         meta["last_touch"] = time.time() - 60 * 86400
-        meta_path.write_text(json.dumps(meta))
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
         # A legacy-<ts>/ archive older than retention is wiped too.
         old_legacy = base / "legacy-20200101-000000"
@@ -706,10 +707,10 @@ class TestPruneCheckpointsOrphanAllowlist:
 
         previewed = tmp_path / "previewed-gone"
         previewed.mkdir()
-        (previewed / "f").write_text("a")
+        (previewed / "f").write_text("a", encoding="utf-8")
         newly_gone = tmp_path / "newly-gone"
         newly_gone.mkdir()
-        (newly_gone / "f").write_text("b")
+        (newly_gone / "f").write_text("b", encoding="utf-8")
 
         m = CheckpointManager(enabled=True)
         assert m.ensure_checkpoint(str(previewed), "previewed") is True
@@ -789,7 +790,7 @@ class TestMaybeAutoPruneCheckpoints:
         base = tmp_path / "checkpoints"
         base.mkdir()
         # A corrupt marker is treated as "no prior run".
-        (base / ".last_prune").write_text("not-a-timestamp")
+        (base / ".last_prune").write_text("not-a-timestamp", encoding="utf-8")
         _seed_legacy_repo(base, "0000" * 4, tmp_path / "gone")
 
         out = maybe_auto_prune_checkpoints(
@@ -914,13 +915,13 @@ class TestOrphanPruneRequiresObservableDeletion:
         vanished_mount = tmp_path / "mnt-a"
         vanished = vanished_mount / "work" / "proj"
         vanished.mkdir(parents=True)
-        (vanished / "main.py").write_text("print('x')\n")
+        (vanished / "main.py").write_text("print('x')\n", encoding="utf-8")
         self._project_with_history(vanished, checkpoint_base, monkeypatch)
 
         mount_point = tmp_path / "mnt-b" / "volume"
         unmounted = mount_point / "proj"
         unmounted.mkdir(parents=True)
-        (unmounted / "main.py").write_text("print('y')\n")
+        (unmounted / "main.py").write_text("print('y')\n", encoding="utf-8")
         self._project_with_history(unmounted, checkpoint_base, monkeypatch)
 
         shutil.rmtree(vanished_mount)
@@ -962,7 +963,7 @@ class TestOrphanPruneRequiresObservableDeletion:
         mount_point = tmp_path / "mnt" / "volume"
         work_dir = mount_point / "project"
         work_dir.mkdir(parents=True)
-        (work_dir / "main.py").write_text("print('x')\n")
+        (work_dir / "main.py").write_text("print('x')\n", encoding="utf-8")
         self._project_with_history(work_dir, checkpoint_base, monkeypatch)
 
         # Detach: the directory that was mounted at the path (with the
@@ -973,7 +974,7 @@ class TestOrphanPruneRequiresObservableDeletion:
         # guaranteed a distinct identity, exactly as in a real unmount.
         mount_point.rename(tmp_path / "detached-volume")
         mount_point.mkdir()
-        (mount_point / ".keep").write_text("")
+        (mount_point / ".keep").write_text("", encoding="utf-8")
         assert not work_dir.exists()
         assert any(mount_point.iterdir())
 
@@ -996,12 +997,12 @@ class TestOrphanPruneRequiresObservableDeletion:
         parent = tmp_path / "projects"
         work_dir = parent / "proj"
         work_dir.mkdir(parents=True)
-        (work_dir / "main.py").write_text("print('x')\n")
+        (work_dir / "main.py").write_text("print('x')\n", encoding="utf-8")
         self._project_with_history(work_dir, checkpoint_base, monkeypatch)
 
         store = _store_path(checkpoint_base)
         meta_path = _project_meta_path(store, _project_hash(str(work_dir)))
-        before = json.loads(meta_path.read_text())
+        before = json.loads(meta_path.read_text(encoding="utf-8"))
         assert "workdir_parent_dev" in before
         assert "workdir_parent_ino" in before
 
@@ -1012,7 +1013,7 @@ class TestOrphanPruneRequiresObservableDeletion:
         )
         _register_project(store, str(work_dir))
 
-        after = json.loads(meta_path.read_text())
+        after = json.loads(meta_path.read_text(encoding="utf-8"))
         assert after["workdir_parent_dev"] == before["workdir_parent_dev"]
         assert after["workdir_parent_ino"] == before["workdir_parent_ino"]
 
@@ -1038,7 +1039,7 @@ class TestSessionDiff:
 
     def test_includes_newly_added_files(self, mgr, work_dir):
         mgr.ensure_checkpoint(str(work_dir), "baseline")
-        (work_dir / "feature.py").write_text("x = 1\n")
+        (work_dir / "feature.py").write_text("x = 1\n", encoding="utf-8")
 
         result = mgr.session_diff(str(work_dir))
         assert result["success"] is True

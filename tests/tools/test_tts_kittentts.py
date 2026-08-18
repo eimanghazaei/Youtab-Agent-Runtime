@@ -122,7 +122,8 @@ class TestDispatcherBranch:
         # Write a config telling it to use kittentts
         import yaml
         (tmp_path / "config.yaml").write_text(
-            yaml.safe_dump({"tts": {"provider": "kittentts"}})
+            yaml.safe_dump({"tts": {"provider": "kittentts"}}),
+            encoding="utf-8",
         )
 
         result = json.loads(text_to_speech_tool(text="Hello"))

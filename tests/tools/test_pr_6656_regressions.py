@@ -78,12 +78,12 @@ class TestUninstallPathTraversal:
         # delete if the guard fails.
         victim = tmp_path / "do-not-delete"
         victim.mkdir()
-        (victim / "important.txt").write_text("data")
+        (victim / "important.txt").write_text("data", encoding="utf-8")
         return skills_dir, hub_dir, victim
 
     def _write_lock(self, hub_dir: Path, entries: dict) -> None:
         lock_path = hub_dir / "lock.json"
-        lock_path.write_text(json.dumps({"version": 1, "installed": entries}))
+        lock_path.write_text(json.dumps({"version": 1, "installed": entries}), encoding="utf-8")
 
     def test_traversal_via_parent_segments_rejected(self, hub_setup):
         """install_path: "../do-not-delete" must NOT escape SKILLS_DIR."""
@@ -155,7 +155,7 @@ class TestUninstallPathTraversal:
         skills_dir, hub_dir, _victim = hub_setup
         legit = skills_dir / "category" / "my-skill"
         legit.mkdir(parents=True)
-        (legit / "SKILL.md").write_text("test")
+        (legit / "SKILL.md").write_text("test", encoding="utf-8")
 
         self._write_lock(hub_dir, {
             "my-skill": {
@@ -209,9 +209,9 @@ class TestBundleHashFilenameSensitivity:
         install as drifted."""
         skill_dir = tmp_path / "skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("hello")
+        (skill_dir / "SKILL.md").write_text("hello", encoding="utf-8")
         (skill_dir / "scripts").mkdir()
-        (skill_dir / "scripts" / "run.sh").write_text("world")
+        (skill_dir / "scripts" / "run.sh").write_text("world", encoding="utf-8")
 
         bundle = self._make_bundle({
             "SKILL.md": "hello",

@@ -713,7 +713,7 @@ class TestCheckpoint:
             "command": "sleep 999",
             "pid": 999999999,  # almost certainly not running
             "task_id": "t1",
-        }]))
+        }]), encoding="utf-8")
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
@@ -728,14 +728,14 @@ class TestCheckpoint:
             "task_id": "t1",
             "pid_scope": "sandbox",
         }]
-        checkpoint.write_text(json.dumps(original))
+        checkpoint.write_text(json.dumps(original), encoding="utf-8")
 
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 0
             assert registry.get("proc_remote") is None
 
-            data = json.loads(checkpoint.read_text())
+            data = json.loads(checkpoint.read_text(encoding="utf-8"))
             assert data == []
 
 # =========================================================================

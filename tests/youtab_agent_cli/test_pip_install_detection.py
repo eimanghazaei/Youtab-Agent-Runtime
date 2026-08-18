@@ -22,8 +22,8 @@ def test_code_scoped_stamp_wins_over_home_stamp(tmp_path):
     home = tmp_path / "home"
     code.mkdir()
     home.mkdir()
-    (code / ".install_method").write_text("git\n")
-    (home / ".install_method").write_text("docker\n")  # container contamination
+    (code / ".install_method").write_text("git\n", encoding="utf-8")
+    (home / ".install_method").write_text("docker\n", encoding="utf-8")  # container contamination
     with patch("youtab_agent_cli.config.get_managed_system", return_value=None), \
          patch("youtab_agent_cli.config.get_youtab_home", return_value=home):
         from youtab_agent_cli.config import detect_install_method
@@ -43,7 +43,7 @@ def test_stamp_install_method_writes_code_scoped(tmp_path):
     with patch("youtab_agent_cli.config.get_youtab_home", return_value=home):
         from youtab_agent_cli.config import stamp_install_method
         stamp_install_method("git", project_root=code)
-    assert (code / ".install_method").read_text().strip() == "git"
+    assert (code / ".install_method").read_text(encoding="utf-8").strip() == "git"
     assert not (home / ".install_method").exists()
 
 

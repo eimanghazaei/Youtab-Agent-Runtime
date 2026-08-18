@@ -38,9 +38,9 @@ def _make_socket_dir(tmpdir, session_name, pid=None, owner_pid=None):
     d = tmpdir / f"agent-browser-{session_name}"
     d.mkdir()
     if pid is not None:
-        (d / f"{session_name}.pid").write_text(str(pid))
+        (d / f"{session_name}.pid").write_text(str(pid), encoding="utf-8")
     if owner_pid is not None:
-        (d / f"{session_name}.owner_pid").write_text(str(owner_pid))
+        (d / f"{session_name}.owner_pid").write_text(str(owner_pid), encoding="utf-8")
     return d
 
 
@@ -95,7 +95,7 @@ class TestReapOrphanedBrowserSessions:
         from tools.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_corrupt1234")
-        (d / "h_corrupt1234.pid").write_text("not-a-number")
+        (d / "h_corrupt1234.pid").write_text("not-a-number", encoding="utf-8")
 
         _reap_orphaned_browser_sessions()
         assert not d.exists()

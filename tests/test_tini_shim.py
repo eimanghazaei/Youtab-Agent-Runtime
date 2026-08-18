@@ -21,8 +21,8 @@ def recorder(tmp_path: Path) -> tuple[Path, Path]:
     """Fake /init + wrapper that print argv, one token per line."""
     init = tmp_path / "fake-init"
     wrapper = tmp_path / "fake-wrapper"
-    init.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
-    wrapper.write_text("#!/bin/sh\nprintf 'wrapper\\n'\n")
+    init.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n", encoding="utf-8")
+    wrapper.write_text("#!/bin/sh\nprintf 'wrapper\\n'\n", encoding="utf-8")
     init.chmod(0o755)
     wrapper.chmod(0o755)
     return init, wrapper
@@ -48,7 +48,7 @@ def _run_shim(
 
 def test_shim_script_is_executable_bit_friendly() -> None:
     assert SHIM.is_file()
-    text = SHIM.read_text()
+    text = SHIM.read_text(encoding="utf-8")
     assert text.startswith("#!/bin/sh")
     assert "YOUTAB_AGENT_TINI_SHIM_TARGET" in text
 

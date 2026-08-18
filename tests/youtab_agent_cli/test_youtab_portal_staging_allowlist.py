@@ -80,7 +80,8 @@ class TestResolveAccessTokenEnvOverrideWins:
                         }
                     },
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         return auth_file
 

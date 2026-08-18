@@ -77,14 +77,14 @@ def make_manager(monkeypatch):
 class TestWriteFrequencyParsing:
     def test_string_async(self, tmp_path):
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "async"}))
+        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": "async"}), encoding="utf-8")
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == "async"
 
 
     def test_integer_frequency(self, tmp_path):
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": 5}))
+        cfg_file.write_text(json.dumps({"apiKey": "k", "writeFrequency": 5}), encoding="utf-8")
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == 5
 
@@ -95,13 +95,13 @@ class TestWriteFrequencyParsing:
             "apiKey": "k",
             "writeFrequency": "turn",
             "hosts": {"youtab": {"writeFrequency": "session"}},
-        }))
+        }), encoding="utf-8")
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == "session"
 
     def test_defaults_to_async(self, tmp_path):
         cfg_file = tmp_path / "config.json"
-        cfg_file.write_text(json.dumps({"apiKey": "k"}))
+        cfg_file.write_text(json.dumps({"apiKey": "k"}), encoding="utf-8")
         cfg = HonchoClientConfig.from_global_config(config_path=cfg_file)
         assert cfg.write_frequency == "async"
 

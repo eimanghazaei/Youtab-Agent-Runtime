@@ -53,7 +53,7 @@ class TestWriteAndRoundTrip:
         proc = _spawn_sleeper()
         try:
             _write_bridge_pidfile(tmp_path, proc.pid)
-            lines = (tmp_path / "bridge.pid").read_text().split("\n")
+            lines = (tmp_path / "bridge.pid").read_text(encoding="utf-8").split("\n")
             assert int(lines[0]) == proc.pid
             # Line 2 is the kernel start time (present on Linux).
             assert int(lines[1]) == get_process_start_time(proc.pid)
@@ -82,7 +82,7 @@ class TestIdentityGuard:
         # Shape the cmdline to look like the node bridge for this session.
         proc = _spawn_sleeper("node", str(tmp_path))
         try:
-            (tmp_path / "bridge.pid").write_text(str(proc.pid))  # legacy: pid only
+            (tmp_path / "bridge.pid").write_text(str(proc.pid), encoding="utf-8")  # legacy: pid only
             _kill_stale_bridge_by_pidfile(tmp_path)
             assert _wait_dead(proc), "a cmdline-confirmed bridge should be killed"
         finally:

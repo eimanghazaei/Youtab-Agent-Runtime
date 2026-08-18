@@ -36,13 +36,13 @@ class TestSplitPairingDirMigration:
         new.mkdir(parents=True)
         (new / "feishu-approved.json").write_text(json.dumps({
             "ou_user": {"user_name": "Alice", "approved_at": 123.0}
-        }))
+        }), encoding="utf-8")
 
         with patch("gateway.pairing.PAIRING_DIR", legacy), patch("gateway.pairing.get_youtab_home", return_value=home):
             store = PairingStore()
             assert store.is_approved("feishu", "ou_user") is True
 
-        migrated = json.loads((legacy / "feishu-approved.json").read_text())
+        migrated = json.loads((legacy / "feishu-approved.json").read_text(encoding="utf-8"))
         assert "ou_user" in migrated
 
 
@@ -313,7 +313,7 @@ class TestApprovalFlow:
             entry = store.list_pending("telegram")[0]
 
             digest = json.loads(
-                (tmp_path / "telegram-pending.json").read_text()
+                (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
             )[entry["request_id"]]["hash"]
 
             assert set(entry) == {
@@ -523,7 +523,8 @@ class TestUnreadablePairingFile:
 
         approved_path = tmp_path / "weixin-approved.json"
         approved_path.write_text(
-            '{"o9cq80fake@im.wechat": {"user_name": "x", "approved_at": 0}}'
+            '{"o9cq80fake@im.wechat": {"user_name": "x", "approved_at": 0}}',
+            encoding="utf-8",
         )
 
         real_open = builtins.open

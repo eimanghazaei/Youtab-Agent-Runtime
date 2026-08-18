@@ -80,9 +80,9 @@ class TestWebUIBuildNeeded:
         web_dir, dist_dir = _make_web_dir(tmp_path)
         src = web_dir / "src" / "App.tsx"
         src.parent.mkdir(parents=True, exist_ok=True)
-        src.write_text("export const A = 1\n")
+        src.write_text("export const A = 1\n", encoding="utf-8")
         (dist_dir / ".vite").mkdir(parents=True, exist_ok=True)
-        (dist_dir / ".vite" / "manifest.json").write_text("{}")
+        (dist_dir / ".vite" / "manifest.json").write_text("{}", encoding="utf-8")
         self._stamp_current(web_dir)
         assert _web_ui_build_needed(web_dir) is False
         future = time.time() + 10_000
@@ -95,7 +95,7 @@ class TestWebUIBuildNeeded:
     def test_content_hash_is_deterministic(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         (web_dir / "src").mkdir(parents=True, exist_ok=True)
-        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
+        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n", encoding="utf-8")
         root = self._root(web_dir)
         h1 = _compute_web_ui_content_hash(root, web_dir)
         h2 = _compute_web_ui_content_hash(root, web_dir)
@@ -106,11 +106,11 @@ class TestWebUIBuildNeeded:
         import json as _json
         web_dir, _ = _make_web_dir(tmp_path)
         (web_dir / "src").mkdir(parents=True, exist_ok=True)
-        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n")
+        (web_dir / "src" / "App.tsx").write_text("export const A = 1\n", encoding="utf-8")
         self._stamp_current(web_dir)
         stamp = _web_ui_stamp_path()
         assert stamp.is_file()
-        data = _json.loads(stamp.read_text())
+        data = _json.loads(stamp.read_text(encoding="utf-8"))
         assert data["contentHash"] == _compute_web_ui_content_hash(self._root(web_dir), web_dir)
 
 
@@ -246,7 +246,7 @@ class TestBuildWebUIFlock:
         web_dir, dist_dir = _make_web_dir(tmp_path)
         # No dist yet — contender must take the blocking-wait path.
         lock_path = tmp_path / ".web_ui_build.lock"
-        holder = open(lock_path, "a")
+        holder = open(lock_path, "a", encoding="utf-8")
         fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
 
         def release_after_building():

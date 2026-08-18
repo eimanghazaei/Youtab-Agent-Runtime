@@ -107,7 +107,7 @@ class TestCmdStatus:
         import plugins.memory.honcho.cli as honcho_cli
 
         cfg_path = tmp_path / "honcho.json"
-        cfg_path.write_text("{}")
+        cfg_path.write_text("{}", encoding="utf-8")
 
         class FakeConfig:
             enabled = True
@@ -161,7 +161,7 @@ class TestCmdStatus:
         import plugins.memory.honcho.cli as honcho_cli
 
         cfg_path = tmp_path / "honcho.json"
-        cfg_path.write_text("{}")
+        cfg_path.write_text("{}", encoding="utf-8")
 
         class FakeConfig:
             enabled = True
@@ -230,7 +230,7 @@ class TestCloneHonchoForProfile:
     def _setup_clone_env(self, monkeypatch, tmp_path, cfg):
         import plugins.memory.honcho.cli as honcho_cli
         cfg_path = tmp_path / "config.json"
-        cfg_path.write_text("{}")
+        cfg_path.write_text("{}", encoding="utf-8")
         monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
         monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
         monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
@@ -323,7 +323,7 @@ class TestSetupWizardDeploymentShape:
         import plugins.memory.honcho.cli as honcho_cli
 
         cfg_path = tmp_path / "config.json"
-        cfg_path.write_text("{}")
+        cfg_path.write_text("{}", encoding="utf-8")
         cfg = initial_cfg if initial_cfg is not None else {"apiKey": "***"}
 
         monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
@@ -600,7 +600,7 @@ class TestCloneCarriesPinUserPeer:
             "hosts": {"youtab": {"pinUserPeer": True, "peerName": "eri"}},
         }
         cfg_path = tmp_path / "config.json"
-        cfg_path.write_text("{}")
+        cfg_path.write_text("{}", encoding="utf-8")
         monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)
         monkeypatch.setattr(honcho_cli, "_config_path", lambda: cfg_path)
         monkeypatch.setattr(honcho_cli, "_local_config_path", lambda: cfg_path)
@@ -646,7 +646,7 @@ class TestCmdSetupDeviceFlow:
         from plugins.memory.honcho.oauth import OAuthCredential
 
         cfg_path = tmp_path / "config.json"
-        cfg_path.write_text("{}")
+        cfg_path.write_text("{}", encoding="utf-8")
         cfg = {"apiKey": "***"}
 
         monkeypatch.setattr(honcho_cli, "_read_config", lambda: cfg)

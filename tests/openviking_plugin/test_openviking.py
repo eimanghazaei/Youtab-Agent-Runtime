@@ -15,7 +15,8 @@ def _write_skill(skills_dir, name, body="Do the thing."):
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n"
+        f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n",
+        encoding="utf-8",
     )
     return skill_dir
 
@@ -24,7 +25,7 @@ def _write_bundle(bundles_dir, slug, skills):
     bundles_dir.mkdir(parents=True, exist_ok=True)
     lines = [f"name: {slug}", "skills:"]
     lines.extend(f"  - {skill}" for skill in skills)
-    (bundles_dir / f"{slug}.yaml").write_text("\n".join(lines) + "\n")
+    (bundles_dir / f"{slug}.yaml").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 class FakeVikingClient:

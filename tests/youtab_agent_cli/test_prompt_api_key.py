@@ -18,7 +18,7 @@ def profile_env(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
-    (home / ".env").write_text("")
+    (home / ".env").write_text("", encoding="utf-8")
     return home
 
 

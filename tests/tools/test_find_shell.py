@@ -210,7 +210,7 @@ class TestMacosLoginShellSwallowRegression:
         # A .bash_profile that exec's zsh — the reported macOS shape.
         home = tmp_path / "home"
         home.mkdir()
-        (home / ".bash_profile").write_text("exec /bin/zsh -l\n")
+        (home / ".bash_profile").write_text("exec /bin/zsh -l\n", encoding="utf-8")
 
         zsh = os.environ.get("SHELL") or "/bin/zsh"
         if not os.path.isfile(zsh):

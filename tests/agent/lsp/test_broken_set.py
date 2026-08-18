@@ -35,7 +35,7 @@ def _make_git_workspace(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
-    (repo / "pyproject.toml").write_text("[project]\nname='t'\n")
+    (repo / "pyproject.toml").write_text("[project]\nname='t'\n", encoding="utf-8")
     return repo
 
 
@@ -51,11 +51,11 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
     repo_b = tmp_path / "repo-b"
     repo_b.mkdir()
     (repo_b / ".git").mkdir()
-    (repo_b / "pyproject.toml").write_text("[project]\nname='b'\n")
+    (repo_b / "pyproject.toml").write_text("[project]\nname='b'\n", encoding="utf-8")
     a_src = repo_a / "x.py"
-    a_src.write_text("")
+    a_src.write_text("", encoding="utf-8")
     b_src = repo_b / "x.py"
-    b_src.write_text("")
+    b_src.write_text("", encoding="utf-8")
 
     monkeypatch.chdir(str(repo_a))
     svc = LSPService(
@@ -80,7 +80,7 @@ def test_unrelated_project_not_affected_by_broken(tmp_path, monkeypatch):
 def test_mark_broken_handles_no_workspace_silently(tmp_path):
     """File outside any git worktree → no workspace → no key to add."""
     src = tmp_path / "orphan.py"
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
     svc = LSPService(
         enabled=True,
         wait_mode="document",
@@ -101,7 +101,7 @@ def test_snapshot_failure_marks_broken_via_outer_timeout(tmp_path, monkeypatch):
     repo = _make_git_workspace(tmp_path)
     monkeypatch.chdir(str(repo))
     src = repo / "x.py"
-    src.write_text("")
+    src.write_text("", encoding="utf-8")
 
     svc = LSPService(
         enabled=True,

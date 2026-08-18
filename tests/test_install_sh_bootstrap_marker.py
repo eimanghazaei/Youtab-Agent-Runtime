@@ -65,7 +65,7 @@ def test_marker_matches_the_schema_the_desktop_validates(tmp_path):
     marker = install_dir / ".youtab-agent-runtime-bootstrap-complete"
     assert marker.is_file(), "install.sh must stamp the bootstrap marker"
 
-    payload = json.loads(marker.read_text())
+    payload = json.loads(marker.read_text(encoding="utf-8"))
     assert payload["schemaVersion"] == 1
     assert len(payload["pinnedCommit"]) >= 7
     assert payload["pinnedBranch"] == "main"
@@ -88,7 +88,7 @@ def test_explicit_commit_pin_wins_over_head(tmp_path):
 
     run_write_marker(install_dir, commit=pinned)
 
-    payload = json.loads((install_dir / ".youtab-agent-runtime-bootstrap-complete").read_text())
+    payload = json.loads((install_dir / ".youtab-agent-runtime-bootstrap-complete").read_text(encoding="utf-8"))
     assert payload["pinnedCommit"] == pinned
 
 

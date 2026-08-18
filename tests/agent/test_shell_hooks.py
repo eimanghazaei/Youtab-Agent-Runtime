@@ -21,7 +21,7 @@ from agent import shell_hooks
 
 def _write_script(tmp_path: Path, name: str, body: str) -> Path:
     path = tmp_path / name
-    path.write_text(body)
+    path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
     return path
 
@@ -221,7 +221,7 @@ class TestCallbackSubprocess:
         cb(tool_name="file_read", args={"path": "x"})
         assert calls.exists()
         # Only the terminal call wrote to the log
-        assert calls.read_text().count("pre_tool_call") == 1
+        assert calls.read_text(encoding="utf-8").count("pre_tool_call") == 1
 
     def test_payload_schema_delivered(self, tmp_path):
         capture = tmp_path / "payload.json"
@@ -239,7 +239,7 @@ class TestCallbackSubprocess:
             session_id="sess-77",
             task_id="task-77",
         )
-        payload = json.loads(capture.read_text())
+        payload = json.loads(capture.read_text(encoding="utf-8"))
         assert payload["hook_event_name"] == "pre_tool_call"
         assert payload["tool_name"] == "terminal"
         assert payload["tool_input"] == {"command": "echo hi"}

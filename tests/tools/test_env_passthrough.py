@@ -40,7 +40,7 @@ class TestConfigPassthrough:
     def test_reads_from_config(self, tmp_path, monkeypatch):
         config = {"terminal": {"env_passthrough": ["MY_CUSTOM_KEY", "ANOTHER_TOKEN"]}}
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config))
+        config_path.write_text(yaml.dump(config), encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         _ep_mod._config_passthrough = None
 
@@ -52,7 +52,7 @@ class TestConfigPassthrough:
     def test_union_of_skill_and_config(self, tmp_path, monkeypatch):
         config = {"terminal": {"env_passthrough": ["CONFIG_KEY"]}}
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config))
+        config_path.write_text(yaml.dump(config), encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         _ep_mod._config_passthrough = None
 

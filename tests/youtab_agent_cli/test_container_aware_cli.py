@@ -35,7 +35,8 @@ def container_env(tmp_path, monkeypatch):
         "backend=podman\n"
         "container_name=youtab-agent-runtime\n"
         "exec_user=youtab\n"
-        "youtab_bin=/data/current-package/bin/youtab\n"
+        "youtab_bin=/data/current-package/bin/youtab\n",
+        encoding="utf-8",
     )
     return youtab_home
 

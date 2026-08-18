@@ -9,7 +9,7 @@ def test_dry_run_prints_plan_without_mutating(monkeypatch, tmp_path, capsys):
     youtab_home = tmp_path / ".youtab-agent-runtime"
     project_root.mkdir()
     youtab_home.mkdir()
-    (youtab_home / "config.yaml").write_text("model: {}\n")
+    (youtab_home / "config.yaml").write_text("model: {}\n", encoding="utf-8")
 
     called = False
 

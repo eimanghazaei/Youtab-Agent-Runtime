@@ -382,7 +382,7 @@ class TestRootLevelProviderOverride:
                 "default": "google/gemini-3-flash-preview",
                 "provider": "openrouter",  # correct canonical key
             },
-        }))
+        }), encoding="utf-8")
 
         import cli
         monkeypatch.setattr(cli, "_youtab_home", youtab_home)
@@ -405,7 +405,7 @@ class TestRootLevelProviderOverride:
                 "default": "google/gemini-3-flash-preview",
                 # no explicit model.provider — defaults provide "auto"
             },
-        }))
+        }), encoding="utf-8")
 
         import cli
         monkeypatch.setattr(cli, "_youtab_home", youtab_home)
@@ -427,7 +427,7 @@ class TestRootLevelProviderOverride:
             "model": {
                 "default": "google/gemini-3-flash-preview",
             },
-        }))
+        }), encoding="utf-8")
 
         import cli
         monkeypatch.setattr(cli, "_youtab_home", youtab_home)
@@ -450,7 +450,7 @@ class TestRootLevelProviderOverride:
                 "backend": "vercel_sandbox",
                 "vercel_runtime": "python3.13",
             },
-        }))
+        }), encoding="utf-8")
 
         import cli
         monkeypatch.setattr(cli, "_youtab_home", youtab_home)

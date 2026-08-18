@@ -65,7 +65,7 @@ def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
     }
     if expiry is not None:
         data["expiry"] = expiry
-    path.write_text(json.dumps(data))
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def test_bridge_returns_valid_token(bridge_module, tmp_path):
@@ -191,7 +191,7 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
 
     creds = api_module.get_credentials()
 
-    saved = json.loads(token_path.read_text())
+    saved = json.loads(token_path.read_text(encoding="utf-8"))
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"

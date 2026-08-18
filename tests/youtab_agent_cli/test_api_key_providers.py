@@ -551,7 +551,7 @@ class TestHasAnyProviderConfigured:
         config_file = youtab_home / "config.yaml"
         config_file.write_text(yaml.dump({
             "model": {"default": "anthropic/claude-opus-4.6", "provider": "openrouter"},
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr(config_module, "get_env_path", lambda: youtab_home / ".env")
         monkeypatch.setattr(config_module, "get_youtab_home", lambda: youtab_home)
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))

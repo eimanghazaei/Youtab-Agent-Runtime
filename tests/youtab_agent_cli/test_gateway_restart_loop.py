@@ -143,7 +143,7 @@ class TestCronCreateLifecycleBlock:
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path / ".youtab-agent-runtime"))
         scripts_dir = tmp_path / ".youtab-agent-runtime" / "scripts"
         scripts_dir.mkdir(parents=True)
-        (scripts_dir / "restart.sh").write_text("#!/bin/bash\nyoutab gateway restart\n")
+        (scripts_dir / "restart.sh").write_text("#!/bin/bash\nyoutab gateway restart\n", encoding="utf-8")
         args = Namespace(
             cron_command="create",
             schedule="1h",
@@ -344,7 +344,8 @@ class TestLifecycleGuardModule:
         scripts_dir = tmp_path / ".youtab-agent-runtime" / "scripts"
         scripts_dir.mkdir(parents=True)
         (scripts_dir / "restart.sh").write_text(
-            "launchctl kickstart -k gui/501/ai.youtab-agent-runtime.gateway\n"
+            "launchctl kickstart -k gui/501/ai.youtab-agent-runtime.gateway\n",
+            encoding="utf-8",
         )
         with pytest.raises(GatewayLifecycleBlocked):
             check_gateway_lifecycle("daily", "restart.sh")

@@ -287,7 +287,7 @@ def _audit_lines(home):
     log = home / "logs" / "dashboard-auth.log"
     if not log.exists():
         return []
-    return [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_privileged_decisions_generate_audit_events(gated, tmp_path, monkeypatch):

@@ -66,7 +66,7 @@ def mock_pyright(monkeypatch, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".git").mkdir()
-    (repo / "pyproject.toml").write_text("")  # so pyright's root resolver finds it
+    (repo / "pyproject.toml").write_text("", encoding="utf-8")  # so pyright's root resolver finds it
     monkeypatch.chdir(str(repo))
     gen = _install_mock_server(monkeypatch, "errors", "pyright")
     next(gen)
@@ -85,7 +85,7 @@ def test_service_e2e_delta_filter(mock_pyright):
     """End-to-end: snapshot baseline → wait → delta returned."""
     repo = mock_pyright
     f = repo / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     svc = LSPService(
         enabled=True,
@@ -116,7 +116,7 @@ def test_service_e2e_delta_filter_with_line_shift(mock_pyright):
     """
     repo = mock_pyright
     f = repo / "x.py"
-    f.write_text("print('hi')\n")
+    f.write_text("print('hi')\n", encoding="utf-8")
 
     svc = LSPService(
         enabled=True,
@@ -147,7 +147,7 @@ def test_reused_client_refreshes_last_used_and_survives_reap(mock_pyright):
     """
     repo = mock_pyright
     f = repo / "x.py"
-    f.write_text("")
+    f.write_text("", encoding="utf-8")
     svc = LSPService(
         enabled=True,
         wait_mode="document",
@@ -180,7 +180,7 @@ def test_reaper_survives_sweep_error(mock_pyright):
     ``except Exception`` guard must swallow the error and keep sweeping."""
     repo = mock_pyright
     f = repo / "x.py"
-    f.write_text("")
+    f.write_text("", encoding="utf-8")
     svc = LSPService(
         enabled=True,
         wait_mode="document",

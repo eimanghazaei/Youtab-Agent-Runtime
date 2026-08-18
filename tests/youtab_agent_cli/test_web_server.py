@@ -141,7 +141,7 @@ class TestReloadEnv:
     def test_adds_new_vars(self, tmp_path):
         """reload_env() adds vars from .env that are not in os.environ."""
         env_file = tmp_path / ".env"
-        env_file.write_text("TEST_RELOAD_VAR=hello123\n")
+        env_file.write_text("TEST_RELOAD_VAR=hello123\n", encoding="utf-8")
         with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
             os.environ.pop("TEST_RELOAD_VAR", None)
             count = reload_env()
@@ -153,7 +153,7 @@ class TestReloadEnv:
     def test_removes_deleted_known_vars(self, tmp_path):
         """reload_env() removes known Youtab vars not present in .env."""
         env_file = tmp_path / ".env"
-        env_file.write_text("")  # empty .env
+        env_file.write_text("", encoding="utf-8")  # empty .env
         # Pick a known key from OPTIONAL_ENV_VARS
         known_key = next(iter(OPTIONAL_ENV_VARS.keys()))
         with patch.dict(reload_env.__globals__, {"get_env_path": lambda: env_file}):
@@ -2365,7 +2365,8 @@ class TestDiscoverUserThemes:
             "    hex: \"#0a1628\"\n"
             "    alpha: 1.0\n"
             "layout:\n"
-            "  density: spacious\n"
+            "  density: spacious\n",
+            encoding="utf-8",
         )
         from youtab_agent_cli import web_server
         results = web_server._discover_user_themes()
@@ -2382,7 +2383,7 @@ class TestDiscoverUserThemes:
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         themes_dir = tmp_path / "dashboard-themes"
         themes_dir.mkdir()
-        (themes_dir / "mine.yaml").write_text("name: mine\n")
+        (themes_dir / "mine.yaml").write_text("name: mine\n", encoding="utf-8")
 
         other = tmp_path / "other-profile"
         other.mkdir()
@@ -2925,7 +2926,7 @@ class TestDashboardPluginManifestExtensions:
         import json
         plug_dir = tmp_path / "plugins" / name / "dashboard"
         plug_dir.mkdir(parents=True)
-        (plug_dir / "manifest.json").write_text(json.dumps(manifest))
+        (plug_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
         return plug_dir
 
     def test_override_and_hidden_carried_through(self, tmp_path, monkeypatch):

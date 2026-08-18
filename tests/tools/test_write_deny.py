@@ -36,7 +36,7 @@ class TestWriteDenyExactPaths:
         profile_home = root / "profiles" / "coder"
         profile_home.mkdir(parents=True)
         global_env = root / ".env"
-        global_env.write_text("OPENAI_API_KEY=sk-real\n")
+        global_env.write_text("OPENAI_API_KEY=sk-real\n", encoding="utf-8")
 
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(profile_home))
 

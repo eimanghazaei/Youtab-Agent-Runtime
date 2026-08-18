@@ -233,7 +233,7 @@ def _run_with_current_provider_and_model(
         cron_lines.append(f"  model_provider: {cron_model_provider}")
     if cron_lines:
         config_yaml += "cron:\n" + "\n".join(cron_lines) + "\n"
-    (tmp_path / "config.yaml").write_text(config_yaml)
+    (tmp_path / "config.yaml").write_text(config_yaml, encoding="utf-8")
     fake_db = MagicMock()
     with patch("cron.scheduler._youtab_home", tmp_path), \
          patch("cron.scheduler._get_youtab_home", return_value=tmp_path), \

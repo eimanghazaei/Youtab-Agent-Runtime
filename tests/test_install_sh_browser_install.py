@@ -16,7 +16,7 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 def test_install_script_honors_explicit_browser_override_only() -> None:
     """find_system_browser consults only an explicit AGENT_BROWSER_EXECUTABLE_PATH."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     assert 'override="${AGENT_BROWSER_EXECUTABLE_PATH:-}"' in text
     # An explicit override still skips the bundled download (override, not fallback).
@@ -26,7 +26,7 @@ def test_install_script_honors_explicit_browser_override_only() -> None:
 
 
 def test_playwright_installs_are_timeout_guarded() -> None:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     # The timeout wrapper still exists and is used internally by the install
     # wrapper, so every Playwright download remains bounded.
@@ -47,7 +47,7 @@ def test_playwright_installs_are_timeout_guarded() -> None:
 
 def test_install_script_supports_skip_browser_flag() -> None:
     """--skip-browser (and --no-playwright alias) skips the Playwright install."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     assert "--skip-browser|--no-playwright)" in text
     assert "SKIP_BROWSER=true" in text
@@ -68,7 +68,7 @@ def test_browser_install_timeout_stays_interruptible() -> None:
     `-k 10` guarantees a SIGKILL after the deadline. Both are GNU-only, so the
     installer probes support once and falls back to plain `timeout`.
     """
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     # GNU-flag probe + the guarded invocation must both be present. The timeout
     # binary is parameterized ($timeout_bin) so macOS gtimeout works too (#39219).
@@ -105,7 +105,7 @@ def _run_install_fn(distro: str, version: str, *, native_fails: bool,
         "playwright_fallback_platform",
         "run_playwright_install",
     ]
-    src = INSTALL_SH.read_text()
+    src = INSTALL_SH.read_text(encoding="utf-8")
     import re
 
     extracted = []
@@ -158,7 +158,7 @@ echo "FINAL_RC=$?"
         env = dict(os.environ, RUNLOG=runlog)
         proc = subprocess.run(["bash", "-c", harness], capture_output=True,
                               text=True, env=env)
-        runs = Path(runlog).read_text().strip().splitlines()
+        runs = Path(runlog).read_text(encoding="utf-8").strip().splitlines()
         final_rc = None
         for line in proc.stdout.splitlines():
             if line.startswith("FINAL_RC="):

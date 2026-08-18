@@ -8,12 +8,12 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 
 def test_termux_pkg_list_includes_network_basics() -> None:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     assert "local termux_pkgs=(clang rust make pkg-config libffi openssl ca-certificates curl)" in text
 
 
 def test_install_script_has_connectivity_probe_and_termux_guidance() -> None:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     assert "check_network_prerequisites()" in text
     assert "https://pypi.org/simple/" in text
     assert "https://duckduckgo.com/" in text

@@ -66,8 +66,8 @@ class TestShellFileOpsCwdTracking:
         dir_b = tmp_path / "b"
         dir_a.mkdir()
         dir_b.mkdir()
-        (dir_a / "target.txt").write_text("content-a\n")
-        (dir_b / "target.txt").write_text("content-b\n")
+        (dir_a / "target.txt").write_text("content-a\n", encoding="utf-8")
+        (dir_b / "target.txt").write_text("content-b\n", encoding="utf-8")
 
         env = _FakeEnv(start_cwd=str(dir_a))
         ops = ShellFileOperations(env, cwd=str(dir_a))
@@ -91,7 +91,7 @@ class TestShellFileOpsCwdTracking:
         """Backends without a cwd attribute still work via init-time cwd."""
         dir_a = tmp_path / "fixed"
         dir_a.mkdir()
-        (dir_a / "target.txt").write_text("fixed-content\n")
+        (dir_a / "target.txt").write_text("fixed-content\n", encoding="utf-8")
 
         class _NoCwdEnv:
             def execute(self, command, cwd=None, **kwargs):
@@ -116,7 +116,7 @@ class TestShellFileOpsCwdTracking:
         this test catches it.
         """
         target = tmp_path / "file.txt"
-        target.write_text("old content\n")
+        target.write_text("old content\n", encoding="utf-8")
 
         env = _FakeEnv(start_cwd=str(tmp_path))
         ops = ShellFileOperations(env, cwd=str(tmp_path))
@@ -124,6 +124,6 @@ class TestShellFileOpsCwdTracking:
         result = ops.patch_replace(str(target), "old content\n", "new content\n")
         assert result.success is True
         assert result.error is None
-        assert target.read_text() == "new content\n", (
+        assert target.read_text(encoding="utf-8") == "new content\n", (
             "patch_replace claimed success but file wasn't written correctly"
         )

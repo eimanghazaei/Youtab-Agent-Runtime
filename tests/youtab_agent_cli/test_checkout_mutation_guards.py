@@ -83,8 +83,8 @@ class TestEarlyRecovery:
     def test_sandboxed_root_still_recovers(self, tmp_path, monkeypatch):
         # The guard must not disable recovery for sandboxed roots: with a
         # marker present and a broken probe, the repair path still runs.
-        (tmp_path / ".lazy-refresh-incomplete").write_text("started=1\npid=1\n")
-        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+        (tmp_path / ".lazy-refresh-incomplete").write_text("started=1\npid=1\n", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
         monkeypatch.setattr(er, "_probe_broken_packages", lambda: ["PyYAML"])
         monkeypatch.setattr(er, "_pinned_specs", lambda broken, root: broken)
         installs = []

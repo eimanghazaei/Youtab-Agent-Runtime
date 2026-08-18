@@ -100,7 +100,8 @@ class TestWantsTuiEarly:
     def home_with_interface(self, tmp_path, monkeypatch):
         def _make(interface):
             (tmp_path / "config.yaml").write_text(
-                f"display:\n  interface: {interface}\n"
+                f"display:\n  interface: {interface}\n",
+                encoding="utf-8",
             )
             monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
             monkeypatch.setattr(m, "_EARLY_INTERFACE_CACHE", None)
@@ -120,7 +121,7 @@ class TestWantsTuiEarly:
 
     def test_unreadable_config_defaults_to_cli(self, tmp_path, monkeypatch):
         # Garbage YAML must not crash the hot path; falls back to cli.
-        (tmp_path / "config.yaml").write_text("this: : : not valid yaml\n")
+        (tmp_path / "config.yaml").write_text("this: : : not valid yaml\n", encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setattr(m, "_EARLY_INTERFACE_CACHE", None)
         assert m._wants_tui_early([]) is False

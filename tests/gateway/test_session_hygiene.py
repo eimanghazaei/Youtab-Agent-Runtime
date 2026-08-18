@@ -472,7 +472,8 @@ async def test_session_hygiene_timeout_continues_to_agent_and_sets_cooldown(monk
         "compression:\n"
         "  enabled: true\n"
         "  hygiene_timeout_seconds: 0.01\n"
-        "  hygiene_failure_cooldown_seconds: 120\n"
+        "  hygiene_failure_cooldown_seconds: 120\n",
+        encoding="utf-8",
     )
 
     gateway_run = importlib.import_module("gateway.run")
@@ -740,7 +741,8 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     cfg_path.write_text(
         "compression:\n"
         "  enabled: true\n"
-        "  hygiene_hard_message_limit: 10\n"
+        "  hygiene_hard_message_limit: 10\n",
+        encoding="utf-8",
     )
 
     gateway_run = importlib.import_module("gateway.run")

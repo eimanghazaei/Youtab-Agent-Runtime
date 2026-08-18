@@ -112,7 +112,7 @@ class TestIntegration:
 class TestFileSizeLabel:
     def test_bytes(self, tmp_path):
         f = tmp_path / "small.txt"
-        f.write_text("hi")
+        f.write_text("hi", encoding="utf-8")
         assert _file_size_label(str(f)) == "2B"
 
 

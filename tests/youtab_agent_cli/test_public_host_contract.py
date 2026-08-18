@@ -218,7 +218,7 @@ def test_the_committed_block_matches_the_generator():
     """
     from youtab_runtime.origin_protection import render_nginx_server_block
 
-    committed = (GATEWAY / "infrastructure" / "nginx" / "agent.youtab.io.conf").read_text()
+    committed = (GATEWAY / "infrastructure" / "nginx" / "agent.youtab.io.conf").read_text(encoding="utf-8")
     generated = render_nginx_server_block(
         server_name=PUBLIC_HOST,
         upstream="127.0.0.1:8081",

@@ -49,6 +49,6 @@ class TestDebugSessionEnabled:
         ds.save()
         files = list(tmp_path.glob("*.json"))
         assert len(files) == 1
-        data = json.loads(files[0].read_text())
+        data = json.loads(files[0].read_text(encoding="utf-8"))
         assert data["total_calls"] == 0
         assert data["tool_calls"] == []

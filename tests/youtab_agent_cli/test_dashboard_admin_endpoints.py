@@ -67,8 +67,8 @@ class TestMcpEndpoints:
         assert "bearer_token" not in response.json()
 
         youtab_home = get_youtab_home()
-        config_text = (youtab_home / "config.yaml").read_text()
-        env_text = (youtab_home / ".env").read_text()
+        config_text = (youtab_home / "config.yaml").read_text(encoding="utf-8")
+        env_text = (youtab_home / ".env").read_text(encoding="utf-8")
         assert secret not in config_text
         assert "Bearer ${MCP_BEARER_SERVER_API_KEY}" in config_text
         assert f"MCP_BEARER_SERVER_API_KEY={secret}" in env_text
@@ -236,8 +236,8 @@ class TestMemoryEndpoints:
         from youtab_constants import get_youtab_home
 
         mem = get_youtab_home() / "memories"
-        (mem / "MEMORY.md").write_text("notes")
-        (mem / "USER.md").write_text("user")
+        (mem / "MEMORY.md").write_text("notes", encoding="utf-8")
+        (mem / "USER.md").write_text("user", encoding="utf-8")
 
         r = self.client.post("/api/memory/reset", json={"target": "user"})
         assert r.status_code == 200 and "USER.md" in r.json()["deleted"]
@@ -860,9 +860,9 @@ class TestDebugShareEndpoint:
 
         logs = get_youtab_home() / "logs"
         logs.mkdir(parents=True, exist_ok=True)
-        (logs / "agent.log").write_text("agent line\n")
-        (logs / "errors.log").write_text("err line\n")
-        (logs / "gateway.log").write_text("gw line\n")
+        (logs / "agent.log").write_text("agent line\n", encoding="utf-8")
+        (logs / "errors.log").write_text("err line\n", encoding="utf-8")
+        (logs / "gateway.log").write_text("gw line\n", encoding="utf-8")
 
 
     def test_redact_false_is_honored(self, monkeypatch):

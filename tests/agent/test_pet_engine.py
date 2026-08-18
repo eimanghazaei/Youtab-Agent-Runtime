@@ -117,7 +117,8 @@ def boba_like(tmp_path, monkeypatch):
     pet_dir.mkdir(parents=True, exist_ok=True)
     sheet.save(pet_dir / "spritesheet.webp")
     (pet_dir / "pet.json").write_text(
-        '{"id":"boba","displayName":"Boba","description":"d","spritesheetPath":"spritesheet.webp"}'
+        '{"id":"boba","displayName":"Boba","description":"d","spritesheetPath":"spritesheet.webp"}',
+        encoding="utf-8",
     )
     return pet_dir
 

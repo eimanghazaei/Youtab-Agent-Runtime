@@ -20,8 +20,8 @@ def _terminal_line(out: str) -> str:
 
 def _seed(home: Path, *, config_yaml: str, env_text: str) -> None:
     home.mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text(config_yaml)
-    (home / ".env").write_text(env_text)
+    (home / "config.yaml").write_text(config_yaml, encoding="utf-8")
+    (home / ".env").write_text(env_text, encoding="utf-8")
 
 
 def test_dump_surfaces_terminal_env_override(monkeypatch, capsys, tmp_path):

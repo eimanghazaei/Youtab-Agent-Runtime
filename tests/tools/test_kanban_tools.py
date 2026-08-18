@@ -821,7 +821,8 @@ def test_create_respects_auto_subscribe_on_create_false(monkeypatch, worker_env,
     home = tmp_path / "gate-home" / ".youtab-agent-runtime"
     home.mkdir(parents=True)
     (home / "config.yaml").write_text(
-        "kanban:\n  auto_subscribe_on_create: false\n"
+        "kanban:\n  auto_subscribe_on_create: false\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
     monkeypatch.setenv("YOUTAB_AGENT_SESSION_PLATFORM", "discord")

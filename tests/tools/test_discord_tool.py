@@ -387,10 +387,10 @@ class TestNonBlockingCapabilityDetection:
         # Rewrite timestamp to be stale
         import json as _json
         p = tmp_path / "discord_capabilities.json"
-        data = _json.loads(p.read_text())
+        data = _json.loads(p.read_text(encoding="utf-8"))
         for entry in data.values():
             entry["ts"] = _time.time() - dt._CAPABILITY_DISK_TTL_SECONDS - 10
-        p.write_text(_json.dumps(data))
+        p.write_text(_json.dumps(data), encoding="utf-8")
         assert dt._load_caps_from_disk("tok") is None
 
     def test_schema_build_uses_nonblocking_path(self, monkeypatch):

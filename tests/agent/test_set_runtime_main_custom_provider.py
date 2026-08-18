@@ -101,7 +101,8 @@ class TestResolveAutoCustomEndToEnd:
             "model:\n"
             "  default: glm-5.1\n"
             "  provider: 'custom:ephemeral'\n"
-            "  base_url: ''\n"
+            "  base_url: ''\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
@@ -145,7 +146,8 @@ class TestResolveAutoCustomEndToEnd:
             "  - name: openclaw\n"
             "    base_url: 'https://withcfg.example/v1'\n"
             "    model: glm-5.1\n"
-            "    api_key: cfg-key\n"
+            "    api_key: cfg-key\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
@@ -188,7 +190,8 @@ class TestResolveAutoCustomEndToEnd:
             f"    base_url: '{proxy_base}'\n"
             "    model: claude-4-6-opus\n"
             "    api_key: foundry-token\n"
-            "    api_mode: anthropic_messages\n"
+            "    api_mode: anthropic_messages\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 

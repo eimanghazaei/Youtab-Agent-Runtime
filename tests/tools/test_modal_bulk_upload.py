@@ -94,8 +94,8 @@ class TestModalBulkUpload:
 
         src_a = tmp_path / "a.json"
         src_b = tmp_path / "b.py"
-        src_a.write_text("cred_content")
-        src_b.write_text("skill_content")
+        src_a.write_text("cred_content", encoding="utf-8")
+        src_b.write_text("skill_content", encoding="utf-8")
 
         files = [
             (str(src_a), "/root/.youtab-agent-runtime/credentials/a.json"),

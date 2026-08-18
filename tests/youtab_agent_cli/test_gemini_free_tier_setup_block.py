@@ -11,8 +11,8 @@ def config_home(tmp_path, monkeypatch):
     """Isolated YOUTAB_AGENT_HOME with an empty config."""
     home = tmp_path / "youtab"
     home.mkdir()
-    (home / "config.yaml").write_text("model: some-old-model\n")
-    (home / ".env").write_text("")
+    (home / "config.yaml").write_text("model: some-old-model\n", encoding="utf-8")
+    (home / ".env").write_text("", encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
     # Clear any ambient env that could alter provider resolution
     for var in (
@@ -56,7 +56,7 @@ class TestGeminiSetupFreeTierBlock:
 
         # Config must NOT show gemini as the provider
         import yaml
-        cfg = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        cfg = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = cfg.get("model")
         if isinstance(model, dict):
             assert model.get("provider") != "gemini", (
@@ -87,7 +87,7 @@ class TestGeminiSetupFreeTierBlock:
         assert "Not saving Gemini" not in output
 
         import yaml
-        cfg = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        cfg = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = cfg.get("model")
         assert isinstance(model, dict), f"model should be dict, got {type(model)}"
         assert model.get("provider") == "gemini"

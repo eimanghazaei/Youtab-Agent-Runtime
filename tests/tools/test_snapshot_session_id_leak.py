@@ -101,7 +101,7 @@ def test_shared_snapshot_no_cross_session_leak(tmp_path):
         # And the snapshot file must not carry the session id at all.
         snap = env._snapshot_path
         if os.path.exists(snap):
-            with open(snap) as f:
+            with open(snap, encoding="utf-8") as f:
                 assert "YOUTAB_AGENT_SESSION_ID" not in f.read()
     finally:
         env.cleanup()

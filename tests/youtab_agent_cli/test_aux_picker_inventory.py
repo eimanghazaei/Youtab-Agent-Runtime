@@ -55,7 +55,7 @@ def configured_home(tmp_path, monkeypatch):
     ``custom_providers:`` entry, both credentialled via env."""
     home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
-    (home / "config.yaml").write_text(yaml.safe_dump(CONFIG))
+    (home / "config.yaml").write_text(yaml.safe_dump(CONFIG), encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")

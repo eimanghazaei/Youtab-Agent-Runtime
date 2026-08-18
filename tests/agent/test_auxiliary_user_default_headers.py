@@ -20,12 +20,12 @@ def _isolate(tmp_path, monkeypatch):
     youtab_home = tmp_path / ".youtab-agent-runtime"
     youtab_home.mkdir()
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
-    (youtab_home / "config.yaml").write_text("model:\n  default: test-model\n")
+    (youtab_home / "config.yaml").write_text("model:\n  default: test-model\n", encoding="utf-8")
 
 
 def _write_config(tmp_path, config_dict):
     import yaml
-    (tmp_path / ".youtab-agent-runtime" / "config.yaml").write_text(yaml.dump(config_dict))
+    (tmp_path / ".youtab-agent-runtime" / "config.yaml").write_text(yaml.dump(config_dict), encoding="utf-8")
 
 
 class TestApplyUserDefaultHeadersHelper:

@@ -90,7 +90,7 @@ def test_patch_replace_propagates_lsp_diagnostics(tmp_path):
     the outer PatchResult must carry it forward."""
     fops = ShellFileOperations(LocalEnvironment(cwd=str(tmp_path)))
     target = tmp_path / "x.py"
-    target.write_text("x = 1\n")
+    target.write_text("x = 1\n", encoding="utf-8")
 
     block = "<diagnostics>ERROR [1:5] semantic issue</diagnostics>"
 

@@ -182,7 +182,7 @@ class TestSafeRootDenialMessageIntegration:
 
         res = ops.write_file(str(inside), "content")
         assert res.error is None
-        assert inside.read_text() == "content"
+        assert inside.read_text(encoding="utf-8") == "content"
 
 
 class TestCheckSensitivePathMacOSBypass:
@@ -233,11 +233,11 @@ class TestAtomicWrite:
         # A real rename allocates a new inode for the target; an in-place
         # rewrite would keep the same inode. This proves the swap is atomic.
         target = tmp_path / "f.txt"
-        target.write_text("v1")
+        target.write_text("v1", encoding="utf-8")
         ino_before = os.stat(target).st_ino
         res = ops.write_file(str(target), "v2 content")
         assert res.error is None, res.error
-        assert target.read_text() == "v2 content"
+        assert target.read_text(encoding="utf-8") == "v2 content"
         assert os.stat(target).st_ino != ino_before
 
 
@@ -249,11 +249,11 @@ class TestAtomicWrite:
 
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
-        target.write_text("a = 1\nb = 2\nc = 3\n")
+        target.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
         os.chmod(target, 0o600)
         res = ops.patch_replace(str(target), "b = 2", "b = 22")
         assert res.success, res.error
-        assert target.read_text() == "a = 1\nb = 22\nc = 3\n"
+        assert target.read_text(encoding="utf-8") == "a = 1\nb = 22\nc = 3\n"
         assert (os.stat(target).st_mode & 0o777) == 0o600
 
 

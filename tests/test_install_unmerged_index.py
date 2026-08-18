@@ -42,7 +42,7 @@ def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProce
 
 def _extract_autostash_block() -> str:
     """Pull the autostash if-block from install.sh's update_repo()."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     m = re.search(
         r'local autostash_ref="".*?\n            fi\n',
         text,
@@ -53,7 +53,7 @@ def _extract_autostash_block() -> str:
 
 
 def _extract_install_sh_function(name: str) -> str:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     match = re.search(rf"{name}\(\) \{{.*?\n\}}", text, re.DOTALL)
     assert match is not None, f"{name}() not found in install.sh"
     return match.group(0)
@@ -63,7 +63,7 @@ def _make_unmerged_repo(repo: Path) -> None:
     """Leave ``repo`` with a conflicted (unmerged) index, as an interrupted
     update would."""
     _git(repo, "init")
-    (repo / "f.txt").write_text("base\n")
+    (repo / "f.txt").write_text("base\n", encoding="utf-8")
     _git(repo, "add", "f.txt")
     _git(repo, "commit", "-m", "base")
     # Capture the default branch name only after the first commit exists
@@ -71,12 +71,12 @@ def _make_unmerged_repo(repo: Path) -> None:
     start = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
     _git(repo, "checkout", "-b", "feature")
-    (repo / "f.txt").write_text("feature side\n")
+    (repo / "f.txt").write_text("feature side\n", encoding="utf-8")
     _git(repo, "add", "f.txt")
     _git(repo, "commit", "-m", "feature")
 
     _git(repo, "checkout", start)
-    (repo / "f.txt").write_text("main side\n")
+    (repo / "f.txt").write_text("main side\n", encoding="utf-8")
     _git(repo, "add", "f.txt")
     _git(repo, "commit", "-m", "mainside")
 
@@ -130,7 +130,7 @@ def test_install_sh_clears_unmerged_index_then_stashes(tmp_path: Path) -> None:
 def test_install_ps1_clears_unmerged_index_before_stash() -> None:
     """install.ps1 must clear an unmerged index before stash/checkout, and do
     so *before* the stash push (order matters — the fix is a no-op otherwise)."""
-    text = INSTALL_PS1.read_text()
+    text = INSTALL_PS1.read_text(encoding="utf-8")
     assert "ls-files --unmerged" in text, (
         "install.ps1 must detect an unmerged index before updating"
     )
@@ -145,7 +145,7 @@ def test_install_ps1_clears_unmerged_index_before_stash() -> None:
 
 def test_install_sh_clears_unmerged_index_before_stash_source_order() -> None:
     """Same ordering contract for install.sh's source."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     assert "ls-files --unmerged" in text
     idx_unmerged = text.index("ls-files --unmerged")
     idx_stash = text.index("stash push --include-untracked")
@@ -163,7 +163,7 @@ def test_install_ps1_stops_venv_resident_processes_before_removing_venv() -> Non
     mid-recursion (issues #47036/#47557/#47910). The recreate branch must also
     sweep by venv path prefix, and that sweep must run before the delete.
     """
-    text = INSTALL_PS1.read_text()
+    text = INSTALL_PS1.read_text(encoding="utf-8")
 
     # The youtab.exe tree-kill is preserved (kills spawned child processes too).
     assert 'taskkill /F /T /IM youtab.exe' in text

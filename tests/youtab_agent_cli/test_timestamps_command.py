@@ -25,7 +25,7 @@ class _Stub(CLICommandsMixin):
 def _seed(tmp_path, monkeypatch, value=False):
     hh = tmp_path / ".youtab-agent-runtime"
     hh.mkdir()
-    (hh / "config.yaml").write_text(f"display:\n  timestamps: {str(value).lower()}\n")
+    (hh / "config.yaml").write_text(f"display:\n  timestamps: {str(value).lower()}\n", encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(hh))
     import cli
 
@@ -38,7 +38,7 @@ def test_timestamps_on_sets_and_persists(tmp_path, monkeypatch):
     s = _Stub()
     s._handle_timestamps_command("/timestamps on")
     assert s.show_timestamps is True
-    assert yaml.safe_load((hh / "config.yaml").read_text())["display"]["timestamps"] is True
+    assert yaml.safe_load((hh / "config.yaml").read_text(encoding="utf-8"))["display"]["timestamps"] is True
 
 
 def _render_history(history, show_ts):

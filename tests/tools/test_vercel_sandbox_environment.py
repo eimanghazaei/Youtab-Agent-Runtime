@@ -290,7 +290,7 @@ class TestFileSync:
         self, make_env, vercel_sdk, monkeypatch, tmp_path
     ):
         src = tmp_path / "token.txt"
-        src.write_text("secret-token")
+        src.write_text("secret-token", encoding="utf-8")
         monkeypatch.setattr(
             "tools.credential_files.get_credential_file_mounts",
             lambda: [
@@ -317,7 +317,7 @@ class TestFileSync:
         self, make_env, vercel_sdk, monkeypatch, tmp_path
     ):
         src = tmp_path / "token.txt"
-        src.write_text("secret-token")
+        src.write_text("secret-token", encoding="utf-8")
         monkeypatch.setattr(
             "tools.credential_files.get_credential_file_mounts",
             lambda: [
@@ -331,7 +331,7 @@ class TestFileSync:
         monkeypatch.setattr("tools.credential_files.iter_cache_files", lambda **kwargs: [])
 
         env = make_env()
-        src.write_text("updated-secret-token")
+        src.write_text("updated-secret-token", encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_FORCE_FILE_SYNC", "1")
         vercel_sdk.current.run_command_side_effects.append(_cwd_result("hello"))
 
@@ -351,7 +351,7 @@ class TestFileSync:
         youtab_home = tmp_path / ".youtab-agent-runtime"
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         src = tmp_path / "token.txt"
-        src.write_text("host-token")
+        src.write_text("host-token", encoding="utf-8")
         monkeypatch.setattr(
             "tools.credential_files.get_credential_file_mounts",
             lambda: [
@@ -388,7 +388,7 @@ class TestFileSync:
         # host credential file, so token.txt keeps its host content, and the
         # credential mapping cannot serve as an inference anchor for new
         # remote files either — new.txt/skip.txt stay remote-only.
-        assert src.read_text() == "host-token"
+        assert src.read_text(encoding="utf-8") == "host-token"
         assert not (tmp_path / "new.txt").exists()
         assert not (tmp_path / "skip.txt").exists()
         assert len(sandbox.snapshot_calls) == 1
@@ -400,7 +400,7 @@ class TestFileSync:
         self, make_env, vercel_sdk, monkeypatch, tmp_path
     ):
         src = tmp_path / "token.txt"
-        src.write_text("host-token")
+        src.write_text("host-token", encoding="utf-8")
         monkeypatch.setattr(
             "tools.credential_files.get_credential_file_mounts",
             lambda: [
@@ -434,7 +434,7 @@ class TestFileSync:
 
         env.cleanup()
 
-        assert src.read_text() == "host-token"
+        assert src.read_text(encoding="utf-8") == "host-token"
         assert len(sandbox.snapshot_calls) == 1
         assert sandbox.closed == 1
         assert len(sandbox.download_file_calls) == 0

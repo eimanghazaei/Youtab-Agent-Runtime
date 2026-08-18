@@ -32,7 +32,7 @@ def clean_env(monkeypatch):
 def bundle_file(tmp_path: Path) -> str:
     """Create a placeholder CA bundle file and return its absolute path."""
     path = tmp_path / "ca.pem"
-    path.write_text("-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----\n")
+    path.write_text("-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----\n", encoding="utf-8")
     return str(path)
 
 
@@ -45,7 +45,7 @@ class TestResolveRequestsVerify:
 
     def test_priority_youtab_over_requests(self, clean_env, tmp_path, bundle_file):
         other = tmp_path / "other.pem"
-        other.write_text("stub")
+        other.write_text("stub", encoding="utf-8")
         clean_env.setenv("YOUTAB_AGENT_CA_BUNDLE", bundle_file)
         clean_env.setenv("REQUESTS_CA_BUNDLE", str(other))
         assert _resolve_requests_verify() == bundle_file

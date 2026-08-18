@@ -23,7 +23,7 @@ pytestmark = pytest.mark.skipif(
 class TestWarnIfCredentialFileBroadlyReadable:
     def test_warns_on_world_readable(self, tmp_path, caplog):
         f = tmp_path / "slack_tokens.json"
-        f.write_text("{}")
+        f.write_text("{}", encoding="utf-8")
         f.chmod(0o644)
 
         with caplog.at_level(logging.WARNING):
@@ -36,7 +36,7 @@ class TestWarnIfCredentialFileBroadlyReadable:
 
     def test_warns_on_group_readable(self, tmp_path, caplog):
         f = tmp_path / "tokens.json"
-        f.write_text("{}")
+        f.write_text("{}", encoding="utf-8")
         f.chmod(0o640)
 
         with caplog.at_level(logging.WARNING):
@@ -44,7 +44,7 @@ class TestWarnIfCredentialFileBroadlyReadable:
 
     def test_silent_on_0600(self, tmp_path, caplog):
         f = tmp_path / "tokens.json"
-        f.write_text("{}")
+        f.write_text("{}", encoding="utf-8")
         f.chmod(0o600)
 
         with caplog.at_level(logging.WARNING):
@@ -61,7 +61,7 @@ class TestWarnIfCredentialFileBroadlyReadable:
 
     def test_uses_provided_logger(self, tmp_path):
         f = tmp_path / "tokens.json"
-        f.write_text("{}")
+        f.write_text("{}", encoding="utf-8")
         f.chmod(0o644)
 
         records = []
@@ -88,7 +88,7 @@ class TestGoogleChatReadPathWarns:
         # google-auth may not be installed in this environment; the warning
         # fires before the import guard, so a None return is fine either way.
         token = tmp_path / "google_chat_user_token.json"
-        token.write_text("{}")
+        token.write_text("{}", encoding="utf-8")
         token.chmod(0o644)
 
         from plugins.platforms.google_chat.oauth import load_user_credentials

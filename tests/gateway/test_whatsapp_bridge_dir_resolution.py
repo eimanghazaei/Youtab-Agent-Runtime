@@ -16,8 +16,8 @@ from gateway.platforms import whatsapp_common
 def _seed_install_tree(install_bridge: Path) -> None:
     """Create a minimal fake bridge source tree."""
     install_bridge.mkdir(parents=True, exist_ok=True)
-    (install_bridge / "bridge.js").write_text("// bridge\n")
-    (install_bridge / "package.json").write_text('{"name": "whatsapp-bridge"}\n')
+    (install_bridge / "bridge.js").write_text("// bridge\n", encoding="utf-8")
+    (install_bridge / "package.json").write_text('{"name": "whatsapp-bridge"}\n', encoding="utf-8")
 
 
 def test_readonly_install_mirrors_to_youtab_home(tmp_path, monkeypatch):
@@ -54,7 +54,7 @@ def test_readonly_install_mirrors_to_youtab_home(tmp_path, monkeypatch):
     expected = youtab_home / "scripts" / "whatsapp-bridge"
     assert resolved == expected
     # Source was mirrored, not symlinked.
-    assert (expected / "bridge.js").read_text() == "// bridge\n"
+    assert (expected / "bridge.js").read_text(encoding="utf-8") == "// bridge\n"
     assert (expected / "package.json").exists()
 
 

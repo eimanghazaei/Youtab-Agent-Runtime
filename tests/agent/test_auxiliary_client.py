@@ -91,7 +91,7 @@ def codex_auth_dir(tmp_path, monkeypatch):
             "access_token": "codex-test-token-abc123",
             "refresh_token": "codex-refresh-xyz",
         }
-    }))
+    }), encoding="utf-8")
     monkeypatch.setattr(
         "agent.auxiliary_client._read_codex_access_token",
         lambda: "codex-test-token-abc123",
@@ -306,7 +306,8 @@ class TestMoaAggregatorSharedResolution:
                         },
                     }
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
         return home
@@ -317,9 +318,9 @@ class TestMoaAggregatorSharedResolution:
         import yaml
 
         home = self._write_moa_config(tmp_path, monkeypatch)
-        cfg = yaml.safe_load((home / "config.yaml").read_text())
+        cfg = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
         cfg["auxiliary"] = {"title_generation": {"provider": "moa", "model": "opus-gpt"}}
-        (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+        (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
         resolved_provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(
             task="title_generation",
@@ -516,7 +517,7 @@ class TestReadCodexAccessToken:
                     "tokens": {"access_token": "tok-123", "refresh_token": "r-456"},
                 },
             },
-        }))
+        }), encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         result = _read_codex_access_token()
         assert result == "tok-123"
@@ -547,7 +548,7 @@ class TestReadCodexAccessToken:
                     "tokens": {"access_token": expired_jwt, "refresh_token": "r"},
                 },
             },
-        }))
+        }), encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _read_codex_access_token()
@@ -572,7 +573,7 @@ class TestReadCodexAccessToken:
                     "tokens": {"access_token": valid_jwt, "refresh_token": "r"},
                 },
             },
-        }))
+        }), encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         result = _read_codex_access_token()
         assert result == valid_jwt
@@ -595,7 +596,7 @@ class TestResolveXaiOAuthForAux:
         (youtab_home / "auth.json").write_text(json.dumps({
             "version": 1,
             "providers": {},
-        }))
+        }), encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         monkeypatch.delenv("YOUTAB_AGENT_XAI_BASE_URL", raising=False)
         monkeypatch.delenv("XAI_BASE_URL", raising=False)
@@ -627,7 +628,7 @@ class TestResolveXaiOAuthForAux:
         (youtab_home / "auth.json").write_text(json.dumps({
             "version": 1,
             "providers": {},
-        }))
+        }), encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         monkeypatch.setenv("YOUTAB_AGENT_XAI_BASE_URL", "https://example.x.ai/v1/")
 
@@ -881,7 +882,7 @@ class TestExpiredCodexFallback:
                     "tokens": {"access_token": expired_jwt, "refresh_token": "r"},
                 },
             },
-        }))
+        }), encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
         # Set up Anthropic as fallback
@@ -924,7 +925,7 @@ class TestExpiredCodexFallback:
                     "tokens": {"access_token": expired_jwt, "refresh_token": "r"},
                 },
             },
-        }))
+        }), encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
 

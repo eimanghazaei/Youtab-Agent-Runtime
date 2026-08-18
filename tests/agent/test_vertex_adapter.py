@@ -145,7 +145,7 @@ def test_adc_refuses_foreign_profile_google_application_credentials(
     from agent import secret_scope
 
     sa_file = tmp_path / "other_profile_sa.json"
-    sa_file.write_text('{"project_id": "other-profile"}')
+    sa_file.write_text('{"project_id": "other-profile"}', encoding="utf-8")
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", str(sa_file))
 
     secret_scope.set_multiplex_active(True)

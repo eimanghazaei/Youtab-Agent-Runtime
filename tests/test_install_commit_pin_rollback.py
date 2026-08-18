@@ -49,7 +49,7 @@ def _git(cwd: Path, *args: str) -> str:
 
 def _extract_pin_block() -> str:
     """Pull the commit-pin block out of install.sh's update_repo()."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     match = re.search(
         r'if \[ -n "\$INSTALL_COMMIT" \]; then.*?\n    fi\n',
         text,
@@ -67,7 +67,7 @@ def repo(tmp_path):
     _git(origin, "init", "-q", "-b", "main")
     shas = []
     for n in range(3):
-        (origin / "f.txt").write_text(f"rev{n}\n")
+        (origin / "f.txt").write_text(f"rev{n}\n", encoding="utf-8")
         _git(origin, "add", "f.txt")
         _git(origin, "commit", "-qm", f"rev{n}")
         shas.append(_git(origin, "rev-parse", "HEAD"))

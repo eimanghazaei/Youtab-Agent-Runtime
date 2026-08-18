@@ -56,7 +56,7 @@ class TestReadClaudeCodeCredentialsPriority:
                 "refreshToken": "json-refresh",
                 "expiresAt": 9999999999999,
             }
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         # Mock Keychain to return a "newer" token
@@ -90,7 +90,7 @@ class TestReadClaudeCodeCredentialsPriority:
                 "refreshToken": "json-refresh",
                 "expiresAt": 9999999999999,
             }
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
@@ -138,7 +138,7 @@ class TestReadClaudeCodeCredentialsDesync:
                 "refreshToken": "json-refresh",
                 "expiresAt": file_expires_at,
             }
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
     def _keychain_payload(self, *, access_token, expires_at, refresh_token="kc-refresh"):

@@ -19,9 +19,9 @@ def config_home(tmp_path, monkeypatch):
     home = tmp_path / "youtab"
     home.mkdir()
     config_yaml = home / "config.yaml"
-    config_yaml.write_text("model: old-model\ncustom_providers: []\n")
+    config_yaml.write_text("model: old-model\ncustom_providers: []\n", encoding="utf-8")
     env_file = home / ".env"
-    env_file.write_text("")
+    env_file.write_text("", encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
     monkeypatch.delenv("YOUTAB_AGENT_MODEL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -35,7 +35,7 @@ def _write_config(home, **top_level):
     import yaml
     cfg = {"model": "old-model", "custom_providers": []}
     cfg.update(top_level)
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
 
 def _capture_provider_labels(config_home):

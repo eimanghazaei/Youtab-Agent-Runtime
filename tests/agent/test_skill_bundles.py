@@ -39,7 +39,7 @@ def _make_bundle_yaml(
         for ln in instruction.splitlines():
             lines.append(f"  {ln}")
     path = bundles_dir / f"{slug}.yaml"
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 
@@ -47,7 +47,8 @@ def _make_skill(skills_dir: Path, name: str, body: str = "Do the thing.") -> Pat
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n"
+        f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n",
+        encoding="utf-8",
     )
     return skill_dir
 
@@ -94,7 +95,7 @@ class TestScanBundles:
     def test_skips_invalid_yaml(self, bundles_env):
         bundles_dir, _ = bundles_env
         bundles_dir.mkdir(parents=True)
-        (bundles_dir / "broken.yaml").write_text("{not: valid yaml: [")
+        (bundles_dir / "broken.yaml").write_text("{not: valid yaml: [", encoding="utf-8")
         _make_bundle_yaml(bundles_dir, "good", ["skill-a"])
         result = scan_bundles()
         assert "/good" in result
@@ -218,7 +219,7 @@ class TestSaveAndDeleteBundle:
         path = save_bundle("test-bundle", ["s1", "s2"], description="d", instruction="i")
         assert path.exists()
         assert path.parent == bundles_dir
-        content = path.read_text()
+        content = path.read_text(encoding="utf-8")
         assert "test-bundle" in content
         assert "s1" in content
         assert "s2" in content

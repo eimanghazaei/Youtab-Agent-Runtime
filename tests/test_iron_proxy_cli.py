@@ -229,7 +229,7 @@ def test_cmd_disable_uses_public_status_pid_not_private_read_pid(
     # "still running"; the new code reads status.pid which returns None
     # because _pid_alive is False, so no spurious warning.
     state = ip._proxy_state_dir()
-    (state / "iron-proxy.pid").write_text("99999")
+    (state / "iron-proxy.pid").write_text("99999", encoding="utf-8")
     # _pid_alive returns False → status.pid is None.
     monkeypatch.setattr(ip, "_pid_alive", lambda pid: False)
 

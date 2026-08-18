@@ -45,8 +45,8 @@ def _advance_backup_clock(seconds: float = 1.1) -> None:
 
 def _make_youtab_tree(root: Path) -> None:
     """Create a realistic ~/.youtab-agent-runtime directory structure for testing."""
-    (root / "config.yaml").write_text("model:\n  provider: openrouter\n")
-    (root / ".env").write_text("OPENROUTER_API_KEY=sk-test-123\n")
+    (root / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+    (root / ".env").write_text("OPENROUTER_API_KEY=sk-test-123\n", encoding="utf-8")
     for db_name in ("memory_store.db", "youtab_state.db"):
         with sqlite3.connect(root / db_name) as conn:
             conn.execute("CREATE TABLE sample (value TEXT)")
@@ -54,36 +54,36 @@ def _make_youtab_tree(root: Path) -> None:
 
     # Sessions
     (root / "sessions").mkdir(exist_ok=True)
-    (root / "sessions" / "abc123.json").write_text("{}")
+    (root / "sessions" / "abc123.json").write_text("{}", encoding="utf-8")
 
     # Skills
     (root / "skills").mkdir(exist_ok=True)
     (root / "skills" / "my-skill").mkdir()
-    (root / "skills" / "my-skill" / "SKILL.md").write_text("# My Skill\n")
+    (root / "skills" / "my-skill" / "SKILL.md").write_text("# My Skill\n", encoding="utf-8")
 
     # Skins
     (root / "skins").mkdir(exist_ok=True)
-    (root / "skins" / "cyber.yaml").write_text("name: cyber\n")
+    (root / "skins" / "cyber.yaml").write_text("name: cyber\n", encoding="utf-8")
 
     # Cron
     (root / "cron").mkdir(exist_ok=True)
-    (root / "cron" / "jobs.json").write_text("[]")
+    (root / "cron" / "jobs.json").write_text("[]", encoding="utf-8")
 
     # Memories
     (root / "memories").mkdir(exist_ok=True)
-    (root / "memories" / "notes.json").write_text("{}")
+    (root / "memories" / "notes.json").write_text("{}", encoding="utf-8")
 
     # Profiles
     (root / "profiles").mkdir(exist_ok=True)
     (root / "profiles" / "coder").mkdir()
-    (root / "profiles" / "coder" / "config.yaml").write_text("model:\n  provider: anthropic\n")
-    (root / "profiles" / "coder" / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-123\n")
+    (root / "profiles" / "coder" / "config.yaml").write_text("model:\n  provider: anthropic\n", encoding="utf-8")
+    (root / "profiles" / "coder" / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-123\n", encoding="utf-8")
 
     # youtab-agent-runtime repo (should be EXCLUDED)
     (root / "youtab-agent-runtime").mkdir(exist_ok=True)
-    (root / "youtab-agent-runtime" / "run_agent.py").write_text("# big file\n")
+    (root / "youtab-agent-runtime" / "run_agent.py").write_text("# big file\n", encoding="utf-8")
     (root / "youtab-agent-runtime" / ".git").mkdir()
-    (root / "youtab-agent-runtime" / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (root / "youtab-agent-runtime" / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
 
     # __pycache__ (should be EXCLUDED)
     (root / "plugins").mkdir(exist_ok=True)
@@ -91,11 +91,11 @@ def _make_youtab_tree(root: Path) -> None:
     (root / "plugins" / "__pycache__" / "mod.cpython-312.pyc").write_bytes(b"\x00")
 
     # PID files (should be EXCLUDED)
-    (root / "gateway.pid").write_text("12345")
+    (root / "gateway.pid").write_text("12345", encoding="utf-8")
 
     # Logs (should be included)
     (root / "logs").mkdir(exist_ok=True)
-    (root / "logs" / "agent.log").write_text("log line\n")
+    (root / "logs" / "agent.log").write_text("log line\n", encoding="utf-8")
 
 
 def _symlink_file_or_skip(link: Path, target: Path) -> None:
@@ -212,7 +212,7 @@ class TestBackup:
         youtab_home.mkdir()
         _make_youtab_tree(youtab_home)
         outside = tmp_path / "outside-secret.txt"
-        outside.write_text("outside secret\n")
+        outside.write_text("outside secret\n", encoding="utf-8")
         _symlink_file_or_skip(youtab_home / "skills" / "outside-link.txt", outside)
 
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
@@ -280,7 +280,7 @@ class TestImport:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         live_state = '{"gateway_state": "running"}'
-        (youtab_home / "profiles" / "coder" / "gateway_state.json").write_text(live_state)
+        (youtab_home / "profiles" / "coder" / "gateway_state.json").write_text(live_state, encoding="utf-8")
 
         zip_path = tmp_path / "backup.zip"
         self._make_backup_zip(zip_path, {
@@ -295,10 +295,10 @@ class TestImport:
         run_import(args)
 
         # Profile config is restored, but its live gateway state is preserved.
-        assert (youtab_home / "profiles" / "coder" / "config.yaml").read_text() == "model: anthropic\n"
+        assert (youtab_home / "profiles" / "coder" / "config.yaml").read_text(encoding="utf-8") == "model: anthropic\n"
         assert (
             youtab_home / "profiles" / "coder" / "gateway_state.json"
-        ).read_text() == live_state
+        ).read_text(encoding="utf-8") == live_state
 
     def test_preserves_runtime_pid_and_process_files(self, tmp_path, monkeypatch):
         """gateway.pid / cron.pid / gateway.lock / processes.json from a backup
@@ -310,8 +310,8 @@ class TestImport:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         # Live runtime files belonging to the target's own processes.
-        (youtab_home / "gateway.pid").write_text("4242")
-        (youtab_home / "processes.json").write_text('{"live": true}')
+        (youtab_home / "gateway.pid").write_text("4242", encoding="utf-8")
+        (youtab_home / "processes.json").write_text('{"live": true}', encoding="utf-8")
 
         zip_path = tmp_path / "backup.zip"
         self._make_backup_zip(zip_path, {
@@ -328,8 +328,8 @@ class TestImport:
         run_import(args)
 
         # Live runtime files are untouched; the backup's foreign ones never land.
-        assert (youtab_home / "gateway.pid").read_text() == "4242"
-        assert (youtab_home / "processes.json").read_text() == '{"live": true}'
+        assert (youtab_home / "gateway.pid").read_text(encoding="utf-8") == "4242"
+        assert (youtab_home / "processes.json").read_text(encoding="utf-8") == '{"live": true}'
         # cron.pid / gateway.lock had no live copy and were not seeded.
         assert not (youtab_home / "cron.pid").exists()
         assert not (youtab_home / "gateway.lock").exists()
@@ -394,8 +394,8 @@ class TestRoundTrip:
         run_import(Namespace(zipfile=str(out_zip), force=True))
 
         # Verify key files
-        assert (dst_home / "config.yaml").read_text() == "model:\n  provider: openrouter\n"
-        assert (dst_home / ".env").read_text() == "OPENROUTER_API_KEY=sk-test-123\n"
+        assert (dst_home / "config.yaml").read_text(encoding="utf-8") == "model:\n  provider: openrouter\n"
+        assert (dst_home / ".env").read_text(encoding="utf-8") == "OPENROUTER_API_KEY=sk-test-123\n"
         assert (dst_home / "skills" / "my-skill" / "SKILL.md").exists()
         assert (dst_home / "profiles" / "coder" / "config.yaml").exists()
         assert (dst_home / "sessions" / "abc123.json").exists()
@@ -490,11 +490,11 @@ class TestBackupEdgeCases:
         """Backup skips files with pre-1980 timestamps (ZIP limitation)."""
         youtab_home = tmp_path / ".youtab-agent-runtime"
         youtab_home.mkdir()
-        (youtab_home / "config.yaml").write_text("model: test\n")
+        (youtab_home / "config.yaml").write_text("model: test\n", encoding="utf-8")
 
         # Create a file with epoch timestamp (1970-01-01)
         old_file = youtab_home / "ancient.txt"
-        old_file.write_text("old data")
+        old_file.write_text("old data", encoding="utf-8")
         os.utime(old_file, (0, 0))
 
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
@@ -527,7 +527,7 @@ class TestImportEdgeCases:
         """Import handles EOFError during confirmation prompt."""
         youtab_home = tmp_path / ".youtab-agent-runtime"
         youtab_home.mkdir()
-        (youtab_home / "config.yaml").write_text("existing\n")
+        (youtab_home / "config.yaml").write_text("existing\n", encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
@@ -646,14 +646,15 @@ class TestQuickSnapshot:
         """Create a fake YOUTAB_AGENT_HOME with critical state files."""
         home = tmp_path / ".youtab-agent-runtime"
         home.mkdir()
-        (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
-        (home / ".env").write_text("OPENROUTER_API_KEY=test-key-123\n")
-        (home / "auth.json").write_text('{"providers": {}}\n')
+        (home / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+        (home / ".env").write_text("OPENROUTER_API_KEY=test-key-123\n", encoding="utf-8")
+        (home / "auth.json").write_text('{"providers": {}}\n', encoding="utf-8")
         (home / "channel_aliases.json").write_text(
-            '{"whatsapp": {"120363408391911677@g.us": "general"}}\n'
+            '{"whatsapp": {"120363408391911677@g.us": "general"}}\n',
+            encoding="utf-8",
         )
         (home / "cron").mkdir()
-        (home / "cron" / "jobs.json").write_text('{"jobs": []}\n')
+        (home / "cron" / "jobs.json").write_text('{"jobs": []}\n', encoding="utf-8")
 
         # Real SQLite database
         db_path = home / "state.db"
@@ -719,19 +720,23 @@ class TestQuickSnapshot:
         # Generic pairing store (new location)
         (youtab_home / "platforms" / "pairing").mkdir(parents=True)
         (youtab_home / "platforms" / "pairing" / "telegram-approved.json").write_text(
-            '{"12345": {"user_name": "alice"}}'
+            '{"12345": {"user_name": "alice"}}',
+            encoding="utf-8",
         )
         (youtab_home / "platforms" / "pairing" / "discord-approved.json").write_text(
-            '{"67890": {"user_name": "bob"}}'
+            '{"67890": {"user_name": "bob"}}',
+            encoding="utf-8",
         )
         # Legacy pairing store (old location)
         (youtab_home / "pairing").mkdir()
         (youtab_home / "pairing" / "matrix-approved.json").write_text(
-            '{"@charlie:server": {"user_name": "charlie"}}'
+            '{"@charlie:server": {"user_name": "charlie"}}',
+            encoding="utf-8",
         )
         # Feishu's separate JSON
         (youtab_home / "feishu_comment_pairing.json").write_text(
-            '{"doc_abc": {"allow_from": ["user_xyz"]}}'
+            '{"doc_abc": {"allow_from": ["user_xyz"]}}',
+            encoding="utf-8",
         )
 
         snap_id = create_quick_snapshot(youtab_home=youtab_home)
@@ -743,7 +748,7 @@ class TestQuickSnapshot:
         assert (snap_dir / "pairing" / "matrix-approved.json").exists()
         assert (snap_dir / "feishu_comment_pairing.json").exists()
 
-        with open(snap_dir / "manifest.json") as f:
+        with open(snap_dir / "manifest.json", encoding="utf-8") as f:
             meta = json.load(f)
         files = meta["files"]
         assert "platforms/pairing/telegram-approved.json" in files
@@ -798,7 +803,7 @@ class TestQuickSnapshot:
         assert not (second_dir / "state.db").exists()
 
         # Manifest must record the oversized skip
-        with open(second_dir / "manifest.json") as f:
+        with open(second_dir / "manifest.json", encoding="utf-8") as f:
             meta = json.load(f)
         assert "state.db" in meta.get("oversized_skipped", [])
 
@@ -829,7 +834,7 @@ class TestQuickSnapshotProjectsKanban:
         home = tmp_path / ".youtab-agent-runtime"
         home.mkdir()
         # Minimal critical file so the snapshot is non-empty.
-        (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
+        (home / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
 
         for name, table, row in (
             ("projects.db", "projects", ("p1", "demo")),
@@ -979,7 +984,7 @@ class TestPreUpdateBackup:
         from youtab_agent_cli.backup import create_pre_update_backup
 
         outside = tmp_path / "outside-secret.txt"
-        outside.write_text("outside secret\n")
+        outside.write_text("outside secret\n", encoding="utf-8")
         _symlink_file_or_skip(youtab_home / "skills" / "outside-link.txt", outside)
 
         out = create_pre_update_backup(youtab_home=youtab_home)
@@ -1015,7 +1020,7 @@ class TestRunPreUpdateBackup:
         (youtab_home / "config.yaml").write_text(yaml.safe_dump({
             "_config_version": 22,
             "updates": {"pre_update_backup": value},
-        }))
+        }), encoding="utf-8")
 
     @staticmethod
     def _zips(youtab_home):
@@ -1113,7 +1118,7 @@ class TestRestoreCronJobsIfEmptied:
     @staticmethod
     def _seed_jobs(path: Path, jobs):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"jobs": jobs}))
+        path.write_text(json.dumps({"jobs": jobs}), encoding="utf-8")
 
     def _make_snapshot(self, youtab_home: Path, label="pre-update"):
         from youtab_agent_cli.backup import create_quick_snapshot
@@ -1129,7 +1134,7 @@ class TestRestoreCronJobsIfEmptied:
         assert snap_id
 
         # Migration silently empties the file (valid JSON, zero jobs).
-        jobs_path.write_text(json.dumps({"jobs": []}))
+        jobs_path.write_text(json.dumps({"jobs": []}), encoding="utf-8")
 
         result = restore_cron_jobs_if_emptied(snap_id, youtab_home=youtab_home)
         assert result is not None
@@ -1138,7 +1143,7 @@ class TestRestoreCronJobsIfEmptied:
         assert result["snapshot_id"] == snap_id
 
         # The live file now has the jobs back.
-        restored = json.loads(jobs_path.read_text())
+        restored = json.loads(jobs_path.read_text(encoding="utf-8"))
         assert len(restored["jobs"]) == 3
 
 
@@ -1157,7 +1162,7 @@ class TestRestoreCronJobsIfEmptied:
         assert snap_id
 
         # Desktop scheduler overwrites with only its own 1 job.
-        jobs_path.write_text(json.dumps({"jobs": [{"id": "desktop-watchdog"}]}))
+        jobs_path.write_text(json.dumps({"jobs": [{"id": "desktop-watchdog"}]}), encoding="utf-8")
 
         result = restore_cron_jobs_if_emptied(snap_id, youtab_home=youtab_home)
         assert result is not None
@@ -1165,7 +1170,7 @@ class TestRestoreCronJobsIfEmptied:
         assert result["job_count"] == 19
 
         # The live file now has all 19 jobs back.
-        restored = json.loads(jobs_path.read_text())
+        restored = json.loads(jobs_path.read_text(encoding="utf-8"))
         assert len(restored["jobs"]) == 19
 
 
@@ -1182,8 +1187,8 @@ class TestRestoreCronJobsIfEmptied:
 class TestMemoryProviderExternalPaths:
     def _make_min_tree(self, youtab_home: Path) -> None:
         youtab_home.mkdir(parents=True, exist_ok=True)
-        (youtab_home / "config.yaml").write_text("model:\n  provider: openrouter\n")
-        (youtab_home / ".env").write_text("OPENROUTER_API_KEY=sk-test\n")
+        (youtab_home / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
+        (youtab_home / ".env").write_text("OPENROUTER_API_KEY=sk-test\n", encoding="utf-8")
         (youtab_home / "state.db").write_bytes(b"x")
 
 
@@ -1194,7 +1199,7 @@ class TestMemoryProviderExternalPaths:
         self._make_min_tree(youtab_home)
         outside = tmp_path.parent / "outside-home-secret"
         outside.mkdir(exist_ok=True)
-        (outside / "leak.json").write_text('{"secret":1}')
+        (outside / "leak.json").write_text('{"secret":1}', encoding="utf-8")
 
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -1237,7 +1242,7 @@ class TestMemoryProviderExternalPaths:
 
         restored = dst_home / ".honcho" / "config.json"
         assert restored.exists()
-        assert restored.read_text() == '{"peer":"bob"}'
+        assert restored.read_text(encoding="utf-8") == '{"peer":"bob"}'
         # Credential-shaped file tightened.
         assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into YOUTAB_AGENT_HOME.

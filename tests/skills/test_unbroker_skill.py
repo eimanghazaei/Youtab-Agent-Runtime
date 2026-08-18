@@ -658,7 +658,7 @@ def test_storage_lock_mutual_exclusion_and_stale_break():
             pass
         # a stale lock (old mtime) from a crashed writer gets broken
         lock = target.with_name(target.name + ".lock")
-        lock.write_text("999999")
+        lock.write_text("999999", encoding="utf-8")
         old = _time.time() - 120
         os.utime(lock, (old, old))
         with storage.locked(target, timeout=0.2, stale=30):

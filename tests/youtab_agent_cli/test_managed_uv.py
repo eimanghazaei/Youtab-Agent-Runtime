@@ -19,7 +19,7 @@ import pytest
 def _make_executable(path: Path) -> None:
     """Create a minimal fake uv binary at *path*."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("#!/bin/sh\necho uv 0.1.2\n")
+    path.write_text("#!/bin/sh\necho uv 0.1.2\n", encoding="utf-8")
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
 
 
@@ -97,7 +97,7 @@ class TestResolveUv:
     def test_non_executable_file_returns_none(self, tmp_path):
         uv = tmp_path / "bin" / "uv"
         uv.parent.mkdir(parents=True)
-        uv.write_text("not a binary")
+        uv.write_text("not a binary", encoding="utf-8")
         # Ensure no execute bit
         uv.chmod(0o644)
         with patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path):
@@ -670,11 +670,11 @@ class TestPatchRetryOnVulnerableCandidate:
             # which request produced it so the probe below can look it up.
             python = state["generation"] / "cpython" / "bin" / "python3"
             python.parent.mkdir(parents=True, exist_ok=True)
-            python.write_text(state["requested"] or "")
+            python.write_text(state["requested"] or "", encoding="utf-8")
             return SimpleNamespace(returncode=0, stdout=str(python), stderr="")
 
         def fake_probe(python, **kwargs):
-            requested = Path(python).read_text()
+            requested = Path(python).read_text(encoding="utf-8")
             # Bare minor request ("3.11") always resolves to the FIRST
             # (worst-case / already-known-vulnerable) version in the list.
             if requested in vulnerable_versions or requested == "3.11":

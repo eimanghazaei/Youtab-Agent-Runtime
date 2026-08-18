@@ -28,7 +28,8 @@ def _seed_pool(tmp_path, monkeypatch, entries, provider="openrouter"):
     youtab_home = tmp_path / "youtab"
     youtab_home.mkdir(parents=True, exist_ok=True)
     (youtab_home / "auth.json").write_text(
-        json.dumps({"version": 1, "credential_pool": {provider: entries}})
+        json.dumps({"version": 1, "credential_pool": {provider: entries}}),
+        encoding="utf-8",
     )
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
     from agent.credential_pool import load_pool

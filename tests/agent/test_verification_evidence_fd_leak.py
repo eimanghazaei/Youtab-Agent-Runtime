@@ -63,7 +63,7 @@ def _track_connections(monkeypatch):
 
 
 def _python_project(root):
-    (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+    (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
 
 
 def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):

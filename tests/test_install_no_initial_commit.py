@@ -42,7 +42,7 @@ def _git(cwd: Path, *args: str) -> None:
 
 def _extract_no_commit_guard() -> str:
     """Pull the clone_repo() guard that drops a commit-less checkout."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     m = re.search(
         r'if \[ -d "\$INSTALL_DIR/\.git" \] && ! git -C "\$INSTALL_DIR" '
         r"rev-parse --verify HEAD.*?\n    fi",
@@ -68,7 +68,7 @@ def test_install_sh_guard_moves_commitless_checkout_aside(tmp_path: Path) -> Non
     install_dir = tmp_path / "youtab-agent-runtime"
     install_dir.mkdir()
     _git(install_dir, "init")
-    (install_dir / "leftover.txt").write_text("partial download")  # untracked
+    (install_dir / "leftover.txt").write_text("partial download", encoding="utf-8")  # untracked
 
     # Sanity: this is exactly the state that breaks `git stash`.
     head = subprocess.run(
@@ -83,14 +83,14 @@ def test_install_sh_guard_moves_commitless_checkout_aside(tmp_path: Path) -> Non
     assert not install_dir.exists(), "commit-less checkout should be moved aside"
     backups = list(install_dir.parent.glob(install_dir.name + ".broken-*"))
     assert len(backups) == 1, "broken checkout should be moved to one backup dir"
-    assert (backups[0] / "leftover.txt").read_text() == "partial download"
+    assert (backups[0] / "leftover.txt").read_text(encoding="utf-8") == "partial download"
 
 
 def test_install_sh_guard_keeps_repo_with_commits(tmp_path: Path) -> None:
     install_dir = tmp_path / "youtab-agent-runtime"
     install_dir.mkdir()
     _git(install_dir, "init")
-    (install_dir / "f.txt").write_text("real content")
+    (install_dir / "f.txt").write_text("real content", encoding="utf-8")
     _git(install_dir, "add", "f.txt")
     _git(install_dir, "commit", "-m", "init")
 
@@ -105,7 +105,7 @@ def test_install_sh_guard_keeps_repo_with_commits(tmp_path: Path) -> None:
 def test_install_sh_guard_ignores_non_repo_dir(tmp_path: Path) -> None:
     install_dir = tmp_path / "youtab-agent-runtime"
     install_dir.mkdir()
-    (install_dir / "f.txt").write_text("not a repo")
+    (install_dir / "f.txt").write_text("not a repo", encoding="utf-8")
 
     _run_guard(install_dir)
     # No .git → not our concern; the existing "not a git repository" branch
@@ -116,7 +116,7 @@ def test_install_sh_guard_ignores_non_repo_dir(tmp_path: Path) -> None:
 
 def test_install_ps1_validity_requires_initial_commit() -> None:
     """The PowerShell repo-validity gate must also require a resolvable HEAD."""
-    text = INSTALL_PS1.read_text()
+    text = INSTALL_PS1.read_text(encoding="utf-8")
     assert "rev-parse --verify HEAD" in text, (
         "install.ps1 must probe for an initial commit (#40998)"
     )

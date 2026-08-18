@@ -25,7 +25,7 @@ def cfg_home(tmp_path, monkeypatch):
 
 
 def _write_cfg(home, cfg: dict):
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
 
 class _BothModalitiesProvider(VideoGenProvider):

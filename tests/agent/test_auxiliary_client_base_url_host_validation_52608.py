@@ -32,7 +32,7 @@ class TestTryAnthropicBaseUrlHostValidation:
                 "model": "claude-haiku-4-5-20251001",
                 "base_url": "https://openrouter.ai/api/v1",
             }
-        }))
+        }), encoding="utf-8")
 
         with (
             patch(
@@ -67,7 +67,7 @@ class TestTryAnthropicBaseUrlHostValidation:
                 "model": "claude-haiku-4-5-20251001",
                 "base_url": "https://api.anthropic.com",
             }
-        }))
+        }), encoding="utf-8")
 
         with (
             patch(
@@ -99,7 +99,7 @@ class TestTryAnthropicBaseUrlHostValidation:
                 "model": "claude-haiku-4-5-20251001",
                 "base_url": "https://api.openai.com/v1",
             }
-        }))
+        }), encoding="utf-8")
 
         with (
             patch(

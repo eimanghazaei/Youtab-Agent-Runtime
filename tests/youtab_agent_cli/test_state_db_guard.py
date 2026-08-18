@@ -96,7 +96,7 @@ class TestPreUpdateBackupIntegrityGuard:
 
         root = tmp_path / ".youtab-agent-runtime"
         root.mkdir()
-        (root / "config.yaml").write_text("model:\n  provider: openrouter\n")
+        (root / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
         db = root / "state.db"
         conn = sqlite3.connect(db)
         conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY)")

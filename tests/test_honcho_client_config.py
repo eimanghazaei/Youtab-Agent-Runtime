@@ -20,7 +20,7 @@ class TestHonchoClientConfigAutoEnable:
         config_path.write_text(json.dumps({
             "apiKey": "test-api-key-12345",
             # Note: no "enabled" field
-        }))
+        }), encoding="utf-8")
 
         cfg = HonchoClientConfig.from_global_config(config_path=config_path)
 
@@ -33,7 +33,7 @@ class TestHonchoClientConfigAutoEnable:
         config_path.write_text(json.dumps({
             "apiKey": "test-api-key-12345",
             "enabled": False,  # Explicitly disabled
-        }))
+        }), encoding="utf-8")
 
         cfg = HonchoClientConfig.from_global_config(config_path=config_path)
 
@@ -47,7 +47,7 @@ class TestHonchoClientConfigAutoEnable:
         config_path.write_text(json.dumps({
             "workspace": "test",
             # No apiKey, no enabled
-        }))
+        }), encoding="utf-8")
 
         # Clear env var if set
         env_key = os.environ.pop("HONCHO_API_KEY", None)
@@ -106,7 +106,7 @@ class TestLatencyFlagResolution:
                 'firstTurnBaseWait': 0,
                 'firstTurnDialecticWait': 0.5,
             }},
-        }))
+        }), encoding="utf-8")
         cfg = HonchoClientConfig.from_global_config(config_path=config_path)
         assert cfg.query_rewrite is True
         assert cfg.first_turn_base_wait == 0.0
@@ -119,7 +119,7 @@ class TestLatencyFlagResolution:
             'apiKey': 'k',
             'timeout': 30,
             'hosts': {'youtab': {'timeout': 5}},
-        }))
+        }), encoding="utf-8")
         cfg = HonchoClientConfig.from_global_config(config_path=config_path)
         assert cfg.timeout == 5.0
 

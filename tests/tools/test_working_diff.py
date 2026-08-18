@@ -31,7 +31,7 @@ def repo(tmp_path):
     d = tmp_path / "repo"
     d.mkdir()
     _git(d, "init", "-q")
-    (d / "tracked.py").write_text("print('hello')\n")
+    (d / "tracked.py").write_text("print('hello')\n", encoding="utf-8")
     _git(d, "add", "-A")
     _git(d, "commit", "-q", "-m", "init")
     return d
@@ -45,7 +45,7 @@ def test_clean_repo_reports_empty(repo):
 
 
 def test_unstaged_change_appears_in_default_mode(repo):
-    (repo / "tracked.py").write_text("print('changed')\n")
+    (repo / "tracked.py").write_text("print('changed')\n", encoding="utf-8")
     result = collect_working_diff(str(repo))
     assert result["success"] is True
     assert "-print('hello')" in result["diff"]

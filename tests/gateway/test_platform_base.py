@@ -32,7 +32,7 @@ def test_media_delivery_denies_encrypted_bitwarden_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(base, "_YOUTAB_AGENT_ROOT", youtab_home)
     path = youtab_home / "cache" / "bws_cache.enc.json"
     path.parent.mkdir()
-    path.write_text("encrypted-secret-cache")
+    path.write_text("encrypted-secret-cache", encoding="utf-8")
 
     assert path in base._media_delivery_denied_paths()
     assert base.validate_media_delivery_path(str(path)) is None
@@ -595,7 +595,7 @@ class TestMediaDeliveryDefaultMode:
         self._patch_roots(monkeypatch)
 
         notes = tmp_path / "notes.md"
-        notes.write_text("# Old notes\n")
+        notes.write_text("# Old notes\n", encoding="utf-8")
         old_mtime = time.time() - 7200  # 2 hours ago — far outside any window
         os.utime(notes, (old_mtime, old_mtime))
 
@@ -621,7 +621,7 @@ class TestMediaDeliveryDefaultMode:
         youtab_dir = fake_home / ".youtab-agent-runtime"
         (youtab_dir / "mcp-tokens").mkdir(parents=True)
         secret = youtab_dir / rel
-        secret.write_text('{"access_token": "live-bearer-abc123"}')
+        secret.write_text('{"access_token": "live-bearer-abc123"}', encoding="utf-8")
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr(
             "gateway.platforms.base._YOUTAB_AGENT_HOME",
@@ -648,7 +648,7 @@ class TestMediaDeliveryDefaultMode:
         youtab_dir = fake_home / ".youtab-agent-runtime"
         youtab_dir.mkdir(parents=True)
         token = youtab_dir / "google_token.json"
-        token.write_text('{"access_token": "***", "refresh_token": "***"}')
+        token.write_text('{"access_token": "***", "refresh_token": "***"}', encoding="utf-8")
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr("gateway.platforms.base._YOUTAB_AGENT_HOME", youtab_dir)
         monkeypatch.setattr("gateway.platforms.base._YOUTAB_AGENT_ROOT", youtab_dir)

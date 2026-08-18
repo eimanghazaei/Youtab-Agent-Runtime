@@ -40,7 +40,7 @@ def test_token_file_rejects_symlink(tmp_path, monkeypatch):
     token_dir = home / ".youtab-agent-runtime" / "desktop-ssh" / ("a" * 32)
     token_dir.mkdir(parents=True, mode=0o700)
     target = tmp_path / "token"
-    target.write_text("b" * 64)
+    target.write_text("b" * 64, encoding="utf-8")
     target.chmod(0o600)
     token_path = token_dir / "0123456789abcdef.token"
     token_path.symlink_to(target)
@@ -49,7 +49,7 @@ def test_token_file_rejects_symlink(tmp_path, monkeypatch):
         with pytest.raises(SystemExit, match="symlink|not accessible"):
             _read_ssh_session_token_file(str(token_path))
         assert not token_path.exists()
-        assert target.read_text() == "b" * 64
+        assert target.read_text(encoding="utf-8") == "b" * 64
     finally:
         reset_youtab_home_override(override)
 

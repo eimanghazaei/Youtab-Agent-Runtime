@@ -105,7 +105,7 @@ def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
 def test_install_id_persists_across_calls(tmp_path, monkeypatch):
     """A minted install id must survive restarts (service.instance.id continuity)."""
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text("{}\n")
+    (tmp_path / "config.yaml").write_text("{}\n", encoding="utf-8")
 
     import youtab_agent_cli.config as cfg_mod
     from agent.monitoring.policy import ensure_install_id
@@ -115,6 +115,6 @@ def test_install_id_persists_across_calls(tmp_path, monkeypatch):
     # Persisted: a fresh load (simulating a new gateway process) returns the same id.
     second = ensure_install_id(cfg_mod.load_config())
     assert second == first
-    assert first in (tmp_path / "config.yaml").read_text()
+    assert first in (tmp_path / "config.yaml").read_text(encoding="utf-8")
 
 

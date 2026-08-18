@@ -30,7 +30,7 @@ def _make_youtab_node(youtab_home: Path) -> Path:
     node_bin = youtab_home / "node" / "bin"
     node_bin.mkdir(parents=True)
     for name in ("node", "npm", "npx"):
-        (node_bin / name).write_text("#!/bin/sh\n")
+        (node_bin / name).write_text("#!/bin/sh\n", encoding="utf-8")
         (node_bin / name).chmod(0o755)
     return node_bin
 
@@ -46,7 +46,7 @@ def test_leaves_unrelated_symlinks_untouched(fake_home):
     # Simulate nvm's node living elsewhere; user's ~/.local/bin/node -> nvm.
     nvm_bin = fake_home / ".nvm" / "versions" / "node" / "v20.0.0" / "bin"
     nvm_bin.mkdir(parents=True)
-    (nvm_bin / "node").write_text("#!/bin/sh\n")
+    (nvm_bin / "node").write_text("#!/bin/sh\n", encoding="utf-8")
     (local_bin / "node").symlink_to(nvm_bin / "node")
 
     removed = uninstall.remove_node_symlinks(youtab_home)

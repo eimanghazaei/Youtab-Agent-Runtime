@@ -79,7 +79,7 @@ class TestXAIProviderIsAvailable:
         """A malformed auth.json must not crash availability scans."""
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
-        (tmp_path / "auth.json").write_text("not json at all }{")
+        (tmp_path / "auth.json").write_text("not json at all }{", encoding="utf-8")
 
         from plugins.web.xai.provider import XAIWebSearchProvider
         assert XAIWebSearchProvider().is_available() is False
@@ -481,7 +481,7 @@ class TestXAIProviderOAuthPath:
                     },
                 },
             },
-        }))
+        }), encoding="utf-8")
 
         captured: dict = {}
 
@@ -512,7 +512,8 @@ class TestXAIProviderOAuthPath:
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         monkeypatch.delenv("XAI_OAUTH_ACCESS_TOKEN", raising=False)
         (tmp_path / "config.yaml").write_text(
-            "credential_pool_strategies:\n  xai-oauth: round_robin\n"
+            "credential_pool_strategies:\n  xai-oauth: round_robin\n",
+            encoding="utf-8",
         )
         auth_path = tmp_path / "auth.json"
         auth_path.write_text(json.dumps({
@@ -540,7 +541,7 @@ class TestXAIProviderOAuthPath:
                     "base_url": "https://api.x.ai/v1",
                 }],
             },
-        }))
+        }), encoding="utf-8")
 
         refresh_calls = []
 
@@ -567,7 +568,7 @@ class TestXAIProviderOAuthPath:
         assert refreshed["api_key"] == "fresh-access"
         assert refresh_calls == [("rejected-access", "one-time-refresh")]
 
-        stored = json.loads(auth_path.read_text())
+        stored = json.loads(auth_path.read_text(encoding="utf-8"))
         entries = {
             item["id"]: item
             for item in stored["credential_pool"]["xai-oauth"]

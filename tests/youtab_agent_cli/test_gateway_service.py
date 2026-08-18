@@ -203,7 +203,7 @@ class TestGeneratedSystemdUnits:
         local_bin.mkdir(parents=True)
         profile_node_bin.mkdir(parents=True)
         real_node = profile_node_bin / "node"
-        real_node.write_text("#!/bin/sh\n")
+        real_node.write_text("#!/bin/sh\n", encoding="utf-8")
         link_node = local_bin / "node"
         link_node.symlink_to(real_node)
 
@@ -221,7 +221,7 @@ class TestGeneratedSystemdUnits:
         local_bin.mkdir(parents=True)
         profile_node_bin.mkdir(parents=True)
         real_node = profile_node_bin / "node"
-        real_node.write_text("#!/bin/sh\n")
+        real_node.write_text("#!/bin/sh\n", encoding="utf-8")
         link_node = local_bin / "node"
         link_node.symlink_to(real_node)
 
@@ -1050,7 +1050,7 @@ class TestSystemUnitPathRemapping:
         project.mkdir(parents=True)
         venv_bin = project / "venv" / "bin"
         venv_bin.mkdir(parents=True)
-        (venv_bin / "python").write_text("")
+        (venv_bin / "python").write_text("", encoding="utf-8")
 
         target_home = "/home/alice"
 
@@ -1460,7 +1460,7 @@ class TestSystemdInstallOffersLegacyRemoval:
         assert remove_called["invoked"] is False
         # New unit should still have been written
         assert unit_path.exists()
-        assert unit_path.read_text() == "unit text\n"
+        assert unit_path.read_text(encoding="utf-8") == "unit text\n"
 
     def test_install_skips_legacy_check_when_none_present(
         self, tmp_path, monkeypatch
@@ -1554,9 +1554,9 @@ class TestSystemScopeWizardPreCheck:
         sys_dir.mkdir()
         usr_dir.mkdir()
         if system_present:
-            (sys_dir / "youtab-gateway.service").write_text("[Unit]\n")
+            (sys_dir / "youtab-gateway.service").write_text("[Unit]\n", encoding="utf-8")
         if user_present:
-            (usr_dir / "youtab-gateway.service").write_text("[Unit]\n")
+            (usr_dir / "youtab-gateway.service").write_text("[Unit]\n", encoding="utf-8")
         monkeypatch.setattr(
             gateway_cli,
             "get_systemd_unit_path",
@@ -1608,7 +1608,7 @@ class TestGatewayCommandCatchesSystemScopeError:
         usr_dir = tmp_path / "usr"
         sys_dir.mkdir()
         usr_dir.mkdir()
-        (sys_dir / "youtab-gateway.service").write_text("[Unit]\n")
+        (sys_dir / "youtab-gateway.service").write_text("[Unit]\n", encoding="utf-8")
         monkeypatch.setattr(
             gateway_cli,
             "get_systemd_unit_path",

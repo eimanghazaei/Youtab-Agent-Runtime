@@ -56,7 +56,7 @@ class TestPatchFailureEscalation:
         from tools.file_tools import _handle_patch
 
         target = tmp_path / "f.py"
-        target.write_text("def foo():\n    return 1\n")
+        target.write_text("def foo():\n    return 1\n", encoding="utf-8")
 
         for _i in range(2):
             result = _handle_patch(
@@ -81,7 +81,7 @@ class TestPatchFailureEscalation:
         from tools.file_tools import _handle_patch
 
         target = tmp_path / "shared.py"
-        target.write_text("z = 0\n")
+        target.write_text("z = 0\n", encoding="utf-8")
 
         # Three failures under task A.
         for _i in range(3):

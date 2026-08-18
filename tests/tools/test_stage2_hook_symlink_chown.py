@@ -16,7 +16,7 @@ STAGE2_HOOK = REPO_ROOT / "docker" / "stage2-hook.sh"
 def stage2_text() -> str:
     if not STAGE2_HOOK.exists():
         pytest.skip("docker/stage2-hook.sh not present in this checkout")
-    return STAGE2_HOOK.read_text()
+    return STAGE2_HOOK.read_text(encoding="utf-8")
 
 
 def _chown_youtab_tree_function(text: str) -> str:
@@ -54,7 +54,7 @@ def test_chown_helper_repairs_real_directories(stage2_text: str, tmp_path: Path)
     proc = _run_helper(stage2_text, target, log_path)
 
     assert proc.returncode == 0, proc.stderr
-    assert log_path.read_text().splitlines() == [
+    assert log_path.read_text(encoding="utf-8").splitlines() == [
         f"-R youtab:youtab {target}",
     ]
 

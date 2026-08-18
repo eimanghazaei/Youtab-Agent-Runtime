@@ -29,7 +29,7 @@ def test_dump_flags_shell_only_key_not_in_dotenv(monkeypatch, capsys, tmp_path):
     home = get_youtab_home()
     home.mkdir(parents=True, exist_ok=True)
     # .env has some OTHER key but NOT firecrawl.
-    (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-xxxx\n")
+    (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-xxxx\n", encoding="utf-8")
     # firecrawl is exported in the (test) shell only.
     monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-shell-only")
 
@@ -50,7 +50,7 @@ def test_dump_leaves_unset_key_untouched(monkeypatch, capsys, tmp_path):
 
     home = get_youtab_home()
     home.mkdir(parents=True, exist_ok=True)
-    (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-xxxx\n")
+    (home / ".env").write_text("OPENROUTER_API_KEY=sk-or-xxxx\n", encoding="utf-8")
 
     dump.run_dump(SimpleNamespace(show_keys=False))
 

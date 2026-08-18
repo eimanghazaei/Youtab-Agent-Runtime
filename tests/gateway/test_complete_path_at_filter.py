@@ -27,8 +27,8 @@ from tui_gateway import server
 
 
 def _fixture(tmp_path: Path):
-    (tmp_path / "readme.md").write_text("x")
-    (tmp_path / ".env").write_text("x")
+    (tmp_path / "readme.md").write_text("x", encoding="utf-8")
+    (tmp_path / ".env").write_text("x", encoding="utf-8")
     (tmp_path / "src").mkdir()
     (tmp_path / "docs").mkdir()
 
@@ -99,16 +99,16 @@ def test_bare_at_still_shows_static_refs(tmp_path, monkeypatch):
 
 
 def _nested_fixture(tmp_path: Path):
-    (tmp_path / "readme.md").write_text("x")
-    (tmp_path / ".env").write_text("x")
+    (tmp_path / "readme.md").write_text("x", encoding="utf-8")
+    (tmp_path / ".env").write_text("x", encoding="utf-8")
     (tmp_path / "ui-tui/src/components").mkdir(parents=True)
-    (tmp_path / "ui-tui/src/components/appChrome.tsx").write_text("x")
-    (tmp_path / "ui-tui/src/components/appLayout.tsx").write_text("x")
-    (tmp_path / "ui-tui/src/components/thinking.tsx").write_text("x")
+    (tmp_path / "ui-tui/src/components/appChrome.tsx").write_text("x", encoding="utf-8")
+    (tmp_path / "ui-tui/src/components/appLayout.tsx").write_text("x", encoding="utf-8")
+    (tmp_path / "ui-tui/src/components/thinking.tsx").write_text("x", encoding="utf-8")
     (tmp_path / "ui-tui/src/hooks").mkdir(parents=True)
-    (tmp_path / "ui-tui/src/hooks/useCompletion.ts").write_text("x")
+    (tmp_path / "ui-tui/src/hooks/useCompletion.ts").write_text("x", encoding="utf-8")
     (tmp_path / "tui_gateway").mkdir()
-    (tmp_path / "tui_gateway/server.py").write_text("x")
+    (tmp_path / "tui_gateway/server.py").write_text("x", encoding="utf-8")
 
 
 def test_fuzzy_at_finds_file_without_directory_prefix(tmp_path, monkeypatch):
@@ -145,10 +145,10 @@ def test_fuzzy_paths_relative_to_cwd_inside_subdir(tmp_path, monkeypatch):
     subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
 
     (tmp_path / "apps" / "web" / "src").mkdir(parents=True)
-    (tmp_path / "apps" / "web" / "src" / "appChrome.tsx").write_text("x")
+    (tmp_path / "apps" / "web" / "src" / "appChrome.tsx").write_text("x", encoding="utf-8")
     (tmp_path / "apps" / "api" / "src").mkdir(parents=True)
-    (tmp_path / "apps" / "api" / "src" / "server.ts").write_text("x")
-    (tmp_path / "README.md").write_text("x")
+    (tmp_path / "apps" / "api" / "src" / "server.ts").write_text("x", encoding="utf-8")
+    (tmp_path / "README.md").write_text("x", encoding="utf-8")
 
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
@@ -192,11 +192,11 @@ def test_fuzzy_finds_top_level_entries_outside_a_git_repo(tmp_path, monkeypatch)
     deep = tmp_path / "aaa_hog"
     deep.mkdir()
     for i in range(40):
-        (deep / f"f{i:03d}.txt").write_text("x")
+        (deep / f"f{i:03d}.txt").write_text("x", encoding="utf-8")
 
     # ...and the folder the user actually wants, sorted after it.
     (tmp_path / "Desktop").mkdir()
-    (tmp_path / "Desktop" / "note.txt").write_text("x")
+    (tmp_path / "Desktop" / "note.txt").write_text("x", encoding="utf-8")
 
     assert "@folder:Desktop/" in [t for t, _, _ in _items("@Desktop")]
 
@@ -212,7 +212,7 @@ def test_leading_slash_matches_the_bare_form(tmp_path, monkeypatch):
     """`@/foo` and `@foo` return the same thing when `/foo` doesn't exist."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "Desktop").mkdir()
-    (tmp_path / "Desktop" / "note.txt").write_text("x")
+    (tmp_path / "Desktop" / "note.txt").write_text("x", encoding="utf-8")
 
     server._fuzzy_cache.clear()
     bare = [t for t, _, _ in _items("@Desktop")]
@@ -232,7 +232,7 @@ def test_leading_slash_prefers_a_real_absolute_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     # A decoy that would win if the slash were stripped unconditionally.
     (tmp_path / "etc").mkdir()
-    (tmp_path / "etc" / "decoy.conf").write_text("x")
+    (tmp_path / "etc" / "decoy.conf").write_text("x", encoding="utf-8")
 
     texts = [t for t, _, _ in _items("@/etc/")]
 

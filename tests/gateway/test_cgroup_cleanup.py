@@ -14,7 +14,7 @@ from gateway import cgroup_cleanup
 class TestOwnCgroupPath:
     def test_parses_v2_cgroup_path(self, tmp_path, monkeypatch):
         proc_self = tmp_path / "cgroup"
-        proc_self.write_text("0::/user.slice/user-1000.slice/youtab-gateway.service\n")
+        proc_self.write_text("0::/user.slice/user-1000.slice/youtab-gateway.service\n", encoding="utf-8")
         monkeypatch.setattr(
             cgroup_cleanup,
             "Path",

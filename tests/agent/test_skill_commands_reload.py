@@ -30,7 +30,8 @@ def _write_skill(skills_dir: Path, name: str, description: str = "") -> Path:
             ---
             body
             """
-        )
+        ),
+        encoding="utf-8",
     )
     return skill_dir
 
@@ -100,7 +101,7 @@ class TestReloadSkillsHelper:
 
         snapshot = _skills_prompt_snapshot_path()
         snapshot.parent.mkdir(parents=True, exist_ok=True)
-        snapshot.write_text("{}")
+        snapshot.write_text("{}", encoding="utf-8")
         assert snapshot.exists()
 
         reload_skills()

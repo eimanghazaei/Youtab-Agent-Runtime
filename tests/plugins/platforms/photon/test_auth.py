@@ -71,7 +71,7 @@ def test_store_and_load_photon_token(tmp_youtab_home: Path) -> None:
     photon_auth.store_photon_token("abc123def456")
     assert photon_auth.load_photon_token() == "abc123def456"
 
-    auth_json = json.loads((tmp_youtab_home / "auth.json").read_text())
+    auth_json = json.loads((tmp_youtab_home / "auth.json").read_text(encoding="utf-8"))
     assert auth_json["credential_pool"]["photon"][0]["access_token"] == "abc123def456"
 
 

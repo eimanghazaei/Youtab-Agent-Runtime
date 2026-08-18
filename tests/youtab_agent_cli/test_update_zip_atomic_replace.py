@@ -22,15 +22,15 @@ from youtab_agent_cli.main import _atomic_replace_dir
 def test_atomic_replace_swaps_content_on_success(tmp_path: Path) -> None:
     src = tmp_path / "src" / "ui-tui"
     src.mkdir(parents=True)
-    (src / "new.txt").write_text("NEW")
+    (src / "new.txt").write_text("NEW", encoding="utf-8")
 
     dst = tmp_path / "install" / "ui-tui"
     dst.mkdir(parents=True)
-    (dst / "old.txt").write_text("OLD")
+    (dst / "old.txt").write_text("OLD", encoding="utf-8")
 
     _atomic_replace_dir(str(src), str(dst))
 
-    assert (dst / "new.txt").read_text() == "NEW"
+    assert (dst / "new.txt").read_text(encoding="utf-8") == "NEW"
     assert not (dst / "old.txt").exists()
     # No staging/backup siblings left behind.
     assert not (dst.parent / "ui-tui.youtab-agent-runtime-update-staging").exists()

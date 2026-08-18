@@ -56,7 +56,7 @@ def _write_plugin_manifest(root: Path, name: str, manifest: dict) -> Path:
     return the dashboard dir path."""
     dashboard_dir = root / name / "dashboard"
     dashboard_dir.mkdir(parents=True)
-    (dashboard_dir / "manifest.json").write_text(json.dumps(manifest))
+    (dashboard_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return dashboard_dir
 
 
@@ -134,7 +134,7 @@ class TestApiPathSanitizer:
 
     def test_simple_relative_path_accepted(self, tmp_path):
         d = self._dashboard_dir(tmp_path)
-        (d / "api.py").write_text("router = None\n")
+        (d / "api.py").write_text("router = None\n", encoding="utf-8")
         assert web_server._safe_plugin_api_relpath("api.py", dashboard_dir=d) == "api.py"
 
 
@@ -212,7 +212,8 @@ class TestMountApiRoutesRefusesUntrusted:
         # regardless of whether it exists, since the source/path checks
         # short-circuit before the importer runs.
         (dash / "api.py").write_text(
-            "from fastapi import APIRouter\nrouter = APIRouter()\n"
+            "from fastapi import APIRouter\nrouter = APIRouter()\n",
+            encoding="utf-8",
         )
         return {
             "name": "synthetic",
@@ -275,7 +276,7 @@ class TestEndToEndPocBlocked:
         monkeypatch.setenv("YOUTAB_AGENT_ENABLE_PROJECT_PLUGINS", "0")
         # Payload: absolute path inside a manifest dropped in CWD.
         payload_py = tmp_path / "payload.py"
-        payload_py.write_text("OWNED = True\n")
+        payload_py.write_text("OWNED = True\n", encoding="utf-8")
         _write_plugin_manifest(
             cwd / ".youtab-agent-runtime" / "plugins",
             "evil",

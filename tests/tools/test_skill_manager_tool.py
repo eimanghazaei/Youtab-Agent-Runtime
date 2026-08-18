@@ -195,7 +195,7 @@ class TestEditSkill:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
         assert result["success"] is True
-        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "Updated description" in content
 
 
@@ -205,7 +205,7 @@ class TestEditSkill:
             result = _edit_skill("my-skill", "no frontmatter")
         assert result["success"] is False
         # Original content should be preserved
-        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "A test skill" in content
 
 class TestPatchSkill:
@@ -214,7 +214,7 @@ class TestPatchSkill:
             _create_skill("my-skill", VALID_SKILL_CONTENT)
             result = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
         assert result["success"] is True
-        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "Do the new thing." in content
 
 
@@ -237,7 +237,7 @@ word word
 
     def test_patch_supporting_file_symlink_escape_blocked(self, tmp_path):
         outside_file = tmp_path / "outside.txt"
-        outside_file.write_text("old text here")
+        outside_file.write_text("old text here", encoding="utf-8")
 
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
@@ -252,7 +252,7 @@ word word
 
         assert result["success"] is False
         assert "escapes" in result["error"].lower()
-        assert outside_file.read_text() == "old text here"
+        assert outside_file.read_text(encoding="utf-8") == "old text here"
 
 
 class TestDeleteSkill:
@@ -317,7 +317,7 @@ class TestRemoveFile:
         outside_dir = tmp_path / "outside"
         outside_dir.mkdir()
         outside_file = outside_dir / "keep.txt"
-        outside_file.write_text("content")
+        outside_file.write_text("content", encoding="utf-8")
 
         with _skill_dir(tmp_path):
             _create_skill("my-skill", VALID_SKILL_CONTENT)
@@ -467,7 +467,8 @@ def _write_external_skill(external_dir: Path, name: str = "ext-skill") -> Path:
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: An external skill.\n---\n\n"
-        "# External\n\nBody with OLD_MARKER here.\n"
+        "# External\n\nBody with OLD_MARKER here.\n",
+        encoding="utf-8",
     )
     return skill_dir
 
@@ -492,7 +493,7 @@ class TestExternalSkillMutations:
             result = _patch_skill("ext-skill", "OLD_MARKER", "NEW_MARKER")
 
         assert result["success"] is True, result
-        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text()
+        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
         # No duplicate in local
         assert not (local / "ext-skill").exists()
 
@@ -670,7 +671,7 @@ class TestPinnedGuard:
                 result = _edit_skill("my-skill", VALID_SKILL_CONTENT_2)
         assert result["success"] is True, result
         # Content updated
-        content = (tmp_path / "my-skill" / "SKILL.md").read_text()
+        content = (tmp_path / "my-skill" / "SKILL.md").read_text(encoding="utf-8")
         assert "A test skill" not in content
 
     def test_delete_refuses_pinned(self, tmp_path):
@@ -724,7 +725,7 @@ class TestDeleteSkillRmtreeGuard:
         otherwise follow it and delete the link target's contents."""
         victim = tmp_path.parent / "precious_victim"
         victim.mkdir()
-        (victim / "important.txt").write_text("DO NOT DELETE")
+        (victim / "important.txt").write_text("DO NOT DELETE", encoding="utf-8")
         skills = tmp_path / "skills"
         skills.mkdir()
         evil = skills / "evil-skill"
@@ -749,7 +750,7 @@ class TestDeleteSkillRmtreeGuard:
         skills.mkdir()
         outside = tmp_path / "outside_skill"
         outside.mkdir()
-        (outside / "SKILL.md").write_text("x")
+        (outside / "SKILL.md").write_text("x", encoding="utf-8")
         with patch("tools.skill_manager_tool.SKILLS_DIR", skills), \
              patch("agent.skill_utils.get_all_skills_dirs", return_value=[skills]), \
              patch("tools.skill_manager_tool._find_skill",

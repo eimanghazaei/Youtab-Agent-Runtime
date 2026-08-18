@@ -256,7 +256,7 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
     _install_fake_tools_package()
     _install_fake_openai_module(whisper_capture, transcription_response="hello from whisper")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
-    (tmp_path / "config.yaml").write_text("stt:\n  provider: openai\n")
+    (tmp_path / "config.yaml").write_text("stt:\n  provider: openai\n", encoding="utf-8")
     monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("TOOL_GATEWAY_DOMAIN", "youtab.io")

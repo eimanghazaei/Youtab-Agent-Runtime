@@ -38,13 +38,13 @@ def repo(tmp_path):
     _git(root, "init", "-q")
     _git(root, "config", "user.email", "t@example.com")
     _git(root, "config", "user.name", "Test")
-    (root / "a.txt").write_text("one\ntwo\n")
+    (root / "a.txt").write_text("one\ntwo\n", encoding="utf-8")
     _git(root, "add", "-A")
     _git(root, "commit", "-qm", "init")
     # A tracked modification + a brand-new untracked file (the new-file case the
     # rail/review must surface).
-    (root / "a.txt").write_text("one\ntwo\nthree\n")
-    (root / "new.py").write_text("print(1)\nprint(2)\n")
+    (root / "a.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    (root / "new.py").write_text("print(1)\nprint(2)\n", encoding="utf-8")
     return root
 
 
@@ -78,7 +78,7 @@ def test_stage_commit_roundtrip_clears_changes(client, repo):
 def test_worktree_add_initializes_plain_folder(client, tmp_path):
     folder = tmp_path / "plain-project"
     folder.mkdir()
-    (folder / "notes.txt").write_text("not committed\n")
+    (folder / "notes.txt").write_text("not committed\n", encoding="utf-8")
 
     added = client.post(
         "/api/git/worktree/add", json={"path": str(folder), "branch": "feature/plain"}

@@ -33,7 +33,7 @@ def test_audit_writes_jsonlines(profile_home):
 
     path = profile_home / "logs" / "dashboard-auth.log"
     assert path.exists(), f"audit log not created at {path}"
-    lines = path.read_text().strip().splitlines()
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
     assert len(lines) == 2
 
     second = json.loads(lines[1])
@@ -50,7 +50,7 @@ def test_audit_redacts_token_like_fields(profile_home):
         provider="youtab", access_token="should-not-appear",
         refresh_token="also-not", code="not-this", state="nope",
     )
-    raw = (profile_home / "logs" / "dashboard-auth.log").read_text()
+    raw = (profile_home / "logs" / "dashboard-auth.log").read_text(encoding="utf-8")
     for forbidden in ("should-not-appear", "also-not", "not-this", "nope"):
         assert forbidden not in raw, f"token-like value leaked into audit log: {forbidden}"
 

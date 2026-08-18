@@ -28,7 +28,7 @@ class TestStuckLoopDetection:
         runner._increment_restart_failure_counts({"session:a", "session:b"})
         path = home / runner._STUCK_LOOP_FILE
         assert path.exists()
-        counts = json.loads(path.read_text())
+        counts = json.loads(path.read_text(encoding="utf-8"))
         assert counts["session:a"] == 1
         assert counts["session:b"] == 1
 

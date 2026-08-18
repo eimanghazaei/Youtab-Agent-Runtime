@@ -25,7 +25,7 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 
 def test_install_sh_stamps_code_tree_not_home() -> None:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     # Stamps the code tree.
     assert text.count('echo "git" > "$INSTALL_DIR/.install_method"') >= 1, (

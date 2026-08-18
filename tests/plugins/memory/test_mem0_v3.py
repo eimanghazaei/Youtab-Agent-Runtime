@@ -274,7 +274,7 @@ class TestMem0ModeSwitch:
         """Backward compat: old mem0.json without mode key works."""
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         config_path = tmp_path / "mem0.json"
-        config_path.write_text('{"user_id": "old-user"}')
+        config_path.write_text('{"user_id": "old-user"}', encoding="utf-8")
         monkeypatch.setenv("MEM0_API_KEY", "test-key")
         provider = Mem0MemoryProvider()
         provider.initialize("test")
@@ -312,7 +312,7 @@ class TestMem0UserIdResolution:
 
     def test_file_override_beats_gateway_native_id(self, monkeypatch, tmp_path):
         monkeypatch.delenv("MEM0_USER_ID", raising=False)
-        (tmp_path / "mem0.json").write_text('{"user_id": "ryan@example.com"}')
+        (tmp_path / "mem0.json").write_text('{"user_id": "ryan@example.com"}', encoding="utf-8")
         provider = self._provider(monkeypatch, tmp_path)
         provider.initialize("test", user_id="123456789", platform="telegram")
         assert provider._user_id == "ryan@example.com"
@@ -329,7 +329,7 @@ class TestMem0UserIdResolution:
         # suggested default. Treat that placeholder as unset so users on
         # gateways still get gateway-native ids — not silent collisions.
         monkeypatch.delenv("MEM0_USER_ID", raising=False)
-        (tmp_path / "mem0.json").write_text('{"user_id": "youtab-user"}')
+        (tmp_path / "mem0.json").write_text('{"user_id": "youtab-user"}', encoding="utf-8")
         provider = self._provider(monkeypatch, tmp_path)
         provider.initialize("test", user_id="123456789", platform="telegram")
         assert provider._user_id == "123456789"

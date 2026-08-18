@@ -19,15 +19,15 @@ def fake_skills(tmp_path):
     skill_dir.mkdir(parents=True)
 
     # Create SKILL.md
-    (skill_dir / "SKILL.md").write_text("# Test Skill\nA test skill.")
+    (skill_dir / "SKILL.md").write_text("# Test Skill\nA test skill.", encoding="utf-8")
 
     # Create a legitimate file inside the skill
     refs = skill_dir / "references"
     refs.mkdir()
-    (refs / "api.md").write_text("API docs here")
+    (refs / "api.md").write_text("API docs here", encoding="utf-8")
 
     # Create a sensitive file outside skills dir (simulating .env)
-    (tmp_path / ".env").write_text("SECRET_API_KEY=sk-do-not-leak")
+    (tmp_path / ".env").write_text("SECRET_API_KEY=sk-do-not-leak", encoding="utf-8")
 
     with patch("tools.skills_tool.SKILLS_DIR", skills_dir):
         yield {"skills_dir": skills_dir, "skill_dir": skill_dir, "tmp_path": tmp_path}
@@ -44,8 +44,8 @@ class TestPathTraversalBlocked:
         tmp_path = fake_skills["tmp_path"]
         outside_skill = tmp_path / "outside-skill"
         outside_skill.mkdir()
-        (outside_skill / "SKILL.md").write_text("# Outside Skill\n")
-        (outside_skill / ".env").write_text("ESCAPED_SECRET=do-not-leak")
+        (outside_skill / "SKILL.md").write_text("# Outside Skill\n", encoding="utf-8")
+        (outside_skill / ".env").write_text("ESCAPED_SECRET=do-not-leak", encoding="utf-8")
 
         result = json.loads(skill_view("../outside-skill", file_path=".env"))
 
@@ -58,8 +58,8 @@ class TestPathTraversalBlocked:
         tmp_path = fake_skills["tmp_path"]
         outside_skill = tmp_path / "outside-absolute"
         outside_skill.mkdir()
-        (outside_skill / "SKILL.md").write_text("# Outside Absolute\n")
-        (outside_skill / ".env").write_text("ABSOLUTE_SECRET=do-not-leak")
+        (outside_skill / "SKILL.md").write_text("# Outside Absolute\n", encoding="utf-8")
+        (outside_skill / ".env").write_text("ABSOLUTE_SECRET=do-not-leak", encoding="utf-8")
 
         result = json.loads(skill_view(str(outside_skill), file_path=".env"))
 
@@ -99,7 +99,7 @@ class TestPathTraversalBlocked:
         """Symlinks pointing outside the skill directory should be blocked."""
         skill_dir = fake_skills["skill_dir"]
         secret = fake_skills["tmp_path"] / "secret.txt"
-        secret.write_text("TOP SECRET DATA")
+        secret.write_text("TOP SECRET DATA", encoding="utf-8")
 
         symlink = skill_dir / "evil-link"
         try:

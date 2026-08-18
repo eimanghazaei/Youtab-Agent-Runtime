@@ -49,7 +49,7 @@ def profile_env(tmp_path, monkeypatch):
 
 
 def _write(path: Path, payload: dict) -> None:
-    path.write_text(json.dumps(payload, indent=2))
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ def test_missing_global_auth_file_is_safe(profile_env):
 
 
 def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
-    (profile_env["global"] / "auth.json").write_text("{not valid json")
+    (profile_env["global"] / "auth.json").write_text("{not valid json", encoding="utf-8")
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
         "openrouter": [{
             "id": "prof-1",
@@ -189,11 +189,11 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
     }])
 
     # Global auth.json unchanged.
-    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text(encoding="utf-8"))
     assert global_data["credential_pool"]["openrouter"][0]["id"] == "glob-1"
 
     # Profile auth.json holds the new entry.
-    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text(encoding="utf-8"))
     assert profile_data["credential_pool"]["openrouter"][0]["id"] == "prof-new"
 
     # Subsequent read returns profile (shadows global).
@@ -283,7 +283,7 @@ def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     # Same entry id, freshly re-authed with a new token and cleared status.
     write_credential_pool("openrouter", [_pool_entry(access_token="sk-new")])
 
-    data = json.loads((classic_env / "auth.json").read_text())
+    data = json.loads((classic_env / "auth.json").read_text(encoding="utf-8"))
     persisted = data["credential_pool"]["openrouter"][0]
     assert persisted["access_token"] == "sk-new"
     assert persisted.get("last_status") != "exhausted"

@@ -24,7 +24,7 @@ def tmp_image(tmp_path):
 def tmp_text(tmp_path):
     """Create a temporary .py file and return its path."""
     f = tmp_path / "main.py"
-    f.write_text("print('hello')\n")
+    f.write_text("print('hello')\n", encoding="utf-8")
     return f
 
 
@@ -189,7 +189,7 @@ class TestEscapedSpaces:
 class TestEdgeCases:
     def test_path_with_no_extension(self, tmp_path):
         f = tmp_path / "Makefile"
-        f.write_text("all:\n\techo hi\n")
+        f.write_text("all:\n\techo hi\n", encoding="utf-8")
         result = _detect_file_drop(str(f))
         assert result is not None
         assert result["is_image"] is False
@@ -197,7 +197,7 @@ class TestEdgeCases:
     def test_path_that_looks_like_command_but_is_file(self, tmp_path):
         """A file literally named 'help' inside a directory starting with /."""
         f = tmp_path / "help"
-        f.write_text("not a command\n")
+        f.write_text("not a command\n", encoding="utf-8")
         result = _detect_file_drop(str(f))
         assert result is not None
         assert result["is_image"] is False

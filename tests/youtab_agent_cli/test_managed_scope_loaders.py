@@ -79,6 +79,6 @@ def test_gateway_env_bridge_honors_managed(homes, monkeypatch):
     # writing YOUTAB_AGENT_TIMEZONE = cfg["timezone"]. Prove the overlay flips the value.
     import yaml
 
-    raw = yaml.safe_load((home / "config.yaml").read_text())
+    raw = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
     bridged = managed_scope.apply_managed_overlay(raw)
     assert bridged.get("timezone") == "Asia/Tokyo"

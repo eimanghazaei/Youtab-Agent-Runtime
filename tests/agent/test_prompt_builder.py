@@ -210,7 +210,8 @@ class TestParseSkillFile:
     def test_reads_frontmatter_description(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         skill_file.write_text(
-            "---\nname: test-skill\ndescription: A useful test skill\n---\n\nBody here"
+            "---\nname: test-skill\ndescription: A useful test skill\n---\n\nBody here",
+            encoding="utf-8",
         )
         is_compat, frontmatter, desc = _parse_skill_file(skill_file)
         assert is_compat is True
@@ -221,7 +222,7 @@ class TestParseSkillFile:
     def test_long_description_truncated(self, tmp_path):
         skill_file = tmp_path / "SKILL.md"
         long_desc = "A" * 100
-        skill_file.write_text(f"---\ndescription: {long_desc}\n---\n")
+        skill_file.write_text(f"---\ndescription: {long_desc}\n---\n", encoding="utf-8")
         _, _, desc = _parse_skill_file(skill_file)
         assert len(desc) <= 60
         assert desc.endswith("...")
@@ -229,7 +230,7 @@ class TestParseSkillFile:
 
     def test_logs_parse_failures_and_returns_defaults(self, tmp_path, monkeypatch, caplog):
         skill_file = tmp_path / "SKILL.md"
-        skill_file.write_text("---\nname: broken\n---\n")
+        skill_file.write_text("---\nname: broken\n---\n", encoding="utf-8")
 
         def boom(*args, **kwargs):
             raise OSError("read exploded")
@@ -288,7 +289,7 @@ class TestBuildSkillsSystemPrompt:
         for subdir in ["search", "search"]:
             d = cat_dir / subdir
             d.mkdir(parents=True, exist_ok=True)
-            (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n")
+            (d / "SKILL.md").write_text("---\ndescription: Search stuff\n---\n", encoding="utf-8")
         result = build_skills_system_prompt()
         # "search" should appear only once per category
         assert result.count("- search") == 1
@@ -301,7 +302,8 @@ class TestBuildSkillsSystemPrompt:
         d = tmp_path / "skills" / "social-media" / "twitter" / "thread-writer"
         d.mkdir(parents=True)
         (d / "SKILL.md").write_text(
-            "---\nname: thread-writer\ndescription: Write threads\n---\n"
+            "---\nname: thread-writer\ndescription: Write threads\n---\n",
+            encoding="utf-8",
         )
         # Nested category ("social-media/twitter") demoted via its parent:
         # name visible, description gone.
@@ -325,13 +327,15 @@ class TestBuildSkillsSystemPrompt:
         enabled_skill = skills_dir / "web-search"
         enabled_skill.mkdir()
         (enabled_skill / "SKILL.md").write_text(
-            "---\nname: web-search\ndescription: Search the web\n---\n"
+            "---\nname: web-search\ndescription: Search the web\n---\n",
+            encoding="utf-8",
         )
 
         disabled_skill = skills_dir / "old-tool"
         disabled_skill.mkdir()
         (disabled_skill / "SKILL.md").write_text(
-            "---\nname: old-tool\ndescription: Deprecated tool\n---\n"
+            "---\nname: old-tool\ndescription: Deprecated tool\n---\n",
+            encoding="utf-8",
         )
 
         from unittest.mock import patch
@@ -350,14 +354,16 @@ class TestBuildSkillsSystemPrompt:
         skill_dir = tmp_path / "skills" / "tools" / "cached-skill"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: cached-skill\ndescription: Cached skill\n---\n"
+            "---\nname: cached-skill\ndescription: Cached skill\n---\n",
+            encoding="utf-8",
         )
 
         first = build_skills_system_prompt()
         assert "cached-skill" in first
 
         (tmp_path / "config.yaml").write_text(
-            "skills:\n  disabled: [cached-skill]\n"
+            "skills:\n  disabled: [cached-skill]\n",
+            encoding="utf-8",
         )
 
         second = build_skills_system_prompt()
@@ -444,7 +450,7 @@ class TestBuildContextFilesPrompt:
         assert "Youtab Agent Runtime" in result
 
     def test_loads_agents_md(self, tmp_path):
-        (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.")
+        (tmp_path / "AGENTS.md").write_text("Use Ruff for linting.", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Ruff for linting" in result
         assert "Project Context" in result
@@ -457,7 +463,7 @@ class TestBuildContextFilesPrompt:
         import agent.runtime_cwd as rt
 
         monkeypatch.setattr(rt, "_PACKAGE_ROOT", tmp_path.resolve())
-        (tmp_path / "AGENTS.md").write_text("Never give up on the right solution.")
+        (tmp_path / "AGENTS.md").write_text("Never give up on the right solution.", encoding="utf-8")
         monkeypatch.chdir(tmp_path)
         result = build_context_files_prompt(cwd=None, skip_soul=True)
         assert "Never give up" not in result
@@ -492,7 +498,7 @@ class TestBuildContextFilesPrompt:
 
 
     def test_loads_claude_md(self, tmp_path):
-        (tmp_path / "CLAUDE.md").write_text("Use type hints everywhere.")
+        (tmp_path / "CLAUDE.md").write_text("Use type hints everywhere.", encoding="utf-8")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "type hints" in result
         assert "CLAUDE.md" in result
@@ -506,8 +512,8 @@ class TestBuildContextFilesPrompt:
     def test_claude_md_uppercase_takes_priority(self, tmp_path):
         uppercase = tmp_path / "CLAUDE.md"
         lowercase = tmp_path / "claude.md"
-        uppercase.write_text("From uppercase.")
-        lowercase.write_text("From lowercase.")
+        uppercase.write_text("From uppercase.", encoding="utf-8")
+        lowercase.write_text("From lowercase.", encoding="utf-8")
         if uppercase.samefile(lowercase):
             pytest.skip("filesystem is case-insensitive")
         result = build_context_files_prompt(cwd=str(tmp_path))
@@ -525,14 +531,14 @@ class TestBuildContextFilesPrompt:
 
 class TestFindYoutabMd:
     def test_finds_in_cwd(self, tmp_path):
-        (tmp_path / ".youtab-agent-runtime.md").write_text("rules")
+        (tmp_path / ".youtab-agent-runtime.md").write_text("rules", encoding="utf-8")
         assert _find_youtab_md(tmp_path) == tmp_path / ".youtab-agent-runtime.md"
 
 
 
     def test_walks_to_git_root(self, tmp_path):
         (tmp_path / ".git").mkdir()
-        (tmp_path / ".youtab-agent-runtime.md").write_text("root rules")
+        (tmp_path / ".youtab-agent-runtime.md").write_text("root rules", encoding="utf-8")
         sub = tmp_path / "a" / "b"
         sub.mkdir(parents=True)
         assert _find_youtab_md(sub) == tmp_path / ".youtab-agent-runtime.md"
@@ -550,7 +556,7 @@ class TestFindYoutabMd:
 
         parent = tmp_path / "parent"
         parent.mkdir()
-        (parent / ".youtab-agent-runtime.md").write_text("planted by another user")
+        (parent / ".youtab-agent-runtime.md").write_text("planted by another user", encoding="utf-8")
         cwd = parent / "work"
         cwd.mkdir()
         # No git root anywhere up the tree.
@@ -834,7 +840,8 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir = tmp_path / "skills" / "iot" / "openhue"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  youtab:\n    requires_toolsets: [terminal]\n---\n"
+            "---\nname: openhue\ndescription: Hue lights\nmetadata:\n  youtab:\n    requires_toolsets: [terminal]\n---\n",
+            encoding="utf-8",
         )
         result = build_skills_system_prompt(
             available_tools=set(),
@@ -850,7 +857,8 @@ class TestBuildSkillsSystemPromptConditional:
         skill_dir = tmp_path / "skills" / "search" / "duckduckgo"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text(
-            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  youtab:\n    fallback_for_toolsets: [web]\n---\n"
+            "---\nname: duckduckgo\ndescription: Free web search\nmetadata:\n  youtab:\n    fallback_for_toolsets: [web]\n---\n",
+            encoding="utf-8",
         )
         result = build_skills_system_prompt()
         assert "duckduckgo" in result

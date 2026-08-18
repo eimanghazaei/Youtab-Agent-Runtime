@@ -81,7 +81,8 @@ class TestGetDisabledSkillNames:
             "    - global-skill\n"
             "  platform_disabled:\n"
             "    telegram:\n"
-            "      - tg-only-skill\n"
+            "      - tg-only-skill\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.delenv("YOUTAB_AGENT_PLATFORM", raising=False)
@@ -100,7 +101,8 @@ class TestGetDisabledSkillNames:
             "    - global-skill\n"
             "  platform_disabled:\n"
             "    discord:\n"
-            "      - discord-skill\n"
+            "      - discord-skill\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.delenv("YOUTAB_AGENT_PLATFORM", raising=False)
@@ -119,7 +121,8 @@ class TestGetDisabledSkillNames:
             "    telegram:\n"
             "      - tg-skill\n"
             "    discord:\n"
-            "      - discord-skill\n"
+            "      - discord-skill\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         monkeypatch.setenv("YOUTAB_AGENT_PLATFORM", "telegram")
@@ -141,7 +144,7 @@ class TestFindAllSkillsFiltering:
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
         skill_md = skill_dir / "SKILL.md"
-        skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent")
+        skill_md.write_text("---\nname: my-skill\ndescription: A test skill\n---\nContent", encoding="utf-8")
         # Point SKILLS_DIR at the real tempdir so iter_skill_index_files
         # (which uses os.walk) can actually find the file.
         import tools.skills_tool as _st

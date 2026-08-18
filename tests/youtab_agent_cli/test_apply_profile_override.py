@@ -30,7 +30,7 @@ def _run_apply_profile_override(
     youtab_root.mkdir(parents=True, exist_ok=True)
 
     if active_profile is not None:
-        (youtab_root / "active_profile").write_text(active_profile)
+        (youtab_root / "active_profile").write_text(active_profile, encoding="utf-8")
 
     if active_profile and active_profile != "default":
         (youtab_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
@@ -148,7 +148,7 @@ class TestSupervisedChildIgnoresStickyProfile:
         active_profile fallback, never an explicit flag)."""
         youtab_root = tmp_path / ".youtab-agent-runtime"
         youtab_root.mkdir(parents=True, exist_ok=True)
-        (youtab_root / "active_profile").write_text("briefer")
+        (youtab_root / "active_profile").write_text("briefer", encoding="utf-8")
         (youtab_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
         (youtab_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
 

@@ -88,7 +88,7 @@ class TestRunJobScript:
         from cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "test.py"
-        script.write_text('print("hello from script")\n')
+        script.write_text('print("hello from script")\n', encoding="utf-8")
 
         success, output = _run_job_script(str(script))
         assert success is True
@@ -98,7 +98,7 @@ class TestRunJobScript:
         from cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "relative.py"
-        script.write_text('print("relative works")\n')
+        script.write_text('print("relative works")\n', encoding="utf-8")
 
         success, output = _run_job_script("relative.py")
         assert success is True
@@ -123,7 +123,8 @@ class TestRunJobScript:
                 key = {blocked_var!r}
                 print("PRESENT" if os.environ.get(key) else "ABSENT")
                 """
-            )
+            ),
+            encoding="utf-8",
         )
 
         success, output = _run_job_script("env_probe.py")
@@ -135,7 +136,7 @@ class TestRunJobScript:
         from cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "probe.py"
-        script.write_text('print("ok")\n')
+        script.write_text('print("ok")\n', encoding="utf-8")
 
         venv = tmp_path / "venv"
         venv_scripts = venv / "Scripts"
@@ -178,7 +179,7 @@ class TestRunJobScript:
         from cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "probe.py"
-        script.write_text('print("ok")\n')
+        script.write_text('print("ok")\n', encoding="utf-8")
 
         captured = {}
 
@@ -208,7 +209,7 @@ class TestBuildJobPromptWithScript:
         from cron.scheduler import _build_job_prompt
 
         script = cron_env / "scripts" / "data.py"
-        script.write_text('print("new PR: #123 fix typo")\n')
+        script.write_text('print("new PR: #123 fix typo")\n', encoding="utf-8")
 
         job = {
             "prompt": "Report any notable changes.",
@@ -295,7 +296,7 @@ class TestScriptPathContainment:
 
         # Create a script outside the scripts dir
         outside_script = cron_env / "outside.py"
-        outside_script.write_text('print("should not run")\n')
+        outside_script.write_text('print("should not run")\n', encoding="utf-8")
 
         success, output = _run_job_script(str(outside_script))
         assert success is False
@@ -331,7 +332,7 @@ class TestScriptPathContainment:
         from cron.scheduler import _run_job_script
 
         script = cron_env / "scripts" / "good.py"
-        script.write_text('print("ok")\n')
+        script.write_text('print("ok")\n', encoding="utf-8")
 
         success, output = _run_job_script("good.py")
         assert success is True
@@ -344,7 +345,7 @@ class TestScriptPathContainment:
         subdir = cron_env / "scripts" / "monitors"
         subdir.mkdir()
         script = subdir / "check.py"
-        script.write_text('print("sub ok")\n')
+        script.write_text('print("sub ok")\n', encoding="utf-8")
 
         success, output = _run_job_script("monitors/check.py")
         assert success is True
@@ -361,7 +362,7 @@ class TestScriptPathContainment:
 
         # Create a script outside the scripts dir
         outside = tmp_path / "outside_evil.py"
-        outside.write_text('print("escaped")\n')
+        outside.write_text('print("escaped")\n', encoding="utf-8")
 
         # Create a symlink inside scripts/ pointing outside
         link = cron_env / "scripts" / "sneaky.py"

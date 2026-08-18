@@ -25,7 +25,7 @@ class TestFindDocker:
     def test_not_in_path_falls_back_to_known_locations(self, tmp_path):
         # Create a fake docker binary at a known path
         fake_docker = tmp_path / "docker"
-        fake_docker.write_text("#!/bin/sh\n")
+        fake_docker.write_text("#!/bin/sh\n", encoding="utf-8")
         fake_docker.chmod(0o755)
 
         with patch("tools.environments.docker.shutil.which", return_value=None), \

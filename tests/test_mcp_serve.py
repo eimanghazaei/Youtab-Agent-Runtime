@@ -117,7 +117,7 @@ def sample_sessions():
 
 @pytest.fixture
 def populated_sessions_dir(sessions_dir, sample_sessions):
-    (sessions_dir / "sessions.json").write_text(json.dumps(sample_sessions))
+    (sessions_dir / "sessions.json").write_text(json.dumps(sample_sessions), encoding="utf-8")
     return sessions_dir
 
 
@@ -275,7 +275,7 @@ class TestHelpers:
 
 
     def test_load_sessions_index_corrupt(self, sessions_dir, monkeypatch):
-        (sessions_dir / "sessions.json").write_text("not json!")
+        (sessions_dir / "sessions.json").write_text("not json!", encoding="utf-8")
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
         assert mcp_serve._load_sessions_index() == {}
@@ -785,7 +785,7 @@ class TestEdgeCases:
             "platform": "telegram",
             "updated_at": "2026-03-29T12:00:00",
         }}
-        (sessions_dir / "sessions.json").write_text(json.dumps(data))
+        (sessions_dir / "sessions.json").write_text(json.dumps(data), encoding="utf-8")
         import mcp_serve
         monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: sessions_dir)
         entries = mcp_serve._load_sessions_index()
@@ -832,7 +832,7 @@ class TestEventBridgePollE2E:
                 "origin": {"platform": "telegram", "chat_id": "poll_test"},
             }
         }
-        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data), encoding="utf-8")
 
         # Write messages to SQLite
         messages = [
@@ -887,7 +887,7 @@ class TestEventBridgePollE2E:
                 "origin": {"platform": "telegram", "chat_id": "skip"},
             }
         }
-        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data))
+        (sessions_dir / "sessions.json").write_text(json.dumps(sessions_data), encoding="utf-8")
         _create_test_db(db_path, session_id, [
             {"role": "user", "content": "Hello", "timestamp": "2026-03-29T15:00:01"},
         ])
@@ -944,7 +944,7 @@ class TestEventBridgePollE2E:
         # _poll_once reads <YOUTAB_AGENT_HOME>/state.db for its mtime gate; the autouse
         # fixture points YOUTAB_AGENT_HOME at tmp_path.
         db_path = tmp_path / "state.db"
-        db_path.write_text("placeholder")
+        db_path.write_text("placeholder", encoding="utf-8")
 
         session_id = "20260329_150000_late_register"
         # The routing index now comes from _load_sessions_index() (state.db

@@ -446,7 +446,7 @@ class TestBusySessionOnboardingHint:
 
         # The flag is now persisted to tmp_path/config.yaml
         import yaml
-        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
         assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
 
 

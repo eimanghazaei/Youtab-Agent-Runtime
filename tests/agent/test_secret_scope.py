@@ -117,7 +117,7 @@ class TestEnvFileParsing:
 
 
     def test_build_profile_secret_scope(self, tmp_path):
-        (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=sk-profile\n")
+        (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=sk-profile\n", encoding="utf-8")
         assert ss.build_profile_secret_scope(tmp_path) == {
             "ANTHROPIC_API_KEY": "sk-profile"
         }
@@ -125,7 +125,7 @@ class TestEnvFileParsing:
     def test_build_profile_secret_scope_includes_home_external_secrets(
         self, tmp_path, monkeypatch
     ):
-        (tmp_path / ".env").write_text("XIAOMI_API_KEY=placeholder\n")
+        (tmp_path / ".env").write_text("XIAOMI_API_KEY=placeholder\n", encoding="utf-8")
         from youtab_agent_cli import env_loader
 
         home_key = str(tmp_path.resolve())

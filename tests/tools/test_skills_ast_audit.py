@@ -16,7 +16,8 @@ def test_bypass_payload_detected(tmp_path):
         "import importlib\n"
         "parts = ['o', 's']\n"
         "m = importlib.import_module(''.join(parts))\n"
-        "e = m.__dict__[''.join(['e','n','v'])]\n"
+        "e = m.__dict__[''.join(['e','n','v'])]\n",
+        encoding="utf-8",
     )
     pids = _pids(ast_scan_path(f))
     assert "dynamic_import" in pids
@@ -26,13 +27,13 @@ def test_bypass_payload_detected(tmp_path):
 
 def test_syntax_error_does_not_crash(tmp_path):
     f = tmp_path / "bad.py"
-    f.write_text("def broken(\n")
+    f.write_text("def broken(\n", encoding="utf-8")
     assert ast_scan_path(f) == []
 
 
 def test_recursion_error_does_not_crash(tmp_path):
     f = tmp_path / "deep.py"
-    f.write_text("a" + ".x" * 5000 + "\n")
+    f.write_text("a" + ".x" * 5000 + "\n", encoding="utf-8")
     orig = sys.getrecursionlimit()
     sys.setrecursionlimit(200)
     try:

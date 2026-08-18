@@ -28,7 +28,7 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 def _extract_setup_path_shim_block() -> str:
     """Return the install.sh shim-write block used by setup_path()."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     match = re.search(
         r"(?P<block>mkdir -p \"\$command_link_dir\".*?chmod \+x \"\$command_link_dir/youtab\")",
         text,
@@ -77,7 +77,7 @@ def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -
     venv_bin.mkdir(parents=True)
     pip_entry = venv_bin / "youtab"
     pip_marker = "#!/usr/bin/env python\n# pip-generated entry point — must not be overwritten\n"
-    pip_entry.write_text(pip_marker)
+    pip_entry.write_text(pip_marker, encoding="utf-8")
     pip_entry.chmod(pip_entry.stat().st_mode | stat.S_IXUSR)
 
     command_link_dir = tmp_path / "local_bin"
@@ -103,7 +103,7 @@ def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -
 
     # The pip entry point must still be the original pip script — not a
     # re-written self-recursing bash shim.
-    assert pip_entry.read_text() == pip_marker, (
+    assert pip_entry.read_text(encoding="utf-8") == pip_marker, (
         "venv/bin/youtab was overwritten by setup_path() — symlink-stomp "
         "regression (#21454)."
     )
@@ -114,7 +114,7 @@ def test_re_running_setup_path_block_preserves_pip_entry_point(tmp_path: Path) -
         "command_link_dir/youtab must be replaced with a regular file, not "
         "left as a symlink — otherwise the next install will stomp again."
     )
-    shim_text = shim_path.read_text()
+    shim_text = shim_path.read_text(encoding="utf-8")
     assert "unset PYTHONPATH" in shim_text
     assert "unset PYTHONHOME" in shim_text
     assert f'exec "{pip_entry}"' in shim_text

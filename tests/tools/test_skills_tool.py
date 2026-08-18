@@ -40,7 +40,7 @@ description: Description for {name}.
 
 {body}
 """
-    (skill_dir / "SKILL.md").write_text(content)
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     return skill_dir
 
 
@@ -190,7 +190,8 @@ class TestFindAllSkills:
             git_dir = tmp_path / ".git" / "fake-skill"
             git_dir.mkdir(parents=True)
             (git_dir / "SKILL.md").write_text(
-                "---\nname: fake\ndescription: x\n---\n\nBody.\n"
+                "---\nname: fake\ndescription: x\n---\n\nBody.\n",
+                encoding="utf-8",
             )
             # Neither are skills vendored inside a nested virtualenv.
             typer_skill = (
@@ -222,12 +223,14 @@ class TestFindAllSkills:
         no_desc = tmp_path / "no-desc"
         no_desc.mkdir()
         (no_desc / "SKILL.md").write_text(
-            "---\nname: no-desc\n---\n\n# Heading\n\nFirst paragraph.\n"
+            "---\nname: no-desc\n---\n\n# Heading\n\nFirst paragraph.\n",
+            encoding="utf-8",
         )
         long_dir = tmp_path / "long-desc"
         long_dir.mkdir()
         (long_dir / "SKILL.md").write_text(
-            f"---\nname: long\ndescription: {'x' * (MAX_DESCRIPTION_LENGTH + 100)}\n---\n\nBody.\n"
+            f"---\nname: long\ndescription: {'x' * (MAX_DESCRIPTION_LENGTH + 100)}\n---\n\nBody.\n",
+            encoding="utf-8",
         )
 
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
@@ -320,7 +323,8 @@ class TestSkillView:
                 "description: A skill whose directory name differs from its name.\n"
                 "---\n\n"
                 "# real-skill-name\n\n"
-                "Step 1: Do the thing.\n"
+                "Step 1: Do the thing.\n",
+                encoding="utf-8",
             )
             by_dir = json.loads(skill_view("my-skill"))
             by_name = json.loads(skill_view("real-skill-name"))
@@ -340,7 +344,7 @@ class TestSkillView:
             skill_dir = _make_skill(tmp_path, "my-skill")
             refs_dir = skill_dir / "references"
             refs_dir.mkdir()
-            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.")
+            (refs_dir / "api.md").write_text("# API Docs\nEndpoint info.", encoding="utf-8")
 
             existing = json.loads(skill_view("my-skill", file_path="references/api.md"))
             missing = json.loads(skill_view("my-skill", file_path="references/nope.md"))
@@ -889,7 +893,7 @@ class TestSkillViewCollisionDetection:
             / "sketch.md"
         )
         support_file.parent.mkdir(parents=True, exist_ok=True)
-        support_file.write_text("# Sketch style support doc\n")
+        support_file.write_text("# Sketch style support doc\n", encoding="utf-8")
         _make_skill(local_dir, "sketch", category="creative", body="REAL SKETCH SKILL")
 
         p1, p2 = self._patch_dirs(local_dir, [external_dir])

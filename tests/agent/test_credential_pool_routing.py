@@ -317,7 +317,8 @@ class TestApiKeyHintRealPool:
                         ]
                     },
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
         from agent.credential_pool import load_pool
@@ -374,7 +375,8 @@ class TestFailureAttribution:
         youtab_home = tmp_path / "youtab"
         youtab_home.mkdir(parents=True, exist_ok=True)
         (youtab_home / "auth.json").write_text(
-            json.dumps({"version": 1, "credential_pool": {"anthropic": entries}})
+            json.dumps({"version": 1, "credential_pool": {"anthropic": entries}}),
+            encoding="utf-8",
         )
         from agent.credential_pool import load_pool
 

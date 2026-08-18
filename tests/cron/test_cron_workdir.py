@@ -65,7 +65,7 @@ class TestNormalizeWorkdir:
     def test_file_not_dir_rejected(self, tmp_path):
         from cron.jobs import _normalize_workdir
         f = tmp_path / "file.txt"
-        f.write_text("hi")
+        f.write_text("hi", encoding="utf-8")
         with pytest.raises(ValueError, match="not a directory"):
             _normalize_workdir(str(f))
 

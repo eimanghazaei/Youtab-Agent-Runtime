@@ -39,7 +39,7 @@ def _write_auth_store(youtab_home: Path, youtab_state: Dict[str, Any]) -> Path:
     auth_path.write_text(json.dumps({
         "version": 1,
         "providers": {"youtab": youtab_state},
-    }))
+    }), encoding="utf-8")
     return auth_path
 
 
@@ -138,7 +138,7 @@ def _write_xai_pool_entry(
                 }
             ]
         },
-    }))
+    }), encoding="utf-8")
     return auth_path
 
 
@@ -148,7 +148,7 @@ def test_xai_adapter_not_authenticated_when_no_pool_entry(tmp_path, monkeypatch)
         "version": 1,
         "providers": {},
         "credential_pool": {},
-    }))
+    }), encoding="utf-8")
     assert not XAIGrokAdapter().is_authenticated()
 
 
@@ -196,7 +196,7 @@ def test_xai_adapter_retry_rotates_pool_entry_on_429(tmp_path, monkeypatch):
                 },
             ]
         },
-    }))
+    }), encoding="utf-8")
 
     # Refresh must NOT be called on the 429 path — guard against
     # the fix accidentally trying to refresh-on-rate-limit.

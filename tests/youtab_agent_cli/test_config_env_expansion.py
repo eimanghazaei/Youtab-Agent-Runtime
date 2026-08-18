@@ -33,7 +33,7 @@ class TestLoadConfigExpansion:
             "plain: no-substitution\n"
         )
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(config_yaml)
+        config_file.write_text(config_yaml, encoding="utf-8")
 
         monkeypatch.setenv("GOOGLE_API_KEY", "gsk-test-key")
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1234567:ABC-token")
@@ -57,7 +57,7 @@ class TestLoadConfigCacheEnvStaleness:
     def test_env_var_appearing_after_first_load_invalidates_cache(self, tmp_path, monkeypatch):
         config_yaml = "auxiliary:\n  vision:\n    api_key: ${LATE_DOTENV_KEY_58514}\n"
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(config_yaml)
+        config_file.write_text(config_yaml, encoding="utf-8")
 
         monkeypatch.delenv("LATE_DOTENV_KEY_58514", raising=False)
         monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
@@ -73,7 +73,7 @@ class TestLoadConfigCacheEnvStaleness:
     def test_unchanged_env_still_serves_cache(self, tmp_path, monkeypatch):
         config_yaml = "providers:\n  mistral:\n    api_key: ${STABLE_KEY_58514}\n"
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(config_yaml)
+        config_file.write_text(config_yaml, encoding="utf-8")
 
         monkeypatch.setenv("STABLE_KEY_58514", "key-stable")
         monkeypatch.setitem(load_config.__globals__, "get_config_path", lambda: config_file)
@@ -95,7 +95,7 @@ class TestLoadCliConfigExpansion:
 
     def test_cli_config_ignores_empty_terminal_section(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("terminal:\n")
+        config_file.write_text("terminal:\n", encoding="utf-8")
 
         monkeypatch.setattr("cli._youtab_home", tmp_path)
 
@@ -113,7 +113,7 @@ class TestLoadCliConfigExpansion:
             "    api_key: ${UNSET_CLI_VAR_ABC}\n"
         )
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(config_yaml)
+        config_file.write_text(config_yaml, encoding="utf-8")
 
         monkeypatch.delenv("UNSET_CLI_VAR_ABC", raising=False)
         monkeypatch.setattr("cli._youtab_home", tmp_path)

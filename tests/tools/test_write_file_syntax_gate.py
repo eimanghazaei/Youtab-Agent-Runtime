@@ -39,7 +39,7 @@ class TestFailClosedSyntaxGate:
         content = json.dumps({"a": 1, "b": [1, 2, 3]})
         res = ops.write_file(str(target), content)
         assert res.error is None, res.error
-        assert target.read_text() == content
+        assert target.read_text(encoding="utf-8") == content
 
 
     def test_invalid_python_is_NOT_hard_refused(self, ops, tmp_path: Path):
@@ -52,7 +52,7 @@ class TestFailClosedSyntaxGate:
         bad_python = "def foo(:\n    pass\n"
         res = ops.write_file(str(target), bad_python)
         assert res.error is None, res.error
-        assert target.read_text() == bad_python
+        assert target.read_text(encoding="utf-8") == bad_python
         # Still surfaced via the (non-blocking) lint report:
         assert res.lint is not None
         assert res.lint.get("status") == "error"
@@ -73,4 +73,4 @@ class TestFailClosedSyntaxGate:
         )
         res = ops.write_file(str(target), content)
         assert res.error is None, res.error
-        assert target.read_text() == content
+        assert target.read_text(encoding="utf-8") == content

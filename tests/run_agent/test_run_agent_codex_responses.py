@@ -1506,7 +1506,7 @@ def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
 
     dump_file = agent._dump_api_request_debug(_codex_request_kwargs(), reason="preflight")
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
 
 
@@ -1530,7 +1530,7 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
         reason="preflight",
     )
 
-    payload = json.loads(dump_file.read_text())
+    payload = json.loads(dump_file.read_text(encoding="utf-8"))
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 

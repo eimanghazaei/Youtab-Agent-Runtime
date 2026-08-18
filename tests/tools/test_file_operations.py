@@ -422,7 +422,7 @@ class TestSearchFilesFallbackHiddenPaths:
 
         for p in [visible_file, nested_hidden_file, visible_nested_file, hidden_dir_file]:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("x")
+            p.write_text("x", encoding="utf-8")
 
         ops = ShellFileOperations(self._make_env())
         monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")
@@ -441,7 +441,7 @@ class TestSearchFilesFallbackHiddenPaths:
 
         for p in [visible_file, visible_nested_file, hidden_dir_file]:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("x")
+            p.write_text("x", encoding="utf-8")
 
         ops = ShellFileOperations(self._make_env())
         monkeypatch.setattr(ops, "_has_command", lambda command: command == "find")

@@ -262,7 +262,7 @@ class TestMemoryStorePersistence:
         monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
         # Write file with duplicates
         mem_file = tmp_path / "MEMORY.md"
-        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry")
+        mem_file.write_text("duplicate entry\n§\nduplicate entry\n§\nunique entry", encoding="utf-8")
 
         store = MemoryStore()
         store.load_from_disk()
@@ -398,11 +398,11 @@ class TestExternalDriftGuard:
         assert "drift_backup" in result
         # On-disk file is UNTOUCHED — that's the point.
         assert path.stat().st_size == original_size
-        assert "Vendor Master" in path.read_text()
+        assert "Vendor Master" in path.read_text(encoding="utf-8")
         # Backup exists with the drifted content.
         bak = result["drift_backup"]
         assert Path(bak).exists()
-        assert "Vendor Master" in Path(bak).read_text()
+        assert "Vendor Master" in Path(bak).read_text(encoding="utf-8")
         # The model has to know what file to look at and what to do.
         assert ".bak." in result["error"]
         assert "remediation" in result

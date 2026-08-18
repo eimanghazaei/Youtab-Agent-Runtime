@@ -37,7 +37,7 @@ async def test_redelivered_restart_with_older_update_id_is_ignored(tmp_path, mon
         "platform": "telegram",
         "update_id": 12345,
         "requested_at": time.time() - 5,
-    }))
+    }), encoding="utf-8")
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock()
@@ -62,7 +62,7 @@ async def test_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch
         "platform": "telegram",
         "update_id": 12345,
         "requested_at": time.time() - 600,  # 10 minutes ago
-    }))
+    }), encoding="utf-8")
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -86,7 +86,7 @@ async def test_event_without_update_id_bypasses_dedup(tmp_path, monkeypatch):
         "platform": "telegram",
         "update_id": 999999,
         "requested_at": time.time(),
-    }))
+    }), encoding="utf-8")
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
@@ -113,7 +113,7 @@ async def test_different_platform_bypasses_dedup(tmp_path, monkeypatch):
         "platform": "telegram",
         "update_id": 12345,
         "requested_at": time.time(),
-    }))
+    }), encoding="utf-8")
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)

@@ -34,7 +34,7 @@ class TestRegisterCredentialFiles:
     def test_dict_with_path_key(self, tmp_path):
         youtab_home = tmp_path / ".youtab-agent-runtime"
         youtab_home.mkdir()
-        (youtab_home / "token.json").write_text("{}")
+        (youtab_home / "token.json").write_text("{}", encoding="utf-8")
 
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}):
             missing = register_credential_files([{"path": "token.json"}])
@@ -50,7 +50,7 @@ class TestRegisterCredentialFiles:
         """When both path and name are present, path wins."""
         youtab_home = tmp_path / ".youtab-agent-runtime"
         youtab_home.mkdir()
-        (youtab_home / "real.json").write_text("{}")
+        (youtab_home / "real.json").write_text("{}", encoding="utf-8")
 
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}):
             missing = register_credential_files([
@@ -68,7 +68,7 @@ class TestSkillsDirectoryMount:
         skills_dir = youtab_home / "skills"
         skills_dir.mkdir(parents=True)
         (skills_dir / "test-skill").mkdir()
-        (skills_dir / "test-skill" / "SKILL.md").write_text("# test")
+        (skills_dir / "test-skill" / "SKILL.md").write_text("# test", encoding="utf-8")
 
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}):
             mounts = get_skills_directory_mount()
@@ -92,10 +92,10 @@ class TestSkillsDirectoryMount:
         youtab_home = tmp_path / ".youtab-agent-runtime"
         skills_dir = youtab_home / "skills"
         skills_dir.mkdir(parents=True)
-        (skills_dir / "legit.md").write_text("# real skill")
+        (skills_dir / "legit.md").write_text("# real skill", encoding="utf-8")
         # Create a symlink pointing outside the skills tree
         secret = tmp_path / "secret.txt"
-        secret.write_text("TOP SECRET")
+        secret.write_text("TOP SECRET", encoding="utf-8")
         (skills_dir / "evil_link").symlink_to(secret)
 
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}):
@@ -108,7 +108,7 @@ class TestSkillsDirectoryMount:
         assert safe_path != skills_dir
         # Legitimate file should be present
         assert (safe_path / "legit.md").exists()
-        assert (safe_path / "legit.md").read_text() == "# real skill"
+        assert (safe_path / "legit.md").read_text(encoding="utf-8") == "# real skill"
         # Symlink should NOT be present
         assert not (safe_path / "evil_link").exists()
 
@@ -117,7 +117,7 @@ class TestSkillsDirectoryMount:
         youtab_home = tmp_path / ".youtab-agent-runtime"
         skills_dir = youtab_home / "skills"
         skills_dir.mkdir(parents=True)
-        (skills_dir / "skill.md").write_text("ok")
+        (skills_dir / "skill.md").write_text("ok", encoding="utf-8")
 
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}):
             mounts = get_skills_directory_mount()
@@ -130,12 +130,12 @@ class TestIterSkillsFiles:
         youtab_home = tmp_path / ".youtab-agent-runtime"
         skills_dir = youtab_home / "skills"
         (skills_dir / "cat" / "myskill").mkdir(parents=True)
-        (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
+        (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill", encoding="utf-8")
         (skills_dir / "cat" / "myskill" / "scripts").mkdir()
-        (skills_dir / "cat" / "myskill" / "scripts" / "run.sh").write_text("#!/bin/bash")
+        (skills_dir / "cat" / "myskill" / "scripts" / "run.sh").write_text("#!/bin/bash", encoding="utf-8")
         # Add a symlink that should be filtered
         secret = tmp_path / "secret"
-        secret.write_text("nope")
+        secret.write_text("nope", encoding="utf-8")
         (skills_dir / "cat" / "myskill" / "evil").symlink_to(secret)
 
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}):
@@ -173,7 +173,7 @@ class TestPathTraversalSecurity:
 
         # Create a sensitive file one level above youtab_home
         sensitive = tmp_path / "sensitive.json"
-        sensitive.write_text('{"secret": "value"}')
+        sensitive.write_text('{"secret": "value"}', encoding="utf-8")
 
         result = register_credential_file("../sensitive.json")
 
@@ -189,7 +189,7 @@ class TestPathTraversalSecurity:
         # Create a fake sensitive file outside youtab_home
         ssh_dir = tmp_path / ".ssh"
         ssh_dir.mkdir()
-        (ssh_dir / "id_rsa").write_text("PRIVATE KEY")
+        (ssh_dir / "id_rsa").write_text("PRIVATE KEY", encoding="utf-8")
 
         result = register_credential_file("../../.ssh/id_rsa")
 
@@ -204,7 +204,7 @@ class TestPathTraversalSecurity:
 
         # Create a file at an absolute path
         sensitive = tmp_path / "absolute.json"
-        sensitive.write_text("{}")
+        sensitive.write_text("{}", encoding="utf-8")
 
         result = register_credential_file(str(sensitive))
 
@@ -218,7 +218,7 @@ class TestPathTraversalSecurity:
         youtab_home.mkdir()
         subdir = youtab_home / "creds"
         subdir.mkdir()
-        (subdir / "oauth.json").write_text("{}")
+        (subdir / "oauth.json").write_text("{}", encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
         result = register_credential_file("creds/oauth.json")
@@ -233,7 +233,7 @@ class TestPathTraversalSecurity:
 
         # Create a sensitive file outside youtab_home
         sensitive = tmp_path / "sensitive.json"
-        sensitive.write_text('{"secret": "value"}')
+        sensitive.write_text('{"secret": "value"}', encoding="utf-8")
 
         # Create a symlink inside youtab_home pointing outside
         symlink = youtab_home / "evil_link.json"
@@ -259,7 +259,7 @@ class TestConfigPathTraversal:
     def _write_config(self, youtab_home: Path, cred_files: list):
         import yaml
         config_path = youtab_home / "config.yaml"
-        config_path.write_text(yaml.dump({"terminal": {"credential_files": cred_files}}))
+        config_path.write_text(yaml.dump({"terminal": {"credential_files": cred_files}}), encoding="utf-8")
 
     def test_config_traversal_rejected(self, tmp_path, monkeypatch):
         """'../secret' in config.yaml must not escape YOUTAB_AGENT_HOME."""
@@ -268,7 +268,7 @@ class TestConfigPathTraversal:
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
         sensitive = tmp_path / "secret.json"
-        sensitive.write_text("{}")
+        sensitive.write_text("{}", encoding="utf-8")
         self._write_config(youtab_home, ["../secret.json"])
 
         mounts = get_credential_file_mounts()
@@ -283,7 +283,7 @@ class TestConfigPathTraversal:
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
         sensitive = tmp_path / "abs.json"
-        sensitive.write_text("{}")
+        sensitive.write_text("{}", encoding="utf-8")
         self._write_config(youtab_home, [str(sensitive)])
 
         mounts = get_credential_file_mounts()
@@ -295,7 +295,7 @@ class TestConfigPathTraversal:
         youtab_home.mkdir()
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
-        (youtab_home / "oauth.json").write_text("{}")
+        (youtab_home / "oauth.json").write_text("{}", encoding="utf-8")
         self._write_config(youtab_home, ["oauth.json"])
 
         mounts = get_credential_file_mounts()
@@ -410,7 +410,7 @@ class TestIterCacheFiles:
         doc_dir = youtab_home / "cache" / "documents"
         doc_dir.mkdir(parents=True)
         real_file = doc_dir / "real.txt"
-        real_file.write_text("content")
+        real_file.write_text("content", encoding="utf-8")
         (doc_dir / "link.txt").symlink_to(real_file)
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
@@ -449,15 +449,15 @@ class TestMasterCredentialStoresAreNeverMountable:
     def _home(tmp_path):
         home = tmp_path / ".youtab-agent-runtime"
         home.mkdir()
-        (home / ".env").write_text("OPENAI_API_KEY=sk-proj-REAL\n")
-        (home / "auth.json").write_text('{"providers":{}}')
-        (home / ".anthropic_oauth.json").write_text('{"refresh_token":"rt"}')
-        (home / "webhook_subscriptions.json").write_text("{}")
+        (home / ".env").write_text("OPENAI_API_KEY=sk-proj-REAL\n", encoding="utf-8")
+        (home / "auth.json").write_text('{"providers":{}}', encoding="utf-8")
+        (home / ".anthropic_oauth.json").write_text('{"refresh_token":"rt"}', encoding="utf-8")
+        (home / "webhook_subscriptions.json").write_text("{}", encoding="utf-8")
         (home / "cache").mkdir()
-        (home / "cache" / "bws_cache.json").write_text("{}")
+        (home / "cache" / "bws_cache.json").write_text("{}", encoding="utf-8")
         (home / "mcp-tokens").mkdir()
-        (home / "mcp-tokens" / "srv.json").write_text('{"access_token":"t"}')
-        (home / "google_token.json").write_text("{}")
+        (home / "mcp-tokens" / "srv.json").write_text('{"access_token":"t"}', encoding="utf-8")
+        (home / "google_token.json").write_text("{}", encoding="utf-8")
         return home
 
     @pytest.mark.parametrize(

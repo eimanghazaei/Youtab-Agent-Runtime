@@ -142,7 +142,7 @@ class TestCheckpointNotify:
             registry._running[s.id] = s
             registry._write_checkpoint()
 
-            data = json.loads((tmp_path / "procs.json").read_text())
+            data = json.loads((tmp_path / "procs.json").read_text(encoding="utf-8"))
             assert len(data) == 1
             assert data[0]["notify_on_complete"] is True
 
@@ -155,7 +155,7 @@ class TestCheckpointNotify:
             "command": "sleep 999",
             "pid": os.getpid(),
             "task_id": "t1",
-        }]))
+        }]), encoding="utf-8")
         with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
             recovered = registry.recover_from_checkpoint()
             assert recovered == 1

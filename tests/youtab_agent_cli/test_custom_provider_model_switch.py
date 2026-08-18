@@ -17,9 +17,9 @@ def config_home(tmp_path, monkeypatch):
     home = tmp_path / "youtab"
     home.mkdir()
     config_yaml = home / "config.yaml"
-    config_yaml.write_text("model: old-model\ncustom_providers: []\n")
+    config_yaml.write_text("model: old-model\ncustom_providers: []\n", encoding="utf-8")
     env_file = home / ".env"
-    env_file.write_text("")
+    env_file.write_text("", encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
     monkeypatch.delenv("YOUTAB_AGENT_MODEL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
@@ -54,7 +54,8 @@ class TestCustomProviderModelSwitch:
             "- name: Old Endpoint\n"
             "  base_url: https://old.example.test/v1\n"
             "  api_key: sk-old-config\n"
-            "  model: old-model\n"
+            "  model: old-model\n",
+            encoding="utf-8",
         )
         write_credential_pool(
             "custom:old-endpoint",
@@ -113,7 +114,7 @@ class TestCustomProviderModelSwitch:
         assert selected is not None
         assert selected.access_token == "sk-new"
 
-        config = yaml.safe_load(config_path.read_text()) or {}
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         assert config["model"]["base_url"] == "https://new.example.test/v1"
 
 
@@ -133,7 +134,8 @@ class TestCustomProviderModelSwitch:
             "- name: Example Provider\n"
             "  base_url: https://api.example-provider.test/v1\n"
             "  api_key: ${EXAMPLE_PROVIDER_API_KEY}\n"
-            "  model: qwen3.6-35b-fast\n"
+            "  model: qwen3.6-35b-fast\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("EXAMPLE_PROVIDER_API_KEY", "sk-live-example-provider")
 
@@ -156,10 +158,10 @@ class TestCustomProviderModelSwitch:
             "https://api.example-provider.test/v1",
             timeout=8.0,
         )
-        config = yaml.safe_load(config_path.read_text()) or {}
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         assert config["model"]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
         assert config["custom_providers"][0]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
-        assert "sk-live-example-provider" not in config_path.read_text()
+        assert "sk-live-example-provider" not in config_path.read_text(encoding="utf-8")
 
     def test_key_env_custom_provider_persists_reference_not_secret(self, config_home, monkeypatch):
         """key_env custom providers should also avoid writing plaintext keys."""
@@ -174,7 +176,8 @@ class TestCustomProviderModelSwitch:
             "- name: Example Provider\n"
             "  base_url: https://api.example-provider.test/v1\n"
             "  key_env: EXAMPLE_PROVIDER_API_KEY\n"
-            "  model: qwen3.6-35b-fast\n"
+            "  model: qwen3.6-35b-fast\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("EXAMPLE_PROVIDER_API_KEY", "sk-live-example-provider")
 
@@ -192,10 +195,10 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        config = yaml.safe_load(config_path.read_text()) or {}
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         assert config["model"]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
         assert config["custom_providers"][0]["key_env"] == "EXAMPLE_PROVIDER_API_KEY"
-        assert "sk-live-example-provider" not in config_path.read_text()
+        assert "sk-live-example-provider" not in config_path.read_text(encoding="utf-8")
 
     def test_env_ref_base_url_preserves_api_key_ref_through_picker(
         self, config_home, monkeypatch
@@ -223,7 +226,8 @@ class TestCustomProviderModelSwitch:
             "  base_url: ${NEURALWATT_API_BASE}\n"
             "  api_key: ${NEURALWATT_API_KEY}\n"
             "  model: qwen3.6-35b-fast\n"
-            "  models: []\n"
+            "  models: []\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("NEURALWATT_API_BASE", "https://api.neuralwatt.com/v1")
         monkeypatch.setenv("NEURALWATT_API_KEY", "sk-live-neuralwatt-secret")
@@ -256,7 +260,7 @@ class TestCustomProviderModelSwitch:
         assert probe_args[0] == "sk-live-neuralwatt-secret"
 
         # But config.yaml must keep the env reference, not the plaintext secret.
-        saved = config_path.read_text()
+        saved = config_path.read_text(encoding="utf-8")
         config = yaml.safe_load(saved) or {}
         assert config["model"]["api_key"] == "${NEURALWATT_API_KEY}"
         assert config["custom_providers"][0]["api_key"] == "${NEURALWATT_API_KEY}"
@@ -291,7 +295,8 @@ class TestCustomProviderModelSwitch:
             "    transport: anthropic_messages\n"
             "    model: claude-opus-4-7\n"
             "    default_model: claude-opus-4-7\n"
-            "custom_providers: []\n"
+            "custom_providers: []\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_CRS_HENKEE_KEY", "cr_live_secret_xyz")
 
@@ -324,7 +329,7 @@ class TestCustomProviderModelSwitch:
 
         # The providers entry must NOT gain an api_key field — neither the
         # plaintext secret nor a synthesized ${KEY_ENV} template.
-        saved_text = config_path.read_text()
+        saved_text = config_path.read_text(encoding="utf-8")
         saved = yaml.safe_load(saved_text) or {}
         entry = saved["providers"]["crs-henkee"]
         assert "api_key" not in entry, (
@@ -358,7 +363,8 @@ class TestCustomProviderModelSwitch:
             "    transport: anthropic_messages\n"
             "    model: claude-opus-4-7\n"
             "    default_model: claude-opus-4-7\n"
-            "custom_providers: []\n"
+            "custom_providers: []\n",
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_CRS_HENKEE_KEY", "cr_live_secret_xyz")
 
@@ -382,7 +388,7 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        saved_text = config_path.read_text()
+        saved_text = config_path.read_text(encoding="utf-8")
         saved = yaml.safe_load(saved_text) or {}
         entry = saved["providers"]["crs-henkee"]
         # Existing api_key template must survive (the resolved secret must not
@@ -418,7 +424,7 @@ class TestCustomProviderDiscoverModels:
             _model_flow_named_custom({}, provider_info)
 
         mock_fetch.assert_not_called()
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "glm-5"
@@ -444,7 +450,7 @@ class TestCustomProviderDiscoverModels:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((config_home / "config.yaml").read_text(encoding="utf-8")) or {}
         model = config.get("model")
         assert isinstance(model, dict)
         assert model["default"] == "fallback-b"

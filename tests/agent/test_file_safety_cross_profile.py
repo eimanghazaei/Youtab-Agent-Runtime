@@ -41,19 +41,19 @@ def fake_youtab(tmp_path, monkeypatch):
     """
     root = tmp_path / "fake-youtab"
     (root / "skills" / "foo").mkdir(parents=True)
-    (root / "skills" / "foo" / "SKILL.md").write_text("# default skill\n")
+    (root / "skills" / "foo" / "SKILL.md").write_text("# default skill\n", encoding="utf-8")
     (root / "plugins" / "foo").mkdir(parents=True)
     (root / "memories").mkdir(parents=True)
     (root / "cron").mkdir(parents=True)
 
     sec_home = root / "profiles" / "youtab-security"
     (sec_home / "skills" / "foo").mkdir(parents=True)
-    (sec_home / "skills" / "foo" / "SKILL.md").write_text("# sec skill\n")
+    (sec_home / "skills" / "foo" / "SKILL.md").write_text("# sec skill\n", encoding="utf-8")
     (sec_home / "plugins").mkdir(parents=True)
 
     coder_home = root / "profiles" / "coder"
     (coder_home / "skills" / "foo").mkdir(parents=True)
-    (coder_home / "skills" / "foo" / "SKILL.md").write_text("# coder skill\n")
+    (coder_home / "skills" / "foo" / "SKILL.md").write_text("# coder skill\n", encoding="utf-8")
 
     # Monkeypatch the resolver functions used by file_safety so each test
     # can choose which profile is "active".

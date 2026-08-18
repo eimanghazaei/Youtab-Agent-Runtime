@@ -89,7 +89,8 @@ def _make_skill(skills_dir, name, body="content"):
     sd = skills_dir / name
     sd.mkdir(parents=True, exist_ok=True)
     (sd / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: desc {name}\n---\n\n# {name}\n\n{body}\n"
+        f"---\nname: {name}\ndescription: desc {name}\n---\n\n# {name}\n\n{body}\n",
+        encoding="utf-8",
     )
 
 

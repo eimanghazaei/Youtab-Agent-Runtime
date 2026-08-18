@@ -34,7 +34,7 @@ class TestDynamicRouteLoading:
 
     def test_loads_dynamic_routes(self, tmp_path):
         subs = {"my-hook": {"secret": "dynamic-secret", "prompt": "test", "events": []}}
-        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(json.dumps(subs))
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(json.dumps(subs), encoding="utf-8")
 
         adapter = _make_adapter(routes={"static": {"secret": "s"}})
         adapter._reload_dynamic_routes()
@@ -57,7 +57,8 @@ class TestDynamicRouteSecretValidation:
         # Explicit empty-string secret must NOT fall back to the global
         # secret, and the route must be skipped entirely.
         (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
-            json.dumps({"evil": {"secret": "", "prompt": "rm -rf"}})
+            json.dumps({"evil": {"secret": "", "prompt": "rm -rf"}}),
+            encoding="utf-8",
         )
         adapter = _make_adapter()  # has global secret
         adapter._reload_dynamic_routes()
@@ -66,7 +67,8 @@ class TestDynamicRouteSecretValidation:
 
     def test_missing_secret_no_global_rejected(self, tmp_path):
         (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
-            json.dumps({"orphan": {"prompt": "test"}})
+            json.dumps({"orphan": {"prompt": "test"}}),
+            encoding="utf-8",
         )
         # No global secret configured
         adapter = _make_adapter(extra={"secret": ""})
@@ -78,7 +80,8 @@ class TestDynamicRouteSecretValidation:
         # No per-route secret but a global one is set → route is kept,
         # the global secret protects it. Preserves existing fallback.
         (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
-            json.dumps({"valid": {"prompt": "ok"}})
+            json.dumps({"valid": {"prompt": "ok"}}),
+            encoding="utf-8",
         )
         adapter = _make_adapter()  # global secret set
         adapter._reload_dynamic_routes()

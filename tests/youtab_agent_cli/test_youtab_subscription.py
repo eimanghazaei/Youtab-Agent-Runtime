@@ -216,7 +216,7 @@ def test_has_agent_browser_resolves_via_youtab_managed_node_path(monkeypatch, tm
     managed_dir = tmp_path / "node"
     managed_dir.mkdir()
     managed_bin = managed_dir / "agent-browser"
-    managed_bin.write_text("#!/bin/sh\nexit 0\n")
+    managed_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     managed_bin.chmod(0o755)
 
     monkeypatch.setattr(_shutil, "which", lambda cmd, path=None: str(managed_bin) if path else None)

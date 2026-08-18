@@ -114,7 +114,7 @@ class TestYoutabManagedNode:
         node_dir = home / "node"
         node_dir.mkdir(parents=True)
         npm_cmd = node_dir / "npm.cmd"
-        npm_cmd.write_text("@echo off\n")
+        npm_cmd.write_text("@echo off\n", encoding="utf-8")
         monkeypatch.setattr(youtab_constants.sys, "platform", "win32")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
         monkeypatch.setattr(youtab_constants, "node_tool_runnable", lambda path: True)
@@ -127,11 +127,11 @@ class TestYoutabManagedNode:
         home = tmp_path / "youtab"
         managed_npm = home / "node" / "npm.cmd"
         managed_npm.parent.mkdir(parents=True)
-        managed_npm.write_text("@echo off\n")
+        managed_npm.write_text("@echo off\n", encoding="utf-8")
         bin_dir = tmp_path / "nodejs"
         bin_dir.mkdir()
         path_npm = bin_dir / "npm.cmd"
-        path_npm.write_text("@echo off\n")
+        path_npm.write_text("@echo off\n", encoding="utf-8")
         monkeypatch.setattr(youtab_constants.sys, "platform", "win32")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
         monkeypatch.setenv("PATH", str(bin_dir))
@@ -155,7 +155,7 @@ class TestNodeToolRunnable:
 
     def _stub(self, tmp_path, name, body, mode=0o755):
         path = tmp_path / name
-        path.write_text(body)
+        path.write_text(body, encoding="utf-8")
         path.chmod(mode)
         return path
 
@@ -184,7 +184,7 @@ class TestNodeToolRunnable:
 
         def _heal():
             heal_called["value"] = True
-            broken_npm.write_text("#!/bin/sh\necho '22.0.0'\nexit 0\n")
+            broken_npm.write_text("#!/bin/sh\necho '22.0.0'\nexit 0\n", encoding="utf-8")
             broken_npm.chmod(0o755)
             return True
 
@@ -474,7 +474,7 @@ class TestAgentBrowserRunnable:
 
     def _stub(self, tmp_path, name, body, mode=0o755):
         p = tmp_path / name
-        p.write_text(body)
+        p.write_text(body, encoding="utf-8")
         p.chmod(mode)
         return p
 
@@ -562,7 +562,7 @@ class TestGetYoutabDir:
         legacy.symlink_to(tmp_path / "does-not-exist")
         new = tmp_path / "platforms" / "pairing"
         new.mkdir(parents=True)
-        (new / "discord-approved.json").write_text("[]")
+        (new / "discord-approved.json").write_text("[]", encoding="utf-8")
         result = get_youtab_dir("platforms/pairing", "pairing")
         assert result == new
 
