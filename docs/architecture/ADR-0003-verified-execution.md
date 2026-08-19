@@ -1,10 +1,35 @@
 # ADR-0003 — Verified execution: completion, corrective loop, decomposition, visibility, verifier independence
 
 **Status:** PROPOSED · **Scope:** task-scoped agents, Super-Agent Units, orchestration and verification under the Youtab Agent Runtime
-**Supersedes:** nothing · **Related:** `ADR-0002-cognitive-growth-and-persistent-memory.md`, `YOUTAB_AGENT_RUNTIME_BOUNDARY.md`, `docs/roadmap/SIMORGH_UNIFIED_COGNITIVE_ARCHITECTURE.md`, `ADR-0001`, Master Tracker
+**Supersedes:** nothing · **Related:** `ADR-0002-cognitive-growth-and-persistent-memory.md`, `YOUTAB_AGENT_RUNTIME_BOUNDARY.md`, `CODE_AGENT_WORKSPACE_CONTRACT.md` (Living Canon), `docs/roadmap/SIMORGH_UNIFIED_COGNITIVE_ARCHITECTURE.md`, `ADR-0001`, Master Tracker
 **Deciders:** Owner (ratification required — this ADR is not Canon until the Owner accepts it)
 
 > This is a **proposal** and a companion to ADR-0002. It records a decision the Owner must ratify before any completion-verification, orchestration, corrective-loop, or execution-visibility code opens. Nothing here is implemented yet, and no Master-Tracker row may treat it as accepted while its status reads PROPOSED. This ADR decides a contract; it selects no datastore, transport, framework, or wire schema and authorizes no code, no deployment, and no Simorgh integration.
+
+> **Guiding principle — one central brain, many growing cognitive agents.** Simorgh remains Youtab's
+> unified system-level brain and orchestrator. Agents are many growing cognitive components that may
+> independently maintain and improve their own scoped working, episodic, semantic, skill and long-term
+> memory, learn and specialise, **without hard-coded cognitive ceilings**. Only promotion to shared
+> Simorgh memory, cross-agent sharing, cross-boundary effects and sensitive operations require
+> governance. Verified execution constrains *claims of completion*, never an agent's intelligence,
+> memory, or legitimate capability (`SIMORGH_UNIFIED_COGNITIVE_ARCHITECTURE.md`).
+
+> **Living Canon, not immutable.** Once ratified, this architecture is **Living Canon** in the sense of
+> `CODE_AGENT_WORKSPACE_CONTRACT.md`: it may be amended, extended, versioned or superseded through a
+> reviewed ADR/PR change that records the reason, affected contracts, threat-model/security impact,
+> migration, rollback, and executable acceptance evidence. The newest Owner-ratified version is
+> authoritative; older versions stay traceable in Git history; there is no silent drift. Canon status is
+> never a hard ceiling on agent capability and never silently weakens the protected invariant set —
+> **tenant isolation, data ownership, deletion/erasure, evidence, rollback, verifier independence, or
+> Simorgh's role as the one central brain** (the same set guarded by `ADR-0002` and
+> `CODE_AGENT_WORKSPACE_CONTRACT.md`).
+
+> **Implementation precedence (foundational).** This verified-execution foundation is implemented
+> **before** ADR-0002's MemoryBus (#26) and learning-pipeline (#27) slices, and it **governs every later
+> implementation slice from the beginning.** The independent Verifier, the evidence/completion-record
+> contract, the fail-closed `VERIFIED_COMPLETE` state machine, and the goal-persistence corrective loop
+> apply to MemoryBus, the learning pipeline, orchestration, and every subsequent workstream — none of
+> them may self-declare completion. **An agent may never mark its own work `VERIFIED_COMPLETE`.**
 
 ## Context
 
@@ -27,7 +52,7 @@ An implementing agent may **never** transition its own task to complete via narr
 with alternative states `BLOCKED`, `FAILED`, `CORRECTING`, `CANCELLED`, `RESUMABLE`.
 
 - Only an **independent system Verifier** may transition a task to `VERIFIED_COMPLETE`. No agent, sub-agent, orchestrator, chat surface, or frontend may set that state. **Authority locus:** the Verifier and the completion-attribution authority are a **system / Brain-side authority — Simorgh-governed or a runtime-external system component — not the implementing runtime plane** (which the boundary forbids from being an effect/authority authorizer). "The orchestrator" in this ADR is Simorgh's orchestration function, not a second brain.
-- The `VERIFIED_COMPLETE` transition must be **cryptographically signed by the Verifier's key**, and the task-state store must **reject any completion transition that does not carry a valid Verifier signature** — so a compromised agent or orchestrator that can write task state cannot forge completion by writing the state directly (the completion analogue of ADR-0002's system-attributed, un-forgeable provenance).
+- The `VERIFIED_COMPLETE` transition must be **cryptographically signed by the Verifier's key**, and the task-state store must **reject any completion transition whose signature does not cover this task's full completion-record binding — task ID, head SHA, acceptance-criteria version, evidence-bundle digest and a freshness nonce.** A signature bound to a different task, a different SHA, an earlier acceptance-criteria version, or an already-used nonce is rejected, so a compromised agent or orchestrator that can write task state cannot forge completion by writing the state directly, nor **replay** a valid signature onto a new or stale state (the completion analogue of ADR-0002's system-attributed, un-forgeable provenance).
 - `IMPLEMENTATION_FINISHED` is the implementing agent's terminal **self-report event** (not one of the enumerated task states). **It is not completion**; it is a request to verify, and it moves the task no further than `VERIFYING`. The corrective path `CORRECTING → RUNNING → VERIFYING` re-enters verification against the same acceptance-criteria version.
 - The Verifier independently inspects reality and does not accept the agent's summary as a substitute. It measures at least: exact repository and branch; base and head SHA; changed files; the full worktree including untracked files; produced artifacts and their hashes; real test **collection** (not a claimed count); unit, integration, E2E, security and mutation results; external side-effect receipts where applicable; runtime/API/UI behavior exercised through the **real** path; skipped, xfailed, or de-collected tests; secret or private-data leakage; the claimed deployment state; and rollback/recovery evidence.
 - The **completion record** binds verified evidence to: task ID; goal ID; tenant / user / workspace; exact code SHA; artifact hashes; verifier identity and version; acceptance-criteria version; timestamp; and evidence-bundle digest. It is emitted as part of the task's `youtab.agent-completion.v1` lifecycle (per the runtime boundary) and is **system-attributed at verification**, in the same spirit as ADR-0002 attributes provenance at admission — never asserted by the implementing agent.
@@ -59,6 +84,9 @@ A **required backend event contract** makes Agent and sub-agent work observable 
 - Each event carries at least: task ID; goal ID; sub-agent ID (where applicable); a **monotonically increasing sequence** number; timestamp; event type; **real** status; provenance; **redaction status**; and an evidence reference.
 - **Reconnect resumes from the last acknowledged event without duplicating work** (the sequence number is the resume cursor).
 - Secrets, tokens, private file contents, and sensitive environment values **must be redacted** before emission — the same non-leakage discipline ADR-0001 and ADR-0002 require, applied to the event stream. Redaction is **not pattern-matching alone**: because an agent controls event content (filenames, diffs, split/encoded payloads across sequenced events), the stream is subject to **covert-channel / entropy checks**, and the **evidence bundles** the Verifier produces (which may contain private file contents) are themselves **redaction-scoped and tenant-partitioned** — stored and access-scoped to `(tenant, user, workspace)`, never in a shared cross-tenant evidence store.
+- **Verification stores do not depend on MemoryBus (#26).** The completion-record, evidence-bundle and attempt-history stores this foundation requires are stood up **with the foundation** and are **independent of MemoryBus** (their datastore is unselected here) — which is what lets #28/#29/#31 precede #26. They are, however, **tenant-partitioned durable stores subject to ADR-0002 §5's lawful deletion, retention, legal-hold and cryptographic-erasure regime**: on a tenant/user erasure request the private payloads they retain are erased (key destruction reaching backups/replicas), and only the **non-sensitive, non-payload completion fact** is retained, and only where legally permitted. This reconciles evidence retention with the "a tombstone must not preserve the deleted private payload" rule: verification evidence may hold payload **while live and lawfully retained**, and is erasable on the same terms as any other private store.
+- **The Verifier processes each tenant's evidence under per-tenant isolation** — it inspects many tenants' private evidence to do its job, but does not co-mingle tenant data in memory, logs, or caches.
+- **Event count / timing / sequence cadence** is an agent-modulable low-bandwidth side channel that content redaction does not close; it is accepted as **low-risk** and, where a deployment judges it material, mitigated by rate/shape normalization of the emitted stream — consistent with this ADR's honesty about agent-controlled event content.
 - The event stream shows **actual backend events only, never simulated or optimistic progress.** A surface may **never** show "Complete" until the Verifier has issued `VERIFIED_COMPLETE`.
 - **Frontend surfaces are REQUIRED but implemented later.** In dependency order they include: a dedicated Agent icon; a Code icon / workspace; Chat→Agent invocation; navigation from Chat to an active task; live events; sub-agent status; real file reads and changes; patches and diffs; commands; tests and their results; verifier state; blockers and corrective attempts; artifacts; and the final verified result. Chat must be able to invoke the Agent for real work, receive progress, continue normal conversation, provide genuinely-required input, receive the verified result, and reopen the Code execution view.
 - **Frontend security never replaces backend authorization** (per ADR-0001: a UI is not an authority). The backend event contract and each frontend surface are added as **separate Master-Tracker implementation slices in dependency order** and are **NOT started in this documentation PR.**
@@ -79,6 +107,8 @@ The Verifier **fails closed.** If it is unavailable, the task remains `VERIFYING
 
 The verification run executes in an **environment whose toolchain the implementing agent cannot influence** — a poisoned build tool, dependency, or test harness from the agent's workspace must not be able to emit a fake green under the correct head SHA. Because fail-closed parks work in `VERIFYING`/`BLOCKED`, that queue is **bounded with timeout escalation**, so a Verifier outage cannot silently accumulate an unbounded backlog (a resource control, not a relaxation of fail-closed).
 
+The **Verifier's signing key** (which makes `VERIFIED_COMPLETE` un-forgeable, §1) is held only by the Verifier authority — for example in an HSM/KMS — is **never present in the runtime plane, the implementing agent's workspace, or the isolated build toolchain**, and is **non-exportable**. The whole un-forgeability argument rests on this custody: an agent or orchestrator that can write task state still cannot produce a valid completion signature.
+
 ### Why not the alternatives
 
 - **Let the implementing agent declare its own completion.** Rejected: it is self-report about reality, the untrusted class this platform already refuses for objectives, memory, and effects. It cannot detect a stale-SHA green, a de-collected test, or a mocked success.
@@ -90,6 +120,10 @@ The verification run executes in an **environment whose toolchain the implementi
 ## Consequences
 
 **Positive**
+- **This foundation lands first and governs everything after it.** Because the Verifier, the
+  evidence/completion contract, the fail-closed state machine and the corrective loop are built before
+  MemoryBus (#26) and the learning pipeline (#27), every later slice — memory, learning, orchestration,
+  frontend — inherits verified completion from its first line of code; no workstream can self-certify.
 - Completion becomes an auditable, evidence-bound fact tied to an exact SHA, artifact hashes, and a named verifier — attributable and reproducible.
 - The corrective loop cannot silently weaken the goal or spin invisibly; attempt history and structured failed-criteria make "still not done" a first-class, escalatable state.
 - Decomposition scales to real complexity without losing file-ownership, and integration is single-branch and inspectable.
@@ -106,6 +140,10 @@ The verification run executes in an **environment whose toolchain the implementi
 
 Any slice that opens verification, orchestration, corrective-loop, or execution-visibility code must prove:
 
+- **The verified-execution foundation is in force before dependent slices.** MemoryBus (#26), the
+  learning pipeline (#27) and every later slice route their own completion through the independent
+  Verifier and cannot reach `VERIFIED_COMPLETE` by self-report — the foundation governs them from their
+  first commit.
 - **Narrative-only completion is rejected.** An agent emitting `IMPLEMENTATION_FINISHED` (or any "done" text) with no measured evidence cannot reach `VERIFIED_COMPLETE`; the task stays `VERIFYING`.
 - **A green check from a stale or different SHA is rejected.** Test/build success whose recorded SHA ≠ the head under verification does not satisfy any criterion.
 - **A missing or mismatched artifact hash is rejected.** An artifact without a hash, or with a hash that does not match its bytes, fails verification.
@@ -119,6 +157,10 @@ Any slice that opens verification, orchestration, corrective-loop, or execution-
 - **The event stream resumes without duplication and redacts secrets.** Reconnect from the last acknowledged sequence replays no completed work, and no secret, token, private file content, or sensitive env value appears in any event.
 - **No surface shows "Complete" before `VERIFIED_COMPLETE`.** A status surface reflects only measured backend state.
 - **An unsigned or agent-authored `VERIFIED_COMPLETE` written directly to the state store is rejected** (verifier-signed transition).
+- **A replayed or mis-bound completion signature is rejected.** A valid Verifier signature bound to a different task, a different head SHA, an earlier acceptance-criteria version, or an already-used nonce does not satisfy the transition.
+- **The Verifier signing key is absent from the runtime plane, the agent workspace, and the build toolchain**; no component other than the Verifier authority can produce a valid completion signature.
+- **Verification stores are erasable and MemoryBus-independent.** The completion-record/evidence-bundle/attempt-history stores stand up without MemoryBus (#26), and a tenant/user erasure request erases their retained private payloads (reaching backups/replicas) while retaining only the non-sensitive completion fact where legally permitted.
+- **The Verifier does not co-mingle tenants.** Evidence from different tenants is processed under per-tenant isolation and never appears in a shared cross-tenant store, memory, or log.
 - **Two sub-agents never share a worktree; the primary integrator owns the single authoritative branch.**
 - **The corrective loop never silently weakens the goal or acceptance criteria**, and a **repeated identical failure** forces a strategy change or escalation rather than an invisible re-run.
 - **Verification runs in an isolated toolchain** the implementing agent cannot influence; an agent-poisoned build/dep/test tool cannot produce a green under the correct SHA.
@@ -128,6 +170,8 @@ Any slice that opens verification, orchestration, corrective-loop, or execution-
 
 - the independent-Verifier gate on the `VERIFIED_COMPLETE` transition (so an agent could self-complete);
 - the **Verifier-signature requirement** on the transition (an unsigned or agent-authored `VERIFIED_COMPLETE` written directly to the state store is rejected);
+- the **signature-binding / anti-replay check** (a signature bound to a different task, SHA, criteria version, or a used nonce is rejected);
+- the **signing-key-custody** boundary (the Verifier key is unreachable from the runtime plane, agent workspace, and build toolchain);
 - the SHA-match check between recorded results and the verified head;
 - the artifact-hash match check;
 - the sub-agent-claim inspection/verification step;
@@ -142,7 +186,9 @@ Any slice that opens verification, orchestration, corrective-loop, or execution-
 - the blocker-is-not-completion rule;
 - the system-attribution of the completion record;
 - the **reconnect-resume-without-duplication** cursor;
-- the event-stream **and evidence-bundle** redaction of secrets/private data, including covert-channel/entropy checks and evidence-bundle tenant-partitioning.
+- the event-stream **and evidence-bundle** redaction of secrets/private data, including covert-channel/entropy checks and evidence-bundle tenant-partitioning;
+- the **per-tenant isolation** of Verifier evidence processing (no cross-tenant co-mingling in store, memory, or log);
+- the **lawful-erasure reach into the verification stores** (per ADR-0002 §5: private payloads erased to backups/replicas; only the non-sensitive completion fact retained where legally permitted).
 
 ## Non-goals
 

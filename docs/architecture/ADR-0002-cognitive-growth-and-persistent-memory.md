@@ -1,7 +1,7 @@
 # ADR-0002 — Cognitive growth and persistent agent memory
 
 **Status:** PROPOSED · **Scope:** task-scoped agents and Super-Agent Units under the Youtab Agent Runtime
-**Supersedes:** nothing · **Related:** `YOUTAB_AGENT_RUNTIME_BOUNDARY.md`, `ADR-0001`, `ADR-0003` (verified execution), `docs/roadmap/SIMORGH_UNIFIED_COGNITIVE_ARCHITECTURE.md`, Master Tracker WS#15
+**Supersedes:** nothing · **Related:** `YOUTAB_AGENT_RUNTIME_BOUNDARY.md`, `ADR-0001`, `ADR-0003` (verified execution), `CODE_AGENT_WORKSPACE_CONTRACT.md` (Living Canon), `docs/roadmap/SIMORGH_UNIFIED_COGNITIVE_ARCHITECTURE.md`, Master Tracker WS#15
 **Deciders:** Owner (ratification required — this ADR is not Canon until the Owner accepts it)
 
 > This is a **proposal**. It records a decision the Owner must ratify before Workstreams #16
@@ -9,6 +9,30 @@
 > ingress & Code-to-Agent), #26 (MemoryBus) and #27 (learning pipeline) open any code. Nothing here
 > is implemented yet, and no row may treat it as accepted while its status reads PROPOSED. Companion
 > **ADR-0003** governs verified completion and execution.
+
+> **Guiding principle — one central brain, many growing cognitive agents.** Simorgh remains Youtab's
+> unified system-level brain and orchestrator. Agents are many growing cognitive components that may
+> **independently maintain and improve their own scoped working, episodic, semantic, skill and
+> long-term memory**, learn and specialise, **without hard-coded cognitive ceilings**. Only promotion
+> to shared Simorgh memory, cross-agent sharing, cross-boundary effects and sensitive operations
+> require governance. This ADR is the memory-integrity expression of that principle.
+
+> **Living Canon, not immutable.** Once ratified, this architecture is **Living Canon** in the sense of
+> `CODE_AGENT_WORKSPACE_CONTRACT.md`: it may be amended, extended, versioned or superseded through a
+> reviewed ADR/PR change that records the reason, affected contracts, threat-model/security impact,
+> migration, rollback, and executable acceptance evidence. The newest Owner-ratified version is
+> authoritative; older versions stay traceable in Git history; there is no silent drift. Canon status
+> never becomes a hard ceiling on agent memory, learning or capability, and never silently weakens the
+> protected invariant set — **tenant isolation, data ownership, deletion/erasure, evidence, rollback,
+> verifier independence, or Simorgh's role as the one brain** (the same set guarded by `ADR-0003` and
+> `CODE_AGENT_WORKSPACE_CONTRACT.md`).
+
+> **Verified-execution precedence.** The verified-completion foundation in **ADR-0003** is implemented
+> **first** and **governs the MemoryBus (#26), learning-pipeline (#27) and every later implementation
+> slice (orchestration #30, frontend #32 included) from their first commit**: every claim these slices
+> make — that isolation holds, that erasure propagated, that a promotion was screened — is a
+> **measured, independently verified** fact, never a self-declared one. **No memory or learning slice
+> may mark its own work `VERIFIED_COMPLETE`.**
 
 ## Context
 
@@ -68,7 +92,7 @@ artificially slow and cognitively constrained; that is explicitly rejected.
 
 | Tier | Purpose | Owner scope (namespace key) | Persistence | Ordinary operation |
 |---|---|---|---|---|
-| **Working** | the active task's scratch state | task (ephemeral) | discarded at deactivation | autonomous |
+| **Working** | the active task's scratch state | task, **tenant/user-bound** (ephemeral) | discarded & **zeroed at deactivation** (no residue survives worker/warm-container reuse) | autonomous |
 | **Episodic** | completed tasks and outcomes | tenant·user·workspace·agent·purpose | durable, agent namespace | **autonomous** create/update/consolidate/read |
 | **Semantic** | learned facts | tenant·user·workspace·agent·purpose | durable, agent namespace | **autonomous** |
 | **Skill / procedural** | methods & tool strategies that worked | tenant·user·workspace·agent·purpose | durable, agent namespace | **autonomous** |
@@ -146,7 +170,12 @@ not sufficient, and **opt-in alone does not license system-wide readability** (�
 Promotion into shared Simorgh knowledge requires, as gated steps: **de-identification; eligibility
 classification; provenance; quality evaluation; poisoning / prompt-injection screening; copyright /
 licence checks; independent verification (`ADR-0003`); tenant-leakage checks; Simorgh-governed
-promotion.** **Simorgh is the sole authority that consolidates or promotes across agents.**
+promotion.** **Simorgh is the sole authority that consolidates or promotes across agents.** Because
+promotion is the primary cross-tenant / privacy leak boundary, **de-identification, eligibility
+classification and poisoning / prompt-injection screening execute system-side, are not
+agent-influenceable, and are hardened against agent-crafted evasion or encoding** — in the same sense
+as the default-sovereign recognizer (§1); a compromised agent cannot shape memory content to slip
+encoded private data past the classifier.
 
 **Corroboration, not repetition.** Because ordinary writes are self-authored, promotion quality
 evaluation must weight **independent-source corroboration** and **cap the influence of any single
@@ -184,13 +213,33 @@ become unreadable without per-record purge); and **legal or policy retention hol
 
 - A **non-sensitive audit/tombstone record** may prove that an action occurred, but it **must not
   preserve the deleted private payload** — and "payload" **includes derived embeddings/vectors**, which
-  can leak source text.
-- Erasure **propagates to derivatives**: erasing a source record triggers **supersession/rollback of
-  promoted artifacts and embeddings sourced from it**, reaching every consumer (§4). De-identified
-  artifacts that provably retain no path to the source are out of erasure scope; those that do are in.
+  can leak source text. Only **non-sensitive audit evidence is retained, and only where legally
+  permitted** (a legal hold or a lawful-basis retention requirement); where retention is not permitted,
+  even the audit record is minimised to the non-sensitive fact of the act.
+- Erasure reaches **derived memories, embeddings and backups/replicas**: erasing a source record
+  triggers **supersession/rollback of promoted artifacts and embeddings sourced from it**, reaching
+  every consumer (§4), and **cryptographic erasure (key destruction) renders backups and replicas
+  unreadable** without a per-record purge. De-identified artifacts that provably retain no path to the
+  source are out of erasure scope; those that do are in.
+- **Per-erasure-unit key granularity (normative).** Cryptographic erasure requires **per-record (or
+  per-erasure-unit) key granularity**, so that destroying one subject's key renders **only** that
+  subject's records — including embeddings and backup/replica copies — unreadable, without a shared key
+  either defeating erasure or over-erasing other subjects' recoverability.
+- **Erasure is verified by positive, checkable facts, not a self-report.** Erasure verification
+  (`ADR-0003`) measures that a known ciphertext becomes **undecryptable after key destruction** and that
+  **derivative supersession/rollback is observed at every recorded consumer** — never a MemoryBus
+  self-attestation that erasure "occurred" (a Verifier cannot observe absence-of-data across every
+  replica).
+- **The ADR-0003 verification stores are in scope.** Verifier evidence bundles and persisted
+  attempt/completion history — which may retain private file contents (`ADR-0003` §4) and stand up
+  independently of MemoryBus — are **tenant-partitioned durable stores subject to this same §5 regime**:
+  deletion, retention, legal hold and cryptographic erasure. On a tenant/user erasure request their
+  retained private payloads are erased (key destruction reaching backups/replicas); only the
+  **non-sensitive, non-payload completion fact** may be retained, and only where legally permitted.
 - **Legal-hold vs erasure precedence:** a legal hold **suspends** erasure of the held records; a user
   erasure request during a hold is **queued and honoured on release** (lawful basis recorded), never
-  silently dropped or unlawfully executed.
+  silently dropped or unlawfully executed. Records under hold remain **encrypted, tenant-isolated and
+  access-logged** for the hold's duration.
 
 Deletion, erasure, holds, propagation and supersession are **normative, testable behaviours**
 (§ acceptance criteria), not aspirations.
@@ -225,6 +274,10 @@ forced through the gate** (over-gating is itself a regression and is tested, §a
 
 ## Consequences
 
+- The **ADR-0003 verified-execution foundation is built first and governs #26/#27 and, per ADR-0003,
+  every later implementation slice (orchestration #30, frontend #32 included)**: MemoryBus and the
+  learning pipeline report completion only through the independent Verifier, against measured evidence,
+  and can never self-declare `VERIFIED_COMPLETE`.
 - A **MemoryBus service slice (#26)** (agent-owned + Simorgh-consolidated namespaces; autonomous
   scoped read/write; system-side sovereign recognizer; per-scope write quota/back-pressure; gated
   promotion; tenant isolation; provenance/confidence system-attribution; deletion / crypto-erasure /
@@ -244,7 +297,7 @@ forced through the gate** (over-gating is itself a regression and is tested, §a
 ## Open questions (must be answered at ratification)
 
 1. **Boundary refinement** — accept the sovereign-vs-own-scope split and the system-side, default-
-   sovereign recognizer, and amend **both** boundary clauses (line 13 and lines 15–16) to grant a
+   sovereign recognizer, and amend **both** boundary clauses (line 13 and line 15) to grant a
    write-capable own-scope. (Ratification-blocking; it changes an invariant.)
 2. **MemoryBus substrate** — datastore, and how the 5-tuple keying, isolation, per-scope quotas and
    **cryptographic erasure** (incl. backups/replicas) are enforced at rest.
@@ -280,10 +333,19 @@ Any slice that opens memory code must prove:
 - **Consolidation output tenancy:** single-tenant-input output is not readable by another tenant;
   **multi-tenant-input output is non-shared unless every input is independently eligible and no private
   input is used**; mosaic re-identification across promotions is screened.
+- **Promotion classifiers are system-side and un-gameable:** de-identification, eligibility
+  classification and poisoning/injection screening run system-side and **reject agent-crafted evasion /
+  encoding** — an agent cannot shape memory content to slip encoded private data past them.
 - **Deletion/erasure:** Owner/tenant/user deletion and GDPR/cryptographic erasure remove the private
   payload **and its embeddings**, **propagate to promoted derivatives and every consumer**, and reach
-  **backups/replicas** via key destruction; a retained **audit/tombstone does not preserve the payload**;
-  a **legal hold** suspends erasure and the request is honoured on release.
+  **backups/replicas** via **per-erasure-unit key destruction** (one subject's key destroys only that
+  subject's records); erasure is proven by **ciphertext-undecryptable + supersession-observed-at-every-
+  consumer**, not a self-report; a retained **audit/tombstone does not preserve the payload**; a **legal
+  hold** suspends erasure (held records stay encrypted/tenant-isolated/access-logged) and the request is
+  honoured on release.
+- **ADR-0003 verification stores obey §5:** Verifier evidence bundles and attempt/completion history
+  are tenant-partitioned and, on erasure, their retained private payloads are erased (reaching
+  backups/replicas) while only the non-sensitive completion fact may be retained where legally permitted.
 
 ### Learning-pipeline mutation controls (each turns RED when the control is removed, GREEN when restored)
 
@@ -294,15 +356,21 @@ Any slice that opens memory code must prove:
 - **unverified agent claims cannot enter shared memory;**
 - **poisoned or prompt-injected memory is quarantined**, and a **poisoned promoted skill rolls back to
   every consumer** (bounded blast radius);
-- **revocation and deletion (incl. cryptographic erasure) work and reach derivatives/embeddings.**
+- **agent-crafted evasion cannot defeat the system-side de-identification / eligibility / screening
+  classifiers;**
+- **revocation and deletion (incl. cryptographic erasure) work and reach derivatives/embeddings**, and
+  **erasure reaches the ADR-0003 evidence/attempt-history stores** (backups/replicas via
+  per-erasure-unit key destruction).
 
 ### General mutation controls
 
-Removing the tenant-isolation check, the **system-side sovereign recognizer**, the **write-quota**
-control, the memory-scope (incl. `purpose`) check, the **over-gating** guard, the
-recalled-memory-cannot-widen-scope check, the multi-tenant consolidation-output check, the
-skill-replay toolset check, the system-attribution of provenance/confidence, or the
-deletion/erasure-propagation path each turns the suite **red**; restoring each returns it **green**.
+Removing the tenant-isolation check, the **system-side sovereign recognizer**, the **system-side
+promotion-classifier hardening**, the **write-quota** control, the memory-scope (incl. `purpose`)
+check, the **over-gating** guard, the recalled-memory-cannot-widen-scope check, the multi-tenant
+consolidation-output check, the skill-replay toolset check, the **working-tier zeroing-on-deactivation**
+guard, the system-attribution of provenance/confidence, the **per-erasure-unit key granularity**, or
+the deletion/erasure-propagation path (**including to the ADR-0003 evidence stores**) each turns the
+suite **red**; restoring each returns it **green**.
 
 ## Non-goals
 
