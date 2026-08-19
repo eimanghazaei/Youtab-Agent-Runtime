@@ -167,7 +167,7 @@ class TestGenerate:
     def test_rejects_non_image_local_source(self, provider, monkeypatch, tmp_path):
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
         text_path = tmp_path / "not-image.txt"
-        text_path.write_text("hello")
+        text_path.write_text("hello", encoding="utf-8")
 
         result = provider.generate("edit this", image_url=str(text_path))
 

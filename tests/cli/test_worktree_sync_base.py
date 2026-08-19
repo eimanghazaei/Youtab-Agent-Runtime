@@ -25,7 +25,7 @@ def _run(args, cwd):
 
 
 def _commit(repo, name, msg):
-    (Path(repo) / name).write_text(msg + "\n")
+    (Path(repo) / name).write_text(msg + "\n", encoding="utf-8")
     _run(["git", "add", "."], repo)
     _run(["git", "commit", "-m", msg], repo)
 

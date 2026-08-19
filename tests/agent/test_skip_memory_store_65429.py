@@ -95,4 +95,4 @@ def test_skip_memory_memory_tool_handler_works_and_provider_skipped(
     # The write must actually persist to the profile-scoped memories dir.
     memory_md = tmp_path / "hm" / "memories" / "MEMORY.md"
     assert memory_md.exists()
-    assert "User prefers concise answers." in memory_md.read_text()
+    assert "User prefers concise answers." in memory_md.read_text(encoding="utf-8")

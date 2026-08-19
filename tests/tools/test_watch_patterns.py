@@ -171,7 +171,7 @@ class TestCheckpointPersistence:
             "watcher_interval": 0,
             "notify_on_complete": False,
             "watch_patterns": ["PANIC", "OOM"],
-        }]))
+        }]), encoding="utf-8")
         monkeypatch.setattr(pr_mod, "CHECKPOINT_PATH", checkpoint)
         # PID doesn't exist, so nothing will be recovered
         count = registry.recover_from_checkpoint()

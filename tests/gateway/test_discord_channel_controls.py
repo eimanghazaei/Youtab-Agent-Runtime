@@ -227,7 +227,7 @@ def test_config_bridges_ignored_channels(monkeypatch, tmp_path):
         "discord": {
             "ignored_channels": ["111", "222"],
         },
-    }))
+    }), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
     # Use setenv (not delenv) so monkeypatch registers cleanup even when
     # the var doesn't exist yet — load_gateway_config will overwrite it.

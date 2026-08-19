@@ -72,13 +72,13 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
                 "auth_mode": "chatgpt",
             },
         },
-    }))
+    }), encoding="utf-8")
     (codex_home / "auth.json").write_text(json.dumps({
         "tokens": {
             "access_token": "fresh-access",
             "refresh_token": "fresh-refresh",
         },
-    }))
+    }), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
 
@@ -86,7 +86,7 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
 
     assert resolved["api_key"] == "fresh-access"
     assert resolved["source"] == "youtab-auth-store"
-    stored = json.loads((youtab_home / "auth.json").read_text())
+    stored = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     tokens = stored["providers"]["openai-codex"]["tokens"]
     assert tokens["access_token"] == "fresh-access"
     assert tokens["refresh_token"] == "fresh-refresh"

@@ -24,12 +24,12 @@ class TestCredentialExclusion:
         profile_dir.mkdir(parents=True)
 
         # Create a profile with credentials
-        (profile_dir / "config.yaml").write_text("model: gpt-4\n")
-        (profile_dir / "auth.json").write_text('{"tokens": {"access": "sk-secret"}}')
-        (profile_dir / ".env").write_text("OPENROUTER_API_KEY=sk-secret-key\n")
-        (profile_dir / "SOUL.md").write_text("I am helpful.\n")
+        (profile_dir / "config.yaml").write_text("model: gpt-4\n", encoding="utf-8")
+        (profile_dir / "auth.json").write_text('{"tokens": {"access": "sk-secret"}}', encoding="utf-8")
+        (profile_dir / ".env").write_text("OPENROUTER_API_KEY=sk-secret-key\n", encoding="utf-8")
+        (profile_dir / "SOUL.md").write_text("I am helpful.\n", encoding="utf-8")
         (profile_dir / "memories").mkdir()
-        (profile_dir / "memories" / "MEMORY.md").write_text("# Memories\n")
+        (profile_dir / "memories" / "MEMORY.md").write_text("# Memories\n", encoding="utf-8")
 
         monkeypatch.setattr("youtab_agent_cli.profiles._get_profiles_root", lambda: profiles_root)
         monkeypatch.setattr("youtab_agent_cli.profiles.get_profile_dir", lambda n: profile_dir)

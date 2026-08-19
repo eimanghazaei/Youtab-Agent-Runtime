@@ -298,7 +298,7 @@ class TestTelegramApprovalCallback:
 
         # Should NOT have triggered approval resolution
         mock_resolve.assert_not_called()
-        assert (tmp_path / ".update_response").read_text() == "y"
+        assert (tmp_path / ".update_response").read_text(encoding="utf-8") == "y"
 
     @pytest.mark.asyncio
     async def test_update_prompt_callback_rejects_unauthorized_user(self, tmp_path):

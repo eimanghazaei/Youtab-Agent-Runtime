@@ -89,7 +89,7 @@ class TestAbiStamp:
         assert err is None
         assert target.is_dir()
         stamp = target / ld._TARGET_STAMP_NAME
-        assert stamp.read_text().strip() == ld._python_abi_tag()
+        assert stamp.read_text(encoding="utf-8").strip() == ld._python_abi_tag()
 
 
     def test_unwritable_target_reports_error(self, tmp_path):
@@ -104,7 +104,7 @@ class TestAbiStamp:
         # kernel for every uid and on Windows too, so the ENOTDIR path is
         # reached wherever the suite runs.
         blocking_file = tmp_path / "not-a-dir"
-        blocking_file.write_text("occupied")
+        blocking_file.write_text("occupied", encoding="utf-8")
 
         err = ld._ensure_target_ready(blocking_file / "lazy")
 
@@ -278,7 +278,8 @@ class TestCoreNeverShadowed:
         shadow_pkg = target / "packaging"
         shadow_pkg.mkdir()
         (shadow_pkg / "__init__.py").write_text(
-            "SHADOW_SENTINEL = True\n__version__ = '0.0.0-shadow'\n"
+            "SHADOW_SENTINEL = True\n__version__ = '0.0.0-shadow'\n",
+            encoding="utf-8",
         )
         assert (shadow_pkg / "__init__.py").exists(), "shadow copy must exist on disk"
 

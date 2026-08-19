@@ -61,7 +61,7 @@ def test_save_env_value_managed_key_rejected(env_homes, capsys):
     save_env_value("OPENAI_API_BASE", "https://user.example/v1")
     assert "managed" in capsys.readouterr().err.lower()
     env_path = get_env_path()
-    body = env_path.read_text() if env_path.exists() else ""
+    body = env_path.read_text(encoding="utf-8") if env_path.exists() else ""
     assert "user.example" not in body
 
 

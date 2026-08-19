@@ -103,7 +103,7 @@ def _provider_for_mode(tmp_path, monkeypatch, mode: str):
     }
     config_path = tmp_path / "hindsight" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(config))
+    config_path.write_text(json.dumps(config), encoding="utf-8")
 
     monkeypatch.setattr(
         "plugins.memory.hindsight.get_youtab_home", lambda: tmp_path
@@ -172,7 +172,7 @@ def provider(tmp_path, monkeypatch):
     }
     config_path = tmp_path / "hindsight" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(config))
+    config_path.write_text(json.dumps(config), encoding="utf-8")
 
     monkeypatch.setattr(
         "plugins.memory.hindsight.get_youtab_home", lambda: tmp_path
@@ -199,7 +199,7 @@ def provider_with_config(tmp_path, monkeypatch):
         config.update(overrides)
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
+        config_path.write_text(json.dumps(config), encoding="utf-8")
 
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_youtab_home", lambda: tmp_path
@@ -403,14 +403,14 @@ class TestPostSetup:
         provider.post_setup(str(youtab_home), {"memory": {}})
 
         assert saved_configs[-1]["memory"]["provider"] == "hindsight"
-        env_text = (youtab_home / ".env").read_text()
+        env_text = (youtab_home / ".env").read_text(encoding="utf-8")
         assert "HINDSIGHT_LLM_API_KEY=sk-local-test\n" in env_text
         assert "HINDSIGHT_TIMEOUT=120\n" in env_text
         assert "HINDSIGHT_IDLE_TIMEOUT=300\n" in env_text
 
         profile_env = user_home / ".hindsight" / "profiles" / "youtab.env"
         assert profile_env.exists()
-        assert profile_env.read_text() == (
+        assert profile_env.read_text(encoding="utf-8") == (
             "HINDSIGHT_API_LLM_PROVIDER=openai\n"
             "HINDSIGHT_API_LLM_API_KEY=sk-local-test\n"
             "HINDSIGHT_API_LLM_MODEL=gpt-4o-mini\n"
@@ -568,7 +568,7 @@ class TestSyncTurn:
         config = {"mode": "cloud", "apiKey": "k", "api_url": "http://x", "bank_id": "b"}
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
+        config_path.write_text(json.dumps(config), encoding="utf-8")
         monkeypatch.setattr("plugins.memory.hindsight.get_youtab_home", lambda: tmp_path)
 
         p1 = HindsightMemoryProvider()
@@ -893,7 +893,7 @@ class TestBankIdTemplate:
         }
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
+        config_path.write_text(json.dumps(config), encoding="utf-8")
         monkeypatch.setattr("plugins.memory.hindsight.get_youtab_home", lambda: tmp_path)
 
         p = HindsightMemoryProvider()
@@ -947,7 +947,7 @@ class TestAvailability:
         config = {"mode": "local_embedded"}
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config))
+        config_path.write_text(json.dumps(config), encoding="utf-8")
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_youtab_home", lambda: tmp_path
         )
@@ -1122,7 +1122,7 @@ class TestClientAutoUpgradeRoutesThroughLazyDeps:
 
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps({"mode": "cloud"}))
+        config_path.write_text(json.dumps({"mode": "cloud"}), encoding="utf-8")
         monkeypatch.setattr(
             "plugins.memory.hindsight.get_youtab_home", lambda: tmp_path
         )

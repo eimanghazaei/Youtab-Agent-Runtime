@@ -49,7 +49,7 @@ class TestUserConfigMerge:
         legacy = {
             "approvals": {"mode": "manual", "timeout": 60, "cron_mode": "deny"},
         }
-        cfg_path.write_text(yaml.safe_dump(legacy))
+        cfg_path.write_text(yaml.safe_dump(legacy), encoding="utf-8")
 
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
         # Force a fresh reimport of config.py so the YOUTAB_AGENT_HOME is honored.

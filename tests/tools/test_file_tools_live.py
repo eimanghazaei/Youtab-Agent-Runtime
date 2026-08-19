@@ -75,10 +75,10 @@ def ops(env, tmp_path):
 @pytest.fixture
 def populated_dir(tmp_path):
     """A temp directory with known files for search/read tests."""
-    (tmp_path / "alpha.py").write_text(MULTIFILE_A)
-    (tmp_path / "bravo.py").write_text(MULTIFILE_B)
-    (tmp_path / "notes.txt").write_text(MULTIFILE_C)
-    (tmp_path / "data.csv").write_text("col1,col2\n1,2\n3,4\n")
+    (tmp_path / "alpha.py").write_text(MULTIFILE_A, encoding="utf-8")
+    (tmp_path / "bravo.py").write_text(MULTIFILE_B, encoding="utf-8")
+    (tmp_path / "notes.txt").write_text(MULTIFILE_C, encoding="utf-8")
+    (tmp_path / "data.csv").write_text("col1,col2\n1,2\n3,4\n", encoding="utf-8")
     return tmp_path
 
 
@@ -100,7 +100,7 @@ class TestLocalEnvironmentExecute:
 
     def test_cat_deterministic_content(self, env, tmp_path):
         f = tmp_path / "det.txt"
-        f.write_text(SIMPLE_CONTENT)
+        f.write_text(SIMPLE_CONTENT, encoding="utf-8")
         result = env.execute(f"cat {f}")
         assert result["returncode"] == 0
         assert result["output"] == SIMPLE_CONTENT
@@ -127,7 +127,7 @@ class TestHasCommand:
 class TestReadFile:
     def test_exact_content(self, ops, tmp_path):
         f = tmp_path / "exact.txt"
-        f.write_text(SIMPLE_CONTENT)
+        f.write_text(SIMPLE_CONTENT, encoding="utf-8")
         result = ops.read_file(str(f))
         assert result.error is None
         # Content has line numbers prepended, check the actual text is there
@@ -140,7 +140,7 @@ class TestReadFile:
 
     def test_no_noise_in_content(self, ops, tmp_path):
         f = tmp_path / "noise_check.txt"
-        f.write_text("ONLY_THIS_CONTENT\n")
+        f.write_text("ONLY_THIS_CONTENT\n", encoding="utf-8")
         result = ops.read_file(str(f))
         assert result.error is None
         _assert_clean(result.content)
@@ -154,7 +154,7 @@ class TestWriteFile:
         result = ops.write_file(path, SIMPLE_CONTENT)
         assert result.error is None
         assert result.bytes_written == len(SIMPLE_CONTENT.encode())
-        assert Path(path).read_text() == SIMPLE_CONTENT
+        assert Path(path).read_text(encoding="utf-8") == SIMPLE_CONTENT
 
 
     def test_roundtrip_read_write(self, ops, tmp_path):
@@ -173,18 +173,18 @@ class TestWriteFile:
 class TestPatchReplace:
     def test_exact_replacement(self, ops, tmp_path):
         path = str(tmp_path / "patch.txt")
-        Path(path).write_text("hello world\n")
+        Path(path).write_text("hello world\n", encoding="utf-8")
         result = ops.patch_replace(path, "world", "earth")
         assert result.error is None
-        assert Path(path).read_text() == "hello earth\n"
+        assert Path(path).read_text(encoding="utf-8") == "hello earth\n"
 
 
     def test_multiline_patch(self, ops, tmp_path):
         path = str(tmp_path / "multi.txt")
-        Path(path).write_text("line1\nline2\nline3\n")
+        Path(path).write_text("line1\nline2\nline3\n", encoding="utf-8")
         result = ops.patch_replace(path, "line2", "REPLACED")
         assert result.error is None
-        assert Path(path).read_text() == "line1\nREPLACED\nline3\n"
+        assert Path(path).read_text(encoding="utf-8") == "line1\nREPLACED\nline3\n"
 
 
 # ── search ───────────────────────────────────────────────────────────────
@@ -250,7 +250,7 @@ class TestTerminalOutputCleanliness:
 
     def test_cat(self, env, tmp_path):
         f = tmp_path / "cat_test.txt"
-        f.write_text("CAT_CONTENT_EXACT\n")
+        f.write_text("CAT_CONTENT_EXACT\n", encoding="utf-8")
         result = env.execute(f"cat {f}")
         assert result["output"] == "CAT_CONTENT_EXACT\n"
         _assert_clean(result["output"])

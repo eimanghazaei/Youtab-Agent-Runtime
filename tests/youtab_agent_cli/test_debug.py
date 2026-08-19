@@ -23,19 +23,24 @@ def youtab_home(tmp_path, monkeypatch):
     (logs_dir / "agent.log").write_text(
         "2026-04-12 17:00:00 INFO agent: session started\n"
         "2026-04-12 17:00:01 INFO tools.terminal: running ls\n"
-        "2026-04-12 17:00:02 WARNING agent: high token usage\n"
+        "2026-04-12 17:00:02 WARNING agent: high token usage\n",
+        encoding="utf-8",
     )
     (logs_dir / "errors.log").write_text(
-        "2026-04-12 17:00:05 ERROR gateway.run: connection lost\n"
+        "2026-04-12 17:00:05 ERROR gateway.run: connection lost\n",
+        encoding="utf-8",
     )
     (logs_dir / "gateway.log").write_text(
-        "2026-04-12 17:00:10 INFO gateway.run: started\n"
+        "2026-04-12 17:00:10 INFO gateway.run: started\n",
+        encoding="utf-8",
     )
     (logs_dir / "gui.log").write_text(
-        "2026-04-12 17:00:12 INFO youtab_agent_cli.web_server: dashboard request\n"
+        "2026-04-12 17:00:12 INFO youtab_agent_cli.web_server: dashboard request\n",
+        encoding="utf-8",
     )
     (logs_dir / "desktop.log").write_text(
-        "2026-04-12 17:00:15 INFO desktop: backend spawned\n"
+        "2026-04-12 17:00:15 INFO desktop: backend spawned\n",
+        encoding="utf-8",
     )
 
     return home
@@ -118,7 +123,7 @@ class TestCaptureLogSnapshot:
         from youtab_agent_cli import debug
 
         monkeypatch.setattr(debug, "_resolve_log_path", lambda _name: log_path)
-        log_path.write_text("")
+        log_path.write_text("", encoding="utf-8")
 
         snap = debug._capture_log_snapshot("agent", tail_lines=10)
         assert snap.path == log_path
@@ -134,7 +139,7 @@ class TestCaptureLogSnapshot:
         # backward-reading loop so the truncation path actually fires.
         line = "A" * 99 + "\n"  # 100 bytes per line
         num_lines = 200  # 20000 bytes
-        (youtab_home / "logs" / "agent.log").write_text(line * num_lines)
+        (youtab_home / "logs" / "agent.log").write_text(line * num_lines, encoding="utf-8")
 
         # max_bytes = 1000 = 100 * 10 → cut at byte 20000 - 1000 = 19000,
         # and byte 19000 - 1 is '\n'.  Boundary hit → keep all 10 lines.
@@ -176,10 +181,11 @@ class TestCaptureLogSnapshotRedaction:
         logs_dir = home / "logs"
         logs_dir.mkdir()
         (logs_dir / "agent.log").write_text(
-            f"2026-04-12 17:00:00 INFO config: api_key={_REDACT_FIXTURE_TOKEN} loaded\n"
+            f"2026-04-12 17:00:00 INFO config: api_key={_REDACT_FIXTURE_TOKEN} loaded\n",
+            encoding="utf-8",
         )
-        (logs_dir / "errors.log").write_text("")
-        (logs_dir / "gateway.log").write_text("")
+        (logs_dir / "errors.log").write_text("", encoding="utf-8")
+        (logs_dir / "gateway.log").write_text("", encoding="utf-8")
         return home
 
     def test_default_redacts_tail_and_full_text(self, youtab_home_with_secret):
@@ -236,7 +242,8 @@ class TestCaptureLogSnapshotRedaction:
         log_path.write_text(
             "2026-04-12 17:00:00 INFO gateway.run: "
             "inbound message: platform=bluebubbles "
-            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n",
+            encoding="utf-8",
         )
 
         snap = _capture_log_snapshot("agent", tail_lines=10)
@@ -253,7 +260,8 @@ class TestCaptureLogSnapshotRedaction:
         log_path.write_text(
             "2026-04-12 17:00:00 INFO gateway.run: "
             "inbound message: platform=bluebubbles "
-            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n"
+            "user=person@example.com chat=iMessage;-;person@example.com msg='hello'\n",
+            encoding="utf-8",
         )
 
         snap = _capture_log_snapshot("agent", tail_lines=10, redact=False)
@@ -403,11 +411,13 @@ class TestRunDebugShareRedaction:
         logs_dir = home / "logs"
         logs_dir.mkdir()
         (logs_dir / "agent.log").write_text(
-            f"2026-04-12 17:00:00 INFO config: api_key={_REDACT_FIXTURE_TOKEN} loaded\n"
+            f"2026-04-12 17:00:00 INFO config: api_key={_REDACT_FIXTURE_TOKEN} loaded\n",
+            encoding="utf-8",
         )
-        (logs_dir / "errors.log").write_text("")
+        (logs_dir / "errors.log").write_text("", encoding="utf-8")
         (logs_dir / "gateway.log").write_text(
-            f"2026-04-12 17:00:01 INFO gateway.run: token {_REDACT_FIXTURE_TOKEN}\n"
+            f"2026-04-12 17:00:01 INFO gateway.run: token {_REDACT_FIXTURE_TOKEN}\n",
+            encoding="utf-8",
         )
         return home
 
@@ -602,7 +612,7 @@ class TestScheduleAutoDelete:
         pending_path = _pending_file()
         assert pending_path.exists()
 
-        entries = json.loads(pending_path.read_text())
+        entries = json.loads(pending_path.read_text(encoding="utf-8"))
         assert len(entries) == 2
         urls = {e["url"] for e in entries}
         assert urls == {"https://paste.rs/abc", "https://paste.rs/def"}
@@ -778,7 +788,8 @@ class TestBuildDebugShare:
 
         secret = "sk-proj-SUPERSECRETtoken1234567890"
         (youtab_home / "logs" / "agent.log").write_text(
-            f"line one\nauthorization token={secret}\nline three\n"
+            f"line one\nauthorization token={secret}\nline three\n",
+            encoding="utf-8",
         )
 
         uploaded = []
@@ -838,7 +849,8 @@ class TestCollectShareBundle:
 
         secret = "sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"
         (youtab_home / "logs" / "agent.log").write_text(
-            f"line one\nOPENAI_API_KEY={secret}\nline three\n"
+            f"line one\nOPENAI_API_KEY={secret}\nline three\n",
+            encoding="utf-8",
         )
         with patch("youtab_agent_cli.dump.run_dump"):
             redacted = collect_share_bundle(log_lines=50, redact=True)

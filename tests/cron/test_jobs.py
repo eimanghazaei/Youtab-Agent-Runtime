@@ -843,7 +843,7 @@ class TestSaveJobOutput:
     def test_creates_output_file(self, tmp_cron_dir):
         output_file = save_job_output("test123", "# Results\nEverything ok.")
         assert output_file.exists()
-        assert output_file.read_text() == "# Results\nEverything ok."
+        assert output_file.read_text(encoding="utf-8") == "# Results\nEverything ok."
         assert "test123" in str(output_file)
 
 
@@ -855,7 +855,7 @@ class TestCronOutputRetention:
         d.mkdir(parents=True, exist_ok=True)
         names = [f"2026-06-25_10-00-{i:02d}.md" for i in range(count)]
         for n in names:
-            (d / n).write_text("x")
+            (d / n).write_text("x", encoding="utf-8")
         return names
 
     def test_prune_keeps_newest_n(self, tmp_path):

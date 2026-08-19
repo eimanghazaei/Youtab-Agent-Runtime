@@ -37,7 +37,7 @@ class TestPluginDispatch:
         from youtab_agent_cli import plugins as plugins_module
 
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
-        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n")
+        (tmp_path / "config.yaml").write_text("image_gen:\n  provider: codex\n", encoding="utf-8")
         image_gen_registry.register_provider(_FakeCodexProvider())
 
         monkeypatch.setattr(image_generation_tool, "_read_configured_image_provider", lambda: "codex")

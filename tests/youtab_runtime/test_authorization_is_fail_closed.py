@@ -643,7 +643,7 @@ class TestTheFsClusterCannotReachCredentialMaterial:
     @pytest.fixture
     def sensitive(self, tmp_path):
         target = tmp_path / ".env"
-        target.write_text("YOUTAB_API_KEY=super-secret\n")
+        target.write_text("YOUTAB_API_KEY=super-secret\n", encoding="utf-8")
         return target
 
     def test_reading_a_credential_file_is_refused(self, sensitive):
@@ -663,7 +663,7 @@ class TestTheFsClusterCannotReachCredentialMaterial:
 
         from youtab_agent_cli.web_server import _fs_path_or_refuse
 
-        (tmp_path / name).write_text("K=v\n")
+        (tmp_path / name).write_text("K=v\n", encoding="utf-8")
         with pytest.raises(HTTPException):
             _fs_path_or_refuse(str(tmp_path / name))
 
@@ -675,7 +675,7 @@ class TestTheFsClusterCannotReachCredentialMaterial:
         for tree in ("mcp-tokens", "pairing"):
             path = tmp_path / tree / "token.json"
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("{}")
+            path.write_text("{}", encoding="utf-8")
             with pytest.raises(HTTPException):
                 _fs_path_or_refuse(str(path))
 
@@ -693,7 +693,7 @@ class TestTheFsClusterCannotReachCredentialMaterial:
         from youtab_agent_cli.web_server import _fs_path_or_refuse
 
         ordinary = tmp_path / "main.py"
-        ordinary.write_text("print('hi')\n")
+        ordinary.write_text("print('hi')\n", encoding="utf-8")
         assert _fs_path_or_refuse(str(ordinary)) == ordinary.resolve()
 
     def test_listing_omits_credential_entries(self, tmp_path):
@@ -702,8 +702,8 @@ class TestTheFsClusterCannotReachCredentialMaterial:
 
         from youtab_agent_cli.web_server import fs_list
 
-        (tmp_path / ".env").write_text("K=v\n")
-        (tmp_path / "main.py").write_text("x\n")
+        (tmp_path / ".env").write_text("K=v\n", encoding="utf-8")
+        (tmp_path / "main.py").write_text("x\n", encoding="utf-8")
         names = {e["name"] for e in asyncio.run(fs_list(str(tmp_path)))["entries"]}
         assert "main.py" in names
         assert ".env" not in names

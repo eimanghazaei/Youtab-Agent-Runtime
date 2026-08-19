@@ -268,7 +268,7 @@ class TestPluginDiscovery:
         import yaml
 
         config = {"plugins": {"enabled": ["security-guidance"]}}
-        (_isolate_env / "config.yaml").write_text(yaml.safe_dump(config))
+        (_isolate_env / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 
         # Wipe any cached plugin state from earlier tests in this worker.
         for k in list(sys.modules):

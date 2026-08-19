@@ -33,10 +33,11 @@ def test_redact_secrets_false_in_config_yaml_is_honored(tmp_path):
             security:
               redact_secrets: false
             """
-        )
+        ),
+        encoding="utf-8",
     )
     # Empty .env so nothing else sets the env var
-    (youtab_home / ".env").write_text("")
+    (youtab_home / ".env").write_text("", encoding="utf-8")
 
     # Spawn a fresh Python process that imports youtab_agent_cli.main and checks
     # _REDACT_ENABLED. Must be a subprocess — we need a clean module state.
@@ -82,8 +83,8 @@ def test_redact_secrets_default_true_when_unset(tmp_path):
     """
     youtab_home = tmp_path / ".youtab-agent-runtime"
     youtab_home.mkdir()
-    (youtab_home / "config.yaml").write_text("{}\n")  # empty config
-    (youtab_home / ".env").write_text("")
+    (youtab_home / "config.yaml").write_text("{}\n", encoding="utf-8")  # empty config
+    (youtab_home / ".env").write_text("", encoding="utf-8")
 
     probe = textwrap.dedent(
         """\
@@ -124,10 +125,11 @@ def test_dotenv_redact_secrets_beats_config_yaml(tmp_path):
             security:
               redact_secrets: false
             """
-        )
+        ),
+        encoding="utf-8",
     )
     # .env force-enables redaction
-    (youtab_home / ".env").write_text("YOUTAB_AGENT_REDACT_SECRETS=true\n")
+    (youtab_home / ".env").write_text("YOUTAB_AGENT_REDACT_SECRETS=true\n", encoding="utf-8")
 
     probe = textwrap.dedent(
         """\

@@ -108,7 +108,7 @@ def _env_value(youtab_home: Path, key: str) -> str | None:
     env_file = youtab_home / ".env"
     if not env_file.exists():
         return None
-    for line in env_file.read_text().splitlines():
+    for line in env_file.read_text(encoding="utf-8").splitlines():
         if "=" not in line:
             continue
         k, _, v = line.partition("=")

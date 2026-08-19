@@ -45,8 +45,8 @@ class TestGoogleWorkspaceCredentialFiles:
     def test_entries_are_registered_when_files_exist(self, tmp_path):
         youtab_home = tmp_path / ".youtab-agent-runtime"
         youtab_home.mkdir()
-        (youtab_home / "google_token.json").write_text("{}")
-        (youtab_home / "google_client_secret.json").write_text("{}")
+        (youtab_home / "google_token.json").write_text("{}", encoding="utf-8")
+        (youtab_home / "google_client_secret.json").write_text("{}", encoding="utf-8")
 
         from tools.credential_files import (
             clear_credential_files,

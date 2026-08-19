@@ -14,7 +14,8 @@ def external_skills_dir(tmp_path):
     skill_dir = ext_dir / "my-external-skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: my-external-skill\ndescription: A skill from an external directory\n---\n\n# My External Skill\n\nDo external things.\n"
+        "---\nname: my-external-skill\ndescription: A skill from an external directory\n---\n\n# My External Skill\n\nDo external things.\n",
+        encoding="utf-8",
     )
     return ext_dir
 
@@ -30,7 +31,7 @@ def youtab_home(tmp_path):
 
 class TestGetExternalSkillsDirs:
     def test_empty_config(self, youtab_home):
-        (youtab_home / "config.yaml").write_text("skills:\n  external_dirs: []\n")
+        (youtab_home / "config.yaml").write_text("skills:\n  external_dirs: []\n", encoding="utf-8")
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}):
             from agent.skill_utils import get_external_skills_dirs
             result = get_external_skills_dirs()
@@ -39,7 +40,8 @@ class TestGetExternalSkillsDirs:
 
     def test_valid_dir_returned(self, youtab_home, external_skills_dir):
         (youtab_home / "config.yaml").write_text(
-            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n",
+            encoding="utf-8",
         )
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}):
             from agent.skill_utils import get_external_skills_dirs
@@ -55,7 +57,8 @@ class TestGetExternalSkillsDirs:
 class TestGetAllSkillsDirs:
     def test_local_always_first(self, youtab_home, external_skills_dir):
         (youtab_home / "config.yaml").write_text(
-            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n",
+            encoding="utf-8",
         )
         with patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}):
             from agent.skill_utils import get_all_skills_dirs
@@ -67,7 +70,8 @@ class TestGetAllSkillsDirs:
 class TestExternalSkillsInFindAll:
     def test_external_skills_found(self, youtab_home, external_skills_dir):
         (youtab_home / "config.yaml").write_text(
-            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n",
+            encoding="utf-8",
         )
         local_skills = youtab_home / "skills"
         with (
@@ -85,10 +89,12 @@ class TestExternalSkillsInFindAll:
         local_skill = local_skills / "my-external-skill"
         local_skill.mkdir(parents=True)
         (local_skill / "SKILL.md").write_text(
-            "---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal.\n"
+            "---\nname: my-external-skill\ndescription: Local version\n---\n\nLocal.\n",
+            encoding="utf-8",
         )
         (youtab_home / "config.yaml").write_text(
-            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n",
+            encoding="utf-8",
         )
         with (
             patch.dict(os.environ, {"YOUTAB_AGENT_HOME": str(youtab_home)}),
@@ -104,7 +110,8 @@ class TestExternalSkillsInFindAll:
 class TestExternalSkillView:
     def test_skill_view_finds_external(self, youtab_home, external_skills_dir):
         (youtab_home / "config.yaml").write_text(
-            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n"
+            f"skills:\n  external_dirs:\n    - {external_skills_dir}\n",
+            encoding="utf-8",
         )
         local_skills = youtab_home / "skills"
         with (

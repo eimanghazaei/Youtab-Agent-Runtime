@@ -65,7 +65,7 @@ def test_save_auth_store_writes_0o600_with_0o700_parent(tmp_path, monkeypatch):
     )
 
     # Content survived the rewrite
-    data = json.loads(auth_path.read_text())
+    data = json.loads(auth_path.read_text(encoding="utf-8"))
     assert data["providers"]["openai-codex"]["tokens"]["access_token"] == "secret-x"
 
 
@@ -103,7 +103,7 @@ def test_save_qwen_cli_tokens_writes_0o600_with_0o700_parent(tmp_path, monkeypat
         f"Qwen token parent dir mode 0o{parent_mode:o} != 0o700"
     )
 
-    data = json.loads(auth_path.read_text())
+    data = json.loads(auth_path.read_text(encoding="utf-8"))
     assert data["access_token"] == "qwen-secret"
 
 
@@ -151,7 +151,7 @@ def test_shared_youtab_store_writes_0o600_with_0o700_parent(tmp_path, monkeypatc
         f"Youtab shared store parent dir mode 0o{parent_mode:o} != 0o700"
     )
 
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     assert data["refresh_token"] == "youtab-refresh-xxx"
 
 

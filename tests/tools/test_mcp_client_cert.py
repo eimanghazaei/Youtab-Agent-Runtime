@@ -36,7 +36,7 @@ class TestResolveClientCert:
         from tools.mcp_tool import _resolve_client_cert
 
         pem = tmp_path / "combined.pem"
-        pem.write_text("dummy")
+        pem.write_text("dummy", encoding="utf-8")
 
         result = _resolve_client_cert("srv", {"client_cert": str(pem)})
         assert result == str(pem)
@@ -47,8 +47,8 @@ class TestResolveClientCert:
 
         cert = tmp_path / "client.crt"
         key = tmp_path / "client.key"
-        cert.write_text("cert")
-        key.write_text("key")
+        cert.write_text("cert", encoding="utf-8")
+        key.write_text("key", encoding="utf-8")
 
         result = _resolve_client_cert("srv", {
             "client_cert": [str(cert), str(key)],
@@ -61,8 +61,8 @@ class TestResolveClientCert:
 
         cert = tmp_path / "client.crt"
         key = tmp_path / "client.key"
-        cert.write_text("cert")
-        key.write_text("key")
+        cert.write_text("cert", encoding="utf-8")
+        key.write_text("key", encoding="utf-8")
 
         with pytest.raises(ValueError, match=r"key passphrase.*must be a string"):
             _resolve_client_cert("srv", {
@@ -82,7 +82,7 @@ class TestHTTPClientCert:
         from tools.mcp_tool import MCPServerTask
 
         cert = tmp_path / "client.pem"
-        cert.write_text("dummy")
+        cert.write_text("dummy", encoding="utf-8")
 
         server = MCPServerTask("remote")
         captured: dict = {}
@@ -236,7 +236,7 @@ class TestSSEClientCert:
         from tools.mcp_tool import MCPServerTask
 
         cert = tmp_path / "client.pem"
-        cert.write_text("dummy")
+        cert.write_text("dummy", encoding="utf-8")
 
         server = MCPServerTask("sse-test")
         server._auth_type = ""
@@ -285,7 +285,7 @@ class TestSSEClientCert:
         from tools.mcp_tool import MCPServerTask
 
         ca_bundle = tmp_path / "ca.pem"
-        ca_bundle.write_text("dummy")
+        ca_bundle.write_text("dummy", encoding="utf-8")
 
         server = MCPServerTask("sse-test")
         server._auth_type = ""

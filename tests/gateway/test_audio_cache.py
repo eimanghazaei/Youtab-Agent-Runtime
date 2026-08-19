@@ -63,7 +63,7 @@ class TestCleanupAudioCache:
     def test_removes_old_files(self):
         cache_dir = get_audio_cache_dir()
         old_file = cache_dir / "old.ogg"
-        old_file.write_text("old")
+        old_file.write_text("old", encoding="utf-8")
         # Set modification time to 48 hours ago
         old_mtime = time.time() - 48 * 3600
         os.utime(old_file, (old_mtime, old_mtime))
@@ -75,7 +75,7 @@ class TestCleanupAudioCache:
     def test_keeps_recent_files(self):
         cache_dir = get_audio_cache_dir()
         recent = cache_dir / "recent.ogg"
-        recent.write_text("fresh")
+        recent.write_text("fresh", encoding="utf-8")
 
         removed = cleanup_audio_cache(max_age_hours=24)
         assert removed == 0
@@ -99,11 +99,11 @@ class TestUnifiedMediaCacheCleanup:
         )
         cache_dir = get_screenshot_cache_dir()
         old_file = cache_dir / "old.png"
-        old_file.write_text("old")
+        old_file.write_text("old", encoding="utf-8")
         old_mtime = time.time() - 48 * 3600
         os.utime(old_file, (old_mtime, old_mtime))
         fresh = cache_dir / "fresh.png"
-        fresh.write_text("fresh")
+        fresh.write_text("fresh", encoding="utf-8")
 
         removed = cleanup_screenshot_cache(max_age_hours=24)
         assert removed == 1

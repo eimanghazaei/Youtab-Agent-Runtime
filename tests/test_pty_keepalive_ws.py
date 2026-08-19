@@ -107,7 +107,7 @@ async def test_attach_token_reuses_default_chat_after_active_session_fallback(
     with client.websocket_connect("/api/pty?attach=TOK1&channel=CHAT") as ws1:
         ws1.send_bytes(b"hi")
 
-    active_session_file.write_text(json.dumps({"session_id": "existing"}))
+    active_session_file.write_text(json.dumps({"session_id": "existing"}), encoding="utf-8")
 
     with client.websocket_connect("/api/pty?attach=TOK1&channel=CHAT") as ws2:
         ws2.send_bytes(b"again")

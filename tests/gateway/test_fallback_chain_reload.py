@@ -23,7 +23,8 @@ def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
     cfg.write_text(
         "fallback_providers:\n"
         "  - provider: deepseek\n"
-        "    model: deepseek-v4-flash\n"
+        "    model: deepseek-v4-flash\n",
+        encoding="utf-8",
     )
 
     runner = SimpleNamespace(
@@ -39,7 +40,8 @@ def test_refresh_fallback_model_rereads_config(tmp_path, monkeypatch):
     cfg.write_text(
         "fallback_providers:\n"
         "  - provider: openrouter\n"
-        "    model: anthropic/claude-sonnet-4.6\n"
+        "    model: anthropic/claude-sonnet-4.6\n",
+        encoding="utf-8",
     )
     updated = bound()
     assert updated == [
@@ -110,7 +112,8 @@ def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):
         "    model: deepseek-v4-flash\n"
         "fallback_model:\n"
         "  provider: youtab\n"
-        "  model: openai/gpt-5.5\n"
+        "  model: openai/gpt-5.5\n",
+        encoding="utf-8",
     )
 
     chain = GatewayRunner._load_fallback_model()

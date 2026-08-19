@@ -116,7 +116,7 @@ class TestDumpSubagentTimeoutDiagnostic:
         assert p.name.startswith("subagent-timeout-sa-7-abc123-")
         assert p.suffix == ".log"
 
-        content = p.read_text()
+        content = p.read_text(encoding="utf-8")
         # Header references the issue for future grep-ability
         assert "issue #14726" in content
         # Timeout facts
@@ -158,7 +158,7 @@ class TestDumpSubagentTimeoutDiagnostic:
         # so mkdir(exist_ok=True) → NotADirectoryError and we fall through.
         bogus.parent.mkdir(parents=True, exist_ok=True)
         bogus.mkdir()
-        (bogus / "logs").write_text("not a dir")
+        (bogus / "logs").write_text("not a dir", encoding="utf-8")
         result = _dump_subagent_timeout_diagnostic(
             child=child,
             task_index=0,

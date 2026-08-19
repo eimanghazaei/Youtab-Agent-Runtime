@@ -23,7 +23,7 @@ def _setup_doctor_env(monkeypatch, tmp_path, venv_name="venv"):
     venv_bin_dir = project / venv_name / "bin"
     venv_bin_dir.mkdir(parents=True, exist_ok=True)
     youtab_bin = venv_bin_dir / "youtab"
-    youtab_bin.write_text("#!/usr/bin/env python\n# entry point\n")
+    youtab_bin.write_text("#!/usr/bin/env python\n# entry point\n", encoding="utf-8")
     youtab_bin.chmod(0o755)
 
     monkeypatch.setattr(doctor_mod, "YOUTAB_AGENT_HOME", home)
@@ -82,7 +82,7 @@ class TestDoctorCommandInstallation:
         cmd_link_dir.mkdir(parents=True)
         cmd_link = cmd_link_dir / "youtab"
         wrong_target = tmp_path / "wrong_youtab"
-        wrong_target.write_text("#!/usr/bin/env python\n")
+        wrong_target.write_text("#!/usr/bin/env python\n", encoding="utf-8")
         cmd_link.symlink_to(wrong_target)
 
         monkeypatch.setattr(Path, "home", lambda: tmp_path)

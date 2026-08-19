@@ -42,7 +42,7 @@ def _ops(root):
 def match_tree(tmp_path):
     """A tree with several files all containing 'needle'."""
     for i in range(5):
-        (tmp_path / f"f{i}.txt").write_text(f"needle line {i}\n")
+        (tmp_path / f"f{i}.txt").write_text(f"needle line {i}\n", encoding="utf-8")
     return tmp_path
 
 
@@ -50,11 +50,11 @@ def match_tree(tmp_path):
 def partial_error_tree(tmp_path):
     """A tree with matches plus one unreadable file (forces exit 2 + matches)."""
     for i in range(4):
-        (tmp_path / f"f{i}.txt").write_text(f"needle line {i}\n")
+        (tmp_path / f"f{i}.txt").write_text(f"needle line {i}\n", encoding="utf-8")
     sub = tmp_path / "sub"
     sub.mkdir()
     locked = sub / "locked.txt"
-    locked.write_text("needle in locked\n")
+    locked.write_text("needle in locked\n", encoding="utf-8")
     os.chmod(locked, 0o000)
     yield tmp_path
     os.chmod(locked, 0o755)  # let pytest clean up tmp_path

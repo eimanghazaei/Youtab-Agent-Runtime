@@ -438,7 +438,7 @@ class TestPosixStaleInstallLockClear:
         lock = home / "packages" / ".install.lock.d"
         lock.mkdir(parents=True)
         if pid is not None:
-            (lock / "info").write_text(f"pid={pid}\n")
+            (lock / "info").write_text(f"pid={pid}\n", encoding="utf-8")
         os.environ["CUA_DRIVER_RS_HOME"] = str(home)
         return lock
 

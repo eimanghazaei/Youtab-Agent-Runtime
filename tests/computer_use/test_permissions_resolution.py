@@ -15,7 +15,7 @@ def test_status_finds_user_local_driver_when_path_omits_it(tmp_path, monkeypatch
 
     driver = tmp_path / ".local" / "bin" / "cua-driver"
     driver.parent.mkdir(parents=True)
-    driver.write_text("#!/bin/sh\nexit 0\n")
+    driver.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     driver.chmod(0o755)
 
     monkeypatch.delenv("YOUTAB_AGENT_CUA_DRIVER_CMD", raising=False)

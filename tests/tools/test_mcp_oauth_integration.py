@@ -53,14 +53,14 @@ async def test_external_refresh_picked_up_without_restart(tmp_path, monkeypatch)
         "token_type": "Bearer",
         "expires_in": 3600,
         "refresh_token": "OLD_REFRESH",
-    }))
+    }), encoding="utf-8")
     client_info_file.write_text(json.dumps({
         "client_id": "test-client",
         "redirect_uris": ["http://127.0.0.1:12345/callback"],
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
-    }))
+    }), encoding="utf-8")
 
     mgr = MCPOAuthManager()
     provider = mgr.get_or_build_provider(
@@ -87,7 +87,7 @@ async def test_external_refresh_picked_up_without_restart(tmp_path, monkeypatch)
         "token_type": "Bearer",
         "expires_in": 3600,
         "refresh_token": "NEW_REFRESH",
-    }))
+    }), encoding="utf-8")
     os.utime(tokens_file, (future_mtime, future_mtime))
 
     # The next auth flow should detect the mtime change and reload.
@@ -121,7 +121,7 @@ async def test_handle_401_deduplicates_concurrent_callers(tmp_path, monkeypatch)
         "access_token": "TOK",
         "token_type": "Bearer",
         "expires_in": 3600,
-    }))
+    }), encoding="utf-8")
 
     mgr = MCPOAuthManager()
     provider = mgr.get_or_build_provider(

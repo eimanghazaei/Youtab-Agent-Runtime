@@ -148,7 +148,7 @@ def test_install_bws_happy_path(youtab_home, monkeypatch):
         if url.endswith(".zip"):
             Path(dest).write_bytes(zip_bytes)
         elif url.endswith(".txt"):
-            Path(dest).write_text(checksum_text)
+            Path(dest).write_text(checksum_text, encoding="utf-8")
         else:
             raise AssertionError(f"unexpected download url: {url}")
 
@@ -189,7 +189,7 @@ def _fake_bws_payload(items):
 def test_fetch_server_url_sets_env(monkeypatch, tmp_path):
     """server_url must be plumbed into the subprocess as BWS_SERVER_URL."""
     fake_binary = tmp_path / "bws"
-    fake_binary.write_text("")
+    fake_binary.write_text("", encoding="utf-8")
     payload = _fake_bws_payload([{"key": "K", "value": "v"}])
 
     captured_env = {}
@@ -253,7 +253,8 @@ def test_env_loader_calls_bsm_when_enabled(tmp_path, monkeypatch):
         "    access_token_env: 'BWS_ACCESS_TOKEN'\n"
         "    cache_ttl_seconds: 0\n"
         "    override_existing: false\n"
-        "    auto_install: false\n"
+        "    auto_install: false\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
@@ -301,7 +302,7 @@ def test_disk_cache_key_mismatch_triggers_refetch(monkeypatch, tmp_path):
     home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
     fake_binary = tmp_path / "bws"
-    fake_binary.write_text("")
+    fake_binary.write_text("", encoding="utf-8")
     payload = _fake_bws_payload([{"key": "K1", "value": "v1"}])
 
     call_count = {"n": 0}
@@ -318,7 +319,7 @@ def test_disk_cache_key_mismatch_triggers_refetch(monkeypatch, tmp_path):
         "key": "deadbeef00000000|other-project|",
         "secrets": {"OTHER": "should-not-leak"},
         "fetched_at": time.time(),
-    }))
+    }), encoding="utf-8")
 
     secrets, _ = bw.fetch_bitwarden_secrets(
         access_token="0.t", project_id="proj-1", binary=fake_binary,
@@ -339,7 +340,7 @@ def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
     home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
     fake_binary = tmp_path / "bws"
-    fake_binary.write_text("")
+    fake_binary.write_text("", encoding="utf-8")
     payload = _fake_bws_payload([{"key": "K1", "value": "secret-value"}])
 
     monkeypatch.setattr(
@@ -372,7 +373,7 @@ def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
     assert cache_path.exists()
     mode = stat.S_IMODE(os.stat(cache_path).st_mode)
     assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
-    text = cache_path.read_text()
+    text = cache_path.read_text(encoding="utf-8")
     assert "secret-value" not in text
     assert "0.t" not in text
     payload_disk = json.loads(text)
@@ -389,7 +390,7 @@ def test_encrypted_cache_falls_back_on_network_error(monkeypatch, tmp_path):
     home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
     fake_binary = tmp_path / "bws"
-    fake_binary.write_text("")
+    fake_binary.write_text("", encoding="utf-8")
     calls = {"n": 0}
 
     def fake_run(*a, **kw):
@@ -454,7 +455,7 @@ def _seed_stale_disk_cache(home, *, secrets, age_seconds, project_id="proj-1",
         "key": bw._cache_key_str(cache_key),
         "secrets": secrets,
         "fetched_at": time.time() - age_seconds,
-    }))
+    }), encoding="utf-8")
 
 
 def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
@@ -463,7 +464,7 @@ def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
     home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
     fake_binary = tmp_path / "bws"
-    fake_binary.write_text("")
+    fake_binary.write_text("", encoding="utf-8")
     bw._reset_cache_for_tests(home)
 
     # Seed a stale (older than TTL) disk cache from a previous successful fetch
@@ -501,7 +502,7 @@ def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
     home = tmp_path / ".youtab-agent-runtime"
     home.mkdir()
     fake_binary = tmp_path / "bws"
-    fake_binary.write_text("")
+    fake_binary.write_text("", encoding="utf-8")
     bw._reset_cache_for_tests(home)
 
     _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=3600)

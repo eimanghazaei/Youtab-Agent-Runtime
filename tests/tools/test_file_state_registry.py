@@ -158,7 +158,7 @@ class FileToolsIntegrationTests(unittest.TestCase):
 
     def _write_seed(self, name: str, content: str = "seed\n") -> str:
         p = os.path.join(self._tmpdir, name)
-        with open(p, "w") as f:
+        with open(p, "w", encoding="utf-8") as f:
             f.write(content)
         return p
 

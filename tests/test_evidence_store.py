@@ -138,7 +138,7 @@ def test_evidence_store_summary(tmp_path):
 
 def test_evidence_store_corrupted_file(tmp_path):
     store_file = tmp_path / "test_evidence.json"
-    store_file.write_text("NOT VALID JSON {{{")
+    store_file.write_text("NOT VALID JSON {{{", encoding="utf-8")
 
     with pytest.raises(SystemExit):
         EvidenceStore(str(store_file))

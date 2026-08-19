@@ -147,7 +147,7 @@ class TestReadClaudeCodeCredentials:
                 "refreshToken": "sk-ant-oat01-refresh",
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         creds = read_claude_code_credentials()
         assert creds is not None
@@ -157,7 +157,7 @@ class TestReadClaudeCodeCredentials:
 
     def test_ignores_primary_api_key_for_native_anthropic_resolution(self, tmp_path, monkeypatch):
         claude_json = tmp_path / ".claude.json"
-        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
+        claude_json.write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         creds = read_claude_code_credentials()
@@ -193,7 +193,7 @@ class TestResolveAnthropicToken:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
-        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}))
+        (tmp_path / ".claude.json").write_text(json.dumps({"primaryApiKey": "sk-ant-api03-primary"}), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() is None
@@ -220,7 +220,7 @@ class TestResolveAnthropicToken:
                 "refreshToken": "refresh",
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "cc-auto-token"
 
@@ -342,7 +342,7 @@ class TestResolveAnthropicToken:
                 "refreshToken": "refresh-token",
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         assert resolve_anthropic_token() == "cc-auto-token"
@@ -393,7 +393,7 @@ class TestRefreshOauthToken:
         # Verify credentials were written back
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
-        written = json.loads(cred_file.read_text())
+        written = json.loads(cred_file.read_text(encoding="utf-8"))
         assert written["claudeAiOauth"]["accessToken"] == "new-token-abc"
         assert written["claudeAiOauth"]["refreshToken"] == "new-refresh-456"
 
@@ -418,7 +418,7 @@ class TestWriteClaudeCodeCredentials:
         _write_claude_code_credentials("tok", "ref", 12345)
         cred_file = tmp_path / ".claude" / ".credentials.json"
         assert cred_file.exists()
-        data = json.loads(cred_file.read_text())
+        data = json.loads(cred_file.read_text(encoding="utf-8"))
         assert data["claudeAiOauth"]["accessToken"] == "tok"
         assert data["claudeAiOauth"]["refreshToken"] == "ref"
         assert data["claudeAiOauth"]["expiresAt"] == 12345
@@ -428,9 +428,9 @@ class TestWriteClaudeCodeCredentials:
         cred_dir = tmp_path / ".claude"
         cred_dir.mkdir()
         cred_file = cred_dir / ".credentials.json"
-        cred_file.write_text(json.dumps({"otherField": "keep-me"}))
+        cred_file.write_text(json.dumps({"otherField": "keep-me"}), encoding="utf-8")
         _write_claude_code_credentials("new-tok", "new-ref", 99999)
-        data = json.loads(cred_file.read_text())
+        data = json.loads(cred_file.read_text(encoding="utf-8"))
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
 
@@ -469,7 +469,7 @@ class TestResolveWithRefresh:
                 "refreshToken": "valid-refresh",
                 "expiresAt": int(time.time() * 1000) - 3600_000,
             }
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         # Mock refresh to succeed
@@ -491,7 +491,7 @@ class TestResolveWithRefresh:
                 "refreshToken": "valid-refresh",
                 "expiresAt": int(time.time() * 1000) - 3600_000,
             }
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("agent.anthropic_adapter._refresh_oauth_token", return_value="refreshed-token"):
@@ -517,7 +517,7 @@ class TestRunOauthSetupToken:
                 "refreshToken": "refresh",
                 "expiresAt": int(time.time() * 1000) + 3600_000,
             }
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         with patch("subprocess.run") as mock_run:

@@ -59,12 +59,12 @@ def _make_user_plugin(tmp_path, name="hot"):
     dashboard_dir.mkdir(parents=True)
     dist_dir = dashboard_dir / "dist"
     dist_dir.mkdir()
-    (dist_dir / "index.js").write_text("console.log('hello');")
+    (dist_dir / "index.js").write_text("console.log('hello');", encoding="utf-8")
     (dashboard_dir / "manifest.json").write_text(json.dumps({
         "name": name,
         "label": name.title(),
         "entry": "dist/index.js",
-    }))
+    }), encoding="utf-8")
     return dashboard_dir
 
 
@@ -74,12 +74,12 @@ def _make_bundled_plugin(tmp_path, name="bundledx"):
     dashboard_dir.mkdir(parents=True)
     dist_dir = dashboard_dir / "dist"
     dist_dir.mkdir()
-    (dist_dir / "index.js").write_text("console.log('bundled');")
+    (dist_dir / "index.js").write_text("console.log('bundled');", encoding="utf-8")
     (dashboard_dir / "manifest.json").write_text(json.dumps({
         "name": name,
         "label": name.title(),
         "entry": "dist/index.js",
-    }))
+    }), encoding="utf-8")
     return dashboard_dir
 
 

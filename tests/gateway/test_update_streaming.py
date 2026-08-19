@@ -72,7 +72,7 @@ class TestGatewayPrompt:
         # Simulate the response arriving after a short delay
         def write_response():
             time.sleep(0.2)
-            (youtab_home / ".update_response").write_text("y")
+            (youtab_home / ".update_response").write_text("y", encoding="utf-8")
 
         thread = threading.Thread(target=write_response)
         thread.start()
@@ -178,7 +178,7 @@ class TestWatchUpdateProgress:
 
         pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
                    "session_key": "agent:main:telegram:dm:111"}
-        (youtab_home / ".update_pending.json").write_text(json.dumps(pending))
+        (youtab_home / ".update_pending.json").write_text(json.dumps(pending), encoding="utf-8")
         # Write output
         (youtab_home / ".update_output.txt").write_text("→ Fetching updates...\n", encoding="utf-8")
 
@@ -191,7 +191,7 @@ class TestWatchUpdateProgress:
             (youtab_home / ".update_output.txt").write_text(
                 "→ Fetching updates...\n✓ Code updated!\n"
             , encoding="utf-8")
-            (youtab_home / ".update_exit_code").write_text("0")
+            (youtab_home / ".update_exit_code").write_text("0", encoding="utf-8")
 
         with patch("gateway.run._youtab_home", youtab_home):
             task = asyncio.create_task(write_exit_code())
@@ -216,8 +216,8 @@ class TestWatchUpdateProgress:
 
         pending = {"platform": "telegram", "chat_id": "111", "user_id": "222",
                    "session_key": "agent:main:telegram:dm:111"}
-        (youtab_home / ".update_pending.json").write_text(json.dumps(pending))
-        (youtab_home / ".update_output.txt").write_text("output\n")
+        (youtab_home / ".update_pending.json").write_text(json.dumps(pending), encoding="utf-8")
+        (youtab_home / ".update_output.txt").write_text("output\n", encoding="utf-8")
 
         mock_adapter = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: mock_adapter}
@@ -226,13 +226,13 @@ class TestWatchUpdateProgress:
         async def simulate_prompt_cycle():
             await asyncio.sleep(0.2)
             prompt = {"prompt": "Restore local changes? [Y/n]", "default": "y", "id": "test1"}
-            (youtab_home / ".update_prompt.json").write_text(json.dumps(prompt))
+            (youtab_home / ".update_prompt.json").write_text(json.dumps(prompt), encoding="utf-8")
             # Simulate user responding
             await asyncio.sleep(0.2)
-            (youtab_home / ".update_response").write_text("y")
+            (youtab_home / ".update_response").write_text("y", encoding="utf-8")
             (youtab_home / ".update_prompt.json").unlink(missing_ok=True)
             await asyncio.sleep(0.2)
-            (youtab_home / ".update_exit_code").write_text("0")
+            (youtab_home / ".update_exit_code").write_text("0", encoding="utf-8")
 
         with patch("gateway.run._youtab_home", youtab_home):
             task = asyncio.create_task(simulate_prompt_cycle())
@@ -268,9 +268,9 @@ class TestWatchUpdateProgress:
             "default": "y",
             "id": "restart-recover",
         }
-        (youtab_home / ".update_pending.json").write_text(json.dumps(pending))
-        (youtab_home / ".update_output.txt").write_text("")
-        (youtab_home / ".update_prompt.json").write_text(json.dumps(prompt))
+        (youtab_home / ".update_pending.json").write_text(json.dumps(pending), encoding="utf-8")
+        (youtab_home / ".update_output.txt").write_text("", encoding="utf-8")
+        (youtab_home / ".update_prompt.json").write_text(json.dumps(prompt), encoding="utf-8")
 
         runner1 = _make_runner()
         adapter1 = AsyncMock()
@@ -302,9 +302,9 @@ class TestWatchUpdateProgress:
 
             async def respond_and_finish():
                 await asyncio.sleep(0.2)
-                (youtab_home / ".update_response").write_text("y")
+                (youtab_home / ".update_response").write_text("y", encoding="utf-8")
                 await asyncio.sleep(0.2)
-                (youtab_home / ".update_exit_code").write_text("0")
+                (youtab_home / ".update_exit_code").write_text("0", encoding="utf-8")
 
             finisher = asyncio.create_task(respond_and_finish())
             await runner2._watch_update_progress(
@@ -349,7 +349,7 @@ class TestUpdatePromptInterception:
         runner._is_user_authorized = MagicMock(return_value=True)
         runner._session_key_for_source = MagicMock(return_value=session_key)
         runner._handle_reset_command = AsyncMock(return_value="reset ok")
-        (youtab_home / ".update_prompt.json").write_text(json.dumps({"prompt": "test"}))
+        (youtab_home / ".update_prompt.json").write_text(json.dumps({"prompt": "test"}), encoding="utf-8")
 
         with patch("gateway.run._youtab_home", youtab_home):
             result = await runner._handle_message(event)
@@ -361,7 +361,7 @@ class TestUpdatePromptInterception:
         # return the prompt's default.
         response_path = youtab_home / ".update_response"
         assert response_path.exists()
-        assert response_path.read_text() == ""
+        assert response_path.read_text(encoding="utf-8") == ""
         assert not (youtab_home / ".update_prompt.json").exists()
         # Pending flag is cleared so stray future input won't be
         # re-intercepted for a prompt that is no longer outstanding.

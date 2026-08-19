@@ -72,7 +72,7 @@ class TestCleanupDocumentCache:
     def test_removes_old_files(self, tmp_path):
         cache_dir = get_document_cache_dir()
         old_file = cache_dir / "old.txt"
-        old_file.write_text("old")
+        old_file.write_text("old", encoding="utf-8")
         # Set modification time to 48 hours ago
         old_mtime = time.time() - 48 * 3600
         os.utime(old_file, (old_mtime, old_mtime))

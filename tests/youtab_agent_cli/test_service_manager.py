@@ -340,7 +340,7 @@ def test_s6_log_run_creates_leaf_as_youtab_without_chown(
     mgr = S6ServiceManager(scandir=s6_scandir)
     mgr.register_profile_gateway("coder")
 
-    log_text = (s6_scandir / "gateway-coder" / "log" / "run").read_text()
+    log_text = (s6_scandir / "gateway-coder" / "log" / "run").read_text(encoding="utf-8")
 
     assert not any(line.lstrip().startswith("chown ") for line in log_text.splitlines()), (
         "restartable log/run must not invoke chown on youtab-writable paths; "

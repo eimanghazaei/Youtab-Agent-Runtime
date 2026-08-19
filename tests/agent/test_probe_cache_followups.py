@@ -216,7 +216,7 @@ class TestContextCacheKeyNormalization:
         path.write_text(yaml.dump({"context_lengths": {
             "m1@http://host/v1": 128_000,
             "m1@http://host/v1/": 64_000,
-        }}))
+        }}), encoding="utf-8")
 
         model_metadata._invalidate_cached_context_length("m1", "http://host/v1/")
         cache = model_metadata._load_context_cache()

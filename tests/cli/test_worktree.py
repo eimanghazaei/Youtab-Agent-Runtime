@@ -26,7 +26,7 @@ def git_repo(tmp_path):
         cwd=repo, capture_output=True,
     )
     # Create initial commit (worktrees need at least one commit)
-    (repo / "README.md").write_text("# Test Repo\n")
+    (repo / "README.md").write_text("# Test Repo\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
@@ -59,7 +59,7 @@ def git_repo_no_remote(tmp_path):
         ["git", "config", "user.name", "Test"],
         cwd=repo, capture_output=True,
     )
-    (repo / "README.md").write_text("# Test Repo\n")
+    (repo / "README.md").write_text("# Test Repo\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
@@ -82,7 +82,7 @@ def git_repo_remote_no_tracking(tmp_path):
         ["git", "config", "user.name", "Test"],
         cwd=repo, capture_output=True,
     )
-    (repo / "README.md").write_text("# Test Repo\n")
+    (repo / "README.md").write_text("# Test Repo\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, capture_output=True)
     subprocess.run(
         ["git", "commit", "-m", "Initial commit"],
@@ -248,7 +248,7 @@ class TestWorktreeCreation:
         assert info1["branch"] != info2["branch"]
 
         # Create a file in worktree 1
-        (Path(info1["path"]) / "only-in-wt1.txt").write_text("hello")
+        (Path(info1["path"]) / "only-in-wt1.txt").write_text("hello", encoding="utf-8")
 
         # It should NOT appear in worktree 2
         assert not (Path(info2["path"]) / "only-in-wt1.txt").exists()
@@ -302,8 +302,8 @@ class TestWorktreeInclude:
     def test_copies_included_files(self, git_repo):
         """Files listed in .worktreeinclude should be copied to the worktree."""
         # Create a .env file (gitignored)
-        (git_repo / ".env").write_text("SECRET=abc123")
-        (git_repo / ".gitignore").write_text(".env\n.worktrees/\n")
+        (git_repo / ".env").write_text("SECRET=abc123", encoding="utf-8")
+        (git_repo / ".gitignore").write_text(".env\n.worktrees/\n", encoding="utf-8")
         subprocess.run(
             ["git", "add", ".gitignore"],
             cwd=str(git_repo), capture_output=True,
@@ -314,7 +314,7 @@ class TestWorktreeInclude:
         )
 
         # Create .worktreeinclude
-        (git_repo / ".worktreeinclude").write_text(".env\n")
+        (git_repo / ".worktreeinclude").write_text(".env\n", encoding="utf-8")
 
         # Import and use the real _setup_worktree logic for include handling
         info = _setup_worktree(str(git_repo))
@@ -323,7 +323,7 @@ class TestWorktreeInclude:
         # Manually copy .worktreeinclude entries (mirrors cli.py logic)
         include_file = git_repo / ".worktreeinclude"
         wt_path = Path(info["path"])
-        for line in include_file.read_text().splitlines():
+        for line in include_file.read_text(encoding="utf-8").splitlines():
             entry = line.strip()
             if not entry or entry.startswith("#"):
                 continue
@@ -335,7 +335,7 @@ class TestWorktreeInclude:
 
         # Verify .env was copied
         assert (wt_path / ".env").exists()
-        assert (wt_path / ".env").read_text() == "SECRET=abc123"
+        assert (wt_path / ".env").read_text(encoding="utf-8") == "SECRET=abc123"
 
         # Should not crash — just skip all lines
 
@@ -355,14 +355,14 @@ class TestGitignoreManagement:
 
         # Now manually add .worktrees/ to .gitignore (mirrors cli.py logic)
         _ignore_entry = ".worktrees/"
-        existing = gitignore.read_text() if gitignore.exists() else ""
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
         if _ignore_entry not in existing.splitlines():
-            with open(gitignore, "a") as f:
+            with open(gitignore, "a", encoding="utf-8") as f:
                 if existing and not existing.endswith("\n"):
                     f.write("\n")
                 f.write(f"{_ignore_entry}\n")
 
-        content = gitignore.read_text()
+        content = gitignore.read_text(encoding="utf-8")
         assert ".worktrees/" in content
 
 
@@ -387,11 +387,11 @@ class TestMultipleWorktrees:
             assert (Path(info["path"]) / "README.md").exists()
 
         # Edit a file in one worktree
-        (Path(worktrees[0]["path"]) / "README.md").write_text("Modified in wt0")
+        (Path(worktrees[0]["path"]) / "README.md").write_text("Modified in wt0", encoding="utf-8")
 
         # Others should be unaffected
         for info in worktrees[1:]:
-            assert (Path(info["path"]) / "README.md").read_text() == "# Test Repo\n"
+            assert (Path(info["path"]) / "README.md").read_text(encoding="utf-8") == "# Test Repo\n"
 
         # List worktrees via git
         result = subprocess.run(
@@ -422,7 +422,7 @@ def _can_symlink():
     try:
         with tempfile.TemporaryDirectory() as d:
             src = Path(d) / "src"
-            src.write_text("x")
+            src.write_text("x", encoding="utf-8")
             lnk = Path(d) / "lnk"
             lnk.symlink_to(src)
             return True
@@ -439,8 +439,8 @@ class TestWorktreeDirectorySymlink:
         # Create a .venv directory
         venv_dir = git_repo / ".venv" / "lib"
         venv_dir.mkdir(parents=True)
-        (venv_dir / "marker.txt").write_text("venv marker")
-        (git_repo / ".gitignore").write_text(".venv/\n.worktrees/\n")
+        (venv_dir / "marker.txt").write_text("venv marker", encoding="utf-8")
+        (git_repo / ".gitignore").write_text(".venv/\n.worktrees/\n", encoding="utf-8")
         subprocess.run(
             ["git", "add", ".gitignore"], cwd=str(git_repo), capture_output=True
         )
@@ -448,7 +448,7 @@ class TestWorktreeDirectorySymlink:
             ["git", "commit", "-m", "gitignore"], cwd=str(git_repo), capture_output=True
         )
 
-        (git_repo / ".worktreeinclude").write_text(".venv/\n")
+        (git_repo / ".worktreeinclude").write_text(".venv/\n", encoding="utf-8")
 
         info = _setup_worktree(str(git_repo))
         assert info is not None
@@ -463,7 +463,7 @@ class TestWorktreeDirectorySymlink:
             os.symlink(str(src.resolve()), str(dst))
 
         assert dst.is_symlink()
-        assert (dst / "lib" / "marker.txt").read_text() == "venv marker"
+        assert (dst / "lib" / "marker.txt").read_text(encoding="utf-8") == "venv marker"
 
 
 class TestStaleWorktreePruning:
@@ -553,7 +553,7 @@ class TestStaleWorktreePruning:
         assert info is not None
 
         # Make an unpushed commit (would normally protect it)
-        (Path(info["path"]) / "work.txt").write_text("stale work")
+        (Path(info["path"]) / "work.txt").write_text("stale work", encoding="utf-8")
         subprocess.run(["git", "add", "work.txt"], cwd=info["path"], capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", "old agent work"],
@@ -827,11 +827,11 @@ class TestWorktreeLockReaping:
                 cwd=repo, capture_output=True,
             )
         if unpushed:
-            (p / "work.txt").write_text("x")
+            (p / "work.txt").write_text("x", encoding="utf-8")
             subprocess.run(["git", "add", "work.txt"], cwd=p, capture_output=True)
             subprocess.run(["git", "commit", "-m", "wip"], cwd=p, capture_output=True)
         if dirty:
-            (p / "dirty.txt").write_text("uncommitted")
+            (p / "dirty.txt").write_text("uncommitted", encoding="utf-8")
         TestWorktreeLockReaping._age(p, age_h)
         return p
 
@@ -941,7 +941,7 @@ class TestWidenedPruner:
         )
         sha = None
         if commit:
-            (p / "work.txt").write_text(f"work for {name}\n")
+            (p / "work.txt").write_text(f"work for {name}\n", encoding="utf-8")
             subprocess.run(["git", "add", "work.txt"], cwd=p, capture_output=True)
             subprocess.run(["git", "commit", "-m", "wip"], cwd=p, capture_output=True)
             sha = subprocess.run(
@@ -949,7 +949,7 @@ class TestWidenedPruner:
                 capture_output=True, text=True,
             ).stdout.strip()
         if dirty:
-            (p / "dirty.txt").write_text("uncommitted")
+            (p / "dirty.txt").write_text("uncommitted", encoding="utf-8")
         TestWidenedPruner._age(p, age_h)
         return p, sha
 
@@ -1074,7 +1074,7 @@ class TestMergeVerdictCache:
         key_after_merge = set(cache)
 
         # New local-only work lands in the worktree.
-        (wt / "more.txt").write_text("unmerged work\n")
+        (wt / "more.txt").write_text("unmerged work\n", encoding="utf-8")
         subprocess.run(["git", "add", "more.txt"], cwd=wt, capture_output=True)
         subprocess.run(["git", "commit", "-m", "new work"], cwd=wt, capture_output=True)
 

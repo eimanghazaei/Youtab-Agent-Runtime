@@ -129,14 +129,14 @@ class TestWriteEnv:
     def test_write_new_vars(self, tmp_path):
         env_path = tmp_path / ".env"
         _write_env(env_path, {"OPENAI_API_KEY": "sk-test"})
-        content = env_path.read_text()
+        content = env_path.read_text(encoding="utf-8")
         assert "OPENAI_API_KEY=sk-test" in content
 
     def test_update_existing_var(self, tmp_path):
         env_path = tmp_path / ".env"
-        env_path.write_text("OPENAI_API_KEY=old\nOTHER=keep\n")
+        env_path.write_text("OPENAI_API_KEY=old\nOTHER=keep\n", encoding="utf-8")
         _write_env(env_path, {"OPENAI_API_KEY": "new"})
-        content = env_path.read_text()
+        content = env_path.read_text(encoding="utf-8")
         assert "OPENAI_API_KEY=new" in content
         assert "OTHER=keep" in content
         assert "old" not in content
@@ -193,9 +193,9 @@ class TestPostSetup:
         config = {"memory": {}}
         post_setup(str(tmp_path), config)
         assert config["memory"]["provider"] == "mem0"
-        env_content = (tmp_path / ".env").read_text()
+        env_content = (tmp_path / ".env").read_text(encoding="utf-8")
         assert "MEM0_API_KEY=sk-test" in env_content
-        mem0_json = json.loads((tmp_path / "mem0.json").read_text())
+        mem0_json = json.loads((tmp_path / "mem0.json").read_text(encoding="utf-8"))
         assert mem0_json["mode"] == "platform"
 
 
@@ -210,9 +210,9 @@ class TestPostSetup:
         config = {"memory": {}}
         post_setup(str(tmp_path), config)
         assert config["memory"]["provider"] == "mem0"
-        env_content = (tmp_path / ".env").read_text()
+        env_content = (tmp_path / ".env").read_text(encoding="utf-8")
         assert "MEM0_API_KEY=admin-key" in env_content
-        mem0_json = json.loads((tmp_path / "mem0.json").read_text())
+        mem0_json = json.loads((tmp_path / "mem0.json").read_text(encoding="utf-8"))
         assert mem0_json["host"] == "http://localhost:8888"  # trailing slash stripped
         assert mem0_json["user_id"] == "youtab-user"
 

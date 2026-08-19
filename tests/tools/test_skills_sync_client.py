@@ -507,8 +507,8 @@ class TestEndToEnd:
         assert "alpha" in result["updated"]
         assert "devops/beta" in result["updated"]
         # content materialized to disk
-        assert (dev2 / "alpha" / "SKILL.md").read_text().endswith("alpha v1\n")
-        assert (dev2 / "devops" / "beta" / "SKILL.md").read_text().endswith("beta v1\n")
+        assert (dev2 / "alpha" / "SKILL.md").read_text(encoding="utf-8").endswith("alpha v1\n")
+        assert (dev2 / "devops" / "beta" / "SKILL.md").read_text(encoding="utf-8").endswith("beta v1\n")
 
     def test_push_idempotent_reupload(self, mock_server, synced_env):
         base, state = mock_server
@@ -794,7 +794,7 @@ class TestDeviceName:
         assert val.startswith("bens-macbook-")
         assert val != "bens-macbook-"
         # persisted + stable across calls
-        assert (tmp_path / ".sync_device_id").read_text() == val
+        assert (tmp_path / ".sync_device_id").read_text(encoding="utf-8") == val
         assert ssc.stable_device_id() == val
 
     def test_existing_file_wins_over_default_and_env(self, tmp_path, monkeypatch):
@@ -809,7 +809,7 @@ class TestDeviceName:
         monkeypatch.setenv("YOUTAB_AGENT_SYNC_DEVICE_NAME", "youtab-cloud-ben-1")
         assert ssc.stable_device_id() == "youtab-cloud-ben-1"
         # persisted so it stays stable even if the env later changes
-        assert (tmp_path / ".sync_device_id").read_text() == "youtab-cloud-ben-1"
+        assert (tmp_path / ".sync_device_id").read_text(encoding="utf-8") == "youtab-cloud-ben-1"
         monkeypatch.setenv("YOUTAB_AGENT_SYNC_DEVICE_NAME", "changed")
         assert ssc.stable_device_id() == "youtab-cloud-ben-1"
 
@@ -868,7 +868,7 @@ class TestOrgIdentityGate:
         skills = tmp_path / "skills"
         org_skill = skills / "_org" / "org-1" / "shared-x"
         org_skill.mkdir(parents=True)
-        (org_skill / "SKILL.md").write_text("---\nname: shared-x\n---\n")
+        (org_skill / "SKILL.md").write_text("---\nname: shared-x\n---\n", encoding="utf-8")
         monkeypatch.setattr(ssc, "_skills_dir", lambda: skills)
         import tools.skill_usage as su
         monkeypatch.setattr(su, "is_bundled", lambda n: False)
@@ -948,7 +948,7 @@ class TestOrgEndToEnd:
         assert "alpha" in result["updated"]
         mirrored = skills / "_org" / "org-1" / "alpha" / "SKILL.md"
         assert mirrored.exists()
-        assert mirrored.read_text().endswith("alpha v1\n")
+        assert mirrored.read_text(encoding="utf-8").endswith("alpha v1\n")
 
     def test_pull_org_noop_when_no_head(self, mock_server, synced_env):
         base, state = mock_server

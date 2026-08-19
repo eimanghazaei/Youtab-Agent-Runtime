@@ -120,7 +120,7 @@ def test_marker_roundtrip(tmp_path):
 def test_marker_survives_corrupt_sidecar(tmp_path):
     path = tmp_path / "desktop" / "interrupted_turns.json"
     path.parent.mkdir(parents=True)
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
 
     assert read_turn_marker(tmp_path, "abc") is None
     record_turn_start(tmp_path, "abc", "prompt")

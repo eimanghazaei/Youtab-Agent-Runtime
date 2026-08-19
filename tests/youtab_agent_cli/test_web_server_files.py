@@ -200,13 +200,13 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
     # Create a regular file and .env variants including shorthand suffixes.
     root.mkdir(parents=True, exist_ok=True)
     regular = root / "config.txt"
-    regular.write_text("safe content")
+    regular.write_text("safe content", encoding="utf-8")
     env_file = root / ".env"
-    env_file.write_text("SECRET_KEY=abc123")
+    env_file.write_text("SECRET_KEY=abc123", encoding="utf-8")
     env_local = root / ".env.local"
-    env_local.write_text("LOCAL_SECRET=def456")
+    env_local.write_text("LOCAL_SECRET=def456", encoding="utf-8")
     env_prod = root / ".env.prod"
-    env_prod.write_text("PROD_SECRET=ghi789")
+    env_prod.write_text("PROD_SECRET=ghi789", encoding="utf-8")
 
     listing = client.get("/api/files", params={"path": str(root)})
     assert listing.status_code == 200
@@ -250,7 +250,7 @@ def test_other_credential_store_basenames_blocked(forced_files_client):
         "bws_cache.enc.json",
     ):
         p = root / name
-        p.write_text("SECRET=abc123")
+        p.write_text("SECRET=abc123", encoding="utf-8")
         assert client.get("/api/files/read", params={"path": str(p)}).status_code == 403, name
         assert client.get("/api/files/download", params={"path": str(p)}).status_code == 403, name
 
@@ -277,12 +277,12 @@ def test_credential_dir_trees_blocked_on_subdir_descent(forced_files_client):
     mcp_dir = root / "mcp-tokens"
     mcp_dir.mkdir(parents=True, exist_ok=True)
     mcp_file = mcp_dir / "github.json"
-    mcp_file.write_text('{"access_token": "SECRET"}\n')
+    mcp_file.write_text('{"access_token": "SECRET"}\n', encoding="utf-8")
 
     pairing_dir = root / "pairing"
     pairing_dir.mkdir(parents=True, exist_ok=True)
     pairing_file = pairing_dir / "device-abc"
-    pairing_file.write_text("PAIRING-SECRET\n")
+    pairing_file.write_text("PAIRING-SECRET\n", encoding="utf-8")
 
     # The token dirs themselves must not appear in the root listing.
     root_names = [e["name"] for e in client.get(

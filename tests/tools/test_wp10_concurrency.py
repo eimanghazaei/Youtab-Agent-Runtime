@@ -54,7 +54,7 @@ def sharing_one_take(tmp_path_factory):
 
 
 def _digests(into: Path, label: str) -> set[str]:
-    body = json.loads((into / ("speaker_" + label) / imp.MANIFEST_FILENAME).read_text())
+    body = json.loads((into / ("speaker_" + label) / imp.MANIFEST_FILENAME).read_text(encoding="utf-8"))
     return {entry["sha256"] for entry in body["files"]}
 
 

@@ -126,7 +126,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             }}))
             assert child.pid > 0
     """).strip()
-    probe.write_text(probe_src + "\n")
+    probe.write_text(probe_src + "\n", encoding="utf-8")
 
     # Run the parallel runner against just the probe file. The runner
     # discovers under ``tests/`` by default, so we override via --paths.
@@ -157,7 +157,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
     assert handoff.exists(), (
         f"probe never wrote handoff file; runner output:\n{proc.stdout}"
     )
-    handoff_data = json.loads(handoff.read_text())
+    handoff_data = json.loads(handoff.read_text(encoding="utf-8"))
     grandchild_pid = handoff_data["pid"]
     diag = handoff_data.get("diag", "(no diag)")
     test_pid = handoff_data.get("test_pid")
@@ -210,7 +210,8 @@ def _make_probe_dir(tmp_path: Path) -> Path:
     probe_dir.mkdir()
     (probe_dir / "test_flagprobe.py").write_text(
         "def test_alpha():\n    assert True\n\n"
-        "def test_beta():\n    assert True\n"
+        "def test_beta():\n    assert True\n",
+        encoding="utf-8",
     )
     return probe_dir
 

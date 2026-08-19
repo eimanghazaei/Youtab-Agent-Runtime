@@ -83,6 +83,6 @@ class TestResolveVerifyIntegration:
 
     def test_insecure_wins_over_everything(self, monkeypatch, tmp_path):
         bundle = tmp_path / "ca.pem"
-        bundle.write_text("stub")
+        bundle.write_text("stub", encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_CA_BUNDLE", str(bundle))
         assert _resolve_verify(insecure=True) is False

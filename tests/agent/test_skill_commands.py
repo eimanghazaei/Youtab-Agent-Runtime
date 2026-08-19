@@ -34,7 +34,7 @@ description: Description for {name}.
 
 {body}
 """
-    (skill_dir / "SKILL.md").write_text(content)
+    (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
     return skill_dir
 
 
@@ -261,12 +261,14 @@ class TestScanSkillCommands:
             first = tmp_path / "a-first"
             first.mkdir()
             (first / "SKILL.md").write_text(
-                "---\nname: git_helper\ndescription: First skill.\n---\n\nBody.\n"
+                "---\nname: git_helper\ndescription: First skill.\n---\n\nBody.\n",
+                encoding="utf-8",
             )
             second = tmp_path / "z-second"
             second.mkdir()
             (second / "SKILL.md").write_text(
-                "---\nname: git-helper\ndescription: Second skill.\n---\n\nBody.\n"
+                "---\nname: git-helper\ndescription: Second skill.\n---\n\nBody.\n",
+                encoding="utf-8",
             )
             result = scan_skill_commands()
         assert "/git-helper" in result
@@ -282,12 +284,14 @@ class TestScanSkillCommands:
             first = tmp_path / "a-first"
             first.mkdir()
             (first / "SKILL.md").write_text(
-                "---\nname: my-skill\ndescription: First.\n---\n\nBody.\n"
+                "---\nname: my-skill\ndescription: First.\n---\n\nBody.\n",
+                encoding="utf-8",
             )
             second = tmp_path / "z-second"
             second.mkdir()
             (second / "SKILL.md").write_text(
-                "---\nname: my_skill\ndescription: Second.\n---\n\nBody.\n"
+                "---\nname: my_skill\ndescription: Second.\n---\n\nBody.\n",
+                encoding="utf-8",
             )
             with caplog.at_level(_logging.WARNING, logger="agent.skill_commands"):
                 scan_skill_commands()
@@ -446,7 +450,7 @@ class TestBuildSkillInvocationMessage:
             skill_dir = _make_skill(tmp_path, "test-skill")
             references = skill_dir / "references"
             references.mkdir()
-            (references / "api.md").write_text("reference")
+            (references / "api.md").write_text("reference", encoding="utf-8")
             scan_skill_commands()
             msg = build_skill_invocation_message("/test-skill", "do stuff")
 
@@ -473,7 +477,7 @@ class TestSkillDirectoryHeader:
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "scripted-skill")
             (skill_dir / "scripts").mkdir()
-            (skill_dir / "scripts" / "run.js").write_text("console.log('hi')")
+            (skill_dir / "scripts" / "run.js").write_text("console.log('hi')", encoding="utf-8")
             scan_skill_commands()
             msg = build_skill_invocation_message("/scripted-skill")
 

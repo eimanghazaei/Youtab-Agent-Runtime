@@ -44,9 +44,10 @@ def _write_plugin(
     }
     if manifest_extra:
         manifest.update(manifest_extra)
-    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest))
+    (plugin_dir / "plugin.yaml").write_text(yaml.dump(manifest), encoding="utf-8")
     (plugin_dir / "__init__.py").write_text(
-        f"def register(ctx):\n    {register_body}\n"
+        f"def register(ctx):\n    {register_body}\n",
+        encoding="utf-8",
     )
     return plugin_dir
 
@@ -57,14 +58,14 @@ def _enable(youtab_home: Path, name: str) -> None:
     cfg: dict = {}
     if cfg_path.exists():
         try:
-            cfg = yaml.safe_load(cfg_path.read_text()) or {}
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
         except Exception:
             cfg = {}
     plugins_cfg = cfg.setdefault("plugins", {})
     enabled = plugins_cfg.setdefault("enabled", [])
     if isinstance(enabled, list) and name not in enabled:
         enabled.append(name)
-    cfg_path.write_text(yaml.safe_dump(cfg))
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
 
 # ── Scanner recursion ──────────────────────────────────────────────────────

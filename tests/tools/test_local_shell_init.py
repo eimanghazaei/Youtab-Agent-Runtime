@@ -21,7 +21,7 @@ from tools.environments.local import (
 class TestResolveShellInitFiles:
     def test_auto_sources_bashrc_when_present(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"
-        bashrc.write_text('export MARKER=seen\n')
+        bashrc.write_text('export MARKER=seen\n', encoding="utf-8")
         monkeypatch.setenv("HOME", str(tmp_path))
 
         # Default config: auto_source_bashrc on, no explicit list.
@@ -39,7 +39,7 @@ class TestResolveShellInitFiles:
         guard so a non-interactive source actually runs it.
         """
         profile = tmp_path / ".profile"
-        profile.write_text('export PATH="$HOME/n/bin:$PATH"\n')
+        profile.write_text('export PATH="$HOME/n/bin:$PATH"\n', encoding="utf-8")
         monkeypatch.setenv("HOME", str(tmp_path))
 
         with patch(
@@ -57,11 +57,11 @@ class TestResolveShellInitFiles:
         non-interactive ``case $- in *i*) ;; *) return;; esac`` guard.
         """
         profile = tmp_path / ".profile"
-        profile.write_text('export FROM_PROFILE=1\n')
+        profile.write_text('export FROM_PROFILE=1\n', encoding="utf-8")
         bash_profile = tmp_path / ".bash_profile"
-        bash_profile.write_text('export FROM_BASH_PROFILE=1\n')
+        bash_profile.write_text('export FROM_BASH_PROFILE=1\n', encoding="utf-8")
         bashrc = tmp_path / ".bashrc"
-        bashrc.write_text('export FROM_BASHRC=1\n')
+        bashrc.write_text('export FROM_BASHRC=1\n', encoding="utf-8")
         monkeypatch.setenv("HOME", str(tmp_path))
 
         with patch(
@@ -151,7 +151,8 @@ class TestSnapshotEndToEnd:
         init_file = tmp_path / "custom-init.sh"
         init_file.write_text(
             'export YOUTAB_AGENT_SHELL_INIT_PROBE="probe-ok"\n'
-            'export PATH="/opt/shell-init-probe/bin:$PATH"\n'
+            'export PATH="/opt/shell-init-probe/bin:$PATH"\n',
+            encoding="utf-8",
         )
 
         with patch(
@@ -192,7 +193,8 @@ class TestSnapshotEndToEnd:
         profile = tmp_path / ".profile"
         profile.write_text(
             f'export PATH="{fake_n_bin}:$PATH"\n'
-            'export FROM_PROFILE=profile-ok\n'
+            'export FROM_PROFILE=profile-ok\n',
+            encoding="utf-8",
         )
         bashrc = tmp_path / ".bashrc"
         bashrc.write_text(
@@ -200,7 +202,8 @@ class TestSnapshotEndToEnd:
             '    *i*) ;;\n'
             '      *) return;;\n'
             'esac\n'
-            'export FROM_BASHRC=bashrc-should-not-appear\n'
+            'export FROM_BASHRC=bashrc-should-not-appear\n',
+            encoding="utf-8",
         )
 
         monkeypatch.setenv("HOME", str(tmp_path))

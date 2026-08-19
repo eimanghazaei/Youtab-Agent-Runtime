@@ -26,7 +26,7 @@ def _git_init(path):
     # Commit a source file so the fixture is a real *code* workspace: a bare git
     # repo with no code no longer flips into the coding posture (see
     # _detect_profile_name / _has_code_files), so "a code repo" needs code.
-    (Path(path) / "main.py").write_text("print('hi')\n")
+    (Path(path) / "main.py").write_text("print('hi')\n", encoding="utf-8")
     for args in (
         ["init", "-q", "-b", "main"],
         ["add", "-A"],
@@ -49,13 +49,13 @@ class TestIsCodingContext:
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t", "HOME": str(tmp_path),
         }
-        (tmp_path / "notes.md").write_text("# my novel\n")
+        (tmp_path / "notes.md").write_text("# my novel\n", encoding="utf-8")
         for args in (["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", "notes"]):
             subprocess.run([shutil.which("git"), "-C", str(tmp_path), *args], check=True, env=env)
 
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is False
         # …but adding a manifest or source file makes it a code workspace.
-        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
 
 
@@ -107,7 +107,7 @@ class TestWorkspaceBlock:
 
     def test_reports_dirty_counts(self, tmp_path):
         _git_init(tmp_path)
-        (tmp_path / "untracked.txt").write_text("hi")
+        (tmp_path / "untracked.txt").write_text("hi", encoding="utf-8")
         block = cc.build_coding_workspace_block(tmp_path)
         assert "untracked" in block
         assert "clean" not in block.split("Status:")[1].splitlines()[0]
@@ -147,9 +147,10 @@ class TestProjectFacts:
 
     def test_detect_project_facts_structured(self, tmp_path):
         (tmp_path / "package.json").write_text(
-            json.dumps({"scripts": {"test": "vitest", "dev": "vite"}})
+            json.dumps({"scripts": {"test": "vitest", "dev": "vite"}}),
+            encoding="utf-8",
         )
-        (tmp_path / "pnpm-lock.yaml").write_text("")
+        (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
         facts = cc.detect_project_facts(tmp_path)
         assert facts.manifests == ["package.json"]
         assert facts.package_managers == ["pnpm"]
@@ -161,9 +162,10 @@ class TestProjectFacts:
         # commands the prompt snapshot renders — one detector feeds both.
         _git_init(tmp_path)
         (tmp_path / "package.json").write_text(
-            json.dumps({"scripts": {"test": "vitest", "lint": "eslint ."}})
+            json.dumps({"scripts": {"test": "vitest", "lint": "eslint ."}}),
+            encoding="utf-8",
         )
-        (tmp_path / "pnpm-lock.yaml").write_text("")
+        (tmp_path / "pnpm-lock.yaml").write_text("", encoding="utf-8")
         facts = cc.project_facts_for(tmp_path)
         assert facts is not None
         verify_line = cc.build_coding_workspace_block(tmp_path).split("Verify:")[1].splitlines()[0]
@@ -196,7 +198,7 @@ class TestHomeDotfilesGuard:
         monkeypatch.setattr(Path, "home", lambda: home)
         proj = home / "www" / "app"
         proj.mkdir(parents=True)
-        (proj / "package.json").write_text("{}")
+        (proj / "package.json").write_text("{}", encoding="utf-8")
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=proj, config=cfg) is True
 
@@ -339,12 +341,12 @@ class TestProfiles:
 class TestDetection:
     @pytest.mark.parametrize("marker", ["pyproject.toml", "package.json", "go.mod", "AGENTS.md"])
     def test_project_manifest_triggers_without_git(self, tmp_path, marker):
-        (tmp_path / marker).write_text("x")
+        (tmp_path / marker).write_text("x", encoding="utf-8")
         cfg = {"agent": {"coding_context": "auto"}}
         assert cc.is_coding_context(platform="cli", cwd=tmp_path, config=cfg) is True
 
     def test_marker_in_parent_counts_from_subdir(self, tmp_path):
-        (tmp_path / "pyproject.toml").write_text("x")
+        (tmp_path / "pyproject.toml").write_text("x", encoding="utf-8")
         sub = tmp_path / "src" / "pkg"
         sub.mkdir(parents=True)
         cfg = {"agent": {"coding_context": "auto"}}

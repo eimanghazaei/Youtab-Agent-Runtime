@@ -79,7 +79,7 @@ class TestIsSafePath:
         dg = _load_lib()
         p = _isolate_env / "subdir" / "file.txt"
         p.parent.mkdir()
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         assert dg.is_safe_path(p) is True
 
     def test_rejects_outside_youtab_home(self, _isolate_env):
@@ -91,19 +91,19 @@ class TestGuessCategory:
     def test_test_prefix(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "test_foo.py"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         assert dg.guess_category(p) == "test"
 
     def test_tmp_prefix(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "tmp_foo.log"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         assert dg.guess_category(p) == "test"
 
     def test_dot_test_suffix(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "mything.test.js"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         assert dg.guess_category(p) == "test"
 
     def test_skips_protected_top_level(self, _isolate_env):
@@ -111,7 +111,7 @@ class TestGuessCategory:
         logs_dir = _isolate_env / "logs"
         logs_dir.mkdir()
         p = logs_dir / "test_log.txt"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         # Even though it matches test_* pattern, logs/ is excluded.
         assert dg.guess_category(p) is None
 
@@ -121,7 +121,7 @@ class TestGuessCategory:
         output_dir = _isolate_env / "cron" / "output" / "job_123"
         output_dir.mkdir(parents=True)
         p = output_dir / "run.md"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         assert dg.guess_category(p) == "cron-output"
 
 
@@ -131,13 +131,13 @@ class TestGuessCategory:
         cron_dir = _isolate_env / "cronjobs"
         cron_dir.mkdir()
         p = cron_dir / "jobs.json"
-        p.write_text("[]")
+        p.write_text("[]", encoding="utf-8")
         assert dg.guess_category(p) is None
 
     def test_ordinary_file_returns_none(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "notes.md"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         assert dg.guess_category(p) is None
 
 
@@ -157,7 +157,7 @@ class TestStaleCronEntryMigration:
         cron_dir = _isolate_env / "cron"
         cron_dir.mkdir()
         jobs_json = cron_dir / "jobs.json"
-        jobs_json.write_text('{"jobs": []}')
+        jobs_json.write_text('{"jobs": []}', encoding="utf-8")
 
         # Simulate a stale tracked.json entry from before #34840 by
         # directly writing the tracked file (track() would reject it).
@@ -168,13 +168,13 @@ class TestStaleCronEntryMigration:
             "category": "cron-output",
             "timestamp": "2025-01-01T00:00:00+00:00",  # very old
             "size": 123,
-        }]))
+        }]), encoding="utf-8")
 
         summary = dg.quick()
         assert summary["deleted"] == 0, "cron/jobs.json must not be deleted"
         assert jobs_json.exists(), "jobs.json must still exist"
         # The stale entry should have been dropped from tracking.
-        remaining = json.loads(tracked_file.read_text())
+        remaining = json.loads(tracked_file.read_text(encoding="utf-8"))
         assert len(remaining) == 0
 
 
@@ -184,7 +184,7 @@ class TestStaleCronEntryMigration:
         cron_dir = _isolate_env / "cron"
         cron_dir.mkdir()
         jobs_json = cron_dir / "jobs.json"
-        jobs_json.write_text("[]")
+        jobs_json.write_text("[]", encoding="utf-8")
 
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
         tracked_file.parent.mkdir(parents=True, exist_ok=True)
@@ -193,7 +193,7 @@ class TestStaleCronEntryMigration:
             "category": "cron-output",
             "timestamp": "2025-01-01T00:00:00+00:00",
             "size": 123,
-        }]))
+        }]), encoding="utf-8")
 
         auto, prompt = dg.dry_run()
         assert len(auto) == 0, "stale cron-output for jobs.json must not appear"
@@ -205,7 +205,7 @@ class TestStaleCronEntryMigration:
         output_dir = _isolate_env / "cron" / "output" / "job_1"
         output_dir.mkdir(parents=True)
         run_md = output_dir / "run.md"
-        run_md.write_text("x")
+        run_md.write_text("x", encoding="utf-8")
 
         # Old enough to be deleted (>14 days)
         from datetime import datetime, timezone, timedelta
@@ -218,7 +218,7 @@ class TestStaleCronEntryMigration:
             "category": "cron-output",
             "timestamp": old_ts,
             "size": 10,
-        }]))
+        }]), encoding="utf-8")
 
         summary = dg.quick()
         assert summary["deleted"] == 1, "valid old cron-output should be deleted"
@@ -229,7 +229,7 @@ class TestTrackForgetQuick:
     def test_track_then_quick_deletes_test(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "test_a.py"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         assert dg.track(str(p), "test", silent=True) is True
         summary = dg.quick()
         assert summary["deleted"] == 1
@@ -239,7 +239,7 @@ class TestTrackForgetQuick:
     def test_forget_removes_entry(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "keep.tmp"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         dg.track(str(p), "temp", silent=True)
         assert dg.forget(str(p)) == 1
         assert p.exists()  # forget does NOT delete the file
@@ -255,7 +255,7 @@ class TestStatus:
     def test_status_with_entries(self, _isolate_env):
         dg = _load_lib()
         p = _isolate_env / "big.tmp"
-        p.write_text("y" * 100)
+        p.write_text("y" * 100, encoding="utf-8")
         dg.track(str(p), "temp", silent=True)
         s = dg.status()
         assert s["total_tracked"] == 1
@@ -269,7 +269,7 @@ class TestDryRun:
     def test_classifies_by_category(self, _isolate_env):
         dg = _load_lib()
         test_f = _isolate_env / "test_x.py"
-        test_f.write_text("x")
+        test_f.write_text("x", encoding="utf-8")
         big = _isolate_env / "big.bin"
         big.write_bytes(b"z" * 10)
         dg.track(str(test_f), "test", silent=True)
@@ -287,7 +287,7 @@ class TestPostToolCallHook:
     def test_write_file_test_pattern_tracked(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "test_created.py"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         pi._on_post_tool_call(
             tool_name="write_file",
             args={"path": str(p), "content": "x"},
@@ -295,7 +295,7 @@ class TestPostToolCallHook:
             task_id="t1", session_id="s1",
         )
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        data = json.loads(tracked_file.read_text())
+        data = json.loads(tracked_file.read_text(encoding="utf-8"))
         assert len(data) == 1
         assert data[0]["category"] == "test"
 
@@ -303,7 +303,7 @@ class TestPostToolCallHook:
     def test_terminal_command_picks_up_paths(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "tmp_created.log"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         pi._on_post_tool_call(
             tool_name="terminal",
             args={"command": f"touch {p}"},
@@ -311,7 +311,7 @@ class TestPostToolCallHook:
             task_id="t3", session_id="s3",
         )
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        data = json.loads(tracked_file.read_text())
+        data = json.loads(tracked_file.read_text(encoding="utf-8"))
         assert any(Path(i["path"]) == p.resolve() for i in data)
 
     def test_ignores_unrelated_tool(self, _isolate_env):
@@ -324,14 +324,14 @@ class TestPostToolCallHook:
         )
         # read_file should never trigger tracking.
         tracked_file = _isolate_env / "disk-cleanup" / "tracked.json"
-        assert not tracked_file.exists() or tracked_file.read_text().strip() == "[]"
+        assert not tracked_file.exists() or tracked_file.read_text(encoding="utf-8").strip() == "[]"
 
 
 class TestOnSessionEndHook:
     def test_runs_quick_when_test_files_tracked(self, _isolate_env):
         pi = _load_plugin_init()
         p = _isolate_env / "test_cleanup.py"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         pi._on_post_tool_call(
             tool_name="write_file",
             args={"path": str(p), "content": "x"},
@@ -375,7 +375,7 @@ class TestBundledDiscovery:
         """Write plugins.enabled allow-list to config.yaml."""
         import yaml
         cfg_path = youtab_home / "config.yaml"
-        cfg_path.write_text(yaml.safe_dump({"plugins": {"enabled": list(names)}}))
+        cfg_path.write_text(yaml.safe_dump({"plugins": {"enabled": list(names)}}), encoding="utf-8")
 
     def test_disk_cleanup_discovered_but_not_loaded_by_default(self, _isolate_env):
         """Bundled plugins are discovered but NOT loaded without opt-in."""
@@ -400,7 +400,7 @@ class TestBundledDiscovery:
                 "enabled": ["disk-cleanup"],
                 "disabled": ["disk-cleanup"],
             }
-        }))
+        }), encoding="utf-8")
         from youtab_agent_cli import plugins as pmod
         mgr = pmod.PluginManager()
         mgr.discover_and_load()

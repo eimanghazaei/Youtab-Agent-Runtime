@@ -44,7 +44,7 @@ def test_invalid_storage_retention_falls_back_to_bounded_ttl(tmp_path, monkeypat
                 },
             },
         },
-    }))
+    }), encoding="utf-8")
     _invalidate_config_cache()
 
     from tools.xai_http import build_xai_storage_options

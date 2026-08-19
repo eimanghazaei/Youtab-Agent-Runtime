@@ -49,7 +49,7 @@ _KNOWN_INIT_TOKENS: tuple[str, ...] = (
 def dockerfile_text() -> str:
     if not DOCKERFILE.exists():
         pytest.skip("Dockerfile not present in this checkout")
-    return DOCKERFILE.read_text()
+    return DOCKERFILE.read_text(encoding="utf-8")
 
 
 def _dockerfile_instructions(dockerfile_text: str) -> list[str]:
@@ -116,7 +116,7 @@ def test_dockerignore_excludes_nested_dependency_dirs():
     if not DOCKERIGNORE.exists():
         pytest.skip(".dockerignore not present in this checkout")
 
-    text = DOCKERIGNORE.read_text()
+    text = DOCKERIGNORE.read_text(encoding="utf-8")
 
     assert "**/node_modules" in text
     assert "**/.venv" in text

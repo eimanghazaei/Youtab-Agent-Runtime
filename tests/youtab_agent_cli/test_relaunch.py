@@ -17,7 +17,7 @@ class TestResolveYoutabBin:
 
     def test_resolves_relative_argv0(self, monkeypatch, tmp_path):
         fake = tmp_path / "youtab"
-        fake.write_text("#!/bin/sh\n")
+        fake.write_text("#!/bin/sh\n", encoding="utf-8")
         fake.chmod(0o755)
         monkeypatch.setattr(sys, "argv", [str(fake.name)])
         monkeypatch.chdir(tmp_path)
@@ -183,7 +183,7 @@ class TestResolveYoutabBinWindowsPyGuard:
         argv[0] fast-path and fall through to PATH / python -m."""
         # Build a fake .py script that "passes" the isfile + X_OK checks.
         script = tmp_path / "main.py"
-        script.write_text("# stub")
+        script.write_text("# stub", encoding="utf-8")
 
         monkeypatch.setattr(relaunch_mod.sys, "platform", "win32")
         monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])
@@ -205,7 +205,7 @@ class TestResolveYoutabBinWindowsPyGuard:
         if sys.platform == "win32":
             pytest.skip("POSIX semantics")
         script = tmp_path / "youtab"
-        script.write_text("#!/usr/bin/env python3\n")
+        script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
         script.chmod(0o755)
         monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])
         assert relaunch_mod.resolve_youtab_bin() == str(script)
@@ -215,7 +215,7 @@ class TestResolveYoutabBinWindowsPyGuard:
         isn't on PATH, return None so the caller falls back to
         python -m youtab_agent_cli.main."""
         script = tmp_path / "main.py"
-        script.write_text("# stub")
+        script.write_text("# stub", encoding="utf-8")
 
         monkeypatch.setattr(relaunch_mod.sys, "platform", "win32")
         monkeypatch.setattr(relaunch_mod.sys, "argv", [str(script), "chat"])

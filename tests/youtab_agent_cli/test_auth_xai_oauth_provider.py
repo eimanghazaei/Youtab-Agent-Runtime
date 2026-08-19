@@ -62,7 +62,7 @@ def _setup_youtab_auth(
         "providers": {"xai-oauth": state},
     }
     auth_file = youtab_home / "auth.json"
-    auth_file.write_text(json.dumps(auth_store, indent=2))
+    auth_file.write_text(json.dumps(auth_store, indent=2), encoding="utf-8")
     return auth_file
 
 
@@ -155,7 +155,7 @@ def test_resolve_provider_normalizes_xai_oauth_aliases():
 def test_save_and_read_xai_oauth_tokens_roundtrip(tmp_path, monkeypatch):
     youtab_home = tmp_path / "youtab"
     youtab_home.mkdir(parents=True, exist_ok=True)
-    (youtab_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    (youtab_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     _save_xai_oauth_tokens(
@@ -184,9 +184,9 @@ def test_refresh_xai_oauth_tokens_preserves_active_provider(tmp_path, monkeypatc
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     auth_path = youtab_home / "auth.json"
-    raw = json.loads(auth_path.read_text())
+    raw = json.loads(auth_path.read_text(encoding="utf-8"))
     raw["active_provider"] = "openrouter"
-    auth_path.write_text(json.dumps(raw))
+    auth_path.write_text(json.dumps(raw), encoding="utf-8")
 
     new_access = _jwt_with_exp(int(time.time()) + 7200)
 
@@ -209,7 +209,7 @@ def test_refresh_xai_oauth_tokens_preserves_active_provider(tmp_path, monkeypatc
         timeout_seconds=5.0,
     )
 
-    after = json.loads(auth_path.read_text())
+    after = json.loads(auth_path.read_text(encoding="utf-8"))
     assert after["active_provider"] == "openrouter"
     assert after["providers"]["xai-oauth"]["tokens"]["access_token"] == new_access
 
@@ -217,7 +217,7 @@ def test_refresh_xai_oauth_tokens_preserves_active_provider(tmp_path, monkeypatc
 def test_read_xai_oauth_tokens_missing(tmp_path, monkeypatch):
     youtab_home = tmp_path / "youtab"
     youtab_home.mkdir(parents=True, exist_ok=True)
-    (youtab_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    (youtab_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     with pytest.raises(AuthError) as exc:
@@ -301,7 +301,7 @@ def _seed_xai_oauth_state(
         "active_provider": active_provider,
         "providers": {"xai-oauth": state},
     }
-    (youtab_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
+    (youtab_home / "auth.json").write_text(json.dumps(auth_store, indent=2), encoding="utf-8")
 
 
 def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure(
@@ -333,7 +333,7 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
     assert exc_info.value.code == "xai_refresh_failed"
     assert exc_info.value.relogin_required is True
 
-    raw = json.loads((youtab_home / "auth.json").read_text())
+    raw = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     tokens = raw["providers"]["xai-oauth"]["tokens"]
 
     # Dead OAuth fields must be cleared.
@@ -364,7 +364,7 @@ def test_resolve_credentials_quarantines_dead_tokens_on_terminal_refresh_failure
 def test_get_xai_oauth_auth_status_logged_out(tmp_path, monkeypatch):
     youtab_home = tmp_path / "youtab"
     youtab_home.mkdir(parents=True, exist_ok=True)
-    (youtab_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    (youtab_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     status = get_xai_oauth_auth_status()
@@ -597,7 +597,7 @@ def test_auth_remove_xai_oauth_clears_singleton_and_sticks(tmp_path, monkeypatch
     # Confirm pre-state: pool sees the seeded entry, auth.json has the singleton.
     pool = load_pool("xai-oauth")
     assert pool.has_credentials()
-    raw = json.loads((youtab_home / "auth.json").read_text())
+    raw = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     assert "xai-oauth" in raw.get("providers", {})
 
     # Act: the user runs `youtab auth remove xai-oauth 1`.
@@ -605,7 +605,7 @@ def test_auth_remove_xai_oauth_clears_singleton_and_sticks(tmp_path, monkeypatch
 
     # Post-state: auth.json singleton must be cleared so a re-seed has
     # nothing to import.
-    raw_after = json.loads((youtab_home / "auth.json").read_text())
+    raw_after = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     assert "xai-oauth" not in raw_after.get("providers", {}), (
         "auth.json providers.xai-oauth must be cleared — otherwise the "
         "next load_pool() reseeds the removed entry from the surviving "
@@ -644,7 +644,7 @@ def test_login_xai_oauth_relogin_clears_suppression_and_reseeds(tmp_path, monkey
 
     youtab_home = tmp_path / "youtab"
     youtab_home.mkdir(parents=True, exist_ok=True)
-    (youtab_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
+    (youtab_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
     monkeypatch.delenv("YOUTAB_AGENT_XAI_BASE_URL", raising=False)
     monkeypatch.delenv("XAI_BASE_URL", raising=False)
@@ -733,7 +733,7 @@ def test_pool_sync_back_writes_to_singleton(tmp_path, monkeypatch):
     # Singleton must reflect refreshed tokens — otherwise the next process
     # to load credentials would re-seed the consumed refresh token.
     auth_path = youtab_home / "auth.json"
-    raw = json.loads(auth_path.read_text())
+    raw = json.loads(auth_path.read_text(encoding="utf-8"))
     state = raw["providers"]["xai-oauth"]
     assert state["tokens"]["access_token"] == new_access
     assert state["tokens"]["refresh_token"] == "rt-new"
@@ -790,7 +790,7 @@ def test_pool_refresh_recovers_when_other_process_already_refreshed(tmp_path, mo
         # Simulate the racing process winning at the auth server right
         # before our POST: by the time we reach this call, auth.json
         # already holds the fresher pair, but we POSTed with rt-shared.
-        raw = json.loads((youtab_home / "auth.json").read_text())
+        raw = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
         raw["providers"]["xai-oauth"]["tokens"] = {
             "access_token": other_process_at,
             "refresh_token": "rt-rotated",
@@ -798,7 +798,7 @@ def test_pool_refresh_recovers_when_other_process_already_refreshed(tmp_path, mo
             "expires_in": 3600,
             "token_type": "Bearer",
         }
-        (youtab_home / "auth.json").write_text(json.dumps(raw))
+        (youtab_home / "auth.json").write_text(json.dumps(raw), encoding="utf-8")
         raise AuthError(
             "refresh_token_reused",
             provider="xai-oauth",
@@ -865,7 +865,7 @@ def test_pool_manual_entry_does_not_sync_back_to_singleton(tmp_path, monkeypatch
     assert len(manual_entries) == 1
     pool._refresh_entry(manual_entries[0], force=True)
 
-    raw = json.loads((youtab_home / "auth.json").read_text())
+    raw = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     tokens = raw["providers"]["xai-oauth"]["tokens"]
     # Singleton must be untouched — manual refresh shouldn't leak across.
     assert tokens["access_token"] == singleton_at
@@ -954,9 +954,9 @@ def test_pool_sync_back_preserves_active_provider(tmp_path, monkeypatch):
     # Simulate a multi-provider user whose actual chosen provider is
     # OpenRouter — xai-oauth tokens exist in the singleton but are NOT
     # the active provider.
-    raw = json.loads((youtab_home / "auth.json").read_text())
+    raw = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     raw["active_provider"] = "openrouter"
-    (youtab_home / "auth.json").write_text(json.dumps(raw))
+    (youtab_home / "auth.json").write_text(json.dumps(raw), encoding="utf-8")
 
     new_access = _jwt_with_exp(int(time.time()) + 2 * 60 * 60)
 
@@ -979,7 +979,7 @@ def test_pool_sync_back_preserves_active_provider(tmp_path, monkeypatch):
 
     # The refresh wrote new tokens back into the singleton — the user's
     # prior ``active_provider`` choice (openrouter) MUST survive.
-    raw_after = json.loads((youtab_home / "auth.json").read_text())
+    raw_after = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     assert raw_after["active_provider"] == "openrouter", (
         "pool sync-back must not flip active_provider; otherwise xAI/Codex/"
         "Youtab token rotations silently take over multi-provider users' "

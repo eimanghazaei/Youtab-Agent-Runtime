@@ -19,7 +19,7 @@ from youtab_agent_cli.main import _run_with_idle_timeout
 
 def test_streams_output_and_returns_zero_on_success(tmp_path):
     script = tmp_path / "ok.py"
-    script.write_text("print('line one'); print('line two')\n")
+    script.write_text("print('line one'); print('line two')\n", encoding="utf-8")
     result = _run_with_idle_timeout(
         [_sys.executable, str(script)], cwd=tmp_path, idle_timeout_seconds=10
     )

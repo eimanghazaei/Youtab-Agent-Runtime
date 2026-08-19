@@ -8,13 +8,13 @@ def _write_config(tmp_path, config: dict) -> None:
     youtab_home = tmp_path / "youtab"
     youtab_home.mkdir(parents=True, exist_ok=True)
     import yaml
-    (youtab_home / "config.yaml").write_text(yaml.dump(config))
+    (youtab_home / "config.yaml").write_text(yaml.dump(config), encoding="utf-8")
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
     youtab_home = tmp_path / "youtab"
     youtab_home.mkdir(parents=True, exist_ok=True)
-    (youtab_home / "auth.json").write_text(json.dumps(payload, indent=2))
+    (youtab_home / "auth.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 @pytest.fixture(autouse=True)

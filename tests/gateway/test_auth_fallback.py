@@ -17,7 +17,8 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         config_path.write_text(
             "model:\n  provider: openai-codex\n"
             "fallback_model:\n  provider: openrouter\n"
-            "  model: meta-llama/llama-4-maverick\n"
+            "  model: meta-llama/llama-4-maverick\n",
+            encoding="utf-8",
         )
 
         monkeypatch.setattr("gateway.run._youtab_home", tmp_path)

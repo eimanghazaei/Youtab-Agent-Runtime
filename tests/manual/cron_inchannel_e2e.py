@@ -107,7 +107,7 @@ def _run_scenario(name, chat_id, is_dm, reply_chat_type):
     # Read the session transcript back and confirm the brief text is present.
     idx = mirror._SESSIONS_INDEX
     import json
-    data = json.loads(idx.read_text())
+    data = json.loads(idx.read_text(encoding="utf-8"))
     entry = next((e for e in data.values() if isinstance(e, dict) and e.get("session_id") == sid), None)
     assert entry, f"{name}: session {sid} not in index"
     # transcript lives in the JSONL / SQLite; verify via the store's own read.
@@ -132,7 +132,7 @@ def _brief_in_transcript(store, sid):
     # Fallback: scan the JSONL transcript file.
     for p in (HOME / "sessions").glob("*.json*"):
         try:
-            if "PRs need review" in p.read_text():
+            if "PRs need review" in p.read_text(encoding="utf-8"):
                 return True
         except Exception:
             continue

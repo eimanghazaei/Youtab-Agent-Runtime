@@ -403,7 +403,8 @@ class TestDogfoodSkill:
 
     def test_taxonomy_has_categories(self):
         with open(
-            os.path.join(self.skill_dir, "references", "issue-taxonomy.md")
+            os.path.join(self.skill_dir, "references", "issue-taxonomy.md"),
+            encoding="utf-8",
         ) as f:
             content = f.read()
         assert "Functional" in content

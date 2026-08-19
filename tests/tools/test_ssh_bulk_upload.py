@@ -54,9 +54,9 @@ class TestSSHBulkUpload:
         """All parent directories should be created in one SSH call."""
         # Create test files
         f1 = tmp_path / "a.txt"
-        f1.write_text("aaa")
+        f1.write_text("aaa", encoding="utf-8")
         f2 = tmp_path / "b.txt"
-        f2.write_text("bbb")
+        f2.write_text("bbb", encoding="utf-8")
 
         files = [
             (str(f1), "/home/testuser/.youtab-agent-runtime/skills/a.txt"),
@@ -97,7 +97,7 @@ class TestSSHBulkUpload:
         the file must exist at the expected path and contain the right data.
         """
         f1 = tmp_path / "local_a.txt"
-        f1.write_text("content a")
+        f1.write_text("content a", encoding="utf-8")
 
         files = [
             (str(f1), "/home/testuser/.youtab-agent-runtime/skills/my_skill.md"),
@@ -116,7 +116,7 @@ class TestSSHBulkUpload:
                 # File must exist (either as symlink or copy)
                 assert os.path.exists(expected), f"Expected staged file at {expected}"
                 # Content must match the source
-                with open(expected, "r") as fh:
+                with open(expected, "r", encoding="utf-8") as fh:
                     assert fh.read() == "content a"
 
             mock = MagicMock()
@@ -139,7 +139,7 @@ class TestSSHBulkUpload:
     def test_bulk_upload_never_stages_remote_home_prefix(self, mock_env, tmp_path):
         """Regression: do not archive /home/<user> path components."""
         f1 = tmp_path / "nested.txt"
-        f1.write_text("nested")
+        f1.write_text("nested", encoding="utf-8")
         files = [(str(f1), "/home/testuser/.youtab-agent-runtime/cache/nested.txt")]
 
         def capture_tar_cmd(cmd, **kwargs):
@@ -168,7 +168,7 @@ class TestSSHBulkUpload:
     def test_timeout_kills_both_processes(self, mock_env, tmp_path):
         """TimeoutExpired during communicate should kill both processes."""
         f1 = tmp_path / "t.txt"
-        f1.write_text("t")
+        f1.write_text("t", encoding="utf-8")
         files = [(str(f1), "/home/testuser/.youtab-agent-runtime/skills/t.txt")]
 
         mock_tar = MagicMock()
@@ -243,7 +243,7 @@ class TestSSHBulkUploadEdgeCases:
     def test_ssh_popen_failure_kills_tar(self, mock_env, tmp_path):
         """If SSH Popen raises, tar process must be killed and cleaned up."""
         f1 = tmp_path / "e.txt"
-        f1.write_text("e")
+        f1.write_text("e", encoding="utf-8")
         files = [(str(f1), "/home/testuser/.youtab-agent-runtime/skills/e.txt")]
 
         mock_tar = _mock_proc()

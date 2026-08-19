@@ -166,7 +166,7 @@ class TestCSV:
         assert result["exported"] == 2
 
         # Verify CSV content
-        with open(csv_path, "r") as f:
+        with open(csv_path, "r", encoding="utf-8") as f:
             reader = csv.reader(f)
             rows = list(reader)
         assert len(rows) == 2
@@ -206,7 +206,7 @@ class TestEdgeCases:
     def test_corrupt_json_recovery(self, capsys):
         """Corrupt JSON file should be treated as empty."""
         memento_cards.DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with open(memento_cards.CARDS_FILE, "w") as f:
+        with open(memento_cards.CARDS_FILE, "w", encoding="utf-8") as f:
             f.write("{corrupted json...")
         result = _run(capsys, ["list"])
         assert result["count"] == 0

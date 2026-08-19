@@ -44,7 +44,7 @@ def _healthy_youtab_state():
 
 def _write_auth(tmp_path: Path, providers: dict) -> str:
     p = tmp_path / "auth.json"
-    p.write_text(json.dumps({"version": 1, "providers": providers}))
+    p.write_text(json.dumps({"version": 1, "providers": providers}), encoding="utf-8")
     return str(p)
 
 
@@ -66,7 +66,7 @@ def test_reseeds_terminal_entry(tmp_path):
     auth = _write_auth(tmp_path, {"youtab": _terminal_youtab_state()})
     result = mod.reseed_if_terminal(auth, _FRESH_SEED)
     assert result == "reseeded"
-    store = json.loads(Path(auth).read_text())
+    store = json.loads(Path(auth).read_text(encoding="utf-8"))
     assert store["providers"]["youtab"]["refresh_token"] == "FRESH-rt"
     assert "last_auth_error" not in store["providers"]["youtab"]
 
@@ -76,7 +76,7 @@ def test_does_not_clobber_healthy_entry(tmp_path):
     auth = _write_auth(tmp_path, {"youtab": _healthy_youtab_state()})
     result = mod.reseed_if_terminal(auth, _FRESH_SEED)
     assert result == "not_terminal"
-    store = json.loads(Path(auth).read_text())
+    store = json.loads(Path(auth).read_text(encoding="utf-8"))
     # Untouched — still the live tokens, not the seed.
     assert store["providers"]["youtab"]["refresh_token"] == "live-rt"
 

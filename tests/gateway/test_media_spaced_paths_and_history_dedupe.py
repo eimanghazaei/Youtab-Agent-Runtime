@@ -35,7 +35,7 @@ class TestSpacedPaths:
 
     def test_spaced_path_followed_by_prose_keeps_prose(self, tmp_path):
         p = tmp_path / "my server.log"
-        p.write_text("log line\n")
+        p.write_text("log line\n", encoding="utf-8")
         media, cleaned = BasePlatformAdapter.extract_media(
             f"MEDIA:{p} is the log you asked for"
         )
@@ -46,8 +46,8 @@ class TestSpacedPaths:
     def test_forward_extension_stops_at_next_media_tag(self, tmp_path):
         a = tmp_path / "Caddyfile"
         b = tmp_path / "Dockerfile"
-        a.write_text("localhost\n")
-        b.write_text("FROM alpine\n")
+        a.write_text("localhost\n", encoding="utf-8")
+        b.write_text("FROM alpine\n", encoding="utf-8")
         media, cleaned = BasePlatformAdapter.extract_media(
             f"MEDIA:{a} MEDIA:{b}"
         )
@@ -61,7 +61,7 @@ class TestSpacedPaths:
 class TestStreamingDisplayStripCodeBlocks:
     def test_fenced_code_example_preserved(self, tmp_path):
         p = tmp_path / "real.pdf"
-        p.write_text("x")
+        p.write_text("x", encoding="utf-8")
         text = f"Example:\n```\nMEDIA:{p}\n```\ndone MEDIA:{p}"
         out = BasePlatformAdapter.strip_media_directives_for_display(text)
         # The example inside the fence survives verbatim; the real tag outside

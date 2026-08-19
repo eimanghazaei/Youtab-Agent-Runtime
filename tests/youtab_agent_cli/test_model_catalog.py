@@ -126,7 +126,7 @@ class TestFetchSuccess:
 
         cache_file = model_catalog._cache_path()
         assert cache_file.exists()
-        with open(cache_file) as fh:
+        with open(cache_file, encoding="utf-8") as fh:
             assert json.load(fh) == manifest
 
 
@@ -157,7 +157,7 @@ class TestFetchFailure:
         # Write stale cache directly (mtime in the past).
         cache = model_catalog._cache_path()
         cache.parent.mkdir(parents=True, exist_ok=True)
-        with open(cache, "w") as fh:
+        with open(cache, "w", encoding="utf-8") as fh:
             json.dump(manifest, fh)
         old = time.time() - 30 * 24 * 3600  # 30 days ago
         import os as _os
@@ -302,7 +302,8 @@ class TestDefaultModelFromCache:
         cache = isolated_home / "cache"
         cache.mkdir()
         (cache / "model_catalog.json").write_text(
-            json.dumps(self._manifest_with_default())
+            json.dumps(self._manifest_with_default()),
+            encoding="utf-8",
         )
         with patch.object(model_catalog, "_fetch_manifest") as fetch:
             assert (
@@ -319,7 +320,7 @@ class TestDefaultModelFromCache:
         from youtab_agent_cli import model_catalog
         cache = isolated_home / "cache"
         cache.mkdir()
-        (cache / "model_catalog.json").write_text(json.dumps(_valid_manifest()))
+        (cache / "model_catalog.json").write_text(json.dumps(_valid_manifest()), encoding="utf-8")
         with patch.object(model_catalog, "_fetch_manifest") as fetch:
             assert model_catalog.get_default_model_from_cache("openrouter") is None
             fetch.assert_not_called()
@@ -333,7 +334,7 @@ class TestDefaultModelFromCache:
 
         repo_root = Path(model_catalog.__file__).resolve().parent.parent
         manifest = json.loads(
-            (repo_root / "youtab_agent_cli" / "data" / "engine_catalog.json").read_text()
+            (repo_root / "youtab_agent_cli" / "data" / "engine_catalog.json").read_text(encoding="utf-8")
         )
         for provider in ("openrouter", "youtab"):
             block = manifest["providers"][provider]
@@ -412,7 +413,8 @@ class TestIntegrationWithModelsModule:
                         "providers": {"youtab": {"access_token": "fake"}},
                         "credential_pool": {},
                     }
-                )
+                ),
+                encoding="utf-8",
             )
 
             # Stub the Portal recommendation union so the row is deterministic
@@ -464,7 +466,8 @@ class TestIntegrationWithModelsModule:
                         "providers": {"youtab": {"access_token": "fake"}},
                         "credential_pool": {},
                     }
-                )
+                ),
+                encoding="utf-8",
             )
             with patch.object(
                 model_catalog, "_fetch_manifest", return_value=_valid_manifest()

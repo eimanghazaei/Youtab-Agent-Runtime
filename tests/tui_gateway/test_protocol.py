@@ -541,7 +541,8 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
 
     (tmp_path / "skins").mkdir()
     (tmp_path / "skins" / "midnight.yaml").write_text(
-        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\n"
+        "name: midnight\ndescription: t\ncolors:\n  banner_title: '#00ffcc'\n  background: '#001010'\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(skin_engine, "get_youtab_home", lambda: tmp_path)
     monkeypatch.setattr(server, "_youtab_home", tmp_path)
@@ -552,13 +553,13 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
 
     # Baseline (default) — seeds the signature.
-    (tmp_path / "config.yaml").write_text("display:\n  skin: default\n")
+    (tmp_path / "config.yaml").write_text("display:\n  skin: default\n", encoding="utf-8")
     server._broadcast_skin_if_changed()
     emitted.clear()
 
     # Activate midnight, as `youtab config set display.skin midnight` would.
     time.sleep(0.01)  # ensure the config mtime moves
-    (tmp_path / "config.yaml").write_text("display:\n  skin: midnight\n")
+    (tmp_path / "config.yaml").write_text("display:\n  skin: midnight\n", encoding="utf-8")
     server._broadcast_skin_if_changed()
 
     assert [ev for ev, _ in emitted] == ["skin.changed"]

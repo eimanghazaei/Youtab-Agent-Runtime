@@ -51,7 +51,8 @@ class TestResolveAutoMainFirst:
                         },
                     }
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
 

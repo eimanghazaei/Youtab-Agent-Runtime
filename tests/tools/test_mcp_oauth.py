@@ -78,7 +78,7 @@ class TestYoutabTokenStorage:
         # File exists with correct permissions
         token_path = tmp_path / "mcp-tokens" / "test-server.json"
         assert token_path.exists()
-        data = json.loads(token_path.read_text())
+        data = json.loads(token_path.read_text(encoding="utf-8"))
         assert data["access_token"] == "abc123"
 
     @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
@@ -119,7 +119,7 @@ class TestYoutabTokenStorage:
 
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
-        (d / "bad-server.json").write_text("NOT VALID JSON{{{")
+        (d / "bad-server.json").write_text("NOT VALID JSON{{{", encoding="utf-8")
 
         import asyncio
         assert asyncio.run(storage.get_tokens()) is None
@@ -392,8 +392,8 @@ class TestRemoveOAuthTokens:
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         d = tmp_path / "mcp-tokens"
         d.mkdir()
-        (d / "myserver.json").write_text("{}")
-        (d / "myserver.client.json").write_text("{}")
+        (d / "myserver.json").write_text("{}", encoding="utf-8")
+        (d / "myserver.client.json").write_text("{}", encoding="utf-8")
 
         remove_oauth_tokens("myserver")
 
@@ -767,9 +767,9 @@ class TestPoisonClientRegistration:
         storage = YoutabTokenStorage("srv")
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
-        (d / "srv.json").write_text('{"access_token": "keep-me"}')
-        (d / "srv.client.json").write_text('{"client_id": "dead"}')
-        (d / "srv.meta.json").write_text('{"token_endpoint": "https://idp/token"}')
+        (d / "srv.json").write_text('{"access_token": "keep-me"}', encoding="utf-8")
+        (d / "srv.client.json").write_text('{"client_id": "dead"}', encoding="utf-8")
+        (d / "srv.meta.json").write_text('{"token_endpoint": "https://idp/token"}', encoding="utf-8")
 
         removed = storage.poison_client_registration()
 
@@ -778,9 +778,9 @@ class TestPoisonClientRegistration:
         assert not (d / "srv.client.json").exists()
         assert not (d / "srv.meta.json").exists()
         # Backup of the client file kept for recovery.
-        assert (d / "srv.client.json.bak").read_text() == '{"client_id": "dead"}'
+        assert (d / "srv.client.json.bak").read_text(encoding="utf-8") == '{"client_id": "dead"}'
         # Tokens are intentionally preserved.
-        assert (d / "srv.json").read_text() == '{"access_token": "keep-me"}'
+        assert (d / "srv.json").read_text(encoding="utf-8") == '{"access_token": "keep-me"}'
 
 
 def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):

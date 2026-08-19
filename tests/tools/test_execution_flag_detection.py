@@ -79,10 +79,10 @@ def test_real_binaries_execute_leading_dash_program_payload(
 
     marker = tmp_path / "executed"
     payload = tmp_path / "-payload-marker"
-    payload.write_text("#!/bin/sh\nprintf executed > \"$MARKER\"\ncat\n")
+    payload.write_text("#!/bin/sh\nprintf executed > \"$MARKER\"\ncat\n", encoding="utf-8")
     payload.chmod(0o755)
     input_file = tmp_path / "input.txt"
-    input_file.write_text("needle\n")
+    input_file.write_text("needle\n", encoding="utf-8")
     resolved_args = [arg.format(input=str(input_file)) for arg in args]
     input_text = (
         "\n".join(str(number) for number in range(10_000, 0, -1)) + "\n"
@@ -101,7 +101,7 @@ def test_real_binaries_execute_leading_dash_program_payload(
 
     subprocess.run(argv, input=input_text, text=True, capture_output=True, env=env, timeout=20)
 
-    assert marker.read_text() == "executed"
+    assert marker.read_text(encoding="utf-8") == "executed"
 
 
 @pytest.mark.parametrize(

@@ -73,7 +73,7 @@ def test_save_conversation_writes_under_youtab_home(youtab_home, tmp_path, monke
     files = list(saved_dir.glob("youtab_conversation_*.json"))
     assert len(files) == 1, files
 
-    payload = json.loads(files[0].read_text())
+    payload = json.loads(files[0].read_text(encoding="utf-8"))
     assert payload["model"] == "test-model"
     assert payload["session_id"] == "20260101_120000_abc123"
     assert payload["messages"] == [

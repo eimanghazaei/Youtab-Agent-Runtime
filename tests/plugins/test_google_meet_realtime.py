@@ -202,7 +202,8 @@ def test_speaker_run_until_stopped_processes_queue(tmp_path):
     processed = tmp_path / "processed.jsonl"
     queue.write_text(
         json.dumps({"id": "a", "text": "hello one"}) + "\n"
-        + json.dumps({"id": "b", "text": "hello two"}) + "\n"
+        + json.dumps({"id": "b", "text": "hello two"}) + "\n",
+        encoding="utf-8",
     )
 
     stub = _StubSession()
@@ -210,18 +211,18 @@ def test_speaker_run_until_stopped_processes_queue(tmp_path):
 
     # Stop once the queue is empty.
     def _stop():
-        return queue.exists() and queue.read_text().strip() == ""
+        return queue.exists() and queue.read_text(encoding="utf-8").strip() == ""
 
     speaker.run_until_stopped(_stop, poll_interval=0.01)
 
     assert stub.spoken == ["hello one", "hello two"]
 
     # Processed file has both entries, in order.
-    lines = [json.loads(l) for l in processed.read_text().splitlines() if l.strip()]
+    lines = [json.loads(l) for l in processed.read_text(encoding="utf-8").splitlines() if l.strip()]
     assert [l["id"] for l in lines] == ["a", "b"]
     assert all(l["result"]["ok"] for l in lines)
 
     # Queue is empty (possibly empty string) after processing.
-    assert queue.read_text().strip() == ""
+    assert queue.read_text(encoding="utf-8").strip() == ""
 
 

@@ -60,7 +60,7 @@ class TestPluginDiscovery:
     def test_reads_requirements_txt(self, tmp_path: Path):
         plugin = tmp_path / "plugins" / "myplugin"
         plugin.mkdir(parents=True)
-        (plugin / "requirements.txt").write_text("requests==2.20.0\n")
+        (plugin / "requirements.txt").write_text("requests==2.20.0\n", encoding="utf-8")
         components = sa._discover_plugins(tmp_path)
         assert len(components) == 1
         assert components[0].name == "requests"
@@ -111,7 +111,7 @@ class TestRunAudit:
     def test_findings_sorted_by_severity_desc(self, tmp_path: Path):
         plugin = tmp_path / "plugins" / "p"
         plugin.mkdir(parents=True)
-        (plugin / "requirements.txt").write_text("alpha==1.0.0\nbeta==2.0.0\n")
+        (plugin / "requirements.txt").write_text("alpha==1.0.0\nbeta==2.0.0\n", encoding="utf-8")
 
         def fake_batch(comps):
             return {

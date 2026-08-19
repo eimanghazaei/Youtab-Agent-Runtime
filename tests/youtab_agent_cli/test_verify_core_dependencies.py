@@ -41,7 +41,7 @@ def temp_pyproject(tmp_path, monkeypatch):
           "pydantic==2.13.4",
           "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
         ]
-    """))
+    """), encoding="utf-8")
     import youtab_agent_cli.main as main_mod
     monkeypatch.setattr(main_mod, "PROJECT_ROOT", tmp_path)
     return tmp_path
@@ -54,7 +54,7 @@ def fake_venv_python(tmp_path):
     scripts = venv_root / "Scripts"
     scripts.mkdir(parents=True)
     py = scripts / "python.exe"
-    py.write_text("#!/bin/sh\necho fake python")
+    py.write_text("#!/bin/sh\necho fake python", encoding="utf-8")
     return py, venv_root
 
 
@@ -123,7 +123,7 @@ class TestResolveInstallTargetPython:
         scripts = venv_root / "Scripts"
         scripts.mkdir(parents=True)
         py = scripts / "python.exe"
-        py.write_text("fake")
+        py.write_text("fake", encoding="utf-8")
 
         with patch("youtab_agent_cli.main._is_windows", return_value=True):
             from youtab_agent_cli.main import _resolve_install_target_python

@@ -38,7 +38,7 @@ class TestPrefixConfusionRegression:
         sibling_file = tmp_path / "skills" / "axolotl-backdoor" / "evil.py"
         skill_dir.mkdir(parents=True)
         sibling_file.parent.mkdir(parents=True)
-        sibling_file.write_text("evil")
+        sibling_file.write_text("evil", encoding="utf-8")
 
         resolved = sibling_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
@@ -53,7 +53,7 @@ class TestPrefixConfusionRegression:
         outside_file = tmp_path / "etc" / "passwd"
         skill_dir.mkdir(parents=True)
         outside_file.parent.mkdir(parents=True)
-        outside_file.write_text("root:x:0:0")
+        outside_file.write_text("root:x:0:0", encoding="utf-8")
 
         resolved = outside_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
@@ -80,7 +80,7 @@ def _can_symlink():
     try:
         with tempfile.TemporaryDirectory() as d:
             src = Path(d) / "src"
-            src.write_text("x")
+            src.write_text("x", encoding="utf-8")
             lnk = Path(d) / "lnk"
             lnk.symlink_to(src)
             return True
@@ -101,7 +101,7 @@ class TestSymlinkEscapeWithActualSymlinks:
         sibling_dir.mkdir(parents=True)
 
         malicious = sibling_dir / "malicious.py"
-        malicious.write_text("evil code")
+        malicious.write_text("evil code", encoding="utf-8")
 
         link = skill_dir / "helper.py"
         link.symlink_to(malicious)
@@ -119,7 +119,7 @@ class TestSymlinkEscapeWithActualSymlinks:
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
         real_file = skill_dir / "real.py"
-        real_file.write_text("print('ok')")
+        real_file.write_text("print('ok')", encoding="utf-8")
         link = skill_dir / "alias.py"
         link.symlink_to(real_file)
 
@@ -133,7 +133,7 @@ class TestSymlinkEscapeWithActualSymlinks:
         skill_dir = tmp_path / "skill"
         skill_dir.mkdir()
         outside = tmp_path / "secret.env"
-        outside.write_text("SECRET=123")
+        outside.write_text("SECRET=123", encoding="utf-8")
 
         link = skill_dir / "config.env"
         link.symlink_to(outside)

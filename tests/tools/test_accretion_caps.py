@@ -54,7 +54,7 @@ class TestReadTrackerCaps:
         # Create 10 distinct files and read each once.
         for i in range(10):
             p = tmp_path / f"file_{i}.txt"
-            p.write_text(f"content {i}\n" * 10)
+            p.write_text(f"content {i}\n" * 10, encoding="utf-8")
             ft.read_file_tool(path=str(p), task_id="long-session")
 
         with ft._read_tracker_lock:

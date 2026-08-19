@@ -29,7 +29,7 @@ def repo_with_worktree(tmp_path):
     _git(repo, "init", "-b", "main")
     _git(repo, "config", "user.email", "t@example.com")
     _git(repo, "config", "user.name", "t")
-    (repo / "README.md").write_text("hi\n")
+    (repo / "README.md").write_text("hi\n", encoding="utf-8")
     _git(repo, "add", ".")
     _git(repo, "commit", "-m", "init")
 

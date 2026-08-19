@@ -110,7 +110,7 @@ RestartPreventExitStatus=78
 """
         installed = expected.replace("RestartPreventExitStatus=78\n", "")
         unit_file = tmp_path / "youtab-gateway.service"
-        unit_file.write_text(installed)
+        unit_file.write_text(installed, encoding="utf-8")
 
         monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
         monkeypatch.setattr(
@@ -139,7 +139,7 @@ RestartSec=5
 WantedBy=default.target
 """
         unit_file = tmp_path / "youtab-gateway.service"
-        unit_file.write_text(installed)
+        unit_file.write_text(installed, encoding="utf-8")
 
         monkeypatch.setattr(gw, "get_systemd_unit_path", lambda system=False: unit_file)
         monkeypatch.setattr(

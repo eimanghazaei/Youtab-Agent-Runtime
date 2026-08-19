@@ -36,7 +36,7 @@ def test_default_config_clamps_reasoning():
 def _seed_config(tmp_path, monkeypatch):
     hh = tmp_path / ".youtab-agent-runtime"
     hh.mkdir()
-    (hh / "config.yaml").write_text("display:\n  show_reasoning: true\n")
+    (hh / "config.yaml").write_text("display:\n  show_reasoning: true\n", encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(hh))
     # cli captures _youtab_home at import; force it to the temp home.
     import cli
@@ -51,7 +51,7 @@ def test_reasoning_full_sets_and_persists(tmp_path, monkeypatch):
 
     s._handle_reasoning_command("/reasoning full")
     assert s.reasoning_full is True
-    saved = yaml.safe_load((hh / "config.yaml").read_text())
+    saved = yaml.safe_load((hh / "config.yaml").read_text(encoding="utf-8"))
     assert saved["display"]["reasoning_full"] is True
 
 

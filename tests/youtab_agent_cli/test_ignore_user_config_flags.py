@@ -63,7 +63,7 @@ class TestIgnoreUserConfigEnvGate:
               system_prompt: "from user config"
             """
         ).lstrip()
-        (tmp_path / "config.yaml").write_text(config_yaml)
+        (tmp_path / "config.yaml").write_text(config_yaml, encoding="utf-8")
 
     def _reload_cli(self, monkeypatch, tmp_path):
         """Point cli._youtab_home at tmp_path and return a fresh load_cli_config."""

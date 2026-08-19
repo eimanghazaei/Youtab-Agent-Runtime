@@ -218,7 +218,7 @@ def test_verify_checksums_signature_skips_without_gpg(youtab_home, monkeypatch, 
     """No gpg on PATH → degrade gracefully (return False), do not raise."""
     monkeypatch.setattr(ip.shutil, "which", lambda name: None)
     cks = tmp_path / "checksums.txt"
-    cks.write_text("abc  iron-proxy.tar.gz\n")
+    cks.write_text("abc  iron-proxy.tar.gz\n", encoding="utf-8")
     assert ip._verify_checksums_signature(tmp_path, cks) is False
 
 
@@ -269,13 +269,13 @@ def test_pick_tar_member_rejects_path_traversal():
 def test_start_proxy_idempotent_when_already_running(youtab_home, monkeypatch):
     state = ip._proxy_state_dir()
     pid_file = state / "iron-proxy.pid"
-    pid_file.write_text("12345")
+    pid_file.write_text("12345", encoding="utf-8")
     monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(ip, "_port_listening", lambda h, p: True)
     monkeypatch.setattr(ip, "iron_proxy_version", lambda b: "test")
     # Materialize config so we get past that check (we shouldn't reach it,
     # but if the idempotent path regresses we want a clean failure mode).
-    (state / "proxy.yaml").write_text("proxy: {}")
+    (state / "proxy.yaml").write_text("proxy: {}", encoding="utf-8")
     # Sentinel: subprocess.Popen must NOT be called.
     with patch("subprocess.Popen", lambda *a, **k: pytest.fail("should not spawn")):
         status = ip.start_proxy()
@@ -386,7 +386,7 @@ def test_ensure_audit_log_creates_with_0o600(youtab_home, tmp_path):
 
 def test_ensure_audit_log_tightens_existing_perms(youtab_home, tmp_path):
     audit = tmp_path / "audit.log"
-    audit.write_text("preexisting content\n")
+    audit.write_text("preexisting content\n", encoding="utf-8")
     os.chmod(audit, 0o644)
     ip.ensure_audit_log(audit)
     mode = audit.stat().st_mode & 0o777
@@ -535,7 +535,7 @@ def test_reload_proxy_posts_bearer_to_management_endpoint(youtab_home, monkeypat
     assert ip.reload_proxy() is True
     assert captured["url"] == "http://127.0.0.1:9092/v1/reload"
     assert captured["method"] == "POST"
-    token = (ip._proxy_state_dir() / "management.token").read_text().strip()
+    token = (ip._proxy_state_dir() / "management.token").read_text(encoding="utf-8").strip()
     assert captured["auth"] == f"Bearer {token}"
 
 
@@ -554,7 +554,7 @@ def test_start_proxy_injects_management_key_env(youtab_home, monkeypatch):
     ip.write_proxy_config(cfg)
     (youtab_home / "bin").mkdir(parents=True, exist_ok=True)
     fake_bin = youtab_home / "bin" / "iron-proxy"
-    fake_bin.write_text("#!/bin/sh\nsleep 60\n")
+    fake_bin.write_text("#!/bin/sh\nsleep 60\n", encoding="utf-8")
     fake_bin.chmod(0o755)
 
     captured_env = {}
@@ -633,8 +633,8 @@ def test_docker_egress_node_options_uses_sentinel(youtab_home, monkeypatch):
 
     state = ip._proxy_state_dir()
     ca = state / "ca.crt"
-    ca.write_text("fake-ca")
-    (state / "ca.key").write_text("fake-key")
+    ca.write_text("fake-ca", encoding="utf-8")
+    (state / "ca.key").write_text("fake-key", encoding="utf-8")
     mapping = _sample_mapping("OPENROUTER_API_KEY")
     proxy_cfg = ip.build_proxy_config(
         mappings=[mapping], ca_cert=ca, ca_key=state / "ca.key", tunnel_port=9090,
@@ -647,7 +647,7 @@ def test_docker_egress_node_options_uses_sentinel(youtab_home, monkeypatch):
     cfg["proxy"]["enforce_on_docker"] = True
     save_config(cfg)
 
-    (state / "iron-proxy.pid").write_text("99999")
+    (state / "iron-proxy.pid").write_text("99999", encoding="utf-8")
     monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(ip, "_port_listening", lambda h, p: True)
 
@@ -680,7 +680,7 @@ def test_persisted_nonce_roundtrip(youtab_home, monkeypatch):
 
     nonce_path = ip._persisted_nonce_path()
     nonce_path.parent.mkdir(parents=True, exist_ok=True)
-    nonce_path.write_text("test-nonce-abc123")
+    nonce_path.write_text("test-nonce-abc123", encoding="utf-8")
     assert ip._read_persisted_nonce() == "test-nonce-abc123"
 
 
@@ -704,7 +704,7 @@ def test_get_status_probes_configured_bind_host(youtab_home, monkeypatch):
     (state / "proxy.yaml").write_text(
         "proxy:\n  http_listen: 172.17.0.1:9123\n", encoding="utf-8"
     )
-    (state / "ca.crt").write_text("cert")
+    (state / "ca.crt").write_text("cert", encoding="utf-8")
     ip._write_pidfile_safely(ip._pidfile(), 99999)
     monkeypatch.setattr(ip, "_pid_alive", lambda pid: True)
     monkeypatch.setattr(ip, "find_iron_proxy", lambda **kw: None)

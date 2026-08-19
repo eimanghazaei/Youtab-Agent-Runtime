@@ -93,12 +93,12 @@ def _write_config(home: Path, agent_cfg: dict | None = None, display_cfg: dict |
         cfg["gateway"] = gateway_cfg
     if timezone:
         cfg["timezone"] = timezone
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
 
 def _write_env(home: Path, entries: dict[str, str]) -> None:
     lines = [f"{k}={v}\n" for k, v in entries.items()]
-    (home / ".env").write_text("".join(lines))
+    (home / ".env").write_text("".join(lines), encoding="utf-8")
 
 
 @pytest.fixture

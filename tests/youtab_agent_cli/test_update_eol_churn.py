@@ -166,7 +166,8 @@ def test_pin_is_withheld_when_the_churn_cannot_be_cleared(tmp_path: Path) -> Non
     # unwritable working tree, a file locked by a running process.
     shim = tmp_path / "git-no-checkout"
     shim.write_text(
-        '#!/bin/sh\nfor a in "$@"; do [ "$a" = checkout ] && exit 1; done\nexec git "$@"\n'
+        '#!/bin/sh\nfor a in "$@"; do [ "$a" = checkout ] && exit 1; done\nexec git "$@"\n',
+        encoding="utf-8",
     )
     shim.chmod(0o755)
 

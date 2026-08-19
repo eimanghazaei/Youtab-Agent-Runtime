@@ -72,7 +72,7 @@ class TestLegacyKeyMigration:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             voice_path = Path(tmpdir) / "gateway_voice_mode.json"
-            voice_path.write_text(json.dumps(legacy_data))
+            voice_path.write_text(json.dumps(legacy_data), encoding="utf-8")
 
             with patch.object(runner, "_VOICE_MODE_PATH", voice_path):
                 with patch("gateway.run.logger") as mock_logger:

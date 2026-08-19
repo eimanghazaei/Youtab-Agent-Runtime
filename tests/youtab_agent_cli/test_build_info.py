@@ -25,7 +25,7 @@ def test_get_build_sha_respects_short_argument(tmp_path):
 
     sha_file = tmp_path / ".youtab_agent_build_sha"
     full_sha = "abcdef1234567890abcdef1234567890abcdef12"
-    sha_file.write_text(full_sha + "\n")
+    sha_file.write_text(full_sha + "\n", encoding="utf-8")
 
     with patch.object(build_info, "_BUILD_SHA_FILE", sha_file):
         assert build_info.get_build_sha(short=12) == "abcdef123456"

@@ -38,7 +38,7 @@ def _make_enabled_plugin(youtab_home: Path, name: str, register_body: str) -> Pa
     cfg_path = youtab_home / "config.yaml"
     cfg = {}
     if cfg_path.exists():
-        cfg = yaml.safe_load(cfg_path.read_text()) or {}
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
     cfg.setdefault("plugins", {}).setdefault("enabled", []).append(name)
     cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
     return plugin_dir

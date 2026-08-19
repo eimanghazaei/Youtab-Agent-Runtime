@@ -323,7 +323,7 @@ class TestGmiMainFlow:
         import yaml
         from youtab_constants import get_youtab_home
 
-        config = yaml.safe_load((get_youtab_home() / "config.yaml").read_text()) or {}
+        config = yaml.safe_load((get_youtab_home() / "config.yaml").read_text(encoding="utf-8")) or {}
         model_cfg = config.get("model")
         assert isinstance(model_cfg, dict)
         assert model_cfg["provider"] == "gmi"

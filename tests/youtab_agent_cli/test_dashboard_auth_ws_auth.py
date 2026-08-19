@@ -240,7 +240,7 @@ class TestWsAuthOkGated:
         # logger may not have been initialized in this process — that's
         # acceptable as long as the rejection path didn't crash.
         if log_file.exists():
-            content = log_file.read_text()
+            content = log_file.read_text(encoding="utf-8")
             assert "ws_ticket_rejected" in content
 
 

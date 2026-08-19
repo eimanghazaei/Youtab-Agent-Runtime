@@ -367,7 +367,7 @@ def test_switch_model_resolves_user_provider_credentials(monkeypatch, tmp_path):
     }
     
     config_file = tmp_path / "config.yaml"
-    config_file.write_text(yaml.dump(config))
+    config_file.write_text(yaml.dump(config), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
     
     # Mock validation to pass

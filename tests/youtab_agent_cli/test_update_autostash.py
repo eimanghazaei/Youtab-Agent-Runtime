@@ -258,13 +258,13 @@ def test_bootstrap_marker_not_autostashed_by_update(tmp_path):
     git("init", "-q")
     git("config", "user.email", "t@example.com")
     git("config", "user.name", "t")
-    (tmp_path / ".gitignore").write_text(repo_gitignore.read_text())
-    (tmp_path / "tracked.txt").write_text("x\n")
+    (tmp_path / ".gitignore").write_text(repo_gitignore.read_text(encoding="utf-8"), encoding="utf-8")
+    (tmp_path / "tracked.txt").write_text("x\n", encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "init")
 
     marker = tmp_path / ".youtab-agent-runtime-bootstrap-complete"
-    marker.write_text("")
+    marker.write_text("", encoding="utf-8")
 
     # Exact flags used by youtab update (youtab_agent_cli/main.py).
     git("stash", "push", "--include-untracked", "-m", "youtab-update-autostash")
@@ -313,27 +313,27 @@ def test_update_autostash_survives_undeletable_untracked_dir(tmp_path):
     git("init", "-q", "-b", "main")
     git("config", "user.email", "t@example.com")
     git("config", "user.name", "t")
-    (tmp_path / "tracked.txt").write_text("v1\n")
+    (tmp_path / "tracked.txt").write_text("v1\n", encoding="utf-8")
     git("add", "-A")
     git("commit", "-qm", "init")
 
-    (tmp_path / "tracked.txt").write_text("v2 local change\n")
+    (tmp_path / "tracked.txt").write_text("v2 local change\n", encoding="utf-8")
     pkg = tmp_path / "packaging" / "homebrew"
     pkg.mkdir(parents=True)
-    (pkg / "youtab-agent-runtime.rb").write_text("formula\n")
+    (pkg / "youtab-agent-runtime.rb").write_text("formula\n", encoding="utf-8")
     os.chmod(pkg, 0o555)  # undeletable contents, like a root-owned dir
     try:
         stash_ref = youtab_main._stash_local_changes_if_needed(["git"], tmp_path)
         assert stash_ref
 
         # The tracked change is stashed; simulate the updater's checkout window.
-        assert (tmp_path / "tracked.txt").read_text() == "v1\n"
+        assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "v1\n"
 
         restored = youtab_main._restore_stashed_changes(
             ["git"], tmp_path, stash_ref, prompt_user=False
         )
         assert restored is True
-        assert (tmp_path / "tracked.txt").read_text() == "v2 local change\n"
-        assert (pkg / "youtab-agent-runtime.rb").read_text() == "formula\n"
+        assert (tmp_path / "tracked.txt").read_text(encoding="utf-8") == "v2 local change\n"
+        assert (pkg / "youtab-agent-runtime.rb").read_text(encoding="utf-8") == "formula\n"
     finally:
         os.chmod(pkg, 0o755)

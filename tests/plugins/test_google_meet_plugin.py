@@ -69,13 +69,13 @@ def test_bot_state_dedupes_captions_and_flushes_status(tmp_path):
     state.record_caption("Alice", "Hey everyone")  # dup — ignored
     state.record_caption("Bob", "Let's start")
 
-    transcript = (out / "transcript.txt").read_text()
+    transcript = (out / "transcript.txt").read_text(encoding="utf-8")
     assert "Alice: Hey everyone" in transcript
     assert "Bob: Let's start" in transcript
     # dedup — Alice line appears exactly once
     assert transcript.count("Alice: Hey everyone") == 1
 
-    status = json.loads((out / "status.json").read_text())
+    status = json.loads((out / "status.json").read_text(encoding="utf-8"))
     assert status["meetingId"] == "abc-defg-hij"
     assert status["transcriptLines"] == 2
     assert status["transcriptPath"].endswith("transcript.txt")
@@ -120,7 +120,8 @@ def test_transcript_reads_last_n_lines(tmp_path):
     (meeting_dir / "transcript.txt").write_text(
         "[10:00:00] Alice: one\n"
         "[10:00:01] Bob: two\n"
-        "[10:00:02] Alice: three\n"
+        "[10:00:02] Alice: three\n",
+        encoding="utf-8",
     )
     pm._write_active({
         "pid": 0, "meeting_id": "abc-defg-hij",

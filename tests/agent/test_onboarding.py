@@ -43,10 +43,10 @@ class TestMarkSeen:
         cfg_path.write_text(yaml.safe_dump({
             "model": {"default": "claude-sonnet-4.6"},
             "display": {"skin": "default"},
-        }))
+        }), encoding="utf-8")
 
         assert mark_seen(cfg_path, BUSY_INPUT_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
+        loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
 
         assert loaded["model"]["default"] == "claude-sonnet-4.6"
         assert loaded["display"]["skin"] == "default"
@@ -56,12 +56,12 @@ class TestMarkSeen:
     def test_idempotent(self, tmp_path):
         cfg_path = tmp_path / "config.yaml"
         mark_seen(cfg_path, BUSY_INPUT_FLAG)
-        first = cfg_path.read_text()
+        first = cfg_path.read_text(encoding="utf-8")
 
         # Second call must be a no-op on-disk content (file may be touched,
         # but the YAML contents should be identical).
         mark_seen(cfg_path, BUSY_INPUT_FLAG)
-        second = cfg_path.read_text()
+        second = cfg_path.read_text(encoding="utf-8")
 
         assert yaml.safe_load(first) == yaml.safe_load(second)
 
@@ -102,7 +102,7 @@ class TestRoundTrip:
         cfg_path = tmp_path / "config.yaml"
 
         assert mark_seen(cfg_path, BUSY_INPUT_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
+        loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
 
         assert is_seen(loaded, BUSY_INPUT_FLAG) is True
         assert is_seen(loaded, TOOL_PROGRESS_FLAG) is False
@@ -112,7 +112,7 @@ class TestRoundTrip:
 
         mark_seen(cfg_path, BUSY_INPUT_FLAG)
         mark_seen(cfg_path, TOOL_PROGRESS_FLAG)
-        loaded = yaml.safe_load(cfg_path.read_text())
+        loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
 
         assert is_seen(loaded, BUSY_INPUT_FLAG) is True
         assert is_seen(loaded, TOOL_PROGRESS_FLAG) is True
@@ -131,7 +131,7 @@ class TestDetectOpenclawResidue:
 
     def test_returns_false_when_path_is_a_file(self, tmp_path):
         # A stray file named ``.openclaw`` is NOT a workspace — skip the banner.
-        (tmp_path / ".openclaw").write_text("oops")
+        (tmp_path / ".openclaw").write_text("oops", encoding="utf-8")
         assert detect_openclaw_residue(home=tmp_path) is False
 
 
@@ -153,13 +153,13 @@ class TestOpenclawResidueSeenFlag:
     def test_flag_independent_of_other_flags(self, tmp_path):
         cfg_path = tmp_path / "config.yaml"
         mark_seen(cfg_path, BUSY_INPUT_FLAG)
-        loaded = yaml.safe_load(cfg_path.read_text())
+        loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         assert is_seen(loaded, OPENCLAW_RESIDUE_FLAG) is False
 
     def test_flag_round_trips(self, tmp_path):
         cfg_path = tmp_path / "config.yaml"
         assert mark_seen(cfg_path, OPENCLAW_RESIDUE_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
+        loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         assert is_seen(loaded, OPENCLAW_RESIDUE_FLAG) is True
 
 
@@ -208,7 +208,7 @@ class TestProfileBuildSeenFlag:
 
         cfg_path = tmp_path / "config.yaml"
         assert mark_seen(cfg_path, PROFILE_BUILD_FLAG) is True
-        loaded = yaml.safe_load(cfg_path.read_text())
+        loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         assert is_seen(loaded, PROFILE_BUILD_FLAG) is True
 
     def test_flag_independent_of_busy_input(self, tmp_path):
@@ -216,7 +216,7 @@ class TestProfileBuildSeenFlag:
 
         cfg_path = tmp_path / "config.yaml"
         mark_seen(cfg_path, BUSY_INPUT_FLAG)
-        loaded = yaml.safe_load(cfg_path.read_text())
+        loaded = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
         assert is_seen(loaded, PROFILE_BUILD_FLAG) is False
 
 

@@ -29,8 +29,8 @@ def _make_bundled(tmp_path):
     bundled = tmp_path / "bundled_skills"
     foo = bundled / "category" / "foo"
     foo.mkdir(parents=True)
-    (foo / "SKILL.md").write_text("---\nname: foo\n---\n# Foo Skill\n")
-    (foo / "helper.py").write_text("print('stock')\n")
+    (foo / "SKILL.md").write_text("---\nname: foo\n---\n# Foo Skill\n", encoding="utf-8")
+    (foo / "helper.py").write_text("print('stock')\n", encoding="utf-8")
     return bundled
 
 
@@ -69,7 +69,7 @@ def test_reset_clears_modified_state(tmp_path):
     bundled, skills_dir, manifest_file = _env(tmp_path)
     with _patches(bundled, skills_dir, manifest_file):
         sync_skills(quiet=True)
-        (skills_dir / "category" / "foo" / "helper.py").write_text("print('mine')\n")
+        (skills_dir / "category" / "foo" / "helper.py").write_text("print('mine')\n", encoding="utf-8")
         assert [m["name"] for m in list_user_modified_bundled_skills()] == ["foo"]
 
         # Restore from the stock source, then it must no longer be flagged.

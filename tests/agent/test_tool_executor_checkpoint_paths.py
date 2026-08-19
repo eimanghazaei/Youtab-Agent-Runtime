@@ -15,9 +15,9 @@ def test_relative_file_checkpoint_uses_task_workspace(tmp_path, monkeypatch):
 
     # Both directories contain content so checkpointing the wrong one would
     # still succeed and remain observable as the regression did in Docker.
-    (process_cwd / "pyproject.toml").write_text("[project]\nname = 'youtab'\n")
-    (workspace_cwd / "pyproject.toml").write_text("[project]\nname = 'workspace'\n")
-    (workspace_cwd / "existing.txt").write_text("before\n")
+    (process_cwd / "pyproject.toml").write_text("[project]\nname = 'youtab'\n", encoding="utf-8")
+    (workspace_cwd / "pyproject.toml").write_text("[project]\nname = 'workspace'\n", encoding="utf-8")
+    (workspace_cwd / "existing.txt").write_text("before\n", encoding="utf-8")
 
     monkeypatch.chdir(process_cwd)
     monkeypatch.setenv("TERMINAL_CWD", str(workspace_cwd))

@@ -18,7 +18,7 @@ def _make_agent(youtab_home: Path) -> Path:
     """Create a fake agent install: source package + venv."""
     agent_root = youtab_home / "youtab-agent-runtime"
     (agent_root / "youtab_agent_cli").mkdir(parents=True)
-    (agent_root / "youtab_agent_cli" / "__init__.py").write_text("")
+    (agent_root / "youtab_agent_cli" / "__init__.py").write_text("", encoding="utf-8")
     (agent_root / "venv" / "bin").mkdir(parents=True)
     return agent_root
 
@@ -27,16 +27,16 @@ def _make_gui_build(youtab_home: Path) -> None:
     """Create the source-built GUI artifacts a `youtab desktop` run produces."""
     desktop = youtab_home / "youtab-agent-runtime" / "apps" / "desktop"
     (desktop / "dist").mkdir(parents=True)
-    (desktop / "dist" / "index.html").write_text("<html>")
+    (desktop / "dist" / "index.html").write_text("<html>", encoding="utf-8")
     (desktop / "release" / "linux-unpacked").mkdir(parents=True)
     (desktop / "node_modules").mkdir(parents=True)
     (youtab_home / "youtab-agent-runtime" / "node_modules").mkdir(parents=True)
-    (youtab_home / "desktop-build-stamp.json").write_text("{}")
+    (youtab_home / "desktop-build-stamp.json").write_text("{}", encoding="utf-8")
 
 
 def _make_user_data(youtab_home: Path) -> None:
-    (youtab_home / "config.yaml").write_text("x: 1\n")
-    (youtab_home / ".env").write_text("KEY=secret\n")
+    (youtab_home / "config.yaml").write_text("x: 1\n", encoding="utf-8")
+    (youtab_home / ".env").write_text("KEY=secret\n", encoding="utf-8")
     (youtab_home / "sessions").mkdir()
 
 

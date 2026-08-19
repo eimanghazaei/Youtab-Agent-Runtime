@@ -73,7 +73,7 @@ def _make_completions_with_pending(streamed: bool, inline_output):
 def _read_single_trace(trace_dir, session_id):
     path = trace_dir / f"{session_id}.jsonl"
     assert path.exists(), f"trace file not written: {path}"
-    lines = path.read_text().strip().split("\n")
+    lines = path.read_text(encoding="utf-8").strip().split("\n")
     assert len(lines) == 1
     return json.loads(lines[0])
 
@@ -106,7 +106,7 @@ def test_pending_trace_cleared_after_flush(tmp_path, monkeypatch):
     mc.consume_and_save_trace("sess_once", aggregator_output_fallback="y")
 
     path = trace_dir / "sess_once.jsonl"
-    lines = path.read_text().strip().split("\n")
+    lines = path.read_text(encoding="utf-8").strip().split("\n")
     assert len(lines) == 1
 
 

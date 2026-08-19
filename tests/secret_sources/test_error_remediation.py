@@ -126,7 +126,8 @@ def test_env_loader_prints_remediation_hint(tmp_path, monkeypatch, capsys):
         "secrets:\n"
         "  bitwarden:\n"
         "    enabled: true\n"
-        "    project_id: proj\n"
+        "    project_id: proj\n",
+        encoding="utf-8",
     )
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.dead")
     monkeypatch.setattr(bw, "find_bws", lambda install_if_missing=True: tmp_path / "bws")

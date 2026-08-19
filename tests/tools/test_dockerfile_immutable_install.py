@@ -9,7 +9,7 @@ DOCKERFILE = REPO_ROOT / "Dockerfile"
 
 
 def _dockerfile_text() -> str:
-    return DOCKERFILE.read_text()
+    return DOCKERFILE.read_text(encoding="utf-8")
 
 
 def test_dockerfile_makes_opt_youtab_readonly_for_youtab_user() -> None:
@@ -85,7 +85,7 @@ def test_dockerfile_redirects_lazy_installs_to_durable_target() -> None:
 
     # stage2-hook must seed + chown the target dir so first-use installs
     # succeed as the unprivileged youtab runtime user.
-    stage2 = (REPO_ROOT / "docker" / "stage2-hook.sh").read_text()
+    stage2 = (REPO_ROOT / "docker" / "stage2-hook.sh").read_text(encoding="utf-8")
     assert '"$YOUTAB_AGENT_HOME/lazy-packages"' in stage2, (
         "stage2-hook.sh must create the lazy-packages dir on the data volume"
     )

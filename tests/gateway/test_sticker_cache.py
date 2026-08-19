@@ -16,7 +16,7 @@ class TestLoadSaveCache:
 
     def test_load_corrupt_file(self, tmp_path):
         bad_file = tmp_path / "bad.json"
-        bad_file.write_text("not json{{{")
+        bad_file.write_text("not json{{{", encoding="utf-8")
         with patch("gateway.sticker_cache.CACHE_PATH", bad_file):
             assert _load_cache() == {}
 

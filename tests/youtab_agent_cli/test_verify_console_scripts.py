@@ -24,7 +24,8 @@ def temp_pyproject(tmp_path, monkeypatch):
         youtab-agent-runtime = "run_agent:main"
         youtab-acp = "acp_adapter.entry:main"
     """
-        )
+        ),
+        encoding="utf-8",
     )
     import youtab_agent_cli.main as main_mod
 

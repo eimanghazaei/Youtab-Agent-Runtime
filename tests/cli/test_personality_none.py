@@ -61,7 +61,7 @@ class TestGatewayPersonalityNone:
         runner = self._make_runner()
         config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.dump(config_data), encoding="utf-8")
 
         with patch("gateway.run._youtab_home", tmp_path):
             event = self._make_event("default")
@@ -75,7 +75,7 @@ class TestGatewayPersonalityNone:
         runner = self._make_runner()
         config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(config_data))
+        config_file.write_text(yaml.dump(config_data), encoding="utf-8")
 
         with patch("gateway.run._youtab_home", tmp_path):
             event = self._make_event("nonexistent")
@@ -86,7 +86,7 @@ class TestGatewayPersonalityNone:
     @pytest.mark.asyncio
     async def test_empty_personality_list_uses_profile_display_path(self, tmp_path):
         runner = self._make_runner(personalities={})
-        (tmp_path / "config.yaml").write_text(yaml.dump({"agent": {"personalities": {}}}))
+        (tmp_path / "config.yaml").write_text(yaml.dump({"agent": {"personalities": {}}}), encoding="utf-8")
 
         with patch("gateway.run._youtab_home", tmp_path), \
              patch("youtab_constants.display_youtab_home", return_value="~/.youtab-agent-runtime/profiles/coder"):

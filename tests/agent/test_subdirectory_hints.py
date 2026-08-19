@@ -11,30 +11,30 @@ from agent.subdirectory_hints import SubdirectoryHintTracker
 def project(tmp_path):
     """Create a mock project tree with hint files in subdirectories."""
     # Root — already loaded at startup
-    (tmp_path / "AGENTS.md").write_text("Root project instructions")
+    (tmp_path / "AGENTS.md").write_text("Root project instructions", encoding="utf-8")
 
     # backend/ — has its own AGENTS.md
     backend = tmp_path / "backend"
     backend.mkdir()
-    (backend / "AGENTS.md").write_text("Backend-specific instructions:\n- Use FastAPI\n- Always add type hints")
+    (backend / "AGENTS.md").write_text("Backend-specific instructions:\n- Use FastAPI\n- Always add type hints", encoding="utf-8")
 
     # backend/src/ — no hints
     (backend / "src").mkdir()
-    (backend / "src" / "main.py").write_text("print('hello')")
+    (backend / "src" / "main.py").write_text("print('hello')", encoding="utf-8")
 
     # frontend/ — has CLAUDE.md
     frontend = tmp_path / "frontend"
     frontend.mkdir()
-    (frontend / "CLAUDE.md").write_text("Frontend rules:\n- Use TypeScript\n- No any types")
+    (frontend / "CLAUDE.md").write_text("Frontend rules:\n- Use TypeScript\n- No any types", encoding="utf-8")
 
     # docs/ — no hints
     (tmp_path / "docs").mkdir()
-    (tmp_path / "docs" / "README.md").write_text("Documentation")
+    (tmp_path / "docs" / "README.md").write_text("Documentation", encoding="utf-8")
 
     # deep/nested/path/ — has .cursorrules
     deep = tmp_path / "deep" / "nested" / "path"
     deep.mkdir(parents=True)
-    (deep / ".cursorrules").write_text("Cursor rules for nested path")
+    (deep / ".cursorrules").write_text("Cursor rules for nested path", encoding="utf-8")
 
     return tmp_path
 
@@ -97,7 +97,7 @@ class TestSubdirectoryHintTracker:
         """Hint files over the limit are truncated."""
         sub = tmp_path / "bigdir"
         sub.mkdir()
-        (sub / "AGENTS.md").write_text("x" * 20_000)
+        (sub / "AGENTS.md").write_text("x" * 20_000, encoding="utf-8")
 
         tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
         result = tracker.check_tool_call(

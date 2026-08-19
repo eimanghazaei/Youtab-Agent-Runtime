@@ -78,7 +78,8 @@ class TestGetActiveProvider:
 
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         (tmp_path / "config.yaml").write_text(
-            yaml.safe_dump({"video_gen": {"provider": "ghost"}})
+            yaml.safe_dump({"video_gen": {"provider": "ghost"}}),
+            encoding="utf-8",
         )
         video_gen_registry.register_provider(_FakeProvider("only"))
         assert video_gen_registry.get_active_provider() is None

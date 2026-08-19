@@ -36,7 +36,7 @@ def _reset_bridge_state(monkeypatch):
 def _write_config(text: str) -> None:
     home = get_youtab_home()
     home.mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text(text)
+    (home / "config.yaml").write_text(text, encoding="utf-8")
 
 
 def test_unset_terminal_env_backfills_backend_from_config():

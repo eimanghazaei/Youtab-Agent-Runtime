@@ -27,7 +27,7 @@ from add_contributor import add_contributor, read_mapping_file  # noqa: E402
 def test_loader_reads_login_from_first_noncomment_line(tmp_path):
     d = tmp_path / "emails"
     d.mkdir()
-    (d / "jane@example.com").write_text("# salvage PR #1\njanedoe\n# trailing note\n")
+    (d / "jane@example.com").write_text("# salvage PR #1\njanedoe\n# trailing note\n", encoding="utf-8")
     mapping = release._load_contributor_dir(d)
     assert mapping == {"jane@example.com": "janedoe"}
 
@@ -66,7 +66,7 @@ def test_add_creates_mapping_file(emails_dir):
     path = emails_dir / "new@example.com"
     assert path.is_file()
     assert read_mapping_file(path) == "newperson"
-    assert "# PR #999 salvage" in path.read_text()
+    assert "# PR #999 salvage" in path.read_text(encoding="utf-8")
 
 
 
@@ -100,14 +100,14 @@ def test_cli_entrypoint_end_to_end(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     for name in ("add_contributor.py",):
-        (scripts / name).write_text((SCRIPTS_DIR / name).read_text())
+        (scripts / name).write_text((SCRIPTS_DIR / name).read_text(encoding="utf-8"), encoding="utf-8")
     # Minimal stub release.py so the legacy lookup import works
-    (scripts / "release.py").write_text("LEGACY_AUTHOR_MAP = {}\n")
+    (scripts / "release.py").write_text("LEGACY_AUTHOR_MAP = {}\n", encoding="utf-8")
     proc = subprocess.run(
         [sys.executable, str(scripts / "add_contributor.py"),
          "cli@example.com", "cliperson", "via subprocess"],
         cwd=tmp_path, capture_output=True, text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text()
+    out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text(encoding="utf-8")
     assert out.splitlines()[0] == "cliperson"

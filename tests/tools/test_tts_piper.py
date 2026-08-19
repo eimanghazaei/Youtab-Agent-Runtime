@@ -63,7 +63,7 @@ class TestResolvePiperVoicePath:
 
     def test_empty_voice_falls_back_to_default_name(self, tmp_path):
         (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx").write_bytes(b"model")
-        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}")
+        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}", encoding="utf-8")
         result = _resolve_piper_voice_path("", tmp_path)
         assert result.endswith(f"{DEFAULT_PIPER_VOICE}.onnx")
 
@@ -111,7 +111,7 @@ class TestGeneratePiperTts:
     def _prepare_voice_files(self, tmp_path, voice=DEFAULT_PIPER_VOICE):
         model = tmp_path / f"{voice}.onnx"
         model.write_bytes(b"model")
-        (tmp_path / f"{voice}.onnx.json").write_text("{}")
+        (tmp_path / f"{voice}.onnx.json").write_text("{}", encoding="utf-8")
         return model
 
     def test_loads_voice_and_writes_wav(self, tmp_path, monkeypatch):
@@ -188,7 +188,7 @@ class TestTextToSpeechToolWithPiper:
     def test_dispatches_to_piper(self, tmp_path, monkeypatch):
         model = tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx"
         model.write_bytes(b"model")
-        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}")
+        (tmp_path / f"{DEFAULT_PIPER_VOICE}.onnx.json").write_text("{}", encoding="utf-8")
 
         monkeypatch.setattr(tts_tool, "_import_piper", lambda: _StubPiperVoice)
 

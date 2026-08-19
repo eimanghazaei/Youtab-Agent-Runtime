@@ -18,8 +18,8 @@ from youtab_agent_cli.commands import SlashCommandCompleter
 
 
 def _run(tmp_path: Path, word: str) -> list[tuple[str, str]]:
-    (tmp_path / "readme.md").write_text("x")
-    (tmp_path / ".env").write_text("x")
+    (tmp_path / "readme.md").write_text("x", encoding="utf-8")
+    (tmp_path / ".env").write_text("x", encoding="utf-8")
     (tmp_path / "src").mkdir()
     (tmp_path / "docs").mkdir()
 

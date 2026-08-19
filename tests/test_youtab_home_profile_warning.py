@@ -45,7 +45,7 @@ class TestGetYoutabHomeProfileWarning:
         """active_profile=coder + YOUTAB_AGENT_HOME unset → warn loudly, still return fallback."""
         youtab_dir = tmp_path / ".youtab-agent-runtime"
         youtab_dir.mkdir()
-        (youtab_dir / "active_profile").write_text("coder\n")
+        (youtab_dir / "active_profile").write_text("coder\n", encoding="utf-8")
 
         result = fresh_constants.get_youtab_home()
 
@@ -69,7 +69,7 @@ class TestGetYoutabHomeProfileWarning:
         """Even if active_profile is 'coder', setting YOUTAB_AGENT_HOME suppresses warning."""
         profile_dir = tmp_path / ".youtab-agent-runtime" / "profiles" / "coder"
         profile_dir.mkdir(parents=True)
-        (tmp_path / ".youtab-agent-runtime" / "active_profile").write_text("coder\n")
+        (tmp_path / ".youtab-agent-runtime" / "active_profile").write_text("coder\n", encoding="utf-8")
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(profile_dir))
 
         result = fresh_constants.get_youtab_home()

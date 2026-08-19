@@ -24,7 +24,7 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     marker = tmp_path / ".restart_pending.json"
 
     assert gateway_run._planned_restart_notification_pending() is False
-    marker.write_text("{}")
+    marker.write_text("{}", encoding="utf-8")
     assert gateway_run._planned_restart_notification_pending() is True
 
     gateway_run._clear_planned_restart_notification()
@@ -56,7 +56,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
 
     notify_path = tmp_path / ".restart_notify.json"
     assert notify_path.exists()
-    data = json.loads(notify_path.read_text())
+    data = json.loads(notify_path.read_text(encoding="utf-8"))
     assert data["platform"] == "telegram"
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
@@ -260,7 +260,8 @@ async def test_relay_restart_notification_uses_logical_platform_and_owner(tmp_pa
                 "scope_id": "T123",
                 "delivered_via_upstream_relay": True,
             }
-        )
+        ),
+        encoding="utf-8",
     )
 
     runner, _native = make_restart_runner()
@@ -306,7 +307,7 @@ async def test_send_restart_notification_logs_warning_on_sendresult_failure(
     notify_path.write_text(json.dumps({
         "platform": "telegram",
         "chat_id": "42",
-    }))
+    }), encoding="utf-8")
 
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock(
@@ -352,7 +353,7 @@ async def test_send_restart_notification_logs_info_on_sendresult_success(
     notify_path.write_text(json.dumps({
         "platform": "telegram",
         "chat_id": "42",
-    }))
+    }), encoding="utf-8")
 
     runner, adapter = make_restart_runner()
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="m-1"))

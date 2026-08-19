@@ -53,7 +53,7 @@ def test_shell_linter_skipped_when_lsp_will_handle(ext, tmp_path):
     """
     fops = _make_fops()
     src = tmp_path / f"bad{ext}"
-    src.write_text("intentionally invalid content\n")
+    src.write_text("intentionally invalid content\n", encoding="utf-8")
 
     def _exec_must_not_run(*args, **kwargs):  # pragma: no cover
         raise AssertionError(
@@ -83,7 +83,7 @@ def test_lsp_will_handle_swallows_enabled_for_exception(tmp_path):
     shell linter still runs."""
     fops = _make_fops()
     src = tmp_path / "foo.ts"
-    src.write_text("const x = 1\n")
+    src.write_text("const x = 1\n", encoding="utf-8")
 
     fake_svc = MagicMock()
     fake_svc.enabled_for.side_effect = RuntimeError("server crashed")
@@ -101,7 +101,7 @@ def test_tsx_default_check_lint_returns_skipped(tmp_path):
     contract that addresses Copilot review #3271017282."""
     fops = _make_fops()
     src = tmp_path / "foo.tsx"
-    src.write_text("export const X = () => <div/>\n")
+    src.write_text("export const X = () => <div/>\n", encoding="utf-8")
 
     # Even with LSP claiming the file, no shell linter runs for .tsx
     # because there's no LINTERS entry — the ``ext not in LINTERS``

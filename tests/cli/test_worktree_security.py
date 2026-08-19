@@ -12,7 +12,7 @@ def _can_symlink():
     try:
         with tempfile.TemporaryDirectory() as d:
             src = Path(d) / "src"
-            src.write_text("x")
+            src.write_text("x", encoding="utf-8")
             lnk = Path(d) / "lnk"
             lnk.symlink_to(src)
             return True
@@ -28,7 +28,7 @@ def git_repo(tmp_path):
     subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, capture_output=True)
-    (repo / "README.md").write_text("# Test Repo\n")
+    (repo / "README.md").write_text("# Test Repo\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "commit", "-m", "Initial commit"], cwd=repo, check=True, capture_output=True)
     return repo
@@ -56,8 +56,8 @@ class TestWorktreeIncludeSecurity:
         import cli as cli_mod
 
         outside_file = git_repo.parent / "sensitive.txt"
-        outside_file.write_text("SENSITIVE DATA")
-        (git_repo / ".worktreeinclude").write_text("../sensitive.txt\n")
+        outside_file.write_text("SENSITIVE DATA", encoding="utf-8")
+        (git_repo / ".worktreeinclude").write_text("../sensitive.txt\n", encoding="utf-8")
 
         info = None
         try:
@@ -75,8 +75,8 @@ class TestWorktreeIncludeSecurity:
 
         outside_dir = git_repo.parent / "outside-dir"
         outside_dir.mkdir()
-        (outside_dir / "secret.txt").write_text("SENSITIVE DIR DATA")
-        (git_repo / ".worktreeinclude").write_text("../outside-dir\n")
+        (outside_dir / "secret.txt").write_text("SENSITIVE DIR DATA", encoding="utf-8")
+        (git_repo / ".worktreeinclude").write_text("../outside-dir\n", encoding="utf-8")
 
         info = None
         try:
@@ -95,9 +95,9 @@ class TestWorktreeIncludeSecurity:
         import cli as cli_mod
 
         outside_file = git_repo.parent / "linked-secret.txt"
-        outside_file.write_text("LINKED SECRET")
+        outside_file.write_text("LINKED SECRET", encoding="utf-8")
         (git_repo / "leak.txt").symlink_to(outside_file)
-        (git_repo / ".worktreeinclude").write_text("leak.txt\n")
+        (git_repo / ".worktreeinclude").write_text("leak.txt\n", encoding="utf-8")
 
         info = None
         try:
@@ -111,8 +111,8 @@ class TestWorktreeIncludeSecurity:
     def test_allows_valid_file_include(self, git_repo):
         import cli as cli_mod
 
-        (git_repo / ".env").write_text("SECRET=***\n")
-        (git_repo / ".worktreeinclude").write_text(".env\n")
+        (git_repo / ".env").write_text("SECRET=***\n", encoding="utf-8")
+        (git_repo / ".worktreeinclude").write_text(".env\n", encoding="utf-8")
 
         info = None
         try:
@@ -121,7 +121,7 @@ class TestWorktreeIncludeSecurity:
 
             copied = Path(info["path"]) / ".env"
             assert copied.exists()
-            assert copied.read_text() == "SECRET=***\n"
+            assert copied.read_text(encoding="utf-8") == "SECRET=***\n"
         finally:
             _force_remove_worktree(info)
 
@@ -131,8 +131,8 @@ class TestWorktreeIncludeSecurity:
 
         assets_dir = git_repo / ".venv" / "lib"
         assets_dir.mkdir(parents=True)
-        (assets_dir / "marker.txt").write_text("venv marker")
-        (git_repo / ".worktreeinclude").write_text(".venv\n")
+        (assets_dir / "marker.txt").write_text("venv marker", encoding="utf-8")
+        (git_repo / ".worktreeinclude").write_text(".venv\n", encoding="utf-8")
 
         info = None
         try:
@@ -141,7 +141,7 @@ class TestWorktreeIncludeSecurity:
 
             linked_dir = Path(info["path"]) / ".venv"
             assert linked_dir.is_symlink()
-            assert (linked_dir / "lib" / "marker.txt").read_text() == "venv marker"
+            assert (linked_dir / "lib" / "marker.txt").read_text(encoding="utf-8") == "venv marker"
         finally:
             _force_remove_worktree(info)
 

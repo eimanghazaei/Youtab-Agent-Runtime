@@ -265,7 +265,7 @@ mode = "test"
 
 
 def test_manifest_fields():
-    data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text())
+    data = yaml.safe_load((PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8"))
     assert data["name"] == "nemo_relay"
     assert set(data["hooks"]) == {
         "on_session_start",

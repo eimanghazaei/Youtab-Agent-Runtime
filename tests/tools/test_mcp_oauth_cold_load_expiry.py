@@ -71,7 +71,7 @@ class TestSetTokensAbsoluteExpiry:
         after = time.time()
 
         on_disk = json.loads(
-            (tmp_path / "mcp-tokens" / "srv.json").read_text()
+            (tmp_path / "mcp-tokens" / "srv.json").read_text(encoding="utf-8")
         )
         assert "expires_at" in on_disk, (
             "Fix A: set_tokens must record an absolute expires_at wall-clock "
@@ -101,7 +101,7 @@ class TestSetTokensAbsoluteExpiry:
         )
 
         on_disk = json.loads(
-            (tmp_path / "mcp-tokens" / "srv.json").read_text()
+            (tmp_path / "mcp-tokens" / "srv.json").read_text(encoding="utf-8")
         )
         assert "expires_at" not in on_disk
 
@@ -156,7 +156,8 @@ class TestGetTokensReconstructsExpiresIn:
                     "expires_at": time.time() - 60,  # expired 1 min ago
                     "refresh_token": "r",
                 }
-            )
+            ),
+            encoding="utf-8",
         )
 
         storage = YoutabTokenStorage("srv")
@@ -194,7 +195,8 @@ class TestGetTokensReconstructsExpiresIn:
                     "expires_in": 3600,
                     "refresh_token": "r",
                 }
-            )
+            ),
+            encoding="utf-8",
         )
         stale_time = time.time() - 7200  # 2hr ago, exceeds 3600s TTL
         import os

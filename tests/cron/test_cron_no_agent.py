@@ -55,7 +55,7 @@ def test_update_job_roundtrips_no_agent_flag(youtab_env):
     from cron.jobs import create_job, update_job, get_job
 
     script_path = youtab_env / "scripts" / "w.sh"
-    script_path.write_text("echo hi\n")
+    script_path.write_text("echo hi\n", encoding="utf-8")
     job = create_job(prompt=None, schedule="every 5m", script="w.sh", no_agent=True, deliver="local")
 
     update_job(job["id"], {"no_agent": False})
@@ -93,7 +93,7 @@ def test_run_job_no_agent_success_returns_script_stdout(youtab_env):
     from cron.scheduler import run_job
 
     script_path = youtab_env / "scripts" / "alert.sh"
-    script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n")
+    script_path.write_text("#!/bin/bash\necho 'RAM 92% on host'\n", encoding="utf-8")
 
     job = create_job(
         prompt=None, schedule="every 5m", script="alert.sh", no_agent=True, deliver="local"

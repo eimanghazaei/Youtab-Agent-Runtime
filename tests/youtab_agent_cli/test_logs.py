@@ -132,7 +132,7 @@ class TestReadTail:
     def test_read_small_file(self, tmp_path):
         log_file = tmp_path / "test.log"
         lines = [f"2026-01-01 00:00:0{i} INFO x: line {i}\n" for i in range(10)]
-        log_file.write_text("".join(lines))
+        log_file.write_text("".join(lines), encoding="utf-8")
 
         result = _read_last_n_lines(log_file, 5)
         assert len(result) == 5

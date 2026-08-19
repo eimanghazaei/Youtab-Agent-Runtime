@@ -131,7 +131,7 @@ class TestPairingStore(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.mkdtemp()
         self._pairing_file = Path(self._tmpdir) / "pairing.json"
-        with open(self._pairing_file, "w") as f:
+        with open(self._pairing_file, "w", encoding="utf-8") as f:
             json.dump({"approved": {}}, f)
         self._patcher_file = patch("plugins.platforms.feishu.feishu_comment_rules.PAIRING_FILE", self._pairing_file)
         self._patcher_cache = patch(

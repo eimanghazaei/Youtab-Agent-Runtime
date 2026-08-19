@@ -1095,10 +1095,10 @@ class TestUserOAuthHelper:
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
         users_dir = tmp_path / "google_chat_user_tokens"
         users_dir.mkdir(parents=True)
-        (users_dir / "alice@example.com.json").write_text("{}")
-        (users_dir / "bob@example.com.json").write_text("{}")
+        (users_dir / "alice@example.com.json").write_text("{}", encoding="utf-8")
+        (users_dir / "bob@example.com.json").write_text("{}", encoding="utf-8")
         # Legacy file should NOT appear in the list.
-        (tmp_path / "google_chat_user_token.json").write_text("{}")
+        (tmp_path / "google_chat_user_token.json").write_text("{}", encoding="utf-8")
 
         from plugins.platforms.google_chat.oauth import list_authorized_emails
         assert list_authorized_emails() == [
@@ -1143,7 +1143,7 @@ class TestPerUserAttachmentRouting:
             "type": "authorized_user",
             "client_id": "cid", "client_secret": "csec",
             "refresh_token": "rtok", "token": "atok",
-        }))
+        }), encoding="utf-8")
         adapter._last_sender_by_chat["spaces/S"] = "alice@example.com"
 
         per_user_api = MagicMock()
@@ -1237,7 +1237,7 @@ class TestThreadCountStore:
         as fresh, move on. The next incr() will overwrite."""
         from plugins.platforms.google_chat.adapter import _ThreadCountStore
         path = tmp_path / "counts.json"
-        path.write_text("not valid json {")
+        path.write_text("not valid json {", encoding="utf-8")
         store = _ThreadCountStore(path)
         store.load()
         assert store.get("spaces/X", "spaces/X/threads/T") == 0
@@ -1246,7 +1246,7 @@ class TestThreadCountStore:
         assert prev == 0
         # File now has valid JSON.
         import json
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         assert data == {"spaces/X": {"spaces/X/threads/T": 1}}
 
 
@@ -1703,7 +1703,7 @@ class TestGoogleChatStandaloneSend:
             "client_email": "bot@example.iam.gserviceaccount.com",
             "private_key": "fake",
             "token_uri": "https://example/token",
-        }))
+        }), encoding="utf-8")
         monkeypatch.setenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON", str(sa_file))
 
         fake_creds = MagicMock()

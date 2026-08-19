@@ -40,7 +40,7 @@ class TestResolveVerifyFallback:
         from youtab_agent_cli.auth import _resolve_verify
 
         ca_file = tmp_path / "ca-bundle.pem"
-        ca_file.write_text("fake cert")
+        ca_file.write_text("fake cert", encoding="utf-8")
 
         # Avoid loading actual PEM — just verify the return type
         mock_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -118,7 +118,7 @@ def _setup_youtab_auth(
             }
         },
     }
-    (youtab_home / "auth.json").write_text(json.dumps(auth_store, indent=2))
+    (youtab_home / "auth.json").write_text(json.dumps(auth_store, indent=2), encoding="utf-8")
 
 
 def _jwt_with_claims(claims: dict) -> str:
@@ -164,7 +164,7 @@ def test_resolve_youtab_runtime_credentials_prefers_invoke_jwt_and_mirrors(
     assert creds["source"] == auth_mod.YOUTAB_AUTH_PATH_INVOKE_JWT
     assert creds["auth_path"] == auth_mod.YOUTAB_AUTH_PATH_INVOKE_JWT
 
-    payload = json.loads((youtab_home / "auth.json").read_text())
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     singleton = payload["providers"]["youtab"]
     assert singleton["agent_key"] == token
     assert datetime.fromisoformat(singleton["agent_key_expires_at"]).timestamp() > time.time() + 300
@@ -217,8 +217,8 @@ def test_resolve_youtab_runtime_credentials_invoke_jwt_is_idempotent(
         },
     }
     auth_path = youtab_home / "auth.json"
-    auth_path.write_text(json.dumps(auth_store, indent=2))
-    before_content = auth_path.read_text()
+    auth_path.write_text(json.dumps(auth_store, indent=2), encoding="utf-8")
+    before_content = auth_path.read_text(encoding="utf-8")
     before_mtime = auth_path.stat().st_mtime_ns
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
@@ -238,10 +238,10 @@ def test_resolve_youtab_runtime_credentials_invoke_jwt_is_idempotent(
 
     assert creds["api_key"] == token
     assert creds["source"] == auth_mod.YOUTAB_AUTH_PATH_INVOKE_JWT
-    assert auth_path.read_text() == before_content
+    assert auth_path.read_text(encoding="utf-8") == before_content
     assert auth_path.stat().st_mtime_ns == before_mtime
     assert sync_calls == []
-    payload = json.loads(auth_path.read_text())
+    payload = json.loads(auth_path.read_text(encoding="utf-8"))
     assert (
         payload["providers"]["youtab"]["agent_key_obtained_at"]
         == original_obtained_at
@@ -275,7 +275,7 @@ def test_resolve_youtab_runtime_credentials_reauths_when_invoke_scope_missing(
 
     assert exc.value.code == "missing_inference_invoke_scope"
     assert exc.value.relogin_required is True
-    payload = json.loads((youtab_home / "auth.json").read_text())
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     assert payload["providers"]["youtab"]["agent_key"] is None
     assert "credential_pool" not in payload or not payload["credential_pool"].get("youtab")
 
@@ -300,7 +300,7 @@ def test_removed_legacy_session_env_var_does_not_change_jwt_auth(tmp_path, monke
     creds = auth_mod.resolve_youtab_runtime_credentials()
 
     assert creds["api_key"] == token
-    payload = json.loads((youtab_home / "auth.json").read_text())
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     assert payload["providers"]["youtab"]["agent_key"] == token
 
     requested_scopes = []
@@ -404,7 +404,7 @@ def test_get_youtab_auth_status_checks_credential_pool(tmp_path, monkeypatch):
     # Empty auth store — no Youtab provider entry
     (youtab_home / "auth.json").write_text(json.dumps({
         "version": 1, "providers": {},
-    }))
+    }), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     # Seed the credential pool with a Youtab entry
@@ -442,7 +442,7 @@ def test_get_youtab_auth_status_empty_returns_not_logged_in(tmp_path, monkeypatc
     youtab_home.mkdir(parents=True, exist_ok=True)
     (youtab_home / "auth.json").write_text(json.dumps({
         "version": 1, "providers": {},
-    }))
+    }), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     status = get_youtab_auth_status()
@@ -482,14 +482,14 @@ class TestLoginYoutabSkipKeepsCurrent:
                 "provider": "openrouter",
                 "default": "anthropic/claude-opus-4.6",
             },
-        }, sort_keys=False))
+        }, sort_keys=False), encoding="utf-8")
 
         auth_path = youtab_home / "auth.json"
         auth_path.write_text(json.dumps({
             "version": 1,
             "active_provider": "openrouter",
             "providers": {"openrouter": {"api_key": "sk-or-fake"}},
-        }))
+        }), encoding="utf-8")
         return youtab_home, config_path, auth_path
 
     def _patch_login_internals(self, monkeypatch, *, prompt_returns):
@@ -547,13 +547,13 @@ class TestLoginYoutabSkipKeepsCurrent:
         _login_youtab(args, PROVIDER_REGISTRY["youtab"])
 
         # config.yaml model section must be unchanged
-        cfg_after = yaml.safe_load(config_path.read_text())
+        cfg_after = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert cfg_after["model"]["provider"] == "openrouter"
         assert cfg_after["model"]["default"] == "anthropic/claude-opus-4.6"
         assert "base_url" not in cfg_after["model"]
 
         # auth.json: active_provider restored to openrouter, but Youtab creds saved
-        auth_after = json.loads(auth_path.read_text())
+        auth_after = json.loads(auth_path.read_text(encoding="utf-8"))
         assert auth_after["active_provider"] == "openrouter"
         assert "youtab" in auth_after["providers"]
         assert auth_after["providers"]["youtab"]["access_token"] == "fake-youtab-token"
@@ -579,12 +579,12 @@ class TestLoginYoutabSkipKeepsCurrent:
         )
         _login_youtab(args, PROVIDER_REGISTRY["youtab"])
 
-        cfg_after = yaml.safe_load(config_path.read_text())
+        cfg_after = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert cfg_after["model"]["provider"] == "youtab"
         assert cfg_after["model"]["default"] == "xiaomi/mimo-v2-pro"
         assert free_tier_calls == [{"force_fresh": True}]
 
-        auth_after = json.loads(auth_path.read_text())
+        auth_after = json.loads(auth_path.read_text(encoding="utf-8"))
         assert auth_after["active_provider"] == "youtab"
 
     def test_skip_with_no_prior_active_provider_clears_it(self, tmp_path, monkeypatch):
@@ -599,7 +599,7 @@ class TestLoginYoutabSkipKeepsCurrent:
         monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
         config_path = youtab_home / "config.yaml"
-        config_path.write_text(yaml.safe_dump({"model": {}}, sort_keys=False))
+        config_path.write_text(yaml.safe_dump({"model": {}}, sort_keys=False), encoding="utf-8")
 
         # No auth.json yet — simulates first-run before any OAuth
         self._patch_login_internals(monkeypatch, prompt_returns=None)
@@ -611,7 +611,7 @@ class TestLoginYoutabSkipKeepsCurrent:
         _login_youtab(args, PROVIDER_REGISTRY["youtab"])
 
         auth_path = youtab_home / "auth.json"
-        auth_after = json.loads(auth_path.read_text())
+        auth_after = json.loads(auth_path.read_text(encoding="utf-8"))
         # active_provider should NOT be set to "youtab" after Skip
         assert auth_after.get("active_provider") in {None, ""}
         # But Youtab creds are still saved
@@ -665,7 +665,7 @@ def test_persist_youtab_credentials_writes_both_pool_and_providers(tmp_path, mon
     youtab_home.mkdir(parents=True, exist_ok=True)
     (youtab_home / "auth.json").write_text(json.dumps({
         "version": 1, "providers": {},
-    }))
+    }), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     state = _full_state_fixture()
@@ -675,7 +675,7 @@ def test_persist_youtab_credentials_writes_both_pool_and_providers(tmp_path, mon
     assert entry.provider == "youtab"
     assert entry.source == YOUTAB_DEVICE_CODE_SOURCE
 
-    payload = json.loads((youtab_home / "auth.json").read_text())
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
 
     # providers.youtab populated with the full state (new behaviour)
     singleton = payload["providers"]["youtab"]
@@ -709,7 +709,7 @@ def test_persist_youtab_credentials_idempotent_no_duplicate_pool_entries(tmp_pat
     youtab_home.mkdir(parents=True, exist_ok=True)
     (youtab_home / "auth.json").write_text(json.dumps({
         "version": 1, "providers": {},
-    }))
+    }), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     first = _full_state_fixture()
@@ -722,7 +722,7 @@ def test_persist_youtab_credentials_idempotent_no_duplicate_pool_entries(tmp_pat
     second["agent_key_expires_at"] = _future_iso(7200)
     persist_youtab_credentials(second)
 
-    payload = json.loads((youtab_home / "auth.json").read_text())
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
 
     # providers.youtab reflects the latest write (singleton semantics)
     assert payload["providers"]["youtab"]["access_token"] == second_token
@@ -749,7 +749,7 @@ def test_persist_youtab_credentials_no_label_uses_auto_derived(tmp_path, monkeyp
     youtab_home.mkdir(parents=True, exist_ok=True)
     (youtab_home / "auth.json").write_text(json.dumps({
         "version": 1, "providers": {},
-    }))
+    }), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     entry = persist_youtab_credentials(_full_state_fixture())
@@ -761,7 +761,7 @@ def test_persist_youtab_credentials_no_label_uses_auto_derived(tmp_path, monkeyp
     assert entry.label != "my-personal"
 
     # No "label" key embedded in providers.youtab when the caller didn't supply one.
-    payload = json.loads((youtab_home / "auth.json").read_text())
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     assert "label" not in payload["providers"]["youtab"]
 
 
@@ -931,14 +931,15 @@ def test_persist_youtab_credentials_mirrors_to_shared_store(
     youtab_home = tmp_path / "youtab"
     youtab_home.mkdir(parents=True, exist_ok=True)
     (youtab_home / "auth.json").write_text(
-        json.dumps({"version": 1, "providers": {}})
+        json.dumps({"version": 1, "providers": {}}),
+        encoding="utf-8",
     )
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
 
     persist_youtab_credentials(_full_state_fixture())
 
     # Per-profile auth.json populated
-    payload = json.loads((youtab_home / "auth.json").read_text())
+    payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     assert "youtab" in payload.get("providers", {})
 
     # Shared store populated with the same refresh_token
@@ -1012,7 +1013,7 @@ class TestStalePortalBaseUrlMigration:
                     "refresh_token": "test-refresh",
                 }
             },
-        }))
+        }), encoding="utf-8")
 
         store = _load_auth_store(auth_file)
         youtab = store["providers"]["youtab"]
@@ -1038,11 +1039,11 @@ class TestStalePortalBaseUrlMigration:
             expires_in=0,
         )
         auth_file = youtab_home / "auth.json"
-        store = json.loads(auth_file.read_text())
+        store = json.loads(auth_file.read_text(encoding="utf-8"))
         store["providers"]["youtab"]["portal_base_url"] = (
             "http://api.youtab.io"
         )
-        auth_file.write_text(json.dumps(store, indent=2))
+        auth_file.write_text(json.dumps(store, indent=2), encoding="utf-8")
 
         refresh_calls = []
 

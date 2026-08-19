@@ -104,7 +104,7 @@ class TestUserSkins:
             "tool_prefix": "▸",
         }
         import yaml
-        skin_file.write_text(yaml.dump(skin_data))
+        skin_file.write_text(yaml.dump(skin_data), encoding="utf-8")
 
         # Patch skins dir
         monkeypatch.setattr("youtab_agent_cli.skin_engine._skins_dir", lambda: skins_dir)
@@ -156,7 +156,7 @@ class TestUserSkins:
         (skins_dir / "pirate.yaml").write_text(yaml.dump({
             "name": "pirate",
             "description": "Arr matey",
-        }))
+        }), encoding="utf-8")
         monkeypatch.setattr("youtab_agent_cli.skin_engine._skins_dir", lambda: skins_dir)
 
         skins = list_skins()

@@ -37,7 +37,7 @@ def test_clamp_collision_emits_warning_naming_both_skills(
     for nm in (name_a, name_b):
         d = skills_dir / "creative" / nm
         d.mkdir(parents=True)
-        (d / "SKILL.md").write_text("---\nname: x\n---\n")
+        (d / "SKILL.md").write_text("---\nname: x\n---\n", encoding="utf-8")
 
     fake_cmds = {
         f"/{name_a}": {

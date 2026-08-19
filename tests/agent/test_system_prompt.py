@@ -88,7 +88,7 @@ def _init_code_repo(path):
     import subprocess
 
     subprocess.run(["git", "-C", str(path), "init", "-q"], check=True)
-    (path / "main.py").write_text("print('hi')\n")
+    (path / "main.py").write_text("print('hi')\n", encoding="utf-8")
 
 
 class TestCodingContextBlock:

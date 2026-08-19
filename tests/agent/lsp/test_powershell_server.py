@@ -37,7 +37,7 @@ def _make_fake_bundle(root) -> str:
     bundle = root / "PowerShellEditorServices"
     inner = bundle / "PowerShellEditorServices"
     inner.mkdir(parents=True)
-    (inner / "Start-EditorServices.ps1").write_text("# fake")
+    (inner / "Start-EditorServices.ps1").write_text("# fake", encoding="utf-8")
     return str(bundle)
 
 

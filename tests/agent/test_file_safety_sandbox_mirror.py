@@ -36,7 +36,7 @@ class TestClassifySandboxMirrorTarget:
             / "profiles" / "group1" / "SOUL.md"
         )
         target.parent.mkdir(parents=True)
-        target.write_text("# mirror copy\n")
+        target.write_text("# mirror copy\n", encoding="utf-8")
 
         result = classify_sandbox_mirror_target(str(target))
         assert result is not None
@@ -64,7 +64,7 @@ class TestClassifySandboxMirrorTarget:
             / Path(inner)
         )
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("x")
+        target.write_text("x", encoding="utf-8")
 
         result = classify_sandbox_mirror_target(str(target))
         assert result is not None
@@ -88,7 +88,7 @@ class TestGetSandboxMirrorWarning:
 
         target = tmp_path / ".youtab-agent-runtime" / "profiles" / "group1" / "SOUL.md"
         target.parent.mkdir(parents=True)
-        target.write_text("# real SOUL\n")
+        target.write_text("# real SOUL\n", encoding="utf-8")
 
         assert get_sandbox_mirror_warning(str(target)) is None
 
@@ -102,7 +102,7 @@ class TestGetSandboxMirrorWarning:
             / "profiles" / "group1" / "SOUL.md"
         )
         target.parent.mkdir(parents=True)
-        target.write_text("# mirror copy\n")
+        target.write_text("# mirror copy\n", encoding="utf-8")
 
         warn = get_sandbox_mirror_warning(str(target))
         assert warn is not None
@@ -122,7 +122,7 @@ class TestGetSandboxMirrorWarning:
             / "profiles" / "g" / "SOUL.md"
         )
         target.parent.mkdir(parents=True)
-        target.write_text("x")
+        target.write_text("x", encoding="utf-8")
 
         warn = get_sandbox_mirror_warning(str(target))
         # Must self-document as defense-in-depth so future reviewers
@@ -153,7 +153,7 @@ class TestSandboxMirrorIsOrthogonalToCrossProfile:
             / "profiles" / "group1" / "SOUL.md"
         )
         target.parent.mkdir(parents=True)
-        target.write_text("x")
+        target.write_text("x", encoding="utf-8")
 
         # cross-profile classifier: active profile == target's inner-mirror
         # profile name; on the existing detector the path's parts[2] is

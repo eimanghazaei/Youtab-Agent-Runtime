@@ -33,7 +33,7 @@ class TestDiscordThreadPersistence:
 
         state_file = tmp_path / "discord_threads.json"
         assert state_file.exists()
-        saved = json.loads(state_file.read_text())
+        saved = json.loads(state_file.read_text(encoding="utf-8"))
         assert set(saved) == {"111", "222"}
 
     def test_threads_survive_restart(self, tmp_path):

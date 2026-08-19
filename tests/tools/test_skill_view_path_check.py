@@ -27,7 +27,7 @@ class TestSkillViewPathBoundaryCheck:
         ref_file = skill_dir / "references" / "api.md"
         skill_dir.mkdir(parents=True)
         ref_file.parent.mkdir()
-        ref_file.write_text("content")
+        ref_file.write_text("content", encoding="utf-8")
 
         resolved = ref_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
@@ -40,7 +40,7 @@ class TestSkillViewPathBoundaryCheck:
         skill_dir = tmp_path / "skills" / "axolotl"
         skill_dir.mkdir(parents=True)
         outside_file = tmp_path / "secret.env"
-        outside_file.write_text("SECRET=123")
+        outside_file.write_text("SECRET=123", encoding="utf-8")
 
         resolved = outside_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
@@ -58,7 +58,7 @@ class TestSkillViewPathBoundaryCheck:
         skill_dir.mkdir(parents=True)
         sibling_dir.mkdir(parents=True)
         sibling_file = sibling_dir / "SKILL.md"
-        sibling_file.write_text("other skill")
+        sibling_file.write_text("other skill", encoding="utf-8")
 
         resolved = sibling_file.resolve()
         skill_dir_resolved = skill_dir.resolve()
@@ -93,7 +93,7 @@ class TestOldCheckWouldFail:
         ref_file = skill_dir / "references" / "api.md"
         skill_dir.mkdir(parents=True)
         ref_file.parent.mkdir()
-        ref_file.write_text("content")
+        ref_file.write_text("content", encoding="utf-8")
 
         resolved = ref_file.resolve()
         skill_dir_resolved = skill_dir.resolve()

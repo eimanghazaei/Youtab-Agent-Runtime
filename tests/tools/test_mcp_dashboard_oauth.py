@@ -103,11 +103,11 @@ def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatc
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
     storage = YoutabTokenStorage("reports")
     storage._tokens_path().parent.mkdir(parents=True)
-    storage._tokens_path().write_text("OLD")
+    storage._tokens_path().write_text("OLD", encoding="utf-8")
     backup = storage.snapshot()
     storage.remove()
 
-    storage._tokens_path().write_text("FRESH")
+    storage._tokens_path().write_text("FRESH", encoding="utf-8")
     storage.restore(backup, only_if_absent=True)
 
-    assert storage._tokens_path().read_text() == "FRESH"
+    assert storage._tokens_path().read_text(encoding="utf-8") == "FRESH"

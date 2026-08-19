@@ -197,7 +197,7 @@ class TestStaleConfigDefaultDoesNotWedgeResolver:
         monkeypatch.setenv("OPENCODE_ZEN_API_KEY", "test-key")
         (tmp_path / "config.yaml").write_text(yaml.safe_dump({
             "model": {"provider": "opencode-zen", "default": "claude-sonnet-4-6"},
-        }))
+        }), encoding="utf-8")
 
         # Re-import with the new YOUTAB_AGENT_HOME so config cache is fresh.
         import youtab_agent_cli.config as _cfg_mod

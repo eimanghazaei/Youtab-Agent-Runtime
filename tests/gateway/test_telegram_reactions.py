@@ -141,7 +141,7 @@ def test_config_bridges_telegram_reactions(monkeypatch, tmp_path):
         "telegram": {
             "reactions": True,
         },
-    }))
+    }), encoding="utf-8")
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
     # Use setenv (not delenv) so monkeypatch registers cleanup even when
     # the var doesn't exist yet — load_gateway_config will overwrite it.

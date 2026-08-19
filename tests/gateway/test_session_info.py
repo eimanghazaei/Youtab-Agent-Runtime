@@ -16,7 +16,7 @@ def _patch_info(tmp_path, config_yaml, model, runtime):
     """Return a context-manager stack that patches _format_session_info deps."""
     cfg_path = tmp_path / "config.yaml"
     if config_yaml is not None:
-        cfg_path.write_text(config_yaml)
+        cfg_path.write_text(config_yaml, encoding="utf-8")
     return (
         patch("gateway.run._youtab_home", tmp_path),
         patch("gateway.run._resolve_gateway_model", return_value=model),
@@ -85,9 +85,9 @@ class TestResetNoticeSessionInfo:
         profile.mkdir(parents=True)
         base.mkdir()
         base.joinpath("config.yaml").write_text(
-            "model:\n  default: base-model\n  provider: custom\n  context_length: 1000\n")
+            "model:\n  default: base-model\n  provider: custom\n  context_length: 1000\n", encoding="utf-8")
         profile.joinpath("config.yaml").write_text(
-            "model:\n  default: profile-model\n  provider: anthropic\n  context_length: 2000\n")
+            "model:\n  default: profile-model\n  provider: anthropic\n  context_length: 2000\n", encoding="utf-8")
         return base, profile
 
     def test_multiplex_uses_profile_config(self, runner, tmp_path):

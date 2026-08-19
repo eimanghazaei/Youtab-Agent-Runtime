@@ -41,7 +41,7 @@ class TestConfigYamlBridging:
     def test_reply_prefix_bridged_from_yaml(self, tmp_path):
         """whatsapp.reply_prefix in config.yaml sets PlatformConfig.extra."""
         config_yaml = tmp_path / "config.yaml"
-        config_yaml.write_text('whatsapp:\n  reply_prefix: "Custom Bot"\n')
+        config_yaml.write_text('whatsapp:\n  reply_prefix: "Custom Bot"\n', encoding="utf-8")
 
         with patch("gateway.config.get_youtab_home", return_value=tmp_path):
             from gateway.config import load_gateway_config
@@ -56,7 +56,7 @@ class TestConfigYamlBridging:
     def test_empty_reply_prefix_bridged(self, tmp_path):
         """Empty string reply_prefix disables the header."""
         config_yaml = tmp_path / "config.yaml"
-        config_yaml.write_text('whatsapp:\n  reply_prefix: ""\n')
+        config_yaml.write_text('whatsapp:\n  reply_prefix: ""\n', encoding="utf-8")
 
         with patch("gateway.config.get_youtab_home", return_value=tmp_path):
             from gateway.config import load_gateway_config

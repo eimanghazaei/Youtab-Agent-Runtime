@@ -23,7 +23,7 @@ from gateway.platforms.base import BasePlatformAdapter
 @pytest.fixture()
 def real_file(tmp_path):
     p = tmp_path / "data.csv"
-    p.write_text("x,y\n1,2\n")
+    p.write_text("x,y\n1,2\n", encoding="utf-8")
     return str(p)
 
 
@@ -62,8 +62,8 @@ class TestEmphasisAndDedupeIntegration:
     def test_two_tags_one_line_both_deliver(self, tmp_path):
         a = tmp_path / "a.csv"
         b = tmp_path / "b.csv"
-        a.write_text("1")
-        b.write_text("2")
+        a.write_text("1", encoding="utf-8")
+        b.write_text("2", encoding="utf-8")
         media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{a} MEDIA:{b}")
         assert [p for p, _ in media] == [str(a), str(b)]
 

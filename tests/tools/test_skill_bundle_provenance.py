@@ -39,7 +39,7 @@ def served_repo(tmp_path, monkeypatch):
 
     repo = tmp_path / "upstream"
     repo.mkdir()
-    (repo / "SKILL.md").write_text(SKILL_MD)
+    (repo / "SKILL.md").write_text(SKILL_MD, encoding="utf-8")
     for rel, content in {
         "references/guide.md": "safe guide\n",
         "templates/report.md": "report\n",
@@ -54,7 +54,7 @@ def served_repo(tmp_path, monkeypatch):
         if isinstance(content, bytes):
             path.write_bytes(content)
         else:
-            path.write_text(content)
+            path.write_text(content, encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(
@@ -153,13 +153,13 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
     do_install(url, console=Console(file=sink, force_terminal=False), skip_confirm=True)
 
     installed = home / "skills" / "demo-bundle"
-    assert (installed / "references" / "guide.md").read_text() == "safe guide\n"
+    assert (installed / "references" / "guide.md").read_text(encoding="utf-8") == "safe guide\n"
     assert (installed / "templates" / "report.md").is_file()
     assert (installed / "scripts" / "run.py").is_file()
     assert (installed / "examples" / "endpoint-inventory.md").is_file()
     assert not (installed / "examples" / "not-installed.md").exists()
     assert (installed / "assets" / "logo.png").read_bytes() == b"\x89PNG\r\n\x1a\n\x00\xff"
-    entry = json.loads((home / "skills" / ".hub" / "lock.json").read_text())["installed"]["demo-bundle"]
+    entry = json.loads((home / "skills" / ".hub" / "lock.json").read_text(encoding="utf-8"))["installed"]["demo-bundle"]
     assert entry["scan_provenance"]["source_url"] == url
     assert entry["scan_provenance"]["fresh"] is True
     assert "Scan provenance: fresh" in sink.getvalue()
@@ -171,8 +171,8 @@ def test_bundled_optional_source_still_includes_support_files(tmp_path, monkeypa
     root = tmp_path / "optional-skills"
     skill = root / "category" / "official-demo"
     (skill / "references").mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: official-demo\ndescription: demo\n---\n")
-    (skill / "references" / "all.md").write_text("all")
+    (skill / "SKILL.md").write_text("---\nname: official-demo\ndescription: demo\n---\n", encoding="utf-8")
+    (skill / "references" / "all.md").write_text("all", encoding="utf-8")
     source = OptionalSkillSource()
     source._optional_dir = root
 

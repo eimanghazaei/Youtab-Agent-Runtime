@@ -926,7 +926,7 @@ class TestDefaultInteractionDispatch:
 
         response = youtab_home / ".update_response"
         assert response.exists()
-        assert response.read_text() == "y"
+        assert response.read_text(encoding="utf-8") == "y"
 
 
 class TestSendExecApproval:

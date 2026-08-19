@@ -258,7 +258,7 @@ def test_pause_windows_gateways_for_update_stops_profile_and_unmapped_pids(
     assert waited_for == [101]
     assert terminated == [(202, True)]
 
-    marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text())
+    marker = json.loads((profile_home / ".gateway-planned-stop.json").read_text(encoding="utf-8"))
     assert marker["target_pid"] == 101
     assert marker["stopper_pid"] == os.getpid()
 

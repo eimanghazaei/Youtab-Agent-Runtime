@@ -354,10 +354,10 @@ class TestMatrixConfigBridge:
         import yaml
 
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(yaml.dump(yaml_content))
+        config_file.write_text(yaml.dump(yaml_content), encoding="utf-8")
 
         # Simulate the bridge logic from gateway/config.py
-        yaml_cfg = yaml.safe_load(config_file.read_text())
+        yaml_cfg = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         matrix_cfg = yaml_cfg.get("matrix", {})
         if isinstance(matrix_cfg, dict):
             if "require_mention" in matrix_cfg and not os.getenv(

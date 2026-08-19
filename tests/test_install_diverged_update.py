@@ -20,7 +20,7 @@ INSTALL_PS1 = REPO_ROOT / "scripts" / "install.ps1"
 
 
 def _extract_install_sh_update_block() -> str:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
     match = re.search(
         r"(?P<block>git checkout \"\$BRANCH\".*?fi\n\n            if \[ -n \"\$autostash_ref\" \])",
         text,
@@ -31,7 +31,7 @@ def _extract_install_sh_update_block() -> str:
 
 
 def _extract_install_ps1_branch_update_block() -> str:
-    text = INSTALL_PS1.read_text()
+    text = INSTALL_PS1.read_text(encoding="utf-8")
     match = re.search(
         r"(?P<block>git -c windows\.appendAtomically=false checkout \$Branch.*?elseif \(\$Tag\))",
         text,
