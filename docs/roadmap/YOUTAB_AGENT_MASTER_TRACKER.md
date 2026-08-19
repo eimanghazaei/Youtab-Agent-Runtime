@@ -65,7 +65,7 @@ different router than production builds.
 | 12 | Tenant/user event filtering | QUEUED | scope gate exists; payload filtering does not |
 | 13 | Governed CSRF secret-file contract | QUEUED | `YOUTAB_CSRF_SECRET_FILE`, ≥32 bytes, fail closed |
 | 14 | Agent Intelligence Floor | QUEUED | needs a measured baseline before it can gate |
-| 15 | Cognitive-growth & persistent-memory ADR | QUEUED | blocking prerequisite for Sandbox/Workspace |
+| 15 | Cognitive-growth, memory & verified-execution ADRs | **PROPOSED** — ADR-0002 (revised) + ADR-0003 companion, awaiting Owner ratification | `docs/architecture/ADR-0002-cognitive-growth-and-persistent-memory.md`, `docs/architecture/ADR-0003-verified-execution.md`; blocks #16/#17/#19 and #26–#32 until ratified |
 | 16 | Secret Broker & Provider Proxy | QUEUED | ADR first |
 | 17 | Capability engine & execution sandbox | QUEUED | ADR first |
 | 18 | Safe snapshot/rollback service | QUEUED | kit engine rejected: deletes post-snapshot user files |
@@ -76,6 +76,13 @@ different router than production builds.
 | 23 | Kanban → Orchestrator Board migration | QUEUED | product workstream |
 | 24 | Frontend Agent launcher PR #72 | **PARKED** | separate repository |
 | 25 | Runtime PR #8 | **EVIDENCE ONLY** | untouched; `972f48be7` |
+| 26 | MemoryBus service (agent-owned + Simorgh-consolidated namespaces) | QUEUED | ADR-0002 first; engine-independent; deletion/erasure/retention/legal-hold |
+| 27 | Governed learning & promotion pipeline | QUEUED | ADR-0002 first + **needs Simorgh consolidation authority** (Simorgh arch integration order); de-identify→classify→screen→verify→promote; no raw private data; corroboration-not-volume |
+| 28 | Independent Verifier & Verified-Completion state machine | QUEUED | ADR-0003 first; system/Brain-side authority; **verifier-signed** transition; fail-closed + isolated toolchain; evidence/attempt-history may ride #26 |
+| 29 | Goal-persistence & corrective loop | QUEUED | ADR-0003 first; bounded corrective tasks; criteria never silently weakened |
+| 30 | Sub-agent orchestration & accountability | QUEUED | ADR-0003 first; dynamic scaling; single-integrator branch; no shared worktree |
+| 31 | Backend execution-event contract | QUEUED | ADR-0003 §4 first; sequenced, redacted, resumable; no "Complete" before VERIFIED_COMPLETE |
+| 32 | Frontend Agent/Code live-execution surfaces | QUEUED | separate frontend repo; consumes #31; extends #24; after backend contract |
 
 ## Known constraints
 
