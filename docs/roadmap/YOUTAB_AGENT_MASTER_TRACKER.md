@@ -8,6 +8,30 @@ Queued work is never deleted to tidy this file. An item that stops being
 relevant is closed with a reason, not removed — a tracker that forgets is worse
 than no tracker, because it reads as complete.
 
+## Owner authorization — AR-PROD-01 engine connect (2026-08-19)
+
+The Owner confirmed this repository is the **real Youtab Agent Runtime product
+engine** (Hermes-derived, rebranded) and authorized connecting it end to end into
+the Youtab product. `youtab-ai-os /v1/agents` is the only public product API/control
+plane; a **versioned `AgentRuntimeConnector`** boundary calls THIS engine for real
+execution. The browser never calls this engine directly.
+
+```text
+AR-PROD-01 (engine side) AUTHORIZATION = OWNER APPROVED (2026-08-19)
+ENGINE BRANCH = feat/agent-runtime-connector off origin/main 13f79aa6caae907af16c6ce87012021671319952
+ROLE = execution engine — owns agents, runs, dispatcher, retries, checkpoints, tools,
+  skills, sandbox execution, runtime events, artifacts. Wire the youtab_runtime
+  signed-command boundary to the real engine if currently disconnected; prove the
+  full command path.
+AUTHORIZED = add/adjust a service-authenticated integration surface + signed-command
+  ingress for the gateway connector; contracts/schemas/tests/CI/config/docs; a new
+  ISOLATED Draft PR (do NOT mix into the Simorgh-focused PR #31).
+NOT AUTHORIZED = merge; production deploy; direct writes to main; force-push shared
+  branches; Simorgh create/copy/modify; weaken/reduce/discard existing runtime
+  capabilities; real production credentials.
+CROSS-REPO = youtab-frontend #106  ->  youtab-ai-os #412  ->  this engine connector PR.
+```
+
 ## Position
 
 | | |
