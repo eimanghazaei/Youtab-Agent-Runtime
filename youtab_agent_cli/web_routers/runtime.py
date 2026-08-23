@@ -47,6 +47,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import Response
 
 from youtab_agent_cli import kanban_db as kb
 from youtab_agent_cli import runtime_command_auth as rca
@@ -544,6 +545,30 @@ async def runtime_run_artifacts(
         task = _load_owned_task(conn, run_id, identity)
         attachments = kb.list_attachments(conn, task.id)
         return {"artifacts": [_artifact_ref(run_id, a) for a in attachments]}
+
+
+@router.get("/api/runtime/v1/runs/{run_id}/artifacts/{artifact_id}")
+async def runtime_run_artifact_content(
+    run_id: str,
+    artifact_id: int,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Stream one owned run's artifact bytes. (tenant,user)-scoped (404 otherwise)."""
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        task = _load_owned_task(conn, run_id, identity)
+        att = kb.get_attachment(conn, int(artifact_id))
+        if att is None or att.task_id != task.id:
+            raise HTTPException(status_code=404, detail={"error": "artifact_not_found"})
+    try:
+        with open(att.stored_path, "rb") as f:
+            data = f.read()
+    except OSError:
+        raise HTTPException(status_code=404, detail={"error": "artifact_unavailable"})
+    return Response(
+        content=data,
+        media_type=att.content_type or "application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{att.filename}"'},
+    )
 
 
 @router.get("/api/runtime/v1/runs/{run_id}/logs")

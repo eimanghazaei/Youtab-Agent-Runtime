@@ -271,6 +271,16 @@ def test_real_run_executes_and_returns_result_events_and_artifact(client):
     assert any(a["name"].startswith("result") for a in arts)
     assert arts[0]["size"] > 0
 
+    # and its bytes are downloadable by the owner, 404 cross-tenant
+    aid = arts[0]["id"]
+    dl = client.get(f"/api/runtime/v1/runs/{run_id}/artifacts/{aid}", headers=headers)
+    assert dl.status_code == 200
+    assert b"real worker output" in dl.content
+    other = _identity_headers(tenant="tenantQ", user="userA")
+    assert client.get(
+        f"/api/runtime/v1/runs/{run_id}/artifacts/{aid}", headers=other
+    ).status_code == 404
+
     # the run appears in the caller's own run list
     runs = client.get("/api/runtime/v1/runs", headers=headers).json()["runs"]
     assert any(x["run_id"] == run_id for x in runs)
