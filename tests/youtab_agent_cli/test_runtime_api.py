@@ -225,6 +225,29 @@ def test_agents_listed_with_full_identity(client):
 # --------------------------------------------------------------------------
 
 
+def test_capabilities_reports_honest_flags(client):
+    caps = client.get("/api/runtime/v1/capabilities", headers=_identity_headers()).json()
+    assert caps["contract_version"] == "1"
+    # resume is NOT genuinely supported by the kanban engine -> must be honest
+    assert caps["resume_supported"] is False
+    assert caps["logs_supported"] is True
+    assert "runs.logs" in caps["supported"]
+
+
+def test_run_logs_endpoint_owned_and_scoped(client):
+    run_id = _create_run(client).json()["run_id"]
+    headers = _identity_headers()
+    # own run: 200 with honest present/logs fields (may be empty early)
+    r = client.get(f"/api/runtime/v1/runs/{run_id}/logs", headers=headers)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["run_id"] == run_id
+    assert "present" in body and "logs" in body
+    # cross-tenant: 404
+    other = _identity_headers(tenant="tenantZ", user="userA")
+    assert client.get(f"/api/runtime/v1/runs/{run_id}/logs", headers=other).status_code == 404
+
+
 def test_real_run_executes_and_returns_result_events_and_artifact(client):
     r = _create_run(client)
     assert r.status_code == 200, r.text

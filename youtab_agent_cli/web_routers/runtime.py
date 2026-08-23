@@ -392,8 +392,14 @@ async def runtime_capabilities(
         "supported": [
             "agents", "runs.create", "runs.list", "runs.detail",
             "runs.events", "runs.cancel", "runs.retry",
-            "tools", "skills", "sandboxes", "artifacts",
+            "runs.logs", "tools", "skills", "sandboxes", "artifacts",
         ],
+        # Honest capability flags — the connector/UI must not offer what the
+        # engine does not genuinely do. The kanban engine has no resume-from-
+        # checkpoint primitive; recovery is retry (a fresh run), so resume is
+        # reported unsupported rather than faked.
+        "resume_supported": False,
+        "logs_supported": True,
         "sandbox_backends": _sandbox_backends().get("backends", []),
         "reasoning_strategies": ["single_shot", "goal_loop"],
     }
@@ -502,6 +508,25 @@ async def runtime_run_artifacts(
         task = _load_owned_task(conn, run_id, identity)
         attachments = kb.list_attachments(conn, task.id)
         return {"artifacts": [_artifact_ref(run_id, a) for a in attachments]}
+
+
+@router.get("/api/runtime/v1/runs/{run_id}/logs")
+async def runtime_run_logs(
+    run_id: str,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+    tail_bytes: int = 65536,
+):
+    """Return the owned run's worker log (bounded tail). Honest empty when none yet."""
+    tail_bytes = max(1024, min(int(tail_bytes), 1_048_576))
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        task = _load_owned_task(conn, run_id, identity)
+    text = kb.read_worker_log(task.id, tail_bytes=tail_bytes, board=RUNTIME_BOARD)
+    return {
+        "run_id": run_id,
+        "present": text is not None,
+        "logs": text or "",
+        "truncated": bool(text is not None and len(text.encode("utf-8", "replace")) >= tail_bytes),
+    }
 
 
 @router.get("/api/runtime/v1/tools")
