@@ -407,6 +407,21 @@ ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     ("/api/messaging", MESSAGING_MANAGE),
     ("/api/plugins", PLUGIN_USE),
 
+    # AR-PROD-01 Agent Runtime product surface. Like /api/gateway/drain and the
+    # MCP OAuth callback, this is a service-to-service contract, not an
+    # interactive dashboard surface: it authenticates through the non-interactive
+    # token seam (the `runtime-service` provider's shared bearer secret) and the
+    # caller is a machine (the youtab-ai-os gateway), which carries a token
+    # principal and no session — so the RBAC gate here would resolve it to a
+    # scopeless user and wrongly refuse it. The real, stronger boundary lives at
+    # the endpoint: the token seam 401s any request without the service bearer,
+    # and the router's `require_service_identity` dependency additionally enforces
+    # the `runtime` scope + the gateway-verified end-user identity headers, with
+    # signed+replay-protected commands on every mutation. The RBAC gate therefore
+    # defers to that guard (PUBLIC), exactly as it does for the other service /
+    # edge routes below. See youtab_agent_cli/web_routers/runtime.py.
+    ("/api/runtime/v1", PUBLIC),
+
     # Nearest owning domain, by the same rule.
     ("/api/analytics", UI_READ),
     ("/api/logs", OPS_MANAGE),

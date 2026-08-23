@@ -54,6 +54,13 @@ _log = logging.getLogger(__name__)
 # Exact paths that accept non-interactive bearer-token auth. A route registers
 # itself here at import/startup; the seam only acts on registered paths.
 _token_routes: set[str] = set()
+# Path PREFIXES that accept non-interactive bearer-token auth. A whole
+# versioned surface with parametric sub-paths (e.g. ``/api/runtime/v1/runs/{id}
+# /events``) can't enumerate every concrete path up front, so it registers its
+# stable prefix once. A prefix match is deliberately anchored at a path segment
+# boundary (the registered value ends in ``/``) so ``/api/runtime/v1/`` can
+# never accidentally match an unrelated ``/api/runtime/v1x`` route.
+_token_route_prefixes: set[str] = set()
 _lock = threading.Lock()
 
 
@@ -68,16 +75,35 @@ def register_token_route(path: str) -> None:
         _token_routes.add(path)
 
 
-def is_token_route(path: str) -> bool:
-    """True if ``path`` was registered as token-authable (exact match)."""
+def register_token_route_prefix(prefix: str) -> None:
+    """Mark every path under ``prefix`` (segment-anchored) as token-authable.
+
+    For a whole version-pinned API surface with parametric sub-paths that a
+    single exact registration can't cover. The prefix is normalised to end in
+    ``/`` so the match is anchored at a path-segment boundary — registering
+    ``/api/runtime/v1`` guards ``/api/runtime/v1/...`` but never a sibling like
+    ``/api/runtime/v1x``. Idempotent. Same fail-closed contract as
+    :func:`register_token_route`: it makes the surface authenticate by token
+    instead of by session cookie, it does NOT make it public.
+    """
+    normalised = prefix if prefix.endswith("/") else prefix + "/"
     with _lock:
-        return path in _token_routes
+        _token_route_prefixes.add(normalised)
+
+
+def is_token_route(path: str) -> bool:
+    """True if ``path`` is token-authable (exact match or under a prefix)."""
+    with _lock:
+        if path in _token_routes:
+            return True
+        return any(path.startswith(p) for p in _token_route_prefixes)
 
 
 def clear_token_routes() -> None:
-    """Test-only: drop all registered token routes."""
+    """Test-only: drop all registered token routes (exact + prefix)."""
     with _lock:
         _token_routes.clear()
+        _token_route_prefixes.clear()
 
 
 def _client_ip(request: Request) -> str:
