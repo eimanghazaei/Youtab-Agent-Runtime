@@ -130,15 +130,33 @@ def _deterministic_worker_enabled() -> bool:
 
 
 def _deterministic_spawn(task, workspace, *, board=None):
-    """Spawn the real deterministic integration worker subprocess."""
+    """Spawn the real deterministic integration worker subprocess.
+
+    The worker's stdout/stderr are redirected to the engine's per-task worker
+    log so ``/runs/{id}/logs`` returns real content (same convention as the
+    production ``_default_spawn``).
+    """
     import subprocess
     import sys
     env = dict(os.environ)
     db_path = str(kb.kanban_db_path(board=RUNTIME_BOARD))
-    return subprocess.Popen(
-        [sys.executable, "-m", "youtab_agent_cli.runtime_integration_worker", task.id, db_path],
-        env=env,
-    ).pid
+    log_path = kb.worker_log_path(task.id, board=RUNTIME_BOARD)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_f = open(log_path, "ab", buffering=0)
+    except OSError:
+        log_f = None
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "youtab_agent_cli.runtime_integration_worker", task.id, db_path],
+            env=env,
+            stdout=log_f if log_f is not None else None,
+            stderr=subprocess.STDOUT if log_f is not None else None,
+        )
+        return proc.pid
+    finally:
+        if log_f is not None:
+            log_f.close()  # the child holds its own dup'd fd
 
 
 def _effective_spawn():

@@ -31,6 +31,10 @@ def main(argv: list[str]) -> int:
 
     from youtab_agent_cli import kanban_db as kb
 
+    def log(msg: str) -> None:
+        # stdout is redirected to the engine's per-task worker log by the spawner.
+        print(f"[deterministic-integration-agent] {msg}", flush=True)
+
     # A short, visible amount of "work" so live event streaming is observable.
     conn = kb.connect(db_path=db_path)
     try:
@@ -38,14 +42,17 @@ def main(argv: list[str]) -> int:
         task_title = task.title if task else task_id
         task_body = (task.body if task and task.body else task_title) or ""
 
+        log(f"worker started (pid {os.getpid()}) for task {task_id}")
         with kb.write_txn(conn):
             kb._append_event(conn, task_id, "worker_started",
                              {"agent": "deterministic-integration-agent", "pid": os.getpid()})
         time.sleep(0.4)
+        log(f"analyzing task: {task_title}")
         with kb.write_txn(conn):
             kb._append_event(conn, task_id, "worker_progress",
                              {"step": "analyzing task", "note": "[deterministic-integration-agent]"})
         time.sleep(0.4)
+        log("producing result")
         with kb.write_txn(conn):
             kb._append_event(conn, task_id, "worker_progress",
                              {"step": "producing result", "note": "[deterministic-integration-agent]"})
@@ -64,10 +71,12 @@ def main(argv: list[str]) -> int:
             f"task: {task_title}\n"
             "status: completed\n"
         ).encode("utf-8")
+        log("writing artifact integration_result.txt")
         kb.store_attachment_bytes(
             conn, task_id, "integration_result.txt", artifact, content_type="text/plain",
         )
         kb.complete_task(conn, task_id, result=result, summary=summary)
+        log("done — task marked complete")
         return 0
     finally:
         conn.close()
