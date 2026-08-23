@@ -159,20 +159,52 @@ def _deterministic_spawn(task, workspace, *, board=None):
             log_f.close()  # the child holds its own dup'd fd
 
 
-def _effective_spawn():
-    """Resolve the spawn function: explicit override > deterministic (non-prod) > real."""
+# Event recorded at create-run naming the execution mode of a run:
+#   "model"         — the real, provider-backed agent (production default);
+#   "deterministic" — the NON-PRODUCTION deterministic integration worker.
+_MODE_EVENT = "runtime_execution_mode"
+
+
+def _resolve_task_mode(task_id: str) -> str:
+    """Return the recorded execution mode for a task ("model" by default).
+
+    The mode is a create-time event so it survives an engine restart and is
+    visible in the run's own event stream.
+    """
+    try:
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            for e in kb.list_events(conn, task_id):
+                if e.kind == _MODE_EVENT and isinstance(e.payload, dict):
+                    m = str(e.payload.get("mode") or "").strip().lower()
+                    if m in ("model", "deterministic"):
+                        return m
+    except Exception:  # noqa: BLE001 — resolution failure defaults to real model
+        pass
+    # No explicit mode: the global non-prod flag makes deterministic the default
+    # (for CI / credential-less environments); otherwise real model execution.
+    return "deterministic" if _deterministic_worker_enabled() else "model"
+
+
+def _mode_aware_spawn(task, workspace, *, board=None):
+    """Single dispatcher spawn function; picks the worker per-task by its mode.
+
+    Precedence: explicit test/proof override > per-task deterministic mode
+    (non-prod only) > the real model-backed ``_default_spawn``. Deterministic is
+    NEVER chosen under a production environment.
+    """
     if _spawn_override is not None:
-        return _spawn_override
-    if _deterministic_worker_enabled():
-        return _deterministic_spawn
-    return None  # real _default_spawn (model-backed worker; needs credentials)
+        return _spawn_override(task, workspace, board=board)
+    mode = _resolve_task_mode(task.id)
+    if mode == "deterministic" and _deterministic_worker_enabled():
+        return _deterministic_spawn(task, workspace, board=board)
+    return kb._default_spawn(task, workspace, board=board)
 
 
 def _dispatch_tick() -> None:
     """Run one dispatcher tick on the runtime board (best-effort, never raises)."""
     try:
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-            kb.dispatch_once(conn, spawn_fn=_effective_spawn(), board=RUNTIME_BOARD)
+            kb.dispatch_once(conn, spawn_fn=_mode_aware_spawn, board=RUNTIME_BOARD)
     except Exception as exc:  # noqa: BLE001 — a tick failure must not crash the loop
         _log.debug("runtime dispatcher tick failed: %s", exc)
 
@@ -338,12 +370,25 @@ def _run_status(task: "kb.Task", *, cancelled: bool) -> str:
     return _STATUS_MAP.get(task.status, task.status)
 
 
-def _run_summary(task: "kb.Task", *, cancelled: bool = False) -> Dict[str, Any]:
+def _mode_from_events(events: "List[kb.Event]") -> str:
+    """Read the recorded execution mode from a run's events ("model" default)."""
+    for e in events:
+        if e.kind == _MODE_EVENT and isinstance(e.payload, dict):
+            m = str(e.payload.get("mode") or "").strip().lower()
+            if m in ("model", "deterministic"):
+                return m
+    return "model"
+
+
+def _run_summary(
+    task: "kb.Task", *, cancelled: bool = False, execution_mode: str = "model"
+) -> Dict[str, Any]:
     return {
         "run_id": task.id,
         "agent_id": task.assignee,
         "agent_name": task.assignee,
         "status": _run_status(task, cancelled=cancelled),
+        "execution_mode": execution_mode,
         "created_at": task.created_at,
         "started_at": task.started_at,
         "finished_at": task.completed_at,
@@ -354,14 +399,35 @@ def _run_summary(task: "kb.Task", *, cancelled: bool = False) -> Dict[str, Any]:
 def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, Any]:
     runs = kb.list_runs(conn, task.id)
     attachments = kb.list_attachments(conn, task.id)
-    summary = _run_summary(task, cancelled=cancelled)
+    events = kb.list_events(conn, task.id)
+    mode = _mode_from_events(events)
+    # Best-effort provider/model/usage from the closing run's metadata (the real
+    # worker records these; the deterministic worker does not).
+    meta = {}
+    for r in reversed(runs):
+        if isinstance(r.metadata, dict) and r.metadata:
+            meta = r.metadata
+            break
+    # The result is the task's recorded result; a real agent that completes via
+    # the kanban_complete tool often carries its answer in the closing run's
+    # summary instead, so fall back to that so the UI always shows the outcome.
+    result = task.result
+    if not result:
+        for r in reversed(runs):
+            if r.summary:
+                result = r.summary
+                break
+    summary = _run_summary(task, cancelled=cancelled, execution_mode=mode)
     summary.update({
         "task": task.body,
         "title": task.title,
-        "result": task.result,
+        "result": result,
         "error": task.last_failure_error,
         "retries": task.consecutive_failures,
         "current_run_id": task.current_run_id,
+        "model": meta.get("model") or meta.get("model_id"),
+        "provider": meta.get("provider"),
+        "usage": meta.get("usage") or meta.get("tokens"),
         "runs": [
             {
                 "id": r.id,
@@ -503,7 +569,9 @@ async def runtime_list_runs(
         summaries = []
         for t in owned:
             events = kb.list_events(conn, t.id)
-            summaries.append(_run_summary(t, cancelled=_is_cancelled(events)))
+            summaries.append(_run_summary(
+                t, cancelled=_is_cancelled(events), execution_mode=_mode_from_events(events)
+            ))
     if status is not None:
         summaries = [s for s in summaries if s["status"] == status]
     total = len(summaries)
@@ -661,6 +729,13 @@ async def runtime_create_run(
     except (TypeError, ValueError):
         max_runtime = None
 
+    # Execution mode: real provider-backed model by default. A caller may request
+    # the non-production deterministic integration worker with ``deterministic``;
+    # it is honoured ONLY when the deterministic worker is enabled (non-prod), so
+    # a production run can never be silently downgraded to a deterministic stub.
+    want_det = bool(payload.get("deterministic", False))
+    mode = "deterministic" if (want_det and _deterministic_worker_enabled()) else "model"
+
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         run_id = kb.create_task(
             conn,
@@ -676,6 +751,10 @@ async def runtime_create_run(
             board=RUNTIME_BOARD,
             session_id=identity.correlation_id,
         )
+        # Record the resolved mode as a create-time event (survives restart,
+        # visible in the run's own event stream, read by the dispatcher spawn).
+        with kb.write_txn(conn):
+            kb._append_event(conn, run_id, _MODE_EVENT, {"mode": mode})
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run
@@ -684,7 +763,11 @@ async def runtime_create_run(
     _dispatch_tick()
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         task = kb.get_task(conn, run_id)
-        return _run_summary(task) if task else {"run_id": run_id, "status": "queued"}
+        return (
+            _run_summary(task, execution_mode=mode)
+            if task
+            else {"run_id": run_id, "status": "queued", "execution_mode": mode}
+        )
 
 
 @router.post("/api/runtime/v1/runs/{run_id}/cancel")
@@ -733,6 +816,11 @@ async def runtime_retry_run(
     await _verify_signed_command(request, identity)
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         task = _load_owned_task(conn, run_id, identity)
+        # Carry the original run's execution mode forward so a retry of a
+        # deterministic integration run stays deterministic and a retry of a
+        # real run stays real.
+        prior_mode = _mode_from_events(kb.list_events(conn, task.id))
+        retry_mode = "deterministic" if (prior_mode == "deterministic" and _deterministic_worker_enabled()) else "model"
         new_id = kb.create_task(
             conn,
             title=f"{task.title} (retry)",
@@ -746,11 +834,17 @@ async def runtime_retry_run(
             board=RUNTIME_BOARD,
             session_id=identity.correlation_id,
         )
+        with kb.write_txn(conn):
+            kb._append_event(conn, new_id, _MODE_EVENT, {"mode": retry_mode})
     ensure_dispatcher_running()
     _dispatch_tick()
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         new_task = kb.get_task(conn, new_id)
-        return _run_summary(new_task) if new_task else {"run_id": new_id, "status": "queued"}
+        return (
+            _run_summary(new_task, execution_mode=retry_mode)
+            if new_task
+            else {"run_id": new_id, "status": "queued", "execution_mode": retry_mode}
+        )
 
 
 # ---------------------------------------------------------------------------
