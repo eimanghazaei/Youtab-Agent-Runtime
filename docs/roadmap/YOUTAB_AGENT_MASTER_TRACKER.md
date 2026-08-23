@@ -11,8 +11,7 @@ than no tracker, because it reads as complete.
 ## Owner authorization — AR-PROD-01 engine connect (2026-08-19)
 
 The Owner confirmed this repository is the **real Youtab Agent Runtime product
-engine** (Hermes-derived, rebranded) and authorized connecting it end to end into
-the Youtab product. `youtab-ai-os /v1/agents` is the only public product API/control
+engine** and authorized connecting it end to end into the Youtab product. `youtab-ai-os /v1/agents` is the only public product API/control
 plane; a **versioned `AgentRuntimeConnector`** boundary calls THIS engine for real
 execution. The browser never calls this engine directly.
 
