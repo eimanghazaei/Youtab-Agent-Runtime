@@ -113,11 +113,47 @@ _ticker_stop = threading.Event()
 _ticker_lock = threading.Lock()
 
 
+def _deterministic_worker_enabled() -> bool:
+    """True when the NON-PRODUCTION deterministic integration worker is opted in.
+
+    Gated by ``YOUTAB_AGENT_RUNTIME_DETERMINISTIC_WORKER`` and refused in
+    production. Lets a local/staging preview execute real runs end-to-end when
+    no model credential is configured — with every event/result honestly tagged
+    ``[deterministic-integration-agent]`` (see runtime_integration_worker).
+    """
+    if (os.environ.get("APP_ENV", "") or "").strip().lower() in {"prod", "production"}:
+        return False
+    return (os.environ.get("YOUTAB_AGENT_RUNTIME_DETERMINISTIC_WORKER", "") or "").strip().lower() in {
+        "1", "true", "yes",
+    }
+
+
+def _deterministic_spawn(task, workspace, *, board=None):
+    """Spawn the real deterministic integration worker subprocess."""
+    import subprocess
+    import sys
+    env = dict(os.environ)
+    db_path = str(kb.kanban_db_path(board=RUNTIME_BOARD))
+    return subprocess.Popen(
+        [sys.executable, "-m", "youtab_agent_cli.runtime_integration_worker", task.id, db_path],
+        env=env,
+    ).pid
+
+
+def _effective_spawn():
+    """Resolve the spawn function: explicit override > deterministic (non-prod) > real."""
+    if _spawn_override is not None:
+        return _spawn_override
+    if _deterministic_worker_enabled():
+        return _deterministic_spawn
+    return None  # real _default_spawn (model-backed worker; needs credentials)
+
+
 def _dispatch_tick() -> None:
     """Run one dispatcher tick on the runtime board (best-effort, never raises)."""
     try:
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-            kb.dispatch_once(conn, spawn_fn=_spawn_override, board=RUNTIME_BOARD)
+            kb.dispatch_once(conn, spawn_fn=_effective_spawn(), board=RUNTIME_BOARD)
     except Exception as exc:  # noqa: BLE001 — a tick failure must not crash the loop
         _log.debug("runtime dispatcher tick failed: %s", exc)
 
