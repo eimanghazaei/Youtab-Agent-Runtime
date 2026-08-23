@@ -878,17 +878,30 @@ def _tools_catalog() -> Dict[str, Any]:
 
 
 def _skills_catalog() -> Dict[str, Any]:
+    """Real installed-skills catalog for the service plane.
+
+    Uses the same authoritative finder the dashboard ``/api/skills`` route and
+    the ``youtab skills`` CLI use (``skills_tool._find_all_skills``), which scans
+    the profile skills dir + external dirs for ``SKILL.md`` frontmatter and
+    honours the disabled-set. Returns enabled skills only (``skip_disabled`` is
+    left False), so a skill disabled in config never appears as invocable. The
+    previous implementation imported a non-existent ``skills_registry`` module
+    and always returned empty; this returns the genuine registry.
+    """
     try:
-        from youtab_agent_cli import skills_registry  # type: ignore
-        lister = getattr(skills_registry, "list_skills", None)
-        if callable(lister):
-            skills = lister()
-            items = [
-                {"id": getattr(s, "name", s if isinstance(s, str) else str(s)),
-                 "name": getattr(s, "name", s if isinstance(s, str) else str(s))}
-                for s in skills
-            ]
-            return {"skills": items, "available": True}
+        from tools.skills_tool import _find_all_skills, _sort_skills
+        found = _sort_skills(_find_all_skills())
+        items = [
+            {
+                "id": s.get("name"),
+                "name": s.get("name"),
+                "description": s.get("description", ""),
+                "category": s.get("category", ""),
+            }
+            for s in found
+            if s.get("name")
+        ]
+        return {"skills": items, "available": True}
     except Exception as exc:  # noqa: BLE001
         _log.debug("runtime skills catalog unavailable: %s", exc)
     return {"skills": [], "available": False, "reason": "skills_catalog_unavailable"}
