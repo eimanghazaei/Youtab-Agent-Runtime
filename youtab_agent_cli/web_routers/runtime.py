@@ -860,18 +860,45 @@ async def _json_body(request: Request) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _sanitize_label(value: Any) -> str:
+    """Clean a toolset label/description for the service plane.
+
+    ``CONFIGURABLE_TOOLSETS`` labels carry leading emoji that can arrive as lone
+    surrogates in some encodings; strip those and any non-printable control chars
+    so the product never renders mojibake. Normal text and valid emoji are kept.
+    """
+    return "".join(
+        c for c in str(value)
+        if not (0xD800 <= ord(c) <= 0xDFFF) and (c.isprintable() or c == " ")
+    ).strip()
+
+
 def _tools_catalog() -> Dict[str, Any]:
+    """Real configurable-toolset catalog as structured DTOs.
+
+    ``_get_effective_configurable_toolsets()`` yields ``(key, label, description)``
+    tuples (built-in + plugin toolsets). Previously each tuple was stringified into
+    the id/name, so the product rendered raw ``"('browser', '...', '...')"`` text.
+    Return proper ``{id, name, description}`` instead.
+    """
     try:
         from youtab_agent_cli import tools_config
         getter = getattr(tools_config, "_get_effective_configurable_toolsets", None)
-        names: List[str] = []
+        tools: List[Dict[str, str]] = []
         if callable(getter):
-            result = getter()
-            if isinstance(result, dict):
-                names = sorted(result.keys())
-            elif isinstance(result, (list, tuple, set)):
-                names = sorted(str(x) for x in result)
-        return {"tools": [{"id": n, "name": n} for n in names], "available": True}
+            for entry in getter() or []:
+                if isinstance(entry, (list, tuple)) and entry:
+                    tid = str(entry[0])
+                    label = _sanitize_label(entry[1]) if len(entry) > 1 else tid
+                    desc = _sanitize_label(entry[2]) if len(entry) > 2 else ""
+                elif isinstance(entry, str):
+                    tid, label, desc = entry, entry, ""
+                else:
+                    continue
+                if tid:
+                    tools.append({"id": tid, "name": label or tid, "description": desc})
+        tools.sort(key=lambda t: t["id"])
+        return {"tools": tools, "available": True}
     except Exception as exc:  # noqa: BLE001
         _log.debug("runtime tools catalog unavailable: %s", exc)
         return {"tools": [], "available": False, "reason": "tools_catalog_unavailable"}
