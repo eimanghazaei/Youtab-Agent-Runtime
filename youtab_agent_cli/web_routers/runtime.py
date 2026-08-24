@@ -49,6 +49,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
+from youtab_agent_cli import agent_identity
 from youtab_agent_cli import kanban_db as kb
 from youtab_agent_cli import runtime_command_auth as rca
 
@@ -163,6 +164,11 @@ def _deterministic_spawn(task, workspace, *, board=None):
 #   "model"         — the real, provider-backed agent (production default);
 #   "deterministic" — the NON-PRODUCTION deterministic integration worker.
 _MODE_EVENT = "runtime_execution_mode"
+
+# Event recorded at create-run naming the branded product-engine the caller
+# selected (a profile_id + its public label). Consumer-safe; never carries the
+# resolved provider/model/override behind that selection.
+_ENGINE_EVENT = "runtime_engine_selection"
 
 
 def _resolve_task_mode(task_id: str) -> str:
@@ -380,6 +386,21 @@ def _mode_from_events(events: "List[kb.Event]") -> str:
     return "model"
 
 
+def _engine_selection_from_events(events: "List[kb.Event]") -> Optional[Dict[str, Any]]:
+    """The branded engine selection recorded at create, or ``None``.
+
+    Consumer-safe projection: ``{profile_id, public_label}`` only. The resolved
+    provider/model/override that selection drove is deliberately NOT recorded on
+    the event and never surfaces here.
+    """
+    for e in events:
+        if e.kind == _ENGINE_EVENT and isinstance(e.payload, dict):
+            pid = e.payload.get("profile_id")
+            if pid:
+                return {"profile_id": pid, "public_label": e.payload.get("public_label")}
+    return None
+
+
 def _run_summary(
     task: "kb.Task", *, cancelled: bool = False, execution_mode: str = "model"
 ) -> Dict[str, Any]:
@@ -428,6 +449,9 @@ def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, A
         "model": meta.get("model") or meta.get("model_id"),
         "provider": meta.get("provider"),
         "usage": meta.get("usage") or meta.get("tokens"),
+        # The branded engine the caller selected at create, if any (consumer-safe
+        # {profile_id, public_label} only; never the provider/model it resolved to).
+        "engine_selection": _engine_selection_from_events(events),
         "runs": [
             {
                 "id": r.id,
@@ -487,6 +511,177 @@ def _load_owned_task(conn: "Any", run_id: str, identity: RuntimeIdentity) -> "kb
 
 
 # ---------------------------------------------------------------------------
+# Branded product-engine catalogue — HONEST availability
+# ---------------------------------------------------------------------------
+#
+# ``/engines`` lists the branded roster (Alpha, Amour, Eco, Homa, Pirouz) with a
+# REAL availability flag, never a hardcoded one:
+#   * a LOCAL engine (ollama/vllm/llamacpp/lmstudio) is ``online`` only when a
+#     bounded loopback reachability probe of its model-list endpoint answers;
+#   * an EXTERNAL engine (deepseek/moonshot/zai/…) is ``online`` only when a
+#     usable credential is installed for its provider (presence boolean ONLY —
+#     the secret value is never read into the response).
+# The provider/model/endpoint/credential behind an engine never appear in the
+# projection — only the branded fields. Probes are cached per short window so
+# listing is cheap.
+
+# Provider aliases that resolve to a LOCAL model server (see auth.resolve_provider
+# and runtime_provider's local-server handling). Availability for these is a
+# reachability probe, not a credential check.
+_LOCAL_ENGINE_PROVIDERS = {
+    "ollama", "vllm", "llamacpp", "llama.cpp", "llama-cpp", "lmstudio",
+}
+
+# Availability cache: profile_id -> (monotonic_ts, "online"|"unavailable").
+_ENGINE_AVAIL_TTL = 20.0  # seconds — one bounded probe per window, not per call
+_engine_avail_cache: "Dict[str, tuple[float, str]]" = {}
+_engine_avail_lock = threading.Lock()
+
+_LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _is_loopback_url(url: str) -> bool:
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").lower().rstrip(".")
+        return host in _LOOPBACK_HOSTS
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _http_reachable(url: str, *, timeout: float = 1.0) -> bool:
+    """Bounded GET; True if the server answers at all (even 4xx), else False.
+
+    Any connection error / timeout / bad URL reads as not reachable. An HTTP
+    error response (e.g. 404 from a wrong path) still proves the server is up,
+    so it counts as reachable. Never raises.
+    """
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 — loopback only
+            resp.read(1)
+            return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:  # noqa: BLE001 — unreachable/timeout/bad-url => not online
+        return False
+
+
+def _local_engine_probe_urls(provider: str) -> List[str]:
+    """Loopback model-list URLs to probe for a local runtime (never remote).
+
+    A local engine that is actually pointed at a non-loopback host is out of
+    scope for this reachability probe — the listing endpoint must not fan out
+    network calls to arbitrary addresses — so such URLs are dropped and the
+    engine reads as unavailable.
+    """
+    p = (provider or "").strip().lower()
+    urls: List[str] = []
+    if p == "ollama":
+        root = (os.environ.get("OLLAMA_BASE_URL") or os.environ.get("OLLAMA_HOST") or "").strip().rstrip("/")
+        if root and not root.startswith("http"):
+            root = "http://" + root
+        root = root or "http://127.0.0.1:11434"
+        urls = [root + "/api/tags", root + "/v1/models"]
+    elif p == "lmstudio":
+        try:
+            from youtab_agent_cli import auth as _auth
+            base = _auth._normalize_lmstudio_runtime_base_url("").rstrip("/")
+        except Exception:  # noqa: BLE001
+            base = "http://127.0.0.1:1234/v1"
+        urls = [base + "/models"]
+    else:  # vllm / llamacpp / llama.cpp / llama-cpp
+        root = (os.environ.get("VLLM_BASE_URL") or "").strip().rstrip("/") or "http://127.0.0.1:8000/v1"
+        urls = [root + "/models"] if root.endswith("/v1") else [root + "/v1/models"]
+    return [u for u in urls if _is_loopback_url(u)]
+
+
+def _local_engine_reachable(provider: str, model: str) -> bool:
+    """True iff a local model server for this engine answers a bounded probe."""
+    for url in _local_engine_probe_urls(provider):
+        if _http_reachable(url, timeout=1.0):
+            return True
+    return False
+
+
+def _external_credential_present(provider: str) -> bool:
+    """True iff a usable credential is installed for an external provider.
+
+    Presence boolean ONLY — the secret's value is never read into any response.
+    Checks the provider's configured API-key env vars and its credential pool.
+    Never raises; an unknown/unconfigured provider reads as absent.
+    """
+    try:
+        from youtab_agent_cli import auth as _auth
+        try:
+            pid = _auth.resolve_provider(provider)
+        except Exception:  # noqa: BLE001 — unknown provider => treat as its own id
+            pid = (provider or "").strip().lower()
+        pconfig = _auth.PROVIDER_REGISTRY.get(pid) or _auth.PROVIDER_REGISTRY.get(
+            (provider or "").strip().lower()
+        )
+        if pconfig is not None:
+            try:
+                from agent.secret_scope import get_secret as _get_secret
+            except Exception:  # noqa: BLE001
+                _get_secret = lambda name, default="": os.environ.get(name, default)  # noqa: E731
+            for var in getattr(pconfig, "api_key_env_vars", ()) or ():
+                try:
+                    if _auth.has_usable_secret(_get_secret(var, "")):
+                        return True
+                except Exception:  # noqa: BLE001
+                    continue
+        try:
+            from agent.credential_pool import load_pool
+            pool = load_pool(provider)
+            if pool is not None and pool.has_credentials():
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    except Exception:  # noqa: BLE001 — any failure reads as no usable credential
+        return False
+    return False
+
+
+def _engine_availability(profile_id: str) -> str:
+    """Compute HONEST availability for one branded engine ("online"/"unavailable")."""
+    bound = agent_identity.engine_binding_for_profile(profile_id)
+    if not bound:
+        return "unavailable"
+    provider, model = bound
+    p = (provider or "").strip().lower()
+    try:
+        if p in _LOCAL_ENGINE_PROVIDERS:
+            return "online" if _local_engine_reachable(p, model) else "unavailable"
+        return "online" if _external_credential_present(p) else "unavailable"
+    except Exception:  # noqa: BLE001 — never let a probe fail the listing
+        return "unavailable"
+
+
+def _engine_availability_cached(profile_id: str) -> str:
+    """Availability with a short TTL so listing is a bounded probe per window."""
+    now = time.monotonic()
+    with _engine_avail_lock:
+        hit = _engine_avail_cache.get(profile_id)
+        if hit is not None and (now - hit[0]) < _ENGINE_AVAIL_TTL:
+            return hit[1]
+    # Probe outside the lock (may do a bounded network call); a brief race just
+    # recomputes and is harmless.
+    val = _engine_availability(profile_id)
+    with _engine_avail_lock:
+        _engine_avail_cache[profile_id] = (now, val)
+    return val
+
+
+def _engine_modalities(role: str) -> List[str]:
+    """Product-safe modality words derived from the engine's role."""
+    return ["text", "image"] if (role or "").strip().lower() == "vision" else ["text"]
+
+
+# ---------------------------------------------------------------------------
 # Read endpoints
 # ---------------------------------------------------------------------------
 
@@ -535,6 +730,33 @@ async def runtime_agents(identity: RuntimeIdentity = Depends(require_service_ide
         _log.warning("runtime agents projection failed: %s", exc)
         raise HTTPException(status_code=503, detail={"error": "runtime_unavailable"})
     return {"agents": agents, "runtime_available": True}
+
+
+@router.get("/api/runtime/v1/engines")
+async def runtime_engines(
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Branded product-engine catalogue with HONEST availability.
+
+    Rows are the branded roster (``agent_identity.public_agents()``).
+    ``availability`` is a REAL check — a bounded loopback reachability probe for
+    a local engine, or an installed-credential presence check for an external
+    one — cached briefly. The projection carries ONLY branded fields; the
+    provider/model/endpoint/credential behind an engine never appear.
+    """
+    engines: List[Dict[str, Any]] = []
+    for ident in agent_identity.public_agents():
+        engines.append({
+            "profile_id": ident.profile_id,
+            "public_label": ident.public_label,
+            "display_name": ident.display_name,
+            "display_version": ident.display_version,
+            "role": ident.role,
+            "icon": ident.icon,
+            "availability": _engine_availability_cached(ident.profile_id),
+            "supported_modalities": _engine_modalities(ident.role),
+        })
+    return {"engines": engines}
 
 
 @router.get("/api/runtime/v1/agents/{agent_id}")
@@ -706,7 +928,13 @@ async def runtime_create_run(
     """Create and dispatch a real run. Signed + idempotent.
 
     Body: ``{ "agent": "<profile>", "task": "<prompt>", "goal_mode"?: bool,
-    "title"?: str, "skills"?: [str], "max_runtime_seconds"?: int }``.
+    "title"?: str, "skills"?: [str], "max_runtime_seconds"?: int,
+    "engine"?: "<profile_id>" }``.
+
+    ``agent`` (the worker profile) is required. ``engine`` is optional and
+    orthogonal: it selects the branded model substrate (e.g. ``eco.v01``) and,
+    when that engine is bound to a provider/model, pins the run to it via
+    ``model_override``/``provider_override`` without touching the profile.
     """
     await _verify_signed_command(request, identity)
     payload = await _json_body(request)
@@ -719,6 +947,22 @@ async def runtime_create_run(
     known = {getattr(p, "name", None) for p in profiles.list_profiles()}
     if agent not in known:
         raise HTTPException(status_code=404, detail={"error": "agent_not_found"})
+
+    # Optional branded-engine selection (a profile_id). Additive and orthogonal
+    # to ``agent``: ``agent`` picks the worker profile, ``engine`` picks the model
+    # substrate. A known-but-unbound engine is honoured (recorded) but runs on the
+    # profile default; an unknown engine is a client error.
+    engine = str(payload.get("engine") or "").strip()
+    engine_identity = None
+    model_override: Optional[str] = None
+    provider_override: Optional[str] = None
+    if engine:
+        engine_identity = agent_identity.identity_for_profile(engine)
+        if engine_identity is None:
+            raise HTTPException(status_code=422, detail={"error": "unknown_engine"})
+        bound = agent_identity.engine_binding_for_profile(engine)
+        if bound:
+            provider_override, model_override = bound
 
     title = str(payload.get("title") or f"[{identity.tenant}] {task_text[:80]}").strip()
     goal_mode = bool(payload.get("goal_mode", False))
@@ -748,6 +992,8 @@ async def runtime_create_run(
             skills=skills,
             goal_mode=goal_mode,
             max_runtime_seconds=max_runtime,
+            model_override=model_override,
+            provider_override=provider_override,
             board=RUNTIME_BOARD,
             session_id=identity.correlation_id,
         )
@@ -755,6 +1001,13 @@ async def runtime_create_run(
         # visible in the run's own event stream, read by the dispatcher spawn).
         with kb.write_txn(conn):
             kb._append_event(conn, run_id, _MODE_EVENT, {"mode": mode})
+            # Record the branded engine selection (consumer-safe: profile_id +
+            # public label only; never the provider/model it resolved to).
+            if engine_identity is not None:
+                kb._append_event(conn, run_id, _ENGINE_EVENT, {
+                    "profile_id": engine,
+                    "public_label": engine_identity.public_label,
+                })
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run

@@ -97,6 +97,42 @@ def identity_for_profile(profile_id: str | None) -> PublicAgentIdentity | None:
     return _agents_by_id().get(profile_id)
 
 
+@lru_cache(maxsize=1)
+def _binding_by_profile() -> dict[str, tuple[str, str]]:
+    """Invert ``private_binding.by_provider_model`` to ``profile_id -> (provider, model)``.
+
+    The forward map is keyed by the substrate name ``"provider/model"``; the
+    Runtime needs the reverse direction to answer "what does this Agent run on?"
+    without any caller ever touching the two halves of a substrate name. Kept
+    here because this module owns the binding half of the artifact.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    binding = _artifact().get("private_binding", {})
+    for key, profile_id in (binding.get("by_provider_model", {}) or {}).items():
+        if not isinstance(key, str) or not isinstance(profile_id, str) or "/" not in key:
+            continue
+        provider, _, model = key.partition("/")
+        provider, model = provider.strip(), model.strip()
+        if provider and model:
+            # First binding wins if a profile were ever multiply-bound (it isn't).
+            out.setdefault(profile_id, (provider, model))
+    return out
+
+
+def engine_binding_for_profile(profile_id: str | None) -> tuple[str, str] | None:
+    """Resolve an Agent ``profile_id`` to its bound ``(provider, model)``, or ``None``.
+
+    The inverse of :func:`identity_for_engine`: given the Agent, return the
+    substrate it runs on. ``None`` for an unknown *or* unbound profile — a known
+    Agent with no engine binding is a valid state (it runs on its profile
+    default), not an error. This is the only sanctioned reverse reader of the
+    binding half of the artifact.
+    """
+    if not profile_id:
+        return None
+    return _binding_by_profile().get(profile_id)
+
+
 def identity_for_engine(provider: str | None, model: str | None) -> PublicAgentIdentity | None:
     """Resolve a configured provider/model pair to its Agent, or ``None``.
 
@@ -145,6 +181,7 @@ __all__ = [
     "label_for_qualified_model",
     "GENERIC_AGENT_LABEL",
     "PublicAgentIdentity",
+    "engine_binding_for_profile",
     "identity_for_engine",
     "identity_for_profile",
     "label_for_engine",
