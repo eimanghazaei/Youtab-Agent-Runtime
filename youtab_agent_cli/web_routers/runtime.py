@@ -50,6 +50,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
 from youtab_agent_cli import agent_identity
+from youtab_agent_cli import engine_connection
 from youtab_agent_cli import kanban_db as kb
 from youtab_agent_cli import runtime_command_auth as rca
 
@@ -607,6 +608,54 @@ def _local_engine_reachable(provider: str, model: str) -> bool:
     return False
 
 
+def _endpoint_probe_urls(provider: str, endpoint: str) -> List[str]:
+    """Model-list URLs to probe at a canonically-resolved connection endpoint.
+
+    Unlike :func:`_local_engine_probe_urls`, this trusts the endpoint because it
+    came from :func:`engine_connection.resolve_connection` (a protected
+    server-side setting), so a remote-but-authorised model server — e.g. an
+    on-prem Ollama reached over a private tunnel — is probeable instead of being
+    dropped as non-loopback. It is still a single, bounded GET to one known
+    host, not a fan-out to arbitrary addresses.
+    """
+    root = (endpoint or "").strip().rstrip("/")
+    if not root:
+        return []
+    p = (provider or "").strip().lower()
+    if p == "ollama":
+        return [root + "/api/tags", root + "/v1/models"]
+    if p == "lmstudio":
+        return [root + "/models"]
+    return [root + "/models"] if root.endswith("/v1") else [root + "/v1/models"]
+
+
+def _connection_reachable(conn: "engine_connection.ResolvedConnection") -> bool:
+    """True iff the canonical connection's endpoint answers a bounded probe."""
+    for url in _endpoint_probe_urls(conn.provider, conn.endpoint):
+        if _http_reachable(url, timeout=1.0):
+            return True
+    return False
+
+
+def _configured_inference_base_url() -> str:
+    """The ``model.base_url`` a run would dial, from server config (best effort).
+
+    Used only to detect a split-brain (a base_url that names a different server
+    than the availability endpoint). Any read failure returns "" — which the
+    consistency check treats as "not independently configured", so a missing
+    config never false-fails a run.
+    """
+    try:
+        from youtab_agent_cli.config import load_config_readonly
+
+        model_cfg = load_config_readonly().get("model")
+        if isinstance(model_cfg, dict):
+            return str(model_cfg.get("base_url") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
 def _external_credential_present(provider: str) -> bool:
     """True iff a usable credential is installed for an external provider.
 
@@ -647,16 +696,20 @@ def _external_credential_present(provider: str) -> bool:
 
 
 def _engine_availability(profile_id: str) -> str:
-    """Compute HONEST availability for one branded engine ("online"/"unavailable")."""
-    bound = agent_identity.engine_binding_for_profile(profile_id)
-    if not bound:
+    """Compute HONEST availability for one branded engine ("online"/"unavailable").
+
+    Availability and execution now share ONE endpoint source
+    (:func:`engine_connection.resolve_connection`), so this probe targets the
+    exact endpoint a run would dial — no longer the loopback-only default that
+    made a remote-but-authorised engine read as permanently unavailable.
+    """
+    conn = engine_connection.resolve_connection(profile_id)
+    if conn is None:
         return "unavailable"
-    provider, model = bound
-    p = (provider or "").strip().lower()
     try:
-        if p in _LOCAL_ENGINE_PROVIDERS:
-            return "online" if _local_engine_reachable(p, model) else "unavailable"
-        return "online" if _external_credential_present(p) else "unavailable"
+        if conn.is_local_server():
+            return "online" if _connection_reachable(conn) else "unavailable"
+        return "online" if _external_credential_present(conn.provider) else "unavailable"
     except Exception:  # noqa: BLE001 — never let a probe fail the listing
         return "unavailable"
 
@@ -963,6 +1016,24 @@ async def runtime_create_run(
         bound = agent_identity.engine_binding_for_profile(engine)
         if bound:
             provider_override, model_override = bound
+
+        # Split-brain guard (fail CLOSED): a local-server engine (e.g. ECO on an
+        # on-prem Ollama) must execute against the SAME server its availability
+        # probe used. If the configured inference base_url names a different
+        # host:port than the canonical connection, refuse — never run somewhere
+        # health never validated, and never report a false "online". The tenant
+        # sees only a neutral error; the endpoints are not written to the log.
+        _conn = engine_connection.resolve_connection(engine)
+        if _conn is not None and _conn.is_local_server():
+            try:
+                engine_connection.assert_consistent(_conn, _configured_inference_base_url())
+            except engine_connection.ConnectionMismatchError:
+                _log.warning(
+                    "engine %s failed the availability/execution endpoint "
+                    "consistency check; failing closed",
+                    engine,
+                )
+                raise HTTPException(status_code=503, detail={"error": "engine_unavailable"})
 
     title = str(payload.get("title") or f"[{identity.tenant}] {task_text[:80]}").strip()
     goal_mode = bool(payload.get("goal_mode", False))

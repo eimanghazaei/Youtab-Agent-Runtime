@@ -73,7 +73,7 @@ def client(tmp_path, monkeypatch):
     # Availability side effects are patched OFF by default (nothing configured /
     # nothing reachable) so no test depends on a live ollama/deepseek. Individual
     # tests flip these to prove the online branch.
-    monkeypatch.setattr(runtime, "_local_engine_reachable", lambda provider, model: False)
+    monkeypatch.setattr(runtime, "_connection_reachable", lambda conn: False)
     monkeypatch.setattr(runtime, "_external_credential_present", lambda provider: False)
 
     app = FastAPI()
@@ -184,7 +184,7 @@ def test_engines_availability_online_only_with_real_check(client, monkeypatch):
     # An external engine goes online ONLY when a credential is present for its
     # provider; a local engine ONLY when its endpoint is reachable.
     monkeypatch.setattr(runtime, "_external_credential_present", lambda provider: provider == "deepseek")
-    monkeypatch.setattr(runtime, "_local_engine_reachable", lambda provider, model: provider == "ollama")
+    monkeypatch.setattr(runtime, "_connection_reachable", lambda conn: conn.provider == "ollama")
     runtime._engine_avail_cache.clear()
 
     engines = {e["profile_id"]: e for e in
@@ -198,9 +198,35 @@ def test_engines_availability_online_only_with_real_check(client, monkeypatch):
     assert engines["eco.v01"]["availability"] == "online"
 
 
+def test_health_probes_the_canonical_remote_endpoint_not_only_loopback(client, monkeypatch):
+    """Split-brain fix: a server-configured REMOTE ollama endpoint is probed by
+    the availability check (the same endpoint execution would dial), instead of
+    being dropped as non-loopback and read as permanently unavailable."""
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://100.108.46.86:11434")
+    monkeypatch.delenv("YOUTAB_ECO_MODEL", raising=False)
+    probed: list[str] = []
+
+    def _fake_reachable(url, *, timeout=1.0):
+        probed.append(url)
+        return True
+
+    # Probe the real health seam (not the patched-off fixture default).
+    monkeypatch.setattr(runtime, "_connection_reachable", runtime._connection_reachable)
+    monkeypatch.setattr(runtime, "_http_reachable", _fake_reachable)
+    runtime._engine_avail_cache.clear()
+
+    engines = {e["profile_id"]: e for e in
+               client.get("/api/runtime/v1/engines", headers=_identity_headers()).json()["engines"]}
+    assert engines["eco.v01"]["availability"] == "online"
+    assert any("100.108.46.86:11434" in u for u in probed), probed
+    # The remote endpoint is never surfaced to the caller.
+    raw = client.get("/api/runtime/v1/engines", headers=_identity_headers()).text
+    assert "100.108.46.86" not in raw and "11434" not in raw
+
+
 def test_engines_never_leak_provider_model_or_secret(client, monkeypatch):
     monkeypatch.setattr(runtime, "_external_credential_present", lambda provider: True)
-    monkeypatch.setattr(runtime, "_local_engine_reachable", lambda provider, model: True)
+    monkeypatch.setattr(runtime, "_connection_reachable", lambda conn: True)
     runtime._engine_avail_cache.clear()
     raw = client.get("/api/runtime/v1/engines", headers=_identity_headers()).text.lower()
     for forbidden in (
