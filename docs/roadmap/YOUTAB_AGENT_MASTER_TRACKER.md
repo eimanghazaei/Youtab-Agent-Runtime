@@ -691,3 +691,82 @@ governed-capability goals is the **Cognitive-growth & persistent-memory ADR
 (#15)** — the blocking prerequisite the Sandbox (#17), Workspace ingress (#19)
 and memory-sharing-with-Simorgh work all wait on. It is an architecture decision
 and should be written as an ADR before any of those rows opens code.
+
+---
+
+# Productization roadmap ledger (AR-PROD ECO slice) — 2026-08-26
+
+Canonical, cross-repo. Statuses are exactly: `DOCUMENTED < IMPLEMENTED <
+UNIT_TESTED < CI_GREEN < LIVE_VERIFIED < PRODUCTION_VERIFIED`, plus `BLOCKED`.
+Never inflated: a contract/UI/doc/mock/unit-test/CI-green is NOT LIVE_VERIFIED,
+and an Amour-only run is NOT ECO evidence.
+
+## Cross-repo heads (last verified 2026-08-26)
+| Repo | Branch | PR | SHA (verified) | CI |
+|---|---|---|---|---|
+| Youtab-Agent-Runtime (engine) | feat/agent-runtime-connector | #33 | `18a623c41be27214b8fe3af33a22a6b69919b951` | python-security/js/wake-word GREEN (after 1 flake rerun — see OPEN_FLAKE) |
+| youtab-ai-os (gateway) | feat/agent-runtime-governed | #551 | `bcefc4bf0b6dbae930e8cd2442b65321a3a636ea` | substantive gates GREEN; Auto-merge Barrier RED = expected on Draft |
+| youtab-frontend (web-os) | feat/agent-runtime-web-os-governed | #107 | `118bf5247960115c3f82316825124a6dd93c0c12` | frontend-validation GREEN |
+
+Status-language correction (Owner §3): do NOT say "all heads green" while a
+reported check is red. Accurate: Gateway substantive gates passed; the
+Auto-merge Barrier is red-and-expected while Draft; the Engine hit a SQLite-lock
+failure and passed on rerun; **real ECO execution is NOT LIVE_VERIFIED.**
+
+## Routing decision (BINDING, final)
+Auto = ECO first; Amour = automatic fallback ONLY when ECO is genuinely
+unavailable; both unavailable → honest failure. Explicit ECO unavailable → honest
+failure (never Amour). Explicit Amour → Amour. No strength/length/quality/
+preference reroute; no Alpha (or any 3rd provider) in the automatic chain.
+Implemented gateway `bcefc4bf` (`engine_selection.resolve_engine_selection`,
+`agent_auto_ladder` by role), engine `18a623c41` (`engine_connection`). CI_GREEN.
+LIVE_VERIFIED = pending the isolated VPS ECO run.
+
+## Roadmap items (dependency order)
+| # | Item | Status | Repo/PR | Evidence | Blocker | Next action |
+|---|---|---|---|---|---|---|
+| 1 | ECO real exec + Amour availability fallback | CI_GREEN; **NOT LIVE_VERIFIED** | engine#33, gw#551 | routing+resolver tests; Amour live t_84a28a7e/t_a8afd507 (adapter proof, not ECO) | isolated VPS run needs Owner exact-SHA auth | run corrected VPS bundle → acceptance matrix A–H |
+| 2 | Agent create/edit/configuration UI | audit in progress | gw#551, fe#107 | audit 2026-08-26 | none (independent) | audit CRUD contracts → implement missing endpoints on canonical surfaces |
+| 3 | Projects/folders connected to Agents | IMPLEMENTED (view); linkage NOT_STARTED | gw, fe#107 | viewProjects ships | none | design Agent↔project linkage |
+| 4 | Sessions lifecycle (create/reopen/rename/archive/search) | IMPLEMENTED (partial) | gw, fe#107 | sessions view+contracts (WP-A-04) | none | complete rename/archive/search |
+| 5 | Library lifecycle (rename/delete/archive) | IMPLEMENTED (partial) | fe#107 | library view | none | complete lifecycle |
+| 6 | Real file/photo attachment → Agent execution | DOCUMENTED | fe#107, engine | composer chips only | none | real upload+reach-execution+progress/preview/retry/a11y |
+| 7 | Tools & Skills redesign + wiring | DOCUMENTED | fe#107 | read-only views | none | grouped cards, search/filter/enable-disable |
+| 8 | Memory & Multi-Agent UI | DOCUMENTED | fe#107, engine | — | WP-13 dep | after WP-13 |
+| 9 | WP-13 real LightRAG Graph+Vector federation | DOCUMENTED | gw (WP-13) | GraphRAG PROHIBITED; LightRAG+graph+vector mandatory | ADR#15 | ADR then impl |
+| 10 | MCP Store/Gateway/Adapters/Permission Engine/Token Vault/Audit | DOCUMENTED | gw, engine | required path preserved | ADR | scope MCP gateway |
+| 11 | Windows/macOS/iPhone/iPad verification | DOCUMENTED | fe#107 | responsive checks | — | device matrix |
+| 12 | RC security/recovery/production-readiness | DOCUMENTED | all | — | all above | RC hardening |
+
+WP-13 constraints: Microsoft GraphRAG PROHIBITED; LightRAG + Graph + Vector all
+enabled; independent Graph+Vector per Agent + Simorgh's own; prove authorized
+federation + deny-by-default isolation.
+
+## OPEN_FLAKE — cross-process SQLite lock (Owner §3)
+| Field | Value |
+|---|---|
+| Test | `tests/youtab_agent_cli/test_relay_shared_metrics.py::test_cross_process_model_call_updates_are_transactional` |
+| First failed run | engine CI run 32971118639 job 98184842204 (2026-08-26) |
+| Rerun (passed) | run 32971118639 job 98189757571 |
+| Failure | `sqlite3.OperationalError: database is locked`; `assert process.exitcode == 0` (line 339) |
+| Subsystem | relay shared-metrics cross-process transactionality (SQLite under 4 parallel CI workers) |
+| ECO-diff independence | the ECO slice touches `engine_connection.py`, `engine_selection.py`, `agent_identity.py`, `web_routers/runtime.py` — none of relay/metrics/kanban SQLite transaction code; the failing test was unmodified and passed on rerun with no code change |
+| Follow-up | reliability WP — make the cross-process metrics test use per-test DB isolation / WAL + busy_timeout; owner = runtime reliability |
+| Status | **OPEN_FLAKE** (tracked, not dismissed) |
+
+## Process deviation — gateway rebase (Owner §4, truthful record)
+- Rebased commit: `e5602dc4` (local routing-policy commit).
+- Previously pushed? **NO** — the first push was rejected (non-fast-forward); `e5602dc4` never reached origin.
+- Remote history rewritten? **NO** — `bad67bbd` is an ancestor of the new head (`bad67bbd → efeffe2f → bcefc4bf`); the push was a fast-forward.
+- Force-push? **NO.** Commit lost? **NO** (`e5602dc4` content preserved as `efeffe2f`).
+- Why: the local commit was based on stale `28ceaf03`; the remote had advanced to `bad67bbd` (merged main + #551). I integrated by rebasing my LOCAL unpushed commit.
+- Correction: future synchronization of a moved remote/`main` uses **merge** (non-rebase), verify ancestry, rerun affected CI. No rebase/amend/force-push of shared history.
+
+## VPS ECO verification bundle
+Status: **DOCUMENTED, being repaired (Owner corrections §6–§14), NOT RUN.**
+Corrected version adds isolated Docker-network service DNS (no
+host.docker.internal), guarded secure dir/cleanup with realpath+marker+label
+checks, credential-file auth (no secrets on argv), supported DB init+migration
+(no `|| true`), fail-closed resource thresholds, sanitized evidence, full
+acceptance matrix A–H, bounded polling. Awaiting Owner exact-SHA authorization
+to run.
