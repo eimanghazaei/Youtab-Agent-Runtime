@@ -23,6 +23,7 @@ that script for why a second roster in this repository would be a bug.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +33,14 @@ _ARTIFACT = Path(__file__).with_name("agent_identity.v1.json")
 # What a Runtime surface shows when no Agent claims the configured engine.
 # Deliberately the product name, not a provider and not a guess.
 GENERIC_AGENT_LABEL = "Youtab Agent"
+
+# The ECO product engine's profile id. The concrete model tag it runs on is
+# deployment-specific infrastructure (the on-prem Ollama serves a private tag
+# that must never be committed here or shown to a user). The generated roster
+# carries a provider-neutral placeholder; a deployment injects the real tag via
+# the protected server-side env below. Unset => the roster's default, unchanged.
+_ECO_PROFILE_ID = "eco.v01"
+_ECO_MODEL_ENV = "YOUTAB_ECO_MODEL"
 
 
 @dataclass(frozen=True)
@@ -130,7 +139,20 @@ def engine_binding_for_profile(profile_id: str | None) -> tuple[str, str] | None
     """
     if not profile_id:
         return None
-    return _binding_by_profile().get(profile_id)
+    bound = _binding_by_profile().get(profile_id)
+    if bound is None:
+        return None
+    provider, model = bound
+    # Deployment-time infrastructure override (protected server-side settings):
+    # the ECO engine's concrete model tag is environment-specific and delivered
+    # by the deployment, not the committed artifact. Read at call time (not in
+    # the lru_cached inverter) so it tracks the process env. Applies to the ECO
+    # profile only; the provider (and every other profile) is untouched.
+    if profile_id == _ECO_PROFILE_ID:
+        override = (os.getenv(_ECO_MODEL_ENV) or "").strip()
+        if override:
+            model = override
+    return (provider, model)
 
 
 def identity_for_engine(provider: str | None, model: str | None) -> PublicAgentIdentity | None:
