@@ -234,6 +234,33 @@ def test_health_probes_the_canonical_remote_endpoint_not_only_loopback(client, m
     assert "100.108.46.86" not in raw and "11434" not in raw
 
 
+def test_availability_cache_ttl_is_bounded(client):
+    """Unavailable health must not be cached indefinitely — the probe re-runs
+    within a small window so a recovered ECO is picked up automatically."""
+    assert 0 < runtime._ENGINE_AVAIL_TTL <= 60
+
+
+def test_availability_recovers_and_restores_eco(client, monkeypatch):
+    """ECO down -> unavailable; ECO recovers + cache expiry -> online again
+    (so Auto's ECO-first routing is restored without a restart)."""
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://100.108.46.86:11434")
+    state = {"up": False}
+    monkeypatch.setattr(
+        runtime,
+        "_connection_reachable",
+        lambda conn: state["up"] and conn.provider == "ollama",
+    )
+
+    def _avail():
+        runtime._engine_avail_cache.clear()  # simulate TTL expiry
+        engines = client.get("/api/runtime/v1/engines", headers=_identity_headers()).json()["engines"]
+        return {e["profile_id"]: e["availability"] for e in engines}["eco.v01"]
+
+    assert _avail() == "unavailable"
+    state["up"] = True
+    assert _avail() == "online"       # recovery restores ECO availability
+
+
 def test_engines_never_leak_provider_model_or_secret(client, monkeypatch):
     monkeypatch.setattr(runtime, "_external_credential_present", lambda provider: True)
     monkeypatch.setattr(runtime, "_connection_reachable", lambda conn: True)

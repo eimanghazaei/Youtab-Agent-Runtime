@@ -143,3 +143,71 @@ def test_mismatch_error_message_carries_no_tenant_and_is_internal_only(monkeypat
         # It names the product profile for internal diagnosis, never a model tag.
         assert "eco.v01" in str(exc)
         assert "qwen" not in str(exc).lower()
+
+
+# --- §6 endpoint authorisation (fail closed) -------------------------------
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1:11434",          # loopback
+        "http://localhost:11434/v1",       # loopback alias
+        "http://10.0.0.5:11434",           # RFC1918
+        "http://192.168.2.10:11434",       # RFC1918
+        "http://100.108.46.86:11434",      # Tailscale CGNAT (the Mac)
+        "http://100.64.0.1:11434",         # CGNAT edge
+    ],
+)
+def test_authorized_endpoints(url):
+    assert ec.endpoint_is_authorized(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",                                 # empty
+        "not a url",                        # malformed
+        "http://user:pass@100.108.46.86:11434",  # credentials in URL
+        "http://8.8.8.8:11434",             # public Internet IP
+        "http://example.com:11434",         # bare hostname (never DNS-resolved)
+        "http://100.128.0.1:11434",         # just outside CGNAT (public)
+    ],
+)
+def test_rejected_endpoints_fail_closed(url, monkeypatch):
+    monkeypatch.delenv(ec._ALLOW_PUBLIC_ENDPOINT_ENV, raising=False)
+    assert ec.endpoint_is_authorized(url) is False
+
+
+def test_public_endpoint_allowed_only_with_explicit_policy(monkeypatch):
+    monkeypatch.delenv(ec._ALLOW_PUBLIC_ENDPOINT_ENV, raising=False)
+    assert ec.endpoint_is_authorized("http://8.8.8.8:11434") is False
+    monkeypatch.setenv(ec._ALLOW_PUBLIC_ENDPOINT_ENV, "true")
+    assert ec.endpoint_is_authorized("http://8.8.8.8:11434") is True
+    # ...but credentials-in-URL is refused even with the opt-in.
+    assert ec.endpoint_is_authorized("http://u:p@8.8.8.8:11434") is False
+
+
+def test_unauthorized_endpoint_zeroes_the_connection(monkeypatch):
+    """A public/creds/malformed OLLAMA_BASE_URL leaves ECO with no endpoint, so
+    health reads unavailable — never probes or dials the rejected target."""
+    _clear_endpoint_env(monkeypatch)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://8.8.8.8:11434")
+    conn = ec.resolve_connection("eco.v01")
+    assert conn.endpoint == ""            # fail closed
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://user:pass@100.108.46.86:11434")
+    assert ec.resolve_connection("eco.v01").endpoint == ""
+
+
+def test_connection_is_a_pure_function_of_profile_and_env(monkeypatch):
+    """Tenant/API input cannot set or override the endpoint/model: the resolver
+    takes ONLY a profile_id — the physical connection comes from server env."""
+    _clear_endpoint_env(monkeypatch)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://100.108.46.86:11434")
+    a = ec.resolve_connection("eco.v01")
+    b = ec.resolve_connection("eco.v01")
+    assert (a.endpoint, a.model, a.provider) == (b.endpoint, b.model, b.provider)
+    # There is no request/tenant-derived parameter on the resolver at all.
+    import inspect
+
+    params = set(inspect.signature(ec.resolve_connection).parameters)
+    assert params == {"profile_id"}

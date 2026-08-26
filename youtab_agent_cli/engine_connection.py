@@ -23,12 +23,22 @@ is no second roster here — only the endpoint half is added.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import urlparse
 
 from youtab_agent_cli import agent_identity
+
+# A resolved ECO endpoint must be a private/loopback/tailnet target — the Mac
+# lives on the Tailscale CGNAT range (100.64.0.0/10). A public-Internet endpoint
+# is refused (fail closed) unless a deliberate future policy opts in via this
+# env; a credentials-in-URL or malformed endpoint is always refused. This keeps
+# the probe from being pointed at an arbitrary public host (SSRF) and keeps ECO
+# on infrastructure the Owner controls.
+_ALLOW_PUBLIC_ENDPOINT_ENV = "YOUTAB_ECO_ALLOW_PUBLIC_ENDPOINT"
+_TAILNET_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 # Providers whose availability is a reachability probe against a model server
 # (as opposed to an external-credential presence check). Kept in step with
@@ -84,15 +94,65 @@ class ResolvedConnection:
         return self.provider in LOCAL_SERVER_PROVIDERS
 
 
+def _public_endpoint_allowed() -> bool:
+    return (os.environ.get(_ALLOW_PUBLIC_ENDPOINT_ENV) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def endpoint_is_authorized(url: str) -> bool:
+    """Whether a resolved endpoint may be used/probed. Fails closed on anything odd.
+
+    Rejects: empty, malformed, a URL carrying credentials (``user:pass@host``),
+    and a public-Internet host (unless the explicit opt-in env is set). Accepts
+    loopback, RFC1918 private, link-local and the Tailscale CGNAT range. A bare
+    hostname (not an IP) is rejected — we never DNS-resolve here (that would be
+    I/O and an SSRF surface); the authorised targets are addressed by IP.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return False
+    if not raw.startswith("http"):
+        raw = "http://" + raw
+    try:
+        u = urlparse(raw)
+    except Exception:  # noqa: BLE001 — malformed => refused
+        return False
+    if not u.hostname:
+        return False
+    if u.username or u.password:  # credentials-in-URL => refused
+        return False
+    host = u.hostname.lower().rstrip(".")
+    if host in _LOOPBACK_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # a hostname, not an IP — not an authorised target
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+    if ip in _TAILNET_CGNAT:
+        return True
+    return _public_endpoint_allowed()
+
+
 def _endpoint_for_provider(provider: str) -> str:
-    """Resolve a local provider's endpoint from protected env, else the default."""
+    """Resolve a local provider's endpoint from protected env, else the default.
+
+    An endpoint that fails :func:`endpoint_is_authorized` (public host without
+    opt-in, credentials-in-URL, malformed) resolves to ``""`` — the engine then
+    reads as unavailable (fail closed) rather than probing/dialing it.
+    """
     p = (provider or "").strip().lower()
     for name in _ENDPOINT_ENV_BY_PROVIDER.get(p, ()):  # first non-empty wins
         raw = (os.environ.get(name) or "").strip().rstrip("/")
         if raw:
             if not raw.startswith("http"):
                 raw = "http://" + raw
-            return raw
+            return raw if endpoint_is_authorized(raw) else ""
     return _ENDPOINT_DEFAULT_BY_PROVIDER.get(p, "")
 
 
