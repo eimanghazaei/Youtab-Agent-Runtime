@@ -705,7 +705,7 @@ and an Amour-only run is NOT ECO evidence.
 | Repo | Branch | PR | SHA (verified) | CI |
 |---|---|---|---|---|
 | Youtab-Agent-Runtime (engine) | feat/agent-runtime-connector | #33 | `18a623c41be27214b8fe3af33a22a6b69919b951` | python-security/js/wake-word GREEN (after 1 flake rerun — see OPEN_FLAKE) |
-| youtab-ai-os (gateway) | feat/agent-runtime-governed | #551 | `bcefc4bf0b6dbae930e8cd2442b65321a3a636ea` | substantive gates GREEN; Auto-merge Barrier RED = expected on Draft |
+| youtab-ai-os (gateway) | feat/agent-runtime-governed | #551 | executable code `bcefc4bf0b6dbae930e8cd2442b65321a3a636ea`; branch head `0b83d3e7877d8c44af178a2f4e66af9cee6b5e63` (docs-only: ADR-0067 draft, byte-identical `services/gateway`) | substantive gates GREEN; Auto-merge Barrier RED = expected on Draft |
 | youtab-frontend (web-os) | feat/agent-runtime-web-os-governed | #107 | `118bf5247960115c3f82316825124a6dd93c0c12` | frontend-validation GREEN |
 
 Status-language correction (Owner §3): do NOT say "all heads green" while a
@@ -725,8 +725,8 @@ LIVE_VERIFIED = pending the isolated VPS ECO run.
 ## Roadmap items (dependency order)
 | # | Item | Status | Repo/PR | Evidence | Blocker | Next action |
 |---|---|---|---|---|---|---|
-| 1 | ECO real exec + Amour availability fallback | CI_GREEN; **NOT LIVE_VERIFIED** | engine#33, gw#551 | routing+resolver tests; Amour live t_84a28a7e/t_a8afd507 (adapter proof, not ECO) | isolated VPS run needs Owner exact-SHA auth | run corrected VPS bundle → acceptance matrix A–H |
-| 2 | Agent create/edit/configuration UI | audit in progress | gw#551, fe#107 | audit 2026-08-26 | none (independent) | audit CRUD contracts → implement missing endpoints on canonical surfaces |
+| 1 | ECO real exec + Amour availability fallback | CI_GREEN; **NOT LIVE_VERIFIED**; exec **BLOCKED — NO AUTHORIZED VPS SHELL** | engine#33, gw#551 | routing+resolver tests; Amour live t_84a28a7e/t_a8afd507 (adapter proof, not ECO) | no authorized execution channel on VPS `100.97.58.20` (Owner §3); exact-SHA auth granted 2026-08-26 but bundle cannot be run without an authorized shell | Owner runs the hashed bundle, OR provisions an authorized runner → acceptance matrix A–H |
+| 2 | Agent create/edit/configuration | **DOCUMENTED** (ADR drafted) | gw#551 (ADR-0067 `0b83d3e7`), fe#107 | audit 2026-08-26 (no product-plane CRUD; only single-operator dashboard `/api/profiles`); **DRAFT-ADR-0067 tenant↔agent-profile ownership** (Option C: gateway-owned tenant-scoped agent; engine tenant-agnostic; capability roles auto/eco/amour) | ADR-0067 §9 dependency questions (Owner decision) | Owner rules on §9 → additive migration + tenant-scoped Agent CRUD API + UI on fe#107 |
 | 3 | Projects/folders connected to Agents | IMPLEMENTED (view); linkage NOT_STARTED | gw, fe#107 | viewProjects ships | none | design Agent↔project linkage |
 | 4 | Sessions lifecycle (create/reopen/rename/archive/search) | IMPLEMENTED (partial) | gw, fe#107 | sessions view+contracts (WP-A-04) | none | complete rename/archive/search |
 | 5 | Library lifecycle (rename/delete/archive) | IMPLEMENTED (partial) | fe#107 | library view | none | complete lifecycle |
@@ -763,10 +763,48 @@ federation + deny-by-default isolation.
 - Correction: future synchronization of a moved remote/`main` uses **merge** (non-rebase), verify ancestry, rerun affected CI. No rebase/amend/force-push of shared history.
 
 ## VPS ECO verification bundle
-Status: **DOCUMENTED, being repaired (Owner corrections §6–§14), NOT RUN.**
-Corrected version adds isolated Docker-network service DNS (no
-host.docker.internal), guarded secure dir/cleanup with realpath+marker+label
-checks, credential-file auth (no secrets on argv), supported DB init+migration
-(no `|| true`), fail-closed resource thresholds, sanitized evidence, full
-acceptance matrix A–H, bounded polling. Awaiting Owner exact-SHA authorization
-to run.
+Status: **REPAIRED + HASHED + STATICALLY VALIDATED; NOT RUN — BLOCKED — NO
+AUTHORIZED VPS SHELL.** Owner granted exact-SHA authorization 2026-08-26
+(engine `18a623c41`, gateway `bcefc4bf`, frontend `118bf52`), but Claude has no
+authorized execution channel on VPS `100.97.58.20` (no existing shell, no
+approved runner) and will not create one (Owner §3). The bundle is delivered for
+the Owner to run.
+
+Corrections applied (Owner §4–§14):
+- Secrets are **file-mounted Docker secrets** (`/run/secrets/*`, tmpfs, root 0400)
+  + a non-printing entrypoint shim — values are absent from `docker inspect` and
+  from `docker compose config` (only file paths render). No `env_file` secrets,
+  no secret on argv, no static dev password (isolated identity generated).
+- Health checks use **python3 urllib / pg_isready / redis-cli** — no assumption
+  that `curl` exists in an image.
+- **Web OS service added** (exact frontend SHA `118bf52`, loopback `127.0.0.1:8091`)
+  so Case G is executable once an authorized browser/tunnel path exists.
+- Isolated Docker-network **service DNS** `http://eco-verify-engine:8092` (no
+  `host.docker.internal`); egress isolation proven (engine-only on egress;
+  backplane `internal:true`; db/redis unpublished).
+- Guarded secure dir + cleanup (realpath + marker + not-symlink + exact project
+  label); bounded readiness; supported DB init (`AUTO_CREATE_TABLES`, no
+  `|| true`) + schema verification; fail-closed resource thresholds (re-checked
+  before startup); overlay-file ECO/both-unavailable simulations (Mac/Tailscale
+  untouched); sanitized evidence with precise forbidden-identifier scan + `eco.v01`/
+  `amour.v03` positive controls.
+
+Artifact SHA-256 (executed exactly if run; verified by the orchestrator against
+`MANIFEST.sha256` before use):
+- `eco-verify.compose.yml`  `5d20cc75422c3497e6006c789cea1dd678182bedcef8139ce52a9e14a7ca858f`
+- `secrets-entrypoint.sh`   `b64d3766bfb28ed8aeb47d9a43808ea0007b53aa352963da9b63686bfa1cb923`
+- `eco_verify_acceptance.py` `8d17a7ef22d0d3efa02637424262c5bce982329d9da5ffacd8da4cb8152f73ac`
+- `eco-verify.eco-down.yml`  `9db5dece8e8a9ea160f05a72ce52114a5fea24c89a88cce02e10493e3e01df46`
+- `eco-verify.both-down.yml` `aa1392a38edb3c304ccfa2ddf90d682a209f0a60e098b1cbf00b962c02f982b3`
+- `web-os-config.js`         `b59fd6a12ada43131df58aea1fe853c56beb6899c3e3edf357354b053b13f2ad`
+- `eco-verify.sh` (runner)   `941eb421fadec724cb57d4c5fd530ded2ac973177b0cc7be26f1fa22097aea34`
+
+Static validation (2026-08-26): `bash -n` OK (runner + shim); `py_compile` OK;
+`docker compose config` valid; egress members = `['eco-verify-engine']`;
+backplane `internal:true`; secrets render as file paths (no values); placeholder
+secret value absent from render; no production resource / no `host.docker.internal`;
+both overlays merge (both-down re-points DeepSeek secret to the empty file).
+
+Case G (browser): **BLOCKED** separately — no authorized loopback tunnel/browser
+path from this session; the Web OS service is ready but cannot be driven here. Not
+marked passed via API tests.
