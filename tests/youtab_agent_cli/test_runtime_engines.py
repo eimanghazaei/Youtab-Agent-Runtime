@@ -210,9 +210,19 @@ def test_health_probes_the_canonical_remote_endpoint_not_only_loopback(client, m
         probed.append(url)
         return True
 
-    # Probe the real health seam (not the patched-off fixture default).
-    monkeypatch.setattr(runtime, "_connection_reachable", runtime._connection_reachable)
+    # The fixture patches _connection_reachable OFF (returns False); restore the
+    # REAL probe path by composing the real endpoint-URL builder with the
+    # recording _http_reachable, so this test exercises resolve_connection ->
+    # _endpoint_probe_urls against the configured remote endpoint.
     monkeypatch.setattr(runtime, "_http_reachable", _fake_reachable)
+    monkeypatch.setattr(
+        runtime,
+        "_connection_reachable",
+        lambda conn: any(
+            runtime._http_reachable(u)
+            for u in runtime._endpoint_probe_urls(conn.provider, conn.endpoint)
+        ),
+    )
     runtime._engine_avail_cache.clear()
 
     engines = {e["profile_id"]: e for e in
