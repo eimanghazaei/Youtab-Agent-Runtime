@@ -726,7 +726,7 @@ LIVE_VERIFIED = pending the isolated VPS ECO run.
 | # | Item | Status | Repo/PR | Evidence | Blocker | Next action |
 |---|---|---|---|---|---|---|
 | 1 | ECO real exec + Amour availability fallback | CI_GREEN; **NOT LIVE_VERIFIED**; **ECO LIVE VERIFICATION — WAITING FOR OWNER EXECUTION** (v2 bundle delivered) | engine#33, gw#551 | routing+resolver tests; Amour live t_84a28a7e/t_a8afd507 (adapter proof, not ECO); v2 self-tests 29/29 | no authorized VPS shell (Owner §3); v2 bundle `466099ea…` corrected+validated, awaiting Owner-authorized run of the new exact SHA | Owner transfers+authorizes v2 → runs → acceptance matrix A–H → LIVE_VERIFIED only if all PASS |
-| 2 | Agent create/edit/configuration | **DOCUMENTED** (ADR-0067 finalized) | gw#551 (ADR-0067), fe#107 | recon 2026-08-27: tenant-scoped `agent_definitions` table + super_admin `POST /v1/agents/register` ALREADY exist; gap = product-plane per-tenant CRUD (list/get/update/delete) for operators + cross-tenant authz tests; runs stay engine-owned; §4 provider stripping done (`consumer_view.py`) | ADR-0067 decision (reuse `agent_definitions` + 404-isolation; additive migration owner_user_id?) — Owner confirm | additive migration + tenant-scoped Agent CRUD API (reuse `_owned`/404) + fe#107 UI |
+| 2 | Agent create/edit/configuration | **IMPLEMENTED (backend) — UNIT_TESTED (8/8 local); NOT pushed / NOT in PR / NOT CI'd; frontend + live cross-tenant PENDING** | gw local `00524104` (branch feat/agent-runtime-governed, unpushed), ADR-0067 `1e2eb87f` | tenant-scoped Agent CRUD on existing `agent_definitions` (no new table): GET/POST/PATCH/DELETE `/v1/agents/definitions[/{id}]`; `definitions_service.py` ownership-scoped queries (tenant filter, None→404); write gate `require_operator_or_above` (one-const threshold); additive nullable `created_by_user_id` + Alembic `0109` (written, NOT run live); `consumer_view._DEFINITION_KEEP` strips provider/model. Tests: `pytest tests/agents/test_definition_routes.py` **8 passed** (cross-tenant get/patch/delete→404; viewer/support write→403; provider/model absent; soft-delete). §9 sub-status: schema✓ migration(written) API✓ authz✓ tests✓(local) | Owner confirm write-role threshold (operator vs tenant_admin); push→CI; run migration; frontend | push to gw#551 + fe#107 UI; unblocks Case F agent-ownership |
 | 3 | Projects/folders connected to Agents | IMPLEMENTED (view); linkage NOT_STARTED | gw, fe#107 | viewProjects ships | none | design Agent↔project linkage |
 | 4 | Sessions lifecycle (create/reopen/rename/archive/search) | IMPLEMENTED (partial) | gw, fe#107 | sessions view+contracts (WP-A-04) | none | complete rename/archive/search |
 | 5 | Library lifecycle (rename/delete/archive) | IMPLEMENTED (partial) | fe#107 | library view | none | complete lifecycle |
@@ -763,11 +763,22 @@ federation + deny-by-default isolation.
 - Correction: future synchronization of a moved remote/`main` uses **merge** (non-rebase), verify ancestry, rerun affected CI. No rebase/amend/force-push of shared history.
 
 ## VPS ECO verification bundle
-Status (v2, 2026-08-27): **REPAIRED (defect list corrected) + HASHED + STATICALLY
-VALIDATED + SELF-TESTED (29/29); NOT RUN — ECO LIVE VERIFICATION WAITING FOR OWNER
-EXECUTION.** v1 bundle (`eco-verify-bootstrap.sh` SHA `38025df0…`) is **REJECTED**;
-superseded by **`eco-verify-bootstrap-v2.sh`** SHA
-`466099eac845722d66221ba1b4399f5100fa84e69cf3a95ce77dc28d0d481917` (98,558 B),
+Status (v2b, 2026-08-27): **CORRECTED + HASHED + STATICALLY VALIDATED + SELF-TESTED
+(40/40) + MUTATION-PROVEN; NOT RUN — ECO LIVE VERIFICATION WAITING FOR OWNER
+EXECUTION.** v1 `38025df0…` REJECTED; earlier v2 `466099ea…` superseded (added §4
+dispatch observer + Case F agent-ownership). **Authoritative `eco-verify-bootstrap-v2.sh`
+SHA `4f0fca8d72c28d2d93edc17a42215373b5781a8a09ae688c34ad91203fda3d56` (119,807 B, 15
+members); archive `017ff354…`; MANIFEST `9bb4dc5d…`; evidence archive `bdab3db1…`.**
+Added since 466099ea: §4 verification-only dispatch-boundary observer
+(`eco_verify_dispatch_probe.py`+`sitecustomize.py`, injected via PYTHONPATH, wraps
+`agent.chat_completion_helpers._dispatch_nonstreaming_api_request`+`interruptible_streaming_api_call`
+— does NOT modify the pinned tree; counts DERIVED from its append-only log, else
+NOT_PROVEN); Case F agent-ownership probes (positive-control-gated; INCOMPLETE if the
+definitions endpoint is absent). §3 finding: pinned engine HAS a no-env file
+credential path (config.yaml custom `api_key`→`_seed_custom_pool`→`OpenAI(api_key=)`,
+credential_pool.py:2706-2737); plain `.env` IS bridged to os.environ (env_loader.py:320)
+— no-env Amour wiring + runtime non-exposure = WAITING FOR OWNER VPS EXECUTION.
+--- (superseded v2 line) v2 `466099ea…` (98,558 B),
 archive `eco-verify-bundle-v2.tar.gz` SHA
 `d083099a96eb626ace2f0c1524da0265b2cc3753db8e4d9681f55fd82a937092`, MANIFEST SHA
 `a1b43ae2bcadbf76e7ce2b09d3abf52d3c713423f0657f9a19179d9aef5358fc`. Executable
