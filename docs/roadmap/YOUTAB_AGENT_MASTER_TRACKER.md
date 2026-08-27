@@ -725,8 +725,8 @@ LIVE_VERIFIED = pending the isolated VPS ECO run.
 ## Roadmap items (dependency order)
 | # | Item | Status | Repo/PR | Evidence | Blocker | Next action |
 |---|---|---|---|---|---|---|
-| 1 | ECO real exec + Amour availability fallback | CI_GREEN; **NOT LIVE_VERIFIED**; exec **BLOCKED — NO AUTHORIZED VPS SHELL** | engine#33, gw#551 | routing+resolver tests; Amour live t_84a28a7e/t_a8afd507 (adapter proof, not ECO) | no authorized execution channel on VPS `100.97.58.20` (Owner §3); exact-SHA auth granted 2026-08-26 but bundle cannot be run without an authorized shell | Owner runs the hashed bundle, OR provisions an authorized runner → acceptance matrix A–H |
-| 2 | Agent create/edit/configuration | **DOCUMENTED** (ADR drafted) | gw#551 (ADR-0067 `0b83d3e7`), fe#107 | audit 2026-08-26 (no product-plane CRUD; only single-operator dashboard `/api/profiles`); **DRAFT-ADR-0067 tenant↔agent-profile ownership** (Option C: gateway-owned tenant-scoped agent; engine tenant-agnostic; capability roles auto/eco/amour) | ADR-0067 §9 dependency questions (Owner decision) | Owner rules on §9 → additive migration + tenant-scoped Agent CRUD API + UI on fe#107 |
+| 1 | ECO real exec + Amour availability fallback | CI_GREEN; **NOT LIVE_VERIFIED**; **ECO LIVE VERIFICATION — WAITING FOR OWNER EXECUTION** (v2 bundle delivered) | engine#33, gw#551 | routing+resolver tests; Amour live t_84a28a7e/t_a8afd507 (adapter proof, not ECO); v2 self-tests 29/29 | no authorized VPS shell (Owner §3); v2 bundle `466099ea…` corrected+validated, awaiting Owner-authorized run of the new exact SHA | Owner transfers+authorizes v2 → runs → acceptance matrix A–H → LIVE_VERIFIED only if all PASS |
+| 2 | Agent create/edit/configuration | **DOCUMENTED** (ADR-0067 finalized) | gw#551 (ADR-0067), fe#107 | recon 2026-08-27: tenant-scoped `agent_definitions` table + super_admin `POST /v1/agents/register` ALREADY exist; gap = product-plane per-tenant CRUD (list/get/update/delete) for operators + cross-tenant authz tests; runs stay engine-owned; §4 provider stripping done (`consumer_view.py`) | ADR-0067 decision (reuse `agent_definitions` + 404-isolation; additive migration owner_user_id?) — Owner confirm | additive migration + tenant-scoped Agent CRUD API (reuse `_owned`/404) + fe#107 UI |
 | 3 | Projects/folders connected to Agents | IMPLEMENTED (view); linkage NOT_STARTED | gw, fe#107 | viewProjects ships | none | design Agent↔project linkage |
 | 4 | Sessions lifecycle (create/reopen/rename/archive/search) | IMPLEMENTED (partial) | gw, fe#107 | sessions view+contracts (WP-A-04) | none | complete rename/archive/search |
 | 5 | Library lifecycle (rename/delete/archive) | IMPLEMENTED (partial) | fe#107 | library view | none | complete lifecycle |
@@ -763,14 +763,52 @@ federation + deny-by-default isolation.
 - Correction: future synchronization of a moved remote/`main` uses **merge** (non-rebase), verify ancestry, rerun affected CI. No rebase/amend/force-push of shared history.
 
 ## VPS ECO verification bundle
-Status: **REPAIRED + HASHED + STATICALLY VALIDATED; NOT RUN — BLOCKED — NO
-AUTHORIZED VPS SHELL.** Owner granted exact-SHA authorization 2026-08-26
-(engine `18a623c41`, gateway `bcefc4bf`, frontend `118bf52`), but Claude has no
-authorized execution channel on VPS `100.97.58.20` (no existing shell, no
-approved runner) and will not create one (Owner §3). The bundle is delivered for
-the Owner to run.
+Status (v2, 2026-08-27): **REPAIRED (defect list corrected) + HASHED + STATICALLY
+VALIDATED + SELF-TESTED (29/29); NOT RUN — ECO LIVE VERIFICATION WAITING FOR OWNER
+EXECUTION.** v1 bundle (`eco-verify-bootstrap.sh` SHA `38025df0…`) is **REJECTED**;
+superseded by **`eco-verify-bootstrap-v2.sh`** SHA
+`466099eac845722d66221ba1b4399f5100fa84e69cf3a95ce77dc28d0d481917` (98,558 B),
+archive `eco-verify-bundle-v2.tar.gz` SHA
+`d083099a96eb626ace2f0c1524da0265b2cc3753db8e4d9681f55fd82a937092`, MANIFEST SHA
+`a1b43ae2bcadbf76e7ce2b09d3abf52d3c713423f0657f9a19179d9aef5358fc`. Executable
+SHAs unchanged (engine `18a623c41`, gateway `bcefc4bf`, frontend `118bf52`). Claude
+still has no authorized VPS shell and created none (Owner §3); the Owner runs v2 and
+must NOT run the rejected `/root/eco-verify-bootstrap.sh`.
 
-Corrections applied (Owner §4–§14):
+v2 defect corrections (Owner §1.1–§1.8, §2, §3):
+- **§1.1/§1.7 Case F+G real**: an isolated seeder (`eco_verify_seed.py`) creates two
+  synthetic tenants + non-privileged users + agent/project/session/file via the
+  gateway's OWN primitives (`org_service.create_user`, real bcrypt `hash_password`,
+  ORM models) in the isolated DB — no mocks, no authz bypass. Case F drives real
+  cross-tenant reads through the product API and asserts 404 deny (run/session/
+  project/file). Case G authenticates as the seeded tenant-A identity and picks a
+  real engine-registry agent (the earlier "no Agent" BLOCK was wrong — the registry
+  serves engine agents to any authed user).
+- **§1.2/§1.3 evidence preserved**: acceptance exit code captured (`set +e`), then
+  collect+sanitize+persist ALWAYS run and the original failure code is returned;
+  sanitized evidence persists at `/var/lib/youtab-eco-verify/evidence/<run-id>/`
+  (0700, files 0600, manifest+SHA-256) and SURVIVES cleanup; only raw logs/secrets
+  inside the disposable root are deleted; sanitization/cleanup failure upgrades to a
+  material failure.
+- **§1.4 no hard-coded counters**: provider-invocation counts are DERIVED from the
+  real per-run branded `engine_selection` the gateway records from the engine
+  `runtime_engine_selection` event (consumer events strip dict payloads, so the run
+  object is the consumer-safe event-derived signal). All counting/invariant logic is
+  pure and self-tested; a hard-coded literal fails bundle self-validation.
+- **§1.5 secrets stay files**: `DEEPSEEK_API_KEY_FILE` renders as a PATH (never a
+  value); the shim injects the value only into the engine (sole consumer; gateway
+  never receives it) as a pinned-SHA fallback; native `*_FILE` support is a tracked
+  additive connector PR, NOT applied to the pinned executable.
+- **§1.8 safe checkout**: no `git checkout --force`; fresh unique clones → verify
+  remote URL → fetch exact commit → verify existence → `checkout --detach` → prove
+  `rev-parse HEAD` + clean `git status --porcelain`; never touches an existing
+  checkout.
+- **§3 self-tests**: `eco_verify_selftests.py` — 29 negative controls (Alpha,
+  duplicate/extra dispatch, fabricated counts, missing correlation, invalid ordering,
+  credential/identifier leak, cross-tenant success, symlink substitution, wrong-dir
+  cleanup, dirty/incorrect checkout, unknown state) run as an ABORT-first preflight.
+
+Earlier corrections retained (Owner §4–§14):
 - Secrets are **file-mounted Docker secrets** (`/run/secrets/*`, tmpfs, root 0400)
   + a non-printing entrypoint shim — values are absent from `docker inspect` and
   from `docker compose config` (only file paths render). No `env_file` secrets,
@@ -789,22 +827,30 @@ Corrections applied (Owner §4–§14):
   untouched); sanitized evidence with precise forbidden-identifier scan + `eco.v01`/
   `amour.v03` positive controls.
 
-Artifact SHA-256 (executed exactly if run; verified by the orchestrator against
-`MANIFEST.sha256` before use):
-- `eco-verify.compose.yml`  `5d20cc75422c3497e6006c789cea1dd678182bedcef8139ce52a9e14a7ca858f`
-- `secrets-entrypoint.sh`   `b64d3766bfb28ed8aeb47d9a43808ea0007b53aa352963da9b63686bfa1cb923`
-- `eco_verify_acceptance.py` `8d17a7ef22d0d3efa02637424262c5bce982329d9da5ffacd8da4cb8152f73ac`
+Artifact SHA-256 (v2; MANIFEST-verified subset executed/sourced by the orchestrator):
+- `eco-verify.compose.yml`   `4991c57c02d67aceece4b5ac17c585a77db6d29c393b8c69a792da022e9bf22b`
+- `secrets-entrypoint.sh`    `b64d3766bfb28ed8aeb47d9a43808ea0007b53aa352963da9b63686bfa1cb923`
+- `eco_verify_acceptance.py` `bd08b38b4d4421d0f4584e31cb84a3b73b4c54a2733c08bb50ba4b93ebb227f7`
+- `eco_verify_browser.py`    `b8082c73feeb2822271fd51b0c501ca27cf1bc549a7af681fd81ed87e84fe097`
+- `eco_verify_seed.py`       `ec21b63fb5878f465c834db2c1674720211ac49108e1f0af23249d290396623f`
+- `eco_verify_selftests.py`  `1ac1ea4b0e40f0acf2fd9e66f2e086a9a55e0a9ebc653e07dfc5ecf977a19296`
+- `eco_verify_guards.sh`     `052324522ef5ed6003284cc2e5a4cab29406e7f01a4af8d5bce46bc1b185d842`
 - `eco-verify.eco-down.yml`  `9db5dece8e8a9ea160f05a72ce52114a5fea24c89a88cce02e10493e3e01df46`
 - `eco-verify.both-down.yml` `aa1392a38edb3c304ccfa2ddf90d682a209f0a60e098b1cbf00b962c02f982b3`
-- `web-os-config.js`         `b59fd6a12ada43131df58aea1fe853c56beb6899c3e3edf357354b053b13f2ad`
-- `eco-verify.sh` (runner)   `941eb421fadec724cb57d4c5fd530ded2ac973177b0cc7be26f1fa22097aea34`
+- `web-os-config.js`         `feddb26d2cc808b894ce0b4d9261b2ce16ddd2a4647e5873368add065cf971e4`
+- `eco-verify.sh` (runner)   `728202ce79ce083638566bed3a8fa89c10d945e8989d6595dc169866e6fcb2d4`
 
-Static validation (2026-08-26): `bash -n` OK (runner + shim); `py_compile` OK;
-`docker compose config` valid; egress members = `['eco-verify-engine']`;
-backplane `internal:true`; secrets render as file paths (no values); placeholder
-secret value absent from render; no production resource / no `host.docker.internal`;
-both overlays merge (both-down re-points DeepSeek secret to the empty file).
+Static validation (2026-08-27, Linux container): `bash -n` OK (runner + shim +
+guards); `py_compile` OK (acceptance/browser/seed/selftests); bootstrap `--write-only`
+round-trip re-verified **13/13** embedded hashes + `sha256sum -c MANIFEST.sha256` OK;
+embedded self-tests **29/29** from the extracted copy; `docker compose config` valid;
+egress members = `['eco-verify-engine']`; backplane `internal:true`; browser
+`network_mode: service:eco-verify-gateway` (no ports); gateway/engine loopback-only;
+db/redis unpublished; secrets render as file paths (no values, incl. `DEEPSEEK_API_KEY_FILE`
+= path); no production resource / no `host.docker.internal`; no embedded credentials.
 
-Case G (browser): **BLOCKED** separately — no authorized loopback tunnel/browser
-path from this session; the Web OS service is ready but cannot be driven here. Not
-marked passed via API tests.
+Case G (browser): implemented as a REAL in-Compose Playwright test (shares the gateway
+netns; serves the exact-SHA Web OS on `127.0.0.1:8093`; drives Auto→ECO; asserts every
+request stays on the two allowed loopback hosts and no forbidden identifier leaks).
+Executable; its run-drive completes given the seeded tenant-A agent. Not marked PASS
+until the Owner-run acceptance produces `G_browser.json` with status PASS.
