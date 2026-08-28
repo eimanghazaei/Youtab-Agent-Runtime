@@ -726,7 +726,7 @@ LIVE_VERIFIED = pending the isolated VPS ECO run.
 | # | Item | Status | Repo/PR | Evidence | Blocker | Next action |
 |---|---|---|---|---|---|---|
 | 1 | ECO real exec + Amour availability fallback | CI_GREEN; **NOT LIVE_VERIFIED**; **ECO LIVE VERIFICATION — WAITING FOR OWNER EXECUTION** (v2 bundle delivered) | engine#33, gw#551 | routing+resolver tests; Amour live t_84a28a7e/t_a8afd507 (adapter proof, not ECO); v2 self-tests 29/29 | no authorized VPS shell (Owner §3); v2 bundle `466099ea…` corrected+validated, awaiting Owner-authorized run of the new exact SHA | Owner transfers+authorizes v2 → runs → acceptance matrix A–H → LIVE_VERIFIED only if all PASS |
-| 2 | Agent create/edit/configuration | **IMPLEMENTED (backend) — UNIT_TESTED (8/8 local); NOT pushed / NOT in PR / NOT CI'd; frontend + live cross-tenant PENDING** | gw local `00524104` (branch feat/agent-runtime-governed, unpushed), ADR-0067 `1e2eb87f` | tenant-scoped Agent CRUD on existing `agent_definitions` (no new table): GET/POST/PATCH/DELETE `/v1/agents/definitions[/{id}]`; `definitions_service.py` ownership-scoped queries (tenant filter, None→404); write gate `require_operator_or_above` (one-const threshold); additive nullable `created_by_user_id` + Alembic `0109` (written, NOT run live); `consumer_view._DEFINITION_KEEP` strips provider/model. Tests: `pytest tests/agents/test_definition_routes.py` **8 passed** (cross-tenant get/patch/delete→404; viewer/support write→403; provider/model absent; soft-delete). §9 sub-status: schema✓ migration(written) API✓ authz✓ tests✓(local) | Owner confirm write-role threshold (operator vs tenant_admin); push→CI; run migration; frontend | push to gw#551 + fe#107 UI; unblocks Case F agent-ownership |
+| 2 | Agent create/edit/configuration | **BACKEND IMPLEMENTED + PUSHED + CI-RUNNING; frontend IMPLEMENTED (push blocked); live cross-tenant VPS-gated** | gw **PUSHED `c0fbe65a`** (origin/feat/agent-runtime-governed, PR#551, base main); fe local `a311c3b8` (#107, push BLOCKED — token lacks `workflow` scope, commit edits frontend-validation.yml); ADR-0067 `1e2eb87f` | Backend: GET/POST/PATCH/DELETE `/v1/agents/definitions[/{id}]` on existing `agent_definitions` (no new table); ownership-scoped `definitions_service.py` (tenant filter→404); **§9 FINAL authz**: read=tenant member, create/update=`require_operator_or_above`, DELETE=`require_tenant_admin_or_above` (operator delete→403); every mutation → `app.auth.audit.record` (auth_audit_log); additive nullable `created_by_user_id` + Alembic `0109` **verified reversible on real Postgres** (upgrade/downgrade/re-upgrade, column present). Tests: `pytest tests/agents/test_definition_routes.py` **20 passed**; `tests/agents/` **355 passed/38 skip/0 fail** (real venv). Frontend: Agent Builder UI + client (list/create/edit/soft-delete) reusing pinned API-base+auth, 10/10 unit tests, no substrate leakage. §9 sub-status: decision✓ schema✓ migration✓(PG-verified) API✓ authz✓ tests✓ frontend✓(local) CI(running) browser✗ | exact-head CI green on `c0fbe65a`; frontend push needs workflow-scope token (Owner); live cross-tenant = VPS | pin `c0fbe65a` into V3 once CI green → Case F executable |
 | 3 | Projects/folders connected to Agents | IMPLEMENTED (view); linkage NOT_STARTED | gw, fe#107 | viewProjects ships | none | design Agent↔project linkage |
 | 4 | Sessions lifecycle (create/reopen/rename/archive/search) | IMPLEMENTED (partial) | gw, fe#107 | sessions view+contracts (WP-A-04) | none | complete rename/archive/search |
 | 5 | Library lifecycle (rename/delete/archive) | IMPLEMENTED (partial) | fe#107 | library view | none | complete lifecycle |
@@ -763,9 +763,22 @@ federation + deny-by-default isolation.
 - Correction: future synchronization of a moved remote/`main` uses **merge** (non-rebase), verify ancestry, rerun affected CI. No rebase/amend/force-push of shared history.
 
 ## VPS ECO verification bundle
-Status (v2b, 2026-08-27): **CORRECTED + HASHED + STATICALLY VALIDATED + SELF-TESTED
-(40/40) + MUTATION-PROVEN; NOT RUN — ECO LIVE VERIFICATION WAITING FOR OWNER
-EXECUTION.** v1 `38025df0…` REJECTED; earlier v2 `466099ea…` superseded (added §4
+Status (V3-in-progress, 2026-08-28): v2/v2b REJECTED by Owner on substance. **V3
+corrections DONE + SELF-TESTED (60/60) + MUTATION-PROVEN; V3 bootstrap SHA pending
+the CI-green Gateway pin (§8).** V3 fixes: **§2 secret-export FIXED** — shim no longer
+exports the Amour key; it is read inside a python step (never argv) into a 0400
+config.yaml the engine consumes via its own `_seed_custom_pool` (config.yaml custom
+`api_key`, no os.environ); sentinel proof: absent from env / /proc/environ / inspect /
+compose, present only in the 0400 file. **§3 fail-closed** — a provider-decision case
+cannot PASS unless real dispatch counts + correlation + observer readiness/integrity all
+hold; no engine_selection fallback; independent **closure validator** fails the run on any
+unproven condition (10/10 mutation-rejected). **§4/§6** observer emits observer_ready+self
+-SHA+seams_wrapped, monotonic seq, per-run scoping, detectable append failures, preflight
+positive-control-or-abort. **§5** real per-request correlation via durable root-only map;
+events lacking it fail. **§7** challenge `<nonce>:<n*2+7>` (echo/wrong-transform FAIL).
+**§12** guarded evidence-deletion predicate + README unsafe-cmd removed. Gateway pinned SHA
+for V3 = `c0fbe65a` (CRUD+authz+migration 0109), replacing bcefc4bf, once its exact-head
+CI is green. --- history: v1 `38025df0…` REJECTED; v2 `466099ea…` superseded (added §4
 dispatch observer + Case F agent-ownership). **Authoritative `eco-verify-bootstrap-v2.sh`
 SHA `4f0fca8d72c28d2d93edc17a42215373b5781a8a09ae688c34ad91203fda3d56` (119,807 B, 15
 members); archive `017ff354…`; MANIFEST `9bb4dc5d…`; evidence archive `bdab3db1…`.**
