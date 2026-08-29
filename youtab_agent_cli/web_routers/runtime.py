@@ -1100,19 +1100,33 @@ async def runtime_cancel_run(
     request: Request,
     identity: RuntimeIdentity = Depends(require_service_identity),
 ):
-    """Cancel a run: record the intent, kill any live worker, block the task."""
+    """Cancel a run: record the intent, kill any live worker, block the task.
+
+    A cancel of an ALREADY-TERMINAL run (completed, or previously cancelled) is
+    an idempotent NO-OP that preserves the existing terminal status: it records
+    no cancel intent and never relabels a finished run. Otherwise it records the
+    product-cancel intent, kills any live worker, and blocks the task.
+    """
     await _verify_signed_command(request, identity)
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         task = _load_owned_task(conn, run_id, identity)
+        # Terminality is read from the run's ACTUAL current state (existing
+        # events included), BEFORE writing anything. A completed run projects
+        # ``completed``; a previously-cancelled run projects ``cancelled`` (its
+        # cancel event already exists). In both cases the cancel is a no-op that
+        # returns the preserved status — a late cancel must never overwrite a
+        # finished run's outcome.
+        current_status = _run_status(task, cancelled=_is_cancelled(kb.list_events(conn, task.id)))
+        if current_status in _TERMINAL_PRODUCT_STATUSES:
+            return {"run_id": run_id, "status": current_status}
         # Record the product-cancel intent (also how detail/list project
         # ``cancelled`` rather than a plain block/archive). Raw event writes are
         # not auto-committed by connect_closing, so wrap in a write txn.
         with kb.write_txn(conn):
             kb._append_event(conn, task.id, _CANCEL_EVENT_KIND, {"by": identity.user})
         worker_pid = task.worker_pid
-        already_terminal = _run_status(task, cancelled=True) in _TERMINAL_PRODUCT_STATUSES
 
-    if worker_pid and not already_terminal:
+    if worker_pid:
         try:
             from gateway.status import terminate_pid
             terminate_pid(int(worker_pid))
