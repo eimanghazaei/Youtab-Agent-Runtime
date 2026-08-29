@@ -12,22 +12,26 @@ import pytest
 from youtab_agent_cli import runtime_command_auth as rca
 
 SECRET = "x" * 50  # >= 43 chars so it passes the length floor
+CORR = "cid-0123456789abcdef0123456789abcdef"  # valid per the shared regex
 
 
-def _sign(method, path, tenant, user, body, ts, nonce, secret=SECRET):
+def _sign(method, path, tenant, user, body, ts, nonce, secret=SECRET, correlation=CORR):
     canonical = rca.canonical_string(
         method=method, path=path, tenant=tenant, user=user,
-        timestamp=str(ts), nonce=nonce, body=body,
+        timestamp=str(ts), nonce=nonce, body=body, correlation=correlation,
     )
     return rca.compute_signature(secret, canonical)
 
 
-def _headers(sig, ts, nonce):
-    return {
+def _headers(sig, ts, nonce, correlation=CORR):
+    h = {
         rca.SIGNATURE_HEADER: sig,
         rca.TIMESTAMP_HEADER: str(ts),
         rca.NONCE_HEADER: nonce,
     }
+    if correlation is not None:
+        h[rca.CORRELATION_HEADER] = correlation
+    return h
 
 
 def test_valid_command_passes_and_records_nonce():

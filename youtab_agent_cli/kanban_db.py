@@ -942,6 +942,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Authoritative gateway per-request correlation id (canonical v1 signed field).
+    # This is the dedicated column; ``session_id`` above remains the legacy
+    # overload (set to the same value for now) to be retired in a later slice.
+    correlation_id: Optional[str] = None
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
     # blocks. Set by ``block_task``; preserved across unblock so a re-block for
     # the same kind is recognisable as an unblock↔re-block loop.
@@ -1029,6 +1033,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            correlation_id=(
+                row["correlation_id"] if "correlation_id" in keys else None
             ),
             block_kind=(
                 row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
@@ -1208,6 +1215,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- Authoritative gateway per-request correlation id (canonical v1 signed
+    -- field 8). This is the dedicated correlation column; ``session_id`` above
+    -- remains the legacy overload carrying the same value for now and will be
+    -- retired in a later slice. Indexed for per-correlation lookups.
+    correlation_id       TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -2397,6 +2409,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "correlation_id" not in cols:
+        # Authoritative gateway per-request correlation id (canonical v1 signed
+        # field). Additive + reversible: legacy rows get NULL; a downgrade simply
+        # stops reading the column. ``session_id`` keeps the legacy overload.
+        _add_column_if_missing(
+            conn, "tasks", "correlation_id", "correlation_id TEXT"
+        )
+
     if "block_kind" not in cols:
         # Typed block reason (VALID_BLOCK_KINDS) or NULL for legacy/un-typed
         # blocks. Existing blocked rows get NULL, which is treated as a
@@ -2426,6 +2446,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_correlation_id ON tasks(correlation_id)"
     )
 
     # task_events gained a run_id column; back-fill it as NULL for
@@ -2841,6 +2864,7 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    correlation_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
@@ -3136,8 +3160,8 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, correlation_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3162,6 +3186,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        correlation_id,
                     ),
                 )
                 for pid in parents:
@@ -8788,6 +8813,19 @@ def _resolve_worker_cli_toolsets(youtab_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _apply_correlation_env(env: "dict[str, str]", task: Task) -> "dict[str, str]":
+    """Inject the authoritative correlation id into a worker env, if present.
+
+    This is how model dispatch carries the gateway correlation id to the child
+    worker (contract C4). Pure and side-effect-free on ``task`` so it can be
+    unit-tested without spawning a subprocess. No-op when the task has no
+    correlation id (legacy rows, non-gateway creation paths).
+    """
+    if task.correlation_id:
+        env["YOUTAB_AGENT_CORRELATION_ID"] = task.correlation_id
+    return env
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -8843,6 +8881,8 @@ def _default_spawn(
         pass
     if task.tenant:
         env["YOUTAB_AGENT_TENANT"] = task.tenant
+    # Carry the authoritative gateway correlation id to the worker (contract C4).
+    _apply_correlation_env(env, task)
     env["YOUTAB_AGENT_KANBAN_TASK"] = task.id
     env["YOUTAB_AGENT_KANBAN_WORKSPACE"] = workspace
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and

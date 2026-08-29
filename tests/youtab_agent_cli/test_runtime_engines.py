@@ -110,12 +110,12 @@ def _identity_headers(tenant="tenantA", user="userA", roles="member"):
     }
 
 
-def _sign(method, path, tenant, user, body: bytes, nonce=None):
+def _sign(method, path, tenant, user, body: bytes, nonce=None, correlation="cid-test"):
     ts = int(time.time())
     nonce = nonce or f"n-{uuid.uuid4().hex}"
     canonical = rca.canonical_string(
         method=method, path=path, tenant=tenant, user=user,
-        timestamp=str(ts), nonce=nonce, body=body,
+        timestamp=str(ts), nonce=nonce, body=body, correlation=correlation,
     )
     sig = rca.compute_signature(SECRET, canonical)
     return {

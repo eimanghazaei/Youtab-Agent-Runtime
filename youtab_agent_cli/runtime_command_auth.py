@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import re
 import sqlite3
 import threading
 import time
@@ -50,6 +51,11 @@ DEFAULT_WINDOW_SECONDS = 300
 TIMESTAMP_HEADER = "x-youtab-runtime-timestamp"
 NONCE_HEADER = "x-youtab-runtime-nonce"
 SIGNATURE_HEADER = "x-youtab-runtime-signature"
+# The per-request correlation id is carried on this header and, as of canonical
+# v1, is a SIGNED field (field 8) so tampering fails the signature check. The
+# shared format regex matches the gateway's app/agents/correlation.py.
+CORRELATION_HEADER = "x-youtab-correlation-id"
+_CORRELATION_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,128}$")
 
 
 class CommandAuthError(Exception):
@@ -147,13 +153,22 @@ class SqliteNonceStore:
 
 
 def canonical_string(
-    *, method: str, path: str, tenant: str, user: str, timestamp: str, nonce: str, body: bytes
+    *,
+    method: str,
+    path: str,
+    tenant: str,
+    user: str,
+    timestamp: str,
+    nonce: str,
+    body: bytes,
+    correlation: str,
 ) -> str:
     """Build the canonical string that the signature covers.
 
     Binds the HTTP verb, the exact path, the gateway-verified tenant+user, the
-    freshness fields, and a hash of the raw body. Any tampering with any of
-    these changes the digest.
+    freshness fields, a hash of the raw body, and (canonical v1) the per-request
+    correlation id as field 8. Any tampering with any of these changes the
+    digest, so a mutated correlation header now fails as ``bad_signature``.
     """
     body_hash = hashlib.sha256(body or b"").hexdigest()
     return "\n".join([
@@ -164,6 +179,7 @@ def canonical_string(
         str(timestamp),
         nonce,
         body_hash,
+        correlation,
     ])
 
 
@@ -211,6 +227,23 @@ def verify_command(
             401,
         )
 
+    # Correlation is mandatory + validated on the signed path, BEFORE the nonce
+    # is consulted/burned. The engine does NOT auto-mint correlation on signed
+    # mutations (auto-mint stays only for unsigned read paths).
+    correlation = _get_header(headers, CORRELATION_HEADER)
+    if not correlation:
+        raise CommandAuthError(
+            "missing_correlation",
+            "signed command requires a correlation id header",
+            401,
+        )
+    if not _CORRELATION_RE.match(correlation):
+        raise CommandAuthError(
+            "invalid_correlation",
+            "correlation id is malformed",
+            400,
+        )
+
     try:
         ts = int(ts_raw)
     except (TypeError, ValueError):
@@ -234,6 +267,7 @@ def verify_command(
             timestamp=ts_raw,
             nonce=nonce,
             body=body,
+            correlation=correlation,
         ),
     )
     if not hmac.compare_digest(expected, signature.strip().lower()):

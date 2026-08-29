@@ -148,12 +148,12 @@ def _identity_headers(tenant="tenantA", user="userA", roles="member"):
     }
 
 
-def _sign(method, path, tenant, user, body: bytes, nonce=None):
+def _sign(method, path, tenant, user, body: bytes, nonce=None, correlation="cid-test"):
     ts = int(time.time())
     nonce = nonce or f"n-{uuid.uuid4().hex}"
     canonical = rca.canonical_string(
         method=method, path=path, tenant=tenant, user=user,
-        timestamp=str(ts), nonce=nonce, body=body,
+        timestamp=str(ts), nonce=nonce, body=body, correlation=correlation,
     )
     sig = rca.compute_signature(SECRET, canonical)
     return {
@@ -309,6 +309,112 @@ def test_cross_user_same_tenant_read_is_404(client):
     assert client.get(
         f"/api/runtime/v1/runs/{run_id}", headers=other_user
     ).status_code == 404
+
+
+# --------------------------------------------------------------------------
+# correlation binding (CORRELATION_CONTRACT v1)
+# --------------------------------------------------------------------------
+
+
+def _identity_headers_corr(correlation, tenant="tenantA", user="userA"):
+    h = _identity_headers(tenant, user)
+    h["X-Youtab-Correlation-Id"] = correlation
+    return h
+
+
+def test_create_stamps_correlation_on_task_event_and_dto(client):
+    r = _create_run(client)
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    headers = _identity_headers()
+
+    # DTO surfaces the correlation the caller sent ("cid-test").
+    detail = client.get(f"/api/runtime/v1/runs/{run_id}", headers=headers).json()
+    assert detail["correlation_id"] == "cid-test"
+
+    # Persisted on the dedicated column (legacy session_id overload preserved).
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        task = kb.get_task(conn, run_id)
+        assert task.correlation_id == "cid-test"
+        assert task.session_id == "cid-test"
+
+    # Authoritative dispatch (mode) event carries the correlation.
+    events = client.get(
+        f"/api/runtime/v1/runs/{run_id}/events", headers=headers
+    ).json()["events"]
+    mode_evt = next(e for e in events if e["kind"] == "runtime_execution_mode")
+    assert mode_evt["payload"]["correlation_id"] == "cid-test"
+    assert mode_evt["correlation_id"] == "cid-test"
+
+
+def test_missing_correlation_on_signed_create_is_401(client):
+    import json
+    body = json.dumps({"agent": "default", "task": "x"}).encode()
+    path = "/api/runtime/v1/runs"
+    # Sign WITHOUT a correlation and omit the header entirely.
+    headers = _identity_headers()
+    headers.pop("X-Youtab-Correlation-Id", None)
+    headers.update(_sign("POST", path, "tenantA", "userA", body, correlation=""))
+    headers["Content-Type"] = "application/json"
+    r = client.post(path, content=body, headers=headers)
+    assert r.status_code == 401
+    assert r.json()["detail"]["error"] == "missing_correlation"
+
+
+def test_malformed_correlation_on_signed_create_is_400(client):
+    import json
+    body = json.dumps({"agent": "default", "task": "x"}).encode()
+    path = "/api/runtime/v1/runs"
+    bad = "bad id!"
+    headers = _identity_headers_corr(bad)
+    headers.update(_sign("POST", path, "tenantA", "userA", body, correlation=bad))
+    headers["Content-Type"] = "application/json"
+    r = client.post(path, content=body, headers=headers)
+    assert r.status_code == 400
+    assert r.json()["detail"]["error"] == "invalid_correlation"
+
+
+def test_tampered_correlation_header_is_bad_signature(client):
+    import json
+    body = json.dumps({"agent": "default", "task": "x"}).encode()
+    path = "/api/runtime/v1/runs"
+    # Sign for "cid-test" but present a DIFFERENT valid correlation on the wire.
+    headers = _identity_headers_corr("cid-tampered-000000")
+    headers.update(_sign("POST", path, "tenantA", "userA", body, correlation="cid-test"))
+    headers["Content-Type"] = "application/json"
+    r = client.post(path, content=body, headers=headers)
+    assert r.status_code == 401
+    assert r.json()["detail"]["error"] == "bad_signature"
+
+
+def test_retry_preserves_correlation_lineage(client):
+    # Original run signed with correlation "cid-test".
+    run_id = _create_run(client).json()["run_id"]
+    _wait_terminal(client, run_id, _identity_headers())
+
+    # Retry with a DIFFERENT inbound correlation; lineage must inherit the
+    # ORIGINAL's correlation, not the retry request's.
+    path = f"/api/runtime/v1/runs/{run_id}/retry"
+    retry_corr = "cid-retry-different-01"
+    headers = _identity_headers_corr(retry_corr)
+    headers.update(_sign("POST", path, "tenantA", "userA", b"", correlation=retry_corr))
+    r = client.post(path, headers=headers)
+    assert r.status_code == 200, r.text
+    new_id = r.json()["run_id"]
+    assert new_id != run_id
+
+    # New task inherits the original correlation engine-side.
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        new_task = kb.get_task(conn, new_id)
+        assert new_task.correlation_id == "cid-test"
+
+    # An authoritative retried_from event records original run + correlation.
+    events = client.get(
+        f"/api/runtime/v1/runs/{new_id}/events", headers=_identity_headers()
+    ).json()["events"]
+    lineage = next(e for e in events if e["kind"] == "runtime_retried_from")
+    assert lineage["payload"]["original_run_id"] == run_id
+    assert lineage["payload"]["correlation_id"] == "cid-test"
 
 
 # --------------------------------------------------------------------------

@@ -171,6 +171,10 @@ _MODE_EVENT = "runtime_execution_mode"
 # resolved provider/model/override behind that selection.
 _ENGINE_EVENT = "runtime_engine_selection"
 
+# Event recorded on a retry run naming the original run it was retried from and
+# the preserved correlation id — makes retry lineage explicit and queryable.
+_RETRIED_FROM_EVENT = "runtime_retried_from"
+
 
 def _resolve_task_mode(task_id: str) -> str:
     """Return the recorded execution mode for a task ("model" by default).
@@ -419,6 +423,9 @@ def _run_summary(
         "started_at": task.started_at,
         "finished_at": task.completed_at,
         "tenant_id": task.tenant,
+        # The caller's own per-request correlation id (authoritative column).
+        # Not a provider/model secret; safe to surface to the consumer.
+        "correlation_id": task.correlation_id,
     }
 
 
@@ -489,12 +496,18 @@ def _artifact_ref(run_id: str, a: "kb.Attachment") -> Dict[str, Any]:
 
 
 def _event_projection(run_id: str, e: "kb.Event") -> Dict[str, Any]:
+    # Surface the correlation id carried on authoritative dispatch/lineage
+    # events (contract C5), so a consumer can trace events by correlation.
+    correlation_id = None
+    if isinstance(e.payload, dict):
+        correlation_id = e.payload.get("correlation_id")
     return {
         "id": e.id,          # monotonic cursor
         "run_id": run_id,
         "kind": e.kind,
         "payload": e.payload,
         "created_at": e.created_at,
+        "correlation_id": correlation_id,
     }
 
 
@@ -1070,12 +1083,23 @@ async def runtime_create_run(
             model_override=model_override,
             provider_override=provider_override,
             board=RUNTIME_BOARD,
+            # Authoritative dedicated correlation column (canonical v1). The
+            # session_id write below stays UNCHANGED as the legacy overload.
+            correlation_id=identity.correlation_id,
             session_id=identity.correlation_id,
         )
         # Record the resolved mode as a create-time event (survives restart,
         # visible in the run's own event stream, read by the dispatcher spawn).
+        # The correlation id is stamped on this authoritative dispatch event
+        # (fail-closed inside the run txn) so the run's own stream is queryable
+        # by correlation independent of the tasks column (contract C4).
         with kb.write_txn(conn):
-            kb._append_event(conn, run_id, _MODE_EVENT, {"mode": mode})
+            kb._append_event(
+                conn,
+                run_id,
+                _MODE_EVENT,
+                {"mode": mode, "correlation_id": identity.correlation_id},
+            )
             # Record the branded engine selection (consumer-safe: profile_id +
             # public label only; never the provider/model it resolved to).
             if engine_identity is not None:
@@ -1149,6 +1173,12 @@ async def runtime_retry_run(
         # real run stays real.
         prior_mode = _mode_from_events(kb.list_events(conn, task.id))
         retry_mode = "deterministic" if (prior_mode == "deterministic" and _deterministic_worker_enabled()) else "model"
+        # Preserve correlation lineage engine-side: the retry inherits the
+        # ORIGINAL task's correlation id (independent of the inbound header) so
+        # the whole retry chain is queryable by one correlation (contract C6).
+        # Fall back to the inbound signed correlation only if the original row
+        # predates the dedicated column (legacy).
+        lineage_correlation = task.correlation_id or identity.correlation_id
         new_id = kb.create_task(
             conn,
             title=f"{task.title} (retry)",
@@ -1160,10 +1190,27 @@ async def runtime_retry_run(
             goal_mode=task.goal_mode,
             max_runtime_seconds=task.max_runtime_seconds,
             board=RUNTIME_BOARD,
+            correlation_id=lineage_correlation,
             session_id=identity.correlation_id,
         )
         with kb.write_txn(conn):
-            kb._append_event(conn, new_id, _MODE_EVENT, {"mode": retry_mode})
+            kb._append_event(
+                conn,
+                new_id,
+                _MODE_EVENT,
+                {"mode": retry_mode, "correlation_id": lineage_correlation},
+            )
+            # Authoritative lineage marker: this run is a retry of ``run_id``,
+            # carrying the preserved correlation (fail-closed run-txn write).
+            kb._append_event(
+                conn,
+                new_id,
+                _RETRIED_FROM_EVENT,
+                {
+                    "original_run_id": run_id,
+                    "correlation_id": lineage_correlation,
+                },
+            )
     ensure_dispatcher_running()
     _dispatch_tick()
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
