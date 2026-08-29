@@ -8,6 +8,39 @@ Queued work is never deleted to tidy this file. An item that stops being
 relevant is closed with a reason, not removed — a tracker that forgets is worse
 than no tracker, because it reads as complete.
 
+## 2026-08-29 — Repository-side corrections (V4 superseded → V5 prerequisites)
+
+Owner directed completing repository-side Agent Runtime work before requesting
+Owner actions. V4 is an intermediate artifact and is NOT to be executed; V5 is
+pinned only after the repo prerequisites below are green.
+
+```text
+NATIVE *_FILE SECRET SUPPORT (gateway) = IMPLEMENTED + VERIFIED_LOCALLY
+  branch feat/native-secret-file-support (off origin/main c866b394), Draft PR #594.
+  app/core/settings.py _env_or_file/_read_secret_file: JWT_SECRET, MEMORY_CURSOR_HMAC_KEY,
+  DATABASE_URL, COMMERCE_ADMIN_DATABASE_URL, MEMORY_MAINTENANCE_DATABASE_URL,
+  AGENT_RUNTIME_SERVICE_SECRET. Fail-closed; value never in env/argv/inspect/logs.
+  tests/core/test_secret_file.py = 35 passed + 2 POSIX-only (verified in Linux);
+  no regression in test_settings.py; ruff check+format clean (0.6.9).
+ENGINE *_FILE = NOT_STARTED (engine service-secret path; follow-up).
+SERVER-SIDE CORRELATION (Web OS→Gateway→Connector→Engine→dispatch→reopen) = NOT_STARTED
+  (browser pre-run X-Correlation-ID done in eco-verify browser; server persistence/
+  propagation/stamp NOT implemented — blocks Case D/E1 per-request zero-dispatch and G).
+AGENT CRUD VERTICAL SLICE = VERIFIED_LOCALLY (backend 20/20 tests/agents/test_definition_routes.py;
+  frontend web-os/tests/agent-definitions.test.mjs 10/10 + surface-coverage 5/5 + secret-scan 5/5
+  clean in Linux). True browser e2e = WAITING_FOR_VPS_EXECUTION.
+FRONTEND (feat/agent-runtime-web-os-governed a311c3b8) = local; push BLOCKED (token lacks
+  workflow scope) AND a PRE-EXISTING unrelated red gate: security-regressions 21/22
+  "organization and billing placeholders are wired to real read APIs" (superadmin/index.html
+  poLoad markers absent on branch base; NOT touched by a311c3b8). Fixing it here would harm
+  reviewability — kept separate.
+SIMORGH = feat/simorgh-agent-runtime-integration created LOCALLY off canonical base c866b394;
+  no impl yet → no push, no PR (existing feat/simorgh-cognitive-brain is a different scope).
+GATEWAY AGENT-GOVERNED PR #551 (f49058bc) = UNCHANGED, still CI-green; not mixed with the above.
+BENCHMARK GATE = docs/roadmap/AGENT_RUNTIME_BENCHMARK_GATE.md (candidate checklist;
+  Agent Runtime NOT benchmark-ready, NOT user-ready).
+```
+
 ## Owner authorization — AR-PROD-01 engine connect (2026-08-19)
 
 The Owner confirmed this repository is the **real Youtab Agent Runtime product
@@ -705,7 +738,7 @@ and an Amour-only run is NOT ECO evidence.
 | Repo | Branch | PR | SHA (verified) | CI |
 |---|---|---|---|---|
 | Youtab-Agent-Runtime (engine) | feat/agent-runtime-connector | #33 | `18a623c41be27214b8fe3af33a22a6b69919b951` | python-security/js/wake-word GREEN (after 1 flake rerun — see OPEN_FLAKE) |
-| youtab-ai-os (gateway) | feat/agent-runtime-governed | #551 | `bcefc4bf0b6dbae930e8cd2442b65321a3a636ea` | substantive gates GREEN; Auto-merge Barrier RED = expected on Draft |
+| youtab-ai-os (gateway) | feat/agent-runtime-governed | #551 | executable code `bcefc4bf0b6dbae930e8cd2442b65321a3a636ea`; branch head `0b83d3e7877d8c44af178a2f4e66af9cee6b5e63` (docs-only: ADR-0067 draft, byte-identical `services/gateway`) | substantive gates GREEN; Auto-merge Barrier RED = expected on Draft |
 | youtab-frontend (web-os) | feat/agent-runtime-web-os-governed | #107 | `118bf5247960115c3f82316825124a6dd93c0c12` | frontend-validation GREEN |
 
 Status-language correction (Owner §3): do NOT say "all heads green" while a
@@ -725,8 +758,8 @@ LIVE_VERIFIED = pending the isolated VPS ECO run.
 ## Roadmap items (dependency order)
 | # | Item | Status | Repo/PR | Evidence | Blocker | Next action |
 |---|---|---|---|---|---|---|
-| 1 | ECO real exec + Amour availability fallback | CI_GREEN; **NOT LIVE_VERIFIED** | engine#33, gw#551 | routing+resolver tests; Amour live t_84a28a7e/t_a8afd507 (adapter proof, not ECO) | isolated VPS run needs Owner exact-SHA auth | run corrected VPS bundle → acceptance matrix A–H |
-| 2 | Agent create/edit/configuration UI | audit in progress | gw#551, fe#107 | audit 2026-08-26 | none (independent) | audit CRUD contracts → implement missing endpoints on canonical surfaces |
+| 1 | ECO real exec + Amour availability fallback | CI_GREEN; **NOT LIVE_VERIFIED**; **ECO LIVE VERIFICATION — WAITING FOR OWNER EXECUTION** (v2 bundle delivered) | engine#33, gw#551 | routing+resolver tests; Amour live t_84a28a7e/t_a8afd507 (adapter proof, not ECO); v2 self-tests 29/29 | no authorized VPS shell (Owner §3); v2 bundle `466099ea…` corrected+validated, awaiting Owner-authorized run of the new exact SHA | Owner transfers+authorizes v2 → runs → acceptance matrix A–H → LIVE_VERIFIED only if all PASS |
+| 2 | Agent create/edit/configuration | **BACKEND IMPLEMENTED + PUSHED + EXACT-HEAD CI GREEN; frontend IMPLEMENTED (push blocked); live cross-tenant VPS-gated** | gw **PUSHED `f49058bc` — CI GREEN** (origin/feat/agent-runtime-governed, PR#551, base main; run 33180656147 all 9 jobs success incl Backend tests + Migration sandbox; synced with main via non-rebase merge `4f7d4b29`, migration re-chained to single head `0110`); fe local `a311c3b8` (#107, push BLOCKED — token lacks `workflow` scope, commit edits frontend-validation.yml); ADR-0067 `1e2eb87f` | Backend: GET/POST/PATCH/DELETE `/v1/agents/definitions[/{id}]` on existing `agent_definitions` (no new table); ownership-scoped `definitions_service.py` (tenant filter→404); **§9 FINAL authz**: read=tenant member, create/update=`require_operator_or_above`, DELETE=`require_tenant_admin_or_above` (operator delete→403); every mutation → `app.auth.audit.record` (auth_audit_log); additive nullable `created_by_user_id` + Alembic `0109` **verified reversible on real Postgres** (upgrade/downgrade/re-upgrade, column present). Tests: `pytest tests/agents/test_definition_routes.py` **20 passed**; `tests/agents/` **355 passed/38 skip/0 fail** (real venv). Frontend: Agent Builder UI + client (list/create/edit/soft-delete) reusing pinned API-base+auth, 10/10 unit tests, no substrate leakage. §9 sub-status: decision✓ schema✓ migration✓(PG-verified) API✓ authz✓ tests✓ frontend✓(local) CI(running) browser✗ | exact-head CI green on `c0fbe65a`; frontend push needs workflow-scope token (Owner); live cross-tenant = VPS | pin `c0fbe65a` into V3 once CI green → Case F executable |
 | 3 | Projects/folders connected to Agents | IMPLEMENTED (view); linkage NOT_STARTED | gw, fe#107 | viewProjects ships | none | design Agent↔project linkage |
 | 4 | Sessions lifecycle (create/reopen/rename/archive/search) | IMPLEMENTED (partial) | gw, fe#107 | sessions view+contracts (WP-A-04) | none | complete rename/archive/search |
 | 5 | Library lifecycle (rename/delete/archive) | IMPLEMENTED (partial) | fe#107 | library view | none | complete lifecycle |
@@ -763,10 +796,124 @@ federation + deny-by-default isolation.
 - Correction: future synchronization of a moved remote/`main` uses **merge** (non-rebase), verify ancestry, rerun affected CI. No rebase/amend/force-push of shared history.
 
 ## VPS ECO verification bundle
-Status: **DOCUMENTED, being repaired (Owner corrections §6–§14), NOT RUN.**
-Corrected version adds isolated Docker-network service DNS (no
-host.docker.internal), guarded secure dir/cleanup with realpath+marker+label
-checks, credential-file auth (no secrets on argv), supported DB init+migration
-(no `|| true`), fail-closed resource thresholds, sanitized evidence, full
-acceptance matrix A–H, bounded polling. Awaiting Owner exact-SHA authorization
-to run.
+Status (V3 FINAL, 2026-08-28): v1/v2/v2b REJECTED by Owner. **V3 corrections DONE +
+SELF-TESTED (60/60) + MUTATION-PROVEN; Gateway pinned to CI-GREEN `f49058bc` (§8
+satisfied).** V3 artifacts: bootstrap `e309cd8fb95a34947f1d14f5d07cb006b2d638826f9932f81f2365cb41befad6`
+(142,356 B, 15 members); archive `abd5b6e4ca02553757090ef856430b440d37a7c17df0bbbaafea68d19ac70f53`;
+MANIFEST `c38259739d107e6ced6ddebec3eb7b6e5a23651bb0292fe6bf74b295ef92952d`; evidence
+`9a56444a348a51c5588b340a51731d41aae084bcb804a338edfe9c6e5a8cbb69`. Executable SHAs:
+Engine `18a623c41…`, **Gateway `f49058bc63041fda8148e935fbe3d76cd55950cc` (CI-GREEN, PR#551,
+Agent-CRUD + migration 0110, supersedes bcefc4bf)**, Web OS `118bf52…`. Owner must grant fresh
+exact-SHA authorization for V3 before any VPS run; do NOT run v1 `38025df0` / v2 `4f0fca8d`. V3 fixes: **§2 secret-export FIXED** — shim no longer
+exports the Amour key; it is read inside a python step (never argv) into a 0400
+config.yaml the engine consumes via its own `_seed_custom_pool` (config.yaml custom
+`api_key`, no os.environ); sentinel proof: absent from env / /proc/environ / inspect /
+compose, present only in the 0400 file. **§3 fail-closed** — a provider-decision case
+cannot PASS unless real dispatch counts + correlation + observer readiness/integrity all
+hold; no engine_selection fallback; independent **closure validator** fails the run on any
+unproven condition (10/10 mutation-rejected). **§4/§6** observer emits observer_ready+self
+-SHA+seams_wrapped, monotonic seq, per-run scoping, detectable append failures, preflight
+positive-control-or-abort. **§5** real per-request correlation via durable root-only map;
+events lacking it fail. **§7** challenge `<nonce>:<n*2+7>` (echo/wrong-transform FAIL).
+**§12** guarded evidence-deletion predicate + README unsafe-cmd removed. Gateway pinned SHA
+for V3 = `c0fbe65a` (CRUD+authz+migration 0109), replacing bcefc4bf, once its exact-head
+CI is green. --- history: v1 `38025df0…` REJECTED; v2 `466099ea…` superseded (added §4
+dispatch observer + Case F agent-ownership). **Authoritative `eco-verify-bootstrap-v2.sh`
+SHA `4f0fca8d72c28d2d93edc17a42215373b5781a8a09ae688c34ad91203fda3d56` (119,807 B, 15
+members); archive `017ff354…`; MANIFEST `9bb4dc5d…`; evidence archive `bdab3db1…`.**
+Added since 466099ea: §4 verification-only dispatch-boundary observer
+(`eco_verify_dispatch_probe.py`+`sitecustomize.py`, injected via PYTHONPATH, wraps
+`agent.chat_completion_helpers._dispatch_nonstreaming_api_request`+`interruptible_streaming_api_call`
+— does NOT modify the pinned tree; counts DERIVED from its append-only log, else
+NOT_PROVEN); Case F agent-ownership probes (positive-control-gated; INCOMPLETE if the
+definitions endpoint is absent). §3 finding: pinned engine HAS a no-env file
+credential path (config.yaml custom `api_key`→`_seed_custom_pool`→`OpenAI(api_key=)`,
+credential_pool.py:2706-2737); plain `.env` IS bridged to os.environ (env_loader.py:320)
+— no-env Amour wiring + runtime non-exposure = WAITING FOR OWNER VPS EXECUTION.
+--- (superseded v2 line) v2 `466099ea…` (98,558 B),
+archive `eco-verify-bundle-v2.tar.gz` SHA
+`d083099a96eb626ace2f0c1524da0265b2cc3753db8e4d9681f55fd82a937092`, MANIFEST SHA
+`a1b43ae2bcadbf76e7ce2b09d3abf52d3c713423f0657f9a19179d9aef5358fc`. Executable
+SHAs unchanged (engine `18a623c41`, gateway `bcefc4bf`, frontend `118bf52`). Claude
+still has no authorized VPS shell and created none (Owner §3); the Owner runs v2 and
+must NOT run the rejected `/root/eco-verify-bootstrap.sh`.
+
+v2 defect corrections (Owner §1.1–§1.8, §2, §3):
+- **§1.1/§1.7 Case F+G real**: an isolated seeder (`eco_verify_seed.py`) creates two
+  synthetic tenants + non-privileged users + agent/project/session/file via the
+  gateway's OWN primitives (`org_service.create_user`, real bcrypt `hash_password`,
+  ORM models) in the isolated DB — no mocks, no authz bypass. Case F drives real
+  cross-tenant reads through the product API and asserts 404 deny (run/session/
+  project/file). Case G authenticates as the seeded tenant-A identity and picks a
+  real engine-registry agent (the earlier "no Agent" BLOCK was wrong — the registry
+  serves engine agents to any authed user).
+- **§1.2/§1.3 evidence preserved**: acceptance exit code captured (`set +e`), then
+  collect+sanitize+persist ALWAYS run and the original failure code is returned;
+  sanitized evidence persists at `/var/lib/youtab-eco-verify/evidence/<run-id>/`
+  (0700, files 0600, manifest+SHA-256) and SURVIVES cleanup; only raw logs/secrets
+  inside the disposable root are deleted; sanitization/cleanup failure upgrades to a
+  material failure.
+- **§1.4 no hard-coded counters**: provider-invocation counts are DERIVED from the
+  real per-run branded `engine_selection` the gateway records from the engine
+  `runtime_engine_selection` event (consumer events strip dict payloads, so the run
+  object is the consumer-safe event-derived signal). All counting/invariant logic is
+  pure and self-tested; a hard-coded literal fails bundle self-validation.
+- **§1.5 secrets stay files**: `DEEPSEEK_API_KEY_FILE` renders as a PATH (never a
+  value); the shim injects the value only into the engine (sole consumer; gateway
+  never receives it) as a pinned-SHA fallback; native `*_FILE` support is a tracked
+  additive connector PR, NOT applied to the pinned executable.
+- **§1.8 safe checkout**: no `git checkout --force`; fresh unique clones → verify
+  remote URL → fetch exact commit → verify existence → `checkout --detach` → prove
+  `rev-parse HEAD` + clean `git status --porcelain`; never touches an existing
+  checkout.
+- **§3 self-tests**: `eco_verify_selftests.py` — 29 negative controls (Alpha,
+  duplicate/extra dispatch, fabricated counts, missing correlation, invalid ordering,
+  credential/identifier leak, cross-tenant success, symlink substitution, wrong-dir
+  cleanup, dirty/incorrect checkout, unknown state) run as an ABORT-first preflight.
+
+Earlier corrections retained (Owner §4–§14):
+- Secrets are **file-mounted Docker secrets** (`/run/secrets/*`, tmpfs, root 0400)
+  + a non-printing entrypoint shim — values are absent from `docker inspect` and
+  from `docker compose config` (only file paths render). No `env_file` secrets,
+  no secret on argv, no static dev password (isolated identity generated).
+- Health checks use **python3 urllib / pg_isready / redis-cli** — no assumption
+  that `curl` exists in an image.
+- **Web OS service added** (exact frontend SHA `118bf52`, loopback `127.0.0.1:8091`)
+  so Case G is executable once an authorized browser/tunnel path exists.
+- Isolated Docker-network **service DNS** `http://eco-verify-engine:8092` (no
+  `host.docker.internal`); egress isolation proven (engine-only on egress;
+  backplane `internal:true`; db/redis unpublished).
+- Guarded secure dir + cleanup (realpath + marker + not-symlink + exact project
+  label); bounded readiness; supported DB init (`AUTO_CREATE_TABLES`, no
+  `|| true`) + schema verification; fail-closed resource thresholds (re-checked
+  before startup); overlay-file ECO/both-unavailable simulations (Mac/Tailscale
+  untouched); sanitized evidence with precise forbidden-identifier scan + `eco.v01`/
+  `amour.v03` positive controls.
+
+Artifact SHA-256 (v2; MANIFEST-verified subset executed/sourced by the orchestrator):
+- `eco-verify.compose.yml`   `4991c57c02d67aceece4b5ac17c585a77db6d29c393b8c69a792da022e9bf22b`
+- `secrets-entrypoint.sh`    `b64d3766bfb28ed8aeb47d9a43808ea0007b53aa352963da9b63686bfa1cb923`
+- `eco_verify_acceptance.py` `bd08b38b4d4421d0f4584e31cb84a3b73b4c54a2733c08bb50ba4b93ebb227f7`
+- `eco_verify_browser.py`    `b8082c73feeb2822271fd51b0c501ca27cf1bc549a7af681fd81ed87e84fe097`
+- `eco_verify_seed.py`       `ec21b63fb5878f465c834db2c1674720211ac49108e1f0af23249d290396623f`
+- `eco_verify_selftests.py`  `1ac1ea4b0e40f0acf2fd9e66f2e086a9a55e0a9ebc653e07dfc5ecf977a19296`
+- `eco_verify_guards.sh`     `052324522ef5ed6003284cc2e5a4cab29406e7f01a4af8d5bce46bc1b185d842`
+- `eco-verify.eco-down.yml`  `9db5dece8e8a9ea160f05a72ce52114a5fea24c89a88cce02e10493e3e01df46`
+- `eco-verify.both-down.yml` `aa1392a38edb3c304ccfa2ddf90d682a209f0a60e098b1cbf00b962c02f982b3`
+- `web-os-config.js`         `feddb26d2cc808b894ce0b4d9261b2ce16ddd2a4647e5873368add065cf971e4`
+- `eco-verify.sh` (runner)   `728202ce79ce083638566bed3a8fa89c10d945e8989d6595dc169866e6fcb2d4`
+
+Static validation (2026-08-27, Linux container): `bash -n` OK (runner + shim +
+guards); `py_compile` OK (acceptance/browser/seed/selftests); bootstrap `--write-only`
+round-trip re-verified **13/13** embedded hashes + `sha256sum -c MANIFEST.sha256` OK;
+embedded self-tests **29/29** from the extracted copy; `docker compose config` valid;
+egress members = `['eco-verify-engine']`; backplane `internal:true`; browser
+`network_mode: service:eco-verify-gateway` (no ports); gateway/engine loopback-only;
+db/redis unpublished; secrets render as file paths (no values, incl. `DEEPSEEK_API_KEY_FILE`
+= path); no production resource / no `host.docker.internal`; no embedded credentials.
+
+Case G (browser): implemented as a REAL in-Compose Playwright test (shares the gateway
+netns; serves the exact-SHA Web OS on `127.0.0.1:8093`; drives Auto→ECO; asserts every
+request stays on the two allowed loopback hosts and no forbidden identifier leaks).
+Executable; its run-drive completes given the seeded tenant-A agent. Not marked PASS
+until the Owner-run acceptance produces `G_browser.json` with status PASS.
