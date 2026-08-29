@@ -8,6 +8,39 @@ Queued work is never deleted to tidy this file. An item that stops being
 relevant is closed with a reason, not removed — a tracker that forgets is worse
 than no tracker, because it reads as complete.
 
+## 2026-08-29 — Repository-side corrections (V4 superseded → V5 prerequisites)
+
+Owner directed completing repository-side Agent Runtime work before requesting
+Owner actions. V4 is an intermediate artifact and is NOT to be executed; V5 is
+pinned only after the repo prerequisites below are green.
+
+```text
+NATIVE *_FILE SECRET SUPPORT (gateway) = IMPLEMENTED + VERIFIED_LOCALLY
+  branch feat/native-secret-file-support (off origin/main c866b394), Draft PR #594.
+  app/core/settings.py _env_or_file/_read_secret_file: JWT_SECRET, MEMORY_CURSOR_HMAC_KEY,
+  DATABASE_URL, COMMERCE_ADMIN_DATABASE_URL, MEMORY_MAINTENANCE_DATABASE_URL,
+  AGENT_RUNTIME_SERVICE_SECRET. Fail-closed; value never in env/argv/inspect/logs.
+  tests/core/test_secret_file.py = 35 passed + 2 POSIX-only (verified in Linux);
+  no regression in test_settings.py; ruff check+format clean (0.6.9).
+ENGINE *_FILE = NOT_STARTED (engine service-secret path; follow-up).
+SERVER-SIDE CORRELATION (Web OS→Gateway→Connector→Engine→dispatch→reopen) = NOT_STARTED
+  (browser pre-run X-Correlation-ID done in eco-verify browser; server persistence/
+  propagation/stamp NOT implemented — blocks Case D/E1 per-request zero-dispatch and G).
+AGENT CRUD VERTICAL SLICE = VERIFIED_LOCALLY (backend 20/20 tests/agents/test_definition_routes.py;
+  frontend web-os/tests/agent-definitions.test.mjs 10/10 + surface-coverage 5/5 + secret-scan 5/5
+  clean in Linux). True browser e2e = WAITING_FOR_VPS_EXECUTION.
+FRONTEND (feat/agent-runtime-web-os-governed a311c3b8) = local; push BLOCKED (token lacks
+  workflow scope) AND a PRE-EXISTING unrelated red gate: security-regressions 21/22
+  "organization and billing placeholders are wired to real read APIs" (superadmin/index.html
+  poLoad markers absent on branch base; NOT touched by a311c3b8). Fixing it here would harm
+  reviewability — kept separate.
+SIMORGH = feat/simorgh-agent-runtime-integration created LOCALLY off canonical base c866b394;
+  no impl yet → no push, no PR (existing feat/simorgh-cognitive-brain is a different scope).
+GATEWAY AGENT-GOVERNED PR #551 (f49058bc) = UNCHANGED, still CI-green; not mixed with the above.
+BENCHMARK GATE = docs/roadmap/AGENT_RUNTIME_BENCHMARK_GATE.md (candidate checklist;
+  Agent Runtime NOT benchmark-ready, NOT user-ready).
+```
+
 ## Owner authorization — AR-PROD-01 engine connect (2026-08-19)
 
 The Owner confirmed this repository is the **real Youtab Agent Runtime product
