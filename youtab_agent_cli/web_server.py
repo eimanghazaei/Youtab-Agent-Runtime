@@ -325,7 +325,12 @@ app.include_router(_memory_oauth_router)
 
 
 def _resolve_session_token() -> str:
-    return os.environ.get("YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+    # File-backed (YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN_FILE) preferred; the inline
+    # env var is still honoured; otherwise a fresh ephemeral token is minted. The
+    # secret value never has to enter the process environment.
+    from youtab_agent_cli.secret_file import env_or_file
+
+    return env_or_file("YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 
 
 _SESSION_TOKEN = _resolve_session_token()

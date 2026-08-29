@@ -267,7 +267,11 @@ class RuntimeIdentity:
 
 
 def _runtime_secret() -> str:
-    return (os.environ.get("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET") or "").strip()
+    # File-backed (YOUTAB_AGENT_RUNTIME_SERVICE_SECRET_FILE) preferred; the inline
+    # env var is still honoured. The value never has to enter the environment.
+    from youtab_agent_cli.secret_file import env_or_file
+
+    return (env_or_file("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET") or "").strip()
 
 
 def require_service_identity(request: Request) -> RuntimeIdentity:
