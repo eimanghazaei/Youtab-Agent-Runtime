@@ -3077,20 +3077,25 @@ def create_task_ex(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
+    # Idempotency FAST PATH — return the existing task instead of creating a
+    # duplicate. Done BEFORE entering write_txn to keep the common (already
+    # exists) case cheap and to avoid taking a write lock just to look up.
+    # This lookup is racy on its own (two concurrent same-key creators can both
+    # miss it), so it is NOT authoritative: the write_txn below re-checks under
+    # the BEGIN IMMEDIATE lock before inserting (see ``_existing_idempotent``).
+    def _existing_idempotent() -> Optional[str]:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
             "ORDER BY created_at DESC LIMIT 1",
             (idempotency_key,),
         ).fetchone()
-        if row:
-            return row["id"], False
+        return row["id"] if row else None
+
+    if idempotency_key:
+        existing = _existing_idempotent()
+        if existing is not None:
+            return existing, False
 
     now = int(time.time())
 
@@ -3119,6 +3124,20 @@ def create_task_ex(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                # AUTHORITATIVE idempotency re-check under the write lock. The
+                # ``idx_tasks_idempotency`` index is non-unique, so the pre-lock
+                # fast path is racy: two concurrent same-key creators can both
+                # miss it. ``write_txn`` opens BEGIN IMMEDIATE, which serialises
+                # writers — so the loser reaches this point only AFTER the winner
+                # has committed its INSERT, and now observes the existing row.
+                # Returning here (no writes performed) commits an empty
+                # transaction and yields the winner's run with created=False, so
+                # exactly one row per key is ever inserted.
+                if idempotency_key:
+                    existing = _existing_idempotent()
+                    if existing is not None:
+                        return existing, False
+
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.

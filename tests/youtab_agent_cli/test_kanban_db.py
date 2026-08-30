@@ -192,6 +192,103 @@ def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
         assert any(e.kind == "scheduled" and e.payload == {"reason": "run next week"} for e in events)
 
 
+# ---------------------------------------------------------------------------
+# Idempotency under concurrency (create_task_ex)
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_same_key_creates_insert_exactly_one_row(kanban_home, monkeypatch):
+    """Two threads creating with the SAME idempotency_key must not duplicate.
+
+    Regression for "Concurrent retries create duplicate runs": the pre-lock
+    idempotency SELECT is racy (``idx_tasks_idempotency`` is non-unique), so two
+    concurrent same-key creators can both miss it. ``create_task_ex`` now
+    re-checks idempotency INSIDE ``write_txn`` (BEGIN IMMEDIATE serialises
+    writers), so the loser observes the winner's row and returns it without
+    inserting.
+
+    The write lock is the synchronisation seam (no sleeps): a barrier releases
+    both workers at the ``write_txn`` boundary — i.e. AFTER both have run the
+    racy pre-lock SELECT and BEFORE either takes BEGIN IMMEDIATE — so they
+    genuinely contend for the write lock, the exact window the bug needs.
+    """
+    import contextlib
+    import threading
+
+    db_path = kb.kanban_db_path()
+
+    real_write_txn = kb.write_txn
+    barrier = threading.Barrier(2)
+
+    @contextlib.contextmanager
+    def _synced_write_txn(conn):
+        barrier.wait()
+        with real_write_txn(conn) as c:
+            yield c
+
+    monkeypatch.setattr(kb, "write_txn", _synced_write_txn)
+
+    key = "concurrent-idem-key"
+    results: dict[int, tuple[str, bool]] = {}
+    errors: list[BaseException] = []
+
+    def _worker(i: int) -> None:
+        try:
+            conn = kb.connect(db_path)
+            try:
+                results[i] = kb.create_task_ex(
+                    conn, title=f"race-{i}", assignee="a", idempotency_key=key,
+                )
+            finally:
+                conn.close()
+        except BaseException as exc:  # noqa: BLE001 — surfaced via the assertions
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"worker raised: {errors!r}"
+    assert not any(t.is_alive() for t in threads), "a worker did not finish"
+    assert set(results) == {0, 1}
+
+    id0, created0 = results[0]
+    id1, created1 = results[1]
+    # Both callers see the SAME run.
+    assert id0 == id1
+    # Exactly one inserter (created=True), one idempotent hit (created=False).
+    assert {created0, created1} == {True, False}
+
+    # Exactly ONE physical row was inserted for that key.
+    with kb.connect(db_path) as verify:
+        count = verify.execute(
+            "SELECT COUNT(*) FROM tasks WHERE idempotency_key = ?", (key,)
+        ).fetchone()[0]
+    assert count == 1, f"idempotency race inserted {count} rows for one key"
+
+    # Mirror the runtime create handler: it appends the create-time MODE/ENGINE
+    # events ONLY when created is True. Exactly one worker created the run, so
+    # the events stay exactly-once even under the concurrent retry.
+    run_id = id0
+    with kb.connect(db_path) as ev:
+        for rid, created in (results[0], results[1]):
+            if created:
+                with real_write_txn(ev):
+                    kb._append_event(
+                        ev, rid, "runtime_execution_mode", {"mode": "model"}
+                    )
+                    kb._append_event(
+                        ev, rid, "runtime_engine_selection", {"profile_id": "eco.v01"}
+                    )
+        events = kb.list_events(ev, run_id)
+    mode_events = [e for e in events if e.kind == "runtime_execution_mode"]
+    engine_events = [e for e in events if e.kind == "runtime_engine_selection"]
+    assert len(mode_events) == 1
+    assert len(engine_events) == 1
+
+
 
 
 
