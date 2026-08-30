@@ -10,6 +10,7 @@ memory.
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
 import re
 from pathlib import Path
@@ -33,6 +34,31 @@ def test_graphrag_is_not_importable():
     assert (
         importlib.util.find_spec("graphrag") is None
     ), "Microsoft GraphRAG is prohibited but resolves as an importable package."
+
+
+def test_no_installed_distribution_provides_graphrag():
+    """Runtime (behavioural) layer: no INSTALLED distribution is graphrag.
+
+    ``test_graphrag_is_not_importable`` only catches a package whose top-level
+    import name is exactly ``graphrag``. A distribution can ship under a
+    different import name than its PyPI project name, so a ``pip install
+    graphrag`` (or ``graph-rag``) that exposes a differently-named module would
+    slip past ``find_spec``. This scans the actually-installed distribution
+    metadata for the same prohibited token the manifest scan uses, so the gate
+    fails on a real installation in the running environment — independent of
+    source text and manifests. Additive: it does not relax any other layer.
+    """
+    offenders = []
+    for dist in importlib.metadata.distributions():
+        # ``Name`` is the canonical project name; fall back to metadata key.
+        name = (dist.metadata.get("Name") or "").strip()
+        if name and _DEP_TOKEN.search(name):
+            version = dist.version or "?"
+            offenders.append(f"{name}=={version}")
+    assert not offenders, (
+        "Microsoft GraphRAG is installed as a distribution in this environment: "
+        + ", ".join(sorted(set(offenders)))
+    )
 
 
 def test_no_dependency_manifest_declares_graphrag():

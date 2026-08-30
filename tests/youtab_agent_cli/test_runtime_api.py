@@ -418,6 +418,80 @@ def test_retry_preserves_correlation_lineage(client):
 
 
 # --------------------------------------------------------------------------
+# idempotent create — create-time events must be exactly-once
+# --------------------------------------------------------------------------
+
+
+def _create_run_idem(client, idem_key, *, nonce, engine=None):
+    """POST a signed create carrying an ``Idempotency-Key`` header.
+
+    Each call uses a DISTINCT signed-command nonce (so it is not rejected as a
+    replay) but the SAME idempotency key (so create_task returns the existing
+    run on the retry). ``Idempotency-Key`` is a header, not part of the signed
+    canonical string, so reusing it across two independently-signed commands is
+    legitimate.
+    """
+    import json
+    payload = {"agent": "default", "task": "idempotent create"}
+    if engine is not None:
+        payload["engine"] = engine
+    body = json.dumps(payload).encode()
+    path = "/api/runtime/v1/runs"
+    headers = _identity_headers()
+    headers.update(_sign("POST", path, "tenantA", "userA", body, nonce=nonce))
+    headers["Content-Type"] = "application/json"
+    headers["Idempotency-Key"] = idem_key
+    return client.post(path, content=body, headers=headers)
+
+
+def _event_kind_counts(client, run_id):
+    events = client.get(
+        f"/api/runtime/v1/runs/{run_id}/events", headers=_identity_headers()
+    ).json()["events"]
+    mode = [e for e in events if e["kind"] == runtime._MODE_EVENT]
+    engine = [e for e in events if e["kind"] == runtime._ENGINE_EVENT]
+    return len(mode), len(engine)
+
+
+def test_idempotent_retry_does_not_duplicate_mode_and_engine_events(client, monkeypatch):
+    # A real, resolvable engine, forced UNBOUND so the run records the engine
+    # selection event without triggering the local-server split-brain guard.
+    engine_id = "alpha.v06"
+    monkeypatch.setattr(
+        runtime.agent_identity, "engine_binding_for_profile", lambda pid: None
+    )
+
+    idem = "idem-key-fixed-001"
+    r1 = _create_run_idem(client, idem, nonce="n-idem-1", engine=engine_id)
+    assert r1.status_code == 200, r1.text
+    run_id = r1.json()["run_id"]
+
+    # First (new) create records EXACTLY ONE of each create-time event.
+    mode_n, engine_n = _event_kind_counts(client, run_id)
+    assert mode_n == 1, f"new create must record one mode event, got {mode_n}"
+    assert engine_n == 1, f"new create must record one engine event, got {engine_n}"
+
+    # Idempotent retry: same key, fresh nonce. Returns the SAME run (semantics
+    # preserved) and MUST NOT append a second mode/engine event.
+    r2 = _create_run_idem(client, idem, nonce="n-idem-2", engine=engine_id)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["run_id"] == run_id, "idempotent retry must return the same run"
+
+    mode_n2, engine_n2 = _event_kind_counts(client, run_id)
+    assert mode_n2 == 1, f"idempotent retry duplicated the mode event: got {mode_n2}"
+    assert engine_n2 == 1, f"idempotent retry duplicated the engine event: got {engine_n2}"
+
+
+def test_normal_new_create_records_one_mode_event(client):
+    # A plain create (no engine) still records exactly one mode event and, with
+    # no engine selected, zero engine events.
+    run_id = _create_run(client).json()["run_id"]
+    mode_n, engine_n = _event_kind_counts(client, run_id)
+    assert mode_n == 1
+    assert engine_n == 0
+
+
+# --------------------------------------------------------------------------
 # signed-command replay / tamper
 # --------------------------------------------------------------------------
 

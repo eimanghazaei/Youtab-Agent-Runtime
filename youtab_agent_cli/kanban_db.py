@@ -2840,7 +2840,20 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
-def create_task(
+def create_task(conn: sqlite3.Connection, **kwargs) -> str:
+    """Backward-compatible wrapper: create a task and return only its id.
+
+    Existing callers depend on the ``str`` return. Callers that must know
+    whether the run was NEWLY created vs. returned via an ``idempotency_key``
+    hit (e.g. the runtime create handler, which must append create-time
+    mode/engine events exactly once) should call :func:`create_task_ex`, which
+    returns ``(task_id, created)``.
+    """
+    task_id, _created = create_task_ex(conn, **kwargs)
+    return task_id
+
+
+def create_task_ex(
     conn: sqlite3.Connection,
     *,
     title: str,
@@ -2868,10 +2881,14 @@ def create_task(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
-) -> str:
+) -> tuple[str, bool]:
     """Create a new task and optionally link it under parent tasks.
 
-    Returns the new task id.  Status is ``ready`` when there are no
+    Returns ``(task_id, created)`` where ``created`` is ``True`` when a new row
+    was inserted and ``False`` when an existing row was returned via an
+    ``idempotency_key`` hit. This lets callers perform create-once side effects
+    (e.g. appending create-time events) without duplicating them on idempotent
+    retries. Status is ``ready`` when there are no
     parents (or all parents already ``done``), otherwise ``todo``.
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
@@ -3073,7 +3090,7 @@ def create_task(
             (idempotency_key,),
         ).fetchone()
         if row:
-            return row["id"]
+            return row["id"], False
 
     now = int(time.time())
 
@@ -3214,7 +3231,7 @@ def create_task(
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
-            return task_id
+            return task_id, True
         except sqlite3.IntegrityError:
             if attempt == 1:
                 raise

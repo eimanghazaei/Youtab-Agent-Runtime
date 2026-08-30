@@ -1069,7 +1069,7 @@ async def runtime_create_run(
     mode = "deterministic" if (want_det and _deterministic_worker_enabled()) else "model"
 
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        run_id = kb.create_task(
+        run_id, created = kb.create_task_ex(
             conn,
             title=title,
             body=task_text,
@@ -1093,20 +1093,27 @@ async def runtime_create_run(
         # The correlation id is stamped on this authoritative dispatch event
         # (fail-closed inside the run txn) so the run's own stream is queryable
         # by correlation independent of the tasks column (contract C4).
-        with kb.write_txn(conn):
-            kb._append_event(
-                conn,
-                run_id,
-                _MODE_EVENT,
-                {"mode": mode, "correlation_id": identity.correlation_id},
-            )
-            # Record the branded engine selection (consumer-safe: profile_id +
-            # public label only; never the provider/model it resolved to).
-            if engine_identity is not None:
-                kb._append_event(conn, run_id, _ENGINE_EVENT, {
-                    "profile_id": engine,
-                    "public_label": engine_identity.public_label,
-                })
+        #
+        # Append ONLY when the run was NEWLY created. On an idempotent retry
+        # (same Idempotency-Key) create_task_ex returns the EXISTING run and
+        # ``created`` is False; re-appending would duplicate the mode/engine
+        # events on that run. The create-time events therefore stay exactly-once
+        # per run, matching the idempotent create semantics.
+        if created:
+            with kb.write_txn(conn):
+                kb._append_event(
+                    conn,
+                    run_id,
+                    _MODE_EVENT,
+                    {"mode": mode, "correlation_id": identity.correlation_id},
+                )
+                # Record the branded engine selection (consumer-safe: profile_id
+                # + public label only; never the provider/model it resolved to).
+                if engine_identity is not None:
+                    kb._append_event(conn, run_id, _ENGINE_EVENT, {
+                        "profile_id": engine,
+                        "public_label": engine_identity.public_label,
+                    })
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run

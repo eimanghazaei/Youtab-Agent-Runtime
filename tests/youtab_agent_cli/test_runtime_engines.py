@@ -287,13 +287,16 @@ def test_engines_requires_service_identity(client):
 
 def test_create_run_with_known_engine_records_selection_and_overrides(client, monkeypatch):
     captured = {}
-    real_create = kb.create_task
+    # The create handler now calls create_task_ex (returns (id, created)) so it
+    # can append create-time events exactly-once on the NEW create only. Spy on
+    # the function the handler actually invokes; assertions are unchanged.
+    real_create = kb.create_task_ex
 
     def _spy(conn, **kwargs):
         captured.update(kwargs)
         return real_create(conn, **kwargs)
 
-    monkeypatch.setattr(kb, "create_task", _spy)
+    monkeypatch.setattr(kb, "create_task_ex", _spy)
 
     r = _create_run(client, engine="eco.v01")
     assert r.status_code == 200, r.text
@@ -318,13 +321,16 @@ def test_create_run_unknown_engine_is_422(client):
 
 def test_create_run_without_engine_is_unchanged(client, monkeypatch):
     captured = {}
-    real_create = kb.create_task
+    # The create handler now calls create_task_ex (returns (id, created)) so it
+    # can append create-time events exactly-once on the NEW create only. Spy on
+    # the function the handler actually invokes; assertions are unchanged.
+    real_create = kb.create_task_ex
 
     def _spy(conn, **kwargs):
         captured.update(kwargs)
         return real_create(conn, **kwargs)
 
-    monkeypatch.setattr(kb, "create_task", _spy)
+    monkeypatch.setattr(kb, "create_task_ex", _spy)
 
     r = _create_run(client)  # no engine
     assert r.status_code == 200, r.text

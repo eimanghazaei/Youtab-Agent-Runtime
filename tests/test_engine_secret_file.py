@@ -192,3 +192,154 @@ def test_dashboard_token_boundary_reads_file(tmp_path, monkeypatch):
     assert ws._resolve_session_token() == value
     assert "YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN" not in os.environ
     assert all(value not in v for v in _app_env_items().values())
+
+
+# ---------------------------------------------------------------------------
+# register() must resolve the service secret from the SAME source the request
+# path uses (env OR _FILE). Regression for "File secrets bypass auth
+# registration": a deployment that sets only *_FILE (e.g. the V5 bundle) must
+# ENABLE /api/runtime/v1 instead of leaving register() a silent no-op.
+# ---------------------------------------------------------------------------
+
+import secrets as _secrets
+
+from plugins.dashboard_auth import runtime_service as _rt_plugin
+
+
+class _FakeCtx:
+    def __init__(self):
+        self.registered = []
+
+    def register_dashboard_auth_provider(self, provider):
+        self.registered.append(provider)
+
+
+@pytest.fixture
+def _clean_runtime_secret_env(monkeypatch):
+    # Clean slate + isolate the global token-route registry register() mutates.
+    from youtab_agent_cli.dashboard_auth import token_auth
+
+    monkeypatch.delenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", raising=False)
+    monkeypatch.delenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET_FILE", raising=False)
+    token_auth.clear_token_routes()
+    yield
+    token_auth.clear_token_routes()
+
+
+def _strong_secret():
+    # 64 url-safe chars — clears the runtime-service entropy gate (>=43).
+    return _secrets.token_urlsafe(48)
+
+
+def test_register_enables_plane_from_file_only(
+    tmp_path, monkeypatch, _clean_runtime_secret_env
+):
+    """Only *_FILE set (strong secret) -> plane ENABLED and the resolved secret
+    equals the file contents; register() and the request path agree on it."""
+    from youtab_agent_cli.web_routers import runtime as rt
+
+    value = _strong_secret()
+    monkeypatch.setenv(
+        "YOUTAB_AGENT_RUNTIME_SERVICE_SECRET_FILE",
+        _write_secret(tmp_path, "svc", value),
+    )
+
+    ctx = _FakeCtx()
+    _rt_plugin.register(ctx)
+
+    # Enabled: a provider registered, no skip reason.
+    assert len(ctx.registered) == 1
+    assert _rt_plugin.LAST_SKIP_REASON == ""
+    provider = ctx.registered[0]
+    # Resolved secret == file contents, proven behaviourally (no secret echo):
+    # the file value verifies, a different token does not.
+    assert provider.verify_token(token=value) is not None
+    assert provider.verify_token(token="not-the-secret") is None
+    # register() and the request path resolve the SAME secret source.
+    assert rt._runtime_secret() == value
+
+
+def test_register_and_request_path_agree_on_inline_env(
+    monkeypatch, _clean_runtime_secret_env
+):
+    """Inline env only (no _FILE) still ENABLES the plane (no regression)."""
+    from youtab_agent_cli.web_routers import runtime as rt
+
+    value = _strong_secret()
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", value)
+
+    ctx = _FakeCtx()
+    _rt_plugin.register(ctx)
+
+    assert len(ctx.registered) == 1
+    assert _rt_plugin.LAST_SKIP_REASON == ""
+    assert ctx.registered[0].verify_token(token=value) is not None
+    assert rt._runtime_secret() == value
+
+
+def test_register_fail_closed_on_weak_file_secret(
+    tmp_path, monkeypatch, _clean_runtime_secret_env
+):
+    """*_FILE pointing at a weak/short secret -> fail-closed no-op (entropy gate
+    still enforced against the file-resolved value)."""
+    monkeypatch.setenv(
+        "YOUTAB_AGENT_RUNTIME_SERVICE_SECRET_FILE",
+        _write_secret(tmp_path, "svc", "short-weak"),
+    )
+
+    ctx = _FakeCtx()
+    _rt_plugin.register(ctx)
+
+    assert ctx.registered == []  # no-op
+    assert "rejected" in _rt_plugin.LAST_SKIP_REASON.lower()
+
+
+def test_register_dual_env_and_file_fails_closed(
+    tmp_path, monkeypatch, _clean_runtime_secret_env
+):
+    """Both env AND _FILE set -> register() matches the request path, which
+    refuses the ambiguous source (fail-closed no-op)."""
+    from youtab_agent_cli.web_routers import runtime as rt
+
+    value = _strong_secret()
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", value)
+    monkeypatch.setenv(
+        "YOUTAB_AGENT_RUNTIME_SERVICE_SECRET_FILE",
+        _write_secret(tmp_path, "svc", value),
+    )
+
+    ctx = _FakeCtx()
+    _rt_plugin.register(ctx)
+
+    assert ctx.registered == []
+    assert "ambiguous" in _rt_plugin.LAST_SKIP_REASON.lower()
+    # The request path refuses the same ambiguous source (agreement).
+    with pytest.raises(SecretFileError, match="ambiguous"):
+        rt._runtime_secret()
+
+
+def test_register_noop_when_neither_env_nor_file_set(
+    monkeypatch, _clean_runtime_secret_env
+):
+    """Neither source set -> no-op with a skip reason; plane stays disabled."""
+    ctx = _FakeCtx()
+    _rt_plugin.register(ctx)
+
+    assert ctx.registered == []
+    assert "not set" in _rt_plugin.LAST_SKIP_REASON.lower()
+
+
+def test_register_fail_closed_on_empty_file(
+    tmp_path, monkeypatch, _clean_runtime_secret_env
+):
+    """A set-but-EMPTY _FILE is treated as unset (fail-closed no-op), matching
+    the secret-file reader's refusal of an empty source."""
+    p = tmp_path / "empty.secret"
+    p.write_bytes(b"")
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET_FILE", str(p))
+
+    ctx = _FakeCtx()
+    _rt_plugin.register(ctx)
+
+    assert ctx.registered == []
+    assert _rt_plugin.LAST_SKIP_REASON  # a skip reason was recorded

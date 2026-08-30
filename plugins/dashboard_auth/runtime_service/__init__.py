@@ -62,7 +62,6 @@ from __future__ import annotations
 
 import hmac
 import logging
-import os
 from typing import Optional
 
 from youtab_agent_cli.dashboard_auth import (
@@ -188,14 +187,33 @@ def register(ctx) -> None:
     global LAST_SKIP_REASON
     LAST_SKIP_REASON = ""
 
-    secret = os.environ.get("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", "").strip()
+    # Resolve the secret from the SAME source the request path uses
+    # (``web_routers/runtime.py::_runtime_secret`` → ``secret_file.env_or_file``):
+    # the file-backed ``YOUTAB_AGENT_RUNTIME_SERVICE_SECRET_FILE`` (12-factor /
+    # Docker/K8s secret) is honoured as well as the inline env var, so the V5
+    # bundle — which sets only ``*_FILE`` — enables /api/runtime/v1 instead of
+    # leaving register() a silent no-op. A dual (env + file) source is an
+    # ambiguous configuration and env_or_file fails CLOSED (raises); we treat
+    # that, and an unreadable/empty file, as "surface stays disabled" here rather
+    # than crashing plugin load. The secret value is never logged.
+    from youtab_agent_cli.secret_file import SecretFileError, env_or_file
+
+    try:
+        secret = (env_or_file("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET") or "").strip()
+    except SecretFileError as exc:
+        LAST_SKIP_REASON = (
+            f"YOUTAB_AGENT_RUNTIME_SERVICE_SECRET could not be resolved — {exc}. "
+            "The runtime surface stays disabled (fail-closed)."
+        )
+        logger.warning("dashboard-auth-runtime: %s", LAST_SKIP_REASON)
+        return
     if not secret:
         LAST_SKIP_REASON = (
-            "YOUTAB_AGENT_RUNTIME_SERVICE_SECRET is not set. Set a >=256-bit "
-            "secret (e.g. `python -c \"import secrets; "
-            "print(secrets.token_urlsafe(32))\"`) shared with the youtab-ai-os "
-            "gateway to enable the Agent Runtime product surface; leave it "
-            "unset to keep /api/runtime/v1 disabled."
+            "YOUTAB_AGENT_RUNTIME_SERVICE_SECRET is not set (neither the inline "
+            "var nor its _FILE variant). Set a >=256-bit secret (e.g. `python -c "
+            "\"import secrets; print(secrets.token_urlsafe(32))\"`) shared with "
+            "the youtab-ai-os gateway to enable the Agent Runtime product "
+            "surface; leave it unset to keep /api/runtime/v1 disabled."
         )
         logger.debug("dashboard-auth-runtime: %s", LAST_SKIP_REASON)
         return
