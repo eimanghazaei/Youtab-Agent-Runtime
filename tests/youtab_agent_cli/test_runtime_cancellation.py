@@ -233,7 +233,13 @@ def blocking(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# signing / request helpers (correlation is transport-only on this contract)
+# signing / request helpers
+#
+# As of the correlation-binding slice (CORRELATION_CONTRACT v1) the per-request
+# correlation id is field 8 of the signed canonical string, so a signed mutating
+# command MUST cover the SAME correlation it forwards on the header (a mismatch
+# now fails closed as ``bad_signature``). These helpers therefore sign the
+# forwarded correlation rather than treating it as transport-only.
 # --------------------------------------------------------------------------
 
 
@@ -247,12 +253,12 @@ def _identity_headers(tenant="tenantA", user="userA", roles="member", correlatio
     }
 
 
-def _sign(method, path, tenant, user, body: bytes, nonce=None):
+def _sign(method, path, tenant, user, body: bytes, nonce=None, correlation="cid-test"):
     ts = int(time.time())
     nonce = nonce or f"n-{uuid.uuid4().hex}"
     canonical = rca.canonical_string(
         method=method, path=path, tenant=tenant, user=user,
-        timestamp=str(ts), nonce=nonce, body=body,
+        timestamp=str(ts), nonce=nonce, body=body, correlation=correlation,
     )
     sig = rca.compute_signature(SECRET, canonical)
     return {
@@ -267,7 +273,7 @@ def _create_run(client, tenant="tenantA", user="userA", task="add 2 and 2",
     body = json.dumps({"agent": "default", "task": task}).encode()
     path = "/api/runtime/v1/runs"
     headers = _identity_headers(tenant, user, correlation=correlation)
-    headers.update(_sign("POST", path, tenant, user, body, nonce=nonce))
+    headers.update(_sign("POST", path, tenant, user, body, nonce=nonce, correlation=correlation))
     headers["Content-Type"] = "application/json"
     return client.post(path, content=body, headers=headers)
 
@@ -275,7 +281,7 @@ def _create_run(client, tenant="tenantA", user="userA", task="add 2 and 2",
 def _cancel(client, run_id, tenant="tenantA", user="userA", correlation="cid-test", nonce=None):
     path = f"/api/runtime/v1/runs/{run_id}/cancel"
     headers = _identity_headers(tenant, user, correlation=correlation)
-    headers.update(_sign("POST", path, tenant, user, b"", nonce=nonce))
+    headers.update(_sign("POST", path, tenant, user, b"", nonce=nonce, correlation=correlation))
     return client.post(path, headers=headers)
 
 
