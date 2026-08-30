@@ -1128,19 +1128,49 @@ async def runtime_cancel_run(
     request: Request,
     identity: RuntimeIdentity = Depends(require_service_identity),
 ):
-    """Cancel a run: record the intent, kill any live worker, block the task."""
-    await _verify_signed_command(request, identity)
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        task = _load_owned_task(conn, run_id, identity)
-        # Record the product-cancel intent (also how detail/list project
-        # ``cancelled`` rather than a plain block/archive). Raw event writes are
-        # not auto-committed by connect_closing, so wrap in a write txn.
-        with kb.write_txn(conn):
-            kb._append_event(conn, task.id, _CANCEL_EVENT_KIND, {"by": identity.user})
-        worker_pid = task.worker_pid
-        already_terminal = _run_status(task, cancelled=True) in _TERMINAL_PRODUCT_STATUSES
+    """Cancel a run: record the intent, kill any live worker, block the task.
 
-    if worker_pid and not already_terminal:
+    A cancel of an ALREADY-TERMINAL run (completed, or previously cancelled) is
+    an idempotent NO-OP that preserves the existing terminal status: it records
+    no cancel intent and never relabels a finished run. Otherwise it records the
+    product-cancel intent, kills any live worker, and blocks the task.
+    """
+    await _verify_signed_command(request, identity)
+    worker_pid = None
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        # ATOMIC check-then-act. The ownership decision, the authoritative
+        # terminal-state read, and the cancel-transition append all happen under
+        # ONE ``BEGIN IMMEDIATE`` write lock (``kanban_db.write_txn`` — the run
+        # store's canonical single-writer transaction). SQLite admits exactly one
+        # writer at a time, so a worker completion cannot commit between the read
+        # and the append: it has either already committed (we observe the
+        # ``completed`` projection and no-op) or it is forced to wait until this
+        # transaction finishes. This closes the check-then-act race where a
+        # completion that landed *after* a pre-lock terminality read got
+        # relabelled ``cancelled``, overwriting a successful completion.
+        with kb.write_txn(conn):
+            # Ownership is enforced inside the lock too (404 on any mismatch;
+            # rolls back, writes nothing — tenant isolation is preserved).
+            task = _load_owned_task(conn, run_id, identity)
+            # Authoritative, lock-stable terminality. A completed run projects
+            # ``completed``; an already-cancelled run projects ``cancelled`` (its
+            # cancel event already exists). Either way the cancel is an idempotent
+            # NO-OP that returns the preserved terminal status and appends NO
+            # second event — a late cancel must never overwrite a finished run's
+            # outcome, and a repeated cancel must never emit a duplicate
+            # transition.
+            current_status = _run_status(
+                task, cancelled=_is_cancelled(kb.list_events(conn, task.id))
+            )
+            if current_status in _TERMINAL_PRODUCT_STATUSES:
+                return {"run_id": run_id, "status": current_status}
+            # Non-terminal under the lock: record EXACTLY ONE product-cancel
+            # intent (also how detail/list project ``cancelled`` rather than a
+            # plain block/archive).
+            kb._append_event(conn, task.id, _CANCEL_EVENT_KIND, {"by": identity.user})
+            worker_pid = task.worker_pid
+
+    if worker_pid:
         try:
             from gateway.status import terminate_pid
             terminate_pid(int(worker_pid))
