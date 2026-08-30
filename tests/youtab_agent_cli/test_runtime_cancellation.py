@@ -33,6 +33,7 @@ import os
 import secrets
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -653,3 +654,364 @@ def test_forwarded_correlation_is_bound_to_the_cancelled_run(instant):
     assert r.status_code == 200
     assert r.json()["status"] == "cancelled"
     assert _get_task(run_id).session_id == correlation
+
+
+# ==========================================================================
+# Cancellation ATOMICITY (race) coverage — the cancel handler makes its
+# terminal-state check + ownership decision + cancel-transition append ATOMIC
+# under the run store's canonical single-writer lock (``kanban_db.write_txn``
+# == ``BEGIN IMMEDIATE``). A worker completion cannot commit between the
+# terminality read and the cancel append: it has either already committed (the
+# cancel no-ops and the completion is preserved) or it is serialized after this
+# transaction. These tests drive the REAL kanban run store (no mock lock) and,
+# where a race must be forced, use the store's own write lock as the
+# deterministic seam rather than a sleep.
+# ==========================================================================
+
+
+def _list_events(run_id):
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        return kb.list_events(conn, run_id)
+
+
+def _cancel_event_count(run_id):
+    return sum(1 for e in _list_events(run_id) if e.kind == CANCEL_EVENT)
+
+
+def _completed_event_count(run_id):
+    return sum(1 for e in _list_events(run_id) if e.kind == "completed")
+
+
+def _store_complete(run_id, *, result="2 + 2 = 4", summary="store completion"):
+    """Directly transition a seeded run to completed via the real store CAS.
+
+    Models the worker's own completion commit (``kanban_db.complete_task`` opens
+    its own ``BEGIN IMMEDIATE`` write txn), so it is serialized against the cancel
+    handler's write txn exactly as a real worker would be.
+    """
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        return kb.complete_task(conn, run_id, result=result, summary=summary)
+
+
+# --------------------------------------------------------------------------
+# Race A — a worker completion that COMMITS WHILE the cancel is waiting on the
+# write lock is preserved; the cancel observes the committed 'completed' inside
+# the lock and no-ops. This is the regression guard for the check-then-act race:
+# the terminality read is now INSIDE the write txn, so a completion can never
+# land between a (previously pre-lock) read and the cancel-event append.
+# --------------------------------------------------------------------------
+
+
+def test_completion_committing_under_lock_while_cancel_waits_is_preserved(instant):
+    runtime.stop_dispatcher()
+    run_id = _seed_task(initial_status="running")
+
+    lock_held = threading.Event()
+    release = threading.Event()
+    holder_err = {}
+
+    def _holder():
+        # Hold the store's write lock across an in-flight completion, then commit
+        # only when released. The cancel handler's BEGIN IMMEDIATE cannot proceed
+        # until this COMMIT lands — the lock IS the deterministic seam.
+        try:
+            with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "UPDATE tasks SET status='done', completed_at=?, result=?, "
+                    "current_run_id=NULL "
+                    "WHERE id=? AND status IN ('running','ready','blocked')",
+                    (int(time.time()), "2 + 2 = 4", run_id),
+                )
+                kb._append_event(
+                    conn, run_id, "completed", {"result_len": 9, "summary": "won"}
+                )
+                lock_held.set()
+                release.wait(10)
+                conn.execute("COMMIT")
+        except Exception as exc:  # noqa: BLE001 — surface to the test thread
+            holder_err["exc"] = exc
+            lock_held.set()
+
+    ht = threading.Thread(target=_holder)
+    ht.start()
+    assert lock_held.wait(10), "holder never acquired the write lock"
+    assert "exc" not in holder_err, holder_err.get("exc")
+
+    cancel_out = {}
+
+    def _do_cancel():
+        r = _cancel(instant.client, run_id)
+        cancel_out["code"] = r.status_code
+        cancel_out["body"] = r.json()
+
+    ct = threading.Thread(target=_do_cancel)
+    ct.start()
+
+    # Release the completion so it COMMITS; the cancel's BEGIN IMMEDIATE then
+    # acquires the lock and reads the committed 'done'/completed state. On the
+    # fixed handler this is an idempotent no-op returning the preserved
+    # 'completed'; the pre-fix handler (pre-lock read) would have relabelled the
+    # just-completed run as 'cancelled'.
+    release.set()
+    ct.join(20)
+    ht.join(10)
+    assert "exc" not in holder_err, holder_err.get("exc")
+
+    assert cancel_out.get("code") == 200, cancel_out
+    assert cancel_out["body"]["status"] == "completed"   # completion preserved
+    assert _cancel_event_count(run_id) == 0              # no cancel event appended
+    assert _get_task(run_id).status == "done"            # store terminal unchanged
+    detail = _detail(instant.client, run_id).json()
+    assert detail["status"] == "completed"
+    assert detail["result"] == "2 + 2 = 4"               # successful outcome kept
+
+
+# --------------------------------------------------------------------------
+# Race A' — completion COMMITTED first (no contention), then a late cancel: the
+# in-lock terminality read sees 'completed' and no-ops. Same guarantee, exercised
+# purely through the store CAS with no threads.
+# --------------------------------------------------------------------------
+
+
+def test_late_cancel_after_store_completion_is_a_noop(instant):
+    runtime.stop_dispatcher()
+    run_id = _seed_task(initial_status="running")
+
+    assert _store_complete(run_id, result="2 + 2 = 4") is True
+    assert _detail(instant.client, run_id).json()["status"] == "completed"
+
+    r = _cancel(instant.client, run_id)
+    assert r.status_code == 200
+    assert r.json()["status"] == "completed"             # preserved, not relabelled
+    assert _cancel_event_count(run_id) == 0              # no cancel event
+    assert _completed_event_count(run_id) == 1           # single terminal event
+    assert _get_task(run_id).status == "done"
+
+
+# --------------------------------------------------------------------------
+# Race B — a completion that arrives AFTER the cancellation has committed cannot
+# turn a cancelled run back into a completed one: the product projection treats
+# the cancel transition as authoritative, so the run stays 'cancelled'. Exactly
+# one cancel transition is recorded (no duplicate cancel event).
+# --------------------------------------------------------------------------
+
+
+def test_stale_worker_completion_after_cancel_cannot_reopen_as_completed(instant):
+    runtime.stop_dispatcher()
+    run_id = _seed_task(initial_status="running")
+
+    # Cancellation wins (no completion racing at this instant).
+    r = _cancel(instant.client, run_id)
+    assert r.status_code == 200
+    assert r.json()["status"] == "cancelled"
+    assert _cancel_event_count(run_id) == 1
+    assert _get_task(run_id).status == "blocked"
+
+    # A stale worker now tries to complete the already-cancelled run. Whatever the
+    # underlying kanban CAS does, the product NEVER regresses cancelled ->
+    # completed: the cancel transition remains authoritative.
+    _store_complete(run_id, result="LATE STRAGGLER")
+
+    assert _detail(instant.client, run_id).json()["status"] == "cancelled"
+    stream = _events(instant.client, run_id).json()
+    assert stream["status"] == "cancelled"
+    assert stream["terminal"] is True
+    assert _cancel_event_count(run_id) == 1              # still exactly one cancel
+
+
+# --------------------------------------------------------------------------
+# Race B' — completion strictly serialized AFTER the cancellation commit (the
+# completion is "paused" until the cancel transaction lands) yields a single
+# cancel transition and a 'cancelled' projection.
+# --------------------------------------------------------------------------
+
+
+def test_completion_paused_until_cancel_commits_yields_single_cancel(instant):
+    runtime.stop_dispatcher()
+    run_id = _seed_task(initial_status="running")
+
+    cancel_committed = threading.Event()
+    completion_started = threading.Event()
+
+    def _paused_completion():
+        # Do not attempt the completion until the cancel transaction has
+        # committed — models a worker whose completion commit is scheduled after
+        # the cancel wins the lock.
+        completion_started.set()
+        cancel_committed.wait(10)
+        _store_complete(run_id, result="PAUSED THEN LATE")
+
+    wt = threading.Thread(target=_paused_completion)
+    wt.start()
+    assert completion_started.wait(10)
+
+    r = _cancel(instant.client, run_id)
+    assert r.status_code == 200
+    assert r.json()["status"] == "cancelled"
+    cancel_committed.set()
+    wt.join(10)
+
+    assert _cancel_event_count(run_id) == 1              # exactly one cancel transition
+    assert _detail(instant.client, run_id).json()["status"] == "cancelled"
+
+
+# --------------------------------------------------------------------------
+# Race C — simultaneous completion vs cancellation, repeated enough to hit BOTH
+# winners. Every outcome is coherent and terminal: exactly one terminal product
+# outcome, at most one cancel event and at most one completed event, and the two
+# invariants that would break under a non-atomic check-then-act:
+#   * no cancel event  => the run projects 'completed' (completion won cleanly);
+#   * a cancel event   => the run projects 'cancelled' (cancel is authoritative).
+# --------------------------------------------------------------------------
+
+
+def test_simultaneous_completion_and_cancellation_is_always_coherent(instant):
+    runtime.stop_dispatcher()
+
+    winners = {"completed": 0, "cancelled": 0}
+
+    def _assert_coherent(tag, run_id, cancel_status):
+        """The invariant every terminal outcome must satisfy, whoever wins.
+
+        Exactly one terminal PRODUCT outcome, at most one cancel event and at
+        most one completed event, and the projection is authoritative and
+        agrees with the cancel handler's own response:
+          * completed  <=> no cancel event was recorded (completion won cleanly);
+          * cancelled  <=> exactly one cancel transition was recorded.
+        A cancelled run is NEVER projected 'completed' even if a straggler
+        completion committed after the cancel.
+        """
+        cancel_ct = _cancel_event_count(run_id)
+        completed_ct = _completed_event_count(run_id)
+        proj = _detail(instant.client, run_id).json()["status"]
+        assert proj in ("completed", "cancelled"), (tag, proj)
+        assert cancel_ct <= 1, (tag, "duplicate cancel event", cancel_ct)
+        assert completed_ct <= 1, (tag, "duplicate completed event", completed_ct)
+        if proj == "completed":
+            assert cancel_ct == 0, (tag, "completed but a cancel event exists")
+            assert completed_ct == 1, (tag, "completed but no completed event")
+        else:  # cancelled
+            assert cancel_ct == 1, (tag, "cancelled but not exactly one cancel event")
+        # The cancel HTTP response agrees with the persisted projection.
+        assert cancel_status == proj, (tag, cancel_status, proj)
+        winners[proj] += 1
+        return proj
+
+    # (1) GENUINE simultaneous races. Both operations block on a barrier and then
+    # contend for the run store's single write lock; whichever commits first wins
+    # and the loser is serialized behind it. The per-iteration invariant must hold
+    # for EITHER winner — this is the coherence guarantee under real contention.
+    for i in range(24):
+        run_id = _seed_task(initial_status="running", title=f"sim-{i}")
+        barrier = threading.Barrier(2)
+        box = {}
+
+        def _t_cancel(rid=run_id, b=box, bar=barrier):
+            bar.wait()
+            r = _cancel(instant.client, rid)
+            b["code"] = r.status_code
+            b["status"] = r.json().get("status")
+
+        def _t_complete(rid=run_id, bar=barrier):
+            bar.wait()
+            _store_complete(rid, result="2 + 2 = 4")
+
+        tc = threading.Thread(target=_t_cancel)
+        tw = threading.Thread(target=_t_complete)
+        tc.start()
+        tw.start()
+        tc.join(20)
+        tw.join(20)
+        assert box.get("code") == 200, box
+        _assert_coherent(f"sim-{i}", run_id, box.get("status"))
+
+    # (2) Deterministically force EACH ordering so BOTH winners are exercised with
+    # the exact same coherence contract, independent of wall-clock scheduling
+    # (the concurrent loop above is dominated by the cancel path's HTTP overhead,
+    # so completion usually wins the lock; these two guarantee coverage of the
+    # cancellation-wins terminal transition as well).
+    for k in range(4):
+        # completion-wins: completion commits first, the late cancel no-ops.
+        rid = _seed_task(initial_status="running", title=f"det-complete-{k}")
+        assert _store_complete(rid, result="2 + 2 = 4") is True
+        cs = _cancel(instant.client, rid).json()["status"]
+        assert _assert_coherent(f"det-complete-{k}", rid, cs) == "completed"
+
+        # cancellation-wins: cancel commits first; a stale worker completion that
+        # lands afterward cannot flip the run back to 'completed'.
+        rid = _seed_task(initial_status="running", title=f"det-cancel-{k}")
+        cs = _cancel(instant.client, rid).json()["status"]
+        _store_complete(rid, result="LATE STRAGGLER")
+        assert _assert_coherent(f"det-cancel-{k}", rid, cs) == "cancelled"
+
+    # Both terminal winners were genuinely produced under the coherence contract.
+    assert winners["completed"] > 0, winners
+    assert winners["cancelled"] > 0, winners
+
+
+# --------------------------------------------------------------------------
+# Race D — repeated cancel performs NO extra mutation: the second (and third)
+# cancel add no cancel event and no completed event, and never regress the
+# terminal projection.
+# --------------------------------------------------------------------------
+
+
+def test_repeated_cancel_records_no_additional_mutation(instant):
+    runtime.stop_dispatcher()
+    run_id = _seed_task(initial_status="running")
+
+    assert _cancel(instant.client, run_id).json()["status"] == "cancelled"
+    events_after_first = [(e.id, e.kind) for e in _list_events(run_id)]
+    assert sum(1 for _, k in events_after_first if k == CANCEL_EVENT) == 1
+
+    for _ in range(3):
+        r = _cancel(instant.client, run_id)
+        assert r.status_code == 200
+        assert r.json()["status"] == "cancelled"
+
+    # Event log is byte-for-byte unchanged after the repeats: exactly one cancel,
+    # no new events, projection stable.
+    assert [(e.id, e.kind) for e in _list_events(run_id)] == events_after_first
+    assert _completed_event_count(run_id) == 0
+    assert _detail(instant.client, run_id).json()["status"] == "cancelled"
+
+
+# --------------------------------------------------------------------------
+# Race E — a wrong-tenant cancel racing the run still cannot touch it: the
+# ownership decision is made INSIDE the atomic section, so a denied caller
+# writes nothing (404) and the rightful owner's later cancel is unaffected.
+# --------------------------------------------------------------------------
+
+
+def test_wrong_tenant_cancel_under_race_writes_nothing(instant):
+    runtime.stop_dispatcher()
+    run_id = _seed_task(tenant="tenantA", user="userA", initial_status="running")
+
+    # Concurrent wrong-tenant + wrong-user attempts; both must 404 and mutate
+    # nothing (no cancel event, no terminal transition).
+    results = {}
+
+    def _wrong(name, tenant, user):
+        r = _cancel(instant.client, run_id, tenant=tenant, user=user)
+        results[name] = r.status_code
+
+    a = threading.Thread(target=_wrong, args=("tenant", "tenantB", "userA"))
+    b = threading.Thread(target=_wrong, args=("user", "tenantA", "userB"))
+    a.start()
+    b.start()
+    a.join(10)
+    b.join(10)
+
+    assert results["tenant"] == 404
+    assert results["user"] == 404
+    # The security-relevant invariant: the denied attempts wrote nothing. No
+    # cancel intent was recorded and the run is NOT projected cancelled (its
+    # exact non-terminal kanban status is immaterial and left untouched).
+    assert _cancel_event_count(run_id) == 0
+    assert _get_task(run_id).status not in ("done", "archived", "blocked")
+    assert _detail(instant.client, run_id).json()["status"] != "cancelled"
+
+    # The rightful owner can still cancel, exactly once.
+    assert _cancel(instant.client, run_id).json()["status"] == "cancelled"
+    assert _cancel_event_count(run_id) == 1
