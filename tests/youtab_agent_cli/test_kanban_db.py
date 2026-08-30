@@ -289,6 +289,52 @@ def test_concurrent_same_key_creates_insert_exactly_one_row(kanban_home, monkeyp
     assert len(engine_events) == 1
 
 
+def test_idempotency_lookup_is_scoped_to_tenant_and_creator(kanban_home):
+    """A colliding idempotency_key from a different (tenant, creator) must NOT
+    dedupe onto another owner's run — that would disclose/suppress across the
+    ownership boundary the runtime surface enforces (_load_owned_task)."""
+    key = "cross-owner-idem-key"
+    with kb.connect() as conn:
+        id_a, created_a = kb.create_task_ex(
+            conn, title="A", assignee="w", tenant="tenantA",
+            created_by="userA", idempotency_key=key,
+        )
+        assert created_a is True
+
+        # Different tenant, same key -> its OWN new run (no dedupe onto A).
+        id_b, created_b = kb.create_task_ex(
+            conn, title="B", assignee="w", tenant="tenantB",
+            created_by="userA", idempotency_key=key,
+        )
+        assert created_b is True
+        assert id_b != id_a
+
+        # Same tenant, different creator, same key -> also its own new run.
+        id_c, created_c = kb.create_task_ex(
+            conn, title="C", assignee="w", tenant="tenantA",
+            created_by="userB", idempotency_key=key,
+        )
+        assert created_c is True
+        assert id_c not in (id_a, id_b)
+
+        # Same tenant + same creator + same key -> dedupes to A's run.
+        id_a2, created_a2 = kb.create_task_ex(
+            conn, title="A-again", assignee="w", tenant="tenantA",
+            created_by="userA", idempotency_key=key,
+        )
+        assert created_a2 is False
+        assert id_a2 == id_a
+
+        # Exactly three distinct rows exist for the shared key (A, B, C).
+        rows = conn.execute(
+            "SELECT tenant, created_by FROM tasks WHERE idempotency_key = ?",
+            (key,),
+        ).fetchall()
+        assert len(rows) == 3
+        owners = {(r["tenant"], r["created_by"]) for r in rows}
+        assert owners == {("tenantA", "userA"), ("tenantB", "userA"), ("tenantA", "userB")}
+
+
 
 
 

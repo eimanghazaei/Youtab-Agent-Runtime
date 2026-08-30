@@ -3083,12 +3083,22 @@ def create_task_ex(
     # This lookup is racy on its own (two concurrent same-key creators can both
     # miss it), so it is NOT authoritative: the write_txn below re-checks under
     # the BEGIN IMMEDIATE lock before inserting (see ``_existing_idempotent``).
+    #
+    # SECURITY: the lookup is scoped to the SAME (tenant, created_by) that owns
+    # the run — the exact ownership boundary the runtime surface enforces on
+    # every read (see web_routers/runtime.py::_load_owned_task). An
+    # Idempotency-Key is caller-controlled, so without this scope a different
+    # tenant/user submitting a colliding key would be handed back another
+    # owner's run (disclosing its tenant/correlation id and suppressing their
+    # own create). Scoped, a colliding key from a different owner simply creates
+    # their own run. ``IS`` gives correct NULL-matches-NULL semantics.
     def _existing_idempotent() -> Optional[str]:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
+            "AND tenant IS ? AND created_by IS ? "
             "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
+            (idempotency_key, tenant, created_by),
         ).fetchone()
         return row["id"] if row else None
 

@@ -422,7 +422,16 @@ def test_retry_preserves_correlation_lineage(client):
 # --------------------------------------------------------------------------
 
 
-def _create_run_idem(client, idem_key, *, nonce, engine=None):
+def _create_run_idem(
+    client,
+    idem_key,
+    *,
+    nonce,
+    engine=None,
+    tenant="tenantA",
+    user="userA",
+    correlation="cid-test",
+):
     """POST a signed create carrying an ``Idempotency-Key`` header.
 
     Each call uses a DISTINCT signed-command nonce (so it is not rejected as a
@@ -437,8 +446,10 @@ def _create_run_idem(client, idem_key, *, nonce, engine=None):
         payload["engine"] = engine
     body = json.dumps(payload).encode()
     path = "/api/runtime/v1/runs"
-    headers = _identity_headers()
-    headers.update(_sign("POST", path, "tenantA", "userA", body, nonce=nonce))
+    headers = _identity_headers_corr(correlation, tenant, user)
+    headers.update(
+        _sign("POST", path, tenant, user, body, nonce=nonce, correlation=correlation)
+    )
     headers["Content-Type"] = "application/json"
     headers["Idempotency-Key"] = idem_key
     return client.post(path, content=body, headers=headers)
@@ -489,6 +500,73 @@ def test_normal_new_create_records_one_mode_event(client):
     mode_n, engine_n = _event_kind_counts(client, run_id)
     assert mode_n == 1
     assert engine_n == 0
+
+
+def test_idempotency_key_does_not_cross_tenant_boundary(client):
+    """A colliding Idempotency-Key from a DIFFERENT tenant must NOT return the
+    first tenant's run (no disclosure, no suppression).
+
+    Idempotency-Key is caller-controlled; the dedupe lookup is scoped to the
+    same (tenant, user) that owns the run — the boundary _load_owned_task
+    enforces on every read. So tenant B reusing tenant A's key gets its OWN new
+    run, and B never sees A's tenant_id/correlation_id.
+    """
+    import json
+
+    key = "shared-idem-key-cross-tenant"
+
+    # Tenant A creates run RA with a secret correlation.
+    ra = _create_run_idem(
+        client, key, nonce="n-a", tenant="tenantA", user="userA",
+        correlation="cid-a-secret",
+    )
+    assert ra.status_code == 200, ra.text
+    run_a = ra.json()["run_id"]
+
+    # Tenant B submits the SAME key -> must get a DISTINCT, newly-created run.
+    rb = _create_run_idem(
+        client, key, nonce="n-b", tenant="tenantB", user="userB",
+        correlation="cid-b-own",
+    )
+    assert rb.status_code == 200, rb.text
+    run_b = rb.json()["run_id"]
+    assert run_b != run_a, "cross-tenant key collision leaked/suppressed a run"
+
+    # B's own run is B's: its detail carries B's tenant + correlation, never A's.
+    b_headers = _identity_headers_corr("cid-b-own", tenant="tenantB", user="userB")
+    detail_b = client.get(
+        f"/api/runtime/v1/runs/{run_b}", headers=b_headers
+    ).json()
+    assert detail_b["tenant_id"] == "tenantB"
+    assert detail_b["correlation_id"] == "cid-b-own"
+    serialized_b = json.dumps(detail_b)
+    assert "tenantA" not in serialized_b
+    assert "cid-a-secret" not in serialized_b
+
+    # And B cannot read A's run at all (existence never leaks cross-tenant).
+    assert client.get(
+        f"/api/runtime/v1/runs/{run_a}", headers=b_headers
+    ).status_code == 404
+
+
+def test_idempotency_key_does_not_cross_user_within_tenant(client):
+    """Within one tenant, a colliding key from a DIFFERENT user is also a new
+    run — the ownership boundary is (tenant, user), matching _load_owned_task."""
+    key = "shared-idem-key-cross-user"
+
+    ra = _create_run_idem(client, key, nonce="n-u1", tenant="tenantA", user="userA")
+    assert ra.status_code == 200, ra.text
+    run_a = ra.json()["run_id"]
+
+    rb = _create_run_idem(client, key, nonce="n-u2", tenant="tenantA", user="userB")
+    assert rb.status_code == 200, rb.text
+    run_b = rb.json()["run_id"]
+    assert run_b != run_a, "same-tenant different-user key collision was not isolated"
+
+    # Same tenant + SAME user + same key still dedupes to the one run.
+    ra2 = _create_run_idem(client, key, nonce="n-u1b", tenant="tenantA", user="userA")
+    assert ra2.status_code == 200, ra2.text
+    assert ra2.json()["run_id"] == run_a
 
 
 # --------------------------------------------------------------------------
