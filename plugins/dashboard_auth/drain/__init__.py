@@ -277,7 +277,12 @@ def register(ctx) -> None:
     try:
         from youtab_agent_cli.dashboard_auth.token_auth import register_token_route
 
-        register_token_route(DRAIN_ROUTE_PATH)
+        # Bind the drain route to THIS provider only, requiring the ``drain``
+        # scope. The seam will never let a non-drain token (e.g. the runtime
+        # service credential) authenticate the drain endpoint.
+        register_token_route(
+            DRAIN_ROUTE_PATH, provider=provider.name, capability=scope
+        )
     except Exception as exc:  # noqa: BLE001 — seam import must not crash plugin load
         logger.warning(
             "dashboard-auth-drain: could not register token route %s: %s",

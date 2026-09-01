@@ -252,7 +252,12 @@ def register(ctx) -> None:
             register_token_route_prefix,
         )
 
-        register_token_route_prefix(RUNTIME_ROUTE_PREFIX)
+        # Bind the prefix to THIS provider only, requiring the ``runtime`` scope
+        # the router's ``require_service_identity`` also enforces. The seam will
+        # never let another provider's token authenticate this surface.
+        register_token_route_prefix(
+            RUNTIME_ROUTE_PREFIX, provider=provider.name, capability=scope
+        )
     except Exception as exc:  # noqa: BLE001 — seam import must not crash plugin load
         logger.warning(
             "dashboard-auth-runtime: could not register token route prefix %s: %s",

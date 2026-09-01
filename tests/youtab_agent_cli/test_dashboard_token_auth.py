@@ -166,6 +166,8 @@ class _NonInteractiveProvider(_TokenProvider):
 
 def test_authenticate_token_accepts_valid():
     register_provider(_TokenProvider(secret="good-secret"))
+    token_auth.register_token_route(
+        "/api/gateway/drain", provider="tok", capability="drain")
     req = _FakeRequest(headers={"authorization": "Bearer good-secret"})
     principal, unreachable = token_auth.authenticate_token(req)
     assert unreachable is None
@@ -176,38 +178,55 @@ def test_authenticate_token_accepts_valid():
 
 def test_authenticate_token_rejects_wrong_secret():
     register_provider(_TokenProvider(secret="good-secret"))
+    token_auth.register_token_route(
+        "/api/gateway/drain", provider="tok", capability="drain")
     req = _FakeRequest(headers={"authorization": "Bearer wrong"})
     principal, unreachable = token_auth.authenticate_token(req)
     assert principal is None
     assert unreachable is None
 
 
-def test_authenticate_token_stacks_first_match_wins():
-    register_provider(_TokenProvider(secret="aaa"))
+def test_authenticate_token_consults_only_route_owner():
+    # Provider binding: only the provider that OWNS the route is consulted; a
+    # token another registered provider would accept is rejected here.
+    register_provider(_TokenProvider(secret="aaa"))            # name "tok"
     second = _TokenProvider(secret="bbb")
     second.name = "tok2"
     register_provider(second)
-    req = _FakeRequest(headers={"authorization": "Bearer bbb"})
-    principal, _ = token_auth.authenticate_token(req)
+    token_auth.register_token_route(
+        "/api/gateway/drain", provider="tok2", capability="drain")
+    principal, _ = token_auth.authenticate_token(
+        _FakeRequest(headers={"authorization": "Bearer bbb"}))
     assert principal is not None and principal.provider == "tok2"
+    # "aaa" would be accepted by 'tok', but 'tok' does not own this route.
+    principal, _ = token_auth.authenticate_token(
+        _FakeRequest(headers={"authorization": "Bearer aaa"}))
+    assert principal is None
 
 
-def test_authenticate_token_unreachable_then_valid_provider_wins():
-    register_provider(_UnreachableTokenProvider())
-    register_provider(_TokenProvider(secret="good"))
-    req = _FakeRequest(headers={"authorization": "Bearer good"})
-    principal, unreachable = token_auth.authenticate_token(req)
-    # A later provider accepting the token beats the earlier outage.
-    assert principal is not None and principal.provider == "tok"
-    assert unreachable is None
+def test_authenticate_token_unreachable_owner_reports_503():
+    # If the ROUTE OWNER's backing store is unreachable, surface it (503),
+    # independent of any other registered provider.
+    register_provider(_UnreachableTokenProvider())            # name "tok-down"
+    register_provider(_TokenProvider(secret="good"))          # name "tok" (not owner)
+    token_auth.register_token_route(
+        "/api/gateway/drain", provider="tok-down", capability="drain")
+    principal, unreachable = token_auth.authenticate_token(
+        _FakeRequest(headers={"authorization": "Bearer good"}))
+    assert principal is None
+    assert unreachable == "tok-down"
 
 
-def test_authenticate_token_buggy_provider_does_not_crash():
-    register_provider(_BuggyTokenProvider())
-    register_provider(_TokenProvider(secret="good"))
-    req = _FakeRequest(headers={"authorization": "Bearer good"})
-    principal, unreachable = token_auth.authenticate_token(req)
-    assert principal is not None and principal.provider == "tok"
+def test_authenticate_token_buggy_owner_does_not_crash():
+    # A buggy OWNER that raises is caught (not surfaced as unreachable) and
+    # never 500s the seam.
+    buggy = _BuggyTokenProvider()                             # name "tok-buggy"
+    register_provider(buggy)
+    token_auth.register_token_route(
+        "/api/gateway/drain", provider="tok-buggy", capability="drain")
+    principal, unreachable = token_auth.authenticate_token(
+        _FakeRequest(headers={"authorization": "Bearer good"}))
+    assert principal is None and unreachable is None
 
 
 # --------------------------------------------------------------------------
@@ -227,7 +246,7 @@ async def _call_next_ok(request):
 
 def test_seam_rejects_wrong_token_401():
     register_provider(_TokenProvider(secret="good"))
-    token_auth.register_token_route("/api/gateway/drain")
+    token_auth.register_token_route("/api/gateway/drain", provider="tok", capability="drain")
     req = _FakeRequest(
         path="/api/gateway/drain", headers={"authorization": "Bearer bad"}
     )

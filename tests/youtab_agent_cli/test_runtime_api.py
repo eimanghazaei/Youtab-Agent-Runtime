@@ -93,7 +93,7 @@ def client(tmp_path, monkeypatch):
     auth_registry.clear_providers()
     auth_registry.register_provider(RuntimeServiceProvider(secret=SECRET, scope="runtime"))
     token_auth.clear_token_routes()
-    token_auth.register_token_route_prefix("/api/runtime/v1/")
+    token_auth.register_token_route_prefix("/api/runtime/v1/", provider="runtime-service", capability="runtime")
 
     # --- one known agent --------------------------------------------------
     monkeypatch.setattr(

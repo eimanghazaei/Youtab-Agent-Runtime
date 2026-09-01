@@ -14,7 +14,7 @@ def teardown_function():
 
 def test_prefix_matches_subpaths_but_is_segment_anchored():
     token_auth.clear_token_routes()
-    token_auth.register_token_route_prefix("/api/runtime/v1")
+    token_auth.register_token_route_prefix("/api/runtime/v1", provider="runtime-service", capability="runtime")
     # Sub-paths (including parametric ones) match.
     assert token_auth.is_token_route("/api/runtime/v1/health")
     assert token_auth.is_token_route("/api/runtime/v1/runs/abc/events")
@@ -26,14 +26,14 @@ def test_prefix_matches_subpaths_but_is_segment_anchored():
 
 def test_exact_and_prefix_coexist():
     token_auth.clear_token_routes()
-    token_auth.register_token_route("/api/gateway/drain")
-    token_auth.register_token_route_prefix("/api/runtime/v1/")
+    token_auth.register_token_route("/api/gateway/drain", provider="drain-secret", capability="drain")
+    token_auth.register_token_route_prefix("/api/runtime/v1/", provider="runtime-service", capability="runtime")
     assert token_auth.is_token_route("/api/gateway/drain")
     assert token_auth.is_token_route("/api/runtime/v1/agents")
 
 
 def test_clear_drops_prefixes():
-    token_auth.register_token_route_prefix("/api/runtime/v1/")
+    token_auth.register_token_route_prefix("/api/runtime/v1/", provider="runtime-service", capability="runtime")
     assert token_auth.is_token_route("/api/runtime/v1/agents")
     token_auth.clear_token_routes()
     assert not token_auth.is_token_route("/api/runtime/v1/agents")

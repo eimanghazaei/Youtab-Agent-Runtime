@@ -846,7 +846,37 @@ async def _authorization_gate(request: Request, call_next):
     Tenant Admin, is refused. Refusal is by scope, so a route added under a
     guarded prefix is refused until somebody grants a scope for it, rather
     than being reachable because nobody remembered it.
+
+    Non-interactive (service-to-service) token callers are a separate contract
+    and are NOT adjudicated by this interactive role/scope model — a
+    :class:`dashboard_auth.TokenPrincipal` carries no role and no interactive
+    scope. Primary isolation lives at the token seam, which binds each token
+    route to exactly one owning provider and authenticates a request only with
+    that owner. This gate keeps a defensive belt: it exempts a
+    token-authenticated request ONLY after re-confirming, against the same
+    seam registry, that the authenticated provider owns THIS route and the
+    principal carries the route's required capability. Anything inconsistent —
+    a forged ``token_authenticated`` flag, a principal whose provider is not the
+    route owner, a missing capability, an unowned/ambiguous route — is denied
+    outright (403), never passed through and never crashed on a ``.has()`` the
+    ``TokenPrincipal`` does not implement.
     """
+    if getattr(request.state, "token_authenticated", False):
+        from youtab_agent_cli.dashboard_auth import token_auth as _token_auth
+
+        principal_tok = getattr(request.state, "token_principal", None)
+        owner = _token_auth.route_owner(request.url.path)
+        provider_name = getattr(principal_tok, "provider", None)
+        caps = tuple(getattr(principal_tok, "scopes", ()) or ())
+        if (
+            owner is not None
+            and provider_name is not None
+            and provider_name == owner.provider
+            and (owner.capability is None or owner.capability in caps)
+        ):
+            return await call_next(request)
+        return JSONResponse(status_code=403, content={"detail": REFUSAL_DETAIL})
+
     scope = required_scope(request.url.path, request.method)
     # An unclassified route is now a refusal, not a pass-through. The scope is
     # still resolved first so the audit record can name what was missing.
