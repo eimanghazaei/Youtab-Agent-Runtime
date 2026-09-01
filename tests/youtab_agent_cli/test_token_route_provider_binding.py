@@ -340,5 +340,180 @@ def test_gate_never_raises_attributeerror_on_tokenprincipal():
     assert getattr(result, "status_code", None) == 403
 
 
+# --- §3 route-boundary security (segment-anchored, no raw startswith) ------
+
+def _runtime_and_drain():
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    token_auth.register_token_route("/api/gateway/drain", provider="drain-secret",
+                                    capability="drain")
+
+
+def test_prefix_does_not_own_sibling_string_prefix():
+    _runtime_and_drain()
+    # The canonical attack: a sibling that shares the string prefix but breaks
+    # the segment boundary must NOT be owned.
+    assert token_auth.route_owner("/api/runtime/v1evil") is None
+    assert token_auth.route_owner("/api/runtime/v1evil/health") is None
+    assert token_auth.is_token_route("/api/runtime/v1evil") is False
+
+
+def test_prefix_owns_real_subpaths():
+    _runtime_and_drain()
+    for p in ("/api/runtime/v1/health", "/api/runtime/v1/agents",
+              "/api/runtime/v1/runs/abc/events"):
+        owner = token_auth.route_owner(p)
+        assert owner is not None and owner.provider == "runtime-service"
+
+
+def test_trailing_slash_variants_are_deterministic():
+    _runtime_and_drain()
+    # bare prefix path (no further segment) is NOT owned; the slash "directory"
+    # path IS owned. Deterministic either way.
+    assert token_auth.route_owner("/api/runtime/v1") is None
+    assert token_auth.route_owner("/api/runtime/v1/") is not None
+    assert token_auth.route_owner("/api/runtime/v1/").provider == "runtime-service"
+
+
+def test_query_string_is_not_part_of_ownership():
+    _runtime_and_drain()
+    # route_owner is fed request.url.path (never the query). A literal "?" in
+    # the path string is just another character and cannot smuggle ownership.
+    assert token_auth.route_owner("/api/runtime/v1/health") is not None
+    assert token_auth.route_owner("/api/gateway/drain?x=/api/runtime/v1/") \
+        is None  # drain is an EXACT route; the "?..." suffix is not that route
+    assert token_auth.route_owner("/api/runtime/v1x?=/api/runtime/v1/") is None
+
+
+def test_percent_encoded_separator_cannot_cross_ownership():
+    _runtime_and_drain()
+    # A percent-encoded slash does NOT split into a segment, so the encoded form
+    # is a single different segment and is not owned by runtime. (Matched on the
+    # same scope path the framework routes on; both deny in lockstep.)
+    assert token_auth.route_owner("/api/runtime%2Fv1/health") is None
+    assert token_auth.route_owner("/api/gateway%2Fdrain") is None
+
+
+def test_dot_segments_cannot_cross_into_another_owner():
+    _runtime_and_drain()
+    # A textual "/../" path that lexically sits under runtime is owned by
+    # runtime — NEVER by drain. It cannot be used to reach the drain owner.
+    p = "/api/runtime/v1/../gateway/drain"
+    owner = token_auth.route_owner(p)
+    assert owner is not None and owner.provider == "runtime-service"
+    assert owner.provider != "drain-secret"
+    # And the drain EXACT route is only its literal self.
+    assert token_auth.route_owner("/api/gateway/drain").provider == "drain-secret"
+
+
+def test_double_slash_stays_within_the_same_owner():
+    _runtime_and_drain()
+    owner = token_auth.route_owner("/api/runtime/v1//health")
+    assert owner is not None and owner.provider == "runtime-service"
+
+
+def test_ownership_is_case_sensitive():
+    _runtime_and_drain()
+    # HTTP paths are case-sensitive; a case-variant is a different, unowned path.
+    assert token_auth.route_owner("/API/RUNTIME/V1/health") is None
+    assert token_auth.route_owner("/api/Gateway/Drain") is None
+
+
+def test_unowned_route_stays_unowned_and_denied():
+    _runtime_and_drain()
+    assert token_auth.route_owner("/api/status") is None
+    assert token_auth.route_owner("/") is None
+    assert token_auth.route_owner("/api/runtime") is None
+
+
+# --- §4 ownership/collision/lifecycle invariants ---------------------------
+
+def test_exact_and_identical_looking_prefix_no_dual_ownership():
+    # Exact "/api/x" owned by A; prefix "/api/x/" owned by B. No single path is
+    # owned by both, and neither resolution is ambiguous.
+    token_auth.register_token_route("/api/x", provider="A", capability="a")
+    token_auth.register_token_route_prefix("/api/x/", provider="B", capability="b")
+    assert token_auth.route_owner("/api/x").provider == "A"
+    assert token_auth.route_owner("/api/x/sub").provider == "B"
+
+
+def test_missing_owner_provider_is_denied():
+    # Route owned by a provider that was never registered -> nothing to consult.
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="ghost", capability="runtime")
+    # (no provider named "ghost" registered)
+    p, un = token_auth.authenticate_token(
+        _Req("/api/runtime/v1/health", {"authorization": "Bearer anything"}))
+    assert p is None and un is None
+
+
+def test_unregistered_provider_leaves_no_usable_stale_route():
+    rt = _StubProvider("runtime-service", "RT", "runtime")
+    auth_registry.register_provider(rt)
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    # works while registered
+    p, _ = token_auth.authenticate_token(
+        _Req("/api/runtime/v1/health", {"authorization": "Bearer RT"}))
+    assert p is not None
+    # remove the provider; the route entry is now a stale owner with no provider
+    auth_registry.clear_providers()
+    p, un = token_auth.authenticate_token(
+        _Req("/api/runtime/v1/health", {"authorization": "Bearer RT"}))
+    assert p is None and un is None
+
+
+def test_failed_registration_leaves_prior_state_intact():
+    token_auth.register_token_route("/api/gateway/drain", provider="drain-secret",
+                                    capability="drain")
+    with pytest.raises(token_auth.TokenRouteOwnershipError):
+        token_auth.register_token_route("/api/gateway/drain", provider="intruder",
+                                        capability="x")
+    # the original owner must be untouched (no partial state)
+    owner = token_auth.route_owner("/api/gateway/drain")
+    assert owner.provider == "drain-secret" and owner.capability == "drain"
+
+
+def test_repeated_registration_is_idempotent_and_safe():
+    for _ in range(5):
+        token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                               provider="runtime-service",
+                                               capability="runtime")
+    assert token_auth.route_owner("/api/runtime/v1/health").provider == "runtime-service"
+    # exactly one prefix entry
+    assert len(token_auth._token_route_prefixes) == 1
+
+
+def test_capability_requirement_comes_from_registered_route_not_principal():
+    # The route's REQUIRED capability is the one registered ("runtime"); a
+    # principal that lacks it is denied even if it carries other scopes, and a
+    # principal cannot self-grant by presenting an arbitrary scope set that
+    # omits the registered capability.
+    lacking = _StubProvider("runtime-service", "RT", "not-runtime")
+    auth_registry.register_provider(lacking)
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    p, _ = token_auth.authenticate_token(
+        _Req("/api/runtime/v1/health", {"authorization": "Bearer RT"}))
+    assert p is None  # provider vouches "not-runtime"; route requires "runtime"
+
+
+def test_registration_is_startup_only_but_lock_guards_access():
+    # Registration mutates module state under _lock; the seam is documented as
+    # startup-only (plugin discovery). Assert the lock exists and resolution is
+    # consistent under it (defensive: a read during a write cannot see a torn
+    # entry because both take _lock).
+    import threading as _t
+    assert isinstance(token_auth._lock, type(_t.Lock()))
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    # resolution holds the lock internally; a concurrent resolve is well-defined
+    assert token_auth.route_owner("/api/runtime/v1/health") is not None
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -79,6 +79,14 @@ class TokenRouteOwnershipError(RuntimeError):
 # PREFIXES (for versioned surfaces with parametric sub-paths, e.g.
 # ``/api/runtime/v1/runs/{id}/events``) are both supported; the prefix ends in
 # ``/`` so ``/api/runtime/v1/`` never matches a sibling ``/api/runtime/v1x``.
+#
+# LIFECYCLE: registration is STARTUP-ONLY. Every route is registered from a
+# plugin's ``register(ctx)`` during ``discover_plugins()``, before the ASGI app
+# begins serving; nothing registers a route on a request path. ``_lock`` still
+# guards every read and write so a resolution can never observe a torn entry
+# even if a late/concurrent registration ever occurred. Registration is
+# idempotent for the same owner and fail-closed on a conflicting owner, so
+# repeated discovery is safe and a mis-wired dual owner cannot arise.
 _token_routes: dict[str, TokenRouteOwner] = {}
 _token_route_prefixes: dict[str, TokenRouteOwner] = {}
 _lock = threading.Lock()
@@ -133,31 +141,58 @@ def register_token_route_prefix(
         _token_route_prefixes[normalised] = owner
 
 
+def _prefix_matches(path: str, prefix: str) -> bool:
+    """Segment-anchored membership: is ``path`` strictly under ``prefix``?
+
+    ``prefix`` is stored already normalised to end in ``/``. Rather than a raw
+    ``str.startswith`` (which would let ``/api/runtime/v1evil`` match a stored
+    ``/api/runtime/v1/`` if the ``/`` were ever dropped), membership is decided
+    on SEGMENT lists: ``path`` is under ``prefix`` iff, split on ``/``, the
+    path's leading segments are exactly the prefix's segments AND the path has
+    at least one further segment. So ``/api/runtime/v1/`` owns
+    ``/api/runtime/v1/health`` and ``/api/runtime/v1/runs/x/events`` but never
+    the sibling ``/api/runtime/v1evil`` nor the bare ``/api/runtime/v1``.
+
+    ``path`` is the ASGI ``request.url.path`` (``scope['path']``) — the SAME
+    representation the framework routes on. No separate normalisation layer is
+    introduced here: comparing on a different normal form than the router would
+    be exactly the divergence that lets ownership and routing disagree.
+    """
+    prefix_segments = prefix.rstrip("/").split("/")
+    path_segments = path.split("/")
+    return (
+        len(path_segments) > len(prefix_segments)
+        and path_segments[: len(prefix_segments)] == prefix_segments
+    )
+
+
 def _resolve_owner(path: str):
     """Return the single :class:`TokenRouteOwner` for ``path``.
 
     Returns ``None`` when ``path`` is not a token route, or ``_AMBIGUOUS`` when
     two owners of equal specificity claim it. An exact route is strictly more
-    specific than any prefix; among prefixes the longest wins; a tie between
-    DIFFERENT providers is ambiguous and resolves fail-closed.
+    specific than any prefix; among prefixes the longest (most path segments)
+    wins; a tie between DIFFERENT providers is ambiguous and resolves
+    fail-closed.
     """
     with _lock:
         exact = _token_routes.get(path)
         prefix_hits = [
             (p, own)
             for p, own in _token_route_prefixes.items()
-            if path == p or path.startswith(p)
+            if _prefix_matches(path, p)
         ]
     candidates = []
     if exact is not None:
-        # Exact beats every prefix (a prefix length can never exceed len(path)).
-        candidates.append((len(path) + 1, exact))
+        # Exact match is strictly more specific than any prefix. Rank by segment
+        # count so specificity is measured on path structure, not raw length.
+        candidates.append((len(path.split("/")) + 1, exact))
     for p, own in prefix_hits:
-        candidates.append((len(p), own))
+        candidates.append((len(p.rstrip("/").split("/")), own))
     if not candidates:
         return None
     best = max(c[0] for c in candidates)
-    top = [own for (length, own) in candidates if length == best]
+    top = [own for (rank, own) in candidates if rank == best]
     if len({own.provider for own in top}) != 1:
         return _AMBIGUOUS
     return top[0]
