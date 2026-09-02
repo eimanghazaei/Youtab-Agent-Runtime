@@ -241,28 +241,42 @@ def register(ctx) -> None:
         logger.warning("dashboard-auth-runtime: %s", LAST_SKIP_REASON)
         return
 
-    ctx.register_dashboard_auth_provider(provider)
-
-    # Opt the whole /api/runtime/v1 surface into the generic token-auth seam so
-    # the dashboard's interactive cookie gate doesn't bounce the gateway's
-    # bearer call. The router's own dependency then enforces the runtime scope
-    # and the end-user identity headers.
+    # The token-auth seam is a hard dependency of the running dashboard (its
+    # middleware is installed by the web server). If it cannot even be imported,
+    # the surface stays DISABLED — the provider is never registered, so there is
+    # no partially-configured boundary (fail-closed by absence, not a partial
+    # enable). This is the ONLY tolerated catch here.
     try:
         from youtab_agent_cli.dashboard_auth.token_auth import (
             register_token_route_prefix,
+            require_route_ownership,
         )
+    except Exception as exc:  # noqa: BLE001 — seam missing → surface disabled, no provider
+        LAST_SKIP_REASON = (
+            f"dashboard-auth token seam unavailable ({exc}); the runtime surface "
+            "stays disabled (fail-closed, provider not registered)."
+        )
+        logger.warning("dashboard-auth-runtime: %s", LAST_SKIP_REASON)
+        return
 
-        # Bind the prefix to THIS provider only, requiring the ``runtime`` scope
-        # the router's ``require_service_identity`` also enforces. The seam will
-        # never let another provider's token authenticate this surface.
-        register_token_route_prefix(
-            RUNTIME_ROUTE_PREFIX, provider=provider.name, capability=scope
-        )
-    except Exception as exc:  # noqa: BLE001 — seam import must not crash plugin load
-        logger.warning(
-            "dashboard-auth-runtime: could not register token route prefix %s: %s",
-            RUNTIME_ROUTE_PREFIX, exc,
-        )
+    # Opt the whole /api/runtime/v1 surface into the generic token-auth seam,
+    # bound to THIS provider only and requiring the ``runtime`` scope the
+    # router's ``require_service_identity`` also enforces.
+    #
+    # Fail-closed: DECLARE the ownership requirement BEFORE registering the
+    # provider or the route. If EITHER registration fails — including a failure
+    # the plugin loader swallows — the requirement stays unmet and the lifespan
+    # verification (verify_service_route_ownership) aborts startup before serving
+    # a single request, rather than leaving /api/runtime/v1 reachable through the
+    # interactive cookie gate. No broad log-and-continue: any error propagates.
+    require_route_ownership(
+        provider=provider.name, path=RUNTIME_ROUTE_PREFIX,
+        is_prefix=True, capability=scope,
+    )
+    ctx.register_dashboard_auth_provider(provider)
+    register_token_route_prefix(
+        RUNTIME_ROUTE_PREFIX, provider=provider.name, capability=scope
+    )
 
     logger.info(
         "dashboard-auth-runtime: registered runtime service-credential provider "

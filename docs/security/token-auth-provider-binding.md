@@ -73,6 +73,21 @@ Exact-path routes are identical via `register_token_route(path, provider=..., ca
   nothing can add a token route once the server is serving. A byte-identical
   idempotent re-registration (e.g. a `discover_plugins(force=True)` re-run of the
   same plugins) remains a no-op.
+- **A partial registration of a built-in service route is startup-fatal**
+  (`ServiceRouteRegistrationError`). The built-in `runtime_service` and `drain`
+  plugins **declare a required ownership** (via `require_route_ownership`) *before*
+  registering their provider and route. At lifespan startup — after
+  `freeze_token_routes()` and **before the server accepts any request** —
+  `verify_service_route_ownership()` checks every declared requirement is met
+  (owning provider registered, route/prefix owned by exactly it with the required
+  capability). If any is unmet — a provider or route registration that failed, a
+  conflicting owner, or a freeze-before-registration ordering bug — **startup
+  aborts**, even when the plugin loader swallowed the underlying exception. A
+  security-critical service route is therefore *never* left reachable through the
+  interactive cookie gate: the surface is either fully wired or the dashboard does
+  not start. A surface intentionally left off (its secret unset) declares no
+  requirement and does not make startup fatal. The fatal error names the
+  provider/route/reason and **carries no secret**.
 
 ### Provider→route ownership and capability binding
 

@@ -40,6 +40,7 @@ from youtab_agent_cli.dashboard_auth.base import TokenPrincipal
 # Re-export the registry types so existing callers keep importing them from here.
 from youtab_agent_cli.dashboard_auth.lifecycle import (  # noqa: F401
     FrozenRegistryError,
+    ServiceRouteRegistrationError,
     TokenRouteOwner,
     TokenRouteOwnershipError,
     TokenRouteRegistrationError,
@@ -87,6 +88,27 @@ def clear_token_routes() -> None:
     """Drop all registered token routes. Refused once frozen (raises). Nothing on
     the serving path calls this; test isolation is a fresh injected registry."""
     lifecycle._default.clear_token_routes()
+
+
+def require_route_ownership(
+    *, provider: str, path: str, is_prefix: bool, capability: Optional[str] = None
+) -> None:
+    """Declare that a security-critical route MUST be owned by ``provider`` (with
+    ``capability``) or startup aborts. A built-in service plugin calls this
+    BEFORE registering its provider/route so a swallowed registration failure
+    still fails closed at :func:`verify_service_route_ownership`. Delegates to the
+    single :class:`~...lifecycle.AuthRegistry`."""
+    lifecycle._default.require_route_ownership(
+        provider=provider, path=path, is_prefix=is_prefix, capability=capability
+    )
+
+
+def verify_service_route_ownership() -> None:
+    """Abort startup (fail-closed) if any declared service-route ownership is
+    unmet. Called from the dashboard app's lifespan startup after
+    :func:`freeze_token_routes`, before serving. Delegates to
+    :func:`lifecycle.verify_service_route_ownership`."""
+    lifecycle.verify_service_route_ownership()
 
 
 def freeze_token_routes() -> None:

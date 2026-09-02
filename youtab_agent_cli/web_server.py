@@ -264,8 +264,20 @@ async def _lifespan(app: "FastAPI"):
     # served while the security registry could mutate. This closes the TOCTOU
     # window between the token seam resolving an owner and the _authorization_gate
     # re-checking it: during serving there is exactly one frozen generation.
-    from youtab_agent_cli.dashboard_auth.token_auth import freeze_token_routes
+    from youtab_agent_cli.dashboard_auth.token_auth import (
+        freeze_token_routes,
+        verify_service_route_ownership,
+    )
     freeze_token_routes()
+    # Fail closed: if a built-in service plugin declared a route-ownership
+    # requirement (runtime-service prefix, drain exact route) but its provider or
+    # route registration did not actually take effect — including a failure the
+    # plugin loader swallowed — this raises ServiceRouteRegistrationError and
+    # aborts startup BEFORE the server accepts a single request, rather than
+    # serving a security-critical route reachable through the interactive cookie
+    # gate. A clean deployment where the surface is intentionally disabled
+    # (secret unset) declares no requirement and passes.
+    verify_service_route_ownership()
 
     try:
         yield

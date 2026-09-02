@@ -77,10 +77,40 @@ class TokenRouteRegistrationError(FrozenRegistryError):
     no secret."""
 
 
+class ServiceRouteRegistrationError(RuntimeError):
+    """A security-critical service route was NOT correctly registered before the
+    registry froze — startup must abort (fail-closed) rather than serve a
+    partially-configured authorization boundary.
+
+    Raised at lifespan startup (before the server accepts traffic) when a
+    declared :class:`RequiredOwnership` is unmet: the owning provider is absent,
+    or the route/prefix is not owned by it with the required capability. This is
+    the backstop for a plugin whose route-ownership registration failed and was
+    swallowed by the plugin loader — the requirement it declared stays unmet, so
+    the server never starts with the route reachable through the cookie gate.
+    Carries provider/route/reason for diagnosis but NO secret."""
+
+
 class TokenRouteOwner(NamedTuple):
     """Who owns a token route and the capability its principal must carry."""
 
     provider: str
+    capability: Optional[str]
+
+
+class RequiredOwnership(NamedTuple):
+    """A fail-closed assertion that a security-critical route MUST be owned.
+
+    Declared by a built-in service plugin BEFORE it registers its provider and
+    route, so that a failure of EITHER registration (even one the plugin loader
+    swallows) leaves this requirement unmet and the lifespan verification aborts
+    startup. ``path`` is the exact route (``is_prefix=False``) or the prefix
+    (``is_prefix=True``); ``capability`` is the scope the owner's principal must
+    carry."""
+
+    provider: str
+    path: str
+    is_prefix: bool
     capability: Optional[str]
 
 
@@ -119,6 +149,9 @@ class AuthRegistry:
         self._providers: dict[str, DashboardAuthProvider] = {}
         self._token_routes: dict[str, TokenRouteOwner] = {}
         self._token_route_prefixes: dict[str, TokenRouteOwner] = {}
+        # Fail-closed requirements declared by built-in service plugins. Checked
+        # at freeze/lifespan; an unmet requirement aborts startup.
+        self._required_ownerships: list[RequiredOwnership] = []
 
     # ---- lifecycle ---------------------------------------------------------
 
@@ -225,6 +258,68 @@ class AuthRegistry:
             self._token_routes.clear()
             self._token_route_prefixes.clear()
 
+    # ---- fail-closed ownership requirements --------------------------------
+
+    def require_route_ownership(
+        self, *, provider: str, path: str, is_prefix: bool,
+        capability: Optional[str] = None,
+    ) -> None:
+        """Declare that ``path`` MUST end up owned by ``provider`` (with
+        ``capability``) or startup aborts. Idempotent for an identical
+        requirement; refused after freeze (a requirement is a startup-time
+        declaration). Declaring this BEFORE registering the provider/route means
+        a later registration failure — even one the plugin loader swallows —
+        leaves the requirement unmet, so :meth:`verify_required_ownerships`
+        turns it into a fail-closed abort.
+
+        Recording a requirement is a verification aid, not part of the
+        immutable auth-decision state, so it is intentionally allowed even after
+        freeze: a freeze-before-registration ordering bug then records a
+        requirement whose provider/route registration is refused, which the
+        lifespan verification still catches as an unmet requirement (a loud
+        abort) rather than a silently-disabled surface. Idempotent."""
+        req = RequiredOwnership(provider, path, is_prefix, capability)
+        with self._coord:
+            if req not in self._required_ownerships:
+                self._required_ownerships.append(req)
+
+    def verify_required_ownerships(self) -> None:
+        """Fail closed if any declared :class:`RequiredOwnership` is unmet.
+
+        For each requirement, the owning provider must be registered AND the
+        exact route / prefix must be owned by exactly that provider with the
+        required capability. Any shortfall raises
+        :class:`ServiceRouteRegistrationError` naming provider/route/reason (no
+        secret). Called at lifespan startup, after freeze and BEFORE the server
+        accepts traffic."""
+        failures: list[str] = []
+        with self._coord:
+            for req in self._required_ownerships:
+                expected = TokenRouteOwner(req.provider, req.capability)
+                if req.provider not in self._providers:
+                    failures.append(
+                        f"{req.path!r}: owning provider {req.provider!r} is not "
+                        "registered (provider registration failed or was skipped)"
+                    )
+                    continue
+                if req.is_prefix:
+                    normalised = req.path if req.path.endswith("/") else req.path + "/"
+                    actual = self._token_route_prefixes.get(normalised)
+                else:
+                    actual = self._token_routes.get(req.path)
+                if actual != expected:
+                    failures.append(
+                        f"{req.path!r}: expected owner "
+                        f"({req.provider!r}, capability={req.capability!r}) but "
+                        f"found {actual!r} — route-ownership registration failed"
+                    )
+        if failures:
+            raise ServiceRouteRegistrationError(
+                "dashboard-auth: security-critical service route(s) not correctly "
+                "registered before freeze; aborting startup (fail-closed): "
+                + "; ".join(failures)
+            )
+
     def _resolve_owner_locked(self, path: str):
         """Resolve the single owner of ``path``. MUST be called holding ``_coord``.
 
@@ -296,6 +391,23 @@ def freeze_dashboard_auth() -> None:
 def is_frozen() -> bool:
     """True once the shared dashboard-auth registry has been frozen."""
     return _default.is_frozen()
+
+
+def require_route_ownership(
+    *, provider: str, path: str, is_prefix: bool, capability: Optional[str] = None
+) -> None:
+    """Declare a fail-closed route-ownership requirement on the shared registry.
+    See :meth:`AuthRegistry.require_route_ownership`."""
+    _default.require_route_ownership(
+        provider=provider, path=path, is_prefix=is_prefix, capability=capability
+    )
+
+
+def verify_service_route_ownership() -> None:
+    """Abort startup (fail-closed) if any declared service-route ownership is
+    unmet. See :meth:`AuthRegistry.verify_required_ownerships`. Called from the
+    dashboard app's lifespan startup, after freeze and BEFORE serving."""
+    _default.verify_required_ownerships()
 
 
 def verify_token_against_snapshot(path: str, token: str):
