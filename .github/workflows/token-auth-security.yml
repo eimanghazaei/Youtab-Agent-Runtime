@@ -14,6 +14,7 @@ on:
       - "youtab_agent_cli/authz.py"
       - "plugins/dashboard_auth/**"
       - "tests/youtab_agent_cli/test_token_route_provider_binding.py"
+      - "tests/youtab_agent_cli/test_token_registry_concurrency.py"
       - "tests/youtab_runtime/test_authorization_gate_service_token_isolation.py"
       - "tests/youtab_agent_cli/test_dashboard_token_auth.py"
       - "tests/youtab_agent_cli/test_runtime_token_prefix.py"
@@ -48,10 +49,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
-      - name: Run token-auth security + isolation tests
+      - name: Run token-auth security + isolation + concurrency tests
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/youtab_agent_cli/test_token_route_provider_binding.py \
+            tests/youtab_agent_cli/test_token_registry_concurrency.py \
             tests/youtab_runtime/test_authorization_gate_service_token_isolation.py \
             tests/youtab_agent_cli/test_dashboard_token_auth.py \
             tests/youtab_agent_cli/test_runtime_token_prefix.py

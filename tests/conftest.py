@@ -399,24 +399,23 @@ _YOUTAB_AGENT_BEHAVIORAL_VARS = frozenset({
 
 
 @pytest.fixture(autouse=True)
-def _unfreeze_dashboard_auth_registry():
-    """Return the shared dashboard-auth lifecycle to BUILDING before each test.
+def _fresh_dashboard_auth_registry(monkeypatch):
+    """Inject a FRESH dashboard-auth registry per test (Contract A isolation).
 
-    The dashboard-auth authorization registry (providers + token routes) is a
-    process-global that the real app FREEZES in lifespan startup (Contract A,
-    immutable-after-startup). A test that runs the app lifespan — e.g.
-    ``with TestClient(web_server.app)`` — therefore leaves the shared flag FROZEN,
-    which would make the NEXT test's ``register_provider`` / ``clear_providers`` /
-    ``register_token_route`` fail closed. This unfreezes the flag (only the flag;
-    it does not touch the provider/route dicts) at the start of every test so each
-    test builds its own auth state normally. Uses the private test-only reset hook,
-    never a production entrypoint.
+    The complete dashboard-auth authorization state lives in one AuthRegistry the
+    real app FREEZES in lifespan startup (immutable-after-startup, with NO runtime
+    reset). A test that runs the app lifespan — e.g.
+    ``with TestClient(web_server.app)`` — would otherwise leave the shared default
+    registry FROZEN and poison the next test. Rather than a shipped reset, each
+    test gets a brand-new instance: we rebind the module-level default. The
+    package's delegating functions resolve the default at call time, so the
+    injection is total. ``monkeypatch`` restores the original after the test.
     """
     try:
         from youtab_agent_cli.dashboard_auth import lifecycle
-        lifecycle._reset_for_tests()
+        monkeypatch.setattr(lifecycle, "_default", lifecycle.AuthRegistry())
     except Exception:
-        # dashboard-auth not importable in this slice — nothing to unfreeze.
+        # dashboard-auth not importable in this slice — nothing to inject.
         pass
     yield
 

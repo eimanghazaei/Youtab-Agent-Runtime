@@ -86,33 +86,46 @@ Exact-path routes are identical via `register_token_route(path, provider=..., ca
   `provider` matches the owner **and** whose scopes include the registered
   capability. `_authorization_gate` re-checks the same facts as a defensive belt.
 
-## Registry lifecycle (Contract A — the complete auth registry freezes)
+## Registry lifecycle (Contract A — one linearizable auth registry)
 
-The whole dashboard-auth authorization state — the provider registry AND the
-provider-bound token-route registry — shares one lifecycle
-(`youtab_agent_cli.dashboard_auth.lifecycle`):
+The whole dashboard-auth authorization state — providers AND provider-bound token
+routes — lives in ONE object, `lifecycle.AuthRegistry`, behind a single
+coordinator lock:
 
     BUILDING  ──lifecycle.freeze_dashboard_auth()──▶  FROZEN
 
 * **BUILDING** (startup): plugins register providers and their owned routes.
 * **FROZEN** (serving): the dashboard freezes the registry in lifespan startup,
-  before accepting traffic. After freeze, EVERY mutator across both registries
-  refuses: `register_provider`, `clear_providers`, `register_token_route[_prefix]`
-  (new route/owner/capability), `clear_token_routes`. There is **no** provider
-  removal/replacement API at all, and a duplicate provider name always raises —
-  so a provider can never be swapped under an owner's name. Only a byte-identical
-  idempotent route re-registration (e.g. a `discover_plugins(force=True)` re-run
-  of the same plugins) stays a no-op.
+  before accepting traffic. After freeze, EVERY mutator refuses:
+  `register_provider`, `clear_providers`, `register_token_route[_prefix]` (new
+  route/owner/capability), `clear_token_routes`. There is **no** provider
+  removal/replacement API, and a duplicate provider name always raises — so a
+  provider can never be swapped under an owner's name. Only a byte-identical
+  idempotent route re-registration (e.g. `discover_plugins(force=True)` of the
+  same plugins) stays a no-op.
 
-Because neither registry can mutate while requests are served, `authenticate_token`
-resolves ONE immutable snapshot — the route owner, then that owner's provider via
-`get_provider` — releases the registry lock, and only then calls `verify_token`
-against that snapshot. The `_authorization_gate` defensive re-check reads the same
-frozen generation, so owner/provider/capability cannot change between seam
-authentication and the gate: there is no cross-generation / split-lock TOCTOU
-window. `clear_*` are refused after freeze; only a private, test-only reset hook
-(`lifecycle._reset_for_tests` + `_reset_*_for_tests`, never reachable from
-application or plugin code) returns the process to BUILDING between tests.
+**Linearizable.** Every mutation and `freeze()` hold the SAME coordinator lock
+continuously across *state-validation → conflict/idempotency check → commit*. So a
+mutation that observed BUILDING cannot commit after `freeze()` returns: it either
+committed before `freeze` took the lock, or it takes the lock afterward, re-reads
+`_frozen` under the same hold, sees FROZEN, and is refused. There is no
+check-then-act window. The lock is a leaf (no other lock is taken while it is
+held), so there is no lock-order cycle.
+
+**Consistent snapshot, lock released before `verify_token`.**
+`authenticate_token` resolves the `(owner, provider)` snapshot under the
+coordinator lock in one hold, **releases the lock**, and only then calls the owner
+provider's `verify_token` — never with the lock held. The `_authorization_gate`
+re-check reads the same frozen generation, so owner/provider/capability cannot
+change between seam authentication and the gate: no cross-generation / split-lock
+TOCTOU.
+
+**No runtime reset.** `clear_*` are refused after freeze, and there is **no
+reset/unfreeze callable in any shipped module** — a frozen registry cannot be
+reopened. Tests get isolation by INJECTING a fresh instance: an autouse fixture
+rebinds the module default (`lifecycle._default`) to a new `AuthRegistry()` per
+test; the delegating module functions resolve the default at call time, so the
+injection is total and needs no production reset path.
 
 ## Versioning
 

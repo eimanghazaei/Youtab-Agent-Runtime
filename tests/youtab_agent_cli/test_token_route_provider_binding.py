@@ -60,11 +60,11 @@ class _StubProvider(DashboardAuthProvider):
 
 
 def _hard_reset():
-    # Bypass the freeze guard: these tests deliberately FREEZE the registry, so
-    # normal clear_* would raise in teardown. Use the private test-only hooks.
-    lifecycle._reset_for_tests()
-    token_auth._reset_routes_for_tests()
-    auth_registry._reset_providers_for_tests()
+    # These tests deliberately FREEZE the registry (which is immutable-after-
+    # freeze with NO reset function). Isolation is a FRESH injected registry:
+    # rebind the module-level default to a new AuthRegistry(). The delegating
+    # module functions resolve _default at call time, so this is total.
+    lifecycle._default = lifecycle.AuthRegistry()
 
 
 @pytest.fixture(autouse=True)
@@ -489,8 +489,8 @@ def test_repeated_registration_is_idempotent_and_safe():
                                                provider="runtime-service",
                                                capability="runtime")
     assert token_auth.route_owner("/api/runtime/v1/health").provider == "runtime-service"
-    # exactly one prefix entry
-    assert len(token_auth._token_route_prefixes) == 1
+    # exactly one prefix entry in the single registry
+    assert len(lifecycle._default._token_route_prefixes) == 1
 
 
 def test_capability_requirement_comes_from_registered_route_not_principal():
@@ -508,17 +508,16 @@ def test_capability_requirement_comes_from_registered_route_not_principal():
     assert p is None  # provider vouches "not-runtime"; route requires "runtime"
 
 
-def test_registration_is_startup_only_but_lock_guards_access():
-    # Registration mutates module state under _lock; the seam is documented as
-    # startup-only (plugin discovery). Assert the lock exists and resolution is
-    # consistent under it (defensive: a read during a write cannot see a torn
-    # entry because both take _lock).
-    import threading as _t
-    assert isinstance(token_auth._lock, type(_t.Lock()))
+def test_single_coordinator_lock_guards_all_access():
+    # There is ONE coordinator lock on the registry object; every mutation and
+    # read takes it, so a read can never see a torn entry and no mutation can
+    # commit across a freeze that took the same lock.
+    assert lifecycle._default._coord is not None
+    assert hasattr(lifecycle._default._coord, "acquire")
+    assert hasattr(lifecycle._default._coord, "release")
     token_auth.register_token_route_prefix("/api/runtime/v1/",
                                            provider="runtime-service",
                                            capability="runtime")
-    # resolution holds the lock internally; a concurrent resolve is well-defined
     assert token_auth.route_owner("/api/runtime/v1/health") is not None
 
 
@@ -574,17 +573,25 @@ def test_freeze_is_idempotent():
     assert token_auth.is_frozen() is True
 
 
-def test_clear_after_freeze_raises_and_only_private_hook_resets():
-    # WAVE-15: the normal clear must NOT be able to reopen a frozen registry.
+def test_clear_after_freeze_raises_and_no_reset_function_exists():
+    # WAVE-16: the normal clear must NOT reopen a frozen registry, and there is
+    # NO reset/unfreeze callable in any shipped module.
     token_auth.freeze_token_routes()
     assert token_auth.is_frozen() is True
     with pytest.raises(lifecycle.FrozenRegistryError):
         token_auth.clear_token_routes()
-    # only the private test-only reset hook returns to BUILDING
-    lifecycle._reset_for_tests()
-    token_auth._reset_routes_for_tests()
+    # no shipped reset/unfreeze anywhere
+    for mod in (lifecycle, token_auth, auth_registry):
+        for banned in ("_reset_for_tests", "_reset_routes_for_tests",
+                       "_reset_providers_for_tests", "unfreeze", "reset_registry",
+                       "raise_if_frozen"):
+            assert not hasattr(mod, banned), f"{mod.__name__}.{banned} must not exist"
+    # a frozen AuthRegistry instance has no unfreeze/reset either
+    assert not hasattr(lifecycle.AuthRegistry, "unfreeze")
+    assert not hasattr(lifecycle.AuthRegistry, "reset")
+    # the ONLY way to a working registry is a FRESH instance (test injection)
+    lifecycle._default = lifecycle.AuthRegistry()
     assert token_auth.is_frozen() is False
-    # registration works again after the private reset
     token_auth.register_token_route_prefix("/api/runtime/v1/",
                                            provider="runtime-service",
                                            capability="runtime")
