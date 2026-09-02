@@ -130,6 +130,17 @@ def test_drain_valid_secret_and_drain_principal_proceeds(monkeypatch, _no_real_d
     assert _no_real_drain["write"] == 1  # intended side effect happened once
 
 
+def test_drain_bad_action_400_when_authenticated(monkeypatch, _no_real_drain):
+    # The bad-action 400 path is reachable ONLY past both guards: valid secret +
+    # a drain-token principal. Unknown action → 400, and NO side effect.
+    monkeypatch.setenv(DRAIN_ENV, DRAIN_SECRET)
+    with pytest.raises(Exception) as ei:
+        _call_drain(_FakeRequest({"action": "explode"},
+                                 principal=_drain_principal(), authed=True))
+    assert getattr(ei.value, "status_code", None) == 400
+    assert _no_real_drain == {"write": 0, "clear": 0}
+
+
 def test_drain_unauthenticated_denied_no_side_effect(monkeypatch, _no_real_drain):
     monkeypatch.setenv(DRAIN_ENV, DRAIN_SECRET)
     with pytest.raises(Exception) as ei:
