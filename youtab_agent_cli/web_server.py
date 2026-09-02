@@ -4415,14 +4415,17 @@ async def get_gateway_job(job_id: str):
 async def gateway_drain(request: Request):
     """Begin or cancel an external (NAS-driven) gateway drain.
 
-    Authenticated by the non-interactive token-auth seam: the
-    ``dashboard_auth/drain`` plugin registers this exact path as a token route
-    and verifies the ``Authorization`` bearer secret. If that plugin isn't
-    active (no ``YOUTAB_AGENT_DASHBOARD_DRAIN_SECRET``), the route is NOT a token
-    route, so on a gated bind the cookie gate handles it (a browser session can
-    still drive it from the dashboard) and on a loopback bind the legacy
-    session-token gate applies — either way it is never unauthenticated on a
-    network-exposed bind.
+    Service-token-only, fail-closed. This endpoint is authenticated exclusively
+    by the non-interactive token-auth seam: the ``dashboard_auth/drain`` plugin
+    registers this exact path as a token route owned by the ``drain-secret``
+    provider and verifies the ``Authorization`` bearer against the configured
+    drain secret. When the drain secret is absent, empty, weak, or otherwise
+    invalid, the surface is DISABLED and this handler returns ``503
+    drain_disabled`` BEFORE any side effect — an authenticated dashboard cookie
+    session, INCLUDING one holding ``ops:manage``, can NOT drive a drain (there
+    is no cookie fallback; a future cookie-admin drain mode would require a
+    separate Owner-approved ADR). The two guards below are independent of the
+    middleware so the handler cannot be reached out of contract.
 
     Body: ``{"action": "drain"}`` (begin) or ``{"action": "cancel"}`` (cancel).
     Begin writes the ``.drain_request.json`` marker the gateway's
@@ -4436,6 +4439,26 @@ async def gateway_drain(request: Request):
     immediate, drain-skipping action maps onto the existing
     ``POST /api/gateway/restart`` force path, which supersedes a drain.
     """
+    # Independent, unconditional fail-closed guard (WAVE-21), evaluated BEFORE any
+    # marker write, state mutation, or side effect.
+    #
+    # (1) Disabled unless a VALID drain secret is configured — using the SAME
+    #     authoritative contract as the drain provider, so the handler and the
+    #     token seam cannot disagree. Absent/empty/weak/malformed → 503. This is
+    #     what stops an `ops:manage` dashboard cookie from driving a drain when
+    #     the drain surface is off (the historical opt-out exposure).
+    from plugins.dashboard_auth.drain import is_drain_enabled
+    if not is_drain_enabled():
+        raise HTTPException(status_code=503, detail={"error": "drain_disabled"})
+    # (2) Even with a valid secret, only a request the drain token seam
+    #     authenticated (the `drain-secret` provider) may drive it — never a
+    #     cookie session. Belt to the middleware's suspenders.
+    _tok = getattr(request.state, "token_principal", None)
+    if not getattr(request.state, "token_authenticated", False) or getattr(
+        _tok, "provider", None
+    ) != "drain-secret":
+        raise HTTPException(status_code=403, detail={"error": "drain_forbidden"})
+
     from gateway.drain_control import (
         clear_drain_request,
         drain_requested,

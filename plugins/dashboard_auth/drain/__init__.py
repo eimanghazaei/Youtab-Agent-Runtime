@@ -226,6 +226,29 @@ def _load_config_drain_auth_section() -> dict:
     return section if isinstance(section, dict) else {}
 
 
+def is_drain_enabled() -> bool:
+    """The authoritative drain enable/disable decision, shared by provider
+    registration and the ``gateway_drain`` handler guard so the two can never
+    disagree.
+
+    True iff a VALID drain secret is configured: present, non-empty, and strong
+    enough by the SAME entropy gate (:func:`assess_secret_strength`) and the SAME
+    ``min_secret_chars`` config the provider uses. Absent / empty / weak /
+    malformed → False (the drain surface is DISABLED and the handler must 503).
+    Reads the secret the same way the provider does
+    (``os.environ[YOUTAB_AGENT_DASHBOARD_DRAIN_SECRET]``) and NEVER returns or
+    logs the secret value — only the boolean decision."""
+    secret = os.environ.get("YOUTAB_AGENT_DASHBOARD_DRAIN_SECRET", "").strip()
+    if not secret:
+        return False
+    section = _load_config_drain_auth_section()
+    try:
+        min_chars = int(section.get("min_secret_chars", _DEFAULT_MIN_SECRET_CHARS))
+    except (TypeError, ValueError):
+        min_chars = _DEFAULT_MIN_SECRET_CHARS
+    return assess_secret_strength(secret, min_chars=min_chars) is None
+
+
 def register(ctx) -> None:
     """Plugin entry — registers DrainSecretProvider when a strong secret is set.
 

@@ -40,6 +40,8 @@ from youtab_agent_cli.dashboard_auth.base import TokenPrincipal
 # Re-export the registry types so existing callers keep importing them from here.
 from youtab_agent_cli.dashboard_auth.lifecycle import (  # noqa: F401
     FrozenRegistryError,
+    LifecycleState,
+    RegistryNotVerifiedError,
     ServiceRouteRegistrationError,
     TokenRouteOwner,
     TokenRouteOwnershipError,
@@ -126,6 +128,12 @@ def is_frozen() -> bool:
     return lifecycle.is_frozen()
 
 
+def is_verified() -> bool:
+    """True only when the shared registry reached VERIFIED — the sole state in
+    which token authentication may serve."""
+    return lifecycle.is_verified()
+
+
 # --- bearer extraction ------------------------------------------------------
 
 def _client_ip(request: Request) -> str:
@@ -183,6 +191,23 @@ async def token_auth_middleware(
     path = request.url.path
     if not is_token_route(path):
         return await call_next(request)
+
+    # Fail closed on an unverified generation: a registry that FROZE but never
+    # reached VERIFIED (verification skipped, raced, or aborted) must not
+    # authenticate a token-owned route — even though `_frozen` is true. In
+    # production the lifespan freezes AND verifies before `yield`, so serving is
+    # always VERIFIED; this refuses the dangerous FROZEN_UNVERIFIED window.
+    if lifecycle.is_frozen() and not lifecycle.is_verified():
+        audit_log(
+            AuditEvent.TOKEN_AUTH_FAILURE,
+            reason="registry_not_verified",
+            path=path,
+            ip=_client_ip(request),
+        )
+        return JSONResponse(
+            {"error": "service_unverified", "detail": "Service Unavailable"},
+            status_code=503,
+        )
 
     principal, unreachable = authenticate_token(request)
     if principal is not None:

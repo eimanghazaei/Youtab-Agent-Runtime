@@ -114,6 +114,30 @@ class RequiredOwnership(NamedTuple):
     capability: Optional[str]
 
 
+import enum
+
+
+class LifecycleState(enum.IntEnum):
+    """Monotonic dashboard-auth registry lifecycle. Transitions only ever move
+    FORWARD (BUILDING < FROZEN_UNVERIFIED < VERIFIED); there is no reset/unfreeze.
+
+        BUILDING          providers/routes/prefixes/requirements are registered
+        FROZEN_UNVERIFIED  freeze() sealed the registry; verification pending
+        VERIFIED           verify_required_ownerships() passed; safe to serve
+    """
+
+    BUILDING = 0
+    FROZEN_UNVERIFIED = 1
+    VERIFIED = 2
+
+
+class RegistryNotVerifiedError(RuntimeError):
+    """Token authentication was attempted against a registry that froze but never
+    reached VERIFIED (verification skipped, raced, or aborted). Fail closed —
+    never serve a token-owned route from an unverified generation. Carries no
+    secret."""
+
+
 # Sentinel: a path matched by two owners of equal specificity — fail closed.
 _AMBIGUOUS = object()
 
@@ -145,7 +169,7 @@ class AuthRegistry:
         # mutation and read. Reentrant so an internal helper called under the lock
         # does not self-deadlock.
         self._coord = threading.RLock()
-        self._frozen = False
+        self._state = LifecycleState.BUILDING
         self._providers: dict[str, DashboardAuthProvider] = {}
         self._token_routes: dict[str, TokenRouteOwner] = {}
         self._token_route_prefixes: dict[str, TokenRouteOwner] = {}
@@ -156,20 +180,33 @@ class AuthRegistry:
     # ---- lifecycle ---------------------------------------------------------
 
     def freeze(self) -> None:
-        """Transition BUILDING → FROZEN under the coordinator lock. Idempotent."""
+        """Atomically transition BUILDING → FROZEN_UNVERIFIED under the coordinator
+        lock. Idempotent and monotonic: a no-op once frozen or verified; there is
+        NO backward transition."""
         with self._coord:
-            self._frozen = True
+            if self._state == LifecycleState.BUILDING:
+                self._state = LifecycleState.FROZEN_UNVERIFIED
+
+    def state(self) -> LifecycleState:
+        with self._coord:
+            return self._state
 
     def is_frozen(self) -> bool:
+        """True once the registry has left BUILDING (FROZEN_UNVERIFIED or VERIFIED)."""
         with self._coord:
-            return self._frozen
+            return self._state != LifecycleState.BUILDING
+
+    def is_verified(self) -> bool:
+        """True only in VERIFIED — the sole state in which token auth may serve."""
+        with self._coord:
+            return self._state == LifecycleState.VERIFIED
 
     # ---- provider registry -------------------------------------------------
 
     def register_provider(self, provider: DashboardAuthProvider) -> None:
         assert_protocol_compliance(type(provider))
         with self._coord:
-            if self._frozen:
+            if self._state != LifecycleState.BUILDING:
                 raise FrozenRegistryError(
                     f"dashboard-auth registry is frozen; refusing provider "
                     f"registration ({provider.name!r}) after startup"
@@ -204,7 +241,7 @@ class AuthRegistry:
 
     def clear_providers(self) -> None:
         with self._coord:
-            if self._frozen:
+            if self._state != LifecycleState.BUILDING:
                 raise FrozenRegistryError(
                     "dashboard-auth registry is frozen; refusing provider clearing"
                 )
@@ -223,7 +260,7 @@ class AuthRegistry:
                     f"token route {path!r} already owned by {existing.provider!r}; "
                     f"refusing to reassign to {provider!r}"
                 )
-            if self._frozen and existing is None:
+            if self._state != LifecycleState.BUILDING and existing is None:
                 raise TokenRouteRegistrationError(
                     f"token route registry is frozen; refusing to register new "
                     f"route {path!r} after startup"
@@ -242,7 +279,7 @@ class AuthRegistry:
                     f"token route prefix {normalised!r} already owned by "
                     f"{existing.provider!r}; refusing to reassign to {provider!r}"
                 )
-            if self._frozen and existing is None:
+            if self._state != LifecycleState.BUILDING and existing is None:
                 raise TokenRouteRegistrationError(
                     f"token route registry is frozen; refusing to register new "
                     f"prefix {normalised!r} after startup"
@@ -251,7 +288,7 @@ class AuthRegistry:
 
     def clear_token_routes(self) -> None:
         with self._coord:
-            if self._frozen:
+            if self._state != LifecycleState.BUILDING:
                 raise FrozenRegistryError(
                     "dashboard-auth registry is frozen; refusing token-route clearing"
                 )
@@ -273,27 +310,45 @@ class AuthRegistry:
         turns it into a fail-closed abort.
 
         Recording a requirement is a verification aid, not part of the
-        immutable auth-decision state, so it is intentionally allowed even after
-        freeze: a freeze-before-registration ordering bug then records a
-        requirement whose provider/route registration is refused, which the
-        lifespan verification still catches as an unmet requirement (a loud
-        abort) rather than a silently-disabled surface. Idempotent."""
+        immutable auth-decision state, so it is intentionally allowed during
+        BUILDING and FROZEN_UNVERIFIED (a freeze-before-registration ordering bug
+        then records a requirement whose provider/route registration is refused,
+        which verification still catches as an unmet requirement — a loud abort
+        rather than a silently-disabled surface). It is REFUSED once VERIFIED: a
+        late requirement must never be silently appended to an already-verified
+        serving registry (WAVE-20 W20-2). Idempotent within a state."""
         req = RequiredOwnership(provider, path, is_prefix, capability)
         with self._coord:
+            if self._state == LifecycleState.VERIFIED:
+                raise FrozenRegistryError(
+                    "dashboard-auth registry is VERIFIED; refusing to declare a "
+                    f"new route-ownership requirement for {path!r} after "
+                    "verification (a late requirement is never silently accepted)"
+                )
             if req not in self._required_ownerships:
                 self._required_ownerships.append(req)
 
     def verify_required_ownerships(self) -> None:
-        """Fail closed if any declared :class:`RequiredOwnership` is unmet.
+        """Fail closed if any declared :class:`RequiredOwnership` is unmet, then
+        atomically transition FROZEN_UNVERIFIED → VERIFIED.
 
-        For each requirement, the owning provider must be registered AND the
-        exact route / prefix must be owned by exactly that provider with the
-        required capability. Any shortfall raises
-        :class:`ServiceRouteRegistrationError` naming provider/route/reason (no
-        secret). Called at lifespan startup, after freeze and BEFORE the server
-        accepts traffic."""
+        Valid ONLY in FROZEN_UNVERIFIED: raises if called before freeze; a no-op
+        if already VERIFIED (idempotent). For each requirement, the owning
+        provider must be registered AND the exact route / prefix must be owned by
+        exactly that provider with the required capability. Any shortfall raises
+        :class:`ServiceRouteRegistrationError` (naming provider/route/reason, no
+        secret) and the registry STAYS FROZEN_UNVERIFIED — it never reaches
+        VERIFIED, so serving stays fail-closed. Called at lifespan startup, after
+        freeze and BEFORE the server accepts traffic."""
         failures: list[str] = []
         with self._coord:
+            if self._state == LifecycleState.VERIFIED:
+                return
+            if self._state != LifecycleState.FROZEN_UNVERIFIED:
+                raise RegistryNotVerifiedError(
+                    "verify_required_ownerships() requires a FROZEN_UNVERIFIED "
+                    "registry; freeze() must run first"
+                )
             for req in self._required_ownerships:
                 expected = TokenRouteOwner(req.provider, req.capability)
                 if req.provider not in self._providers:
@@ -313,12 +368,16 @@ class AuthRegistry:
                         f"({req.provider!r}, capability={req.capability!r}) but "
                         f"found {actual!r} — route-ownership registration failed"
                     )
-        if failures:
-            raise ServiceRouteRegistrationError(
-                "dashboard-auth: security-critical service route(s) not correctly "
-                "registered before freeze; aborting startup (fail-closed): "
-                + "; ".join(failures)
-            )
+            if failures:
+                # Stay FROZEN_UNVERIFIED — never transition to VERIFIED on failure.
+                raise ServiceRouteRegistrationError(
+                    "dashboard-auth: security-critical service route(s) not "
+                    "correctly registered before freeze; aborting startup "
+                    "(fail-closed): " + "; ".join(failures)
+                )
+            # Atomically seal: all requirements met → VERIFIED, under the same
+            # coordinator hold as the check (no verify/late-declare race window).
+            self._state = LifecycleState.VERIFIED
 
     def _resolve_owner_locked(self, path: str):
         """Resolve the single owner of ``path``. MUST be called holding ``_coord``.
@@ -391,6 +450,17 @@ def freeze_dashboard_auth() -> None:
 def is_frozen() -> bool:
     """True once the shared dashboard-auth registry has been frozen."""
     return _default.is_frozen()
+
+
+def is_verified() -> bool:
+    """True only when the shared registry has reached VERIFIED — the sole state
+    in which token authentication may serve."""
+    return _default.is_verified()
+
+
+def registry_state() -> LifecycleState:
+    """The current lifecycle state of the shared registry."""
+    return _default.state()
 
 
 def require_route_ownership(

@@ -105,19 +105,32 @@ Exact-path routes are identical via `register_token_route(path, provider=..., ca
 
 The whole dashboard-auth authorization state — providers AND provider-bound token
 routes — lives in ONE object, `lifecycle.AuthRegistry`, behind a single
-coordinator lock:
+coordinator lock, and moves through an explicit **monotonic** state machine
+(`lifecycle.LifecycleState`):
 
-    BUILDING  ──lifecycle.freeze_dashboard_auth()──▶  FROZEN
+    BUILDING ──freeze()──▶ FROZEN_UNVERIFIED ──verify_required_ownerships()──▶ VERIFIED
 
-* **BUILDING** (startup): plugins register providers and their owned routes.
-* **FROZEN** (serving): the dashboard freezes the registry in lifespan startup,
-  before accepting traffic. After freeze, EVERY mutator refuses:
-  `register_provider`, `clear_providers`, `register_token_route[_prefix]` (new
-  route/owner/capability), `clear_token_routes`. There is **no** provider
-  removal/replacement API, and a duplicate provider name always raises — so a
-  provider can never be swapped under an owner's name. Only a byte-identical
-  idempotent route re-registration (e.g. `discover_plugins(force=True)` of the
-  same plugins) stays a no-op.
+* **BUILDING** (startup): plugins register providers, their owned routes, and
+  their fail-closed ownership requirements.
+* **FROZEN_UNVERIFIED**: `freeze()` sealed the registry; verification pending.
+  EVERY provider/route mutator refuses (`register_provider`, `clear_providers`,
+  `register_token_route[_prefix]` for a new route/owner/capability,
+  `clear_token_routes`). Only a byte-identical idempotent route re-registration
+  (e.g. `discover_plugins(force=True)` of the same plugins) stays a no-op.
+* **VERIFIED**: `verify_required_ownerships()` confirmed every declared
+  requirement and atomically sealed the registry. **This is the only state in
+  which token authentication may serve** — `token_auth_middleware` fails closed
+  (`503 service_unverified`) on a token route when the registry is
+  FROZEN_UNVERIFIED (frozen but not verified), even though `_frozen` is true. A
+  **late requirement is refused after VERIFIED** (`require_route_ownership`
+  raises, no mutation), so nothing unverified can be appended to a serving
+  registry.
+
+Transitions only ever move **forward** — there is no reverse transition, no
+reset, and no unfreeze. Failed verification stays in FROZEN_UNVERIFIED (never
+reaches VERIFIED), so a partial security boundary can never serve. There is
+**no** provider removal/replacement API, and a duplicate provider name always
+raises — so a provider can never be swapped under an owner's name.
 
 **Linearizable.** Every mutation and `freeze()` hold the SAME coordinator lock
 continuously across *state-validation → conflict/idempotency check → commit*. So a
@@ -141,6 +154,44 @@ reopened. Tests get isolation by INJECTING a fresh instance: an autouse fixture
 rebinds the module default (`lifecycle._default`) to a new `AuthRegistry()` per
 test; the delegating module functions resolve the default at call time, so the
 injection is total and needs no production reset path.
+
+## Drain endpoint is service-token-only, fail-closed
+
+`POST /api/gateway/drain` is mounted unconditionally, but the handler
+(`gateway_drain`) carries an **independent, unconditional guard** evaluated
+BEFORE any marker write or side effect:
+
+1. **Disabled unless a valid drain secret is configured.** The guard calls
+   `plugins.dashboard_auth.drain.is_drain_enabled()` — the SAME authoritative
+   contract the drain provider uses to decide registration (same env var, same
+   `assess_secret_strength` entropy gate, same `min_secret_chars`), so the
+   handler and the token seam can never disagree. Absent / empty / weak /
+   malformed → `503 drain_disabled`. This closes the historical opt-out
+   exposure: an authenticated `ops:manage` dashboard cookie session that reaches
+   the handler while the drain secret is unset is **503'd, not served** — there
+   is **no cookie fallback**.
+2. **Only a drain-token request may drive it.** Even with a valid secret, the
+   guard requires a request the token seam authenticated with the `drain-secret`
+   provider (`403 drain_forbidden` otherwise) — belt to the middleware's
+   suspenders. A dashboard cookie session cannot bypass token ownership.
+
+A future cookie-admin drain mode would require a separate Owner-approved ADR; it
+is deliberately not introduced here. The guard names only the error code — never
+the secret — in responses, logs, or exception text.
+
+## Targeted OWASP / Agentic evidence
+
+Each control maps to an executable test or a source-level enforced invariant
+(not a checklist claim). The full assessment runs in the separate Final Security
+Gate.
+
+| Control | Enforcement | Evidence |
+| --- | --- | --- |
+| **A01 Broken Access Control** (drain reachable via cookie when disabled) | `gateway_drain` guard #1 → `503 drain_disabled`; no cookie fallback | `test_drain_optout_and_verified_lifecycle.py::test_drain_disabled_503_without_valid_secret` (+ `_no_side_effect`) |
+| **A05 Security Misconfiguration** (opt-out leaves an unclaimed live route) | handler independent of the seam; disabled surface = 503, not a cookie-gate handoff | same suite; `is_drain_enabled` shared-contract test |
+| **API1/API5 Broken function/object auth & improper exposure** | drain driven only by the `drain-secret` token principal (guard #2); runtime↔drain isolation unchanged | `test_drain_valid_secret_but_cookie_principal_forbidden`; `test_authorization_gate_service_token_isolation.py` (runtime↔drain denied) |
+| **Agentic: unsafe side-effect execution** | guard runs BEFORE any marker write; tests assert zero `write/clear_drain_request` calls on denial | `_no_real_drain` side-effect counter asserts in every denial test |
+| **Agentic: identity / privilege boundary** | token auth serves only in VERIFIED; frozen-but-unverified fails closed; late requirement refused after VERIFIED | `test_serving_before_verified_fails_closed`; `test_requirement_after_verified_refused_without_mutation` |
 
 ## Versioning and release notes (0.20.0)
 
