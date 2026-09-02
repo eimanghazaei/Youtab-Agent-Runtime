@@ -72,6 +72,19 @@ class TokenRouteOwnershipError(RuntimeError):
     """
 
 
+class TokenRouteRegistrationError(RuntimeError):
+    """A NEW token route registration was refused after the registry FROZE.
+
+    Contract A (immutable-after-startup): once the dashboard finishes plugin
+    discovery and calls :func:`freeze_token_routes` — before the HTTP server
+    accepts traffic — the security registry is sealed. A byte-identical
+    re-registration of an already-owned route is still tolerated (idempotent
+    no-op, so a ``discover_plugins(force=True)`` re-run of the SAME plugins is
+    safe), but any new route/prefix/owner/capability is rejected fail-closed.
+    Carries no secret.
+    """
+
+
 # Provider-BOUND token routes. A token route is owned by exactly ONE provider,
 # and only that provider may authenticate a request on it (the seam never tries
 # every provider against every route — that would let a credential minted for
@@ -80,19 +93,46 @@ class TokenRouteOwnershipError(RuntimeError):
 # ``/api/runtime/v1/runs/{id}/events``) are both supported; the prefix ends in
 # ``/`` so ``/api/runtime/v1/`` never matches a sibling ``/api/runtime/v1x``.
 #
-# LIFECYCLE: registration is STARTUP-ONLY. Every route is registered from a
-# plugin's ``register(ctx)`` during ``discover_plugins()``, before the ASGI app
-# begins serving; nothing registers a route on a request path. ``_lock`` still
-# guards every read and write so a resolution can never observe a torn entry
-# even if a late/concurrent registration ever occurred. Registration is
-# idempotent for the same owner and fail-closed on a conflicting owner, so
-# repeated discovery is safe and a mis-wired dual owner cannot arise.
+# LIFECYCLE (Contract A — immutable after startup, ENFORCED not just documented):
+# every route is registered from a plugin's ``register(ctx)`` during
+# ``discover_plugins()``, which the real dashboard startup runs BEFORE the ASGI
+# server accepts traffic (``main._maybe_setup_dashboard_auth_interactively`` and
+# the dashboard command both discover before ``start_server``; request-time
+# ``discover_plugins()`` is an idempotent no-op). ``freeze_token_routes()`` is
+# then called from the app lifespan startup, sealing the registry: after the
+# freeze a NEW route/owner/capability is rejected (``TokenRouteRegistrationError``)
+# and only a byte-identical idempotent re-registration is a no-op. Because no
+# mutation can occur while requests are served, ``_resolve_owner`` /
+# ``authenticate_token`` / the ``_authorization_gate`` re-check all observe one
+# stable generation — there is no TOCTOU window between resolving an owner and
+# consulting its provider. ``_lock`` still guards every read and write.
 _token_routes: dict[str, TokenRouteOwner] = {}
 _token_route_prefixes: dict[str, TokenRouteOwner] = {}
 _lock = threading.Lock()
+# Contract A lifecycle flag: BUILDING (False) → FROZEN (True). Guarded by _lock.
+_frozen: bool = False
 
 # Sentinel: a path matched by two owners of equal specificity — fail closed.
 _AMBIGUOUS = object()
+
+
+def freeze_token_routes() -> None:
+    """Seal the token-route registry (Contract A). Idempotent.
+
+    Called from the dashboard app's lifespan startup once plugin discovery has
+    registered every token route and BEFORE the server accepts traffic. After
+    this, only a byte-identical idempotent re-registration is tolerated; any new
+    route/owner/capability is refused fail-closed.
+    """
+    global _frozen
+    with _lock:
+        _frozen = True
+
+
+def is_frozen() -> bool:
+    """True once :func:`freeze_token_routes` has sealed the registry."""
+    with _lock:
+        return _frozen
 
 
 def register_token_route(
@@ -104,7 +144,9 @@ def register_token_route(
     it public — it makes it authenticate by ``provider``'s bearer token instead
     of by session cookie. Idempotent for the SAME (provider, capability);
     re-registering with a DIFFERENT owner raises
-    :class:`TokenRouteOwnershipError` (fail-closed, registration closed).
+    :class:`TokenRouteOwnershipError` (fail-closed, registration closed). After
+    :func:`freeze_token_routes`, a NEW route raises
+    :class:`TokenRouteRegistrationError`.
     """
     owner = TokenRouteOwner(provider, capability)
     with _lock:
@@ -113,6 +155,11 @@ def register_token_route(
             raise TokenRouteOwnershipError(
                 f"token route {path!r} already owned by {existing.provider!r}; "
                 f"refusing to reassign to {provider!r}"
+            )
+        if _frozen and existing is None:
+            raise TokenRouteRegistrationError(
+                f"token route registry is frozen; refusing to register new "
+                f"route {path!r} after startup"
             )
         _token_routes[path] = owner
 
@@ -127,7 +174,8 @@ def register_token_route_prefix(
     path-segment boundary — registering ``/api/runtime/v1`` guards
     ``/api/runtime/v1/...`` but never a sibling like ``/api/runtime/v1x``.
     Idempotent for the SAME owner; a conflicting owner raises
-    :class:`TokenRouteOwnershipError`.
+    :class:`TokenRouteOwnershipError`. After :func:`freeze_token_routes`, a NEW
+    prefix raises :class:`TokenRouteRegistrationError`.
     """
     normalised = prefix if prefix.endswith("/") else prefix + "/"
     owner = TokenRouteOwner(provider, capability)
@@ -137,6 +185,11 @@ def register_token_route_prefix(
             raise TokenRouteOwnershipError(
                 f"token route prefix {normalised!r} already owned by "
                 f"{existing.provider!r}; refusing to reassign to {provider!r}"
+            )
+        if _frozen and existing is None:
+            raise TokenRouteRegistrationError(
+                f"token route registry is frozen; refusing to register new "
+                f"prefix {normalised!r} after startup"
             )
         _token_route_prefixes[normalised] = owner
 
@@ -221,10 +274,12 @@ def is_token_route(path: str) -> bool:
 
 
 def clear_token_routes() -> None:
-    """Test-only: drop all registered token routes (exact + prefix)."""
+    """Test-only: drop all registered token routes (exact + prefix) and unfreeze."""
+    global _frozen
     with _lock:
         _token_routes.clear()
         _token_route_prefixes.clear()
+        _frozen = False
 
 
 def _client_ip(request: Request) -> str:

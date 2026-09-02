@@ -256,6 +256,17 @@ async def _lifespan(app: "FastAPI"):
     # sweeping stale sessions on schedule, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
 
+    # Contract A (immutable-after-startup): plugin discovery has already
+    # registered every token route (the dashboard command / interactive auth
+    # setup both discover BEFORE start_server; request-time discover_plugins()
+    # is an idempotent no-op). Seal the provider-bound token-route registry now —
+    # in lifespan startup, BEFORE uvicorn accepts traffic — so no request is ever
+    # served while the security registry could mutate. This closes the TOCTOU
+    # window between the token seam resolving an owner and the _authorization_gate
+    # re-checking it: during serving there is exactly one frozen generation.
+    from youtab_agent_cli.dashboard_auth.token_auth import freeze_token_routes
+    freeze_token_routes()
+
     try:
         yield
     finally:

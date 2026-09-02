@@ -515,5 +515,115 @@ def test_registration_is_startup_only_but_lock_guards_access():
     assert token_auth.route_owner("/api/runtime/v1/health") is not None
 
 
+# --- §1 Contract A: registry freeze (immutable after startup) --------------
+
+def test_freeze_then_new_route_is_refused_failclosed():
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    token_auth.freeze_token_routes()
+    assert token_auth.is_frozen() is True
+    with pytest.raises(token_auth.TokenRouteRegistrationError):
+        token_auth.register_token_route("/api/gateway/drain", provider="drain-secret",
+                                        capability="drain")
+    with pytest.raises(token_auth.TokenRouteRegistrationError):
+        token_auth.register_token_route_prefix("/api/other/v1/", provider="x",
+                                               capability="y")
+
+
+def test_freeze_allows_identical_idempotent_reregistration():
+    # A discover_plugins(force=True) re-run of the SAME plugins re-registers the
+    # SAME (provider, capability) — that must stay a no-op even when frozen.
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    token_auth.register_token_route("/api/gateway/drain", provider="drain-secret",
+                                    capability="drain")
+    token_auth.freeze_token_routes()
+    # identical re-registration: no raise
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    token_auth.register_token_route("/api/gateway/drain", provider="drain-secret",
+                                    capability="drain")
+    assert token_auth.route_owner("/api/runtime/v1/health").provider == "runtime-service"
+    assert token_auth.route_owner("/api/gateway/drain").provider == "drain-secret"
+
+
+def test_freeze_still_rejects_conflicting_owner():
+    token_auth.register_token_route("/api/gateway/drain", provider="drain-secret",
+                                    capability="drain")
+    token_auth.freeze_token_routes()
+    # a conflicting owner for an EXISTING route is refused (ownership guard)
+    with pytest.raises(token_auth.TokenRouteOwnershipError):
+        token_auth.register_token_route("/api/gateway/drain", provider="intruder",
+                                        capability="x")
+    assert token_auth.route_owner("/api/gateway/drain").provider == "drain-secret"
+
+
+def test_freeze_is_idempotent():
+    token_auth.freeze_token_routes()
+    token_auth.freeze_token_routes()  # no raise
+    assert token_auth.is_frozen() is True
+
+
+def test_clear_unfreezes_for_test_isolation():
+    token_auth.freeze_token_routes()
+    assert token_auth.is_frozen() is True
+    token_auth.clear_token_routes()
+    assert token_auth.is_frozen() is False
+    # registration works again after clear
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    assert token_auth.route_owner("/api/runtime/v1/health") is not None
+
+
+def test_request_during_building_is_denied_before_route_registered():
+    # BUILDING phase: a route not yet registered resolves to no owner, so a
+    # request is denied (fail-closed) — a partially-built registry never grants.
+    rt = _StubProvider("runtime-service", "RT", "runtime")
+    auth_registry.register_provider(rt)
+    # NOT registered yet
+    p, un = token_auth.authenticate_token(
+        _Req("/api/runtime/v1/health", {"authorization": "Bearer RT"}))
+    assert p is None and un is None
+    # once registered (still BUILDING, not frozen), it authenticates
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    p, _ = token_auth.authenticate_token(
+        _Req("/api/runtime/v1/health", {"authorization": "Bearer RT"}))
+    assert p is not None
+
+
+def test_frozen_registry_resolution_is_stable_after_refused_mutation():
+    # After freeze, a refused new registration must not perturb existing owners
+    # (no partial state), so resolution is stable across the failed mutation.
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    token_auth.freeze_token_routes()
+    before = token_auth.route_owner("/api/runtime/v1/health")
+    try:
+        token_auth.register_token_route("/api/gateway/drain", provider="drain-secret",
+                                        capability="drain")
+    except token_auth.TokenRouteRegistrationError:
+        pass
+    after = token_auth.route_owner("/api/runtime/v1/health")
+    assert before == after
+    assert token_auth.route_owner("/api/gateway/drain") is None  # never took effect
+
+
+# --- §2 provider registry: no silent replacement (TOCTOU surface) ----------
+
+def test_provider_cannot_be_replaced_under_same_name():
+    # The provider registry rejects a duplicate name outright, so an attacker
+    # cannot swap a provider object under an owner's name mid-flight.
+    auth_registry.register_provider(_StubProvider("runtime-service", "RT", "runtime"))
+    with pytest.raises(Exception):
+        auth_registry.register_provider(_StubProvider("runtime-service", "EVIL", "runtime"))
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

@@ -187,5 +187,64 @@ def test_plugins_register_provider_bound_routes():
         auth_registry.clear_providers()
 
 
+# --- §3 route-boundary attacks through the REAL app (HTTP), not helpers -----
+
+@pytest.mark.parametrize("path", [
+    "/api/runtime/v1evil",              # sibling string-prefix
+    "/api/runtime/v1evil/health",       # sibling subpath
+    "/api/runtime/v1/../gateway/drain",  # dot-segment cannot reach drain
+])
+def test_boundary_paths_never_authenticate_as_runtime(client, path):
+    # A valid runtime bearer + identity on a path that is NOT the runtime
+    # surface must never succeed (200). It is either not a token route (cookie
+    # gate 401) or an unmatched route (404) — never an authenticated 200, and
+    # never a 500.
+    r = client.get(path, headers=_bearer(RUNTIME_SECRET, IDENT))
+    assert r.status_code != 200
+    assert r.status_code != 500
+
+
+def test_percent_encoded_separator_resolves_consistently_no_crossing(client):
+    # The ASGI stack decodes ``%2F`` to ``/`` BEFORE both the router and the
+    # token seam see the path, so ``/api/runtime%2Fv1/health`` becomes the
+    # runtime surface's own ``/api/runtime/v1/health`` for BOTH. Ownership and
+    # routing therefore agree — the request is served as the runtime owner it
+    # decodes to (200), never crossed to a different owner, never a 500. The
+    # unit test proves the LITERAL encoded string is unowned; here we prove the
+    # decoded scope path the framework routes on is what the seam uses too.
+    r = client.get("/api/runtime%2Fv1/health", headers=_bearer(RUNTIME_SECRET, IDENT))
+    assert r.status_code != 500
+    # decodes to the runtime owner's own health route -> authorized 200; a
+    # non-decoding stack would 401/404 instead. Either way it is never drain.
+    assert r.status_code in (200, 401, 403, 404)
+    # a DRAIN bearer on the same encoded runtime path must still be denied.
+    assert client.get("/api/runtime%2Fv1/health",
+                      headers=_bearer(DRAIN_SECRET, IDENT)).status_code != 200
+
+
+def test_double_slash_stays_within_runtime_owner_no_crossing(client):
+    # A double slash is still under the runtime prefix (owned by runtime), so it
+    # can only ever reach the runtime surface — never drain — and must not 500.
+    r = client.get("/api/runtime/v1//health", headers=_bearer(RUNTIME_SECRET, IDENT))
+    assert r.status_code != 500
+    # whatever it resolves to (200 if the route matches, 404 if not) it is the
+    # runtime owner's decision, never drain's.
+    assert r.status_code in (200, 404, 403, 401)
+
+
+def test_exact_drain_and_prefix_runtime_are_independent(client):
+    # Exact drain route (owned by drain) and the runtime prefix (owned by
+    # runtime) each authenticate ONLY their own bearer, end to end.
+    ok_drain = client.post(DRAIN_PATH, headers=_bearer(DRAIN_SECRET),
+                           json={"action": "cancel"})
+    assert ok_drain.status_code == 200
+    ok_runtime = client.get(HEALTH, headers=_bearer(RUNTIME_SECRET, IDENT))
+    assert ok_runtime.status_code == 200
+    # cross use denied (repeat of the isolation invariant at HTTP level)
+    assert client.post(DRAIN_PATH, headers=_bearer(RUNTIME_SECRET),
+                       json={"action": "drain"}).status_code != 200
+    assert client.get(HEALTH, headers=_bearer(DRAIN_SECRET, IDENT)).status_code != 200
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
