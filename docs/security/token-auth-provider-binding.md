@@ -127,31 +127,70 @@ rebinds the module default (`lifecycle._default`) to a new `AuthRegistry()` per
 test; the delegating module functions resolve the default at call time, so the
 injection is total and needs no production reset path.
 
-## Versioning
+## Versioning and release notes (0.20.0)
 
-Repository version is pre-1.0 (`0.19.1`). Under semantic versioning a breaking
-change to a public plugin API before 1.0.0 is a **minor** bump: **0.19.1 →
-0.20.0** (pre-1.0 breaking-version notation). The bump itself is intentionally
-**not** made in this change set because `0.19.1` is also asserted by unrelated
-release/wake-word fixtures and pinned in `uv.lock`; it should be applied
-together with the release that lands this change.
+**Version introduced: `0.20.0`.** The provider→route binding is a breaking
+change to a public plugin API, so under pre-1.0 semantic versioning it is a
+**minor** bump: **0.19.1 → 0.20.0**. This bump **is applied in this change set**:
+
+- `pyproject.toml` `version = "0.20.0"` — what the built wheel/sdist carry.
+- `youtab_agent_cli/__init__.py` `__version__ = "0.20.0"` — what the CLI reports.
+- `uv.lock` — regenerated with `uv lock`; the `youtab-agent-runtime` package
+  block now resolves `0.20.0`. No third-party pin moved (all direct deps are
+  exact-pinned), so the lock delta is the project version alone.
+- `tests/test_packaging_metadata.py` — a version-consistency guard asserts the
+  three sources above agree, and that `importlib.metadata` reports the same
+  version where the distribution is installed.
+
+`__release_date__` is intentionally left at the prior value: the release date is
+stamped by the actual release process (`scripts/release.py`, CalVer) when the
+release is published, which is out of scope for this change.
+
+### What is breaking (record for the release)
+
+- `register_token_route(path)` and `register_token_route_prefix(prefix)` now
+  **require** an explicit `provider=` owner (and accept an optional
+  `capability=`). The old ownerless signature raises `TypeError` and the route
+  is not registered — it stays behind the interactive cookie gate.
+- The provider/route authorization registry becomes **immutable after startup
+  freeze** (Contract A) — no route, prefix, provider, or capability can be added
+  or cleared once the server is serving.
+- **Cross-provider token use is denied**: each route is owned by exactly one
+  provider and only that owner's `verify_token` is consulted; a bearer another
+  provider would accept is rejected on a route it does not own (e.g. a
+  runtime-service token can no longer reach `/api/gateway/drain`).
+- **No compatibility default** and no inferred owner — either would silently
+  weaken provider isolation. Migration steps are in *Migration for external
+  dashboard-auth / token plugins* above.
+
+### Not a version assertion (left unchanged, deliberately)
+
+The wake-word `runtime_version` field (`scripts/wakeword/qualify.py`,
+`scripts/wakeword/round8_controller.py`, and the `tests/tools/test_wakeword_*`
+fixtures) is a **free-form provenance string** recorded into a qualification
+freeze. It is validated only as non-empty and is **never compared to the package
+version** (the fixtures already use `0.19.1`, `0.1.0`, and `0.20.0`
+interchangeably as opaque round-trip values). It is therefore **not** an
+assertion of the Engine package version and was **not** edited — changing it
+would be editing fixtures merely to silence, which is prohibited. The
+`--runtime-version 0.19.1` in the `qualify.py` module docstring is an
+illustrative CLI usage example (alongside a `<sha>` placeholder), not an
+authoritative version, and is likewise left as-is.
+
+There is no committed root changelog: release notes and the CalVer tag are
+generated at publish time by `scripts/release.py` from git history. These notes
+live in this migration document rather than in an invented parallel changelog.
 
 ### Release gate (stacked-PR ledger)
 
 This change ships on `fix/wave12-authz-gate-token-provider-binding`, whose Draft
 PR targets `integration/engine-runtime-v5` (itself the head line of a separate
-Draft PR to `main`). The following gate is mandatory and must not be skipped:
+Draft PR to `main`). The following gate remains mandatory:
 
-- **The engine PR that carries this change to `main` MUST NOT become Ready or
-  merge to `main` until, on the same exact head:** the version is bumped
-  `0.19.1 → 0.20.0` in `pyproject.toml` and `youtab_agent_cli/__init__.py`,
-  `uv.lock` is regenerated, the *legitimate* version references are updated
-  (`scripts/wakeword/qualify.py` and the wake-word fixtures that assert
-  `runtime_version`/`--runtime-version`), and ALL CI reruns green on the
-  resulting exact head.
-- **Do not** modify fixtures merely to silence a version assertion — update them
-  only because the runtime version legitimately changed to `0.20.0`.
 - Each stacked merge (this branch → `integration/engine-runtime-v5` → `main`)
   requires its own exact-head Owner authorization and a full CI rerun on the new
   head. Only the final merged `main` SHA may become the Engine pin; a Draft head
   is never a final pin.
+- Publishing the `0.20.0` release itself (`scripts/release.py --publish`, the
+  GitHub release, and any tag) is a separate, outward-facing step and is **not**
+  performed by this change.

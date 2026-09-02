@@ -2,7 +2,7 @@
 
 [project]
 name = "youtab-agent-runtime"
-version = "0.19.1"
+version = "0.20.0"
 description = "Portable Youtab execution runtime for agents and Super-Agent Units under One Brain"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's

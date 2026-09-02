@@ -308,6 +308,78 @@ _REQUIRED_SECURITY_PINS = {
 }
 
 
+def _pyproject_version() -> str:
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    return data["project"]["version"]
+
+
+def _module_version() -> str:
+    """Read ``__version__`` from youtab_agent_cli/__init__.py without importing it.
+
+    The module runs ``_ensure_utf8()`` at import time (stream reconfiguration),
+    so parse the assignment out of the source instead of importing.
+    """
+    src = (REPO_ROOT / "youtab_agent_cli" / "__init__.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id == "__version__"
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)
+                ):
+                    return node.value.value
+    raise AssertionError("__version__ not found in youtab_agent_cli/__init__.py")
+
+
+def test_declared_version_agrees_across_pyproject_module_and_lock():
+    """The one authoritative version must read the same from every source.
+
+    The release bump (0.19.1 -> 0.20.0) touches three coupled places:
+    ``pyproject.toml`` (what the wheel/sdist carries), ``__version__`` in
+    ``youtab_agent_cli/__init__.py`` (what the CLI reports), and the
+    ``youtab-agent-runtime`` block in ``uv.lock`` (what ``uv sync --frozen``
+    installs). If any one is bumped without the others, an install reports a
+    different version than the package API or than the image built from the
+    lock. This fails closed on that drift; regenerate the lock (``uv lock``) in
+    the same change as the pyproject/module bump.
+    """
+    pyproject = _pyproject_version()
+    module = _module_version()
+    assert module == pyproject, (
+        f"__version__ ({module!r}) != pyproject version ({pyproject!r}); bump "
+        "both in the same change"
+    )
+    locked = _locked_versions("youtab-agent-runtime")
+    assert locked == {pyproject}, (
+        f"uv.lock resolves youtab-agent-runtime to {sorted(locked)} but "
+        f"pyproject declares {pyproject!r}; regenerate uv.lock with `uv lock`"
+    )
+
+
+def test_installed_distribution_reports_declared_version_when_present():
+    """Where the distribution is installed, its metadata must match the source.
+
+    ``importlib.metadata.version`` reads the installed distribution's
+    ``METADATA`` -- the version a consumer actually sees at runtime. In an
+    environment where the package is not installed (a bare source checkout with
+    no editable install) there is nothing to compare, so the check is skipped;
+    CI installs it editable, so the assertion runs there.
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        installed = version("youtab-agent-runtime")
+    except PackageNotFoundError:
+        pytest.skip("youtab-agent-runtime is not installed in this environment")
+    assert installed == _pyproject_version(), (
+        f"importlib.metadata reports {installed!r} but pyproject declares "
+        f"{_pyproject_version()!r}; reinstall so the installed metadata matches"
+    )
+
+
 def test_security_pins_present_in_mirrored_lazy_features():
     """Curated security pins must be present (not just version-consistent) in
     every lazy feature that bundles an SDK pulling that package transitively.
