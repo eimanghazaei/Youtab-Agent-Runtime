@@ -14,6 +14,7 @@ from typing import Optional
 
 import pytest
 
+from youtab_agent_cli.dashboard_auth import lifecycle
 from youtab_agent_cli.dashboard_auth import registry as auth_registry
 from youtab_agent_cli.dashboard_auth import token_auth
 from youtab_agent_cli.dashboard_auth.base import DashboardAuthProvider, TokenPrincipal
@@ -58,13 +59,19 @@ class _StubProvider(DashboardAuthProvider):
         return None
 
 
+def _hard_reset():
+    # Bypass the freeze guard: these tests deliberately FREEZE the registry, so
+    # normal clear_* would raise in teardown. Use the private test-only hooks.
+    lifecycle._reset_for_tests()
+    token_auth._reset_routes_for_tests()
+    auth_registry._reset_providers_for_tests()
+
+
 @pytest.fixture(autouse=True)
 def _clean():
-    auth_registry.clear_providers()
-    token_auth.clear_token_routes()
+    _hard_reset()
     yield
-    auth_registry.clear_providers()
-    token_auth.clear_token_routes()
+    _hard_reset()
 
 
 class _Req:
@@ -567,12 +574,17 @@ def test_freeze_is_idempotent():
     assert token_auth.is_frozen() is True
 
 
-def test_clear_unfreezes_for_test_isolation():
+def test_clear_after_freeze_raises_and_only_private_hook_resets():
+    # WAVE-15: the normal clear must NOT be able to reopen a frozen registry.
     token_auth.freeze_token_routes()
     assert token_auth.is_frozen() is True
-    token_auth.clear_token_routes()
+    with pytest.raises(lifecycle.FrozenRegistryError):
+        token_auth.clear_token_routes()
+    # only the private test-only reset hook returns to BUILDING
+    lifecycle._reset_for_tests()
+    token_auth._reset_routes_for_tests()
     assert token_auth.is_frozen() is False
-    # registration works again after clear
+    # registration works again after the private reset
     token_auth.register_token_route_prefix("/api/runtime/v1/",
                                            provider="runtime-service",
                                            capability="runtime")
@@ -623,6 +635,113 @@ def test_provider_cannot_be_replaced_under_same_name():
     auth_registry.register_provider(_StubProvider("runtime-service", "RT", "runtime"))
     with pytest.raises(Exception):
         auth_registry.register_provider(_StubProvider("runtime-service", "EVIL", "runtime"))
+
+
+# --- §1/§2 WAVE-15: the COMPLETE auth registry (providers + routes) freezes ---
+
+def test_freeze_seals_both_registries():
+    # freeze_token_routes() delegates to the shared lifecycle, sealing the
+    # PROVIDER registry as well as the route registry.
+    token_auth.freeze_token_routes()
+    assert lifecycle.is_frozen() is True
+    assert token_auth.is_frozen() is True
+
+
+def test_provider_registration_after_freeze_refused():
+    token_auth.freeze_token_routes()
+    with pytest.raises(lifecycle.FrozenRegistryError):
+        auth_registry.register_provider(_StubProvider("late", "S", "s"))
+
+
+def test_provider_clearing_after_freeze_refused():
+    auth_registry.register_provider(_StubProvider("p", "S", "s"))
+    token_auth.freeze_token_routes()
+    with pytest.raises(lifecycle.FrozenRegistryError):
+        auth_registry.clear_providers()
+    # the provider is still there (no partial wipe)
+    assert auth_registry.get_provider("p") is not None
+
+
+def test_route_clearing_after_freeze_refused():
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    token_auth.freeze_token_routes()
+    with pytest.raises(lifecycle.FrozenRegistryError):
+        token_auth.clear_token_routes()
+    assert token_auth.route_owner("/api/runtime/v1/health") is not None
+
+
+def test_no_provider_removal_api_exists():
+    # There is no supported provider removal/unregistration — the only mutators
+    # are register (dup-name raises) and clear (refused after freeze). So a
+    # provider cannot be removed then re-added under the same name after freeze.
+    assert not hasattr(auth_registry, "unregister_provider")
+    assert not hasattr(auth_registry, "remove_provider")
+
+
+def test_forced_rediscovery_after_freeze_cannot_mutate():
+    # Simulate a discover_plugins(force=True) re-run of the SAME plugins after
+    # freeze: identical route re-registration is a no-op; a genuinely new
+    # provider or route is refused.
+    p = _StubProvider("runtime-service", "S", "runtime")
+    auth_registry.register_provider(p)
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    token_auth.freeze_token_routes()
+    # identical route re-registration: allowed no-op
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    # re-registering the SAME provider name: refused (dup + frozen)
+    with pytest.raises(Exception):
+        auth_registry.register_provider(_StubProvider("runtime-service", "S", "runtime"))
+    # a genuinely new route: refused
+    with pytest.raises(token_auth.TokenRouteRegistrationError):
+        token_auth.register_token_route("/api/gateway/drain", provider="drain-secret",
+                                        capability="drain")
+
+
+def test_authenticate_uses_single_owner_provider_snapshot():
+    # owner present but provider absent -> deny
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    p, un = token_auth.authenticate_token(
+        _Req("/api/runtime/v1/health", {"authorization": "Bearer S"}))
+    assert p is None and un is None
+    # register the owner provider -> now authenticates via that single snapshot
+    auth_registry.register_provider(_StubProvider("runtime-service", "S", "runtime"))
+    p, _ = token_auth.authenticate_token(
+        _Req("/api/runtime/v1/health", {"authorization": "Bearer S"}))
+    assert p is not None and p.provider == "runtime-service"
+
+
+def test_partial_registration_is_failclosed():
+    # A provider registered WITHOUT its route being owned by it (the route step
+    # "failed") is inert: it owns no route, so it can never authenticate.
+    auth_registry.register_provider(_StubProvider("orphan", "S", "orphan-scope"))
+    # no route owned by "orphan" -> any path resolves to a different/absent owner
+    p, un = token_auth.authenticate_token(
+        _Req("/api/runtime/v1/health", {"authorization": "Bearer S"}))
+    assert p is None and un is None  # unowned path -> denied
+
+
+def test_frozen_snapshot_is_consistent_across_gate_recheck():
+    # After freeze, route_owner + get_provider are stable, so a hypothetical
+    # concurrent mutation cannot change what the gate re-check sees.
+    auth_registry.register_provider(_StubProvider("runtime-service", "S", "runtime"))
+    token_auth.register_token_route_prefix("/api/runtime/v1/",
+                                           provider="runtime-service",
+                                           capability="runtime")
+    token_auth.freeze_token_routes()
+    owner1 = token_auth.route_owner("/api/runtime/v1/health")
+    # any mutation attempt is refused, so a second read is identical
+    with pytest.raises(Exception):
+        token_auth.register_token_route("/x", provider="y", capability="z")
+    owner2 = token_auth.route_owner("/api/runtime/v1/health")
+    assert owner1 == owner2 and owner1.provider == "runtime-service"
 
 
 if __name__ == "__main__":

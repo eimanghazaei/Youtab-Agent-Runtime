@@ -86,6 +86,34 @@ Exact-path routes are identical via `register_token_route(path, provider=..., ca
   `provider` matches the owner **and** whose scopes include the registered
   capability. `_authorization_gate` re-checks the same facts as a defensive belt.
 
+## Registry lifecycle (Contract A — the complete auth registry freezes)
+
+The whole dashboard-auth authorization state — the provider registry AND the
+provider-bound token-route registry — shares one lifecycle
+(`youtab_agent_cli.dashboard_auth.lifecycle`):
+
+    BUILDING  ──lifecycle.freeze_dashboard_auth()──▶  FROZEN
+
+* **BUILDING** (startup): plugins register providers and their owned routes.
+* **FROZEN** (serving): the dashboard freezes the registry in lifespan startup,
+  before accepting traffic. After freeze, EVERY mutator across both registries
+  refuses: `register_provider`, `clear_providers`, `register_token_route[_prefix]`
+  (new route/owner/capability), `clear_token_routes`. There is **no** provider
+  removal/replacement API at all, and a duplicate provider name always raises —
+  so a provider can never be swapped under an owner's name. Only a byte-identical
+  idempotent route re-registration (e.g. a `discover_plugins(force=True)` re-run
+  of the same plugins) stays a no-op.
+
+Because neither registry can mutate while requests are served, `authenticate_token`
+resolves ONE immutable snapshot — the route owner, then that owner's provider via
+`get_provider` — releases the registry lock, and only then calls `verify_token`
+against that snapshot. The `_authorization_gate` defensive re-check reads the same
+frozen generation, so owner/provider/capability cannot change between seam
+authentication and the gate: there is no cross-generation / split-lock TOCTOU
+window. `clear_*` are refused after freeze; only a private, test-only reset hook
+(`lifecycle._reset_for_tests` + `_reset_*_for_tests`, never reachable from
+application or plugin code) returns the process to BUILDING between tests.
+
 ## Versioning
 
 Repository version is pre-1.0 (`0.19.1`). Under semantic versioning a breaking
@@ -94,3 +122,23 @@ change to a public plugin API before 1.0.0 is a **minor** bump: **0.19.1 →
 **not** made in this change set because `0.19.1` is also asserted by unrelated
 release/wake-word fixtures and pinned in `uv.lock`; it should be applied
 together with the release that lands this change.
+
+### Release gate (stacked-PR ledger)
+
+This change ships on `fix/wave12-authz-gate-token-provider-binding`, whose Draft
+PR targets `integration/engine-runtime-v5` (itself the head line of a separate
+Draft PR to `main`). The following gate is mandatory and must not be skipped:
+
+- **The engine PR that carries this change to `main` MUST NOT become Ready or
+  merge to `main` until, on the same exact head:** the version is bumped
+  `0.19.1 → 0.20.0` in `pyproject.toml` and `youtab_agent_cli/__init__.py`,
+  `uv.lock` is regenerated, the *legitimate* version references are updated
+  (`scripts/wakeword/qualify.py` and the wake-word fixtures that assert
+  `runtime_version`/`--runtime-version`), and ALL CI reruns green on the
+  resulting exact head.
+- **Do not** modify fixtures merely to silence a version assertion — update them
+  only because the runtime version legitimately changed to `0.20.0`.
+- Each stacked merge (this branch → `integration/engine-runtime-v5` → `main`)
+  requires its own exact-head Owner authorization and a full CI rerun on the new
+  head. Only the final merged `main` SHA may become the Engine pin; a Draft head
+  is never a final pin.

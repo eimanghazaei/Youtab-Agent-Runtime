@@ -10,6 +10,7 @@ import logging
 import threading
 from typing import List, Optional
 
+from youtab_agent_cli.dashboard_auth import lifecycle
 from youtab_agent_cli.dashboard_auth.base import (
     DashboardAuthProvider,
     assert_protocol_compliance,
@@ -23,11 +24,18 @@ _providers: dict[str, DashboardAuthProvider] = {}
 def register_provider(provider: DashboardAuthProvider) -> None:
     """Register a provider.
 
+    Startup-only (Contract A): refused once the registry is frozen. There is no
+    provider-removal or provider-replacement API — a name already registered
+    raises, so a provider can never be swapped under an owner's name — and after
+    freeze even a first registration is refused.
+
     Raises:
         TypeError: on protocol violation.
         ValueError: if a provider with the same name is already registered.
+        lifecycle.FrozenRegistryError: if the registry is frozen (post-startup).
     """
     assert_protocol_compliance(type(provider))
+    lifecycle.raise_if_frozen(f"provider registration ({provider.name!r})")
     with _lock:
         if provider.name in _providers:
             raise ValueError(
@@ -76,6 +84,23 @@ def list_session_providers() -> List[DashboardAuthProvider]:
 
 
 def clear_providers() -> None:
-    """Test-only: drop all registrations."""
+    """Drop all registrations. Refused once the registry is frozen.
+
+    In production nothing calls this (there is no supported provider-clearing on
+    the serving path); it exists for startup rebuilds and tests. After freeze it
+    raises, so a live authorization surface cannot be reopened. Tests that need
+    to reset a frozen registry use :func:`_reset_providers_for_tests`.
+    """
+    lifecycle.raise_if_frozen("provider clearing")
+    with _lock:
+        _providers.clear()
+
+
+def _reset_providers_for_tests() -> None:
+    """PRIVATE test-only hook: drop all provider registrations unconditionally.
+
+    Bypasses the freeze guard. Not part of the supported runtime surface and
+    never called by application or plugin code — only by the test harness.
+    """
     with _lock:
         _providers.clear()

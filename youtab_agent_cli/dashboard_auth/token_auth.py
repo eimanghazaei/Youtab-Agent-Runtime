@@ -45,7 +45,7 @@ from typing import Awaitable, Callable, NamedTuple, Optional, Tuple
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
-from youtab_agent_cli.dashboard_auth import list_token_providers
+from youtab_agent_cli.dashboard_auth import get_provider, lifecycle
 from youtab_agent_cli.dashboard_auth.audit import AuditEvent, audit_log
 from youtab_agent_cli.dashboard_auth.base import ProviderError, TokenPrincipal
 
@@ -72,16 +72,16 @@ class TokenRouteOwnershipError(RuntimeError):
     """
 
 
-class TokenRouteRegistrationError(RuntimeError):
+class TokenRouteRegistrationError(lifecycle.FrozenRegistryError):
     """A NEW token route registration was refused after the registry FROZE.
 
-    Contract A (immutable-after-startup): once the dashboard finishes plugin
-    discovery and calls :func:`freeze_token_routes` — before the HTTP server
-    accepts traffic — the security registry is sealed. A byte-identical
-    re-registration of an already-owned route is still tolerated (idempotent
-    no-op, so a ``discover_plugins(force=True)`` re-run of the SAME plugins is
-    safe), but any new route/prefix/owner/capability is rejected fail-closed.
-    Carries no secret.
+    A specialisation of :class:`lifecycle.FrozenRegistryError` for the route
+    registry so a caller may catch either. Once the dashboard finishes plugin
+    discovery and freezes the registry — before the HTTP server accepts traffic
+    — a byte-identical re-registration of an already-owned route is still
+    tolerated (idempotent no-op, so a ``discover_plugins(force=True)`` re-run of
+    the SAME plugins is safe), but any new route/prefix/owner/capability is
+    rejected fail-closed. Carries no secret.
     """
 
 
@@ -98,41 +98,42 @@ class TokenRouteRegistrationError(RuntimeError):
 # ``discover_plugins()``, which the real dashboard startup runs BEFORE the ASGI
 # server accepts traffic (``main._maybe_setup_dashboard_auth_interactively`` and
 # the dashboard command both discover before ``start_server``; request-time
-# ``discover_plugins()`` is an idempotent no-op). ``freeze_token_routes()`` is
-# then called from the app lifespan startup, sealing the registry: after the
-# freeze a NEW route/owner/capability is rejected (``TokenRouteRegistrationError``)
-# and only a byte-identical idempotent re-registration is a no-op. Because no
-# mutation can occur while requests are served, ``_resolve_owner`` /
-# ``authenticate_token`` / the ``_authorization_gate`` re-check all observe one
-# stable generation — there is no TOCTOU window between resolving an owner and
-# consulting its provider. ``_lock`` still guards every read and write.
+# ``discover_plugins()`` is an idempotent no-op). The freeze is shared with the
+# provider registry through :mod:`youtab_agent_cli.dashboard_auth.lifecycle`, so
+# ``lifecycle.freeze_dashboard_auth()`` (called from the app lifespan startup)
+# seals BOTH registries as one generation: after the freeze a new
+# route/owner/capability is rejected (``TokenRouteRegistrationError``) and a new
+# provider is rejected (``FrozenRegistryError``); only a byte-identical
+# idempotent route re-registration is a no-op. Because neither registry can
+# mutate while requests are served, ``_resolve_owner`` / ``authenticate_token`` /
+# the ``_authorization_gate`` re-check all observe one stable generation — there
+# is no TOCTOU window between resolving an owner and consulting its provider.
+# ``_lock`` guards every route read/write; the provider registry has its own lock
+# and is read via ``get_provider`` (see ``authenticate_token``: the owner is
+# resolved, the lock released, then ``verify_token`` runs against that snapshot).
 _token_routes: dict[str, TokenRouteOwner] = {}
 _token_route_prefixes: dict[str, TokenRouteOwner] = {}
 _lock = threading.Lock()
-# Contract A lifecycle flag: BUILDING (False) → FROZEN (True). Guarded by _lock.
-_frozen: bool = False
 
 # Sentinel: a path matched by two owners of equal specificity — fail closed.
 _AMBIGUOUS = object()
 
 
 def freeze_token_routes() -> None:
-    """Seal the token-route registry (Contract A). Idempotent.
+    """Seal the COMPLETE dashboard-auth registry (providers + token routes).
 
-    Called from the dashboard app's lifespan startup once plugin discovery has
-    registered every token route and BEFORE the server accepts traffic. After
-    this, only a byte-identical idempotent re-registration is tolerated; any new
-    route/owner/capability is refused fail-closed.
+    Backwards-compatible name; delegates to
+    :func:`lifecycle.freeze_dashboard_auth`, which freezes both the provider
+    registry and this route registry as one generation. Idempotent. Called from
+    the dashboard app's lifespan startup once plugin discovery has registered
+    every provider and route and BEFORE the server accepts traffic.
     """
-    global _frozen
-    with _lock:
-        _frozen = True
+    lifecycle.freeze_dashboard_auth()
 
 
 def is_frozen() -> bool:
-    """True once :func:`freeze_token_routes` has sealed the registry."""
-    with _lock:
-        return _frozen
+    """True once the shared dashboard-auth registry has been frozen."""
+    return lifecycle.is_frozen()
 
 
 def register_token_route(
@@ -156,7 +157,7 @@ def register_token_route(
                 f"token route {path!r} already owned by {existing.provider!r}; "
                 f"refusing to reassign to {provider!r}"
             )
-        if _frozen and existing is None:
+        if lifecycle.is_frozen() and existing is None:
             raise TokenRouteRegistrationError(
                 f"token route registry is frozen; refusing to register new "
                 f"route {path!r} after startup"
@@ -186,7 +187,7 @@ def register_token_route_prefix(
                 f"token route prefix {normalised!r} already owned by "
                 f"{existing.provider!r}; refusing to reassign to {provider!r}"
             )
-        if _frozen and existing is None:
+        if lifecycle.is_frozen() and existing is None:
             raise TokenRouteRegistrationError(
                 f"token route registry is frozen; refusing to register new "
                 f"prefix {normalised!r} after startup"
@@ -274,12 +275,24 @@ def is_token_route(path: str) -> bool:
 
 
 def clear_token_routes() -> None:
-    """Test-only: drop all registered token routes (exact + prefix) and unfreeze."""
-    global _frozen
+    """Drop all registered token routes (exact + prefix). Refused once frozen.
+
+    In production nothing calls this on the serving path; after freeze it raises
+    so a live surface cannot be reopened. Tests that must reset a frozen registry
+    use :func:`_reset_routes_for_tests` (+ ``lifecycle._reset_for_tests``).
+    """
+    lifecycle.raise_if_frozen("token-route clearing")
     with _lock:
         _token_routes.clear()
         _token_route_prefixes.clear()
-        _frozen = False
+
+
+def _reset_routes_for_tests() -> None:
+    """PRIVATE test-only hook: drop all token routes unconditionally (bypasses
+    the freeze guard). Never called by application or plugin code."""
+    with _lock:
+        _token_routes.clear()
+        _token_route_prefixes.clear()
 
 
 def _client_ip(request: Request) -> str:
@@ -327,43 +340,45 @@ def authenticate_token(
     token = extract_bearer_token(request)
     if not token:
         return None, None
+    # Resolve an IMMUTABLE snapshot of (owner, owner's provider) up front, then
+    # authenticate against it with NO registry lock held (verify_token may do a
+    # constant-time compare or, for a third-party provider, a network call). On a
+    # frozen registry the snapshot is stable for the whole request, so there is
+    # no window in which the owner or its provider could change under us.
     owner = route_owner(request.url.path)
     if owner is None:
         # Not a definite single-owner token route: fail closed. (An ambiguously
         # owned path resolves to None and is rejected here rather than tried.)
         return None, None
-    unreachable: Optional[str] = None
-    for provider in list_token_providers():
-        if provider.name != owner.provider:
-            continue  # only the route owner may authenticate this path
-        try:
-            principal = provider.verify_token(token=token)
-        except ProviderError as e:
-            _log.warning(
-                "dashboard-auth: token provider %r unreachable during verify: %s",
-                provider.name, e,
-            )
-            if unreachable is None:
-                unreachable = provider.name
-            continue
-        except Exception as e:  # noqa: BLE001 — a buggy provider must not 500 the gate
-            _log.warning(
-                "dashboard-auth: token provider %r raised during verify: %s",
-                provider.name, e,
-            )
-            continue
-        if principal is None:
-            continue
-        # Belt to the owner-only suspenders: the principal must have come from
-        # the owner and must carry the route's required capability.
-        if principal.provider != owner.provider:
-            continue
-        if owner.capability is not None and owner.capability not in tuple(
-            getattr(principal, "scopes", ()) or ()
-        ):
-            continue
-        return principal, None
-    return None, unreachable
+    provider = get_provider(owner.provider)  # single snapshot lookup, no iteration
+    if provider is None or not getattr(provider, "supports_token", False):
+        # Route owner present but its provider is absent/incapable -> deny.
+        return None, None
+    try:
+        principal = provider.verify_token(token=token)
+    except ProviderError as e:
+        _log.warning(
+            "dashboard-auth: token provider %r unreachable during verify: %s",
+            provider.name, e,
+        )
+        return None, provider.name  # 503 upstream, not "bad credentials"
+    except Exception as e:  # noqa: BLE001 — a buggy provider must not 500 the gate
+        _log.warning(
+            "dashboard-auth: token provider %r raised during verify: %s",
+            provider.name, e,
+        )
+        return None, None
+    if principal is None:
+        return None, None
+    # Belt to the owner-only suspenders: the principal must have come from the
+    # owner and must carry the route's required capability.
+    if principal.provider != owner.provider:
+        return None, None
+    if owner.capability is not None and owner.capability not in tuple(
+        getattr(principal, "scopes", ()) or ()
+    ):
+        return None, None
+    return principal, None
 
 
 async def token_auth_middleware(

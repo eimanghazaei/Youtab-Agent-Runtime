@@ -399,6 +399,29 @@ _YOUTAB_AGENT_BEHAVIORAL_VARS = frozenset({
 
 
 @pytest.fixture(autouse=True)
+def _unfreeze_dashboard_auth_registry():
+    """Return the shared dashboard-auth lifecycle to BUILDING before each test.
+
+    The dashboard-auth authorization registry (providers + token routes) is a
+    process-global that the real app FREEZES in lifespan startup (Contract A,
+    immutable-after-startup). A test that runs the app lifespan — e.g.
+    ``with TestClient(web_server.app)`` — therefore leaves the shared flag FROZEN,
+    which would make the NEXT test's ``register_provider`` / ``clear_providers`` /
+    ``register_token_route`` fail closed. This unfreezes the flag (only the flag;
+    it does not touch the provider/route dicts) at the start of every test so each
+    test builds its own auth state normally. Uses the private test-only reset hook,
+    never a production entrypoint.
+    """
+    try:
+        from youtab_agent_cli.dashboard_auth import lifecycle
+        lifecycle._reset_for_tests()
+    except Exception:
+        # dashboard-auth not importable in this slice — nothing to unfreeze.
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_environment(tmp_path, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 
