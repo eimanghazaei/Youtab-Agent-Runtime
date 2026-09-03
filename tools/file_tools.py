@@ -441,6 +441,14 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
+    # Windows reserved devices (CON, NUL, COM1, \\.\PhysicalDrive0, ...) hang on
+    # read or expose raw hardware. Gated on Windows, where the OS resolves them;
+    # the predicate is platform-independent so the rule stays testable anywhere.
+    if os.name == "nt":
+        from tools.path_security import is_windows_reserved_device_path
+
+        if is_windows_reserved_device_path(path):
+            return True
     normalized = os.path.normpath(_expand_tilde(path))
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True

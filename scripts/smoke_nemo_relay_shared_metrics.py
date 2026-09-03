@@ -393,7 +393,7 @@ def main() -> int:
             ],
             cwd=workdir,
             env=env,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             capture_output=True,
             timeout=120,
         )

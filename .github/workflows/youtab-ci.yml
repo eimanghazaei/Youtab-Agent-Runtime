@@ -318,3 +318,63 @@ jobs:
           set -o pipefail
           bash scripts/run_tests.sh tests/youtab_runtime tests/youtab_agent_cli \
             -j 3 --file-retries 0 -q 2>&1 | tee windows-runtime-cli.log
+
+  # Windows tools gate (WAVE-25). `tests/tools` runs in full on ubuntu (via
+  # python-security's run_all_gates) and partially on the wake-word job, but its
+  # broad surface — file-safety guards, device-path blocking, subprocess
+  # construction, tirith, kanban attachments, ingestion — had no Windows
+  # coverage, so a Windows-only regression in any of them could land unseen.
+  # This job runs the Windows-compatible `tests/tools` suite on every PR and on
+  # push to main. Genuinely POSIX-only paths (/dev, /proc, symlink, mode bits,
+  # the tirith installer's platform key) skip via the same narrow capability
+  # guards in tests/_wincompat.py used by the runtime/CLI gate — never a blanket
+  # platform skip, and paired with Windows fail-closed tests
+  # (tests/tools/test_windows_device_paths.py, test_windows_fallback_safety.py).
+  # A separate job from windows-runtime-cli so this large suite has its own time
+  # budget and cannot destabilise that gate. Making it a *required* status needs
+  # it added to the `main-required-gates` ruleset once green (an Owner change,
+  # mirroring the note on windows-runtime-cli above).
+  windows-tools:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    concurrency:
+      group: windows-tools-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py
+        with:
+          python-version: "3.12"
+      # Same locked surface tests/tools needs on the ubuntu gate: `web` pins
+      # FastAPI to the deployed version, `slack` for the platform-picker tests,
+      # and `wakeword-ingest` brings numpy + PyAV for the ingestion suites
+      # (module-top numpy imports — they fail rather than skip without it, by
+      # design). PyAV and ai-edge-litert both ship Windows wheels at these pins.
+      - name: Install locked development environment
+        run: python -m pip install -e ".[dev,web,slack,wakeword-ingest]"
+      # The branding gate's OCR tests need an engine; rapidocr is the accurate
+      # one on this repo's assets (see python-security). onnxruntime arrives
+      # transitively; ai-edge-litert supplies the tflite interpreter the
+      # wake-word regression tests load.
+      - name: Install the OCR engine and tflite runtime the tools suite needs
+        run: python -m pip install 'rapidocr-onnxruntime==1.4.4' 'ai-edge-litert==2.1.6'
+      # Each test file runs in its own subprocess (scripts/run_tests.sh), so a
+      # single hung device/subprocess test hits the per-file timeout and is
+      # reported without wedging the whole suite. `-j 3` bounds parallelism on
+      # the 4-vCPU runner; `--file-retries 0` forbids the retry-that-hides-a-flake.
+      - name: Windows tools suite (file-safety, device paths, subprocess, tirith, kanban, ingestion)
+        shell: bash
+        env:
+          YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
+          TZ: UTC
+          PYTHONUTF8: "1"
+          # Per-file ceiling raised from the 300s default for THIS job: the same
+          # -j3 contention rationale as windows-runtime-cli, and tests/tools
+          # carries heavier ingestion/subprocess files. The 90-minute job
+          # timeout still bounds a genuine hang; -j3 is unchanged.
+          YOUTAB_AGENT_TEST_FILE_TIMEOUT: "900"
+        run: |
+          set -o pipefail
+          bash scripts/run_tests.sh tests/tools \
+            -j 3 --file-retries 0 -q 2>&1 | tee windows-tools.log

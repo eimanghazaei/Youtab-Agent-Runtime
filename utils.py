@@ -14,7 +14,27 @@ from urllib.parse import urlparse
 
 import yaml
 
+from tools.path_security import is_windows_reserved_device_path
+
 logger = logging.getLogger(__name__)
+
+
+def _reject_windows_reserved_device(target: Union[str, Path]) -> None:
+    """Fail closed, before any side effect, when *target* names a Windows
+    reserved device.
+
+    Enforcement is gated on Windows, where the OS resolves ``CON``/``NUL``/
+    ``COM1``/``\\\\.\\PhysicalDrive0``/... to a device (write hangs, silently
+    discards the data, or reaches raw hardware).  The predicate is
+    platform-independent so the rule stays unit-testable on any host.
+    """
+    if os.name == "nt" and is_windows_reserved_device_path(str(target)):
+        raise ValueError(
+            f"Refusing to write to '{target}': it names a Windows reserved "
+            f"device (CON, PRN, AUX, NUL, COM1-9, LPT1-9, or a \\\\.\\ / \\\\?\\ "
+            f"device path), which would hang, discard the data, or reach raw "
+            f"hardware."
+        )
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -159,6 +179,8 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     need to re-apply permissions can target it instead of the symlink.
     """
     target_str = str(target)
+    # Fail closed before the swap if the destination names a Windows device.
+    _reject_windows_reserved_device(target_str)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
     tmp_str = str(tmp_path)
     try:
@@ -202,6 +224,9 @@ def atomic_write_text(
     Used by the memory store, skill manager, and agent importer so that
     every destructive file rewrite in the codebase shares one implementation.
     """
+    # Validate before creating the parent dir or a temp file (no side effects
+    # on a rejected Windows device target).
+    _reject_windows_reserved_device(path)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
@@ -245,6 +270,9 @@ def atomic_json_write(
         **dump_kwargs: Additional keyword args forwarded to json.dump(), such
             as default=str for non-native types.
     """
+    # Validate before creating the parent dir or a temp file (no side effects
+    # on a rejected Windows device target).
+    _reject_windows_reserved_device(path)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 

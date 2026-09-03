@@ -30,8 +30,24 @@ The following runtime/CLI behaviours are supported and covered on Windows:
   drive-letter absolute paths; all text I/O is explicit UTF-8 (never the cp1252
   locale default). Local image references in task bodies accept native Windows
   paths (`agent/image_routing.py`). (`test_windows_compat.py`.)
+- **Reserved device-name hardening** — writes and reads through the agent
+  file tools, the shared atomic sinks, and the kanban attachment store reject
+  Windows reserved device names and namespaces (`CON`, `PRN`, `AUX`, `NUL`,
+  `COM1`-`COM9`, `LPT1`-`LPT9` — case-insensitively, with any extension and the
+  trailing-dot/space variants Win32 strips, in any path component — plus the
+  `\\.\` / `\\?\` device/verbatim prefixes and native-device forms). The check
+  is `tools.path_security.is_windows_reserved_device_path` (pure and
+  platform-independent) enforced on `os.name == "nt"`; a would-be write to a
+  device therefore fails closed *before* any filesystem side effect instead of
+  hanging, silently discarding the data, or reaching raw hardware.
+  (`tests/tools/test_windows_device_paths.py`.) POSIX file-name semantics are
+  unchanged — `con`/`nul` remain ordinary files there.
 - **Subprocess construction** — argv-list invocation (no shell interpolation),
   paths with spaces, and predictable `FileNotFoundError` for a missing command.
+  All `subprocess` text-mode reads pass explicit `encoding="utf-8"` (never the
+  cp1252 locale default); a repo-wide AST guard
+  (`tests/tools/test_subprocess_encoding_guard.py`) prevents regressions
+  including multi-line calls the line-based footgun linter cannot see.
 - **Dashboard-auth lifecycle & serving** — the WAVE-19…22 invariants
   (VERIFIED-only serving, provider→route binding, fail-closed ownership, drain
   token-only) run and pass unchanged on Windows (`tests/youtab_runtime/`).
@@ -72,6 +88,29 @@ with a Windows fail-closed / safe-selection test.
 - **`shell_hooks`** splits hook command strings with `shlex.split` in POSIX
   mode; a bare native Windows path in a hook command (e.g. `C:\tools\hook.py`)
   needs quoting. Interpreter-prefixed / quoted hook commands work.
+- **Secret-file confidentiality** relies on the ACL of the containing profile
+  directory. POSIX creates `auth.json` / cron `jobs.json` with `0o600`
+  (owner-only); Windows has no mode bits, so those files inherit the ACL of
+  `%LOCALAPPDATA%\youtab` (the user, `SYSTEM`, and `Administrators` — the same
+  privileged-plus-owner set POSIX `0o600` grants against `root`). This is
+  equivalent for the normal single-user desktop install; it is weaker only if
+  the Youtab home is relocated onto storage with a permissive inherited ACL
+  (e.g. a shared network drive). The temp-file→fsync→replace write is still
+  atomic and never leaks the file descriptor on Windows. Explicit per-file ACL
+  tightening (`icacls`) is not applied today — tracked as a hardening
+  opportunity, not an active exposure on a default install.
+
+## Supported Python versions
+
+The project pins `requires-python = ">=3.11,<3.14"`; CI exercises 3.12 (and
+3.13 in the token-auth gate). **Python 3.14 is out of the supported band** and
+is enforced, not merely documented: `tools/daemon_pool.py` reproduces CPython's
+private `ThreadPoolExecutor` worker contract, which exists only in 3.8-3.13
+(3.14 refactored it into a `_WorkerContext`), so on 3.14 the daemon pool raises
+a clear `RuntimeError` naming the boundary instead of a cryptic
+`AttributeError`. Raising the ceiling would require reworking
+`_adjust_thread_count` for the new worker signature.
+(`tests/tools/test_daemon_pool_version_boundary.py`.)
 
 ## Running the Windows suite
 

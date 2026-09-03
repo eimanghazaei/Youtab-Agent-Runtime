@@ -3696,7 +3696,17 @@ def _safe_attachment_name(raw: str) -> str:
     name = name.lstrip(".").strip()
     if not name:
         raise ValueError("invalid attachment filename")
-    return name[:200]
+    name = name[:200]
+    # A leaf like "CON"/"con.txt"/"NUL" resolves to a Windows device even inside
+    # the per-task attachments dir, so writing the blob would hang or silently
+    # discard it. Reject on Windows (where the OS resolves the device); the
+    # predicate is platform-independent so POSIX behaviour is unchanged.
+    if os.name == "nt":
+        from tools.path_security import is_windows_reserved_device_path
+
+        if is_windows_reserved_device_path(name):
+            raise ValueError("attachment filename names a Windows reserved device")
+    return name
 
 
 def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
