@@ -19,6 +19,7 @@ import os
 from pathlib import Path, PurePosixPath
 
 import pytest
+from tests import _wincompat
 
 import tools.file_tools as ft
 import tools.terminal_tool as terminal_tool
@@ -89,6 +90,7 @@ def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
     assert resolved == (workspace / "target.py")
 
 
+@_wincompat.requires_symlink
 def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, monkeypatch):
     """Docker paths are sandbox-local and must not be host-dereferenced.
 
@@ -118,6 +120,7 @@ def test_container_path_normalization_uses_posix_path_syntax():
     assert str(resolved) == "/workspace/projects/bar"
 
 
+@_wincompat.requires_symlink
 def test_container_relative_path_keeps_container_cwd_symlink(tmp_path, monkeypatch):
     """Relative Docker paths should stay under the container cwd textually."""
     host_project = tmp_path / "host-project"

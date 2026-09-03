@@ -41,6 +41,9 @@ class TestReadFileHandler:
 
 
 class TestWriteFileHandler:
+    # Keep the path unresolved so the assertion holds cross-platform: on Windows
+    # _resolve_path_for_task rewrites "/tmp/out.txt" to a native absolute path.
+    @patch("tools.file_tools._resolve_path_for_task", new=lambda p, *a, **k: p)
     @patch("tools.file_tools._get_file_ops")
     def test_writes_content(self, mock_get):
         mock_ops = MagicMock()
@@ -129,6 +132,7 @@ class TestWriteFileHandler:
 
 
 class TestPatchHandler:
+    @patch("tools.file_tools._resolve_path_for_task", new=lambda p, *a, **k: p)
     @patch("tools.file_tools._get_file_ops")
     def test_replace_mode_calls_patch_replace(self, mock_get):
         mock_ops = MagicMock()

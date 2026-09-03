@@ -13,6 +13,7 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 """
 
 import pytest
+from tests import _wincompat
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
 import json
@@ -781,6 +782,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
             t.join(timeout=5)
         return responses
 
+    @_wincompat.requires_posix
     def test_missing_token_rejected(self):
         """A request with no token is rejected as Unauthorized."""
         resp = self._drive_server(

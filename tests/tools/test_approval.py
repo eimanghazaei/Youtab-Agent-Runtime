@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import pytest
+from tests import _wincompat
 
 import tools.approval as approval_module
 from youtab_constants import get_youtab_home
@@ -99,6 +100,7 @@ class TestDetectDangerousRm:
             assert "delete" in desc.lower()
 
 
+    @_wincompat.requires_posix
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
         with mock_patch("tempfile.gettempdir", return_value="/tmp"):
             for prefix in ("youtab-verify-", "youtab-ad-hoc-"):
@@ -108,6 +110,7 @@ class TestDetectDangerousRm:
                     None,
                 )
 
+    @_wincompat.requires_posix
     def test_symlinked_temp_dir_only_exempts_canonical_target(self, tmp_path):
         real_temp = tmp_path / "real-temp"
         real_temp.mkdir()

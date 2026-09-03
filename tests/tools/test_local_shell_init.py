@@ -10,6 +10,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+from tests import _wincompat
 
 from tools.environments.local import (
     LocalEnvironment,
@@ -18,6 +19,7 @@ from tools.environments.local import (
 )
 
 
+@_wincompat.requires_posix
 class TestResolveShellInitFiles:
     def test_auto_sources_bashrc_when_present(self, tmp_path, monkeypatch):
         bashrc = tmp_path / ".bashrc"

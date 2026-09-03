@@ -3135,7 +3135,7 @@ class OptionalSkillSource(SkillSource):
                 and "__pycache__" not in f.parts
                 and f.suffix != ".pyc"
             ):
-                rel_path = str(f.relative_to(skill_dir))
+                rel_path = f.relative_to(skill_dir).as_posix()
                 try:
                     files[rel_path] = f.read_bytes()
                 except OSError:
@@ -3151,7 +3151,7 @@ class OptionalSkillSource(SkillSource):
             name=name,
             files=files,
             source="official",
-            identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
+            identifier=f"official/{skill_dir.relative_to(self._optional_dir).as_posix()}",
             trust_level="builtin",
         )
 
@@ -3476,7 +3476,12 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         if isinstance(file_content, bytes):
             file_dest.write_bytes(file_content)
         else:
-            file_dest.write_text(file_content, encoding="utf-8")
+            # newline="" disables the platform newline translation: on Windows
+            # write_text would rewrite "\n" to "\r\n", so the installed bytes
+            # would no longer match the bundle's content and content_hash() /
+            # bundle_content_hash() would disagree, making every installed skill
+            # look perpetually out-of-date (#WAVE-25).
+            file_dest.write_text(file_content, encoding="utf-8", newline="")
 
     return dest
 

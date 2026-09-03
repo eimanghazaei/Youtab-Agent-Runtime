@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import pytest
+from tests import _wincompat
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import _YOUTAB_AGENT_PROVIDER_ENV_FORCE_PREFIX
@@ -326,6 +327,7 @@ class TestStdinHelpers:
         proc.stdin.close.assert_called_once()
         assert result["status"] == "ok"
 
+    @_wincompat.requires_posix
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 
@@ -570,6 +572,7 @@ class TestSpawnEnvSanitization:
 class TestPopenLeakOnSetupFailure:
     """Regression for issue #2749: subprocess orphaned when post-Popen setup raises."""
 
+    @_wincompat.requires_os_attr("getpgid")
     def test_popen_killed_when_thread_creation_fails(self, registry):
         """If Thread() raises after Popen, proc must be killed — not orphaned."""
         killed = []
@@ -750,6 +753,7 @@ class TestKillProcess:
         assert result["status"] == "already_exited"
 
 
+    @_wincompat.requires_posix
     def test_kill_detached_session_uses_host_pid(self, registry):
         s = _make_session(sid="proc_detached", command="sleep 999")
         s.pid = 424242
