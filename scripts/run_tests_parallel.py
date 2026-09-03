@@ -53,13 +53,23 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+
+# Per-subprocess private temp roots (see _run_one_file_attempt), swept once at
+# the end of the run rather than deleted inline — deleting a worker's temp root
+# the instant its subprocess returns can race a still-settling child on Windows,
+# and the runner's own recursive self-test spawns this script as a grandchild.
+# ``list.append`` is atomic in CPython, so the pool threads share this safely.
+_TMP_BASES_TO_SWEEP: List[str] = []
 
 
 # Default test discovery roots.
@@ -428,7 +438,22 @@ def _run_one_file_once(
 ) -> Tuple[Path, int, str, dict[str, int], float]:
     """Single attempt of a per-file pytest subprocess (see _run_one_file)."""
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
-    
+
+    # Give each per-file pytest subprocess its OWN temp root so concurrent
+    # workers never share pytest's ``pytest-of-<user>`` base dir. The runner is
+    # launched under a stripped env, so every worker resolves getpass.getuser()
+    # to "unknown" and TEMP to one shared dir; pytest's tmp cleanup (which
+    # renames a numbered dir to ``garbage-<uuid>`` and then deletes it) then
+    # raced across workers on Windows -> an intermittent FileNotFoundError in an
+    # unrelated tmp-using test. A unique base per subprocess removes the shared
+    # state and the race. Cleaned up in the finally so a full run does not leave
+    # one temp dir per test file behind.
+    sub_env = dict(os.environ)
+    _tmp_base = tempfile.mkdtemp(prefix="ytrun-")
+    sub_env["TMPDIR"] = _tmp_base
+    sub_env["TEMP"] = _tmp_base
+    sub_env["TMP"] = _tmp_base
+
     subproc_start = time.monotonic()
     # launch the pytest process
     proc = subprocess.Popen(
@@ -437,72 +462,76 @@ def _run_one_file_once(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
-        env=os.environ,
+        env=sub_env,
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
         # _kill_tree handles the Windows path via taskkill /F /T.
         start_new_session=True,
     )
-
-    # Capture the pgid NOW, before the leader can exit and be reaped. Once
-    # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
-    # even though grandchildren in that group are still alive — defeating
-    # the whole cleanup. None on Windows where the pgid concept doesn't apply.
-    pgid: int | None = None
-    if sys.platform != "win32":
-        try:
-            pgid = os.getpgid(proc.pid)
-        except (ProcessLookupError, PermissionError):
-            pgid = None
-
     try:
-        output, _ = proc.communicate(timeout=file_timeout)
-        rc = proc.returncode
-    except subprocess.TimeoutExpired:
-        _kill_tree(proc, pgid=pgid)
+        # Capture the pgid NOW, before the leader can exit and be reaped. Once
+        # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
+        # even though grandchildren in that group are still alive — defeating
+        # the whole cleanup. None on Windows where the pgid concept doesn't apply.
+        pgid: int | None = None
+        if sys.platform != "win32":
+            try:
+                pgid = os.getpgid(proc.pid)
+            except (ProcessLookupError, PermissionError):
+                pgid = None
+
         try:
-            output, _ = proc.communicate(timeout=10)
+            output, _ = proc.communicate(timeout=file_timeout)
+            rc = proc.returncode
         except subprocess.TimeoutExpired:
-            output = "(file timeout exceeded; output unavailable)"
-        rc = 124  # de facto convention for "killed by timeout".
-        output = (
-            f"({file_timeout:.0f}s exceeded; "
-            f"process tree SIGKILL'd)\n{output}"
-        )
-    except BaseException:
-        # KeyboardInterrupt / runner crash — make sure no zombie
-        # grandchildren outlive us.
-        _kill_tree(proc, pgid=pgid)
-        raise
-    else:
-        # Happy path: pytest exited on its own. Kill the group anyway in
-        # case it left grandchildren behind; already-dead is a no-op.
-        _kill_tree(proc, pgid=pgid)
+            _kill_tree(proc, pgid=pgid)
+            try:
+                output, _ = proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                output = "(file timeout exceeded; output unavailable)"
+            rc = 124  # de facto convention for "killed by timeout".
+            output = (
+                f"({file_timeout:.0f}s exceeded; "
+                f"process tree SIGKILL'd)\n{output}"
+            )
+        except BaseException:
+            # KeyboardInterrupt / runner crash — make sure no zombie
+            # grandchildren outlive us.
+            _kill_tree(proc, pgid=pgid)
+            raise
+        else:
+            # Happy path: pytest exited on its own. Kill the group anyway in
+            # case it left grandchildren behind; already-dead is a no-op.
+            _kill_tree(proc, pgid=pgid)
 
-        output +=  "\n"
+            output +=  "\n"
 
-    if rc == 5:
-        # No tests collected in THIS file — legitimate per-file: a
-        # platform-gated or fully-marker-filtered file (e.g. a win32-only
-        # suite on Linux) collects nothing and must not fail the suite.
-        # Tolerated here; the RUN-level guard in main() still fails when
-        # NOTHING was collected across every file, so a broken invocation
-        # (venv without pytest, -k that matches nothing) can't report green.
-        rc = 0
-    # Parse the summary from the UNMODIFIED pytest output, before any diagnostic
-    # pointer is appended: the parser walks backwards from the last line looking
-    # for the counts line, so anything appended here would be scanned first.
-    summary = _parse_pytest_summary(output)
-    if rc != 0 and capture_import_diagnostics:
-        pointer = _capture_import_diagnostics(file, output, repo_root)
-        if pointer is not None:
-            # String concatenation onto text we were already going to print.
-            # ``rc`` is not touched here and must never be: turning a failure
-            # green is the one thing this instrumentation may not do.
-            output = f"{output.rstrip()}\n{pointer}\n"
-    subproc_wall = time.monotonic() - subproc_start
-    return file, rc, output, summary, subproc_wall
+        if rc == 5:
+            # No tests collected in THIS file — legitimate per-file: a
+            # platform-gated or fully-marker-filtered file (e.g. a win32-only
+            # suite on Linux) collects nothing and must not fail the suite.
+            # Tolerated here; the RUN-level guard in main() still fails when
+            # NOTHING was collected across every file, so a broken invocation
+            # (venv without pytest, -k that matches nothing) can't report green.
+            rc = 0
+        # Parse the summary from the UNMODIFIED pytest output, before any diagnostic
+        # pointer is appended: the parser walks backwards from the last line looking
+        # for the counts line, so anything appended here would be scanned first.
+        summary = _parse_pytest_summary(output)
+        if rc != 0 and capture_import_diagnostics:
+            pointer = _capture_import_diagnostics(file, output, repo_root)
+            if pointer is not None:
+                # String concatenation onto text we were already going to print.
+                # ``rc`` is not touched here and must never be: turning a failure
+                # green is the one thing this instrumentation may not do.
+                output = f"{output.rstrip()}\n{pointer}\n"
+        subproc_wall = time.monotonic() - subproc_start
+        return file, rc, output, summary, subproc_wall
+    finally:
+        # The subprocess (and, via _kill_tree, its whole process tree) has
+        # exited by here, so its private temp root is safe to remove.
+        _TMP_BASES_TO_SWEEP.append(_tmp_base)
 
 
 def _parse_pytest_summary(output: str) -> dict[str, int]:
@@ -1304,4 +1333,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        _rc = main()
+    finally:
+        # Sweep every per-subprocess temp root ONCE, after the whole run — never
+        # inline (that races a still-settling child and the recursive self-test).
+        for _base in _TMP_BASES_TO_SWEEP:
+            shutil.rmtree(_base, ignore_errors=True)
+    sys.exit(_rc)
