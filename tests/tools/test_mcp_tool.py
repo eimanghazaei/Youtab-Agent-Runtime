@@ -582,7 +582,12 @@ class TestRunOnMCPLoopInterrupts:
             with pytest.raises(InterruptedError, match="User sent a new message"):
                 mcp_mod._run_on_mcp_loop(_slow_call(), timeout=10)
 
-            deadline = time.time() + 2
+            # Generous ceiling: the CancelledError must propagate to the slow
+            # call, but cross-thread asyncio scheduling can lag well past 2s
+            # under -j3 CPU contention on the CI runner (the assertion is
+            # unchanged — this only absorbs scheduling latency, it is not a
+            # fixed sleep and does not reduce concurrency).
+            deadline = time.time() + 30
             while time.time() < deadline and not cancelled.is_set():
                 time.sleep(0.01)
             assert cancelled.is_set()
@@ -621,7 +626,12 @@ class TestRunOnMCPLoopInterrupts:
             with pytest.raises(TimeoutError, match=r"MCP call timed out after .*configured timeout: 0.1s"):
                 mcp_mod._run_on_mcp_loop(_slow_call(), timeout=0.1)
 
-            deadline = time.time() + 2
+            # Generous ceiling: the CancelledError must propagate to the slow
+            # call, but cross-thread asyncio scheduling can lag well past 2s
+            # under -j3 CPU contention on the CI runner (the assertion is
+            # unchanged — this only absorbs scheduling latency, it is not a
+            # fixed sleep and does not reduce concurrency).
+            deadline = time.time() + 30
             while time.time() < deadline and not cancelled.is_set():
                 time.sleep(0.01)
             assert cancelled.is_set()

@@ -651,22 +651,30 @@ def test_cancellation_is_distinguishable_from_a_failure(instant):
 # ==========================================================================
 
 
-def test_forwarded_correlation_is_bound_to_the_cancelled_run(instant):
-    runtime.stop_dispatcher()
+def test_forwarded_correlation_is_bound_to_the_cancelled_run(blocking):
     correlation = "cid-cross-plane-0001"
 
     # Create through the signed path with the gateway-forwarded correlation.
     run_id = _create_run(
-        instant.client, task="corr", correlation=correlation
+        blocking.client, task="corr", correlation=correlation
     ).json()["run_id"]
 
     # The engine bound the forwarded correlation to the run (persisted).
     assert _get_task(run_id).session_id == correlation
 
+    # Wait until the worker is actually active so the cancel deterministically
+    # hits a running (cancellable) run — the blocking worker is the file's
+    # deterministic seam (a prior version raced an ``instant`` worker's
+    # completion against the cancel and flaked to "completed" under -j3 CI
+    # contention).
+    started = _wait(lambda: blocking.sidecar.exists()
+                    and "started" in blocking.sidecar.read_text(encoding="utf-8"))
+    assert started, "worker did not start"
+
     # Cancel under the SAME correlation the gateway would forward — accepted,
     # and the run stays bound to that one correlation (cross-plane agreement:
     # the id the connector emits is the id the engine persists).
-    r = _cancel(instant.client, run_id, correlation=correlation)
+    r = _cancel(blocking.client, run_id, correlation=correlation)
     assert r.status_code == 200
     assert r.json()["status"] == "cancelled"
     assert _get_task(run_id).session_id == correlation

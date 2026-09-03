@@ -482,6 +482,10 @@ class TestSpawnEnvSanitization:
         with patch.dict(os.environ, {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
+            # USERPROFILE is the Windows home var; sanitization keeps it (it is
+            # not a blocked token), so a realistic cleared env must still carry
+            # it — otherwise Path.home() raises on Windows where HOME is unused.
+            "USERPROFILE": r"C:\Users\tester",
             "USER": "tester",
             "TELEGRAM_BOT_TOKEN": "bot-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
