@@ -350,17 +350,76 @@ def test_serving_after_verified_authenticates(_fresh):
     assert getattr(resp, "served", False) is True  # passed through to call_next
 
 
-def test_building_serves_without_verified(_fresh):
-    # BUILDING is the pre-freeze construction state used by lifespan-less test
-    # harnesses; it authenticates (production reaches serving only via the
-    # lifespan, which freezes+verifies before yield).
+class _CountingStub(_Stub):
+    """A route-owner whose verify_token records whether it was ever called, so a
+    fail-closed gate can be proven to short-circuit BEFORE provider verification."""
+
+    def __init__(self, name, secret, scope):
+        super().__init__(name, secret, scope)
+        self.verify_calls = 0
+
+    def verify_token(self, *, token):
+        self.verify_calls += 1
+        return super().verify_token(token=token)
+
+
+def test_building_fails_closed(_fresh):
+    # WAVE-22: BUILDING must fail closed. A server whose ASGI lifespan was
+    # disabled/bypassed/misconfigured never froze+verified, so it stays BUILDING;
+    # a token-owned route must return 503 service_unverified rather than serve —
+    # lifespan execution is not the sole security control. The provider verifier
+    # and the downstream handler are never reached, and no side effect occurs.
     reg = lifecycle._default
-    reg.register_provider(_Stub("runtime-service", "S", "runtime"))
+    provider = _CountingStub("runtime-service", "S", "runtime")
+    reg.register_provider(provider)
     reg.register_token_route_prefix("/api/runtime/v1/", provider="runtime-service",
                                     capability="runtime")
+    assert reg.state() is LifecycleState.BUILDING  # never frozen/verified
+    handler_calls = {"n": 0}
+
+    async def _counting_next(_req):
+        handler_calls["n"] += 1
+        r = _Resp(); r.status_code = 200; r.served = True
+        return r
+
     resp = asyncio.run(token_auth.token_auth_middleware(
-        _MwReq("/api/runtime/v1/health", {"authorization": "Bearer S"}), _call_next))
-    assert getattr(resp, "served", False) is True
+        _MwReq("/api/runtime/v1/health", {"authorization": "Bearer S"}), _counting_next))
+    assert resp.status_code == 503
+    import json
+    assert json.loads(bytes(resp.body)).get("error") == "service_unverified"
+    assert provider.verify_calls == 0        # verifier never consulted
+    assert handler_calls["n"] == 0           # protected handler never reached
+    assert getattr(resp, "served", False) is False
+
+
+def test_unknown_lifecycle_state_fails_closed(_fresh):
+    # WAVE-22 §4: an unknown/invalid lifecycle state must also fail closed. We
+    # cannot construct an out-of-range IntEnum member, so we model the
+    # unreadable-state contract directly: the serving gate returns True ONLY for
+    # the explicit VERIFIED member and treats any other/erroring value as denied.
+    from youtab_agent_cli.dashboard_auth.token_auth import _registry_verified
+
+    class _Boom:
+        def state(self):  # a registry whose state cannot be read
+            raise RuntimeError("state unreadable")
+
+    orig = lifecycle._default
+    try:
+        lifecycle._default = _Boom()  # type: ignore[assignment]
+        assert _registry_verified() is False  # error → fail closed, not fail open
+    finally:
+        lifecycle._default = orig
+
+    # And a bare non-VERIFIED state is likewise not servable.
+    reg = _healthy_registry()
+    lifecycle._default = reg
+    try:
+        reg.freeze()  # FROZEN_UNVERIFIED
+        assert _registry_verified() is False
+        reg.verify_required_ownerships()  # -> VERIFIED
+        assert _registry_verified() is True
+    finally:
+        lifecycle._default = orig
 
 
 # --- concurrency: freeze/verify/late-declare linearizable -------------------
@@ -431,6 +490,59 @@ def test_verify_token_runs_without_coordinator_lock(_fresh):
     token_auth.authenticate_token(
         _MwReq("/api/runtime/v1/health", {"authorization": "Bearer S"}))
     assert observed["free"] is True
+
+
+def test_serving_never_authorizes_before_verified_under_race(_fresh):
+    # WAVE-22 §4 concurrency: race real middleware serving against the
+    # freeze→verify transition. A request is served (reaches call_next) ONLY from
+    # a VERIFIED generation; because the state is monotonic, a handler that ran
+    # can only ever observe VERIFIED. No partially-verified state becomes
+    # observable as authorized. Repeated for stability.
+    for _ in range(5):
+        reg = _healthy_registry()
+        lifecycle._default = reg
+        served_states: list = []
+        errors: list = []
+        # 1 transition thread + 4 request threads = 5 parties.
+        start = threading.Barrier(5)
+
+        async def _witness_next(_req):
+            # Runs only if the gate authorized. Record the state seen here; a
+            # monotonic registry cannot have regressed below the gate's read.
+            served_states.append(reg.state())
+            r = _Resp(); r.status_code = 200; r.served = True
+            return r
+
+        def do_transition():
+            start.wait()
+            reg.freeze()
+            reg.verify_required_ownerships()  # -> VERIFIED
+
+        def do_requests():
+            start.wait()
+            for _ in range(150):
+                try:
+                    resp = asyncio.run(token_auth.token_auth_middleware(
+                        _MwReq("/api/runtime/v1/health",
+                               {"authorization": "Bearer S"}), _witness_next))
+                    # Every response is either a fail-closed 503 or a served 200.
+                    if getattr(resp, "served", False):
+                        pass  # state recorded in _witness_next
+                    else:
+                        assert resp.status_code == 503
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=do_transition)] + [
+            threading.Thread(target=do_requests) for _ in range(4)]
+        for t in threads: t.start()
+        for t in threads: t.join(10)
+
+        assert not errors, errors
+        assert reg.state() is LifecycleState.VERIFIED
+        # The core invariant: NOTHING was served before VERIFIED.
+        assert served_states, "race did not exercise the post-verify serving path"
+        assert all(s is LifecycleState.VERIFIED for s in served_states)
 
 
 if __name__ == "__main__":

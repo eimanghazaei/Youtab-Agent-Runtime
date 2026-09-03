@@ -119,12 +119,20 @@ coordinator lock, and moves through an explicit **monotonic** state machine
   (e.g. `discover_plugins(force=True)` of the same plugins) stays a no-op.
 * **VERIFIED**: `verify_required_ownerships()` confirmed every declared
   requirement and atomically sealed the registry. **This is the only state in
-  which token authentication may serve** — `token_auth_middleware` fails closed
-  (`503 service_unverified`) on a token route when the registry is
-  FROZEN_UNVERIFIED (frozen but not verified), even though `_frozen` is true. A
-  **late requirement is refused after VERIFIED** (`require_route_ownership`
-  raises, no mutation), so nothing unverified can be appended to a serving
-  registry.
+  which token authentication may serve.** `token_auth_middleware` gates on the
+  explicit state and **fails closed (`503 service_unverified`) on a token route
+  in EVERY non-VERIFIED state** — `BUILDING` (never froze, e.g. the ASGI lifespan
+  was disabled/bypassed/misconfigured), `FROZEN_UNVERIFIED` (froze but
+  verification skipped/raced/aborted), and any unknown/unreadable state (the
+  fail-closed helper `_registry_verified()` treats a read error as *not*
+  verified). The check runs **before** provider token verification, the route
+  handler, and any protected side effect; there is no test-mode/env-var bypass,
+  no implicit auto-verification, and no fall-through to the cookie/session gate.
+  Because lifespan execution is therefore **not** the sole security control, a
+  server started without a functioning lifespan simply refuses every token
+  route. A **late requirement is refused after VERIFIED**
+  (`require_route_ownership` raises, no mutation), so nothing unverified can be
+  appended to a serving registry.
 
 Transitions only ever move **forward** — there is no reverse transition, no
 reset, and no unfreeze. Failed verification stays in FROZEN_UNVERIFIED (never
@@ -191,7 +199,7 @@ Gate.
 | **A05 Security Misconfiguration** (opt-out leaves an unclaimed live route) | handler independent of the seam; disabled surface = 503, not a cookie-gate handoff | same suite; `is_drain_enabled` shared-contract test |
 | **API1/API5 Broken function/object auth & improper exposure** | drain driven only by the `drain-secret` token principal (guard #2); runtime↔drain isolation unchanged | `test_drain_valid_secret_but_cookie_principal_forbidden`; `test_authorization_gate_service_token_isolation.py` (runtime↔drain denied) |
 | **Agentic: unsafe side-effect execution** | guard runs BEFORE any marker write; tests assert zero `write/clear_drain_request` calls on denial | `_no_real_drain` side-effect counter asserts in every denial test |
-| **Agentic: identity / privilege boundary** | token auth serves only in VERIFIED; frozen-but-unverified fails closed; late requirement refused after VERIFIED | `test_serving_before_verified_fails_closed`; `test_requirement_after_verified_refused_without_mutation` |
+| **Agentic: identity / privilege boundary** | token auth serves ONLY in VERIFIED — BUILDING, FROZEN_UNVERIFIED, and unknown/unreadable states all fail closed (`503`); a lifespan-disabled server refuses every token route; late requirement refused after VERIFIED | `test_building_fails_closed`, `test_serving_before_verified_fails_closed`, `test_unknown_lifecycle_state_fails_closed`, `test_serving_never_authorizes_before_verified_under_race`; `test_authorization_gate_service_token_isolation.py::test_lifespan_disabled_{runtime,drain}_route_fails_closed`, `test_no_env_var_bypasses_verification`; `test_requirement_after_verified_refused_without_mutation` |
 
 ## Versioning and release notes (0.20.0)
 

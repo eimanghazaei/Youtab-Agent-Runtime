@@ -102,8 +102,14 @@ def _isolated_state():
     clear_providers()
     token_auth.clear_token_routes()
     yield
-    clear_providers()
-    token_auth.clear_token_routes()
+    # A test may drive the registry to VERIFIED (frozen), after which clear_* is
+    # correctly refused. Per-test isolation is the autouse fresh-registry fixture
+    # (conftest rebinds lifecycle._default), so tolerate a frozen registry here.
+    try:
+        clear_providers()
+        token_auth.clear_token_routes()
+    except token_auth.FrozenRegistryError:
+        pass
 
 
 class _FakeURL:
@@ -247,6 +253,11 @@ async def _call_next_ok(request):
 def test_seam_rejects_wrong_token_401():
     register_provider(_TokenProvider(secret="good"))
     token_auth.register_token_route("/api/gateway/drain", provider="tok", capability="drain")
+    # WAVE-22: the middleware serves (and therefore reaches the wrong-token
+    # rejection) only from a VERIFIED generation. Drive the isolated registry
+    # through the real freeze → verify transition first.
+    token_auth.freeze_token_routes()
+    token_auth.verify_service_route_ownership()
     req = _FakeRequest(
         path="/api/gateway/drain", headers={"authorization": "Bearer bad"}
     )

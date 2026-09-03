@@ -61,12 +61,28 @@ def client(tmp_path, monkeypatch):
     token_auth.register_token_route(
         DRAIN_PATH, provider="drain-secret", capability="drain")
 
+    # Real startup ordering (WAVE-22): the seam serves only from a VERIFIED
+    # generation. This fixture registers the providers/routes MANUALLY (so the
+    # real lifespan cannot run here without double-registering), so it drives
+    # the isolated registry through the real declare → freeze → verify →
+    # VERIFIED transition itself — exactly what the dashboard lifespan does
+    # before accepting traffic.
+    token_auth.require_route_ownership(
+        provider="runtime-service", path=RUNTIME_PREFIX, is_prefix=True,
+        capability="runtime")
+    token_auth.require_route_ownership(
+        provider="drain-secret", path=DRAIN_PATH, is_prefix=False,
+        capability="drain")
+    token_auth.freeze_token_routes()
+    token_auth.verify_service_route_ownership()
+
     c = TestClient(web_server.app)
     try:
         yield c
     finally:
-        auth_registry.clear_providers()
-        token_auth.clear_token_routes()
+        # The registry is now VERIFIED (frozen); clear_* is correctly refused
+        # after freeze. Per-test isolation is the autouse fresh-registry fixture
+        # rebinding lifecycle._default, so no manual clear is needed here.
         web_server.app.state.auth_required = False
 
 
@@ -230,6 +246,89 @@ def test_double_slash_stays_within_runtime_owner_no_crossing(client):
     # whatever it resolves to (200 if the route matches, 404 if not) it is the
     # runtime owner's decision, never drain's.
     assert r.status_code in (200, 404, 403, 401)
+
+
+# --- WAVE-22: lifespan-disabled real app must fail closed (VERIFIED-only) ----
+
+@pytest.fixture()
+def _unverified_client(tmp_path, monkeypatch):
+    """The REAL app with providers/routes registered but the registry left
+    UNVERIFIED — i.e. the ASGI lifespan was disabled/bypassed/misconfigured so it
+    never froze+verified. Bare ``TestClient`` (no ``with``) does NOT run the
+    lifespan, so the shared registry stays BUILDING. This is exactly the
+    configuration mistake WAVE-22 defends against."""
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", RUNTIME_SECRET)
+    monkeypatch.setenv("YOUTAB_AGENT_DASHBOARD_DRAIN_SECRET", DRAIN_SECRET)
+    web_server.app.state.auth_required = True
+    auth_registry.clear_providers()
+    token_auth.clear_token_routes()
+    auth_registry.register_provider(
+        RuntimeServiceProvider(secret=RUNTIME_SECRET, scope="runtime"))
+    auth_registry.register_provider(
+        DrainSecretProvider(secret=DRAIN_SECRET, scope="drain"))
+    token_auth.register_token_route_prefix(
+        RUNTIME_PREFIX, provider="runtime-service", capability="runtime")
+    token_auth.register_token_route(
+        DRAIN_PATH, provider="drain-secret", capability="drain")
+    # DELIBERATELY no freeze / no verify: the registry stays BUILDING.
+    from youtab_agent_cli.dashboard_auth.lifecycle import LifecycleState
+    assert token_auth.lifecycle.registry_state() is LifecycleState.BUILDING
+    c = TestClient(web_server.app)
+    try:
+        yield c
+    finally:
+        auth_registry.clear_providers()
+        token_auth.clear_token_routes()
+        web_server.app.state.auth_required = False
+
+
+def test_lifespan_disabled_runtime_route_fails_closed(_unverified_client):
+    # A VALID runtime bearer + identity, on a lifespan-disabled server, must be
+    # refused with 503 service_unverified — never authenticated, never 500, never
+    # a fall-through to the cookie gate.
+    r = _unverified_client.get(HEALTH, headers=_bearer(RUNTIME_SECRET, IDENT))
+    assert r.status_code == 503
+    assert r.json().get("error") == "service_unverified"
+    assert RUNTIME_SECRET not in r.text
+
+
+def test_lifespan_disabled_drain_route_fails_closed(_unverified_client):
+    # Likewise the drain surface: a valid drain bearer is refused 503 while
+    # unverified, and no drain side effect can run (the seam denies before the
+    # handler).
+    r = _unverified_client.post(
+        DRAIN_PATH, headers=_bearer(DRAIN_SECRET), json={"action": "cancel"})
+    assert r.status_code == 503
+    assert r.json().get("error") == "service_unverified"
+    assert DRAIN_SECRET not in r.text
+
+
+def test_no_env_var_bypasses_verification(_unverified_client, monkeypatch):
+    # Behavioural: a battery of plausible "test/dev bypass" env vars must NOT
+    # open the gate. The registry is unverified; the route stays 503 regardless.
+    for name in (
+        "YOUTAB_AGENT_SKIP_VERIFICATION", "YOUTAB_AGENT_TEST_MODE",
+        "YOUTAB_AGENT_DEV", "YOUTAB_AGENT_INSECURE", "YOUTAB_AGENT_DEBUG",
+        "TESTING", "CI", "PYTEST_CURRENT_TEST_BYPASS",
+        "YOUTAB_AGENT_DASHBOARD_AUTH_VERIFIED", "YOUTAB_AGENT_ALLOW_UNVERIFIED",
+    ):
+        monkeypatch.setenv(name, "1")
+    r = _unverified_client.get(HEALTH, headers=_bearer(RUNTIME_SECRET, IDENT))
+    assert r.status_code == 503
+    assert r.json().get("error") == "service_unverified"
+
+
+def test_serving_gate_source_has_no_env_bypass():
+    # Source-level: the serving gate and its fail-closed helper must not consult
+    # any environment variable — there is no env/test bypass of VERIFIED-only
+    # serving to regress.
+    import inspect
+    from youtab_agent_cli.dashboard_auth import token_auth as _ta
+    for fn in (_ta.token_auth_middleware, _ta._registry_verified):
+        src = inspect.getsource(fn)
+        assert "environ" not in src and "getenv" not in src, (
+            f"{fn.__name__} must not read environment variables")
 
 
 def test_exact_drain_and_prefix_runtime_are_independent(client):

@@ -84,6 +84,15 @@ def client(tmp_path, monkeypatch):
 
     app.include_router(runtime.router)
 
+    # Real startup ordering (WAVE-22): serve only from a VERIFIED generation.
+    # A bare test app has no lifespan, so drive the isolated registry through
+    # the real declare → freeze → verify → VERIFIED transition.
+    token_auth.require_route_ownership(
+        provider="runtime-service", path="/api/runtime/v1/", is_prefix=True,
+        capability="runtime")
+    token_auth.freeze_token_routes()
+    token_auth.verify_service_route_ownership()
+
     with TestClient(app) as c:
         yield c
 
@@ -91,8 +100,8 @@ def client(tmp_path, monkeypatch):
     runtime._spawn_override = None
     runtime._nonce_store = None
     runtime._engine_avail_cache.clear()
-    auth_registry.clear_providers()
-    token_auth.clear_token_routes()
+    # Registry is VERIFIED (frozen) — clear_* is refused after freeze; the
+    # autouse fresh-registry fixture provides per-test isolation.
 
 
 # --------------------------------------------------------------------------

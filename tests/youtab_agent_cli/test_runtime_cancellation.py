@@ -185,6 +185,16 @@ def _make_harness(tmp_path, monkeypatch, worker_src):
         return await token_auth_middleware(request, call_next)
 
     app.include_router(runtime.router)
+
+    # Real startup ordering (WAVE-22): serve only from a VERIFIED generation.
+    # This bare harness app has no lifespan, so drive the isolated registry
+    # through the real declare → freeze → verify → VERIFIED transition.
+    token_auth.require_route_ownership(
+        provider="runtime-service", path="/api/runtime/v1/", is_prefix=True,
+        capability="runtime")
+    token_auth.freeze_token_routes()
+    token_auth.verify_service_route_ownership()
+
     client = TestClient(app)
     client.__enter__()
     return _Harness(client, db_path=db_path, sidecar=sidecar, release=release, spawned=spawned)
@@ -208,8 +218,8 @@ def _teardown_harness(h: _Harness):
     finally:
         runtime._spawn_override = None
         runtime._nonce_store = None
-        auth_registry.clear_providers()
-        token_auth.clear_token_routes()
+        # Registry is VERIFIED (frozen) — clear_* is refused after freeze; the
+        # autouse fresh-registry fixture provides per-test isolation.
 
 
 @pytest.fixture()

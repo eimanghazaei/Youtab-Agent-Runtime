@@ -134,6 +134,28 @@ def is_verified() -> bool:
     return lifecycle.is_verified()
 
 
+def _registry_verified() -> bool:
+    """Fail-closed read of the serving gate.
+
+    Returns ``True`` ONLY when the shared registry is explicitly
+    ``LifecycleState.VERIFIED``. Every other state fails closed:
+
+      * ``BUILDING`` — the registry never froze (e.g. the ASGI lifespan was
+        disabled, bypassed, or misconfigured, so ``freeze``/verify never ran);
+      * ``FROZEN_UNVERIFIED`` — it froze but verification was skipped, raced, or
+        aborted;
+      * an unknown / invalid state value, or ANY error reading the state — an
+        unreadable lifecycle must never fail open.
+
+    The comparison is against the explicit enum member, not a combination of
+    booleans, so there is no ambiguous middle case.
+    """
+    try:
+        return lifecycle.registry_state() is LifecycleState.VERIFIED
+    except Exception:  # noqa: BLE001 — an unreadable lifecycle state must fail closed
+        return False
+
+
 # --- bearer extraction ------------------------------------------------------
 
 def _client_ip(request: Request) -> str:
@@ -182,8 +204,10 @@ async def token_auth_middleware(
 ) -> Response:
     """Outermost auth seam for token-authable routes.
 
-    No-op pass-through for a path with no registered owner. For a registered path,
-    token auth is the only accepted scheme: valid token → attach principal +
+    No-op pass-through for a path with no registered owner. For a registered path
+    the registry must be VERIFIED to serve (otherwise 503 ``service_unverified``,
+    evaluated before any provider verification, handler, or side effect); token
+    auth is then the only accepted scheme: valid token → attach principal +
     ``token_authenticated`` and pass through; owner unreachable → 503; otherwise
     401. The downstream cookie/session gates honour ``token_authenticated`` and
     skip enforcement.
@@ -192,12 +216,18 @@ async def token_auth_middleware(
     if not is_token_route(path):
         return await call_next(request)
 
-    # Fail closed on an unverified generation: a registry that FROZE but never
-    # reached VERIFIED (verification skipped, raced, or aborted) must not
-    # authenticate a token-owned route — even though `_frozen` is true. In
-    # production the lifespan freezes AND verifies before `yield`, so serving is
-    # always VERIFIED; this refuses the dangerous FROZEN_UNVERIFIED window.
-    if lifecycle.is_frozen() and not lifecycle.is_verified():
+    # VERIFIED-only serving (fail closed on every other state). A token-owned
+    # route may authenticate a request ONLY while the shared registry is
+    # explicitly VERIFIED. This runs BEFORE provider token verification, the
+    # route handler, and any protected side effect, so:
+    #   * BUILDING           → 503 (a server whose ASGI lifespan was disabled,
+    #                          bypassed, or misconfigured never froze/verified —
+    #                          lifespan execution is not the sole security control);
+    #   * FROZEN_UNVERIFIED  → 503 (froze but verification skipped/raced/aborted);
+    #   * unknown/unreadable → 503 (`_registry_verified` fails closed on error).
+    # There is no test-mode/env bypass, no implicit auto-verification, and no
+    # fall-through to the cookie/session gate: an unverified generation is denied.
+    if not _registry_verified():
         audit_log(
             AuditEvent.TOKEN_AUTH_FAILURE,
             reason="registry_not_verified",
