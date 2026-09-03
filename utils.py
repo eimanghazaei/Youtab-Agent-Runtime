@@ -257,12 +257,15 @@ def atomic_json_write(
         suffix=".tmp",
     )
     try:
-        if mode is not None and hasattr(os, "fchmod"):
-            # fchmod is Unix-only; Windows' os module has no fchmod. Skipping it
-            # here is safe — mkstemp already created the temp file as 0o600, and
-            # the post-replace os.chmod below applies the final mode durably.
-            os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
+            if mode is not None and hasattr(os, "fchmod"):
+                # fchmod is Unix-only; Windows' os module has no fchmod. Skipping
+                # it here is safe — mkstemp already created the temp file as
+                # 0o600, and the post-replace os.chmod below applies the final
+                # mode durably. Done INSIDE the fdopen context so that a fchmod
+                # error (e.g. ENOTSUP/EPERM on some FUSE/overlay/NFS backings)
+                # cannot leak the raw descriptor: the ``with`` always closes it.
+                os.fchmod(f.fileno(), mode)
             json.dump(
                 data,
                 f,

@@ -28,6 +28,9 @@ permissions:
 jobs:
   python-security:
     runs-on: ubuntu-latest
+    # Finite bound so a wedged step cannot burn the 6h default (WAVE-24). Set
+    # well above the job's normal duration — it caps runaways, not normal runs.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -184,6 +187,9 @@ jobs:
         # (`macos-latest`, or a pinned `macos-14`/`macos-15`) are the only
         # viable macOS legs.
     runs-on: ${{ matrix.os }}
+    # Finite bound so a wedged step cannot burn the 6h default (10x billing on
+    # the macOS leg). Set above normal duration — caps runaways, not normal runs.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -237,6 +243,8 @@ jobs:
 
   javascript:
     runs-on: ubuntu-latest
+    # Finite bound so a wedged step cannot burn the 6h default (WAVE-24).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install exact JavaScript lock

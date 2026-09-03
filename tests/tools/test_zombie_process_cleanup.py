@@ -58,7 +58,12 @@ class TestZombieReproduction:
         finally:
             for pid in pids:
                 try:
-                    os.kill(pid, signal.SIGKILL)
+                    # SIGTERM, not SIGKILL: Windows has no SIGKILL (os.kill would
+                    # raise), while os.kill routes any non-CTRL signal to
+                    # TerminateProcess there — so SIGTERM force-reaps the sleep on
+                    # Windows and terminates it on POSIX. Teardown only; the body
+                    # assertions above are unchanged.
+                    os.kill(pid, signal.SIGTERM)
                 except (ProcessLookupError, PermissionError):
                     pass
 

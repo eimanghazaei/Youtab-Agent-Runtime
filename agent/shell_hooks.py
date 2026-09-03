@@ -13,9 +13,11 @@ Design notes
   :func:`youtab_agent_cli.plugins.invoke_hook` and its aggregators.  Python
   plugins are registered first (via ``discover_and_load()``) so their
   block decisions win ties over shell-hook blocks.
-* Subprocess execution uses ``shlex.split(os.path.expanduser(command))``
-  with ``shell=False`` — no shell injection footguns.  Users that need
-  pipes/redirection wrap their logic in a script.
+* Subprocess execution tokenizes the command with :func:`_tokenize_command`
+  (platform-aware — POSIX uses ``shlex.split`` unchanged; Windows keeps
+  backslash path separators intact) and runs it with ``shell=False`` — no
+  shell injection footguns.  Users that need pipes/redirection wrap their
+  logic in a script.
 * First-use consent is gated by the allowlist under
   ``~/.youtab-agent-runtime/shell-hooks-allowlist.json``.  Non-TTY callers must pass
   ``accept_hooks=True`` (resolved from ``--accept-hooks``,
@@ -430,6 +432,57 @@ def _parse_single_entry(
 _TOP_LEVEL_PAYLOAD_KEYS = {"tool_name", "args", "session_id", "parent_session_id"}
 
 
+class HookCommandError(ValueError):
+    """A hook ``command`` string could not be tokenized into an argv list.
+
+    Subclasses :class:`ValueError` so the module's existing ``except ValueError``
+    sites keep catching it, while giving callers a stable, typed failure to key
+    on.  A mis-tokenized command is *raised* and handled fail-closed rather than
+    executed as a half-parsed argv.
+    """
+
+
+def _tokenize_command(command: str) -> List[str]:
+    """Split a hook ``command`` string into an argv list for ``shell=False``.
+
+    POSIX (``os.name != "nt"``): identical to ``shlex.split(command)`` — the
+    long-standing contract.  Backslash is the POSIX escape character, quotes are
+    honoured and stripped.  **POSIX behaviour is unchanged, byte for byte.**
+
+    Windows (``os.name == "nt"``): backslash is a *path separator*, not an
+    escape.  The default POSIX ``shlex`` treats ``\\`` as an escape and so
+    mangles native paths — ``C:\\Program Files\\t.exe`` collapses to
+    ``C:Program Filest.exe`` and the space then splits the token.  We instead
+    drive ``shlex`` with Windows lexical rules: whitespace splitting, quote
+    grouping/stripping, and **no escape character**.  A quoted path that
+    contains spaces (``"C:\\Program Files\\t.exe"``) stays intact and argument
+    separation stays correct.  This is purely *lexical* tokenization: there is
+    no shell, so shell metacharacters (``| & ; > < $(...) `...` %VAR%``) are
+    never interpreted — they survive as literal characters inside argv tokens
+    and are passed verbatim to the OS via ``subprocess`` with ``shell=False``.
+
+    Raises :class:`HookCommandError` on an unbalanced quote so the caller fails
+    closed instead of executing a partially-parsed command.
+    """
+    if os.name == "nt":
+        lex = shlex.shlex(command, posix=True)
+        lex.whitespace_split = True
+        lex.commenters = ""   # '#' is a valid path/arg character, not a comment
+        lex.escape = ""       # backslash is a path separator, never an escape
+        try:
+            return list(lex)
+        except ValueError as exc:
+            raise HookCommandError(
+                f"command {command!r} cannot be parsed: {exc}"
+            ) from exc
+    try:
+        return shlex.split(command)
+    except ValueError as exc:
+        raise HookCommandError(
+            f"command {command!r} cannot be parsed: {exc}"
+        ) from exc
+
+
 def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
     """Run ``spec.command`` as a subprocess with ``stdin_json`` on stdin.
 
@@ -449,9 +502,9 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        argv = shlex.split(os.path.expanduser(spec.command))
-    except ValueError as exc:
-        result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
+        argv = _tokenize_command(os.path.expanduser(spec.command))
+    except HookCommandError as exc:
+        result["error"] = str(exc)
         return result
     if not argv:
         result["error"] = "empty command"
@@ -814,8 +867,8 @@ def _command_script_path(command: str) -> str:
     common bare-path form.
     """
     try:
-        parts = shlex.split(command)
-    except ValueError:
+        parts = _tokenize_command(command)
+    except HookCommandError:
         return command
     if not parts:
         return command
@@ -901,8 +954,8 @@ def script_is_executable(command: str) -> bool:
     if not os.path.isfile(expanded):
         return False
     try:
-        argv = shlex.split(command)
-    except ValueError:
+        argv = _tokenize_command(command)
+    except HookCommandError:
         return False
     is_bare_invocation = bool(argv) and argv[0] == path
     required = os.X_OK if is_bare_invocation else os.R_OK
