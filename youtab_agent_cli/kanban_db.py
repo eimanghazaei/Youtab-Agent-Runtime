@@ -811,6 +811,40 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     return entries
 
 
+_WINDOWS_TRANSIENT_FS_ERRORS = frozenset((5, 32))  # ACCESS_DENIED, SHARING_VIOLATION
+
+
+def _windows_resilient_fs_op(op):
+    """Run a filesystem rename/rmtree, riding out the transient Windows lock.
+
+    On POSIX this simply calls ``op()`` once — an open file descriptor never
+    blocks a rename or unlink, so there is nothing to retry. On Windows a file
+    that was *just* closed can stay briefly unshareable while the OS releases
+    the handle (notably SQLite's WAL/-shm sidecars after the last connection
+    closes), so ``rename``/``rmtree`` can bounce with ``ERROR_ACCESS_DENIED``
+    (WinError 5) or ``ERROR_SHARING_VIOLATION`` (WinError 32). This retries ONLY
+    those two winerror codes a bounded number of times with a short capped
+    backoff; every other error is raised immediately, and a still-held handle
+    (a genuine leak) surfaces once the attempts are exhausted rather than being
+    masked. It does not weaken the "no open handle at remove time" contract —
+    it only tolerates the OS's release latency for a handle already closed.
+    """
+    if os.name != "nt":
+        op()
+        return
+    backoff = 0.002
+    for attempt in range(12):
+        try:
+            op()
+            return
+        except (PermissionError, OSError) as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in _WINDOWS_TRANSIENT_FS_ERRORS or attempt == 11:
+                raise
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 0.15)
+
+
 def remove_board(slug: str, *, archive: bool = True) -> dict:
     """Remove or archive a board.
 
@@ -851,11 +885,10 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         while target.exists():
             target = archive_root / f"{normed}-{ts}-{suffix}"
             suffix += 1
-        d.rename(target)
+        _windows_resilient_fs_op(lambda: d.rename(target))
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     else:
-        import shutil
-        shutil.rmtree(d)
+        _windows_resilient_fs_op(lambda: shutil.rmtree(d))
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
 

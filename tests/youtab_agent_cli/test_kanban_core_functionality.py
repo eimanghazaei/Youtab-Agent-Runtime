@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests import _wincompat
 from youtab_agent_cli import kanban_db as kb
 from youtab_agent_cli.kanban import run_slash
 
@@ -1320,6 +1321,10 @@ def _drive_nonzero_crash(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 256)
 
 
+@_wincompat.requires_posix  # drives POSIX wait-status worker-exit classification
+# (_record_worker_exit stores a raw wait-status and _classify_worker_exit reads it
+# via os.WIFEXITED/os.WEXITSTATUS/os.WIFSIGNALED, all POSIX-only — on Windows the
+# classifier returns "unknown" and reap_worker_zombies is a documented no-op).
 def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
     """Mixed failure kinds must not consume the violation retry budget.
 

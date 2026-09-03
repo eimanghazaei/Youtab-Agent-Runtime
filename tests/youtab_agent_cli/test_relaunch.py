@@ -106,11 +106,19 @@ class TestRelaunch:
             calls.append((path, argv))
             raise SystemExit(0)
 
+        # This test exercises the POSIX exec-in-place branch of relaunch();
+        # the Windows subprocess branch is covered by the two tests below.
+        # Force the POSIX branch so it runs deterministically on any host
+        # (mirrors how the Windows tests force sys.platform == "win32").
+        monkeypatch.setattr(relaunch_mod.sys, "platform", "linux")
         monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
         monkeypatch.setattr(relaunch_mod, "resolve_youtab_bin", lambda: "/usr/bin/youtab")
 
+        # Pass an explicit empty original_argv so flag-extraction doesn't scan
+        # pytest's own argv (e.g. "-p no:cacheprovider" -> -p/--profile is an
+        # inherited flag); this keeps the assertion hermetic.
         with pytest.raises(SystemExit):
-            relaunch_mod.relaunch(["--resume", "abc"])
+            relaunch_mod.relaunch(["--resume", "abc"], original_argv=[])
 
         assert calls == [("/usr/bin/youtab", ["/usr/bin/youtab", "--resume", "abc"])]
 
@@ -144,7 +152,7 @@ class TestRelaunch:
         monkeypatch.setattr(relaunch_mod.os, "execvp", fake_execvp)
 
         with pytest.raises(SystemExit) as exc_info:
-            relaunch_mod.relaunch(["chat"])
+            relaunch_mod.relaunch(["chat"], original_argv=[])
 
         assert exc_info.value.code == 0
         assert execvp_calls == []
@@ -166,7 +174,7 @@ class TestRelaunch:
         monkeypatch.setattr(relaunch_mod.os, "execvp", lambda *a, **kw: None)
 
         with pytest.raises(SystemExit) as exc_info:
-            relaunch_mod.relaunch(["chat"])
+            relaunch_mod.relaunch(["chat"], original_argv=[])
         assert exc_info.value.code == 42
 
 

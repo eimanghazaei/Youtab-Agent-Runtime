@@ -11,6 +11,8 @@ import pytest
 
 from youtab_agent_cli.completion import _walk, generate_bash, generate_zsh, generate_fish
 
+from tests import _wincompat
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -84,17 +86,18 @@ class TestGenerateBash:
         assert "complete -F _youtab_completion youtab" in out
 
 
+    @_wincompat.requires_working_bash
     def test_valid_bash_syntax(self):
         """Script must pass `bash -n` syntax check."""
         out = generate_bash(_make_parser())
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".bash", delete=False) as f:
-            f.write(out)
-            path = f.name
-        try:
-            result = subprocess.run(["bash", "-n", path], capture_output=True)
-            assert result.returncode == 0, result.stderr.decode()
-        finally:
-            os.unlink(path)
+        # Feed the script to `bash -n` on stdin as bytes. Passing it on stdin
+        # avoids handing bash a Windows path (whose backslashes bash mangles),
+        # and passing bytes (not text=True) avoids Windows newline translation
+        # (\n -> \r\n) that would corrupt the syntax check.
+        result = subprocess.run(
+            ["bash", "-n", "-"], input=out.encode("utf-8"), capture_output=True
+        )
+        assert result.returncode == 0, result.stderr.decode()
 
 
 # ---------------------------------------------------------------------------

@@ -124,6 +124,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo npm
+  windows-runtime-cli:
+    runs-on: windows-latest
+    steps:
+      - run: echo windows-runtime-cli
 """
 
 CI_CONTEXTS = {
@@ -132,6 +136,7 @@ CI_CONTEXTS = {
     "wake-word-backends (ubuntu-latest)": "success",
     "wake-word-backends (windows-latest)": "success",
     "wake-word-backends (macos-latest)": "success",
+    "windows-runtime-cli": "success",
 }
 
 

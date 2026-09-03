@@ -84,8 +84,12 @@ def test_first_init_connect_is_bounded_when_lock_held(kanban_home, monkeypatch):
         conn = kb.connect()  # path NOT yet initialized — must take the bounded path
         conn.close()
         elapsed = time.monotonic() - start
-        # Proceeded within roughly the timeout window (not unbounded).
-        assert 0.4 <= elapsed < 3.0, f"expected bounded ~0.6s acquire, got {elapsed:.2f}s"
+        # Proceeded within roughly the timeout window (not unbounded). The lower
+        # bound proves it actually waited ~the 0.6s lock timeout; the upper bound
+        # only proves boundedness (vs an unbounded flock) — kept generous because
+        # the post-timeout schema-init/integrity pass adds seconds of overhead on
+        # a slow, I/O-throttled CI runner (a real e.g. 3.3s on windows-latest).
+        assert 0.4 <= elapsed < 8.0, f"expected bounded ~0.6s acquire, got {elapsed:.2f}s"
         assert str(db_path.resolve()) in kb._INITIALIZED_PATHS
     finally:
         release.set()

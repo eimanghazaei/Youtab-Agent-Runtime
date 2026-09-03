@@ -12,8 +12,30 @@ Currently:
   Windows path that works.
 """
 
+import pytest
+
 
 class TestMatrixHiddenOnWindows:
+    @pytest.fixture(autouse=True)
+    def _fresh_platform_discovery(self):
+        """Guarantee a complete platform registry before each test.
+
+        Bundled platforms (telegram/discord/slack/matrix/...) register as
+        *deferred* loaders; ``platform_registry.all_entries()`` resolves each
+        one exactly once by popping it. If any earlier test in the session
+        already triggered resolution while those loaders could not materialise
+        (swallowed failure), the platforms are permanently gone from the
+        process-wide singleton — and ``PluginManager._discovered`` stays True,
+        so ``_all_platforms()``'s idempotent ``discover_plugins()`` no longer
+        re-registers them. Forcing a clean re-discovery re-registers the
+        deferred loaders, making this gating assertion hermetic regardless of
+        suite ordering. (Production is unaffected: a real process discovers
+        once, cleanly.)
+        """
+        from youtab_agent_cli.plugins import discover_plugins
+
+        discover_plugins(force=True)
+        yield
     def test_matrix_present_on_linux(self, monkeypatch):
         """Sanity: matrix is still in the picker on Linux/macOS."""
         import youtab_agent_cli.gateway as gateway_mod

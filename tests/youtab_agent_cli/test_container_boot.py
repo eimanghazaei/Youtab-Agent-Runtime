@@ -14,10 +14,22 @@ from pathlib import Path
 
 import pytest
 
+from tests import _wincompat
 from youtab_agent_cli.container_boot import (
     ReconcileAction,
     reconcile_profile_gateways,
 )
+
+
+# Registering an s6 service slot seeds the supervise/ skeleton
+# (``_seed_supervise_skeleton``), which creates the s6-supervise control
+# FIFO via ``os.mkfifo`` and chowns it to the youtab uid via ``os.chown``.
+# Both are POSIX-only syscalls absent on native Windows, and container boot
+# itself is a Linux-container-only feature (invoked from /etc/cont-init.d by
+# s6-overlay). There is no Windows production path to degrade — the reconciler
+# never runs on a native Windows host — so these slot-registering tests are
+# capability-skipped rather than paired with a Windows fail-closed test.
+_requires_s6_fifo = _wincompat.requires_os_attr("mkfifo")
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +121,7 @@ def _named_actions(actions: list[ReconcileAction]) -> list[ReconcileAction]:
 # ---------------------------------------------------------------------------
 
 
+@_requires_s6_fifo
 def test_running_profile_is_registered_and_autostarted(tmp_path: Path) -> None:
     scandir = tmp_path / "run-service"; scandir.mkdir()
     _make_profile(tmp_path, "coder", state="running")
@@ -128,6 +141,7 @@ def test_running_profile_is_registered_and_autostarted(tmp_path: Path) -> None:
     assert not (svc / "down").exists()
 
 
+@_requires_s6_fifo
 def test_registered_profile_has_finish_script(tmp_path: Path) -> None:
     """The finish script must be written so s6 stops restarting on
     fatal config errors (exit 78 → exit 125).  See #51228."""
@@ -158,6 +172,7 @@ def test_registered_profile_has_finish_script(tmp_path: Path) -> None:
 
 
 
+@_requires_s6_fifo
 def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
     """A second reconciliation pass cleanly replaces an existing
     slot (the tmp+rename publication overwrites the previous one)."""
@@ -203,6 +218,7 @@ def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
 
 
 
+@_requires_s6_fifo
 def test_profiles_default_subdir_is_skipped_with_warning(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,

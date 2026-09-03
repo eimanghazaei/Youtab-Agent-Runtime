@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -88,6 +89,55 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+# Windows error codes that MoveFileEx (which backs os.replace) can return
+# *transiently* when the destination is momentarily open by another handle —
+# a concurrent reader, another writer's in-flight replace, an antivirus/indexer
+# scan, or a just-closed handle Windows has not fully released. The replace is
+# still atomic; only the moment of the swap can bounce. POSIX os.replace has no
+# such window.
+_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset((5, 32))  # ACCESS_DENIED, SHARING_VIOLATION
+# Attempts/backoff are sized to ride out a genuinely contended destination — a
+# concurrent reader (or antivirus/indexer) that keeps re-opening the target on a
+# slow, I/O-throttled filesystem (e.g. a CI Windows runner). Worst case is ~3s
+# of bounded backoff BEFORE re-raising, and it only engages while the swap is
+# actually bouncing; the uncontended path still succeeds on the first try.
+_WINDOWS_REPLACE_MAX_ATTEMPTS = 20
+_WINDOWS_REPLACE_MAX_BACKOFF = 0.2  # seconds
+
+
+def _os_replace_resilient(src: str, dst: str) -> None:
+    """``os.replace(src, dst)`` with a BOUNDED retry for the documented,
+    transient Windows sharing violation.
+
+    On POSIX this is a single ``os.replace`` — there is no retry and no sleep,
+    so behaviour is byte-for-byte the pre-existing contract. On Windows,
+    ``MoveFileEx`` can return ``ERROR_ACCESS_DENIED`` (WinError 5) or
+    ``ERROR_SHARING_VIOLATION`` (WinError 32) for a brief window when the
+    destination is momentarily held open; this retries ONLY those two winerror
+    codes, a finite number of times, with a short capped backoff. Every other
+    error (including the ``EXDEV``/``EBUSY`` the caller handles) is re-raised
+    immediately and unchanged, and the transient error is itself re-raised once
+    the bounded attempts are exhausted. This is the standard remediation used by
+    CPython, pip and Git-for-Windows; it does not mask a logic race — the swap
+    is atomic, the retry only rides out the OS-level sharing window.
+    """
+    if os.name != "nt":
+        os.replace(src, dst)
+        return
+    backoff = 0.001
+    last_attempt = _WINDOWS_REPLACE_MAX_ATTEMPTS - 1
+    for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in _WINDOWS_TRANSIENT_REPLACE_ERRORS or attempt == last_attempt:
+                raise
+            time.sleep(backoff)
+            backoff = min(backoff * 2, _WINDOWS_REPLACE_MAX_BACKOFF)
+
+
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
@@ -112,7 +162,7 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
     tmp_str = str(tmp_path)
     try:
-        os.replace(tmp_str, real_path)
+        _os_replace_resilient(tmp_str, real_path)
     except OSError as exc:
         if exc.errno not in (errno.EXDEV, errno.EBUSY):
             raise

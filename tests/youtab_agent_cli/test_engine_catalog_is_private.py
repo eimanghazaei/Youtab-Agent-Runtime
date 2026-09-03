@@ -117,7 +117,10 @@ def test_no_source_file_still_advertises_a_public_catalogue_url():
 
     offenders: list[str] = []
     for rel in tracked:
-        if rel.startswith("docs/evidence/") or rel == str(Path(__file__).relative_to(REPO)):
+        # git ls-files yields forward-slash paths; compare against a forward-slash
+        # form of this file's path so the self-exclusion also holds on Windows
+        # (Path.relative_to renders backslashes there).
+        if rel.startswith("docs/evidence/") or rel == Path(__file__).relative_to(REPO).as_posix():
             continue  # evidence records the finding; this file names it to forbid it
         path = REPO / rel
         try:

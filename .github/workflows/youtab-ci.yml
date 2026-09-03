@@ -243,3 +243,59 @@ jobs:
         run: npm ci
       - name: Type, lint and workspace tests
         run: npm run check
+
+  # Windows portability gate (WAVE-23). The wake-word job already runs ON
+  # windows-latest, but only the two backend artifacts — the broader runtime/CLI
+  # portability surface (atomic writes, file locking, WAL, path/encoding,
+  # subprocess construction, and the dashboard-auth lifecycle/serving invariants)
+  # had no Windows coverage, so a Windows regression could land unseen. This job
+  # runs the Windows-compatible runtime/CLI suite (tests/youtab_runtime +
+  # tests/youtab_agent_cli) on every PR and on push to main. Genuinely
+  # POSIX/Linux-only integration paths (systemd, s6, chown/uid, sudo, FHS
+  # symlinks, /proc, curses, pty, POSIX permission bits, flock) skip via narrow
+  # capability guards in tests/_wincompat.py — never a blanket platform skip, and
+  # each is paired with a Windows fail-closed test. Not optional and not
+  # continue-on-error: a red run blocks. (Making it a *required* status still
+  # needs it added to the `main-required-gates` ruleset — an Owner change,
+  # mirroring the note on the wake-word job above.)
+  windows-runtime-cli:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # Cancel a superseded run of THIS job on the same ref only — scoped so it
+    # cannot affect the existing Linux/macOS/CodeQL/token-auth jobs.
+    concurrency:
+      group: windows-runtime-cli-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py
+        with:
+          python-version: "3.12"
+      # Same locked install surface as python-security minus the POSIX-only
+      # ingestion extra (wakeword-ingest/PyAV is for tests/tools, not run here).
+      # `web` pins FastAPI to the deployed version; `slack` is present because
+      # the platform-picker tests assert on plugins that only import with it.
+      - name: Install locked development environment
+        run: python -m pip install -e ".[dev,web,slack]"
+      # scripts/run_tests.sh runs each test file in its own subprocess and
+      # refuses to run without a venv carrying pytest, or YOUTAB_AGENT_PYTHON
+      # pointing at one — point it at the setup-python interpreter, same as the
+      # Linux gate. `-j 3` bounds parallelism on the 4-vCPU runner so the
+      # subprocess-spawning meta-tests are not oversubscribed; `--file-retries 0`
+      # forbids the retry-that-hides-a-flake (a file must pass on first run).
+      # The suite output is tee'd to the job log (visible on failure in the run
+      # output) rather than an artifact: this repo SHA-pins every third-party
+      # action and introduces none it has not verified, so a new
+      # upload-artifact action is deliberately not added here — the diagnostics
+      # are already in the failed job's log.
+      - name: Windows runtime/CLI suite (atomic-write, locking, WAL, paths, encoding, subprocess, lifecycle/auth)
+        shell: bash
+        env:
+          YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
+          TZ: UTC
+          PYTHONUTF8: "1"
+        run: |
+          set -o pipefail
+          bash scripts/run_tests.sh tests/youtab_runtime tests/youtab_agent_cli \
+            -j 3 --file-retries 0 -q 2>&1 | tee windows-runtime-cli.log

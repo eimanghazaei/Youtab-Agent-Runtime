@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import youtab_state
+from tests import _wincompat
 from youtab_agent_cli import kanban_db as kb
 
 
@@ -399,6 +400,10 @@ def _exited_status(code: int) -> int:
 
 
 
+@_wincompat.requires_posix  # drives POSIX wait-status worker-exit classification
+# (os.WIFEXITED); the test synthesizes a raw wait-status via ``code << 8`` and
+# relies on _classify_worker_exit decoding it — POSIX-only. reap_worker_zombies
+# is a documented Windows no-op (see the paired test below).
 def test_rate_limit_exit_requeues_without_counting_failure(
     kanban_home, monkeypatch,
 ):
@@ -461,6 +466,25 @@ def test_rate_limit_exit_requeues_without_counting_failure(
         assert "crashed" not in outcomes
 
 
+@pytest.mark.skipif(
+    not _wincompat.WINDOWS,
+    reason="paired Windows fail-closed test for the POSIX-only wait-status "
+    "worker-exit reap path (the requires_posix tests above)",
+)
+def test_reap_worker_zombies_is_noop_on_windows():
+    """Fail-closed pairing for the POSIX wait-status classification path.
+
+    Worker-exit classification relies on os.waitpid + os.WIFEXITED, which do
+    not exist on Windows. reap_worker_zombies guards this with
+    ``if os.name != "nt"`` and must therefore be an inert no-op on Windows:
+    it returns an empty list and never raises, so the dispatch loop that calls
+    it each tick keeps running rather than crashing on an unsupported syscall.
+    """
+    import youtab_agent_cli.kanban_db as _kb
+
+    assert _kb.reap_worker_zombies() == []
+    # Called repeatedly each dispatch tick — must stay inert, never raise.
+    assert _kb.reap_worker_zombies() == []
 
 
 def test_respawn_guard_defers_rate_limited_within_cooldown(
@@ -701,8 +725,11 @@ def test_worktree_workspace_explicit_target_materializes_linked_worktree(kanban_
         capture_output=True,
         text=True,
     ).stdout
-    assert f"worktree {target}" in listed
-    assert f"branch refs/heads/{branch}" in listed
+    # git prints worktree paths with forward slashes on every platform;
+    # normalize both sides so the comparison holds on Windows too.
+    listed_posix = listed.replace("\\", "/")
+    assert f"worktree {Path(target).as_posix()}" in listed_posix
+    assert f"branch refs/heads/{branch}" in listed_posix
 
 
 # ---------------------------------------------------------------------------
@@ -1283,6 +1310,11 @@ def test_resolve_youtab_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
 
     monkeypatch.delenv("YOUTAB_AGENT_BIN", raising=False)
     monkeypatch.setattr(shutil, "which", lambda name: None)
+    # On Windows _resolve_youtab_argv resolves the shim via _safe_which_no_cwd,
+    # not shutil.which, and an editable install (pip install -e) puts a real
+    # youtab.EXE on PATH — stub the CWD-safe lookup too so the "no shim" premise
+    # holds on every platform.
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda *a, **k: None)
     argv = kb._resolve_youtab_argv()
     assert argv == [sys.executable, "-m", "youtab_agent_cli.main"]
 
