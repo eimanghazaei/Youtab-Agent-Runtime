@@ -2,11 +2,15 @@
 
 The device predicate is pure and platform-independent, so its adversarial unit
 tests run on every OS. Enforcement in the production guards is gated on
-``os.name == "nt"``; those integration tests force the Windows branch with
-``monkeypatch.setattr(os, "name", "nt")`` so they execute on the Linux CI leg
-too, and a paired POSIX-behaviour test proves the rule does NOT change
-non-Windows semantics (the existing POSIX sensitive-path suites are preserved
-untouched — this file only ADDS the Windows coverage).
+``os.name == "nt"`` and routes through code that resolves the home directory at
+import time (``tools.file_operations._HOME = Path.home()``), so the integration
+tests run NATIVELY on Windows rather than monkeypatching ``os.name`` — patching
+it to ``"nt"`` on a POSIX runner would make ``Path.home()`` use Windows logic
+and raise ``RuntimeError`` there. The Windows enforcement is therefore exercised
+on the ``windows-tools`` / ``windows-runtime-cli`` CI legs; a paired POSIX-
+behaviour test proves the rule does NOT change non-Windows semantics (the
+existing POSIX sensitive-path suites are preserved untouched — this file only
+ADDS coverage).
 """
 
 import os
@@ -14,6 +18,21 @@ import os
 import pytest
 
 from tools.path_security import is_windows_reserved_device_path
+
+
+# Integration tests exercise the real guards, which resolve the home directory
+# on import; run them where os.name is genuinely "nt" instead of forcing it.
+windows_only = pytest.mark.skipif(
+    os.name != "nt",
+    reason="exercises the os.name=='nt' device enforcement natively; runs on the Windows CI legs",
+)
+# POSIX-behaviour tests run natively on the POSIX CI legs (ubuntu + macOS, where
+# tests/tools already runs); on Windows "POSIX semantics" is not a thing to
+# assert, and the paired Windows rejection is proven by the windows_only tests.
+posix_only = pytest.mark.skipif(
+    os.name == "nt",
+    reason="asserts POSIX file-name semantics; runs on the POSIX CI legs",
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -60,23 +79,9 @@ def test_ordinary_path_is_allowed(path):
 # --------------------------------------------------------------------------- #
 # 2. Guard B — agent write/delete/move gate (agent/file_safety.py)
 # --------------------------------------------------------------------------- #
-@pytest.fixture
-def as_windows(monkeypatch):
-    monkeypatch.setattr(os, "name", "nt")
-
-
-# POSIX-behaviour tests run NATIVELY on the POSIX CI legs (ubuntu + macOS,
-# where tests/tools already runs). They cannot monkeypatch os.name to "posix"
-# on a Windows host — pathlib would then try to instantiate a PosixPath, which
-# raises NotImplementedError — so they skip on Windows, where "POSIX semantics"
-# is not a thing to assert. The Windows *rejection* is proven on Windows above.
-posix_only = pytest.mark.skipif(
-    os.name == "nt", reason="asserts POSIX file-name semantics; runs on the POSIX CI legs"
-)
-
-
+@windows_only
 class TestWriteDenialClassifierWindows:
-    def test_device_name_is_denied(self, as_windows):
+    def test_device_name_is_denied(self):
         from agent import file_safety
 
         assert file_safety.is_write_denied("CON") is True
@@ -84,12 +89,12 @@ class TestWriteDenialClassifierWindows:
         msg = file_safety.get_write_denied_error("NUL")
         assert msg is not None and "reserved device" in msg
 
-    def test_namespace_prefix_is_denied(self, as_windows):
+    def test_namespace_prefix_is_denied(self):
         from agent import file_safety
 
         assert file_safety.is_write_denied(r"\\.\PhysicalDrive0") is True
 
-    def test_ordinary_file_still_allowed(self, as_windows, tmp_path):
+    def test_ordinary_file_still_allowed(self, tmp_path):
         from agent import file_safety
 
         assert file_safety.get_write_denied_error(str(tmp_path / "notes.md")) is None
@@ -111,20 +116,21 @@ class TestWriteDenialClassifierPosixUnchanged:
 # --------------------------------------------------------------------------- #
 # 3. utils.py shared atomic sinks (cover skill/memory/cron/oauth writers)
 # --------------------------------------------------------------------------- #
+@windows_only
 class TestAtomicSinksRejectDeviceWindows:
-    def test_atomic_write_text_rejects_device(self, as_windows):
+    def test_atomic_write_text_rejects_device(self):
         import utils
 
         with pytest.raises(ValueError, match="reserved device"):
             utils.atomic_write_text("CON", "data")
 
-    def test_atomic_json_write_rejects_device(self, as_windows):
+    def test_atomic_json_write_rejects_device(self):
         import utils
 
         with pytest.raises(ValueError, match="reserved device"):
             utils.atomic_json_write("nul.json", {"a": 1})
 
-    def test_atomic_replace_rejects_device(self, as_windows, tmp_path):
+    def test_atomic_replace_rejects_device(self, tmp_path):
         import utils
 
         src = tmp_path / "src.tmp"
@@ -132,7 +138,7 @@ class TestAtomicSinksRejectDeviceWindows:
         with pytest.raises(ValueError, match="reserved device"):
             utils.atomic_replace(str(src), r"\\.\PhysicalDrive0")
 
-    def test_normal_write_still_works(self, as_windows, tmp_path):
+    def test_normal_write_still_works(self, tmp_path):
         import utils
 
         target = tmp_path / "ok.txt"
@@ -143,15 +149,17 @@ class TestAtomicSinksRejectDeviceWindows:
 # --------------------------------------------------------------------------- #
 # 4. kanban attachment sanitiser (agent / dashboard / CLI attach path)
 # --------------------------------------------------------------------------- #
-class TestAttachmentNameRejectsDeviceWindows:
-    def test_reserved_names_rejected(self, as_windows):
+class TestAttachmentNameRejectsDevice:
+    @windows_only
+    def test_reserved_names_rejected(self):
         from youtab_agent_cli import kanban_db
 
         for bad in ("CON", "con.txt", "NUL", "com1.log", "aux"):
             with pytest.raises(ValueError):
                 kanban_db._safe_attachment_name(bad)
 
-    def test_ordinary_names_allowed(self, as_windows):
+    @windows_only
+    def test_ordinary_names_allowed(self):
         from youtab_agent_cli import kanban_db
 
         assert kanban_db._safe_attachment_name("report.pdf") == "report.pdf"
@@ -167,15 +175,16 @@ class TestAttachmentNameRejectsDeviceWindows:
 # --------------------------------------------------------------------------- #
 # 5. Guard D read-side (tools/file_tools.py) — reading a device hangs / leaks
 # --------------------------------------------------------------------------- #
+@windows_only
 class TestReadGuardRejectsDeviceWindows:
-    def test_device_read_blocked(self, as_windows):
+    def test_device_read_blocked(self):
         from tools import file_tools
 
         assert file_tools._is_blocked_device_path("CON") is True
         assert file_tools._is_blocked_device_path("nul.txt") is True
         assert file_tools._is_blocked_device_path(r"\\.\PhysicalDrive0") is True
 
-    def test_ordinary_read_not_blocked(self, as_windows):
+    def test_ordinary_read_not_blocked(self):
         from tools import file_tools
 
         assert file_tools._is_blocked_device_path("notes.txt") is False

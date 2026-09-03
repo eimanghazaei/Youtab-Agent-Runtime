@@ -128,6 +128,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - run: echo windows-runtime-cli
+  windows-tools:
+    runs-on: windows-latest
+    steps:
+      - run: echo windows-tools
 """
 
 CI_CONTEXTS = {
@@ -137,6 +141,7 @@ CI_CONTEXTS = {
     "wake-word-backends (windows-latest)": "success",
     "wake-word-backends (macos-latest)": "success",
     "windows-runtime-cli": "success",
+    "windows-tools": "success",
 }
 
 
