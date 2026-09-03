@@ -303,6 +303,17 @@ jobs:
           YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
           TZ: UTC
           PYTHONUTF8: "1"
+          # Per-file timeout, raised from the 300s default for THIS job only.
+          # Cause is identified, not masked: the heaviest suites here spawn their
+          # own child process (e.g. test_session_recovery runs `youtab_agent_cli
+          # ... sessions recover`), and on the 4-vCPU windows-latest runner under
+          # -j 3 that oversubscribes the CPU. Those files finish in ~8s on Linux
+          # and ~19s alone on Windows, but scheduling variance can collide three
+          # heavy files and starve one past 300s (observed 300.72s) — a
+          # contention stall, NOT a hang. A generous ceiling absorbs the variance
+          # while the 60-minute job timeout still bounds a genuine hang. `-j 3`
+          # is unchanged (concurrency is not reduced to make tests pass).
+          YOUTAB_AGENT_TEST_FILE_TIMEOUT: "900"
         run: |
           set -o pipefail
           bash scripts/run_tests.sh tests/youtab_runtime tests/youtab_agent_cli \
