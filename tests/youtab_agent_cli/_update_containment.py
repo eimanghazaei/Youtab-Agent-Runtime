@@ -34,12 +34,27 @@ monkeypatch ``subprocess.run``.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 # Captured before any test can monkeypatch subprocess.run — the tripwire and
 # the disposable-repo builder must always reach the real git, never a mock.
 _REAL_RUN = subprocess.run
+
+# The pristine process environment, captured at import (collection) time before
+# any test mutates it. Updater tests legitimately strip/replace PATH, ComSpec,
+# SystemRoot, HOME, etc. (e.g. the WSL-simulation test), which would otherwise
+# make the tripwire's own `git` subprocess un-spawnable at teardown. The tripwire
+# runs git with THIS env so its CHILD process always has PATH/SystemRoot/ComSpec.
+_REAL_ENV = dict(os.environ)
+
+# The ABSOLUTE path to git, resolved at import time. Executable resolution for a
+# bare "git" uses the PARENT process's PATH at spawn time — which a test may have
+# stripped — so passing a clean child `env` is not enough on Windows. Using the
+# absolute path makes spawning PATH-independent. Falls back to "git" only if it
+# is somehow not on PATH at import (never the case on CI).
+_GIT = shutil.which("git") or "git"
 
 # The PRIMARY developer checkout the updater would target in an editable
 # install: parent-of-parent of youtab_agent_cli/main.py. Resolved once.
@@ -86,10 +101,12 @@ def _isolating_git_env(home: Path) -> dict[str, str]:
 
 
 def _git(cwd: Path, *args: str, env: dict[str, str], check: bool = True):
-    full = dict(os.environ)
+    # Base on the pristine import-time env (not the possibly test-stripped
+    # os.environ) so git is always findable, then layer the isolating env.
+    full = dict(_REAL_ENV)
     full.update(env)
     return _REAL_RUN(
-        ["git", *args],
+        [_GIT, *args],
         cwd=str(cwd),
         env=full,
         capture_output=True,
@@ -171,10 +188,11 @@ def snapshot_refs(repo: Path) -> dict[str, str]:
 
     def one(*args: str) -> str:
         r = _REAL_RUN(
-            ["git", "-C", str(repo), *args],
+            [_GIT, "-C", str(repo), *args],
             capture_output=True,
             text=True,
             check=False,
+            env=_REAL_ENV,  # immune to a test that stripped PATH/ComSpec/SystemRoot
         )
         return r.stdout.strip()
 
