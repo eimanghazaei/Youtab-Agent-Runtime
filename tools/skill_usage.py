@@ -103,8 +103,15 @@ def _usage_file_lock():
         yield
         return
 
-    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-        lock_path.write_text(" ", encoding="utf-8")
+    if msvcrt:
+        # Create the lock file if missing WITHOUT truncating it (WAVE-28 §7).
+        # A truncating write here (write_text) rewrites byte 0, which races a
+        # concurrent holder's byte-0 msvcrt.locking lock and raises PermissionError
+        # (ERROR_LOCK_VIOLATION); _mutate swallows that as a best-effort failure,
+        # silently DROPPING the increment (the 149/150 lost-update flake). An empty
+        # file is lockable (Windows byte-range locks may sit at/after EOF), so a
+        # create-if-missing that never touches byte 0 is sufficient and safe.
+        os.close(os.open(lock_path, os.O_CREAT | os.O_RDWR))
 
     fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
     try:
@@ -783,7 +790,11 @@ def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False
             data[skill_name] = rec
             save_usage(data)
     except Exception as e:
-        logger.debug("skill_usage._mutate(%s) failed: %s", skill_name, e, exc_info=True)
+        # WARNING, not DEBUG (WAVE-28 §7): a dropped read-modify-write here is a
+        # LOST durable increment — materially more serious than a corrupt-sidecar
+        # read — and must be visible, not buried at debug level. Control flow is
+        # unchanged (still best-effort; usage counting never breaks a skill call).
+        logger.warning("skill_usage._mutate(%s) failed: %s", skill_name, e, exc_info=True)
 
 
 # ---------------------------------------------------------------------------
