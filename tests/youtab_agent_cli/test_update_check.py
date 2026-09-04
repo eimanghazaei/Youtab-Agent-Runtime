@@ -50,8 +50,12 @@ def test_prefetch_non_blocking():
         banner.prefetch_update_check()
         elapsed = time.monotonic() - start
 
-        # Should return almost immediately (well under 1 second)
-        assert elapsed < 1.0
+        # prefetch backgrounds the check and must not block on it; a regression
+        # that runs the check inline would wait on real network I/O. 5.0s keeps
+        # that fast-vs-blocking distinction while absorbing -j3 CPU-contention
+        # thread-spawn scheduling on the CI runner (a 1s ceiling is flake-prone
+        # there; intent unchanged).
+        assert elapsed < 5.0
 
         # Wait for the background thread to finish
         banner._update_check_done.wait(timeout=5)
