@@ -13,6 +13,7 @@ from youtab_runtime.run_journal import (
     append_event,
     latest_seq,
     list_events,
+    list_events_by_category,
 )
 
 
@@ -130,6 +131,25 @@ def test_all_categories_accepted(db):
         ev = append_event("run1", P, cat, "k", {"c": cat}, db_path=db)
         assert ev.category == cat
     assert latest_seq("run1", db_path=db) == len(CATEGORIES)
+
+
+def test_list_events_by_category_spans_run_ids_and_is_principal_scoped(db):
+    # process events are keyed by launch token (a fresh "run_id" per launch);
+    # a category sweep must find them across tokens for the owning principal only.
+    append_event("token-1", P, "process", "spawned", {"launch_token": "token-1"}, db_path=db)
+    append_event("token-1", P, "process", "killed", {}, db_path=db)
+    append_event("token-2", P, "process", "recovered", {}, db_path=db)
+    append_event("run-x", P, "lifecycle", "run_completed", {}, db_path=db)
+    # A different principal's process event must never appear.
+    append_event("token-3", R, "process", "spawned", {}, db_path=db)
+
+    kinds = [e.kind for e in list_events_by_category(P, "process", db_path=db)]
+    assert kinds == ["spawned", "killed", "recovered"]  # across token-1 + token-2
+    # Different principal is isolated.
+    assert [e.kind for e in list_events_by_category(R, "process", db_path=db)] == ["spawned"]
+    # Category filter excludes lifecycle.
+    assert not any(e.category != "process"
+                   for e in list_events_by_category(P, "process", db_path=db))
 
 
 def test_concurrent_appends_get_distinct_monotonic_seqs(db):

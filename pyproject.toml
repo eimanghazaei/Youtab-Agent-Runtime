@@ -434,9 +434,13 @@ markers = [
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Youtab falls back to journal_mode=DELETE)",
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
+    "benchmark: WAVE-26 Agent Runtime capability benchmark (tests/benchmark) — kept OUT of default collection; run explicitly via `-m benchmark` in the dedicated benchmark CI job",
 ]
-# integration tests take way too long to run in the normal CI environments
-addopts = "-m 'not integration'"
+# integration tests take way too long to run in the normal CI environments, and
+# the WAVE-26 capability benchmark (tests/benchmark) is a separate, opt-in gate
+# with its own CI job — both are excluded from default collection so the standard
+# suites never pick them up. The benchmark job re-selects them with `-m benchmark`.
+addopts = "-m 'not integration and not benchmark'"
 
 [tool.ty.environment]
 python-version = "3.13"

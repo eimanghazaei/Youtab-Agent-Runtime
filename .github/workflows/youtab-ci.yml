@@ -378,3 +378,79 @@ jobs:
           set -o pipefail
           bash scripts/run_tests.sh tests/tools \
             -j 3 --file-retries 0 -q 2>&1 | tee windows-tools.log
+
+  # WAVE-26 Agent Runtime capability benchmark (deterministic offline). Judges
+  # runtime capability ONLY from observable, durable state — the run journal
+  # (events by seq), the effect ledger, the egress audit trail, harness process
+  # evidence, and files — never from the agent's self-report. No provider, no
+  # network, no production home: the deterministic executors drive the REAL
+  # WAVE-26 substrate at an isolated YOUTAB_AGENT_HOME + journal DB and controlled
+  # fault injection, so a regression in any WAVE-26 module flips a verdict and
+  # fails this gate. Model-quality dimensions (task quality, tool-selection/arg
+  # accuracy, real token/cost, model-driven injection) are DEFINED with oracles
+  # but marked real_provider and reported as unknown/OWNER_LIVE_PROVIDER_ACTION
+  # _REQUIRED here — never coerced to pass or 0.
+  #
+  # NOT a required check yet: adding it to the `main-required-gates` ruleset is a
+  # separate Owner step AFTER it is green once (mirroring the note on the
+  # windows-runtime-cli / windows-tools jobs). Renaming this job renames the
+  # check context, so a rename is a two-place change.
+  benchmark-deterministic:
+    runs-on: ubuntu-latest
+    # Finite bound so a wedged step cannot burn the 6h default; well above the
+    # normal ~1-2 min duration (one scenario spawns a real subprocess).
+    timeout-minutes: 20
+    # Cancel a superseded run of THIS job on the same ref only — scoped so it
+    # cannot affect the other required jobs.
+    concurrency:
+      group: benchmark-deterministic-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py
+        with:
+          python-version: "3.12"
+      # The benchmark imports youtab_runtime (journal/effect/egress/harness),
+      # gateway.status, tools.url_safety and youtab_agent_cli.runtime_command_auth,
+      # so it needs the same editable install as the runtime gates. `web` is
+      # mandatory on every `pip install -e` here (governed by
+      # tests/youtab_runtime/test_framework_version_matches_lock.py): without it
+      # FastAPI resolves freely from the core range. stdlib + httpx only — no new
+      # dependency and no uv.lock churn.
+      - name: Install locked development environment
+        run: python -m pip install -e ".[dev,web]"
+      # Step 1 (authoritative): run the full deterministic bank through the CLI.
+      # The CLI validates the task bank (>=40 scenarios, all 20 families),
+      # asserts every observed verdict equals the verdict a correct runtime must
+      # yield (--check-expected, default in deterministic mode), and exits
+      # non-zero on ANY harness error or unexpected verdict. This is the backstop
+      # against a silent no-collection: it fails loudly if the bank shrank or a
+      # WAVE-26 module regressed.
+      - name: Deterministic capability benchmark (authoritative)
+        env:
+          PYTHONUTF8: "1"
+          TZ: UTC
+        run: python -m tests.benchmark.harness.cli run --mode deterministic --out .bench
+      # The measured record is the evidence, printed rather than uploaded (this
+      # workflow SHA-pins every action and adds none it has not verified, so a new
+      # upload-artifact action is deliberately not introduced). It contains only
+      # verdicts + aggregate metrics over synthetic fixtures — no secrets, no
+      # paths outside the checkout.
+      - name: The measured record (summary.json)
+        run: cat .bench/summary.json
+      # Step 2 (runner-contract smoke): the same suite via the canonical runner,
+      # per-file isolated, `--file-retries 0` (a file must pass first try). The
+      # `benchmark` marker is excluded from default collection, so it is
+      # re-selected with `-m benchmark`. Step 1 already guarantees the benchmark
+      # actually ran, so this is defense-in-depth for the pytest path, not the
+      # sole gate. No continue-on-error; a red run blocks.
+      - name: Benchmark suite via canonical runner (synthetic-journey smoke)
+        env:
+          YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
+          PYTHONUTF8: "1"
+          TZ: UTC
+        run: |
+          set -o pipefail
+          bash scripts/run_tests.sh tests/benchmark \
+            -j 2 --file-retries 0 -m benchmark -q 2>&1 | tee benchmark.log

@@ -326,6 +326,34 @@ def list_events(
     return [_row_to_event(r) for r in rows]
 
 
+def list_events_by_category(
+    principal: Principal,
+    category: str,
+    *,
+    limit: int = 5000,
+    db_path: Optional[Path] = None,
+) -> List[RunEvent]:
+    """Return a principal's events of one ``category`` across all ``run_id``s.
+
+    Reads are principal-scoped (never cross-principal). This exists because
+    ``process`` events are keyed by the harness *launch token* rather than the
+    durable ``run_id`` (a restart uses a fresh token), so they cannot be found
+    via :func:`list_events` for a run. In an isolated per-run journal every
+    ``process`` event belongs to that one run, so a category sweep is the correct
+    way to reconstruct the cross-launch process timeline. Ordered by (run_id, seq).
+    """
+    if not isinstance(principal, Principal):
+        raise RunJournalError("principal must be a Principal instance")
+    path = db_path or default_db_path()
+    with _read_conn(path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM run_events WHERE tenant=? AND user=? AND category=? "
+            "ORDER BY run_id ASC, seq ASC LIMIT ?",
+            (principal.tenant, principal.user, category, max(1, min(int(limit), 20000))),
+        ).fetchall()
+    return [_row_to_event(r) for r in rows]
+
+
 def latest_seq(run_id: str, *, db_path: Optional[Path] = None) -> int:
     """Return the highest seq recorded for ``run_id`` (0 if none)."""
     path = db_path or default_db_path()
