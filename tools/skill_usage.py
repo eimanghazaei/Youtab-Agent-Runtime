@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +87,12 @@ def _usage_file() -> Path:
     return _skills_dir() / ".usage.json"
 
 
+# Windows LK_NBLCK acquire deadline. Generous: contention is brief (each holder
+# releases in ms), so this only bounds a pathological stall and never masks a
+# real deadlock — it raises past the deadline rather than dropping the update.
+_USAGE_LOCK_DEADLINE_S = 60.0
+
+
 @contextmanager
 def _usage_file_lock():
     """Serialize .usage.json read-modify-write cycles across processes."""
@@ -104,8 +111,23 @@ def _usage_file_lock():
         if fcntl:
             fcntl.flock(fd, fcntl.LOCK_EX)
         else:
-            fd.seek(0)
-            msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+            # msvcrt LK_LOCK blocks but gives up after ~10 s and RAISES. Under
+            # heavy multi-process contention that failure would propagate to the
+            # best-effort caller and silently DROP a read-modify-write (a lost
+            # update). Retry the non-blocking LK_NBLCK on a short interval up to a
+            # generous deadline so this behaves like POSIX flock(LOCK_EX)
+            # (block-until-acquired) and the counter increment is genuinely atomic
+            # across processes.
+            deadline = time.monotonic() + _USAGE_LOCK_DEADLINE_S
+            while True:
+                fd.seek(0)
+                try:
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.02)
         yield
     finally:
         if fcntl:
