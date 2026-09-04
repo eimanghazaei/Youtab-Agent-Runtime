@@ -30,15 +30,25 @@ therefore remains `False` by design.
 
 ## Allowlist categories (source: `security/egress_allowlist.json`)
 
-Counts are per unique `(file, symbol)` — the gate's granularity — over 242 raw
-call sites (117 unique keys):
+Counts are per unique `(file, symbol)` — the gate's granularity — over 312 raw
+call sites (146 unique keys). The gate bans raw construction of
+`httpx.Client`/`AsyncClient` **and** the httpx module-level convenience verbs
+(`httpx.get`/`post`/`put`/`patch`/`delete`/`head`/`options`/`request`/`stream`),
+plus `requests.*`, `aiohttp.ClientSession`, `urllib.request.urlopen` and
+`websockets.connect`:
 
 | Category | Keys | Meaning | Residual risk |
 |---|---:|---|---|
-| `fixed_destination_infra` | 89 | Destination is a hardcoded provider/platform API host, an operator-config/env `base_url`, a first-party managed gateway (origin-validated), a local daemon/sidecar/loopback, or a provider-API-response delivery URL. Not influenced by agent output or end-user message content. | SSRF: none (attacker cannot choose the host). Audit-journaling gap only. LOW. |
-| `dev_tooling` | 20 | Reachable only from CLI / setup / onboarding / diagnostics paths, not from an agent run serving requests. Hardcoded or operator-config hosts. | LOW. |
+| `fixed_destination_infra` | 107 | Destination is a hardcoded provider/platform API host, an operator-config/env `base_url`, a first-party managed gateway (origin-validated), a local daemon/sidecar/loopback, or a provider-API-response delivery URL. Not influenced by agent output or end-user message content. | SSRF: none (attacker cannot choose the host). Audit-journaling gap only. LOW. |
+| `dev_tooling` | 31 | Reachable only from CLI / setup / onboarding / diagnostics / skill-management paths, not from an agent run serving requests. Hardcoded or operator-config hosts. | LOW. |
 | `untrusted_destination_guarded` | 5 | Destination can be influenced by agent output / inbound message / operator-entered URL, **and is SSRF-guarded** (see fixes below). | LOW–MEDIUM, mitigated. |
 | `sdk_internal` | 3 | A URL-less httpx transport handed to a vendor SDK (OpenAI/Anthropic/Azure/Gemini); the SDK owns the request. | See out-of-process residual. |
+
+One `dev_tooling` entry carries an open follow-up: `tools/skills_hub.py` /
+`youtab_agent_cli/skills_hub.py` fetch GitHub-hosted skill packages (token-auth,
+operator/CLI-governed) via a manual `Location` redirect loop without per-hop SSRF
+re-validation. Marked `PENDING_OWNER_ACTION` in the allowlist: confirm there is no
+agent-facing arbitrary-URL skill install and add per-hop re-validation.
 
 ## WAVE-27 untrusted-destination SSRF fixes
 

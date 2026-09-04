@@ -330,11 +330,21 @@ def _redact_journal(value: Any, *, _depth: int = 0) -> Any:
 def redact_journal_payload(payload: Any) -> Any:
     """Redaction chokepoint applied to EVERY run-journal payload before persist.
 
-    This makes redaction an *invariant of the substrate* rather than a
-    convention each emitter must remember: whatever a caller hands
-    ``run_journal.append_event``, no string/bytes secret and no over-large
-    structure can land in the durable journal. Numeric values under secret-shaped
-    keys are preserved so usage counts survive (see :func:`_redact_journal`).
+    This makes redaction an *invariant of the substrate* rather than a convention
+    each emitter must remember: a string/bytes value under a secret-shaped key is
+    dropped, free-text strings are scrubbed for inline secrets, and over-large
+    structures are bounded — so no caller can casually persist a raw credential.
+
+    Scope caveats (this is defense-in-depth layered over the typed emitters'
+    own ``redact_mapping``, NOT an absolute guarantee):
+      * A STRING under a *structural* key (see :data:`_SAFE_VERBATIM_KEYS` and
+        the ``_id``/``_hash``/``_digest``/``_seq`` suffixes) is kept verbatim so
+        audit evidence (digests/ids) survives — a caller that put a token-shaped
+        value under such a key would not be scrubbed here. Current emitters only
+        place internally-generated structural values there.
+      * A NUMERIC value under a secret-shaped key is preserved (a bare number
+        cannot carry a credential and usage counts must survive) — a numeric
+        secret (e.g. a PIN) under ``password``/``token`` would pass.
     Idempotent: re-redacting an already-redacted payload is a no-op.
     """
     return _redact_journal(payload)

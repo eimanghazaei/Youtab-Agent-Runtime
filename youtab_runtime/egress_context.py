@@ -9,12 +9,22 @@ scope. Rather than change every call signature (which would be a large,
 untestable, non-mechanical migration), the runtime sets an **ambient** context
 while it executes a run, and the audited factories read it.
 
+Adoption status (WAVE-27, honest): this is the mechanism the real agent worker
+is INTENDED to adopt by wrapping run execution in :func:`egress_run_context`, but
+that production wiring is **not yet in place** — today the context is entered only
+by the benchmark harness and tests. Until the real worker adopts it,
+``in_run_context()`` is False in production, so ``tools/url_safety`` builds the
+plain (still SSRF-guarded) client and the per-request egress journal is exercised
+by the deterministic benchmark, not live runs. Wiring the real worker (and
+verifying it end-to-end with a live provider) is ``PENDING_OWNER_ACTION`` — see
+``docs/security/EGRESS_EXCEPTIONS.md``. SSRF connect-time enforcement and the CI
+lint gate are unaffected by this and apply regardless.
+
 Two zones:
 
-* **In-run**: while a run executes, the runtime enters
-  :func:`egress_run_context` so outbound traffic is attributed and journalled to
-  that run + principal. This is where the agentic security model cares about
-  egress (a run's network side effects judged from observable journal state).
+* **In-run**: when a run enters :func:`egress_run_context`, outbound traffic is
+  attributed and journalled to that run + principal — where the agentic security
+  model cares about egress (network side effects judged from observable state).
 * **System / out-of-run**: CLI, dashboard, bootstrap and platform-infra egress
   that is not part of an agent run. There is no run to attribute to; the
   well-defined :func:`system_principal` / :data:`SYSTEM_RUN_ID` fallback is used.

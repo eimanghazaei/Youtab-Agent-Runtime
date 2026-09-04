@@ -57,6 +57,27 @@
       "owner_action": "NONE"
     },
     {
+      "file": "agent/pet/manifest.py",
+      "symbol": "httpx.get",
+      "reason": "Pet manifest fetch from the configured catalog host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/pet/store.py",
+      "symbol": "httpx.get",
+      "reason": "Pet store asset/download from the configured pet catalog/manifest host (manifest-provided URLs, not agent/user input).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/pet/store.py",
+      "symbol": "httpx.stream",
+      "reason": "Pet store asset/download from the configured pet catalog/manifest host (manifest-provided URLs, not agent/user input).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
       "file": "agent/proxy_sources/iron_proxy.py",
       "symbol": "urllib.request.urlopen",
       "reason": "iron-proxy binary download (version-constant release URL) + local management listener; reached only from the `youtab egress` setup CLI.",
@@ -225,6 +246,27 @@
       "owner_action": "NONE"
     },
     {
+      "file": "plugins/dashboard_auth/self_hosted/__init__.py",
+      "symbol": "httpx.get",
+      "reason": "Self-hosted dashboard-auth OAuth against the operator-configured provider base_url.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/dashboard_auth/self_hosted/__init__.py",
+      "symbol": "httpx.post",
+      "reason": "Self-hosted dashboard-auth OAuth against the operator-configured provider base_url.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/dashboard_auth/youtab/__init__.py",
+      "symbol": "httpx.post",
+      "reason": "Youtab dashboard-auth OAuth against the portal base_url from config/registry.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
       "file": "plugins/image_gen/krea/__init__.py",
       "symbol": "requests.get",
       "reason": "Provider/gateway base_url generate + job-poll (job_id from the provider submit response, not a user URL).",
@@ -263,6 +305,20 @@
       "file": "plugins/memory/hindsight/__init__.py",
       "symbol": "urllib.request.urlopen",
       "reason": "Operator-configured Hindsight host {api_url}/version (capability probe).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/memory/honcho/oauth.py",
+      "symbol": "httpx.get",
+      "reason": "Honcho memory OAuth endpoint from operator config.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/memory/honcho/oauth.py",
+      "symbol": "httpx.post",
+      "reason": "Honcho memory OAuth endpoint from operator config.",
       "category": "fixed_destination_infra",
       "owner_action": "NONE"
     },
@@ -393,6 +449,20 @@
       "owner_action": "NONE"
     },
     {
+      "file": "plugins/platforms/photon/auth.py",
+      "symbol": "httpx.get",
+      "reason": "Photon platform auth against the local Photon sidecar / configured service host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/photon/auth.py",
+      "symbol": "httpx.post",
+      "reason": "Photon platform auth against the local Photon sidecar / configured service host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
       "file": "plugins/platforms/simplex/adapter.py",
       "symbol": "websockets.connect",
       "reason": "self.ws_url (SIMPLEX_WS_URL config, self-hosted daemon).",
@@ -463,6 +533,13 @@
       "owner_action": "NONE"
     },
     {
+      "file": "plugins/spotify/client.py",
+      "symbol": "httpx.request",
+      "reason": "Spotify Web API (api.spotify.com) with the configured token.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
       "file": "plugins/teams_pipeline/pipeline.py",
       "symbol": "httpx.AsyncClient",
       "reason": "Hardcoded Notion (api.notion.com/v1) and Linear (api.linear.app/graphql) platform hosts.",
@@ -473,6 +550,34 @@
       "file": "plugins/video_gen/xai/__init__.py",
       "symbol": "httpx.AsyncClient",
       "reason": "xAI config base_url via _submit/_poll; request_id from the provider submit response.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/web/brave_free/provider.py",
+      "symbol": "httpx.get",
+      "reason": "Brave search API host (config); query in params, not the host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/web/searxng/provider.py",
+      "symbol": "httpx.get",
+      "reason": "Operator-configured SearXNG instance host; query in params, not an arbitrary host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/web/tavily/provider.py",
+      "symbol": "httpx.post",
+      "reason": "Tavily search API host (config); query in the body, not the host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/web/xai/provider.py",
+      "symbol": "httpx.post",
+      "reason": "xAI search API host (config base_url); the search query is in the request body, not the destination host.",
       "category": "fixed_destination_infra",
       "owner_action": "NONE"
     },
@@ -554,6 +659,13 @@
       "owner_action": "NONE"
     },
     {
+      "file": "tools/kanban_tools.py",
+      "symbol": "httpx.stream",
+      "reason": "Kanban board host from operator config (streamed events); board/task ids in the path, not the host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
       "file": "tools/managed_tool_gateway.py",
       "symbol": "httpx.AsyncClient",
       "reason": "Managed-gateway presign POST (is_managed_youtab_gateway_url-validated origin + pinned path); the subsequent PUT to the returned URL uses the SSRF-safe client.",
@@ -608,6 +720,20 @@
       "reason": "Fixed provider/daemon hosts: slack.com/api, signal-cli daemon {http_url} from provider config, hardcoded bots.qq.com/QQ REST. Message body/recipient vary, never the host.",
       "category": "fixed_destination_infra",
       "owner_action": "NONE"
+    },
+    {
+      "file": "tools/skills_hub.py",
+      "symbol": "httpx.get",
+      "reason": "Skill-package fetch/install from GitHub (GITHUB_TOKEN/App auth), operator/CLI-governed supply-chain path with a manual Location redirect loop.",
+      "category": "dev_tooling",
+      "owner_action": "PENDING_OWNER_ACTION: confirm there is no agent-facing arbitrary-URL skill install, and add per-hop SSRF re-validation to the manual redirect loop (tools/skills_hub.py ~306-332)."
+    },
+    {
+      "file": "tools/skills_hub.py",
+      "symbol": "httpx.post",
+      "reason": "Skill-package fetch/install from GitHub (GITHUB_TOKEN/App auth), operator/CLI-governed supply-chain path with a manual Location redirect loop.",
+      "category": "dev_tooling",
+      "owner_action": "PENDING_OWNER_ACTION: confirm there is no agent-facing arbitrary-URL skill install, and add per-hop SSRF re-validation to the manual redirect loop (tools/skills_hub.py ~306-332)."
     },
     {
       "file": "tools/skills_sync_client.py",
@@ -673,9 +799,30 @@
       "owner_action": "NONE"
     },
     {
+      "file": "youtab_agent_cli/auth.py",
+      "symbol": "httpx.get",
+      "reason": "Provider OAuth/device-code/usage flows from the CLI; destinations are hardcoded provider hosts or config/registry base_urls (validated). Not agent-run request paths.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/auth.py",
+      "symbol": "httpx.post",
+      "reason": "Provider OAuth/device-code/usage flows from the CLI; destinations are hardcoded provider hosts or config/registry base_urls (validated). Not agent-run request paths.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
       "file": "youtab_agent_cli/browser_connect.py",
       "symbol": "urllib.request.urlopen",
       "reason": "Local CDP debug-endpoint probe (/json/version) for `youtab browser connect`.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/codex_models.py",
+      "symbol": "httpx.get",
+      "reason": "Codex model-list fetch from the hardcoded/config Codex host. CLI.",
       "category": "dev_tooling",
       "owner_action": "NONE"
     },
@@ -711,6 +858,20 @@
       "file": "youtab_agent_cli/dingtalk_auth.py",
       "symbol": "requests.post",
       "reason": "REGISTRATION_BASE_URL env config (oapi.dingtalk.com). Registration CLI.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/doctor.py",
+      "symbol": "httpx.get",
+      "reason": "`youtab doctor` diagnostics probes to configured/loopback endpoints.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/gateway.py",
+      "symbol": "httpx.get",
+      "reason": "`youtab gateway` CLI probes/controls to the local gateway/config host.",
       "category": "dev_tooling",
       "owner_action": "NONE"
     },
@@ -761,6 +922,48 @@
       "symbol": "urllib.request.urlopen",
       "reason": "OSV vulnerability API endpoint constants. security-audit CLI.",
       "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/skills_hub.py",
+      "symbol": "httpx.get",
+      "reason": "CLI skills-hub sync/publish to the operator-configured hub host.",
+      "category": "dev_tooling",
+      "owner_action": "PENDING_OWNER_ACTION: see tools/skills_hub — verify operator-only, no agent-facing arbitrary-URL install."
+    },
+    {
+      "file": "youtab_agent_cli/skills_hub.py",
+      "symbol": "httpx.post",
+      "reason": "CLI skills-hub sync/publish to the operator-configured hub host.",
+      "category": "dev_tooling",
+      "owner_action": "PENDING_OWNER_ACTION: see tools/skills_hub — verify operator-only, no agent-facing arbitrary-URL install."
+    },
+    {
+      "file": "youtab_agent_cli/skills_hub.py",
+      "symbol": "httpx.put",
+      "reason": "CLI skills-hub sync/publish to the operator-configured hub host.",
+      "category": "dev_tooling",
+      "owner_action": "PENDING_OWNER_ACTION: see tools/skills_hub — verify operator-only, no agent-facing arbitrary-URL install."
+    },
+    {
+      "file": "youtab_agent_cli/status.py",
+      "symbol": "httpx.get",
+      "reason": "`youtab status` probes to configured/loopback runtime endpoints.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/telegram_managed_bot.py",
+      "symbol": "httpx.get",
+      "reason": "Telegram Bot API (api.telegram.org) with the configured bot token.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/telegram_managed_bot.py",
+      "symbol": "httpx.post",
+      "reason": "Telegram Bot API (api.telegram.org) with the configured bot token.",
+      "category": "fixed_destination_infra",
       "owner_action": "NONE"
     },
     {

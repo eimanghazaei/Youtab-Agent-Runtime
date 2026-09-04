@@ -25,43 +25,71 @@ def test_image_gen_load_image_bytes_blocks_metadata():
 
 
 # 2) gateway/relay/media.py:RelayMediaClient.download — inbound-message media URL.
-def test_relay_media_download_blocks_unsafe(monkeypatch):
+def test_relay_media_download_blocks_unsafe_including_redirect(monkeypatch):
+    """An untrusted (non-relay) media URL is fetched through the connect-pinning
+    client, so a metadata target is blocked at connect — and urllib (which
+    auto-follows redirects unguarded) is never used for the untrusted branch."""
     from gateway.relay import media as relay_media
 
-    called = {"n": 0}
-
     def _boom(*a, **k):
-        called["n"] += 1
-        raise AssertionError("must not open an unsafe media URL")
+        raise AssertionError("untrusted branch must not use unguarded urllib")
 
     monkeypatch.setattr(relay_media.urllib.request, "urlopen", _boom)
     client = relay_media.RelayMediaClient("https://relay.example", "gw", "secret")
+    # 169.254.169.254 is a literal metadata IP; the SSRF guard blocks it at
+    # connect (SSRFConnectionBlocked) so download degrades to None. No network.
     out = asyncio.run(client.download(_METADATA))
     assert out is None
-    assert called["n"] == 0
 
 
-def test_relay_media_download_allows_public(monkeypatch):
-    """A public (safe) non-relay URL is still fetched — the guard did not over-block."""
+def test_relay_media_download_allows_public_via_pinning_client(monkeypatch):
+    """A public (safe) non-relay URL is fetched through create_ssrf_safe_client —
+    the guard did not over-block, and the untrusted branch uses the pinning
+    client (not unguarded urllib)."""
     from gateway.relay import media as relay_media
 
-    import urllib.error
+    class _Resp:
+        headers = {"Content-Type": "image/png"}
 
-    # is_safe_url passes for a public URL; assert the fetch is then attempted.
-    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda u: True)
-    reached = {"n": 0}
+        def raise_for_status(self):
+            return None
 
-    def _fake_urlopen(req, timeout=None):
-        reached["n"] += 1
-        # URLError is the download()'s expected best-effort failure path.
-        raise urllib.error.URLError("stop after the guard passed")
+        def iter_bytes(self):
+            yield b"\x89PNG\r\n\x1a\n"
 
-    monkeypatch.setattr(relay_media.urllib.request, "urlopen", _fake_urlopen)
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def stream(self, method, url):
+            return _Resp()
+
+    used = {"pinning": 0}
+
+    def _fake_factory(**kw):
+        used["pinning"] += 1
+        return _Client()
+
+    # The untrusted branch imports create_ssrf_safe_client from tools.url_safety.
+    monkeypatch.setattr("tools.url_safety.create_ssrf_safe_client", _fake_factory)
+    monkeypatch.setattr(relay_media.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("untrusted branch must not use urllib")))
     client = relay_media.RelayMediaClient("https://relay.example", "gw", "secret")
-    # A public, non-/relay/media/ URL: not needs_auth, passes is_safe_url.
     out = asyncio.run(client.download("https://cdn.example.com/pic.png"))
-    assert out is None  # the fake urlopen failed, download degrades to None
-    assert reached["n"] == 1  # but the fetch WAS attempted (not blocked)
+    assert out is not None  # a temp file path
+    assert used["pinning"] == 1
+    import os as _os
+    _os.unlink(out)
 
 
 # 3+4) web_server metadata floor: the exact security contract the fix relies on —

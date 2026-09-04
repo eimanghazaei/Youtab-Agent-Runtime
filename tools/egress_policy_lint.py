@@ -64,6 +64,13 @@ _SKIP_PARTS = frozenset(
 #: raw outbound client is being built. ``requests.Session`` and the verb helpers
 #: all count.
 _HTTPX_CTORS = {"Client", "AsyncClient"}
+#: httpx module-level convenience functions each build an ephemeral client and
+#: egress, so they are banned exactly like a bare Client construction (symmetry
+#: with _REQUESTS_CALLS — a raw ``httpx.get(url)`` is as unaudited as ``httpx.Client()``).
+_HTTPX_CALLS = {
+    "get", "post", "put", "delete", "patch", "head", "options", "request",
+    "stream",
+}
 _REQUESTS_CALLS = {
     "get", "post", "put", "delete", "patch", "head", "options", "request",
     "Session",
@@ -111,7 +118,7 @@ class _Scanner(ast.NodeVisitor):
         mod = node.module or ""
         for alias in node.names:
             bound = alias.asname or alias.name
-            if mod == "httpx" and alias.name in _HTTPX_CTORS:
+            if mod == "httpx" and alias.name in (_HTTPX_CTORS | _HTTPX_CALLS):
                 self.symbol_alias[bound] = f"httpx.{alias.name}"
             elif mod == "aiohttp" and alias.name in _AIOHTTP_CTORS:
                 self.symbol_alias[bound] = f"aiohttp.{alias.name}"
@@ -142,7 +149,7 @@ class _Scanner(ast.NodeVisitor):
                     return "urllib.request.urlopen"
             if isinstance(root, ast.Name):
                 canon = self.module_alias.get(root.id)
-                if canon == "httpx" and attr in _HTTPX_CTORS:
+                if canon == "httpx" and attr in (_HTTPX_CTORS | _HTTPX_CALLS):
                     return f"httpx.{attr}"
                 if canon == "requests" and attr in _REQUESTS_CALLS:
                     return f"requests.{attr}"

@@ -17,9 +17,11 @@ This is the approved way to build an outbound httpx client inside the runtime.
 
 WAVE-27 status: the companion CI static gate (``tools/egress_policy_lint.py``,
 run by the required ``python-security`` job) now BANS bare ``httpx.Client`` /
-``httpx.AsyncClient`` / ``requests`` / ``aiohttp`` / ``urllib`` / ``websockets``
-construction in production code outside the audited adapters, except for sites
-enumerated with a justification in ``security/egress_allowlist.json`` (mirrored,
+``httpx.AsyncClient`` construction AND the httpx module-level verbs
+(``httpx.get`` / ``post`` / ``stream`` / ...), plus ``requests`` / ``aiohttp`` /
+``urllib`` / ``websockets``, in production code outside the audited adapters,
+except for sites enumerated with a justification in
+``security/egress_allowlist.json`` (mirrored,
 human-readable, in ``docs/security/EGRESS_EXCEPTIONS.md``). The shared SSRF
 factory ``tools.url_safety.create_ssrf_safe_*`` routes through this boundary in
 OBSERVE mode while a run context is active (see

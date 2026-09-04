@@ -28,7 +28,10 @@ repository-controlled in-process boundary is proven complete-and-enforced below.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ALLOWLIST_PATH = REPO_ROOT / "security" / "egress_allowlist.json"
@@ -75,6 +78,20 @@ def test_non_httpx_adapters_are_real_and_importable():
     )
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Platform-INDEPENDENT egress coverage proof (a full-repo AST scan of the "
+        "same tracked files on every OS). It is enforced authoritatively by the "
+        "`egress-policy` step of the required python-security CI gate on ubuntu "
+        "(scripts/youtab/run_all_gates.sh) and re-run by this test there. Skipped "
+        "ONLY on Windows to avoid a ~13s CPU/IO-heavy redundant scan occupying an "
+        "xdist worker in the windows-tools job under -j3 --file-retries 0, which "
+        "adds resource pressure to co-scheduled timeout-sensitive tests. No "
+        "Windows-specific behaviour is hidden — the scan result is identical "
+        "across platforms."
+    ),
+)
 def test_ci_gate_has_no_new_or_stale_raw_sites():
     """The executable coverage proof: every production raw outbound-client site
     is either inside the audited adapters or justified in the allowlist, and no
