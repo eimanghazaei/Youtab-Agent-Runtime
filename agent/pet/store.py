@@ -355,14 +355,21 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
 
     if sheet_bytes is None and source_url and _is_petdex_host(source_url):
         try:
-            import httpx
+            from tools.url_safety import create_ssrf_safe_client
 
-            resp = httpx.get(
-                source_url,
-                timeout=timeout,
-                follow_redirects=True,
-                headers={"User-Agent": "youtab-agent-runtime-petdex"},
-            )
+            # The initial host is pinned to petdex.dev above, but a redirect
+            # FROM petdex.dev to an arbitrary/private/metadata host would be
+            # followed blindly by a plain client. The SSRF-pinning client
+            # re-validates every hop by resolved IP at connect time, so a
+            # spoofed/compromised manifest can't bounce the fetch at
+            # 169.254.169.254 / loopback / RFC-1918.
+            with create_ssrf_safe_client(
+                timeout=timeout, follow_redirects=True
+            ) as client:
+                resp = client.get(
+                    source_url,
+                    headers={"User-Agent": "youtab-agent-runtime-petdex"},
+                )
             resp.raise_for_status()
             sheet_bytes = resp.content
         except Exception as exc:  # noqa: BLE001 - cosmetic, degrade to placeholder
@@ -469,35 +476,40 @@ def rename_pet(slug: str, display_name: str) -> str | None:
 
 
 def _download(url: str, dest: Path, *, timeout: float) -> None:
-    import httpx
+    from tools.url_safety import create_ssrf_safe_client
 
+    # Callers host-pin the initial URL to petdex.dev, but the download must not
+    # blindly chase a redirect off that trusted host. The SSRF-pinning client
+    # re-validates every redirect hop by resolved IP at connect time, refusing
+    # private/loopback/link-local/cloud-metadata destinations.
     try:
-        with httpx.stream(
-            "GET",
-            url,
-            timeout=timeout,
-            follow_redirects=True,
-            headers={"User-Agent": "youtab-agent-runtime-petdex"},
-        ) as resp:
-            resp.raise_for_status()
-            tmp = dest.with_suffix(dest.suffix + ".part")
-            with tmp.open("wb") as fh:
-                for chunk in resp.iter_bytes():
-                    fh.write(chunk)
-            tmp.replace(dest)
+        with create_ssrf_safe_client(
+            timeout=timeout, follow_redirects=True
+        ) as client:
+            with client.stream(
+                "GET",
+                url,
+                headers={"User-Agent": "youtab-agent-runtime-petdex"},
+            ) as resp:
+                resp.raise_for_status()
+                tmp = dest.with_suffix(dest.suffix + ".part")
+                with tmp.open("wb") as fh:
+                    for chunk in resp.iter_bytes():
+                        fh.write(chunk)
+                tmp.replace(dest)
     except Exception as exc:  # noqa: BLE001
         raise PetStoreError(f"download failed for {url}: {exc}") from exc
 
 
 def _download_json(url: str, *, timeout: float) -> dict:
-    import httpx
+    from tools.url_safety import create_ssrf_safe_client
 
-    resp = httpx.get(
-        url,
-        timeout=timeout,
-        follow_redirects=True,
-        headers={"User-Agent": "youtab-agent-runtime-petdex"},
-    )
+    # Redirect hops are re-validated by the SSRF-pinning client (see _download).
+    with create_ssrf_safe_client(timeout=timeout, follow_redirects=True) as client:
+        resp = client.get(
+            url,
+            headers={"User-Agent": "youtab-agent-runtime-petdex"},
+        )
     resp.raise_for_status()
     data = resp.json()
     return data if isinstance(data, dict) else {}
