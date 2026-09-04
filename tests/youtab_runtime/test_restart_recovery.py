@@ -31,9 +31,19 @@ def _kinds(events):
 
 
 def test_readiness_barrier_returns_true_for_a_healthy_child(harness):
+    import time
+
     harness.launch(mode=CHILD_MODE_RUN_ONCE)
     assert harness.wait_ready(timeout=30) is True
     # The readiness sentinel really was printed on stdout (not just the file).
+    # wait_ready can win via the ready-file before the daemon stdout reader has
+    # appended the sentinel line, so poll stdout_lines up to a bounded deadline
+    # (a poll interval, not a fixed sleep) rather than asserting immediately.
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if any("READY port=" in ln for ln in harness.stdout_lines):
+            break
+        time.sleep(0.05)
     assert any("READY port=" in ln for ln in harness.stdout_lines)
 
 

