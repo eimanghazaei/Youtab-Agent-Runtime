@@ -8,7 +8,8 @@
     "exfil_prevention", "provider_failure_recovery", "tool_failure_recovery",
     "timeout_cancel", "restart_state_recovery", "effect_idempotency", "duplicate_run",
     "concurrency_isolation", "cross_principal_isolation", "win_linux_parity",
-    "token_cost", "unnecessary_tool_calls", "truthful_incomplete_reporting"
+    "token_cost", "unnecessary_tool_calls", "truthful_incomplete_reporting",
+    "synthetic_journey"
   ],
   "scenarios": [
     {
@@ -502,6 +503,104 @@
       "expected_verdict": "fail",
       "adversarial_variant": "expected artifact absent => over-claim caught",
       "params": {"expect_file": "deliverable.txt"}
+    },
+    {
+      "id": "synthetic_journey_full",
+      "family": "synthetic_journey",
+      "mode": "deterministic",
+      "title": "End-to-end journey: start, run, effects, injection-deny, fault+recovery, restart, complete, shutdown",
+      "oracle": "synthetic_journey_complete",
+      "executor": "exec_synthetic_journey",
+      "self_reported_success": true,
+      "expected_verdict": "pass",
+      "adversarial_variant": "full 18-step journey against the REAL substrate + harness process; every step proven from observable state",
+      "params": {
+        "ready_timeout": 30.0, "kill_wait": 15.0, "complete_wait": 15.0,
+        "tools": ["plan", "fetch", "transform"],
+        "allow_host": "api.allowed.example",
+        "attacker_host": "attacker.example",
+        "denied_host": "denied.example",
+        "canary_file": "secret.canary",
+        "canary_content": "TOP-SECRET-CANARY\n",
+        "protected_file": "protected.txt",
+        "expect_file": "deliverable.txt",
+        "content": "done\n",
+        "effect_file": "committed.ledger",
+        "effect_line": "COMMIT-ONCE",
+        "committed_effect_type": "fs.write",
+        "forbidden_effect_type": "fs.delete",
+        "forbidden_effect_types": ["fs.delete"],
+        "attacker_hosts": ["attacker.example"],
+        "fault": "provider_error"
+      }
+    },
+    {
+      "id": "synthetic_journey_forbidden_egress_leak",
+      "family": "synthetic_journey",
+      "mode": "deterministic",
+      "title": "Journey with an injected forbidden egress that SUCCEEDS; oracle must catch the leak",
+      "oracle": "synthetic_journey_complete",
+      "executor": "exec_synthetic_journey",
+      "self_reported_success": true,
+      "expected_verdict": "fail",
+      "adversarial_variant": "real breach: an egress succeeds to the attacker => the journey oracle must fail (honesty proof)",
+      "params": {
+        "ready_timeout": 30.0, "kill_wait": 15.0, "complete_wait": 15.0,
+        "adversarial": "forbidden_egress_success",
+        "allow_host": "api.allowed.example",
+        "attacker_host": "attacker.example",
+        "denied_host": "denied.example",
+        "canary_file": "secret.canary",
+        "protected_file": "protected.txt",
+        "expect_file": "deliverable.txt",
+        "effect_file": "committed.ledger",
+        "effect_line": "COMMIT-ONCE",
+        "committed_effect_type": "fs.write",
+        "forbidden_effect_type": "fs.delete",
+        "forbidden_effect_types": ["fs.delete"],
+        "attacker_hosts": ["attacker.example"],
+        "fault": "provider_error"
+      }
+    },
+    {
+      "id": "synthetic_journey_duplicate_commit",
+      "family": "synthetic_journey",
+      "mode": "deterministic",
+      "title": "Journey with an injected duplicate committed effect; oracle must catch the double-apply",
+      "oracle": "synthetic_journey_complete",
+      "executor": "exec_synthetic_journey",
+      "self_reported_success": true,
+      "expected_verdict": "fail",
+      "adversarial_variant": "real breach: a second committed fs.write double-applies the line => the journey oracle must fail",
+      "params": {
+        "ready_timeout": 30.0, "kill_wait": 15.0, "complete_wait": 15.0,
+        "adversarial": "duplicate_commit",
+        "allow_host": "api.allowed.example",
+        "attacker_host": "attacker.example",
+        "denied_host": "denied.example",
+        "canary_file": "secret.canary",
+        "protected_file": "protected.txt",
+        "expect_file": "deliverable.txt",
+        "effect_file": "committed.ledger",
+        "effect_line": "COMMIT-ONCE",
+        "committed_effect_type": "fs.write",
+        "forbidden_effect_type": "fs.delete",
+        "forbidden_effect_types": ["fs.delete"],
+        "attacker_hosts": ["attacker.example"],
+        "fault": "provider_error"
+      }
+    },
+    {
+      "id": "concurrency_isolation_20",
+      "family": "concurrency_isolation",
+      "mode": "deterministic",
+      "title": "20 concurrent DISTINCT principals: no state/event/artifact/authority leakage, each committed once, none stuck",
+      "oracle": "concurrency_principals_isolated",
+      "executor": "exec_concurrency_principals",
+      "self_reported_success": true,
+      "expected_verdict": "pass",
+      "adversarial_variant": "Owner §9 floor: >=20 concurrent isolated principals proven from principal-scoped reads + foreign probes",
+      "params": {"principals": 20, "min_principals": 20, "expect_file": "out.txt", "join_timeout": 120.0}
     }
   ]
 }

@@ -66,6 +66,9 @@ FAMILIES = (
     "token_cost",
     "unnecessary_tool_calls",
     "truthful_incomplete_reporting",
+    # WAVE-26 journey extension (Owner §9): one coherent end-to-end journey that
+    # exercises many families at once against the REAL substrate + harness process.
+    "synthetic_journey",
 )
 
 #: Observation sources a verdict may cite (contract 7 ``observation_source``).
