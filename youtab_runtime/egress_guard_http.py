@@ -13,16 +13,23 @@ the shared egress audit boundary in :mod:`youtab_runtime.egress_audit`:
     journalled, carrying only the outbound byte *count* and a *digest*, never the
     body.
 
-This is intended to become the single approved way to build an outbound httpx
-client inside the runtime. NOTE (WAVE-26 status): this factory is NOT yet wired
-into the production provider/MCP/webhook adapters (that is Owner-gated group-4
-work — the SSRF pin would reject legitimate local/self-hosted providers until
-they are allowlisted), and the companion lint/gate that would ban bare
-``httpx.Client`` / ``httpx.AsyncClient`` construction elsewhere is PROPOSED, not
-yet present. Until both land, this factory controls only the callers that opt
-into it (today: the benchmark harness under the network-deny posture). See
-``tests/tools/test_egress_boundary_enumeration.py`` (``UNIVERSAL_EGRESS_COVERAGE``)
-for the authoritative inside/outside adapter inventory.
+This is the approved way to build an outbound httpx client inside the runtime.
+
+WAVE-27 status: the companion CI static gate (``tools/egress_policy_lint.py``,
+run by the required ``python-security`` job) now BANS bare ``httpx.Client`` /
+``httpx.AsyncClient`` / ``requests`` / ``aiohttp`` / ``urllib`` / ``websockets``
+construction in production code outside the audited adapters, except for sites
+enumerated with a justification in ``security/egress_allowlist.json`` (mirrored,
+human-readable, in ``docs/security/EGRESS_EXCEPTIONS.md``). The shared SSRF
+factory ``tools.url_safety.create_ssrf_safe_*`` routes through this boundary in
+OBSERVE mode while a run context is active (see
+:mod:`youtab_runtime.egress_context`). ``enforce=True`` (the default) additionally
+blocks a denied destination pre-connect; ``enforce=False`` (observe) delegates the
+allow/deny decision to the connect-time SSRF guard so wrapping an existing caller
+is behaviour-preserving. "Universal coverage" is claimed ONLY for this
+repository-controlled in-process boundary; out-of-process paths (vendor SDK
+internal transports, subprocess/sandbox egress) are enumerated as exceptions and
+their runtime verification is PENDING_OWNER_ACTION.
 """
 
 from __future__ import annotations

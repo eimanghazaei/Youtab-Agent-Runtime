@@ -3,10 +3,15 @@
 This is the *shared* egress audit boundary every in-process outbound adapter is
 meant to pass through so that a run's network side effects are judged from
 observable, ordered, durable journal state rather than from an agent's
-self-report. It is deliberately honest about its scope: WAVE-26 does **not**
-achieve universal production egress closure (see RECON R3 — there is no single
-chokepoint across httpx / requests / aiohttp / urllib / websockets / vendor
-SDKs). What this module provides is:
+self-report. Scope (WAVE-27): the httpx audited factory
+(:mod:`youtab_runtime.egress_guard_http`) and the non-httpx audited adapters
+(:mod:`youtab_runtime.egress_adapters`) route directly-constructable clients
+through here, and a CI static gate (``tools/egress_policy_lint.py``) bans new raw
+client construction outside those adapters. Coverage is claimed ONLY for this
+repository-controlled in-process boundary; vendor SDK internal transports and
+subprocess/sandbox egress cannot be wrapped in-process and are enumerated as
+exceptions in ``docs/security/EGRESS_EXCEPTIONS.md`` (verification
+PENDING_OWNER_ACTION). What this module provides is:
 
   * :func:`authorize` — classify a destination and emit an ``egress``
     ``authorized``/``denied`` decision to the run journal **before** any network
