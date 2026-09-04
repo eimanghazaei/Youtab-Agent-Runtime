@@ -1084,7 +1084,82 @@ def _notify_context_engine_turn_complete(
 _WAVE26_OBSERVER_REGISTERED = False
 
 
-def run_conversation(
+def _egress_run_context_from_env():
+    """Resolve the ambient egress context for the *current* run, from env.
+
+    WAVE-28 (§6.4): wire the audited-egress ambient context
+    (:mod:`youtab_runtime.egress_context`) into the REAL run/orchestrator
+    execution path. A runtime-plane worker is spawned by the kanban dispatcher
+    (``kanban_db._default_spawn`` → ``youtab -p <profile> chat -q ...``) with the
+    durable run identity in its environment:
+
+    * ``YOUTAB_AGENT_KANBAN_TASK``       → the durable ``run_id``
+    * ``YOUTAB_AGENT_TENANT``            → principal tenant
+    * ``YOUTAB_AGENT_KANBAN_CREATED_BY`` → principal user
+    * ``YOUTAB_AGENT_CORRELATION_ID``    → (installation/correlation, optional)
+
+    These are the SAME identifiers the WAVE-26 run observer already binds a
+    fail-closed :class:`~youtab_runtime.run_journal.Principal` from (see the
+    observer-registration block below), so egress attribution stays consistent
+    with the run journal.
+
+    Returns a context manager:
+
+    * When ALL three halves (run_id, tenant, user) are present — i.e. this
+      process is a real runtime-plane worker executing a run — return
+      :func:`egress_run_context` so every tool/provider egress attempted during
+      the run carries ``(run_id, principal)`` attribution and is exited/cleaned
+      up when the run completes, errors, or is cancelled.
+    * Otherwise (interactive CLI, gateway chat, bootstrap, tests) return a
+      no-op ``nullcontext`` so the ambient context stays unset and
+      ``egress_context.current_context()`` yields the well-defined SYSTEM
+      sentinel — matching the existing out-of-run semantics exactly. This is
+      NOT a new deny path; per the egress design, out-of-run egress falls back
+      to the SYSTEM principal (construction-time SSRF enforcement + the CI lint
+      gate still apply regardless).
+
+    Fail-open on any unexpected error: an attribution failure must never break
+    a real run, so we degrade to ``nullcontext`` (SYSTEM fallback) rather than
+    raise.
+    """
+    from contextlib import nullcontext
+
+    try:
+        run_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+        tenant = (os.environ.get("YOUTAB_AGENT_TENANT") or "").strip()
+        user = (os.environ.get("YOUTAB_AGENT_KANBAN_CREATED_BY") or "").strip()
+        if run_id and tenant and user:
+            from youtab_runtime.egress_context import egress_run_context
+            from youtab_runtime.run_journal import Principal
+
+            return egress_run_context(run_id, Principal(tenant, user))
+    except Exception:
+        logger.warning(
+            "WAVE-28 egress-context resolution failed; falling back to SYSTEM",
+            exc_info=True,
+        )
+    return nullcontext()
+
+
+def run_conversation(*args, **kwargs):
+    """Run-execution chokepoint wrapper (WAVE-28 §6.4).
+
+    Thin façade over :func:`_run_conversation_impl` (the ~6k-line run loop).
+    It enters the ambient egress context for this run BEFORE any tool/provider
+    egress can occur and guarantees the context is exited (contextvar token
+    reset) when the run returns, raises, or is cancelled — via the
+    ``with`` block's ``__exit__``. contextvars propagate to coroutines/tasks
+    created within this block, so async tool/provider calls spawned during the
+    run inherit the same attribution; the context does not leak to sibling or
+    subsequent runs.
+
+    Signature is preserved by forwarding ``*args``/``**kwargs`` unchanged.
+    """
+    with _egress_run_context_from_env():
+        return _run_conversation_impl(*args, **kwargs)
+
+
+def _run_conversation_impl(
     agent,
     user_message: Any,
     system_message: str = None,
