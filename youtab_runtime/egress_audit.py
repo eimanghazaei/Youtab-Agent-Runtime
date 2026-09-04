@@ -51,6 +51,7 @@ __all__ = [
     "authorize",
     "record_attempt",
     "record_outcome",
+    "record_observed",
     "digest_bytes",
     "network_deny_active",
     "resolve_policy",
@@ -587,6 +588,46 @@ def record_outcome(
         decision.principal,
         "egress",
         status.value,
+        payload,
+        correlation_id=decision.correlation_id,
+        db_path=decision._db_path,
+    )
+
+
+def record_observed(
+    decision: AuditDecision,
+    status: EgressDecision,
+    *,
+    http_status: Optional[int] = None,
+    error: Any = None,
+) -> None:
+    """Record an OBSERVE-mode egress outcome (WAVE-27).
+
+    Observe mode is used when the audited factory does not itself enforce the
+    allow/deny decision — enforcement is delegated to the connect-time SSRF guard
+    (behaviour-preserving for existing callers) — but the request still passes
+    through the boundary for visibility. Unlike :func:`record_attempt` /
+    :func:`record_outcome` this tolerates a ``denied``-classified decision (the
+    request may still have proceeded under SSRF-guard enforcement), and emits a
+    distinct ``observed_<status>`` kind so the audit trail never conflates an
+    observed request with an enforced one. Carries only destination metadata.
+    """
+    if status not in (
+        EgressDecision.SUCCEEDED,
+        EgressDecision.FAILED,
+        EgressDecision.UNKNOWN,
+    ):
+        raise EgressAuditError(f"invalid observed status: {status!r}")
+    payload = _base_payload(decision)
+    payload["observed"] = True
+    payload["http_status"] = http_status
+    if error is not None:
+        payload["error"] = redact_error(error)
+    append_event(
+        decision.run_id,
+        decision.principal,
+        "egress",
+        f"observed_{status.value}",
         payload,
         correlation_id=decision.correlation_id,
         db_path=decision._db_path,
