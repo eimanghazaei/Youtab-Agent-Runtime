@@ -164,6 +164,19 @@ class RelayMediaClient:
         needs_auth = self.is_relay_media_url(url)
         if needs_auth and not self.enabled:
             return None
+        # WAVE-27 SSRF fix: a non-relay ``url`` is an inbound-message media URL
+        # (e.g. a Discord CDN pass-through from ``event.media_urls``) — i.e.
+        # attacker/user-controllable. Reject it if it resolves to cloud metadata,
+        # loopback or a private-network address before opening the socket. Relay
+        # re-host URLs (needs_auth) are the operator's own configured relay host
+        # and may legitimately be private/self-hosted, so they keep the prior
+        # behaviour; the bearer is only ever sent to those.
+        if not needs_auth:
+            from tools.url_safety import is_safe_url
+
+            if not is_safe_url(url):
+                logger.warning("relay media download blocked (unsafe URL target)")
+                return None
         headers = {}
         if needs_auth:
             headers["Authorization"] = f"Bearer {self._bearer()}"

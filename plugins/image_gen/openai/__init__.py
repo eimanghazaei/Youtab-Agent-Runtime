@@ -132,12 +132,17 @@ def _load_image_bytes(ref: str) -> Tuple[bytes, str]:
     ref = ref.strip()
     lower = ref.lower()
     if lower.startswith(("http://", "https://")):
-        import requests
+        # WAVE-27 SSRF fix: ``ref`` is an agent/user-supplied image-to-image input
+        # (image_url / reference_image_urls). Fetch it through the connect-time
+        # SSRF-pinning client so it cannot be pointed at cloud metadata, loopback
+        # or private-network addresses (and redirects to them are re-validated).
+        from tools.url_safety import create_ssrf_safe_client
 
-        resp = requests.get(ref, timeout=60)
-        resp.raise_for_status()
-        name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
-        return resp.content, name
+        with create_ssrf_safe_client(follow_redirects=True, timeout=60) as client:
+            resp = client.get(ref)
+            resp.raise_for_status()
+            name = ref.split("?", 1)[0].rsplit("/", 1)[-1] or "image.png"
+            return resp.content, name
     if lower.startswith("data:"):
         import base64
 

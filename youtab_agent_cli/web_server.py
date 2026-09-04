@@ -8037,6 +8037,16 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
     url = base_url + "/models"
+    # WAVE-27 SSRF floor: this probes an operator-entered URL, which may
+    # legitimately be a private/self-hosted provider, so the full private-IP
+    # block is intentionally NOT applied here — but a cloud-metadata endpoint
+    # (169.254.169.254, metadata.google.internal, ...) is never a provider and
+    # is refused regardless.
+    from tools.url_safety import is_always_blocked_url
+
+    if is_always_blocked_url(url):
+        return {"ok": False, "reachable": False,
+                "message": "Refusing to probe a cloud-metadata address.", "models": []}
     headers = {"Accept": "application/json"}
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
@@ -8078,6 +8088,14 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
         url = value.rstrip("/") + "/models"
+        # WAVE-27 SSRF floor (see validate_custom_endpoint): operator-entered URL
+        # may be a legitimate self-hosted provider, but a cloud-metadata endpoint
+        # is never one and is refused.
+        from tools.url_safety import is_always_blocked_url
+
+        if is_always_blocked_url(url):
+            return {"ok": False, "reachable": False,
+                    "message": "Refusing to probe a cloud-metadata address."}
         # Send the optional API key so endpoints that require auth on
         # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
         # their models instead of returning an empty list behind a 401.
