@@ -332,6 +332,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                         default=Path(__file__).with_name("cve_allowlist.toml"))
     parser.add_argument("--requirement", type=Path, default=None,
                         help="audit a locked requirements file instead of the env")
+    parser.add_argument("--no-deps", dest="no_deps", action="store_true",
+                        help="audit exactly the pins in --requirement without "
+                             "re-resolving (the uv export already carries the "
+                             "full closure; avoids downloading/building wheels)")
     parser.add_argument("--output", type=Path, help="write the JSON report here")
     parser.add_argument("--today", type=str, default=None,
                         help="override 'today' (YYYY-MM-DD) for allowlist expiry")
@@ -340,7 +344,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     today = _dt.date.fromisoformat(args.today) if args.today else _dt.date.today()
     try:
         allowlist = load_allowlist(args.allowlist)
-        findings = run_pip_audit(args.python, requirement=args.requirement)
+        extra_args = ("--no-deps",) if args.no_deps else ()
+        findings = run_pip_audit(
+            args.python, requirement=args.requirement, extra_args=extra_args
+        )
     except CveAuditError as exc:
         print(f"CVE gate: ERROR (fail-closed): {exc}", file=sys.stderr)
         return 2

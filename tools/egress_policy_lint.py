@@ -93,8 +93,10 @@ def _call_fingerprint(node: ast.Call) -> str:
     (file, symbol), so an APPROVED site cannot be silently mutated into an unsafe
     one while the gate still passes. The fingerprint is the sha256 of the call
     node's normalized AST dump with line/col attributes stripped — so it is
-    stable across benign line moves, but ANY change to the call changes it:
-      * a different destination argument (a new literal URL, a different var);
+    stable across benign line moves, but any change to the call's ARGUMENT
+    EXPRESSIONS changes it:
+      * a changed destination *expression* — a new literal URL, or swapping the
+        argument to a different name/attribute/call;
       * an added/removed/changed keyword (``follow_redirects=True``, ``verify=``,
         a widened ``timeout``);
       * a different call shape (extra args, a wrapped call).
@@ -102,6 +104,14 @@ def _call_fingerprint(node: ast.Call) -> str:
     un-allowlisted — either way the gate fails until the change is re-reviewed and
     re-baselined. Adding a brand-new call (even of an already-allowlisted symbol
     in an already-allowlisted file) is a new fingerprint and also fails.
+
+    Known limit (data-flow, not value): the fingerprint is over the call node's
+    AST, so a destination passed as a *variable* (``httpx.get(URL)``) hashes the
+    name ``URL``, not its value — re-pointing ``URL``'s definition elsewhere does
+    not change this fingerprint. This is a defense-in-depth STATIC gate; the
+    runtime connect-time SSRF pin (``tools.url_safety.create_ssrf_safe_*``) is the
+    actual destination control. The alias / local-import / from-import evasions
+    ARE caught (the scanner resolves those import forms).
     """
     dump = ast.dump(node, annotate_fields=True, include_attributes=False)
     return hashlib.sha256(dump.encode("utf-8")).hexdigest()[:16]

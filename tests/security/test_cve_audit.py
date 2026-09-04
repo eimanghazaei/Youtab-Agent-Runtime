@@ -250,3 +250,33 @@ def test_cli_fails_closed_when_pip_audit_cannot_run(tmp_path, monkeypatch):
     monkeypatch.setattr(cve, "run_pip_audit", boom)
     code = cve.main(["--today", "2026-09-04", "--allowlist", str(tmp_path / "e.toml")])
     assert code == 2, "a tool that cannot run must fail closed, never pass"
+
+
+def test_cli_no_deps_flag_is_forwarded_to_pip_audit(tmp_path, monkeypatch):
+    # --no-deps must reach pip-audit so it audits exactly the uv-exported pins
+    # (the lock already carries the full closure) instead of re-resolving and
+    # downloading/building heavy optional-extra wheels.
+    seen: dict = {}
+
+    def capture(python_exe, *, requirement=None, extra_args=()):
+        seen["extra_args"] = tuple(extra_args)
+        return []
+
+    monkeypatch.setattr(cve, "run_pip_audit", capture)
+    code = cve.main(["--no-deps", "--requirement", str(tmp_path / "reqs.txt"),
+                     "--today", "2026-09-04", "--allowlist", str(tmp_path / "e.toml")])
+    assert code == 0
+    assert seen["extra_args"] == ("--no-deps",)
+
+
+def test_cli_omits_no_deps_by_default(tmp_path, monkeypatch):
+    seen: dict = {}
+
+    def capture(python_exe, *, requirement=None, extra_args=()):
+        seen["extra_args"] = tuple(extra_args)
+        return []
+
+    monkeypatch.setattr(cve, "run_pip_audit", capture)
+    code = cve.main(["--today", "2026-09-04", "--allowlist", str(tmp_path / "e.toml")])
+    assert code == 0
+    assert seen["extra_args"] == ()

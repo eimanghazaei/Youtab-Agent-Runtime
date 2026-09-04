@@ -397,6 +397,25 @@ constraint-dependencies = [
   # pydantic-settings is pulled by mcp / fastapi. GHSA-4xgf-cpjx-pc3j is fixed
   # in 2.14.2.
   "pydantic-settings>=2.14.2",
+  # ── WAVE-28 §4: floors for advisories surfaced only under opt-in adapter
+  # extras (the CVE gate now audits --all-extras, so these must be safe too). ──
+  # tornado is pulled by python-telegram-bot (telegram extra). 6.5.5 carries a
+  # cluster of DoS/leak advisories (CVE-2026-49853 cross-origin Authorization
+  # forwarding, CVE-2026-49855 gzip bomb, CVE-2026-82397 event-loop stall,
+  # GHSA-wwv5-g3v4-889x cookie-attr injection). All are fixed by 6.5.8.
+  "tornado>=6.5.8",
+  # pyasn1 is pulled by pyasn1-modules -> google-auth (google/gemini extras).
+  # CVE-2026-59884/59885/59886 (quadratic-complexity DoS in the BER/CER/DER
+  # decoder) are all fixed in 0.6.4.
+  "pyasn1>=0.6.4",
+  # httplib2 is pulled by google-api-python-client (google extra).
+  # CVE-2026-59939 (GHSA-j5g9-f88f-gfj3, gzip/deflate decompression-bomb DoS)
+  # is fixed in 0.32.0.
+  "httplib2>=0.32.0",
+  # msgpack is pulled by fal-client (fal extra). CVE-2026-57585
+  # (GHSA-6v7p-g79w-8964, out-of-bounds read / crash on Unpacker reuse after a
+  # caught error) is fixed in 1.2.1.
+  "msgpack>=1.2.1",
 ]
 
 [build-system]
