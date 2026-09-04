@@ -9,7 +9,7 @@ import stat
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Optional, Union
 from urllib.parse import urlparse
 
 import yaml
@@ -214,6 +214,7 @@ def atomic_write_text(
     *,
     encoding: str = "utf-8",
     tmp_prefix: str = ".tmp_",
+    effect: Optional[tuple] = None,
 ) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
@@ -223,10 +224,26 @@ def atomic_write_text(
 
     Used by the memory store, skill manager, and agent importer so that
     every destructive file rewrite in the codebase shares one implementation.
+
+    WAVE-26 (optional): pass ``effect=(run_id, principal)`` to bracket the
+    atomic rename with an effect-ledger guard so a crash-then-requeue does not
+    re-apply the write. Default ``None`` preserves behaviour for the many
+    context-free internal callers.
     """
     # Validate before creating the parent dir or a temp file (no side effects
     # on a rejected Windows device target).
     _reject_windows_reserved_device(path)
+    _eff = None
+    if effect is not None:
+        from youtab_runtime import effect_ledger as _el
+
+        run_id, principal = effect
+        _eff = _el.begin_effect(run_id, principal, "fs.write", os.fspath(path))
+        if not _el.should_execute(_eff):
+            # committed (idempotent) or unknown/in_progress (crash-stranded:
+            # never blindly rewrite) — the durable rename is skipped.
+            return
+        _el.mark_in_progress(_eff.effect_id, principal)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
@@ -237,8 +254,18 @@ def atomic_write_text(
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        atomic_replace(tmp_path, path)
+        atomic_replace(tmp_path, path)  # durable commit point
+        if _eff is not None:
+            from youtab_runtime import effect_ledger as _el
+
+            _el.mark_committed(_eff.effect_id, effect[1])
     except BaseException:
+        if _eff is not None:
+            from youtab_runtime import effect_ledger as _el
+
+            # Torn/crash after in_progress: outcome unproven -> unknown, so a
+            # later retry is reconciled rather than blindly re-applied.
+            _el.mark_unknown(_eff.effect_id, effect[1])
         try:
             os.unlink(tmp_path)
         except OSError:

@@ -1203,6 +1203,41 @@ async def runtime_retry_run(
 ):
     """Retry a finished/blocked run by creating a fresh run from the same spec."""
     await _verify_signed_command(request, identity)
+    # WAVE-26 effect-level idempotency: a retry spawns a fresh run (an observable
+    # effect). When the caller supplies an Idempotency-Key, dedupe on it so a
+    # double-submitted (or concurrently retried) request returns the first child
+    # instead of duplicating the run. Un-keyed retries keep the prior behaviour
+    # (each is a distinct, legitimate re-attempt).
+    _retry_effect = None
+    if identity.idempotency_key:
+        from youtab_runtime import effect_ledger as _el
+        from youtab_runtime.run_journal import Principal as _Principal
+
+        _principal = _Principal(identity.tenant, identity.user)
+        _retry_effect = _el.begin_effect(
+            run_id, _principal, "runtime.retry", identity.idempotency_key,
+            correlation_id=identity.correlation_id,
+        )
+        if not _el.should_execute(_retry_effect):
+            prior = _retry_effect.detail.get("child_run_id")
+            if str(_retry_effect.state) == "committed" and prior:
+                with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+                    child = kb.get_task(conn, prior)
+                    if child:
+                        child_mode = (
+                            "deterministic"
+                            if _mode_from_events(kb.list_events(conn, child.id))
+                            == "deterministic"
+                            else "model"
+                        )
+                        return _run_summary(child, execution_mode=child_mode)
+            # in_progress / unknown: outcome unproven — do not blindly re-run.
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "retry_in_progress_or_unknown",
+                        "run_id": run_id},
+            )
+        _el.mark_in_progress(_retry_effect.effect_id, _principal)
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         task = _load_owned_task(conn, run_id, identity)
         # Carry the original run's execution mode forward so a retry of a
@@ -1250,6 +1285,14 @@ async def runtime_retry_run(
             )
     ensure_dispatcher_running()
     _dispatch_tick()
+    if _retry_effect is not None:
+        from youtab_runtime import effect_ledger as _el
+        from youtab_runtime.run_journal import Principal as _Principal
+
+        _el.mark_committed(
+            _retry_effect.effect_id, _Principal(identity.tenant, identity.user),
+            detail={"child_run_id": new_id},
+        )
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         new_task = kb.get_task(conn, new_id)
         return (
