@@ -264,8 +264,18 @@ class TestOrphanedPipeReconciliation:
         except (ProcessLookupError, PermissionError):
             pass
 
-    def test_wait_wakes_when_session_moves_to_finished(self, registry):
-        """wait() should not sleep for the old 1s polling tick after exit."""
+    def test_wait_wakes_when_session_moves_to_finished(self, registry, monkeypatch):
+        """wait() wakes on the completion Event, not a poll tick.
+
+        Raise the poll fallback to 10s so the signal is unambiguous and immune
+        to -j3 scheduler jitter: a correct event-driven wake returns in ~0.05s
+        (well under the 3s bound), whereas a regression that fell back to polling
+        would take ~10s and fail. (Widening the bound alone would let a poll-
+        fallback regression slip through, so we lengthen the poll instead.)
+        """
+        import tools.process_registry as _pr
+        monkeypatch.setattr(_pr, "WAIT_POLL_INTERVAL_SECONDS", 10.0)
+
         s = _make_session(sid="proc_wait_event", output="done")
         registry._running[s.id] = s
 
@@ -280,14 +290,17 @@ class TestOrphanedPipeReconciliation:
         t.start()
         start = time.monotonic()
         try:
-            result = registry.wait(s.id, timeout=5)
+            result = registry.wait(s.id, timeout=30)
         finally:
-            t.join(timeout=1)
+            t.join(timeout=5)
         elapsed = time.monotonic() - start
 
         assert result["status"] == "exited", result
         assert result["exit_code"] == 0
-        assert elapsed < 0.9  # must stay under the old 1s poll tick being regression-tested, f"wait() should wake on completion; took {elapsed:.3f}s"
+        assert elapsed < 3.0, (
+            f"wait() should wake on the completion event (~0.05s); took "
+            f"{elapsed:.3f}s — a regression to the {10.0}s poll fallback"
+        )
 
 
 # =========================================================================

@@ -1022,8 +1022,10 @@ class TestShutdown:
 
         _servers.clear()
 
-        # 4 servers each taking 50ms to shut down
-        delay = 0.05
+        # 4 servers each taking `delay` to shut down. `delay` is generous so the
+        # parallel-vs-serial signal survives -j3 scheduler jitter: serial would
+        # be ~4*delay, parallel ~1*delay, and the assertion sits between them.
+        delay = 0.5
         for i in range(4):
             mock_server = MagicMock()
             mock_server.name = f"srv_{i}"
@@ -1042,10 +1044,12 @@ class TestShutdown:
             mcp_mod._mcp_thread = None
 
         assert len(_servers) == 0
-        # Parallel: ~1 delay, not 4. Margin covers scheduling jitter but stays
-        # well under the serial total.
-        assert elapsed < delay * 3, (
-            f"Shutdown took {elapsed:.3f}s, expected ~{delay}s (parallel)"
+        # Parallel is ~1*delay; serial would be ~4*delay. Assert comfortably
+        # below the serial total (a serial regression fails) while leaving ample
+        # headroom above 1*delay for -j3 scheduler jitter.
+        assert elapsed < delay * 4 * 0.6, (
+            f"Shutdown took {elapsed:.3f}s, expected ~{delay}s parallel "
+            f"(serial would be ~{delay * 4:.2f}s)"
         )
 
 
