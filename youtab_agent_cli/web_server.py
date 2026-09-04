@@ -8037,11 +8037,9 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
     url = base_url + "/models"
-    # WAVE-27 SSRF floor: this probes an operator-entered URL, which may
-    # legitimately be a private/self-hosted provider, so the full private-IP
-    # block is intentionally NOT applied here — but a cloud-metadata endpoint
-    # (169.254.169.254, metadata.google.internal, ...) is never a provider and
-    # is refused regardless.
+    # Layer 1 (WAVE-27): resolve-time cloud-metadata floor — refuses a metadata
+    # URL up front with a clear message. Kept as defense-in-depth; a private/
+    # self-hosted provider is intentionally allowed here.
     from tools.url_safety import is_always_blocked_url
 
     if is_always_blocked_url(url):
@@ -8051,8 +8049,16 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
 
+    # Layer 2 (WAVE-28 §6.2): connect-pinning client closes the DNS-rebinding
+    # TOCTOU that Layer 1 alone cannot — a sub-second rebind between the check
+    # above and the connect would defeat a resolve-time check. create_ssrf_safe_client
+    # validates and dials the SAME IP at TCP-connect, re-validated per redirect hop;
+    # cloud-metadata/link-local are always blocked (even with allow_private_urls on),
+    # while operator-enabled self-hosted private endpoints stay reachable.
+    from tools.url_safety import create_ssrf_safe_client
+
     try:
-        with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
+        with create_ssrf_safe_client(timeout=httpx.Timeout(8.0)) as client:
             resp = client.get(url, headers=headers)
     except Exception:
         return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
@@ -8088,9 +8094,8 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
         url = value.rstrip("/") + "/models"
-        # WAVE-27 SSRF floor (see validate_custom_endpoint): operator-entered URL
-        # may be a legitimate self-hosted provider, but a cloud-metadata endpoint
-        # is never one and is refused.
+        # Layer 1 (WAVE-27): resolve-time cloud-metadata floor (see
+        # validate_custom_endpoint) — kept as defense-in-depth.
         from tools.url_safety import is_always_blocked_url
 
         if is_always_blocked_url(url):
@@ -8101,8 +8106,13 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
         # their models instead of returning an empty list behind a 401.
         api_key = (body.api_key or "").strip()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        # Layer 2 (WAVE-28 §6.2): connect-pinning closes the DNS-rebinding TOCTOU
+        # Layer 1 cannot — an operator-supplied base URL cannot be rebound to a
+        # private/metadata IP between check and connect.
+        from tools.url_safety import create_ssrf_safe_client
+
         try:
-            with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
+            with create_ssrf_safe_client(timeout=httpx.Timeout(8.0)) as client:
                 resp = client.get(url, headers=headers)
             return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
         except Exception:
@@ -8121,8 +8131,12 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     else:
         params["key"] = value
 
+    # WAVE-28 §6.2: connect-pinning even for the fixed hosted-provider probe URLs
+    # (dialed at the SSRF-validated IP, per-redirect-hop re-validation).
+    from tools.url_safety import create_ssrf_safe_client
+
     try:
-        with httpx.Client(timeout=httpx.Timeout(10.0)) as client:
+        with create_ssrf_safe_client(timeout=httpx.Timeout(10.0)) as client:
             resp = client.get(url, headers=headers, params=params)
     except Exception:
         return {"ok": False, "reachable": False, "message": "Could not reach the provider to verify the key."}
