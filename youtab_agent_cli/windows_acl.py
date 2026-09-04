@@ -180,6 +180,54 @@ def apply_owner_only_dacl(path: _PathLike) -> None:
         raise OSError(f"failed to apply owner-only DACL to {os.fspath(path)!r}: {exc}") from exc
 
 
+def secure_directory_owner_only(path: _PathLike) -> None:
+    """Create ``path`` (if absent) and give it an owner-only *inheritable* DACL.
+
+    Grants ``FILE_ALL_ACCESS`` to only the current user + ``SYSTEM``, marks the
+    DACL protected (so broad inherited ACEs from ``%LOCALAPPDATA%`` are stripped),
+    and tags each ACE ``CONTAINER_INHERIT_ACE | OBJECT_INHERIT_ACE`` so **every
+    file created inside is born owner-only by inheritance** — closing the
+    permissive-creation window for files (e.g. a SQLite DB and its ``-wal`` /
+    ``-shm`` sidecars) that are opened later inside the directory.
+
+    Native Windows only. Raises :class:`NotImplementedError` on POSIX (the caller
+    owns ``0o700`` there) and :class:`OSError` when pywin32 is unavailable or the
+    call fails, so a caller can decide whether to fail closed.
+    """
+    ntsecuritycon, win32api, win32con, win32security = _win32()
+    target = Path(path)
+    target.mkdir(parents=True, exist_ok=True)
+    owner = _current_sid(win32api, win32con, win32security)
+    system = _system_sid(win32security)
+    inherit = (
+        win32security.CONTAINER_INHERIT_ACE | win32security.OBJECT_INHERIT_ACE
+    )
+    acl = win32security.ACL()
+    for sid in (owner, system):
+        acl.AddAccessAllowedAceEx(
+            win32security.ACL_REVISION, inherit, ntsecuritycon.FILE_ALL_ACCESS, sid
+        )
+    info = (
+        win32security.OWNER_SECURITY_INFORMATION
+        | win32security.DACL_SECURITY_INFORMATION
+        | win32security.PROTECTED_DACL_SECURITY_INFORMATION
+    )
+    try:
+        win32security.SetNamedSecurityInfo(
+            os.fspath(target),
+            win32security.SE_FILE_OBJECT,
+            info,
+            owner,
+            None,
+            acl,
+            None,
+        )
+    except Exception as exc:  # noqa: BLE001 — normalise pywintypes.error to OSError
+        raise OSError(
+            f"failed to apply owner-only inheritable DACL to {os.fspath(target)!r}: {exc}"
+        ) from exc
+
+
 def verify_owner_only_dacl(path: _PathLike) -> bool:
     """Return ``True`` iff ``path`` has an owner-only, protected DACL (Windows only).
 

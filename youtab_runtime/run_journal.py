@@ -108,17 +108,91 @@ def default_db_path() -> Path:
     return get_youtab_home().resolve() / "runtime" / "run_journal.db"
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=10)
-    # Best-effort private perms; on Windows this is a no-op (see WAVE-26 agent 1
-    # for the DACL story on *secret* files — the journal stores only redacted
-    # data, so 0o600 best-effort is sufficient here).
+#: Paths whose runtime dir + journal file have already been locked down this
+#: process, so the (idempotent but non-trivial) DACL/chmod work runs once per
+#: path rather than on every connection open. Guarded by ``_lock``.
+_secured_paths: set[str] = set()
+
+
+def _secure_runtime_dir(parent: Path) -> None:
+    """Give the journal's runtime dir owner-only perms BEFORE the DB is created.
+
+    POSIX: ``mkdir`` then ``chmod 0o700``. Windows: an owner-only *inheritable*
+    protected DACL, so the DB and its ``-wal``/``-shm`` sidecars created inside
+    are born owner-only (no permissive-creation window). Best-effort with a loud
+    warning if it cannot be applied (e.g. pywin32 absent): the journal is
+    redacted-by-invariant (see ``append_event``), so a locked-down file is a
+    hardening guarantee, not the sole confidentiality control — failing the whole
+    runtime closed on a missing native binding would be worse than proceeding.
+    """
+    parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "posix":
+        try:
+            os.chmod(parent, 0o700)
+        except OSError:
+            pass
+        return
     try:
-        if os.name == "posix" and db_path.exists():
-            os.chmod(db_path, 0o600)
-    except OSError:
-        pass
+        from youtab_agent_cli.windows_acl import (
+            pywin32_available,
+            secure_directory_owner_only,
+        )
+
+        if pywin32_available():
+            secure_directory_owner_only(parent)
+        else:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "run_journal: pywin32 unavailable; runtime dir %s could not be "
+                "locked to an owner-only DACL (journal data remains redacted).",
+                parent,
+            )
+    except Exception:  # noqa: BLE001 - hardening is best-effort, never fatal
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "run_journal: could not secure runtime dir %s", parent, exc_info=True
+        )
+
+
+def _secure_journal_file(db_path: Path) -> None:
+    """Lock the journal DB file itself down (defense in depth over inheritance)."""
+    if os.name == "posix":
+        try:
+            if db_path.exists():
+                os.chmod(db_path, 0o600)
+        except OSError:
+            pass
+        return
+    try:
+        from youtab_agent_cli.windows_acl import (
+            apply_owner_only_dacl,
+            pywin32_available,
+        )
+
+        if pywin32_available() and db_path.exists():
+            apply_owner_only_dacl(db_path)
+    except Exception:  # noqa: BLE001 - best-effort; inheritance is the primary path
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "run_journal: could not apply owner-only DACL to %s", db_path,
+            exc_info=True,
+        )
+
+
+def _connect(db_path: Path) -> sqlite3.Connection:
+    key = str(db_path)
+    first_time = key not in _secured_paths
+    if first_time:
+        # Secure the DIR before the DB exists so the file is born owner-only via
+        # inheritance on Windows (closes the permissive-creation window).
+        _secure_runtime_dir(db_path.parent)
+    conn = sqlite3.connect(db_path, timeout=10)
+    if first_time:
+        _secure_journal_file(db_path)
+        _secured_paths.add(key)
     return conn
 
 
@@ -249,6 +323,15 @@ def append_event(
 
     path = db_path or default_db_path()
     payload = payload or {}
+    # Redaction chokepoint (WAVE-27): every payload is scrubbed here so the durable
+    # journal can never become a secondary store of secrets, regardless of caller
+    # diligence. Numeric values under secret-shaped keys are preserved so usage
+    # counts (input_tokens/output_tokens/...) survive. Idempotent for callers that
+    # already redacted (observer/egress/ledger) — it is defense in depth, not a
+    # replacement for their typed redaction.
+    from youtab_runtime.redaction import redact_journal_payload
+
+    payload = redact_journal_payload(payload)
     try:
         payload_json = json.dumps(payload, sort_keys=True, ensure_ascii=False,
                                   default=repr)

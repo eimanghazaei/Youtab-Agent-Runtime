@@ -1367,7 +1367,21 @@ async def runtime_retry_run(
         if _retry_effect_id is not None:
             from youtab_runtime import effect_ledger as _el
 
-            _el.mark_unknown(_retry_effect_id, _retry_principal)
+            # Guard the ledger write so a secondary ledger/DB failure cannot mask
+            # the original create/dispatch error (which the caller must see). If
+            # marking unknown fails, the effect stays in_progress; a later process
+            # restart's recover_interrupted reclaims it (owner then provably dead),
+            # so the idempotency key is reconciled rather than lost.
+            try:
+                _el.mark_unknown(_retry_effect_id, _retry_principal)
+            except BaseException:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "runtime_retry_run: could not mark retry effect %s unknown "
+                    "after a dispatch failure; leaving it for restart recovery",
+                    _retry_effect_id, exc_info=True,
+                )
         raise
     if _retry_effect_id is not None:
         from youtab_runtime import effect_ledger as _el

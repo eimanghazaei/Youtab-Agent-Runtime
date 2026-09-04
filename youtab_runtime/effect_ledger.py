@@ -293,6 +293,22 @@ def _ensure_effects_table(conn) -> None:
     )
 
 
+def _dump_detail(detail: Optional[Dict[str, Any]]) -> str:
+    """Serialise an effect's ``detail`` for the ``effects.detail_json`` column,
+    redacted (numeric-preserving) so the ledger table never stores a raw secret.
+
+    Fixes the WAVE-26 asymmetry where the mirror journal event was redacted but
+    the ledger row's own ``detail_json`` was written raw. The ``_owner`` fencing
+    fields (process_id / pid / process_started_at) survive redaction intact
+    (they are short non-secret strings / integers), so ``recover_interrupted``
+    can still read them back.
+    """
+    return json.dumps(
+        redaction.redact_journal_payload(detail or {}),
+        ensure_ascii=False, default=repr,
+    )
+
+
 def _row_to_record(row) -> EffectRecord:
     return EffectRecord(
         effect_id=row["effect_id"],
@@ -369,10 +385,15 @@ def _append_effect_event(
         "target_scope_digest": target_scope_digest,
         "state": state.value,
         "provider_idempotency_key": provider_idempotency_key,
-        "detail": redaction.redact_mapping(detail or {}),
+        "detail": detail or {},
     }
+    # This row is inserted DIRECTLY into run_events (it shares the caller's open
+    # BEGIN IMMEDIATE txn) and so bypasses append_event's redaction chokepoint —
+    # redact the whole payload here so the invariant "no run_events row holds a
+    # raw secret" still holds. Numeric-preserving so counts survive.
     payload_json = json.dumps(
-        payload, sort_keys=True, ensure_ascii=False, default=repr
+        redaction.redact_journal_payload(payload), sort_keys=True,
+        ensure_ascii=False, default=repr,
     )
     conn.execute(
         """INSERT INTO run_events
@@ -493,7 +514,7 @@ def begin_effect(
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)""",
             (effect_id, principal.tenant, principal.user, run_id, logical_action,
              scope_digest, initial.value, provider_key, seq, seq,
-             json.dumps(seed_detail, ensure_ascii=False, default=repr)),
+             _dump_detail(seed_detail)),
         )
         row = conn.execute(
             "SELECT * FROM effects WHERE effect_id=?", (effect_id,)
@@ -548,8 +569,7 @@ def _transition(
         conn.execute(
             "UPDATE effects SET state=?, attempts=?, last_update_seq=?, "
             "detail_json=? WHERE effect_id=? AND tenant=? AND user=?",
-            (dst.value, attempts, seq,
-             json.dumps(merged, ensure_ascii=False, default=repr),
+            (dst.value, attempts, seq, _dump_detail(merged),
              effect_id, principal.tenant, principal.user),
         )
         updated = conn.execute(
@@ -659,8 +679,7 @@ def try_claim(
         conn.execute(
             "UPDATE effects SET state=?, attempts=?, last_update_seq=?, "
             "detail_json=? WHERE effect_id=? AND tenant=? AND user=?",
-            (EffectState.IN_PROGRESS.value, attempts, seq,
-             json.dumps(merged, ensure_ascii=False, default=repr),
+            (EffectState.IN_PROGRESS.value, attempts, seq, _dump_detail(merged),
              effect_id, principal.tenant, principal.user),
         )
         updated = conn.execute(
@@ -775,8 +794,7 @@ def recover_interrupted(
             conn.execute(
                 "UPDATE effects SET state=?, last_update_seq=?, detail_json=? "
                 "WHERE effect_id=?",
-                (EffectState.UNKNOWN.value, seq,
-                 json.dumps(detail, ensure_ascii=False, default=repr),
+                (EffectState.UNKNOWN.value, seq, _dump_detail(detail),
                  row["effect_id"]),
             )
             changed += 1

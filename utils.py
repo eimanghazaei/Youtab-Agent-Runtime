@@ -267,8 +267,22 @@ def atomic_write_text(
             from youtab_runtime import effect_ledger as _el
 
             # Torn/crash after the claim: outcome unproven -> unknown, so a later
-            # retry is reconciled rather than blindly re-applied.
-            _el.mark_unknown(_eff_id, _eff_principal)
+            # retry is reconciled rather than blindly re-applied. Guard the ledger
+            # write: a secondary ledger/DB error here (e.g. the journal is locked
+            # under contention) must NEVER mask the original write failure the
+            # caller needs to see. On such a failure the effect is left
+            # in_progress; a later process restart's recover_interrupted reclaims
+            # it to unknown (its owner is then provably dead).
+            try:
+                _el.mark_unknown(_eff_id, _eff_principal)
+            except BaseException:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "atomic_write_text: could not mark effect %s unknown after a "
+                    "write failure; leaving it for restart recovery",
+                    _eff_id, exc_info=True,
+                )
         try:
             os.unlink(tmp_path)
         except OSError:
