@@ -52,6 +52,12 @@ BLOCK_CASES = [
     r"\\.\PhysicalDrive0", r"\\?\C:\x", "//./PhysicalDrive0", "//?/C:/x",
     # superscript digits Win32 accepts for COM/LPT
     "COM\u00b9", "LPT\u00b2",
+    # legacy trailing-colon device aliases + alternate-data-stream form +
+    # console pseudo-devices (Win32 resolves all of these to a device)
+    "CON:", "con:", "COM1:", "NUL:", "LPT1:",
+    "CON::$DATA", "con::$DATA", "nul::$DATA",
+    "CONIN$", "CONOUT$", "conin$", "conout$", "CONIN$.txt",
+    r"dir\CON:", "C:con:",
 ]
 
 ALLOW_CASES = [
@@ -63,6 +69,9 @@ ALLOW_CASES = [
     # ordinary files and paths
     "normal.txt", "dir/normal", r"C:\Users\x\notes.md", "",
     ".hidden",
+    # a colon/ADS on a NON-reserved stem stays an ordinary file, and names that
+    # merely start with a console-device prefix are not the device
+    "report:draft", "data.txt:stream", "coninside$", "conincorrect",
 ]
 
 

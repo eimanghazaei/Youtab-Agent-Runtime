@@ -50,7 +50,7 @@ def has_traversal_component(path_str: str) -> bool:
 # address raw hardware. The set is the classic reserved list; COM0/LPT0 and
 # names >= 10 are ordinary files and are deliberately absent.
 _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
-    ["CON", "PRN", "AUX", "NUL"]
+    ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
     + [f"COM{i}" for i in range(1, 10)]
     + [f"LPT{i}" for i in range(1, 10)]
 )
@@ -75,8 +75,12 @@ def _component_is_reserved_device(component: str) -> bool:
     if not trimmed:
         return False
     # A name maps to a device by the portion before its first extension dot
-    # ("con.txt" -> "con"), ignoring trailing spaces on that portion.
-    stem = trimmed.split(".", 1)[0].rstrip(" ").translate(_SUPERSCRIPT_DIGITS)
+    # OR its first ADS/colon marker -- Win32 resolves "con.txt", the legacy
+    # trailing-colon alias "con:"/"COM1:", and the alternate-data-stream form
+    # "con::$DATA" all to the device -- ignoring trailing spaces on that portion.
+    stem = re.split(r"[.:]", trimmed, maxsplit=1)[0].rstrip(" ").translate(
+        _SUPERSCRIPT_DIGITS
+    )
     return stem.upper() in _WINDOWS_RESERVED_DEVICE_NAMES
 
 

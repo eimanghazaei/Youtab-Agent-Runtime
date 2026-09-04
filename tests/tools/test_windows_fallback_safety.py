@@ -8,8 +8,15 @@ they execute on the POSIX CI legs as well as natively on windows-latest.
 """
 
 import os
+import sys
+from pathlib import Path
 
 import pytest
+
+# import_speaker lives under scripts/wakeword (a standalone script dir, not a
+# package); put it on sys.path so the resilient-replace tests can import it,
+# mirroring tests/tools/test_wp10_concurrency.py.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts" / "wakeword"))
 
 
 def _perm_error(winerror):
@@ -142,3 +149,41 @@ class TestTirithUnsupportedPlatformHonoursFailOpen:
         self._patch(monkeypatch, fail_open=True)
         result = tirith_security.check_command_security("echo hi")
         assert result["action"] == "allow"
+
+
+# --------------------------------------------------------------------------- #
+# import_speaker._replace_resilient  (concurrent speaker-import os.replace)
+# --------------------------------------------------------------------------- #
+class TestImportSpeakerReplaceResilientWindows:
+    @pytest.fixture(autouse=True)
+    def _win(self, monkeypatch):
+        import import_speaker as imp
+
+        monkeypatch.setattr(os, "name", "nt")
+        monkeypatch.setattr(imp.time, "sleep", lambda *_: None)
+
+    def test_transient_then_success(self, monkeypatch):
+        import import_speaker as imp
+
+        fake = _ScriptedCallable([_perm_error(32), _perm_error(5), None])
+        monkeypatch.setattr(os, "replace", fake)
+        imp._replace_resilient("src", "dst")  # must not raise
+        assert fake.calls == 3
+
+    def test_non_transient_raises_immediately(self, monkeypatch):
+        import import_speaker as imp
+
+        fake = _ScriptedCallable([_perm_error(13)])  # 13 not in {5,32}
+        monkeypatch.setattr(os, "replace", fake)
+        with pytest.raises(PermissionError):
+            imp._replace_resilient("src", "dst")
+        assert fake.calls == 1
+
+    def test_exhaustion_reraises(self, monkeypatch):
+        import import_speaker as imp
+
+        fake = _ScriptedCallable([_perm_error(5)] * 20)
+        monkeypatch.setattr(os, "replace", fake)
+        with pytest.raises(PermissionError):
+            imp._replace_resilient("src", "dst")
+        assert fake.calls == 20

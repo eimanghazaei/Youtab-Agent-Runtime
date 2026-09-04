@@ -45,20 +45,25 @@ def test_prefetch_non_blocking():
     banner._update_result = None
     banner._update_check_done = threading.Event()
 
-    with patch.object(banner, "check_for_updates", return_value=5):
-        start = time.monotonic()
+    # Deterministic non-blocking proof: the check blocks until released, so a
+    # regression that ran it INLINE would hang inside prefetch_update_check()
+    # (caught by the test timeout), while the correct backgrounded version
+    # returns immediately with the result not yet set. This is timing-free — no
+    # wall-clock bound to flake under -j3 CI contention.
+    release = threading.Event()
+
+    def _blocking_check(*_a, **_k):
+        release.wait()
+        return 5
+
+    with patch.object(banner, "check_for_updates", _blocking_check):
         banner.prefetch_update_check()
-        elapsed = time.monotonic() - start
+        # The check is still blocked; the result cannot be set yet unless
+        # prefetch wrongly ran the check on the calling thread.
+        assert banner._update_result is None
 
-        # prefetch backgrounds the check and must not block on it; a regression
-        # that runs the check inline would wait on real network I/O. 5.0s keeps
-        # that fast-vs-blocking distinction while absorbing -j3 CPU-contention
-        # thread-spawn scheduling on the CI runner (a 1s ceiling is flake-prone
-        # there; intent unchanged).
-        assert elapsed < 5.0
-
-        # Wait for the background thread to finish
-        banner._update_check_done.wait(timeout=5)
+        release.set()
+        assert banner._update_check_done.wait(timeout=10)
         assert banner._update_result == 5
 
 
