@@ -827,19 +827,33 @@ def _secure_file(path):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
-    # WAVE-26 #7b: on Windows chmod(0o600) only toggles the read-only bit and
-    # provides no access control; apply an owner-only protected DACL so secrets
-    # in this file (.env etc.) are readable only by the current user + SYSTEM.
-    # Best-effort, matching the POSIX chmod posture above (this helper is
-    # documented best-effort; the fail-closed writers live in auth.py).
+    # WAVE-27 #7b: on Windows chmod(0o600) only toggles the read-only bit and
+    # provides no access control; a newly-written config.yaml/.env inherits the
+    # parent directory's broad DACL (which admits Administrators). Apply an
+    # owner-only *protected* DACL so secrets in this file (.env API keys etc.)
+    # are readable only by the current user + SYSTEM, and — unlike the previous
+    # best-effort swallow, which could leave a broadly-readable .env on disk if
+    # the apply failed — FAIL CLOSED: verify the DACL and, if it cannot be
+    # applied/verified (including because pywin32 is unavailable), remove the
+    # file and raise so the exposed secret never persists. Matches auth.py.
     if os.name == "nt" and os.path.exists(str(path)):
         from youtab_agent_cli import windows_acl
 
-        if windows_acl.pywin32_available():
+        try:
+            if not windows_acl.pywin32_available():
+                raise OSError(
+                    "pywin32 unavailable: cannot apply an owner-only DACL to "
+                    f"secret file {os.fspath(path)!r}"
+                )
+            windows_acl.apply_owner_only_dacl(path)
+            if not windows_acl.verify_owner_only_dacl(path):
+                raise OSError("owner-only DACL verification failed")
+        except OSError:
             try:
-                windows_acl.apply_owner_only_dacl(path)
+                os.unlink(str(path))
             except OSError:
                 pass
+            raise
 
 
 def _ensure_default_soul_md(home: Path) -> None:
@@ -3931,7 +3945,12 @@ def save_env_value(key: str, value: str):
         atomic_replace(tmp_path, env_path)
         # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
         # instead of letting _secure_file unconditionally tighten to 0600.
-        if original_mode is not None:
+        # POSIX-only: on Windows POSIX mode bits carry no access-control meaning
+        # and the atomic rename just moved a temp file with the parent's broad
+        # inherited DACL onto env_path — so always re-apply the fail-closed
+        # owner-only DACL there (WAVE-27 #7b), never skip it for a synthesized
+        # "original mode".
+        if original_mode is not None and os.name != "nt":
             try:
                 os.chmod(env_path, original_mode)
             except OSError:
@@ -4021,8 +4040,11 @@ def remove_env_value(key: str) -> bool:
             atomic_replace(tmp_path, env_path)
             # Preserve the original file mode (e.g. 0640 for Docker volume
             # mounts) instead of letting _secure_file unconditionally tighten
-            # to 0600. Mirrors save_env_value().
-            if original_mode is not None:
+            # to 0600. Mirrors save_env_value(). POSIX-only: on Windows the
+            # rename moved a temp file with the parent's broad inherited DACL
+            # onto env_path, so always re-apply the fail-closed owner-only DACL
+            # there (WAVE-27 #7b) rather than skip it for a synthesized mode.
+            if original_mode is not None and os.name != "nt":
                 try:
                     os.chmod(env_path, original_mode)
                 except OSError:

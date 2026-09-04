@@ -988,6 +988,31 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     return serve
 
 
+def _secure_write_secret_env(dst: Path, data) -> None:
+    """Write a profile ``.env`` at ``dst`` with no permissive-creation window,
+    fail-closed.
+
+    WAVE-27 #7b. The ``.env`` holds API keys/tokens. Delegates to
+    :func:`windows_acl.secure_write_secret_file`, which on Windows creates the
+    file *born* with an owner-only *protected* DACL (current user + SYSTEM)
+    BEFORE any byte is written — so the secret never exists on disk under the
+    profile directory's broad inherited DACL — and fails closed (removes any
+    residue and raises) if it cannot be protected, including when pywin32 is
+    unavailable. On POSIX it is created ``O_EXCL`` at ``0o600``. Any existing
+    file is overwritten in place. Accepts ``bytes`` or ``str``.
+    """
+    from youtab_agent_cli import windows_acl
+
+    windows_acl.secure_write_secret_file(dst, data, overwrite=True)
+
+
+_PROFILE_ENV_PLACEHOLDER = (
+    "# Per-profile secrets for this Youtab profile.\n"
+    "# API keys and tokens set here override the shell environment.\n"
+    "# Behavioral settings belong in config.yaml, not here.\n"
+)
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -1080,21 +1105,17 @@ def create_profile(
                 src = source_dir / filename
                 if src.exists():
                     dst = profile_dir / filename
-                    shutil.copy2(src, dst)
-                    # Tighten .env to owner-only after copy. shutil.copy2
-                    # preserves source mode bits, but if the source's .env
-                    # was loose (host umask 0o022 leaving 0o644), tighten
-                    # explicitly so the clone doesn't inherit weak perms.
                     if filename == ".env":
-                        try:
-                            os.chmod(str(dst), 0o600)
-                            if os.name == "nt":
-                                from youtab_agent_cli import windows_acl
-
-                                if windows_acl.pywin32_available():
-                                    windows_acl.apply_owner_only_dacl(dst)
-                        except OSError:
-                            pass
+                        # WAVE-27 #7b: the .env holds API keys. Write the clone
+                        # *born* owner-only and fail closed rather than
+                        # shutil.copy2()'ing plaintext under the parent's broad
+                        # inherited DACL and best-effort tightening afterwards
+                        # (which left a readable window and silently swallowed a
+                        # failed DACL apply). On POSIX this also normalises a
+                        # loose source mode (0o644) to 0o600.
+                        _secure_write_secret_env(dst, src.read_bytes())
+                    else:
+                        shutil.copy2(src, dst)
 
             # Clone installed skills from the source profile. The dashboard's
             # "clone from default" flow is expected to preserve both bundled
@@ -1120,21 +1141,12 @@ def create_profile(
     # the root .env". Skipped when --clone/--clone-all already copied one.
     env_path = profile_dir / ".env"
     if not env_path.exists():
-        try:
-            env_path.write_text(
-                "# Per-profile secrets for this Youtab profile.\n"
-                "# API keys and tokens set here override the shell environment.\n"
-                "# Behavioral settings belong in config.yaml, not here.\n",
-                encoding="utf-8",
-            )
-            os.chmod(str(env_path), 0o600)
-            if os.name == "nt":
-                from youtab_agent_cli import windows_acl
-
-                if windows_acl.pywin32_available():
-                    windows_acl.apply_owner_only_dacl(env_path)
-        except OSError:
-            pass  # best-effort — save_env_value creates the file on demand
+        # WAVE-27 #7b: the seed .env is comments-only (low sensitivity), but it
+        # is created *born* owner-only and fail-closed for consistency with real
+        # secret .env files — so the very first per-profile key write lands in a
+        # correctly-protected file, never a broadly-readable one, and a DACL
+        # that cannot be applied/verified surfaces instead of being swallowed.
+        _secure_write_secret_env(env_path, _PROFILE_ENV_PLACEHOLDER)
 
     # Seed a default SOUL.md so the user has a file to customize immediately.
     # Skipped when the profile already has one (from --clone / --clone-all).
@@ -1270,21 +1282,17 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
         if env_path.exists():
             continue
         try:
+            # WAVE-27 #7b: the default install's .env holds API keys. Write the
+            # backfilled copy *born* owner-only and fail closed rather than
+            # shutil.copy2()'ing plaintext under the parent's broad inherited
+            # DACL and best-effort tightening afterwards. A fail-closed OSError
+            # (residue already removed by the writer) is caught below so one
+            # unprotectable profile never leaves a readable .env behind nor
+            # aborts the backfill of the others.
             if default_env.is_file():
-                shutil.copy2(default_env, env_path)
+                _secure_write_secret_env(env_path, default_env.read_bytes())
             else:
-                env_path.write_text(
-                    "# Per-profile secrets for this Youtab profile.\n"
-                    "# API keys and tokens set here override the shell environment.\n"
-                    "# Behavioral settings belong in config.yaml, not here.\n",
-                    encoding="utf-8",
-                )
-            os.chmod(str(env_path), 0o600)
-            if os.name == "nt":
-                from youtab_agent_cli import windows_acl
-
-                if windows_acl.pywin32_available():
-                    windows_acl.apply_owner_only_dacl(env_path)
+                _secure_write_secret_env(env_path, _PROFILE_ENV_PLACEHOLDER)
             backfilled.append(entry.name)
         except OSError as e:
             if not quiet:
