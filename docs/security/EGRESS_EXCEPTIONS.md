@@ -28,10 +28,24 @@ counted as verified. The literal "every byte audited" flag
 (`UNIVERSAL_EGRESS_COVERAGE` in `tests/tools/test_egress_boundary_enumeration.py`)
 therefore remains `False` by design.
 
+## Allowlist keying — per-call-site fingerprint (WAVE-28 §6.5)
+
+Each allowlist entry is keyed on `(file, symbol, fingerprint)`, where the
+fingerprint is a sha256 of the call site's normalized AST (line/col attributes
+stripped). This closes the WAVE-27 gap where an approved `(file, symbol)` could
+be *mutated* into an unsafe site — a new destination, an added
+`follow_redirects=True`, a widened kwarg, or an extra verb in the same file — while
+the coarse gate still passed. Now any such change alters the fingerprint, so the
+old entry goes **stale** and the mutated site is **un-allowlisted**; either way
+the gate fails until the change is re-reviewed and re-baselined. An entry that
+omits a fingerprint is treated as unenforceable and reported (fail-closed). The
+mutation matrix is proven by `tests/tools/test_egress_boundary_enumeration.py`.
+
 ## Allowlist categories (source: `security/egress_allowlist.json`)
 
-Counts are per unique `(file, symbol)` — the gate's granularity — over 312 raw
-call sites (146 unique keys). The gate bans raw construction of
+Counts are per unique `(file, symbol, fingerprint)` — the gate's granularity — over
+290 raw call sites (231 fingerprinted keys; identical-fingerprint duplicates carry
+an `occurrences` count). The gate bans raw construction of
 `httpx.Client`/`AsyncClient` **and** the httpx module-level convenience verbs
 (`httpx.get`/`post`/`put`/`patch`/`delete`/`head`/`options`/`request`/`stream`),
 plus `requests.*`, `aiohttp.ClientSession`, `urllib.request.urlopen` and
@@ -39,16 +53,16 @@ plus `requests.*`, `aiohttp.ClientSession`, `urllib.request.urlopen` and
 
 | Category | Keys | Meaning | Residual risk |
 |---|---:|---|---|
-| `fixed_destination_infra` | 107 | Destination is a hardcoded provider/platform API host, an operator-config/env `base_url`, a first-party managed gateway (origin-validated), a local daemon/sidecar/loopback, or a provider-API-response delivery URL. Not influenced by agent output or end-user message content. | SSRF: none (attacker cannot choose the host). Audit-journaling gap only. LOW. |
-| `dev_tooling` | 31 | Reachable only from CLI / setup / onboarding / diagnostics / skill-management paths, not from an agent run serving requests. Hardcoded or operator-config hosts. | LOW. |
-| `untrusted_destination_guarded` | 5 | Destination can be influenced by agent output / inbound message / operator-entered URL, **and is SSRF-guarded** (see fixes below). | LOW–MEDIUM, mitigated. |
-| `sdk_internal` | 3 | A URL-less httpx transport handed to a vendor SDK (OpenAI/Anthropic/Azure/Gemini); the SDK owns the request. | See out-of-process residual. |
+| `fixed_destination_infra` | 154 | Destination is a hardcoded provider/platform API host, an operator-config/env `base_url`, a first-party managed gateway (origin-validated), a local daemon/sidecar/loopback, or a provider-API-response delivery URL. Not influenced by agent output or end-user message content. | SSRF: none (attacker cannot choose the host). Audit-journaling gap only. LOW. |
+| `dev_tooling` | 55 | Reachable only from CLI / setup / onboarding / diagnostics / skill-management paths, not from an agent run serving requests. Hardcoded or operator-config hosts. | LOW. |
+| `untrusted_destination_guarded` | 18 | Destination can be influenced by agent output / inbound message / operator-entered URL, **and is SSRF-guarded** (see fixes below). | LOW–MEDIUM, mitigated. |
+| `sdk_internal` | 4 | A URL-less httpx transport handed to a vendor SDK (OpenAI/Anthropic/Azure/Gemini); the SDK owns the request. | See out-of-process residual. |
 
-One `dev_tooling` entry carries an open follow-up: `tools/skills_hub.py` /
-`youtab_agent_cli/skills_hub.py` fetch GitHub-hosted skill packages (token-auth,
-operator/CLI-governed) via a manual `Location` redirect loop without per-hop SSRF
-re-validation. Marked `PENDING_OWNER_ACTION` in the allowlist: confirm there is no
-agent-facing arbitrary-URL skill install and add per-hop re-validation.
+The WAVE-27 `skills_hub` manual-redirect follow-up is **closed in WAVE-28 §6.3**:
+every config/manifest/remote-catalog-influenced `follow_redirects=True` fetch in
+`tools/skills_hub.py`, `youtab_agent_cli/skills_hub.py`, and `agent/pet/store.py`
+now routes through `tools.url_safety.create_ssrf_safe_client` (connect-time IP pin,
+per-hop re-validation), so those raw sites are gone from the allowlist.
 
 ## WAVE-27 untrusted-destination SSRF fixes
 
@@ -89,30 +103,41 @@ proxy enforcement at the infrastructure layer, and/or live-provider verification
   the real agent worker; end-to-end run-scoped observe auditing in the production
   model worker requires a live provider to exercise and is `PENDING_OWNER_ACTION`.
 
-## Known LOW/MEDIUM follow-ups (PENDING_OWNER_ACTION, non-blocking)
+## WAVE-27 LOW/MEDIUM follow-ups — CLOSED in WAVE-28
 
-Surfaced by the WAVE-27 final reviews; each is honestly disclosed, none is
-reachable as an unauthenticated agent-message SSRF:
+All four repository-side follow-ups from the WAVE-27 reviews are now fixed:
 
-* **`tools/skills_hub.py` raw redirect-following** — the file has an
-  SSRF-validating `_fetch` helper but also several `httpx.get(..., follow_redirects=True)`
-  sites on a plain client that bypass it (catalog-metadata-derived URLs).
-  Operator/CLI skill-install supply chain (installing a skill is already a trust
-  decision). Route those sites through the SSRF-validating helper.
-* **`agent/pet/store.py` redirect-follow** — a plain `follow_redirects=True` client
-  fetches from the hardcoded `petdex.dev` host (host-gated by `_is_petdex_host`),
-  but would follow a redirect *from* that trusted host unguarded. Cosmetic pet
-  feature; route through the pinning client.
-* **Windows `.env` writer window** (`youtab_agent_cli/config.save_env_value` /
-  `remove_env_value`) — writes the secret to a `mkstemp` temp under the parent's
-  broad inherited DACL, then `atomic_replace`s and tightens via the fail-closed
-  `_secure_file`. No *persistent* exposure (final file is protected-or-removed),
-  but a brief pre-tighten window remains on multi-user Windows. Migrate to the
-  born-owner-only pattern used by `auth.py:_atomic_secret_write`.
-* **`youtab_agent_cli/web_server.py` validate endpoints** — the metadata floor is
-  checked at resolve time then a raw httpx client re-resolves at connect (DNS-
-  rebinding TOCTOU). Operator-authenticated, `/models`-suffixed. Route through a
-  connect-pinning client (metadata-only policy that still permits self-hosted).
+* **`tools/skills_hub.py` / `youtab_agent_cli/skills_hub.py` raw redirect-following**
+  — CLOSED (§6.3). Every catalog/manifest-influenced `follow_redirects=True` fetch
+  now routes through `tools.url_safety.create_ssrf_safe_client` (connect-time IP
+  pin, per-hop re-validation); the write-scoped GitHub publish flow uses the
+  pinning client with `follow_redirects=False` so its token can't cross an origin.
+  Tests: `tests/tools/test_skills_hub_ssrf_wave28.py`.
+* **`agent/pet/store.py` redirect-follow** — CLOSED (§6.3). Thumbnail/download/JSON
+  fetches route through the pinning client, so a redirect *off* `petdex.dev` to a
+  private/metadata IP is blocked at the hop.
+* **Windows `.env` writer window** (`youtab_agent_cli/config`) — CLOSED (§6.1). All
+  three writers (`save_env_value`, `remove_env_value`, `sanitize_env_file`) route
+  through a born-owner-only temp (`windows_acl.secure_write_secret_file`): the temp
+  is created empty, its owner+SYSTEM-only protected DACL applied+verified before
+  any secret byte, fail-closed. No pre-tighten window. Tests:
+  `tests/youtab_agent_cli/test_env_writer_acl.py`.
+* **`youtab_agent_cli/web_server.py` validate endpoints** — CLOSED (§6.2). The
+  `/models` probes in `validate_custom_endpoint` / `validate_provider_credential`
+  use `create_ssrf_safe_client` (connect-time pin, per-hop re-validation), so the
+  DNS-rebinding TOCTOU between the resolve-time metadata floor and the connect is
+  closed; the WAVE-27 floor is kept as defense-in-depth and self-hosted providers
+  stay reachable. Tests: `tests/security/test_web_server_validate_ssrf_wave28.py`.
+
+## Real-worker run-context wiring (WAVE-28 §6.4)
+
+`egress_run_context` is now wired into the real run path (`run_conversation` in
+`agent/conversation_loop.py`, resolving run/tenant/user identity from the worker
+spawn env), proven by `tests/youtab_runtime/test_worker_egress_context_wave28.py`
+(attribution, async-task propagation, no cross-run leakage, cancel/exception
+cleanup, redacted audit). The single remaining sub-path — a genuine live-provider
+HTTP hop inside the ambient context — needs a reachable provider and stays
+`PENDING_OWNER_ACTION`.
 
 ## Non-httpx adapter limitation (documented)
 

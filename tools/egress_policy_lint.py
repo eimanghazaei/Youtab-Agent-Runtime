@@ -1,8 +1,13 @@
 """WAVE-27 egress-policy static gate.
 
 Fails CI when production code constructs a raw outbound-network client outside the
-designated audited adapters, UNLESS that exact (file, symbol) site is listed in
-``security/egress_allowlist.json`` with a documented reason. This is what makes
+designated audited adapters, UNLESS that exact call site is listed in
+``security/egress_allowlist.json`` with a documented reason. WAVE-28 §6.5 keys the
+allowlist on ``(file, symbol, fingerprint)`` — a per-call-site AST hash (see
+:func:`_call_fingerprint`) — so an already-approved ``(file, symbol)`` cannot be
+silently mutated into an unsafe site (new destination, added ``follow_redirects``,
+extra verb) while the gate still passes: any change to the site changes its
+fingerprint, which fails as both a stale entry and a new site. This is what makes
 "every directly-controlled outbound client routes through the audited boundary"
 an *enforced, regression-proof* invariant rather than a one-time sweep:
 
@@ -28,8 +33,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
@@ -79,14 +86,39 @@ _AIOHTTP_CTORS = {"ClientSession"}
 _WEBSOCKETS_CALLS = {"connect"}
 
 
+def _call_fingerprint(node: ast.Call) -> str:
+    """A stable structural hash of one banned call site.
+
+    WAVE-28 §6.5: the allowlist keys on (file, symbol, FINGERPRINT), not just
+    (file, symbol), so an APPROVED site cannot be silently mutated into an unsafe
+    one while the gate still passes. The fingerprint is the sha256 of the call
+    node's normalized AST dump with line/col attributes stripped — so it is
+    stable across benign line moves, but ANY change to the call changes it:
+      * a different destination argument (a new literal URL, a different var);
+      * an added/removed/changed keyword (``follow_redirects=True``, ``verify=``,
+        a widened ``timeout``);
+      * a different call shape (extra args, a wrapped call).
+    A changed site's old fingerprint goes stale AND its new fingerprint is
+    un-allowlisted — either way the gate fails until the change is re-reviewed and
+    re-baselined. Adding a brand-new call (even of an already-allowlisted symbol
+    in an already-allowlisted file) is a new fingerprint and also fails.
+    """
+    dump = ast.dump(node, annotate_fields=True, include_attributes=False)
+    return hashlib.sha256(dump.encode("utf-8")).hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class Finding:
     file: str          # repo-relative, forward-slash
     symbol: str        # e.g. "httpx.AsyncClient", "requests.post", "urlopen"
     line: int
+    fingerprint: str   # structural hash of the call site (see _call_fingerprint)
 
     def key(self) -> str:
-        return f"{self.file}::{self.symbol}"
+        return f"{self.file}::{self.symbol}::{self.fingerprint}"
+
+    def site(self) -> Tuple[str, str, str]:
+        return (self.file, self.symbol, self.fingerprint)
 
 
 class _Scanner(ast.NodeVisitor):
@@ -100,7 +132,7 @@ class _Scanner(ast.NodeVisitor):
         # `from urllib.request import urlopen` / `import urllib.request`
         self.urlopen_names: Set[str] = set()
         self.urllib_request_alias: Set[str] = set()
-        self.findings: List[Tuple[str, int]] = []  # (symbol, line)
+        self.findings: List[Tuple[str, int, str]] = []  # (symbol, line, fingerprint)
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -133,7 +165,7 @@ class _Scanner(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         sym = self._banned_symbol(node.func)
         if sym is not None:
-            self.findings.append((sym, node.lineno))
+            self.findings.append((sym, node.lineno, _call_fingerprint(node)))
         self.generic_visit(node)
 
     def _banned_symbol(self, func: ast.AST) -> Optional[str]:
@@ -195,68 +227,122 @@ def scan() -> List[Finding]:
             continue
         sc = _Scanner()
         sc.visit(tree)
-        for sym, line in sc.findings:
-            findings.append(Finding(file=rel, symbol=sym, line=line))
+        for sym, line, fp in sc.findings:
+            findings.append(Finding(file=rel, symbol=sym, line=line, fingerprint=fp))
     return findings
 
 
-def _load_allowlist() -> Dict[str, dict]:
+def _load_allowlist() -> List[dict]:
     if not ALLOWLIST_PATH.exists():
-        return {}
+        return []
     data = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
-    return {e["file"] + "::" + e["symbol"]: e for e in data.get("allow", [])}
+    return list(data.get("allow", []))
+
+
+def _allow_counts(allow: List[dict]) -> "Counter[Tuple[str, str, str]]":
+    """Multiset of allowed sites (file, symbol, fingerprint) -> occurrences.
+
+    An entry MUST carry a fingerprint. An entry missing one (a pre-fingerprint
+    allowlist) matches nothing, so it surfaces as stale and forces a re-baseline
+    — a fail-closed migration, never a silent pass.
+    """
+    ct: "Counter[Tuple[str, str, str]]" = Counter()
+    for e in allow:
+        fp = e.get("fingerprint")
+        if not fp:
+            continue
+        ct[(e["file"], e["symbol"], fp)] += int(e.get("occurrences", 1))
+    return ct
 
 
 def check() -> int:
     findings = scan()
+    found = Counter(f.site() for f in findings)
     allow = _load_allowlist()
-    new = [f for f in findings if f.key() not in allow]
-    # Report allowlist entries that no longer match any finding (stale — should be
-    # pruned so the exception ledger cannot rot).
-    live_keys = {f.key() for f in findings}
-    stale = [k for k in allow if k not in live_keys]
-    if not new and not stale:
-        print(f"egress-policy-gate OK: {len(findings)} known site(s) allowlisted, "
-              f"0 new, 0 stale.")
+    allowed = _allow_counts(allow)
+    # Counter subtraction keeps only positive residues:
+    #   new   = sites found MORE times than allowed (unknown site, or a mutated
+    #           site whose fingerprint no longer matches its old entry, or an
+    #           extra occurrence of an approved site);
+    #   stale = sites allowed MORE times than found (removed/migrated site, a
+    #           now-mismatched fingerprint, or an entry with no fingerprint).
+    new = found - allowed
+    stale = allowed - found
+    # entries that are malformed (no fingerprint) are always reported so the
+    # ledger cannot rot into an unenforceable state.
+    unfingerprinted = [e for e in allow if not e.get("fingerprint")]
+    if not new and not stale and not unfingerprinted:
+        print(f"egress-policy-gate OK: {sum(found.values())} known site(s) "
+              f"across {len(allowed)} fingerprinted allowlist key(s), 0 new, "
+              f"0 stale.")
         return 0
     if new:
+        lines_by_site: Dict[Tuple[str, str, str], List[int]] = {}
+        for f in findings:
+            lines_by_site.setdefault(f.site(), []).append(f.line)
         print("egress-policy-gate FAIL: raw outbound-client construction outside "
-              "the audited adapters (use youtab_runtime.egress_guard_http / "
-              "egress_adapters / tools.url_safety.create_ssrf_safe_*, or add a "
-              "justified entry to security/egress_allowlist.json):")
-        for f in sorted(new, key=lambda x: (x.file, x.line)):
-            print(f"  {f.file}:{f.line}  {f.symbol}")
+              "the audited adapters, OR an approved site was modified (its "
+              "fingerprint changed). Use youtab_runtime.egress_guard_http / "
+              "egress_adapters / tools.url_safety.create_ssrf_safe_*, or "
+              "re-review and re-baseline security/egress_allowlist.json:")
+        for site, n in sorted(new.items()):
+            f_, sym, fp = site
+            lines = sorted(lines_by_site.get(site, []))
+            loc = ", ".join(f"{f_}:{ln}" for ln in lines[:n]) or f_
+            print(f"  {loc}  {sym}  (fingerprint {fp})")
     if stale:
-        print("egress-policy-gate FAIL: stale allowlist entries (site removed or "
-              "migrated — prune them so the ledger stays honest):")
-        for k in sorted(stale):
-            print(f"  {k}")
+        print("egress-policy-gate FAIL: stale allowlist entries (site removed, "
+              "migrated, or its fingerprint changed — prune/re-review so the "
+              "ledger stays honest):")
+        for site, n in sorted(stale.items()):
+            f_, sym, fp = site
+            print(f"  {f_}::{sym}  (fingerprint {fp} x{n})")
+    if unfingerprinted:
+        print("egress-policy-gate FAIL: allowlist entries without a fingerprint "
+              "(unenforceable — re-run --update-baseline):")
+        for e in unfingerprinted:
+            print(f"  {e.get('file')}::{e.get('symbol')}")
     return 1
 
 
 def update_baseline() -> int:
     findings = scan()
+    # Preserve curated reason/category/owner_action. Prefer an exact
+    # (file, symbol, fingerprint) match; fall back to a same-(file, symbol) entry
+    # so a re-fingerprinted or newly-split site keeps its human rationale.
     existing = _load_allowlist()
+    by_full: Dict[Tuple[str, str, str], dict] = {}
+    by_symbol: Dict[Tuple[str, str], dict] = {}
+    for e in existing:
+        fp = e.get("fingerprint")
+        if fp:
+            by_full[(e["file"], e["symbol"], fp)] = e
+        by_symbol.setdefault((e["file"], e["symbol"]), e)
+
+    counts = Counter(f.site() for f in findings)
     entries = []
-    for f in sorted(findings, key=lambda x: (x.file, x.symbol)):
-        prev = existing.get(f.key(), {})
-        entries.append(
-            {
-                "file": f.file,
-                "symbol": f.symbol,
-                "reason": prev.get("reason", "PENDING: pre-existing raw client; "
-                          "not yet migrated to the audited boundary."),
-                "category": prev.get("category", "pre_existing_unmigrated"),
-                "owner_action": prev.get("owner_action", "PENDING_OWNER_ACTION: "
-                                "verify via live integration then migrate or keep."),
-            }
-        )
+    for site in sorted(counts):
+        file_, symbol, fp = site
+        prev = by_full.get(site) or by_symbol.get((file_, symbol), {})
+        entry = {
+            "file": file_,
+            "symbol": symbol,
+            "fingerprint": fp,
+            "reason": prev.get("reason", "PENDING: pre-existing raw client; "
+                      "not yet migrated to the audited boundary."),
+            "category": prev.get("category", "pre_existing_unmigrated"),
+            "owner_action": prev.get("owner_action", "PENDING_OWNER_ACTION: "
+                            "verify via live integration then migrate or keep."),
+        }
+        if counts[site] > 1:
+            entry["occurrences"] = counts[site]
+        entries.append(entry)
     ALLOWLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
     ALLOWLIST_PATH.write_text(
         json.dumps({"allow": entries}, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    print(f"wrote {len(entries)} allowlist entries to "
+    print(f"wrote {len(entries)} fingerprinted allowlist entries to "
           f"{ALLOWLIST_PATH.relative_to(REPO_ROOT).as_posix()}")
     return 0
 

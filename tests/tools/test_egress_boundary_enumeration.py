@@ -96,20 +96,23 @@ def test_ci_gate_has_no_new_or_stale_raw_sites():
     """The executable coverage proof: every production raw outbound-client site
     is either inside the audited adapters or justified in the allowlist, and no
     allowlist entry is stale. This is exactly what the required CI gate enforces."""
-    from tools.egress_policy_lint import _load_allowlist, scan
+    from collections import Counter
+
+    from tools.egress_policy_lint import _allow_counts, _load_allowlist, scan
 
     findings = scan()
-    allow = _load_allowlist()
-    new = [f for f in findings if f.key() not in allow]
-    live = {f.key() for f in findings}
-    stale = [k for k in allow if k not in live]
-    assert not new, f"un-allowlisted raw egress sites: {[f.key() for f in new][:20]}"
-    assert not stale, f"stale allowlist entries (prune them): {stale[:20]}"
+    found = Counter(f.site() for f in findings)
+    allowed = _allow_counts(_load_allowlist())
+    new = found - allowed
+    stale = allowed - found
+    assert not new, f"un-allowlisted / mutated raw egress sites: {list(new)[:20]}"
+    assert not stale, f"stale allowlist entries (prune/re-review): {list(stale)[:20]}"
 
 
 def test_allowlist_entries_are_individually_documented():
     """No broad/silent exceptions: every entry has a concrete reason, a valid
-    category, and an owner_action."""
+    category, an owner_action, AND a per-call-site fingerprint (WAVE-28 §6.5) so
+    an approved (file, symbol) cannot be silently mutated into an unsafe site."""
     data = json.loads(ALLOWLIST_PATH.read_text(encoding="utf-8"))
     entries = data["allow"]
     assert entries, "allowlist must enumerate the known raw sites"
@@ -118,6 +121,11 @@ def test_allowlist_entries_are_individually_documented():
         assert e.get("category") in _VALID_CATEGORIES, e
         assert isinstance(e.get("reason"), str) and len(e["reason"]) >= 12, e
         assert isinstance(e.get("owner_action"), str) and e["owner_action"], e
+        # WAVE-28 §6.5: every entry is fingerprinted (16-hex sha256 prefix).
+        fp = e.get("fingerprint")
+        assert isinstance(fp, str) and len(fp) == 16 and all(
+            c in "0123456789abcdef" for c in fp
+        ), f"entry missing/!invalid fingerprint: {e}"
         # Guard against a resurrected placeholder baseline.
         assert "PENDING: pre-existing raw client" not in e["reason"], e
 
@@ -135,3 +143,140 @@ def test_exceptions_doc_states_precise_scope():
     doc = EXCEPTIONS_DOC.read_text(encoding="utf-8").lower()
     assert "in-process" in doc
     assert "egress_policy_lint" in doc or "egress-policy" in doc
+
+
+# ===========================================================================
+# WAVE-28 §6.5 — the fingerprinted gate rejects mutation of an approved site.
+# Each test baselines a fixture module, proves the gate is GREEN, then mutates
+# and proves the gate FAILS. This is the executable proof that an approved
+# `file::symbol` cannot be turned into a new/unsafe site while CI still passes.
+# ===========================================================================
+
+import ast as _ast  # noqa: E402
+
+
+def _fp(src: str) -> str:
+    """Fingerprint of the single call expression in ``src``."""
+    from tools.egress_policy_lint import _call_fingerprint
+
+    node = _ast.parse(src).body[0].value
+    assert isinstance(node, _ast.Call)
+    return _call_fingerprint(node)
+
+
+def test_fingerprint_is_stable_and_argument_sensitive():
+    # Same call, moved to a different line → same fingerprint (no churn: the
+    # fingerprint strips line/col attributes).
+    assert _fp('httpx.get("https://api.github.com/x")') == _fp(
+        '\n\nhttpx.get("https://api.github.com/x")'
+    )
+    base = _fp('httpx.get("https://api.github.com/x")')
+    # A different destination literal → different fingerprint.
+    assert _fp('httpx.get("http://169.254.169.254/latest")') != base
+    # A changed redirect policy → different fingerprint.
+    assert _fp('httpx.get("https://api.github.com/x", follow_redirects=True)') != base
+    # A widened/added keyword → different fingerprint.
+    assert _fp('httpx.get("https://api.github.com/x", verify=False)') != base
+
+
+def _gate(monkeypatch, tmp_path, source, allow=None):
+    """Point the gate at a single fixture module + a temp allowlist."""
+    import tools.egress_policy_lint as lint
+
+    mod = tmp_path / "modx.py"
+    mod.write_text(source, encoding="utf-8")
+    monkeypatch.setattr(lint, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(lint, "ALLOWLIST_PATH", tmp_path / "allow.json")
+    monkeypatch.setattr(lint, "_iter_py_files", lambda: [mod])
+    if allow is not None:
+        (tmp_path / "allow.json").write_text(
+            json.dumps({"allow": allow}), encoding="utf-8"
+        )
+    return lint, mod
+
+
+_APPROVED = 'import httpx\n\n\ndef f():\n    return httpx.get("https://api.github.com/x")\n'
+
+
+def test_baseline_then_green(monkeypatch, tmp_path):
+    lint, _ = _gate(monkeypatch, tmp_path, _APPROVED)
+    assert lint.update_baseline() == 0
+    assert lint.check() == 0  # freshly baselined → clean
+
+
+def test_mut_new_module_level_verb_fails(monkeypatch, tmp_path):
+    lint, mod = _gate(monkeypatch, tmp_path, _APPROVED)
+    lint.update_baseline()
+    # Add a SECOND httpx verb in the same already-approved file+symbol.
+    mod.write_text(
+        _APPROVED + '\n\ndef g():\n    return httpx.get("https://example.com/y")\n',
+        encoding="utf-8",
+    )
+    assert lint.check() == 1  # new fingerprint is not allowlisted
+
+
+def test_mut_untrusted_url_in_approved_symbol_fails(monkeypatch, tmp_path):
+    lint, mod = _gate(monkeypatch, tmp_path, _APPROVED)
+    lint.update_baseline()
+    # Same file+symbol, destination swapped to a metadata address.
+    mod.write_text(
+        _APPROVED.replace(
+            "https://api.github.com/x", "http://169.254.169.254/latest/meta"
+        ),
+        encoding="utf-8",
+    )
+    assert lint.check() == 1  # changed destination → fingerprint mismatch
+
+
+def test_mut_changed_redirect_policy_fails(monkeypatch, tmp_path):
+    lint, mod = _gate(monkeypatch, tmp_path, _APPROVED)
+    lint.update_baseline()
+    mod.write_text(
+        _APPROVED.replace(
+            'httpx.get("https://api.github.com/x")',
+            'httpx.get("https://api.github.com/x", follow_redirects=True)',
+        ),
+        encoding="utf-8",
+    )
+    assert lint.check() == 1
+
+
+def test_mut_raw_client_behind_alias_or_local_import_fails(monkeypatch, tmp_path):
+    # No allowlist at all: a raw client hidden behind an import-alias AND a
+    # function-local import must still be detected as a new site.
+    src = (
+        "def f():\n"
+        "    import httpx as _h\n"
+        '    return _h.get("https://example.com/z")\n'
+    )
+    lint, _ = _gate(monkeypatch, tmp_path, src, allow=[])
+    assert lint.check() == 1
+    # from-import alias form too.
+    src2 = "from httpx import get as _g\n\n\ndef f():\n    return _g('https://example.com/z')\n"
+    lint2, _ = _gate(monkeypatch, tmp_path, src2, allow=[])
+    assert lint2.check() == 1
+
+
+def test_mut_stale_fingerprint_fails(monkeypatch, tmp_path):
+    # Allowlist an entry whose fingerprint does NOT match the actual site.
+    entry = [{
+        "file": "modx.py", "symbol": "httpx.get", "fingerprint": "deadbeefdeadbeef",
+        "reason": "intentionally wrong fingerprint for the test", "category": "dev_tooling",
+        "owner_action": "NONE",
+    }]
+    lint, _ = _gate(monkeypatch, tmp_path, _APPROVED, allow=entry)
+    # The real site is 'new' (its true fingerprint isn't allowed) AND the bogus
+    # entry is 'stale' — both fail the gate.
+    assert lint.check() == 1
+
+
+def test_mut_broad_entry_without_fingerprint_is_rejected(monkeypatch, tmp_path):
+    # A "broadened" entry that omits the fingerprint (the old coarse file::symbol
+    # form) is unenforceable and must be rejected, not silently honored.
+    entry = [{
+        "file": "modx.py", "symbol": "httpx.get",
+        "reason": "coarse entry without a fingerprint", "category": "dev_tooling",
+        "owner_action": "NONE",
+    }]
+    lint, _ = _gate(monkeypatch, tmp_path, _APPROVED, allow=entry)
+    assert lint.check() == 1  # real site is new; broad entry has no fingerprint
