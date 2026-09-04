@@ -1,0 +1,37 @@
+# CVE allowlist for scripts/youtab/cve_audit.py  (WAVE-27, A06 / supply chain)
+#
+# Every entry here is an EXPLICIT, TIME-BOXED exception to the CVE gate. An entry
+# suppresses a matching pip-audit finding ONLY until its `expires` date; after
+# that the finding blocks again and the expired entry is reported. This is the
+# whole point: a triaged CVE stays visible and dated, it never becomes silent.
+#
+# Add an entry ONLY for a vulnerability that is genuinely accepted or currently
+# unfixable in this environment. The correct fix for a fixable CVE is to bump the
+# pin and regenerate uv.lock — NOT to add it here.
+#
+# Schema (repeat the [[ignore]] table per exception):
+#   reason  = "why this is accepted / who owns the real fix"   (required)
+#   expires = 2026-12-03                                        (required, YYYY-MM-DD)
+#   id      = "CVE-…" | "GHSA-…" | "PYSEC-…"   (matches the vuln id OR any alias)
+#   package = "name"                            (coarse: covers ALL CVEs of a dist)
+# At least one of `id` / `package` must be set.
+#
+# ---------------------------------------------------------------------------
+# NOTE ON CURRENT STATE (pip-audit run 2026-09-04 against .venv-qual):
+# 31 advisories across 6 packages were found. Only the two BUILD/TEST-TIME tools
+# below are triaged here, because they are not part of the deployed runtime image
+# and their advisories are local/build-surface. The four RUNTIME packages
+# (cryptography, h2, mcp, pillow) are deliberately NOT allowlisted so the gate
+# keeps reporting them as open A06 findings until the pins are bumped and uv.lock
+# is regenerated (Owner action). See the WAVE-27 report for the full list + fixes.
+# ---------------------------------------------------------------------------
+
+[[ignore]]
+id = "CVE-2025-71176"   # PYSEC-2026-1845 — pytest /tmp/pytest-of-{user} local DoS/priv
+reason = "pytest is a test-only dependency, never shipped in the runtime image; the flaw needs a local shared-tmp attacker on the build host. Fix = bump pytest>=9.0.3 at next uv.lock regen (Owner)."
+expires = 2026-12-03
+
+[[ignore]]
+id = "CVE-2026-59890"   # PYSEC-2026-3447 — setuptools MANIFEST.in path traversal on sdist build
+reason = "setuptools is a build-time dependency; the flaw is reachable only when building an sdist from an untrusted MANIFEST.in, which this repo controls. Fix = bump setuptools>=83.0.0 at next uv.lock regen (Owner)."
+expires = 2026-12-03

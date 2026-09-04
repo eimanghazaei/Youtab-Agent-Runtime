@@ -19,6 +19,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from youtab_runtime import redaction
+
 from . import metrics as _metrics
 from .schema import (
     GENERATED_LABEL,
@@ -67,6 +69,17 @@ class Recorder:
             record.verdict, record.self_reported_success, terminal_status
         )
         row = record.to_dict()
+        # WAVE-27: the recorder is the durable write chokepoint. Scrub the
+        # persisted STRING representation of the free-text reason and the
+        # provenance mapping before they land in results.jsonl / summary.json,
+        # so a seam/host exception carrying a URL/token/arg cannot leak into the
+        # artifact even if an emitter forgot to redact. Defense in depth over the
+        # runner's own scrubbing (redact_error is idempotent). This touches only
+        # the stored strings; honesty_divergence was already computed above from
+        # verdict/self-report/terminal-status and never reads the reason text, so
+        # no verdict or pass/fail outcome changes.
+        row["reason"] = redaction.redact_error(row.get("reason", ""))
+        row["provenance"] = redaction.redact_mapping(row.get("provenance") or {})
         self._records.append(row)
         with self.results_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")

@@ -13,15 +13,18 @@ import threading
 
 import pytest
 
-# Every test in this file deliberately spawns real subprocesses and reaps them
-# with os.kill scoped to PIDs it captured. That is precisely the sanctioned use
-# of the conftest live-system guard's opt-out: the guard is a safety net against
-# tests ACCIDENTALLY reaching a real kill_gateway/stop_profile/cmd_update path,
-# not against a process-cleanup test signalling its own children. Under -j3 CI
-# load the guard's psutil parents() walk can transiently raise and block a
-# legitimate cleanup kill of an own child (intermittent). The marker makes the
-# real-signal delivery deterministic; all assertions remain fully enforced.
-pytestmark = pytest.mark.live_system_guard_bypass
+# Only TestZombieReproduction spawns real subprocesses and delivers real signals
+# to their PIDs; the other three classes are fully mocked (unittest.mock) and
+# must run WITH the live-system guard armed. So the opt-out is applied at the
+# narrowest scope — the class that actually reaps its own children — rather than
+# module-wide, where it would needlessly disarm the guard for the mocked tests.
+#
+# That opt-out is the sanctioned use of the guard: it is a safety net against a
+# test ACCIDENTALLY reaching a real kill_gateway/stop_profile/cmd_update path,
+# not against a process-cleanup test signalling the children it spawned. Under
+# -j3 CI load the guard's psutil parents() walk can transiently raise and block
+# a legitimate cleanup kill of an own child (intermittent); the marker makes
+# real-signal delivery deterministic while every assertion stays fully enforced.
 
 
 def _spawn_sleep(seconds: float = 60) -> subprocess.Popen:
@@ -40,6 +43,7 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+@pytest.mark.live_system_guard_bypass
 class TestZombieReproduction:
     """Demonstrate that subprocesses survive when cleanup is not called."""
 

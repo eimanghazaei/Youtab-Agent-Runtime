@@ -19,6 +19,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from youtab_runtime import redaction
+
 from . import metrics as _metrics
 from .oracles import ORACLES
 from .recorder import Recorder
@@ -107,20 +109,32 @@ class Runner:
             # A host capability gap (e.g. cannot prove process ownership) — an
             # honest unknown, NOT a harness error and NOT a runtime defect.
             wall_ms = (time.monotonic() - t0) * 1000.0
-            verdict = Verdict.unknown(f"host capability unavailable: {exc}",
-                                      source=["state"])
+            # WAVE-27: scrub the persisted string form of the exception so a
+            # host-capability error carrying a URL/token/arg never lands raw in
+            # the durable artifact. This changes only the stored STRING — the
+            # verdict outcome (unknown) and the CI gate's truthiness checks on
+            # provenance.capability_unavailable are unaffected.
+            verdict = Verdict.unknown(
+                redaction.redact_error(f"host capability unavailable: {exc}"),
+                source=["state"])
             return self._emit_record(
                 scenario, repetition, run_id, principal, verdict,
                 observation=None, wall_ms=wall_ms,
-                provenance={**base_provenance, "capability_unavailable": str(exc)},
+                provenance={**base_provenance,
+                            "capability_unavailable": redaction.redact_error(exc)},
             )
         except Exception as exc:  # noqa: BLE001 - a harness error is an honest unknown
             wall_ms = (time.monotonic() - t0) * 1000.0
-            verdict = Verdict.unknown(f"harness/seam error: {exc}", source=["state"])
+            # WAVE-27: as above — scrub the seam/harness exception string before
+            # it is persisted, without altering the unknown verdict outcome.
+            verdict = Verdict.unknown(
+                redaction.redact_error(f"harness/seam error: {exc}"),
+                source=["state"])
             return self._emit_record(
                 scenario, repetition, run_id, principal, verdict,
                 observation=None, wall_ms=wall_ms,
-                provenance={**base_provenance, "harness_error": str(exc)},
+                provenance={**base_provenance,
+                            "harness_error": redaction.redact_error(exc)},
             )
         finally:
             home_ctx.close()
