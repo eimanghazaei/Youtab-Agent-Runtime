@@ -56,6 +56,15 @@ def read_secret_file(path: str, *, var: str) -> str:
     # here, so this check is POSIX-only.
     if os.name == "posix" and (mode & (stat.S_IWGRP | stat.S_IWOTH)):
         raise SecretFileError(f"{var}_FILE={path!r} is group/other-writable — refused")
+    # WAVE-26 #7b note: the residual addressed by WAVE-26 is that the credential
+    # files the runtime *writes* (auth.json, .env, provider tokens) used chmod
+    # 0o600, a no-op for access control on Windows — those write paths now apply
+    # an owner-only protected DACL (see youtab_agent_cli.windows_acl). The read
+    # side here handles operator-supplied 12-factor *_FILE secrets whose DACL the
+    # operator owns; a strict owner-only requirement would reject normally-created
+    # files (which inherit broader-but-not-writable DACLs) and is intentionally
+    # NOT imposed. The POSIX group/other-writable tamper check stays POSIX-only,
+    # unchanged from before WAVE-26 (no Windows regression).
     with open(path, "rb") as handle:
         raw = handle.read(_MAX_SECRET_FILE_BYTES + 1)
     if len(raw) > _MAX_SECRET_FILE_BYTES:

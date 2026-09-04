@@ -827,6 +827,19 @@ def _secure_file(path):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
+    # WAVE-26 #7b: on Windows chmod(0o600) only toggles the read-only bit and
+    # provides no access control; apply an owner-only protected DACL so secrets
+    # in this file (.env etc.) are readable only by the current user + SYSTEM.
+    # Best-effort, matching the POSIX chmod posture above (this helper is
+    # documented best-effort; the fail-closed writers live in auth.py).
+    if os.name == "nt" and os.path.exists(str(path)):
+        from youtab_agent_cli import windows_acl
+
+        if windows_acl.pywin32_available():
+            try:
+                windows_acl.apply_owner_only_dacl(path)
+            except OSError:
+                pass
 
 
 def _ensure_default_soul_md(home: Path) -> None:

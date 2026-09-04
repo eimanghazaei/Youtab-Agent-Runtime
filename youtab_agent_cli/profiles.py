@@ -1088,6 +1088,11 @@ def create_profile(
                     if filename == ".env":
                         try:
                             os.chmod(str(dst), 0o600)
+                            if os.name == "nt":
+                                from youtab_agent_cli import windows_acl
+
+                                if windows_acl.pywin32_available():
+                                    windows_acl.apply_owner_only_dacl(dst)
                         except OSError:
                             pass
 
@@ -1123,6 +1128,11 @@ def create_profile(
                 encoding="utf-8",
             )
             os.chmod(str(env_path), 0o600)
+            if os.name == "nt":
+                from youtab_agent_cli import windows_acl
+
+                if windows_acl.pywin32_available():
+                    windows_acl.apply_owner_only_dacl(env_path)
         except OSError:
             pass  # best-effort — save_env_value creates the file on demand
 
@@ -1270,6 +1280,11 @@ def backfill_profile_envs(quiet: bool = False) -> List[str]:
                     encoding="utf-8",
                 )
             os.chmod(str(env_path), 0o600)
+            if os.name == "nt":
+                from youtab_agent_cli import windows_acl
+
+                if windows_acl.pywin32_available():
+                    windows_acl.apply_owner_only_dacl(env_path)
             backfilled.append(entry.name)
         except OSError as e:
             if not quiet:

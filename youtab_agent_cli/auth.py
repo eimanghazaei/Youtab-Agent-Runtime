@@ -1210,6 +1210,25 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
         auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
+    # WAVE-26 #7b: POSIX mode bits are not enforced on Windows, where a new file
+    # inherits the parent directory's DACL. Apply an owner-only *protected* DACL
+    # (current user + SYSTEM only) so auth.json is not readable by other
+    # principals. Fail closed: if it cannot be applied/verified, delete the
+    # credential rather than leave it exposed.
+    if os.name == "nt":
+        from youtab_agent_cli import windows_acl
+
+        if windows_acl.pywin32_available():
+            try:
+                windows_acl.apply_owner_only_dacl(auth_file)
+                if not windows_acl.verify_owner_only_dacl(auth_file):
+                    raise OSError("owner-only DACL verification failed")
+            except OSError:
+                try:
+                    auth_file.unlink()
+                except OSError:
+                    pass
+                raise
     return auth_file
 
 
@@ -2483,6 +2502,23 @@ def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
                 tmp_path.unlink()
         except OSError:
             pass
+    # WAVE-26 #7b: harden the finalized token file with an owner-only protected
+    # DACL on Windows (POSIX O_EXCL 0o600 above is a no-op for access control
+    # there). Fail closed: delete the file if the DACL cannot be applied/verified.
+    if os.name == "nt":
+        from youtab_agent_cli import windows_acl
+
+        if windows_acl.pywin32_available():
+            try:
+                windows_acl.apply_owner_only_dacl(auth_path)
+                if not windows_acl.verify_owner_only_dacl(auth_path):
+                    raise OSError("owner-only DACL verification failed")
+            except OSError:
+                try:
+                    auth_path.unlink()
+                except OSError:
+                    pass
+                raise
     return auth_path
 
 
@@ -5246,6 +5282,25 @@ def _write_shared_youtab_state(state: Dict[str, Any]) -> None:
                     fh.flush()
                     os.fsync(fh.fileno())
                 os.replace(tmp, path)
+                # WAVE-26 #7b: owner-only protected DACL on the shared refresh-
+                # token store (Windows). Fail closed — delete the store so a
+                # broadly-readable refresh_token is never left on disk. (The
+                # write is best-effort convenience; per-profile auth.json is the
+                # source of truth, so a raise here is safely swallowed below.)
+                if os.name == "nt":
+                    from youtab_agent_cli import windows_acl
+
+                    if windows_acl.pywin32_available():
+                        try:
+                            windows_acl.apply_owner_only_dacl(path)
+                            if not windows_acl.verify_owner_only_dacl(path):
+                                raise OSError("owner-only DACL verification failed")
+                        except OSError:
+                            try:
+                                path.unlink()
+                            except OSError:
+                                pass
+                            raise
             finally:
                 try:
                     if tmp.exists():
