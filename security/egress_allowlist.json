@@ -724,16 +724,16 @@
     {
       "file": "tools/skills_hub.py",
       "symbol": "httpx.get",
-      "reason": "Skill-package fetch/install from GitHub (GITHUB_TOKEN/App auth), operator/CLI-governed supply-chain path with a manual Location redirect loop.",
+      "reason": "Skill-package fetch/install (GitHub token/App auth or config catalog), operator/CLI-governed supply-chain path, not reachable from the agent message/tool flow. Has an SSRF-validating _fetch helper (create_ssrf_safe_client, follow_redirects=False, per-hop is_safe_url) BUT also several raw httpx.get(follow_redirects=True) sites on a plain client that bypass it (catalog-metadata-derived URLs).",
       "category": "dev_tooling",
-      "owner_action": "PENDING_OWNER_ACTION: confirm there is no agent-facing arbitrary-URL skill install, and add per-hop SSRF re-validation to the manual redirect loop (tools/skills_hub.py ~306-332)."
+      "owner_action": "PENDING_OWNER_ACTION: confirm no agent-facing arbitrary-URL skill install, and route the raw follow_redirects httpx.get sites through the file's SSRF-validating helper / create_ssrf_safe_client."
     },
     {
       "file": "tools/skills_hub.py",
       "symbol": "httpx.post",
-      "reason": "Skill-package fetch/install from GitHub (GITHUB_TOKEN/App auth), operator/CLI-governed supply-chain path with a manual Location redirect loop.",
+      "reason": "Skill-package fetch/install (GitHub token/App auth or config catalog), operator/CLI-governed supply-chain path, not reachable from the agent message/tool flow. Has an SSRF-validating _fetch helper (create_ssrf_safe_client, follow_redirects=False, per-hop is_safe_url) BUT also several raw httpx.get(follow_redirects=True) sites on a plain client that bypass it (catalog-metadata-derived URLs).",
       "category": "dev_tooling",
-      "owner_action": "PENDING_OWNER_ACTION: confirm there is no agent-facing arbitrary-URL skill install, and add per-hop SSRF re-validation to the manual redirect loop (tools/skills_hub.py ~306-332)."
+      "owner_action": "PENDING_OWNER_ACTION: confirm no agent-facing arbitrary-URL skill install, and route the raw follow_redirects httpx.get sites through the file's SSRF-validating helper / create_ssrf_safe_client."
     },
     {
       "file": "tools/skills_sync_client.py",

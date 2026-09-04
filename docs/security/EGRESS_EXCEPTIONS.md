@@ -89,6 +89,31 @@ proxy enforcement at the infrastructure layer, and/or live-provider verification
   the real agent worker; end-to-end run-scoped observe auditing in the production
   model worker requires a live provider to exercise and is `PENDING_OWNER_ACTION`.
 
+## Known LOW/MEDIUM follow-ups (PENDING_OWNER_ACTION, non-blocking)
+
+Surfaced by the WAVE-27 final reviews; each is honestly disclosed, none is
+reachable as an unauthenticated agent-message SSRF:
+
+* **`tools/skills_hub.py` raw redirect-following** — the file has an
+  SSRF-validating `_fetch` helper but also several `httpx.get(..., follow_redirects=True)`
+  sites on a plain client that bypass it (catalog-metadata-derived URLs).
+  Operator/CLI skill-install supply chain (installing a skill is already a trust
+  decision). Route those sites through the SSRF-validating helper.
+* **`agent/pet/store.py` redirect-follow** — a plain `follow_redirects=True` client
+  fetches from the hardcoded `petdex.dev` host (host-gated by `_is_petdex_host`),
+  but would follow a redirect *from* that trusted host unguarded. Cosmetic pet
+  feature; route through the pinning client.
+* **Windows `.env` writer window** (`youtab_agent_cli/config.save_env_value` /
+  `remove_env_value`) — writes the secret to a `mkstemp` temp under the parent's
+  broad inherited DACL, then `atomic_replace`s and tightens via the fail-closed
+  `_secure_file`. No *persistent* exposure (final file is protected-or-removed),
+  but a brief pre-tighten window remains on multi-user Windows. Migrate to the
+  born-owner-only pattern used by `auth.py:_atomic_secret_write`.
+* **`youtab_agent_cli/web_server.py` validate endpoints** — the metadata floor is
+  checked at resolve time then a raw httpx client re-resolves at connect (DNS-
+  rebinding TOCTOU). Operator-authenticated, `/models`-suffixed. Route through a
+  connect-pinning client (metadata-only policy that still permits self-hosted).
+
 ## Non-httpx adapter limitation (documented)
 
 The `requests` / `urllib` / `aiohttp` / `websockets` audited adapters SSRF-check
