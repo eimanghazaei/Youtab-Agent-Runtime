@@ -1310,53 +1310,65 @@ async def runtime_retry_run(
                         "run_id": run_id},
             )
         _retry_effect_id = _eff.effect_id
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        task = _load_owned_task(conn, run_id, identity)
-        # Carry the original run's execution mode forward so a retry of a
-        # deterministic integration run stays deterministic and a retry of a
-        # real run stays real.
-        prior_mode = _mode_from_events(kb.list_events(conn, task.id))
-        retry_mode = "deterministic" if (prior_mode == "deterministic" and _deterministic_worker_enabled()) else "model"
-        # Preserve correlation lineage engine-side: the retry inherits the
-        # ORIGINAL task's correlation id (independent of the inbound header) so
-        # the whole retry chain is queryable by one correlation (contract C6).
-        # Fall back to the inbound signed correlation only if the original row
-        # predates the dedicated column (legacy).
-        lineage_correlation = task.correlation_id or identity.correlation_id
-        new_id = kb.create_task(
-            conn,
-            title=f"{task.title} (retry)",
-            body=task.body,
-            assignee=task.assignee,
-            created_by=identity.user,
-            tenant=identity.tenant,
-            skills=task.skills,
-            goal_mode=task.goal_mode,
-            max_runtime_seconds=task.max_runtime_seconds,
-            board=RUNTIME_BOARD,
-            correlation_id=lineage_correlation,
-            session_id=identity.correlation_id,
-        )
-        with kb.write_txn(conn):
-            kb._append_event(
+    # A winning claim MUST reach a terminal effect state. If creation/dispatch
+    # raises after the claim, mark the effect unknown so a same-key retry is
+    # reconciled rather than permanently 409'd (the API process stays alive, so
+    # recover_interrupted — which only reclaims provably-dead owners — would not
+    # otherwise free the stranded in_progress claim). Mirrors atomic_write_text.
+    try:
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            task = _load_owned_task(conn, run_id, identity)
+            # Carry the original run's execution mode forward so a retry of a
+            # deterministic integration run stays deterministic and a retry of a
+            # real run stays real.
+            prior_mode = _mode_from_events(kb.list_events(conn, task.id))
+            retry_mode = "deterministic" if (prior_mode == "deterministic" and _deterministic_worker_enabled()) else "model"
+            # Preserve correlation lineage engine-side: the retry inherits the
+            # ORIGINAL task's correlation id (independent of the inbound header)
+            # so the whole retry chain is queryable by one correlation (C6).
+            # Fall back to the inbound signed correlation only if the original
+            # row predates the dedicated column (legacy).
+            lineage_correlation = task.correlation_id or identity.correlation_id
+            new_id = kb.create_task(
                 conn,
-                new_id,
-                _MODE_EVENT,
-                {"mode": retry_mode, "correlation_id": lineage_correlation},
+                title=f"{task.title} (retry)",
+                body=task.body,
+                assignee=task.assignee,
+                created_by=identity.user,
+                tenant=identity.tenant,
+                skills=task.skills,
+                goal_mode=task.goal_mode,
+                max_runtime_seconds=task.max_runtime_seconds,
+                board=RUNTIME_BOARD,
+                correlation_id=lineage_correlation,
+                session_id=identity.correlation_id,
             )
-            # Authoritative lineage marker: this run is a retry of ``run_id``,
-            # carrying the preserved correlation (fail-closed run-txn write).
-            kb._append_event(
-                conn,
-                new_id,
-                _RETRIED_FROM_EVENT,
-                {
-                    "original_run_id": run_id,
-                    "correlation_id": lineage_correlation,
-                },
-            )
-    ensure_dispatcher_running()
-    _dispatch_tick()
+            with kb.write_txn(conn):
+                kb._append_event(
+                    conn,
+                    new_id,
+                    _MODE_EVENT,
+                    {"mode": retry_mode, "correlation_id": lineage_correlation},
+                )
+                # Authoritative lineage marker: this run is a retry of ``run_id``,
+                # carrying the preserved correlation (fail-closed run-txn write).
+                kb._append_event(
+                    conn,
+                    new_id,
+                    _RETRIED_FROM_EVENT,
+                    {
+                        "original_run_id": run_id,
+                        "correlation_id": lineage_correlation,
+                    },
+                )
+        ensure_dispatcher_running()
+        _dispatch_tick()
+    except BaseException:
+        if _retry_effect_id is not None:
+            from youtab_runtime import effect_ledger as _el
+
+            _el.mark_unknown(_retry_effect_id, _retry_principal)
+        raise
     if _retry_effect_id is not None:
         from youtab_runtime import effect_ledger as _el
 

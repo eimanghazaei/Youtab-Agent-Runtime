@@ -129,3 +129,45 @@ def test_synthetic_journey_smoke(tmp_path: Path) -> None:
     # Ordering authority is seq: events are strictly increasing.
     seqs = [e["seq"] for e in obs.events]
     assert seqs == sorted(seqs) and len(seqs) == len(set(seqs))
+
+
+def test_restart_dimension_is_really_exercised_on_capable_hosts(tmp_path: Path) -> None:
+    """On a host that can prove (pid, start_time) ownership — the CI ubuntu
+    runner (via /proc) or any host with psutil — the restart/state-recovery and
+    synthetic-journey scenarios MUST yield a real ``pass``, never a silently
+    accepted ``capability_unavailable`` unknown. Without this, the restart
+    dimension could read green on CI without ever actually running (reviewer C
+    N2). On a genuinely incapable host the test skips.
+    """
+    from youtab_runtime import harness_process as hp
+    from youtab_runtime.run_journal import Principal
+
+    probe = hp.HarnessProcess(isolated_benchmark=True,
+                              home=tmp_path / "probe_home",
+                              principal=Principal("cap", "probe"))
+    try:
+        probe.launch(mode=hp.CHILD_MODE_IDLE)
+        if not probe.wait_ready(timeout=30):
+            pytest.skip("harness child did not become ready on this host")
+        capable = probe.prove_ownership() is hp.OwnershipOutcome.OWNED
+    finally:
+        probe.close()
+    if not capable:
+        pytest.skip("host cannot prove process ownership; the restart dimension "
+                    "is exercised on capable CI hosts, not here")
+
+    scenarios = {s.id: s for s in validate()}
+    must_really_pass = [scenarios[sid] for sid in
+                        ("restart_recovers_state", "synthetic_journey_full")
+                        if sid in scenarios]
+    assert must_really_pass, "restart/journey scenarios missing from the bank"
+
+    recorder = Recorder(tmp_path / "out_cap")
+    runner = Runner(recorder, mode=MODE_DETERMINISTIC, repo_root=_REPO_ROOT,
+                    work_root=tmp_path / "work_cap")
+    rows = {r["scenario_id"]: r
+            for r in runner.run_all(must_really_pass, repetitions=1)}
+    for s in must_really_pass:
+        r = rows[s.id]
+        assert r["verdict"] == "pass", (s.id, r["verdict"], r.get("reason"))
+        assert not (r.get("provenance") or {}).get("capability_unavailable"), s.id
