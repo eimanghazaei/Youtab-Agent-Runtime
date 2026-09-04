@@ -16,6 +16,18 @@ Rules enforced here:
 
 The functions are pure and import only the stdlib so they are safe to call from
 any process, including a network-denied benchmark sandbox.
+
+Known limits (honest scope — this is a heuristic chokepoint, not a guarantee):
+  * A GENERIC high-entropy token (no vendor prefix) placed under a structural
+    safe-verbatim key is kept verbatim, because it is shape-indistinguishable
+    from a legitimate digest/uuid. Vendor-prefixed credentials are still caught.
+  * A short (< 40 char) high-entropy value with no vendor prefix, in free text or
+    under a non-secret key, is below the generic entropy floor and is not
+    scrubbed. Lowering the floor would false-positive on ordinary ids/digests.
+  * A secret split across two sibling fields is judged per-value and is NOT
+    reassembled/matched as a whole.
+  * A NUMERIC value under a secret-shaped key is preserved (usage counts must
+    survive); a purely numeric secret such as a PIN would therefore pass.
 """
 
 from __future__ import annotations
@@ -70,32 +82,74 @@ _HEADER_ALLOWLIST = frozenset(
     }
 )
 
-# Value patterns that look like bearer tokens / long high-entropy secrets even
-# when they appear inside free text (error messages, tracebacks). Deliberately
-# broad and high-recall: false positives only cost visibility, a miss leaks a
-# secret. The prefixed shapes catch provider tokens BELOW the generic 40-char
-# floor (AWS key ids are 20 chars, Google keys 39), and the base64 alternative
-# catches standard-base64 blobs the url-safe generic class ([A-Za-z0-9_-]{40,})
-# misses because it excludes ``+ / =``.
-_INLINE_SECRET_RE = re.compile(
-    r"(?i)("
-    r"bearer\s+[A-Za-z0-9._\-]{12,}"
-    # GitHub PATs/tokens (classic prefixes + fine-grained github_pat_).
-    r"|(?:sk|pk|ghp|gho|ghu|ghs|ghr)-[A-Za-z0-9._\-]{12,}"
-    r"|github_pat_[A-Za-z0-9_]{20,}"
+# Value patterns that look like credentials even inside free text (error
+# messages, tracebacks). Split into two tiers so the same corpus can be reused
+# with different strictness:
+#
+#   * PREFIXED shapes — a specific vendor/scheme prefix (bearer/basic/AWS/Google/
+#     Slack/GitHub/JWT) plus a high-entropy body. These are UNAMBIGUOUSLY
+#     credentials: they cannot be confused with a hex digest, uuid or numeric id.
+#     They therefore run everywhere, INCLUDING against values stored under an
+#     otherwise-"structural" safe-verbatim key (see :func:`_safe_verbatim_key`),
+#     so a token smuggled under an ``*_id``/``*_hash`` key is still caught. The
+#     prefixed shapes also catch provider tokens BELOW the generic 40-char floor
+#     (AWS key ids are 20 chars, Google keys 39).
+#   * GENERIC shapes — a long high-entropy run or a standard-base64 blob (the
+#     base64 alternative catches blobs the url-safe generic class excludes because
+#     of ``+ / =``). These are high-recall but SHAPE-COLLIDE with legitimate
+#     digests/ids, so they run only in free text / non-structural values, never
+#     under a safe-verbatim key.
+#
+# Deliberately broad and high-recall: a false positive only costs visibility, a
+# miss leaks a secret.
+_PREFIXED_SECRET_ALTERNATIVES = (
+    r"bearer\s+[A-Za-z0-9._\-]{12,}",
+    # HTTP Basic auth: "Basic <base64(user:pass)>". Require >=16 base64 chars so
+    # the literal word "basic" followed by an ordinary short English word is not
+    # swept up (base64 of "user:pass" is already 20 chars).
+    r"basic\s+[A-Za-z0-9+/]{16,}={0,2}",
+    # GitHub PATs/tokens (classic prefixes) + generic sk-/pk- provider key shape.
+    r"(?:sk|pk|ghp|gho|ghu|ghs|ghr)-[A-Za-z0-9._\-]{12,}",
+    # GitHub fine-grained PATs.
+    r"github_pat_[A-Za-z0-9_]{20,}",
     # Slack tokens: xoxb / xoxp / xoxa / xoxr / xoxs.
-    r"|xox[baprs]-[A-Za-z0-9-]{10,}"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}",
     # AWS access key ids (prefix + 16 uppercase alnum).
-    r"|(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[A-Z0-9]{16}"
+    r"(?:AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA)[A-Z0-9]{16}",
     # Google API keys (AIza + 35).
-    r"|AIza[A-Za-z0-9_\-]{35}"
+    r"AIza[A-Za-z0-9_\-]{35}",
     # JWTs (three base64url segments) even when not prefixed by "bearer".
-    r"|eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}"
+    r"eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}",
+)
+_GENERIC_SECRET_ALTERNATIVES = (
     # Standard-base64 high-entropy blob (with + / and optional padding).
-    r"|[A-Za-z0-9+/]{40,}={0,2}"
+    r"[A-Za-z0-9+/]{40,}={0,2}",
     # Generic url-safe high-entropy run.
-    r"|[A-Za-z0-9_\-]{40,}"
-    r")"
+    r"[A-Za-z0-9_\-]{40,}",
+)
+
+# Prefixed-only matcher used to police safe-verbatim keys (see _redact_journal):
+# catches definitive credentials while letting genuine digests/uuids/ids through.
+_PREFIXED_SECRET_RE = re.compile(
+    "(?i)(" + "|".join(_PREFIXED_SECRET_ALTERNATIVES) + ")"
+)
+# Full free-text matcher: prefixed shapes first, then the generic catch-alls.
+_INLINE_SECRET_RE = re.compile(
+    "(?i)("
+    + "|".join(_PREFIXED_SECRET_ALTERNATIVES + _GENERIC_SECRET_ALTERNATIVES)
+    + ")"
+)
+
+# Credentials embedded in a URL that sits inside free text. :func:`redact_url`
+# handles a URL passed as its own value, but a URL inside an error string never
+# reaches that parser — so scrub these here too. Userinfo (``user:password@``) is
+# dropped while scheme+host stay legible; sensitive query params keep their key
+# but lose their value so the URL shape remains readable.
+_URL_USERINFO_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/@\s:]+:[^/@\s]+@")
+_URL_SECRET_QUERY_RE = re.compile(
+    r"(?i)([?&](?:access[_-]?token|refresh[_-]?token|client[_-]?secret|"
+    r"api[_-]?key|token|auth|sig|signature|secret|password|passwd|pwd|key|"
+    r"session|sid|code)=)[^&#\s]+"
 )
 
 
@@ -121,7 +175,11 @@ def scrub_text(text: str, *, max_chars: int = _MAX_SUMMARY_CHARS) -> str:
     """Scrub inline secrets from free text and bound its length."""
     if not isinstance(text, str):
         text = str(text)
-    scrubbed = _INLINE_SECRET_RE.sub(REDACTED, text)
+    # Drop URL userinfo (keep scheme+host) and sensitive query values first, so a
+    # short credential a heuristic would otherwise miss is still removed.
+    scrubbed = _URL_USERINFO_RE.sub(r"\1" + REDACTED + "@", text)
+    scrubbed = _URL_SECRET_QUERY_RE.sub(r"\1" + REDACTED, scrubbed)
+    scrubbed = _INLINE_SECRET_RE.sub(REDACTED, scrubbed)
     if len(scrubbed) > max_chars:
         scrubbed = scrubbed[:max_chars] + "…[truncated]"
     return scrubbed
@@ -287,7 +345,9 @@ def _redact_journal(value: Any, *, _depth: int = 0) -> Any:
         would destroy usage measurement).
       * A non-secret key whose value is a *structural* string (digest / id /
         hostname / shape — see :data:`_SAFE_VERBATIM_KEYS`) is kept verbatim so
-        audit evidence (digests) survives.
+        audit evidence (digests) survives, EXCEPT a value that is definitively
+        credential-shaped (matches :data:`_PREFIXED_SECRET_RE`), which is still
+        redacted so the safe-verbatim allowance cannot be abused as a bypass.
       * Any other string is run through :func:`scrub_text` so an inline secret in
         free text (an error message, a note) is caught even under a non-secret
         key — defense in depth over the emitters' own scrubbing.
@@ -308,7 +368,16 @@ def _redact_journal(value: Any, *, _depth: int = 0) -> Any:
                 else:
                     out[key] = REDACTED  # string/bytes/container secret -> drop
             elif isinstance(v, str) and _safe_verbatim_key(key):
-                out[key] = v  # structural metadata / digest — keep verbatim
+                # Structural metadata (digest / id / hostname / shape) is kept
+                # verbatim so audit evidence survives — UNLESS the value is a
+                # definitively credential-shaped token (bearer/basic/AWS/Google/
+                # Slack/GitHub/JWT), which is redacted even here. Genuine
+                # digests/uuids/ints never match the prefixed patterns, so this
+                # closes the "smuggle a secret under an *_id/*_hash key" bypass
+                # without destroying legitimate structural evidence.
+                out[key] = (
+                    REDACTED if _PREFIXED_SECRET_RE.search(v) else v
+                )
             else:
                 out[key] = _redact_journal(v, _depth=_depth + 1)
         return out
@@ -339,9 +408,12 @@ def redact_journal_payload(payload: Any) -> Any:
     own ``redact_mapping``, NOT an absolute guarantee):
       * A STRING under a *structural* key (see :data:`_SAFE_VERBATIM_KEYS` and
         the ``_id``/``_hash``/``_digest``/``_seq`` suffixes) is kept verbatim so
-        audit evidence (digests/ids) survives — a caller that put a token-shaped
-        value under such a key would not be scrubbed here. Current emitters only
-        place internally-generated structural values there.
+        audit evidence (digests/ids) survives. A definitively credential-shaped
+        value (bearer/basic/AWS/Google/Slack/GitHub/JWT — see
+        :data:`_PREFIXED_SECRET_RE`) under such a key IS still redacted; only a
+        GENERIC high-entropy token with no vendor prefix survives there, because
+        it is shape-indistinguishable from a legitimate digest. Current emitters
+        only place internally-generated structural values there.
       * A NUMERIC value under a secret-shaped key is preserved (a bare number
         cannot carry a credential and usage counts must survive) — a numeric
         secret (e.g. a PIN) under ``password``/``token`` would pass.
