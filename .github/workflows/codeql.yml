@@ -51,7 +51,15 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
+      # continue-on-error: the SARIF upload step reports alerts into the
+      # repository's Code Scanning view, which requires GitHub code scanning /
+      # Advanced Security to be ENABLED on the repo — an Owner/org setting. Until
+      # then the upload returns "Resource not accessible by integration" and the
+      # analysis (which runs fine) would otherwise mark this advisory workflow
+      # red. Kept non-fatal so it never masquerades as a required failure;
+      # enabling code scanning surfaces the alerts (PENDING_OWNER_ACTION).
       - name: Perform CodeQL analysis
+        continue-on-error: true
         uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
         with:
           category: "/language:${{ matrix.language }}"
