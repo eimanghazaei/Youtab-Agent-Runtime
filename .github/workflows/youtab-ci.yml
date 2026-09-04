@@ -140,23 +140,34 @@ jobs:
         run: scripts/youtab/nginx_tls_gate.sh
       # A06: dependency CVE scanning (integrity != vulnerability — the
       # dependency_gate proves the lock matches, this proves the locked versions
-      # have no KNOWN CVEs). BLOCKING as of WAVE-28: the four runtime CVEs that
-      # kept this advisory (cryptography/h2/mcp/pillow) were closed at the source
-      # (pins bumped + uv.lock regenerated), and the two build/test-only ones
-      # (pytest/setuptools) were bumped too, so cve_allowlist.toml is now empty.
-      # A new applicable Critical/High/Medium advisory — or a scanner failure /
-      # malformed output (cve_audit.py exits 2, fail-closed) — now fails the
-      # required `python-security` job. It runs as a step of this already-required
-      # job rather than a new context on purpose: a floor proved by a check nobody
-      # must pass is a floor a green PR can remove. Not in run_all_gates.sh for
-      # the reason on the TLS step: it needs pip-audit + network, which a
-      # workstation run should not require.
+      # have no KNOWN CVEs). BLOCKING as of WAVE-28: every disclosed advisory was
+      # closed at the source (pins bumped + uv.lock regenerated), so
+      # cve_allowlist.toml is empty. A new applicable Critical/High/Medium
+      # advisory — or a scanner failure / malformed output (cve_audit.py exits 2,
+      # fail-closed) — now fails the required `python-security` job. It runs as a
+      # step of this already-required job rather than a new context on purpose: a
+      # floor proved by a check nobody must pass is a floor a green PR can remove.
+      #
+      # SCOPE (WAVE-28): audit the LOCKED PROJECT dependency graph exported from
+      # uv.lock — NOT this runner's interpreter. The runner also carries CI-only
+      # tooling (uv, pip-audit, rapidocr-onnxruntime, ai-edge-litert) that is
+      # never shipped and is deliberately kept out of uv.lock; auditing the
+      # interpreter conflated those tools with project dependencies (e.g. uv's own
+      # CVEs). `uv export` resolves, from the lock, exactly the extras this job
+      # installs (dev,web,slack,wakeword-ingest) plus their transitives — so the
+      # gate audits what ships/tests here, deterministically, with no tool noise.
+      # Not in run_all_gates.sh for the reason on the TLS step: it needs pip-audit
+      # + network, which a workstation run should not require.
       - name: Install pip-audit for the CVE gate
         if: ${{ !cancelled() }}
         run: python -m pip install 'pip-audit==2.10.1'
-      - name: CVE audit (pip-audit + triaged allowlist) [blocking]
+      - name: CVE audit (pip-audit over the locked project graph) [blocking]
         if: ${{ !cancelled() }}
-        run: python scripts/youtab/cve_audit.py --output "$RUNNER_TEMP/cve-audit.json"
+        run: |
+          uv export --format requirements-txt --no-hashes --no-emit-project --frozen \
+            --extra dev --extra web --extra slack --extra wakeword-ingest \
+            -o "$RUNNER_TEMP/audit-reqs.txt"
+          python scripts/youtab/cve_audit.py --requirement "$RUNNER_TEMP/audit-reqs.txt" --output "$RUNNER_TEMP/cve-audit.json"
       - name: CycloneDX SBOM (artifact, never fails)
         if: ${{ !cancelled() }}
         run: python scripts/youtab/generate_sbom.py --output "$RUNNER_TEMP/sbom.cdx.json"
