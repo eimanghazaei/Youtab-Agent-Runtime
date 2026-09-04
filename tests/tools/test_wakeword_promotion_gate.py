@@ -132,6 +132,10 @@ jobs:
     runs-on: windows-latest
     steps:
       - run: echo windows-tools
+  benchmark-deterministic:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo benchmark-deterministic
 """
 
 CI_CONTEXTS = {
@@ -142,6 +146,7 @@ CI_CONTEXTS = {
     "wake-word-backends (macos-latest)": "success",
     "windows-runtime-cli": "success",
     "windows-tools": "success",
+    "benchmark-deterministic": "success",
 }
 
 
