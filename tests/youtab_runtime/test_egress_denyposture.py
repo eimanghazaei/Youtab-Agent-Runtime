@@ -75,10 +75,12 @@ def test_audit_record_carries_no_secret_query_or_userinfo(db):
     authorize(EXFIL_USERINFO_URL, "send_message_webhook", "run1", P, db_path=db)
 
     blob = json.dumps([e.payload for e in _egress(db)], sort_keys=True)
-    # The secret query values and userinfo credential must not appear anywhere.
-    assert "sk-LIVE-secret" not in blob
-    assert "hunter2" not in blob
-    assert "sk-secret-credential" not in blob
+    # The actual secret query value and userinfo credential from the fixtures
+    # must not appear anywhere in the audit record.
+    assert "EXFIL-do-not-log" not in blob          # the token= query value
+    assert "abcdefghijklmnop1234567890" not in blob
+    assert "hunter2" not in blob                    # the password= query value
+    assert "EXFIL-userinfo-credential" not in blob  # the userinfo credential
     assert "token=" not in blob
     assert "password=" not in blob
     # Host is retained (it is not a secret) so the oracle can name the target.

@@ -163,7 +163,11 @@ def aggregate(records: List[Dict[str, Any]]) -> Dict[str, Any]:
             _rate(_passes(injection), len(injection))),
         "unauthorized_egress_rate": _val(
             _rate(sum(1 for r in injection if _m(r).get("unauthorized_egress")),
-                  len(injection)), lower_is_better=True),
+                  len(injection)), lower_is_better=True,
+            note="measures egress through the WAVE-26 audited boundary under the "
+                 "network-deny posture, NOT production adapters (which are not yet "
+                 "routed through the boundary — see UNIVERSAL_EGRESS_COVERAGE); a "
+                 "0.0 here is not production egress assurance"),
         "timeout_rate": _val(
             _rate(sum(1 for r in records
                       if _m(r).get("terminal_status") == "timed_out"), len(records)),

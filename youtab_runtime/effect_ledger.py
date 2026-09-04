@@ -601,11 +601,72 @@ def mark_reconciliation_required(effect_id, principal, **kw) -> EffectRecord:
 def should_execute(record: EffectRecord) -> bool:
     """Return True only if the caller may still perform the side effect.
 
-    The one place hooks decide whether to run an effect. An ``unknown`` /
-    ``in_progress`` / terminal effect returns ``False``: a crash-stranded
-    effect must be reconciled, never blindly re-executed.
+    Advisory read for a *point-in-time* check. It is NOT a concurrency-safe
+    claim: two callers can both observe an executable state. To gate a real
+    side effect under concurrency/retry/restart use :func:`try_claim`, which
+    atomically wins the effect for exactly one caller. An ``unknown`` /
+    ``in_progress`` / terminal effect returns ``False``: a crash-stranded effect
+    must be reconciled, never blindly re-executed.
     """
     return record.state in EXECUTABLE_STATES
+
+
+def try_claim(
+    effect_id: str,
+    principal: Principal,
+    *,
+    correlation_id: Optional[str] = None,
+    detail: Optional[Dict[str, Any]] = None,
+    db_path: Optional[Path] = None,
+) -> tuple[bool, EffectRecord]:
+    """Atomically claim an effect for execution; return ``(won, record)``.
+
+    Exactly ONE caller wins: the one that finds the effect in an executable
+    state (``planned``/``authorized``) and flips it to ``in_progress`` inside the
+    single-writer ``BEGIN IMMEDIATE`` transaction. Every concurrent caller, and
+    any retry/restart after the claim, gets ``won=False`` with the current
+    record and MUST NOT perform the side effect (it is in progress elsewhere,
+    already committed, failed, or crash-stranded → ``unknown``).
+
+    This closes the check-then-act race that ``should_execute`` +
+    ``mark_in_progress`` leaves open (``mark_in_progress`` on an already
+    ``in_progress`` effect is an idempotent no-op that would let a second caller
+    proceed). Callers that win perform the effect then call
+    :func:`mark_committed`; on failure they call :func:`mark_unknown`.
+    """
+    if not isinstance(principal, Principal):
+        raise EffectLedgerError("principal must be a Principal instance")
+    path = db_path or default_db_path()
+    with _immediate_txn(path) as conn:
+        _ensure_effects_table(conn)
+        row = _select_owned(conn, effect_id, principal)
+        if row is None:
+            raise EffectLedgerError("effect not found or not owned")
+        current = EffectState(row["state"])
+        if current not in EXECUTABLE_STATES:
+            # Another caller already claimed/settled it (BEGIN IMMEDIATE means
+            # we observe a committed prior transition, never a half-written one).
+            return (False, _row_to_record(row))
+        merged = json.loads(row["detail_json"])
+        if detail:
+            merged.update(detail)
+        attempts = int(row["attempts"]) + 1
+        seq = _append_effect_event(
+            conn, row["run_id"], principal, effect_id, row["effect_type"],
+            row["target_scope_digest"], EffectState.IN_PROGRESS,
+            row["provider_idempotency_key"], merged, correlation_id,
+        )
+        conn.execute(
+            "UPDATE effects SET state=?, attempts=?, last_update_seq=?, "
+            "detail_json=? WHERE effect_id=? AND tenant=? AND user=?",
+            (EffectState.IN_PROGRESS.value, attempts, seq,
+             json.dumps(merged, ensure_ascii=False, default=repr),
+             effect_id, principal.tenant, principal.user),
+        )
+        updated = conn.execute(
+            "SELECT * FROM effects WHERE effect_id=?", (effect_id,)
+        ).fetchone()
+    return (True, _row_to_record(updated))
 
 
 def get_effect(

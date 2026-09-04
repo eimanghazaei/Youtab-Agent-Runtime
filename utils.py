@@ -233,17 +233,20 @@ def atomic_write_text(
     # Validate before creating the parent dir or a temp file (no side effects
     # on a rejected Windows device target).
     _reject_windows_reserved_device(path)
-    _eff = None
+    _eff_id = None
+    _eff_principal = None
     if effect is not None:
         from youtab_runtime import effect_ledger as _el
 
         run_id, principal = effect
         _eff = _el.begin_effect(run_id, principal, "fs.write", os.fspath(path))
-        if not _el.should_execute(_eff):
-            # committed (idempotent) or unknown/in_progress (crash-stranded:
-            # never blindly rewrite) — the durable rename is skipped.
+        # Atomically claim: exactly one caller wins. A loser (concurrent writer,
+        # already committed, or crash-stranded unknown) skips the rename — never
+        # a blind rewrite.
+        won, _eff = _el.try_claim(_eff.effect_id, principal)
+        if not won:
             return
-        _el.mark_in_progress(_eff.effect_id, principal)
+        _eff_id, _eff_principal = _eff.effect_id, principal
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
@@ -255,17 +258,17 @@ def atomic_write_text(
             handle.flush()
             os.fsync(handle.fileno())
         atomic_replace(tmp_path, path)  # durable commit point
-        if _eff is not None:
+        if _eff_id is not None:
             from youtab_runtime import effect_ledger as _el
 
-            _el.mark_committed(_eff.effect_id, effect[1])
+            _el.mark_committed(_eff_id, _eff_principal)
     except BaseException:
-        if _eff is not None:
+        if _eff_id is not None:
             from youtab_runtime import effect_ledger as _el
 
-            # Torn/crash after in_progress: outcome unproven -> unknown, so a
-            # later retry is reconciled rather than blindly re-applied.
-            _el.mark_unknown(_eff.effect_id, effect[1])
+            # Torn/crash after the claim: outcome unproven -> unknown, so a later
+            # retry is reconciled rather than blindly re-applied.
+            _el.mark_unknown(_eff_id, _eff_principal)
         try:
             os.unlink(tmp_path)
         except OSError:

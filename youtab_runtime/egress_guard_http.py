@@ -13,10 +13,16 @@ the shared egress audit boundary in :mod:`youtab_runtime.egress_audit`:
     journalled, carrying only the outbound byte *count* and a *digest*, never the
     body.
 
-This is the single approved way to build an outbound httpx client inside the
-runtime; the accompanying lint/gate (see the WAVE-26 report) bans bare
-``httpx.Client`` / ``httpx.AsyncClient`` construction outside this module so new
-adapters cannot silently bypass the audit boundary.
+This is intended to become the single approved way to build an outbound httpx
+client inside the runtime. NOTE (WAVE-26 status): this factory is NOT yet wired
+into the production provider/MCP/webhook adapters (that is Owner-gated group-4
+work — the SSRF pin would reject legitimate local/self-hosted providers until
+they are allowlisted), and the companion lint/gate that would ban bare
+``httpx.Client`` / ``httpx.AsyncClient`` construction elsewhere is PROPOSED, not
+yet present. Until both land, this factory controls only the callers that opt
+into it (today: the benchmark harness under the network-deny posture). See
+``tests/tools/test_egress_boundary_enumeration.py`` (``UNIVERSAL_EGRESS_COVERAGE``)
+for the authoritative inside/outside adapter inventory.
 """
 
 from __future__ import annotations

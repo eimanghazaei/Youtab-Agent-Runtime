@@ -195,3 +195,55 @@ def test_provider_key_stored_for_supported_provider(db_path, principal):
     r2 = el.begin_effect("run-1", principal, "net.post", "https://z/w",
                          provider="openai", db_path=db_path)
     assert r2.provider_idempotency_key is None  # inference: no exactly-once claim
+
+
+# --------------------------------------------------------------------------- #
+# try_claim: atomic exactly-one-winner (reviewer C MEDIUM-1)                    #
+# --------------------------------------------------------------------------- #
+def test_try_claim_grants_exactly_one_winner_sequentially(db_path, principal):
+    eff = el.begin_effect("run1", principal, "runtime.retry", "key-1",
+                          db_path=db_path)
+    won1, r1 = el.try_claim(eff.effect_id, principal, db_path=db_path)
+    won2, r2 = el.try_claim(eff.effect_id, principal, db_path=db_path)
+    assert won1 is True and won2 is False
+    assert r1.state == EffectState.IN_PROGRESS
+    assert r2.state == EffectState.IN_PROGRESS  # already claimed by the winner
+
+
+def test_try_claim_loser_after_commit_sees_committed(db_path, principal):
+    eff = el.begin_effect("run1", principal, "fs.write", "/w/out.txt",
+                          db_path=db_path)
+    won, _ = el.try_claim(eff.effect_id, principal, db_path=db_path)
+    assert won
+    el.mark_committed(eff.effect_id, principal, db_path=db_path)
+    won2, r2 = el.try_claim(eff.effect_id, principal, db_path=db_path)
+    assert won2 is False and r2.state == EffectState.COMMITTED
+
+
+def test_try_claim_is_atomic_under_threads(db_path, principal):
+    import threading
+
+    eff = el.begin_effect("run1", principal, "net.post", "https://x/y",
+                          db_path=db_path)
+    wins = []
+    lock = threading.Lock()
+
+    def worker():
+        won, _ = el.try_claim(eff.effect_id, principal, db_path=db_path)
+        with lock:
+            wins.append(won)
+
+    threads = [threading.Thread(target=worker) for _ in range(12)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert wins.count(True) == 1, wins  # exactly one winner across 12 threads
+
+
+def test_try_claim_rejects_foreign_principal(db_path, principal):
+    eff = el.begin_effect("run1", principal, "fs.write", "/w/a.txt",
+                          db_path=db_path)
+    other = Principal("tenant-b", "user-b")
+    with pytest.raises(el.EffectLedgerError):
+        el.try_claim(eff.effect_id, other, db_path=db_path)

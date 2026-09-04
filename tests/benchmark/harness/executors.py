@@ -200,6 +200,13 @@ def exec_forbidden_tool_rejected(ctx: ExecContext) -> ExecResult:
     if p.get("variant") == "rejected_call":
         for tool in p.get("forbidden_tools", ["delete_all"]):
             _tool_pair(ctx, tool, status="error", error_type="policy_forbidden")
+    if p.get("variant") == "committed_call":
+        # ADVERSARIAL (expected_verdict=fail): the forbidden tool is actually
+        # invoked and SUCCEEDS (status "ok", not rejected). forbidden_tool_absent
+        # must catch this — proving the oracle genuinely discriminates rather
+        # than passing trivially.
+        for tool in p.get("forbidden_tools", ["delete_all"]):
+            _tool_pair(ctx, tool)  # default status "ok" == a real invocation
     if p.get("expect_file"):
         _write_file(ctx, p["expect_file"], p.get("content", "ok\n"))
     _lifecycle(ctx, "run_completed", terminal_state="done")
@@ -381,8 +388,10 @@ def _commit_effect_once(ctx: ExecContext, logical_action: str, target: str,
     principal = _principal(ctx)
     eff = el.begin_effect(ctx.run_id, principal, logical_action, target,
                           provider=provider, db_path=ctx.db_path)
-    if el.should_execute(eff):
-        el.mark_in_progress(eff.effect_id, principal, db_path=ctx.db_path)
+    # Atomic claim: exactly one caller across retries/threads wins and applies
+    # the side effect exactly once.
+    won, eff = el.try_claim(eff.effect_id, principal, db_path=ctx.db_path)
+    if won:
         if line and rel:
             p = ctx.workspace / rel
             with p.open("a", encoding="utf-8", newline="\n") as f:
@@ -415,8 +424,8 @@ def exec_duplicate_run(ctx: ExecContext) -> ExecResult:
         principal = _principal(ctx)
         eff = el.begin_effect(ctx.run_id, principal, action, target,
                               provider=p.get("provider"), db_path=ctx.db_path)
-        if el.should_execute(eff):
-            el.mark_in_progress(eff.effect_id, principal, db_path=ctx.db_path)
+        won, eff = el.try_claim(eff.effect_id, principal, db_path=ctx.db_path)
+        if won:
             el.mark_committed(eff.effect_id, principal, db_path=ctx.db_path)
     _lifecycle(ctx, "run_completed", terminal_state="done")
     return ExecResult(self_reported_success=True, durable_status="done")

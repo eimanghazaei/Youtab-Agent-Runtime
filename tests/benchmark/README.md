@@ -45,6 +45,20 @@ Require a live provider (defined with oracles, reported `unknown` +
 quality, tool-selection / argument accuracy, real token counts & cost, and
 model-driven injection resistance.
 
+### Scope of the runtime-plumbing green
+
+The deterministic suite proves the WAVE-26 substrate *modules* (effect ledger,
+run journal, egress audit, harness process control) behave correctly —
+`duplicate_effect_rate == 0`, `cross_principal_leakage_rate == 0`,
+`unauthorized_egress_rate == 0` reflect the ledger/boundary the harness itself
+drives. They are NOT a claim that every production side effect is guarded:
+effect-level idempotency is wired into the durable run-retry endpoint (and
+`utils.atomic_write_text` accepts an opt-in `effect=` guard), but broad
+production write/network callers are not yet routed through the ledger, and the
+egress boundary is not yet wired into production adapters (see
+`tests/tools/test_egress_boundary_enumeration.py` → `UNIVERSAL_EGRESS_COVERAGE`).
+That production wiring is Owner-gated follow-on work.
+
 ## Running
 
 From the repo root:
