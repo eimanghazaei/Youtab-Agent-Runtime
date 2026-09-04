@@ -1081,6 +1081,9 @@ def _notify_context_engine_turn_complete(
         )
 
 
+_WAVE26_OBSERVER_REGISTERED = False
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -1122,6 +1125,36 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    # WAVE-26: bind a durable per-run usage/tool observer to this worker process
+    # exactly once, so post_api_request/post_tool_call are sunk into the run
+    # journal for the durable runtime plane. Fail-open: an observability failure
+    # must never break a real run. Only runtime-plane workers (spawned with the
+    # kanban task id = durable run id and both principal halves in env) register;
+    # other entrypoints simply skip.
+    global _WAVE26_OBSERVER_REGISTERED
+    if not _WAVE26_OBSERVER_REGISTERED:
+        _WAVE26_OBSERVER_REGISTERED = True  # set first: at-most-once even on error
+        try:
+            _run_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+            _tenant = (os.environ.get("YOUTAB_AGENT_TENANT") or "").strip()
+            _user = (os.environ.get("YOUTAB_AGENT_KANBAN_CREATED_BY") or "").strip()
+            _corr = (os.environ.get("YOUTAB_AGENT_CORRELATION_ID") or "").strip() or None
+            if _run_id and _tenant and _user:
+                from youtab_runtime.run_journal import Principal
+                from youtab_runtime.run_observer import (
+                    create_run_observer,
+                    register_run_observer,
+                )
+
+                register_run_observer(
+                    create_run_observer(
+                        _run_id, Principal(_tenant, _user), correlation_id=_corr
+                    )
+                )
+        except Exception:
+            logger.warning(
+                "WAVE-26 run-observer registration failed", exc_info=True
+            )
     if moa_config is None:
         try:
             from youtab_agent_cli.moa_config import decode_moa_turn
@@ -3157,6 +3190,16 @@ def run_conversation(
                     # charged to that old compaction, and so preflight deferral
                     # does not remain latched indefinitely.
                     agent.context_compressor.update_from_response({})
+                else:
+                    # WAVE-26: a successful response that carried NO usage block
+                    # was previously skipped silently, understating session spend
+                    # as if the call were free. Count it explicitly so the
+                    # aggregate can report an unknown-usage call count instead of
+                    # a fabricated zero. (The durable journal separately records
+                    # this via the post_api_request hook, usage_status="unknown".)
+                    agent.session_unknown_usage_calls = (
+                        getattr(agent, "session_unknown_usage_calls", 0) + 1
+                    )
 
                 if hasattr(response, 'usage') and response.usage:
                     # Cache discovered context length after successful call.

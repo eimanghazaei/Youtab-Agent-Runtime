@@ -429,6 +429,70 @@ def _run_summary(
     }
 
 
+def _journal_usage_rollup(task: "kb.Task") -> Optional[Dict[str, Any]]:
+    """Aggregate usage/model_call journal events for this run (unknown-safe).
+
+    WAVE-26: authoritative per-run usage summed from the durable run journal,
+    preserving ``unknown`` as first-class rather than the best-effort
+    3-fields-or-null the closing run's metadata provides. Returns None when the
+    journal has no usage events for this run (deterministic/offline runs).
+    """
+    try:
+        from youtab_runtime.run_journal import Principal, list_events
+    except Exception:
+        return None
+    if not (task.tenant and task.created_by):
+        return None
+    try:
+        pr = Principal(task.tenant, task.created_by)
+    except Exception:
+        return None
+    fields = ("input_tokens", "output_tokens", "cache_read_tokens",
+              "cache_write_tokens", "reasoning_tokens", "total_tokens")
+    totals = {f: 0 for f in fields}
+    seen_known = False
+    any_unknown = False
+    cost = 0.0
+    cost_known = False
+    seq = 0
+    while True:
+        batch = list_events(task.id, pr, after_seq=seq, category="usage", limit=500)
+        if not batch:
+            break
+        for ev in batch:
+            seq = ev.seq
+            p = ev.payload
+            if p.get("usage_status") == "known":
+                seen_known = True
+                for f in fields:
+                    v = p.get(f)
+                    if v is not None:
+                        totals[f] += int(v)
+                c = (p.get("cost") or {}).get("amount_usd")
+                if c is not None:
+                    cost += float(c)
+                    cost_known = True
+            else:
+                any_unknown = True
+        if len(batch) < 500:
+            break
+    if not seen_known and not any_unknown:
+        return None
+    out: Dict[str, Any] = (
+        {f: totals[f] for f in fields} if seen_known
+        else {f: None for f in fields}
+    )
+    out["usage_status"] = (
+        "known" if seen_known and not any_unknown
+        else ("partial" if seen_known else "unknown")
+    )
+    out["cost"] = {
+        "amount_usd": cost if cost_known else None,
+        "status": "estimated" if cost_known else "unknown",
+    }
+    return out
+
+
 def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, Any]:
     runs = kb.list_runs(conn, task.id)
     attachments = kb.list_attachments(conn, task.id)
@@ -460,7 +524,7 @@ def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, A
         "current_run_id": task.current_run_id,
         "model": meta.get("model") or meta.get("model_id"),
         "provider": meta.get("provider"),
-        "usage": meta.get("usage") or meta.get("tokens"),
+        "usage": _journal_usage_rollup(task) or meta.get("usage") or meta.get("tokens"),
         # The branded engine the caller selected at create, if any (consumer-safe
         # {profile_id, public_label} only; never the provider/model it resolved to).
         "engine_selection": _engine_selection_from_events(events),

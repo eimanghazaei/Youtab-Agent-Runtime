@@ -8970,6 +8970,12 @@ def _default_spawn(
         pass
     if task.tenant:
         env["YOUTAB_AGENT_TENANT"] = task.tenant
+    # WAVE-26: the worker needs BOTH halves of the principal (tenant, user) to
+    # attribute durable usage/tool events in the run journal. tenant is exported
+    # above; carry the owning user (created_by) so the run observer can bind a
+    # fail-closed Principal.
+    if task.created_by:
+        env["YOUTAB_AGENT_KANBAN_CREATED_BY"] = task.created_by
     # Carry the authoritative gateway correlation id to the worker (contract C4).
     _apply_correlation_env(env, task)
     env["YOUTAB_AGENT_KANBAN_TASK"] = task.id
