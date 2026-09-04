@@ -3749,6 +3749,65 @@ def _sanitize_env_lines(lines: list) -> list:
     return sanitized
 
 
+def _write_env_lines_secure(env_path: Path, lines: list) -> None:
+    """Atomically write ``lines`` to ``env_path`` with the temp born owner-only.
+
+    WAVE-28 §6.1 — close the pre-tighten exposure window. The prior writers
+    used ``tempfile.mkstemp``, which creates the temp under the parent's broad
+    inherited DACL (Windows) / umask (POSIX), wrote the secret-bearing ``.env``
+    body into it, and only tightened *after* the atomic replace. On a multi-user
+    Windows host another user could read the temp during that window.
+
+    This routes the write through :func:`windows_acl.secure_write_secret_file`,
+    which creates the temp file EMPTY, applies and *verifies* an owner+SYSTEM-only
+    protected DACL (Windows) / ``O_EXCL`` at ``0o600`` (POSIX) BEFORE any secret
+    byte is written, and is fail-closed: if the secure create or DACL cannot be
+    applied/verified (including when pywin32 is unavailable), it raises and leaves
+    no plaintext behind — never a world-readable fallback. The protected security
+    descriptor / mode moves with the file across the same-directory atomic rename,
+    so ``env_path`` is owner-only from its first byte.
+
+    POSIX Docker-volume semantics are preserved: a pre-existing broader mode
+    (e.g. ``0640``) is re-applied to the FINAL file after the replace, so the
+    temp is still born ``0600`` (window closed) while the deployed file keeps the
+    operator's intended mode.
+    """
+    from youtab_agent_cli import windows_acl
+
+    content = "".join(lines)
+    original_mode = None
+    if os.name != "nt" and env_path.exists():
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
+
+    # Unique temp name in the same directory (atomic-rename target). O_EXCL in
+    # secure_write_secret_file makes creation race-safe regardless of the name.
+    tmp_path = env_path.parent / f".env_{os.getpid()}_{os.urandom(8).hex()}.tmp"
+    try:
+        windows_acl.secure_write_secret_file(tmp_path, content)
+        atomic_replace(str(tmp_path), env_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    # Final file: preserve a POSIX Docker-volume mode if one existed; otherwise
+    # re-assert the fail-closed owner-only DACL (WAVE-27 #7b) — idempotent, since
+    # the born-owner-only temp already carried it across the rename.
+    if original_mode is not None and os.name != "nt":
+        try:
+            os.chmod(env_path, original_mode)
+        except OSError:
+            pass
+    else:
+        _secure_file(env_path)
+    invalidate_env_cache()
+
+
 def sanitize_env_file() -> int:
     """Read, sanitize, and rewrite ~/.youtab-agent-runtime/.env in place.
 
@@ -3760,8 +3819,6 @@ def sanitize_env_file() -> int:
         return 0
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
     with open(env_path, **read_kw) as f:
         original_lines = f.readlines()
 
@@ -3776,21 +3833,9 @@ def sanitize_env_file() -> int:
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
-    try:
-        with os.fdopen(fd, "w", **write_kw) as f:
-            f.writelines(sanitized)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    _secure_file(env_path)
-    invalidate_env_cache()
+    # Born owner-only: the sanitized .env still carries every secret, so the
+    # temp must never exist under a permissive DACL (WAVE-28 §6.1).
+    _write_env_lines_secure(env_path, sanitized)
     return fixes
 
 
@@ -3899,8 +3944,6 @@ def save_env_value(key: str, value: str):
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
     lines = []
     if env_path.exists():
         with open(env_path, **read_kw) as f:
@@ -3929,43 +3972,13 @@ def save_env_value(key: str, value: str):
             lines[-1] += "\n"
         lines.append(f"{key}={serialized_value}\n")
     
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-    # Preserve original permissions so Docker volume mounts aren't clobbered.
-    original_mode = None
-    if env_path.exists():
-        try:
-            original_mode = stat.S_IMODE(env_path.stat().st_mode)
-        except OSError:
-            pass
-    try:
-        with os.fdopen(fd, 'w', **write_kw) as f:
-            f.writelines(lines)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
-        # instead of letting _secure_file unconditionally tighten to 0600.
-        # POSIX-only: on Windows POSIX mode bits carry no access-control meaning
-        # and the atomic rename just moved a temp file with the parent's broad
-        # inherited DACL onto env_path — so always re-apply the fail-closed
-        # owner-only DACL there (WAVE-27 #7b), never skip it for a synthesized
-        # "original mode".
-        if original_mode is not None and os.name != "nt":
-            try:
-                os.chmod(env_path, original_mode)
-            except OSError:
-                pass
-        else:
-            _secure_file(env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    # Born owner-only, fail-closed, Docker-mode preserving (WAVE-28 §6.1): the
+    # secret-bearing temp is created with an owner-only protected DACL / 0o600
+    # BEFORE any byte is written, closing the pre-tighten exposure window that
+    # the previous mkstemp + tighten-after path left open on multi-user Windows.
+    _write_env_lines_secure(env_path, lines)
 
     os.environ[key] = value
-    invalidate_env_cache()
 
 
 def custom_endpoint_key_env(identity: str) -> str:
@@ -4015,8 +4028,6 @@ def remove_env_value(key: str) -> bool:
         return False
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
     with open(env_path, **read_kw) as f:
         lines = f.readlines()
     lines = _sanitize_env_lines(lines)
@@ -4025,38 +4036,10 @@ def remove_env_value(key: str) -> bool:
     found = len(new_lines) < len(lines)
 
     if found:
-        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-        # Preserve original permissions so Docker volume mounts aren't clobbered.
-        original_mode = None
-        try:
-            original_mode = stat.S_IMODE(env_path.stat().st_mode)
-        except OSError:
-            pass
-        try:
-            with os.fdopen(fd, 'w', **write_kw) as f:
-                f.writelines(new_lines)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, env_path)
-            # Preserve the original file mode (e.g. 0640 for Docker volume
-            # mounts) instead of letting _secure_file unconditionally tighten
-            # to 0600. Mirrors save_env_value(). POSIX-only: on Windows the
-            # rename moved a temp file with the parent's broad inherited DACL
-            # onto env_path, so always re-apply the fail-closed owner-only DACL
-            # there (WAVE-27 #7b) rather than skip it for a synthesized mode.
-            if original_mode is not None and os.name != "nt":
-                try:
-                    os.chmod(env_path, original_mode)
-                except OSError:
-                    pass
-            else:
-                _secure_file(env_path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        # Born owner-only, fail-closed, Docker-mode preserving (WAVE-28 §6.1) —
+        # mirrors save_env_value(): the rewritten .env still holds the remaining
+        # secrets, so its temp must never exist under a permissive DACL.
+        _write_env_lines_secure(env_path, new_lines)
 
     os.environ.pop(key, None)
     invalidate_env_cache()
