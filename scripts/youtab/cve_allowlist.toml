@@ -1,4 +1,4 @@
-# CVE allowlist for scripts/youtab/cve_audit.py  (WAVE-27, A06 / supply chain)
+# CVE allowlist for scripts/youtab/cve_audit.py  (A06 / supply chain)
 #
 # Every entry here is an EXPLICIT, TIME-BOXED exception to the CVE gate. An entry
 # suppresses a matching pip-audit finding ONLY until its `expires` date; after
@@ -17,21 +17,25 @@
 # At least one of `id` / `package` must be set.
 #
 # ---------------------------------------------------------------------------
-# NOTE ON CURRENT STATE (pip-audit run 2026-09-04 against .venv-qual):
-# 31 advisories across 6 packages were found. Only the two BUILD/TEST-TIME tools
-# below are triaged here, because they are not part of the deployed runtime image
-# and their advisories are local/build-surface. The four RUNTIME packages
-# (cryptography, h2, mcp, pillow) are deliberately NOT allowlisted so the gate
-# keeps reporting them as open A06 findings until the pins are bumped and uv.lock
-# is regenerated (Owner action). See the WAVE-27 report for the full list + fixes.
+# CURRENT STATE (WAVE-28, pip-audit run 2026-09-04 against the regenerated
+# uv.lock / installed env):
+#
+#   Applicable Critical vulnerabilities: 0
+#   Applicable High vulnerabilities:     0
+#   Applicable Medium vulnerabilities:   0
+#   Ignored advisories:                  0
+#
+# WAVE-28 closed every previously-open A06 finding at the source by bumping the
+# pin and regenerating uv.lock — no advisory is suppressed here:
+#   * cryptography 48.0.1 -> 50.0.0   (CVE-2026-69247/69248/69249)
+#   * h2           4.3.0  -> 4.4.1    (CVE-2026-71554, via [tool.uv] constraint)
+#   * mcp          1.26.0 -> 1.28.1   (CVE-2026-52869/52870/59950)
+#   * pillow       12.2.0 -> 12.3.0   (CVE-2026-54058..59205, 20 advisories)
+#   * pytest       9.0.2  -> 9.0.3    (CVE-2025-71176; was a build/test-only exception)
+#   * setuptools   81.0.0 -> 83.0.0   (CVE-2026-59890; was a build-time-only exception)
+#
+# This allowlist is intentionally EMPTY. The gate is now blocking (no
+# continue-on-error in CI): any new applicable advisory fails the build until it
+# is fixed at the source, or — only if genuinely unfixable — added here with a
+# reason and an expiry, narrowly and with Owner approval.
 # ---------------------------------------------------------------------------
-
-[[ignore]]
-id = "CVE-2025-71176"   # PYSEC-2026-1845 — pytest /tmp/pytest-of-{user} local DoS/priv
-reason = "pytest is a test-only dependency, never shipped in the runtime image; the flaw needs a local shared-tmp attacker on the build host. Fix = bump pytest>=9.0.3 at next uv.lock regen (Owner)."
-expires = 2026-12-03
-
-[[ignore]]
-id = "CVE-2026-59890"   # PYSEC-2026-3447 — setuptools MANIFEST.in path traversal on sdist build
-reason = "setuptools is a build-time dependency; the flaw is reachable only when building an sdist from an untrusted MANIFEST.in, which this repo controls. Fix = bump setuptools>=83.0.0 at next uv.lock regen (Owner)."
-expires = 2026-12-03

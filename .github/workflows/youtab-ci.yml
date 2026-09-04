@@ -138,19 +138,24 @@ jobs:
       - name: Origin TLS floor -- nginx 1.18 config test and real handshake matrix
         if: ${{ !cancelled() }}
         run: scripts/youtab/nginx_tls_gate.sh
-      # WAVE-27 A06: dependency CVE scanning (integrity != vulnerability — the
+      # A06: dependency CVE scanning (integrity != vulnerability — the
       # dependency_gate proves the lock matches, this proves the locked versions
-      # have no KNOWN CVEs). ADVISORY (continue-on-error) while the runtime pins
-      # carry open CVEs (cryptography/h2/mcp/pillow, see scripts/youtab/
-      # cve_allowlist.toml): the finding is surfaced in CI without blocking every
-      # PR. Drop continue-on-error to make it blocking once the pins are bumped
-      # and uv.lock regenerated (Owner action).
+      # have no KNOWN CVEs). BLOCKING as of WAVE-28: the four runtime CVEs that
+      # kept this advisory (cryptography/h2/mcp/pillow) were closed at the source
+      # (pins bumped + uv.lock regenerated), and the two build/test-only ones
+      # (pytest/setuptools) were bumped too, so cve_allowlist.toml is now empty.
+      # A new applicable Critical/High/Medium advisory — or a scanner failure /
+      # malformed output (cve_audit.py exits 2, fail-closed) — now fails the
+      # required `python-security` job. It runs as a step of this already-required
+      # job rather than a new context on purpose: a floor proved by a check nobody
+      # must pass is a floor a green PR can remove. Not in run_all_gates.sh for
+      # the reason on the TLS step: it needs pip-audit + network, which a
+      # workstation run should not require.
       - name: Install pip-audit for the CVE gate
         if: ${{ !cancelled() }}
         run: python -m pip install 'pip-audit==2.10.1'
-      - name: CVE audit (pip-audit + triaged allowlist) [advisory]
+      - name: CVE audit (pip-audit + triaged allowlist) [blocking]
         if: ${{ !cancelled() }}
-        continue-on-error: true
         run: python scripts/youtab/cve_audit.py --output "$RUNNER_TEMP/cve-audit.json"
       - name: CycloneDX SBOM (artifact, never fails)
         if: ${{ !cancelled() }}
@@ -219,7 +224,7 @@ jobs:
       # unconditionally here, because the tflite artifact ships on every
       # platform and an untested binary is the gap this job closes.
       - name: Install both wake-word backends at the shipped pins
-        run: python -m pip install "numpy==2.4.3" "onnxruntime==1.27.0" "ai-edge-litert==2.1.6" "pytest==9.0.2"
+        run: python -m pip install "numpy==2.4.3" "onnxruntime==1.27.0" "ai-edge-litert==2.1.6" "pytest==9.0.3"
       - name: Both artifacts load, agree and keep up with the frame rate
         run: python scripts/wakeword/verify_backends.py --report backend-report.json
       # The report is the evidence, and it is printed rather than uploaded:

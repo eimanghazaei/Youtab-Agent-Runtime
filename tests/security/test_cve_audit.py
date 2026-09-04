@@ -192,12 +192,19 @@ def test_load_allowlist_rejects_entry_with_no_expiry(tmp_path: Path):
 # ── the shipped allowlist is itself well-formed and honest ───────────────────
 
 
-def test_the_shipped_allowlist_parses_and_only_triages_build_tools():
+def test_the_shipped_allowlist_is_empty_after_wave28_source_fixes():
     entries = cve.load_allowlist(REPO / "scripts" / "youtab" / "cve_allowlist.toml")
-    # Exactly the two build/test-time tools are triaged; the runtime CVEs are
-    # deliberately left blocking. If someone allowlists a runtime dep, this fails.
-    ids = {e.id for e in entries}
-    assert ids == {"CVE-2025-71176", "CVE-2026-59890"}
+    # WAVE-28 closed every previously-open advisory at the source (pin bump +
+    # uv.lock regen): the four runtime CVEs (cryptography/h2/mcp/pillow) AND the
+    # two build/test-only ones (pytest/setuptools) are all fixed, so nothing is
+    # suppressed. The gate is now blocking with an EMPTY allowlist — the honest
+    # end state. If a future exception is added it must still be justified and
+    # not pre-expired (asserted below), but the shipped default is zero.
+    assert entries == [], (
+        "the shipped allowlist must be empty: fix advisories at the source (bump "
+        "the pin + regenerate uv.lock), do not suppress them. If an exception is "
+        f"genuinely unavoidable it needs Owner sign-off. Found: {[e.id for e in entries]}"
+    )
     for e in entries:
         assert e.reason.strip(), "every shipped exception must carry a justification"
         assert e.expires > dt.date(2026, 9, 4), "a shipped exception must not be pre-expired"
