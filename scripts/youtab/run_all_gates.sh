@@ -54,6 +54,16 @@ begin sast
 "$python_bin" scripts/youtab/sast_gate.py --root . --output "$evidence_dir/sast.json"
 record sast $?
 
+# WAVE-27 egress-policy static gate. Bans raw outbound-client construction
+# (httpx/requests/aiohttp/urllib/websockets) in production code outside the
+# audited adapters, except sites justified in security/egress_allowlist.json.
+# Fails on a NEW un-allowlisted site or a STALE (removed/migrated) allowlist
+# entry, so "route directly-controlled egress through the audited boundary"
+# stays an enforced, regression-proof invariant.
+begin egress-policy
+"$python_bin" -m tools.egress_policy_lint --check | tee "$evidence_dir/egress-policy.log"
+record egress-policy $?
+
 # Control-plane isolation. Structured, not textual: it parses the Compose and
 # Dockerfile so a comment explaining why host networking was removed cannot
 # fail the build, and an input it cannot resolve fails closed rather than

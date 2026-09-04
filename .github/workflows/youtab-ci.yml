@@ -138,6 +138,23 @@ jobs:
       - name: Origin TLS floor -- nginx 1.18 config test and real handshake matrix
         if: ${{ !cancelled() }}
         run: scripts/youtab/nginx_tls_gate.sh
+      # WAVE-27 A06: dependency CVE scanning (integrity != vulnerability — the
+      # dependency_gate proves the lock matches, this proves the locked versions
+      # have no KNOWN CVEs). ADVISORY (continue-on-error) while the runtime pins
+      # carry open CVEs (cryptography/h2/mcp/pillow, see scripts/youtab/
+      # cve_allowlist.toml): the finding is surfaced in CI without blocking every
+      # PR. Drop continue-on-error to make it blocking once the pins are bumped
+      # and uv.lock regenerated (Owner action).
+      - name: Install pip-audit for the CVE gate
+        if: ${{ !cancelled() }}
+        run: python -m pip install 'pip-audit==2.10.1'
+      - name: CVE audit (pip-audit + triaged allowlist) [advisory]
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: python scripts/youtab/cve_audit.py --output "$RUNNER_TEMP/cve-audit.json"
+      - name: CycloneDX SBOM (artifact, never fails)
+        if: ${{ !cancelled() }}
+        run: python scripts/youtab/generate_sbom.py --output "$RUNNER_TEMP/sbom.cdx.json"
 
   # Both shipped wake-word artifacts, executed on the operating systems that
   # load them. `python-security` above already runs the regression suite, but

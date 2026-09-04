@@ -1,0 +1,823 @@
+{
+  "allow": [
+    {
+      "file": "agent/account_usage.py",
+      "symbol": "httpx.Client",
+      "reason": "Codex/Anthropic/OpenRouter usage APIs — hardcoded provider hosts or base_url from credential-pool/config; not agent/user-influenced.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/anthropic_adapter.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Hardcoded Anthropic/Claude OAuth token endpoints (_OAUTH_TOKEN_URLS / platform.claude.com / console.anthropic.com).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/azure_identity_adapter.py",
+      "symbol": "httpx.Client",
+      "reason": "httpx.Client (bearer-injecting hook) handed to the Anthropic/Azure SDK; the SDK owns the request URL.",
+      "category": "sdk_internal",
+      "owner_action": "PENDING_OWNER_ACTION: SDK-internal transport — inject the audited httpx client where the SDK accepts one; verify with a live provider."
+    },
+    {
+      "file": "agent/gemini_native_adapter.py",
+      "symbol": "httpx.Client",
+      "reason": "Facade/SDK own transport; base_url is the configured Gemini provider host or DEFAULT_GEMINI_BASE_URL.",
+      "category": "sdk_internal",
+      "owner_action": "PENDING_OWNER_ACTION: SDK-internal transport — inject the audited client; live-provider verification."
+    },
+    {
+      "file": "agent/image_gen_provider.py",
+      "symbol": "requests.get",
+      "reason": "save_url_image fetches a provider-API-response image delivery URL (result['image']), not agent/user content.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/model_metadata.py",
+      "symbol": "httpx.Client",
+      "reason": "Local/provider model-catalog probes: server_url/base_url from operator config or hardcoded catalog hosts (OpenRouter/Anthropic/codex).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/model_metadata.py",
+      "symbol": "requests.get",
+      "reason": "Local/provider model-catalog probes: server_url/base_url from operator config or hardcoded catalog hosts (OpenRouter/Anthropic/codex).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/models_dev.py",
+      "symbol": "requests.get",
+      "reason": "Hardcoded MODELS_DEV_URL constant (models.dev/api.json).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/proxy_sources/iron_proxy.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "iron-proxy binary download (version-constant release URL) + local management listener; reached only from the `youtab egress` setup CLI.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/secret_sources/bitwarden.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "bws binary download from a version-constant release URL on the secret-source install/setup path.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "agent/video_gen_provider.py",
+      "symbol": "requests.get",
+      "reason": "save_url_video fetches a provider job delivery URL (video.data[].url), not agent/user content.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/platforms/bluebubbles.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Targets self.server_url (BLUEBUBBLES_SERVER_URL env/config).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/platforms/qqbot/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "ws_connect(gateway_url) where gateway_url is returned by the QQ provider API (fixed provider host).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/platforms/qqbot/onboard.py",
+      "symbol": "httpx.Client",
+      "reason": "QQ bot bind/onboarding flow; hardcoded PORTAL_HOST constant. Setup path only.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/platforms/signal.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Targets self.http_url (SIGNAL_HTTP_URL config, local signal-cli daemon).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/platforms/weixin.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "QR-login/poll/send against constant ILINK_BASE_URL or self._base_url from config.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/platforms/whatsapp_cloud.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Meta Graph API host with configured phone-number-id/token.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/platforms/yuanbao.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "api_domain/ws_url from config (token/resource/ws paths).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/platforms/yuanbao.py",
+      "symbol": "websockets.connect",
+      "reason": "api_domain/ws_url from config (token/resource/ws paths).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/platforms/yuanbao_media.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Config api_domain upload-info + provider-issued Tencent COS upload URL (from genUploadInfo response).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/relay/__init__.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Relay provision/IdP-token/policy connector hosts from operator relay config / GATEWAY_RELAY_IDP_TOKEN_URL.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/relay/media.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "download(): inbound-message media URLs (event.media_urls, e.g. Discord CDN pass-through) — WAVE-27 SSRF-guarded via is_safe_url on the non-relay branch (blocks metadata/loopback/private). upload(): fixed relay host from config.",
+      "category": "untrusted_destination_guarded",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/relay/ws_transport.py",
+      "symbol": "websockets.connect",
+      "reason": "Relay dial URL (self._url) from operator config.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/run.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "POST {proxy_url}/v1/chat/completions; proxy_url from GATEWAY_PROXY_URL env/config (the runtime's own model proxy).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "gateway/wake.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Self-wake POST to the local runtime's own OpenAI-compatible server (host/port from local config).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/browser/browser_use/provider.py",
+      "symbol": "requests.patch",
+      "reason": "Browser-service API host {config.base_url}/browsers; the actual page target travels over the returned CDP url, not here.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/browser/browser_use/provider.py",
+      "symbol": "requests.post",
+      "reason": "Browser-service API host {config.base_url}/browsers; the actual page target travels over the returned CDP url, not here.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/browser/browserbase/provider.py",
+      "symbol": "requests.post",
+      "reason": "Browser-service API host {config.base_url}/v1/sessions (config base_url); 402/close retries to the same host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/browser/firecrawl/provider.py",
+      "symbol": "requests.delete",
+      "reason": "Firecrawl API host {FIRECRAWL_API_URL or _BASE_URL}/v2/browser (operator config).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/browser/firecrawl/provider.py",
+      "symbol": "requests.post",
+      "reason": "Firecrawl API host {FIRECRAWL_API_URL or _BASE_URL}/v2/browser (operator config).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/cron_providers/chronos/_nas_client.py",
+      "symbol": "requests.get",
+      "reason": "Operator NAS/portal URL (self.portal_url) from config.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/cron_providers/chronos/_nas_client.py",
+      "symbol": "requests.post",
+      "reason": "Operator NAS/portal URL (self.portal_url) from config.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/image_gen/krea/__init__.py",
+      "symbol": "requests.get",
+      "reason": "Provider/gateway base_url generate + job-poll (job_id from the provider submit response, not a user URL).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/image_gen/krea/__init__.py",
+      "symbol": "requests.post",
+      "reason": "Provider/gateway base_url generate + job-poll (job_id from the provider submit response, not a user URL).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/image_gen/openai-codex/__init__.py",
+      "symbol": "httpx.Client",
+      "reason": "Hardcoded _CODEX_BASE_URL/responses.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/image_gen/openrouter/__init__.py",
+      "symbol": "requests.post",
+      "reason": "{base_url}/chat/completions (config base_url); reference images are in the JSON body, not the destination.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/image_gen/xai/__init__.py",
+      "symbol": "requests.post",
+      "reason": "{base_url}/images/{edits,generations} (xAI config base_url).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/memory/hindsight/__init__.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Operator-configured Hindsight host {api_url}/version (capability probe).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/memory/mem0/_backend.py",
+      "symbol": "httpx.Client",
+      "reason": "Self-hosted Mem0 server base_url from config; fixed API paths.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/memory/mem0/_setup.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Setup-only connectivity checks (Ollama /api/tags, Qdrant /healthz) against config/local URLs.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/memory/retaindb/__init__.py",
+      "symbol": "requests.get",
+      "reason": "RetainDB config base_url with fixed API routes; file_id is a server id.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/memory/retaindb/__init__.py",
+      "symbol": "requests.post",
+      "reason": "RetainDB config base_url with fixed API routes; file_id is a server id.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/memory/retaindb/__init__.py",
+      "symbol": "requests.request",
+      "reason": "RetainDB config base_url with fixed API routes; file_id is a server id.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/memory/supermemory/__init__.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "{self._base_url}/v4/conversations (config base_url).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/buzz/adapter.py",
+      "symbol": "websockets.connect",
+      "reason": "self._websocket_url() from operator config (Buzz relay).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/dingtalk/adapter.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "@285 httpx handed to dingtalk_stream SDK (sdk-internal); @1694 standalone POST to webhook_url from extra/DINGTALK_WEBHOOK_URL config (operator-set). No agent/user-derived host.",
+      "category": "untrusted_destination_guarded",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/discord/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Agent image_url/animation_url and inbound attachment URL downloads are is_safe_url + per-hop-redirect guarded; other sites are hardcoded discord.com/api/v10.",
+      "category": "untrusted_destination_guarded",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/feishu/adapter.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Onboarding registration/bot-probe; base from fixed _ONBOARD_* maps. Setup path only.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/google_chat/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Hardcoded chat.googleapis.com/v1.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/google_chat/oauth.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "CLI revoke() to fixed oauth2.googleapis.com/revoke.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/homeassistant/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Operator HASS_URL self-hosted base (states/services/websocket).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/line/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "LINE API constants (reply/push/loading/content/bot-info); inbound media by fixed content host + message_id path.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/matrix/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "@2050 external media download is is_safe_url + per-hop redirect + size-cap guarded; @661-678 are mautrix-SDK sessions; @4797 is the config homeserver.",
+      "category": "untrusted_destination_guarded",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/mattermost/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Operator MATTERMOST_URL self-hosted base.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/ntfy/adapter.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Operator ntfy server config (subscribe/publish).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/photon/adapter.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Local Photon sidecar (bind:port), healthz + sidecar calls.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/simplex/adapter.py",
+      "symbol": "websockets.connect",
+      "reason": "self.ws_url (SIMPLEX_WS_URL config, self-hosted daemon).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/slack/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Signature-verified Slack response_url (Slack hooks host) + hardcoded slack.com/api. Not agent/user text.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/sms/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Twilio API host (TWILIO_API_BASE / api.twilio.com).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/teams/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Incoming-webhook_url from config; token to login.microsoftonline.com; service_url validated against the Bot Framework host allowlist.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/teams/adapter.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Incoming-webhook_url from config; token to login.microsoftonline.com; service_url validated against the Bot Framework host allowlist.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/telegram/telegram_network.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Fixed DoH providers (Google/Cloudflare) to resolve api.telegram.org.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/wecom/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "self._ws_url (config/DEFAULT_WS_URL openws.work.weixin.qq.com); @1586/1636 QR setup wizard (fixed work.weixin.qq.com).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/wecom/adapter.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "self._ws_url (config/DEFAULT_WS_URL openws.work.weixin.qq.com); @1586/1636 QR setup wizard (fixed work.weixin.qq.com).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/wecom/callback_adapter.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Fixed WeCom API qyapi.weixin.qq.com/cgi-bin.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/platforms/whatsapp/adapter.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Local Node bridge at 127.0.0.1:{bridge_port}.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/teams_pipeline/pipeline.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Hardcoded Notion (api.notion.com/v1) and Linear (api.linear.app/graphql) platform hosts.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "plugins/video_gen/xai/__init__.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "xAI config base_url via _submit/_poll; request_id from the provider submit response.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "run_agent.py",
+      "symbol": "httpx.Client",
+      "reason": "URL-less httpx.Client transport handed to the OpenAI SDK; base_url is provider config.",
+      "category": "sdk_internal",
+      "owner_action": "PENDING_OWNER_ACTION: SDK-internal transport — inject the audited client; live-provider verification."
+    },
+    {
+      "file": "tools/browser_camofox.py",
+      "symbol": "requests.delete",
+      "reason": "Camofox browser-service API host (CAMOFOX_URL env); navigation target is a JSON body field, not the host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/browser_camofox.py",
+      "symbol": "requests.get",
+      "reason": "Camofox browser-service API host (CAMOFOX_URL env); navigation target is a JSON body field, not the host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/browser_camofox.py",
+      "symbol": "requests.post",
+      "reason": "Camofox browser-service API host (CAMOFOX_URL env); navigation target is a JSON body field, not the host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/browser_cdp_tool.py",
+      "symbol": "websockets.connect",
+      "reason": "CDP browser websocket ws_url from operator/config.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/browser_supervisor.py",
+      "symbol": "websockets.connect",
+      "reason": "Operator/Browserbase CDP endpoint (self.cdp_url).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/browser_tool.py",
+      "symbol": "requests.get",
+      "reason": "CDP endpoint {cdp_url}/json/version; cdp_url from BROWSER_CDP_URL env / config browser.cdp_url (operator).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/discord_tool.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Hardcoded DISCORD_API_BASE (discord.com/api/v10) + path.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/environments/managed_modal.py",
+      "symbol": "requests.request",
+      "reason": "First-party managed gateway origin {self._gateway_origin}{path} from config.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/flux3_video_tool.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Video-generation gateway {endpoints[base_url]}/... from config, managed_gateway_auth_headers.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/homeassistant_tool.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Operator Home Assistant server {hass_url}/api/... from _get_config().",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/managed_tool_gateway.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Managed-gateway presign POST (is_managed_youtab_gateway_url-validated origin + pinned path); the subsequent PUT to the returned URL uses the SSRF-safe client.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/mcp_oauth_manager.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "OAuth metadata prefetch to the operator-configured MCP server_url + SDK-discovered auth-server URL.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/mcp_tool.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "MCP HTTP/SSE/streamable transport to config['url'] (config.yaml mcp_servers.<name>.url, schema-validated by _validate_remote_mcp_url; strips Authorization on cross-origin redirect). Operator-configured, not agent/user-suppliable at runtime.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/microsoft_graph_auth.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Microsoft OAuth token endpoint (credentials.token_url from config).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/microsoft_graph_client.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "graph.microsoft.com/v1.0 (base_url default) + Graph @odata.nextLink pagination URLs returned by Graph itself.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/osv_check.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Constant _OSV_ENDPOINT (osv.dev malware-advisory API).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/send_message_tool.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Fixed provider/daemon hosts: slack.com/api, signal-cli daemon {http_url} from provider config, hardcoded bots.qq.com/QQ REST. Message body/recipient vary, never the host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/send_message_tool.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "Fixed provider/daemon hosts: slack.com/api, signal-cli daemon {http_url} from provider config, hardcoded bots.qq.com/QQ REST. Message body/recipient vary, never the host.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/skills_sync_client.py",
+      "symbol": "requests.Session",
+      "reason": "Operator sync-service base_url (config) with fixed /v1/sync/ routes.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/tirith_security.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "tirith scanner binary download from a hardcoded GitHub release host, cosign-verified; tirith install/security path only.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/transcription_tools.py",
+      "symbol": "requests.post",
+      "reason": "xAI/ElevenLabs STT base_url from provider config/defaults.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/tts_streaming.py",
+      "symbol": "requests.post",
+      "reason": "Gemini/xAI TTS base_url + streaming ws_url from config/defaults.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/tts_streaming.py",
+      "symbol": "websockets.connect",
+      "reason": "Gemini/xAI TTS base_url + streaming ws_url from config/defaults.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/tts_tool.py",
+      "symbol": "requests.post",
+      "reason": "xAI/Gemini TTS base_url from provider config/defaults.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "tools/x_search_tool.py",
+      "symbol": "requests.post",
+      "reason": "xAI {base_url}/responses (creds.base_url or DEFAULT_XAI_BASE_URL).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/access_jwt.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Cloudflare Access certs at {team_domain}/cdn-cgi/access/certs (team_domain from env config).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/auth.py",
+      "symbol": "httpx.Client",
+      "reason": "Provider OAuth/device-code/usage flows from the CLI; destinations are hardcoded provider hosts or config/registry base_urls (validated). Not agent-run request paths.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/browser_connect.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Local CDP debug-endpoint probe (/json/version) for `youtab browser connect`.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/copilot_auth.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "GitHub Copilot device-flow (github.com) + hardcoded api.github.com token exchange. CLI auth.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/dashboard_register.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "portal_base_url/api/oauth/self-hosted-client from config. Registration CLI.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/debug.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Hardcoded paste.rs / dpaste.com for `youtab debug share` (opt-in CLI).",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/diagnostics_upload.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "NAS_BASE env config + presigned URL from the trusted NAS response. Diagnostics CLI.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/dingtalk_auth.py",
+      "symbol": "requests.post",
+      "reason": "REGISTRATION_BASE_URL env config (oapi.dingtalk.com). Registration CLI.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/gateway_enroll.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "connector_base_url/relay/enroll from config. Enroll CLI.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/model_catalog.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "primary/fallback catalog URLs from config/constants.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/models.py",
+      "symbol": "httpx.Client",
+      "reason": "AI_GATEWAY_BASE_URL constant/env + Ollama /api/show probe against config base_url.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/models.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "AI_GATEWAY_BASE_URL constant/env + Ollama /api/show probe against config base_url.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/proxy/server.py",
+      "symbol": "aiohttp.ClientSession",
+      "reason": "Upstream host from the operator UpstreamCredential.base_url; path is forwarded, host is config.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/runtime_provider.py",
+      "symbol": "requests.get",
+      "reason": "Auto-detect local model base_url from model config.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/security_audit.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "OSV vulnerability API endpoint constants. security-audit CLI.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/web_routers/runtime.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Loopback/canonical engine reachability probes only (loopback-filtered), no user/agent influence.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/web_server.py",
+      "symbol": "httpx.AsyncClient",
+      "reason": "In-process ASGITransport dashboard self-test (base_url=127.0.0.1).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/web_server.py",
+      "symbol": "httpx.Client",
+      "reason": "Mostly fixed provider/OAuth/device-code hosts from config/constants; the 2 custom-endpoint validation sites (validate_custom_endpoint / validate_provider_credential OPENAI_BASE_URL) take an operator-entered URL and are WAVE-27-guarded by the cloud-metadata floor (is_always_blocked_url) behind dashboard auth (single-operator plane).",
+      "category": "untrusted_destination_guarded",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/web_server.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "GATEWAY_HEALTH_URL env + hardcoded api.elevenlabs.io / Anthropic OAuth token URLs.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/webhook.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Signed POST to the configured gateway webhook url for `youtab webhook test`.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/youtab_account.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "portal_base_url or api.youtab.io/api/oauth/account from config. Account CLI.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_agent_cli/youtab_billing.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Youtab portal base from _resolve_token_and_base(). Billing CLI.",
+      "category": "dev_tooling",
+      "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_constants.py",
+      "symbol": "urllib.request.urlopen",
+      "reason": "Hardcoded nodejs.org dist index + zip (Windows managed-node self-heal bootstrap).",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE"
+    }
+  ]
+}
