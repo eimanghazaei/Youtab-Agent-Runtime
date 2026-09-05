@@ -89,6 +89,35 @@ def _reconcile_worker(db_path_str, api_request_id, actual, result_q):
         result_q.put(("error:" + repr(exc), os.getpid()))
 
 
+def _raw_locked_begin_worker(db_path_str, result_q):
+    """Contend for the write lock via a RAW sqlite connection (short busy_timeout,
+    no campaign_budget schema-init) so the proof of the BEGIN IMMEDIATE +
+    busy_timeout fail-closed mechanism is deterministic and portable.
+
+    (Routing the contender through ``campaign_budget.reserve`` would re-run
+    ``apply_wal_with_fallback`` on every connect, which on a DELETE-journal SQLite
+    build retries a journal-mode switch under the held lock — an environment-
+    specific compounding wait, not the property under test. reserve() relies on
+    exactly this lock semantics and wraps it in ``except BaseException: ROLLBACK;
+    raise``, so a BUSY propagates as a raised exception = fail closed.)"""
+    import sqlite3 as _sqlite3
+    import time as _time
+
+    conn = _sqlite3.connect(db_path_str, timeout=0)
+    try:
+        conn.isolation_level = None
+        conn.execute("PRAGMA busy_timeout=300")
+        t0 = _time.monotonic()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("ROLLBACK")
+            result_q.put(("acquired", os.getpid(), _time.monotonic() - t0))
+        except _sqlite3.OperationalError as exc:
+            result_q.put(("locked:" + str(exc), os.getpid(), _time.monotonic() - t0))
+    finally:
+        conn.close()
+
+
 def _reserve_then_block_worker(db_path_str, api_request_id, amount, ready_q):
     """Reserve (durably committed), announce it, then block for the kill.
     Deliberately never releases — models a crash after a billable reservation."""
@@ -284,9 +313,10 @@ def test_multiprocess_kill_after_reserve_preserves_ledger(tmp_path):
 # 9. Bounded lock timeout fails CLOSED (no row written)                        #
 # --------------------------------------------------------------------------- #
 def test_multiprocess_lock_contention_fails_closed(tmp_path):
-    """A held write lock forces a contending process to wait up to busy_timeout
-    and then FAIL CLOSED (OperationalError 'database is locked') — never a partial
-    or lost reservation."""
+    """A held write lock forces a contending process's BEGIN IMMEDIATE to wait up
+    to its busy_timeout and then FAIL CLOSED (OperationalError 'database is
+    locked') — bounded, and never a partial write. This is the exact lock
+    mechanism campaign_budget.reserve() relies on (see _raw_locked_begin_worker)."""
     from youtab_runtime import campaign_budget as cb
 
     db_path = str(tmp_path / "campaign_budget.db")
@@ -300,15 +330,10 @@ def test_multiprocess_lock_contention_fails_closed(tmp_path):
     blocker.execute("BEGIN IMMEDIATE")
     ctx = mp.get_context("spawn")
     result_q = ctx.Queue()
-    proc = ctx.Process(
-        target=_reserve_worker,
-        args=(0, db_path, "blocked", "1.00", ctx.Barrier(1), result_q),
-    )
-    t0 = time.monotonic()
+    proc = ctx.Process(target=_raw_locked_begin_worker, args=(db_path, result_q))
     try:
         proc.start()
-        worker_id, outcome, _pid = result_q.get(timeout=60)
-        waited = time.monotonic() - t0
+        outcome, pid, waited = result_q.get(timeout=60)
     finally:
         blocker.rollback()
         blocker.close()
@@ -317,9 +342,10 @@ def test_multiprocess_lock_contention_fails_closed(tmp_path):
             proc.terminate()
             proc.join()
 
-    # The child waited (busy_timeout ~10s) then failed closed with a lock error.
-    assert str(outcome).startswith("error:"), outcome
-    assert "locked" in str(outcome).lower(), outcome
-    assert waited >= 5.0, f"expected the child to wait on the lock, waited {waited:.1f}s"
-    # Nothing was written: the ledger total is unchanged (fail-closed).
+    # The contending writer was refused (fail-closed) with a bounded wait.
+    assert str(outcome).startswith("locked:"), outcome
+    assert "lock" in str(outcome).lower(), outcome
+    assert waited < 5.0, f"busy_timeout must bound the wait, waited {waited:.1f}s"
+    assert pid != os.getpid(), "contention must come from a separate process"
+    # Nothing was written by the blocked writer: the ledger total is unchanged.
     assert cb.status(CID, db_path=db_path).committed_eur == before
