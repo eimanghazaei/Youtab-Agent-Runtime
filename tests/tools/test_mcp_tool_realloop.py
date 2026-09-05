@@ -20,6 +20,23 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _wait_until_running(loop, timeout=5.0):
+    """Block until a just-started background event loop is actually running.
+
+    ``thread.start()`` only schedules ``loop.run_forever``; the loop is not
+    running the instant ``start()`` returns. Using it before then makes
+    ``_run_on_mcp_loop`` correctly raise "MCP event loop is not running" — a
+    race that surfaces under CI ``-j3`` CPU contention. Wait for the loop to be
+    live so the test is deterministic (root cause, not a retry).
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if loop.is_running():
+            return
+        time.sleep(0.005)
+    raise AssertionError("background MCP event loop did not start within timeout")
+
+
 class TestRunOnMCPLoopInterrupts:
     @staticmethod
     def _run_with_future(mcp_mod, future):
@@ -45,6 +62,7 @@ class TestRunOnMCPLoopInterrupts:
         loop = asyncio.new_event_loop()
         thread = threading.Thread(target=loop.run_forever, daemon=True)
         thread.start()
+        _wait_until_running(loop)
 
         cancelled = threading.Event()
 
@@ -97,6 +115,7 @@ class TestRunOnMCPLoopInterrupts:
         loop = asyncio.new_event_loop()
         thread = threading.Thread(target=loop.run_forever, daemon=True)
         thread.start()
+        _wait_until_running(loop)
 
         cancelled = threading.Event()
 

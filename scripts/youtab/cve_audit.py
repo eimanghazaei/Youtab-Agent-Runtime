@@ -336,6 +336,16 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="audit exactly the pins in --requirement without "
                              "re-resolving (the uv export already carries the "
                              "full closure; avoids downloading/building wheels)")
+    parser.add_argument("--disable-pip", dest="disable_pip", action="store_true",
+                        help="do not invoke pip at all — audit the fully-pinned "
+                             "--requirement set directly against the advisory DB. "
+                             "Requires --no-deps. Without this, pip-audit still "
+                             "spins up a venv and runs pip to enumerate the "
+                             "requirements, which fails on a locked pin whose "
+                             "Requires-Python excludes the runner's interpreter "
+                             "(a resolver artifact, not a real vulnerability). "
+                             "Since the uv lock is already the full pinned "
+                             "closure, no pip step is needed.")
     parser.add_argument("--output", type=Path, help="write the JSON report here")
     parser.add_argument("--today", type=str, default=None,
                         help="override 'today' (YYYY-MM-DD) for allowlist expiry")
@@ -344,7 +354,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     today = _dt.date.fromisoformat(args.today) if args.today else _dt.date.today()
     try:
         allowlist = load_allowlist(args.allowlist)
-        extra_args = ("--no-deps",) if args.no_deps else ()
+        if args.disable_pip and not args.no_deps:
+            raise CveAuditError("--disable-pip requires --no-deps")
+        extra = []
+        if args.no_deps:
+            extra.append("--no-deps")
+        if args.disable_pip:
+            extra.append("--disable-pip")
+        extra_args = tuple(extra)
         findings = run_pip_audit(
             args.python, requirement=args.requirement, extra_args=extra_args
         )

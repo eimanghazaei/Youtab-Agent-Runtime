@@ -280,3 +280,33 @@ def test_cli_omits_no_deps_by_default(tmp_path, monkeypatch):
     code = cve.main(["--today", "2026-09-04", "--allowlist", str(tmp_path / "e.toml")])
     assert code == 0
     assert seen["extra_args"] == ()
+
+
+def test_cli_disable_pip_is_forwarded_with_no_deps(tmp_path, monkeypatch):
+    # --disable-pip audits the fully-pinned export directly, without pip's venv
+    # step (which fails on a locked pin whose Requires-Python excludes the
+    # runner's interpreter — a resolver artifact, not a vulnerability).
+    seen: dict = {}
+
+    def capture(python_exe, *, requirement=None, extra_args=()):
+        seen["extra_args"] = tuple(extra_args)
+        return []
+
+    monkeypatch.setattr(cve, "run_pip_audit", capture)
+    code = cve.main(["--no-deps", "--disable-pip",
+                     "--requirement", str(tmp_path / "reqs.txt"),
+                     "--today", "2026-09-04", "--allowlist", str(tmp_path / "e.toml")])
+    assert code == 0
+    assert seen["extra_args"] == ("--no-deps", "--disable-pip")
+
+
+def test_cli_disable_pip_requires_no_deps(tmp_path, monkeypatch):
+    # --disable-pip without --no-deps is a configuration error and must fail
+    # closed (exit 2), never silently pass.
+    def boom(*a, **k):  # pragma: no cover - must not be reached
+        raise AssertionError("run_pip_audit should not run on a config error")
+
+    monkeypatch.setattr(cve, "run_pip_audit", boom)
+    code = cve.main(["--disable-pip", "--requirement", str(tmp_path / "reqs.txt"),
+                     "--today", "2026-09-04", "--allowlist", str(tmp_path / "e.toml")])
+    assert code == 2

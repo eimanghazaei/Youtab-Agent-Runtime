@@ -170,10 +170,12 @@ jobs:
       # this project ships — the core install plus every opt-in adapter/backend
       # (telegram, discord[voice], google, fal, matrix, teams, dingtalk, ...) —
       # so the gate audits the entire shipped surface, deterministically, with no
-      # tool noise. `--no-deps` audits precisely those exported pins without
-      # asking pip to re-resolve (the lock already carries the full closure);
-      # every exported package resolves to a Linux-installable wheel or a
-      # pure-Python sdist, so nothing compiles here.
+      # tool noise. `--no-deps --disable-pip` audits precisely those exported
+      # pins against the advisory DB WITHOUT invoking pip at all: the lock is
+      # already the full pinned closure, so no resolution is needed, and skipping
+      # pip avoids its venv step failing on a locked pin whose Requires-Python
+      # excludes this runner's interpreter (a resolver artifact, never a real
+      # vulnerability) as well as any sdist build.
       #
       # WAVE-29 flipped this from the installed-subset to the FULL `--all-extras`
       # surface. Every advisory previously found only under an opt-in extra is now
@@ -207,7 +209,7 @@ jobs:
           uv export --format requirements-txt --no-hashes --no-emit-project --frozen \
             --all-extras \
             -o "$RUNNER_TEMP/audit-reqs.txt"
-          python scripts/youtab/cve_audit.py --requirement "$RUNNER_TEMP/audit-reqs.txt" --no-deps --output "$RUNNER_TEMP/cve-audit.json"
+          python scripts/youtab/cve_audit.py --requirement "$RUNNER_TEMP/audit-reqs.txt" --no-deps --disable-pip --output "$RUNNER_TEMP/cve-audit.json"
       - name: CycloneDX SBOM (artifact, never fails)
         if: ${{ !cancelled() }}
         run: python scripts/youtab/generate_sbom.py --output "$RUNNER_TEMP/sbom.cdx.json"
