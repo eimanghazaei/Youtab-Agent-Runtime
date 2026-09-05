@@ -375,7 +375,11 @@ def read_secret_bytes_owner_only(path: _PathLike, *, max_bytes: int) -> bytes:
             actual = win32file.GetFinalPathNameByHandle(handle, 0)
         except Exception as exc:  # noqa: BLE001
             raise OSError(f"cannot resolve final path for {target!r}: {exc}") from exc
-        if actual.startswith("\\\\?\\"):
+        # Normalize the \\?\ (and \\?\UNC\) extended-length prefixes so the
+        # comparison matches os.path.abspath for both local and UNC-share secrets.
+        if actual.startswith("\\\\?\\UNC\\"):
+            actual = "\\\\" + actual[len("\\\\?\\UNC\\"):]
+        elif actual.startswith("\\\\?\\"):
             actual = actual[4:]
         if os.path.normcase(actual) != os.path.normcase(os.path.abspath(target)):
             raise OSError(f"{target!r} resolved to a different path via its handle — refused")

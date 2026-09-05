@@ -23,8 +23,9 @@ validator + record stamp: [`harness/tracks.py`](harness/tracks.py). The tests:
 
 ## What is SHARED (identical, byte-for-byte — the comparability invariants)
 
-Both track configs carry an identical `shared` block, and the validator proves it
-equals the spec **and** the real task bank on disk:
+Both track configs carry an identical `shared` block (compared as **canonical
+JSON** — order-independent and type-sensitive, so an `8` vs `8.0` drift is caught),
+and the validator proves it equals the spec **and** the real task bank on disk:
 
 - **Task bank** — `tests/benchmark/tasks/manifest.json`, pinned by
   `manifest_sha256`, `scenario_id_set_sha256` and `family_set_sha256`. Both tracks
@@ -103,6 +104,13 @@ Anthropic. The Owner selects one provider *after* comparing current official
 pricing, privacy, retention, residency and API compatibility — see the ranked
 shortlist and full matrix in
 [`docs/benchmark/PROVIDER_SELECTION_MATRIX.md`](../../docs/benchmark/PROVIDER_SELECTION_MATRIX.md).
+
+> **Pre-selection note:** by design the contract is satisfiable **only while Track
+> B is unselected** — `validate_comparability` requires `provider_name` /
+> `model_name` / `selection_status` to be `OWNER_SELECTION_REQUIRED`. When the
+> Owner selects a provider, the Track B config is updated with the concrete
+> provider/model and this guard is relaxed to accept the selected values; that
+> selection is the Owner's authorized next step, not part of WAVE-30C.
 
 The credential is delivered as a file (`<PROVIDER_API_KEY_ENV>_FILE`, strict
 tier — owner-only `0400` / protected DACL, read through the WAVE-30C same-handle

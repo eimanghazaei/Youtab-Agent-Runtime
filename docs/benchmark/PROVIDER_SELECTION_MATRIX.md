@@ -79,7 +79,7 @@ Prices are **per 1,000,000 tokens**. Currency noted per cell (USD unless stated)
 At the **cheap representative model tier used above**, every cloud provider worst-case Full run
 (1,000,000 tokens priced entirely at the output rate) lands well under EUR 10 on its own - ranging
 from about **EUR 0.34** (Gemini Flash-Lite) to **EUR 4.30** (Claude Haiku 4.5). Summing the three
-stages at their worst case for the priciest representative here (Anthropic Haiku:
+stages at their worst case for the priciest representative here (a Haiku-class model:
 EUR 0.006 + EUR 1.08 + EUR 4.30 = about **EUR 5.38**) still fits inside the EUR 10 cumulative ceiling.
 The DeepSeek/Z.AI/Qwen free tiers and the **local Ollama/vLLM option (EUR 0)** trivially fit.
 **The EUR 10 ceiling therefore constrains model *tier*, not provider:** if the Owner instead selects a
@@ -112,8 +112,6 @@ they are **not** things this agent can or did settle:
 
 ---
 
----
-
 ## WAVE-30C addendum — dual-track framing + ranked shortlist (`OWNER_SELECTION_REQUIRED`)
 
 The benchmark now has **two comparable tracks** (see
@@ -136,21 +134,25 @@ The benchmark now has **two comparable tracks** (see
 > verify").**
 
 **Lens 1 — privacy / EU-residency / no-training first** (safest when the benchmark
-may process any non-public data):
+may process any non-public data). All claims are **per vendor documentation as of
+2026-09-05 and must be re-verified/contracted** — they are not settled facts:
 
-1. **Mistral** — EU-hosted by default, GDPR-native, not trained on API data by
-   default, ZDR on the Scale plan. Reachable via the OpenAI-compatible route.
-2. **OpenAI** — documented EU data-residency option, no training on API data by
-   default, ZDR available (approval-gated).
-3. **Google (Vertex AI)** — EU regional processing on Vertex, paid-tier not used
-   for training (AI Studio residency Unknown — prefer Vertex; never the free tier).
-4. **Alibaba / Qwen (Model Studio, Frankfurt)** — EU region + "never used for
-   training" claim, but retention/ZDR undocumented and official price not
-   machine-verifiable — higher residual uncertainty.
-5. **xAI / Z.AI / DeepSeek / OpenRouter** — lower on this lens: no documented EU
-   residency (xAI), PRC-affiliate transfer not excluded (Z.AI), PRC storage +
-   possible training on inputs (DeepSeek), or compliance delegated to per-request
-   routing (OpenRouter). Selectable only with a signed DPA/ZDR and a pinned region.
+1. **Mistral** — per Mistral docs: EU-hosted by default, GDPR-subject, not trained
+   on API data by default, ZDR on the Scale plan. Reachable via the
+   OpenAI-compatible route.
+2. **OpenAI** — per OpenAI docs: a documented EU data-residency option, no training
+   on API data by default, ZDR available (approval-gated).
+3. **Google (Vertex AI)** — per Google docs: EU regional processing on Vertex,
+   paid-tier not used to improve products (AI Studio residency Unknown — prefer
+   Vertex; never the free tier).
+4. **Alibaba / Qwen (Model Studio, Frankfurt)** — per Alibaba FAQ: an EU region and
+   a "never used for training" claim, but retention/ZDR undocumented and the
+   official price was not machine-verifiable — higher residual uncertainty.
+5. **xAI / Z.AI / DeepSeek / OpenRouter** — lower on this lens per their docs: no
+   documented EU residency (xAI), PRC-affiliate transfer not excluded (Z.AI), PRC
+   storage + possible training on inputs (DeepSeek), or compliance delegated to
+   per-request routing (OpenRouter). Selectable only with a signed DPA/ZDR and a
+   pinned region.
 
 **Lens 2 — lowest worst-case cost first** (at the cheap representative tier; all
 fit under €10, so this constrains model *tier*, not provider):

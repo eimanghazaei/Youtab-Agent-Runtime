@@ -9,7 +9,8 @@ Two comparable execution tracks:
 For a comparison to be honest the two tracks must be *legitimately* comparable,
 not merely asserted so. This module loads the versioned track configs and the
 machine-checkable comparability spec and proves it: both tracks load the
-**byte-identical** task bank (same manifest hash + scenario-id set + family set),
+**identical** task bank (same manifest hash + scenario-id set + family set;
+sections compared as canonical JSON — order-independent, type-sensitive),
 share the same output/taskbank schema versions and the same
 technically-meaningful run limits, and differ **only** in an explicit per-track
 section (track id, provider, model, credential source, cost model, failover).
@@ -24,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -59,6 +61,25 @@ _PROVENANCE_KEYS = (
     "credential_source",
     "cost_model",
 )
+
+
+#: A bare environment-variable placeholder, e.g. ``${YOUTAB_ECO_MODEL}``. A
+#: Track A model name MUST match this exactly — no embedded default
+#: (``${VAR:-gpt-4o-mini}``), no surrounding text — so a concrete model can never
+#: be smuggled in past the Owner-supplied-identifier invariant.
+_ENV_PLACEHOLDER = re.compile(r"\$\{[A-Z_][A-Z0-9_]*\}\Z")
+
+
+def is_bare_env_placeholder(value: str) -> bool:
+    """True iff ``value`` is exactly a bare ``${ENV_VAR}`` reference."""
+    return bool(_ENV_PLACEHOLDER.fullmatch(value or ""))
+
+
+def _canonical(obj: Any) -> str:
+    """Canonical JSON text (sorted keys) so equality is order-independent AND
+    type-sensitive — ``8`` and ``8.0`` (or ``True`` and ``1``) do NOT compare
+    equal, closing a silent int/float/bool drift in a shared invariant."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"))
 
 
 class ComparabilityError(RuntimeError):
@@ -137,7 +158,7 @@ def validate_comparability(*, manifest_path: Optional[Path] = None) -> Dict[str,
 
     Checks:
       1. both track configs load with the right schema;
-      2. their ``shared`` sections are byte-identical to each other and to the
+      2. their ``shared`` sections are identical (canonical JSON) to each other and to the
          comparability spec's ``shared`` block;
       3. the pinned manifest hash + scenario-id-set + family-set match the ACTUAL
          task bank on disk (both tracks load the identical bank);
@@ -152,11 +173,13 @@ def validate_comparability(*, manifest_path: Optional[Path] = None) -> Dict[str,
     a = load_track("A")
     b = load_track("B")
 
-    # (2) shared sections identical across tracks and equal to the spec.
-    if a["shared"] != b["shared"]:
+    # (2) shared sections identical across tracks and equal to the spec. Compared
+    # as canonical JSON so a type drift (int vs float, bool vs int) in a shared
+    # invariant cannot slip through Python's == coercion.
+    if _canonical(a["shared"]) != _canonical(b["shared"]):
         raise ComparabilityError(
             "Track A and Track B 'shared' sections differ — not comparable")
-    if a["shared"] != spec.get("shared"):
+    if _canonical(a["shared"]) != _canonical(spec.get("shared")):
         raise ComparabilityError(
             "track 'shared' section does not match the comparability spec")
 
@@ -206,12 +229,15 @@ def validate_comparability(*, manifest_path: Optional[Path] = None) -> Dict[str,
         raise ComparabilityError(
             "Track A must flag OWNER_MODEL_IDENTIFIER_REQUIRED "
             "('Qwen 3.5 9B' is not a canonical identifier)")
-    # Guard against silently substituting a concrete canonical model name.
+    # Guard against silently substituting a concrete canonical model name. Must be
+    # an EXACT bare ${ENV_VAR} — an embedded default like ${VAR:-gpt-4o-mini} or
+    # any surrounding text is refused (M1).
     model_a = str(pa.get("model_name", ""))
-    if not (model_a.startswith("${") or model_a.endswith("}")):
+    if not is_bare_env_placeholder(model_a):
         raise ComparabilityError(
-            f"Track A model_name {model_a!r} must be an env placeholder, not a "
-            f"hardcoded model — the exact tag is Owner/registry-supplied")
+            f"Track A model_name {model_a!r} must be a bare env placeholder like "
+            f"${{YOUTAB_ECO_MODEL}} (no default, no surrounding text) — the exact "
+            f"tag is Owner/registry-supplied, never hardcoded here")
 
     # (6) Track B: non-Anthropic, Owner-selected, file credential, €10-bounded.
     pb = b["per_track"]

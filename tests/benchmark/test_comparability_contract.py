@@ -17,6 +17,7 @@ from tests.benchmark.harness import tracks
 from tests.benchmark.harness.tracks import (
     ComparabilityError,
     SHARED_LIMIT_KEYS,
+    is_bare_env_placeholder,
     load_track,
     track_provenance,
     validate_comparability,
@@ -54,11 +55,29 @@ def test_track_a_is_local_zero_cost_owner_supplied_model():
     assert a["campaign_budget"] == "excluded"
     assert a["model_identifier_status"] == "OWNER_MODEL_IDENTIFIER_REQUIRED"
     assert a["model_source"] == "owner_supplied_via_env_or_registry"
-    # The model must be an env placeholder, never a hardcoded canonical model —
-    # "Qwen 3.5 9B" is not a canonical identifier and must not be substituted.
-    assert a["model_name"].startswith("${") and a["model_name"].endswith("}")
+    # The model must be a BARE env placeholder, never a hardcoded canonical model
+    # and never an embedded default — "Qwen 3.5 9B" is not a canonical identifier
+    # and must not be substituted.
+    assert is_bare_env_placeholder(a["model_name"])
     # The electricity cost is kept separate from the €10 cloud API budget.
     assert "estimated_electricity_cost_eur" in a["resource_metrics"]
+
+
+@pytest.mark.parametrize(
+    "value,ok",
+    [
+        ("${YOUTAB_ECO_MODEL}", True),
+        ("${OLLAMA_MODEL}", True),
+        ("${YOUTAB_ECO_MODEL:-gpt-4o-mini}", False),  # embedded default forbidden
+        ("${x}real-model", False),                     # surrounding text
+        ("gpt-4o-mini}", False),
+        ("qwen2.5:7b", False),
+        ("", False),
+        ("${}", False),
+    ],
+)
+def test_bare_env_placeholder_matcher(value, ok):
+    assert is_bare_env_placeholder(value) is ok
 
 
 def test_track_b_is_non_anthropic_owner_gated_file_credential():
