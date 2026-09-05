@@ -112,5 +112,64 @@ they are **not** things this agent can or did settle:
 
 ---
 
-*Prepared as provider-neutral decision-support for WAVE-30B section 14. No provider is recommended or
-defaulted. All figures require Owner re-verification at selection time.*
+---
+
+## WAVE-30C addendum — dual-track framing + ranked shortlist (`OWNER_SELECTION_REQUIRED`)
+
+The benchmark now has **two comparable tracks** (see
+[`tests/benchmark/COMPARABILITY.md`](../../tests/benchmark/COMPARABILITY.md)):
+
+- **Track A — Local / ECO** uses the local Ollama-served ECO engine at **€0 API
+  cost** and is **excluded from the €10 cloud budget**. Its exact model tag is
+  Owner/registry-supplied (`YOUTAB_ECO_MODEL`); note **"Qwen 3.5 9B" is not a
+  canonical open-weight identifier** — the repo carries the placeholder
+  `ollama/qwen3.5:9b` and the Owner must supply the real tag before a run.
+- **Track B — Cloud** is exactly one **non-Anthropic** provider from the table
+  above, **selected by the Owner** after re-verifying the criteria, bounded by the
+  €10 campaign ledger.
+
+> **This shortlist is `OWNER_SELECTION_REQUIRED`. It ranks candidates against
+> explicit, stated criteria to aid the decision; it does NOT select, recommend or
+> default to any provider, and Anthropic is excluded from Track B by directive.
+> Rankings flip with the criterion weighted — both lenses are shown. Every figure
+> must be re-verified by the Owner at selection time (§"What the Owner must still
+> verify").**
+
+**Lens 1 — privacy / EU-residency / no-training first** (safest when the benchmark
+may process any non-public data):
+
+1. **Mistral** — EU-hosted by default, GDPR-native, not trained on API data by
+   default, ZDR on the Scale plan. Reachable via the OpenAI-compatible route.
+2. **OpenAI** — documented EU data-residency option, no training on API data by
+   default, ZDR available (approval-gated).
+3. **Google (Vertex AI)** — EU regional processing on Vertex, paid-tier not used
+   for training (AI Studio residency Unknown — prefer Vertex; never the free tier).
+4. **Alibaba / Qwen (Model Studio, Frankfurt)** — EU region + "never used for
+   training" claim, but retention/ZDR undocumented and official price not
+   machine-verifiable — higher residual uncertainty.
+5. **xAI / Z.AI / DeepSeek / OpenRouter** — lower on this lens: no documented EU
+   residency (xAI), PRC-affiliate transfer not excluded (Z.AI), PRC storage +
+   possible training on inputs (DeepSeek), or compliance delegated to per-request
+   routing (OpenRouter). Selectable only with a signed DPA/ZDR and a pinned region.
+
+**Lens 2 — lowest worst-case cost first** (at the cheap representative tier; all
+fit under €10, so this constrains model *tier*, not provider):
+
+1. **Google Gemini Flash-Lite** (~€0.34 full worst-case) · 2. **OpenAI
+   gpt-4o-mini / gpt-5-nano** (~€0.52) · 3. **Mistral Small** (~€0.52) · 4. **Z.AI
+   GLM** (~€0.95, free flash tiers exist) · 5. **DeepSeek** (~€1.14 peak, cheaper
+   off-peak). Qwen unconfirmed (official price not machine-readable). OpenRouter
+   depends on the routed model.
+
+**Selection gate (all must hold before the Owner selects):** non-Anthropic ·
+provider on the implemented-protocol list · signed EU DPA/SCCs where processing
+leaves the EEA · written no-training + retention window · ZDR enrollment confirmed
+· dedicated project-scoped spend-capped key · provider-side hard budget cap ·
+pinned residency region · **all prices re-verified on the run date**.
+
+---
+
+*Prepared as provider-neutral decision-support for WAVE-30B §14 and the WAVE-30C
+dual-track framing. No provider is recommended or defaulted; Track B remains
+`OWNER_SELECTION_REQUIRED`. All figures require Owner re-verification at selection
+time.*

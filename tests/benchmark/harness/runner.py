@@ -50,6 +50,7 @@ class Runner:
         tenant: str = "bench-tenant",
         user: str = "bench-user",
         work_root: Optional[Path] = None,
+        track_provenance: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.recorder = recorder
         self.mode = mode
@@ -59,6 +60,10 @@ class Runner:
         self.user = user
         self.work_root = Path(work_root) if work_root else None
         self._head = runtime_head(self.repo_root)
+        # Per-track provenance stamp (WAVE-30C §2): track/provider/model identity
+        # carried into every record so a result set is self-describing. None in
+        # the default (untracked) deterministic gate — nothing is added.
+        self._track_provenance = dict(track_provenance) if track_provenance else {}
 
     # -- one (scenario, repetition) ---------------------------------------
     def run_scenario(self, scenario: Scenario, repetition: int = 0) -> Dict[str, Any]:
@@ -70,6 +75,7 @@ class Runner:
             "expected_verdict": scenario.expected_verdict,
             "adversarial_variant": scenario.adversarial_variant,
             "required_tool_count": len(scenario.params.get("required_tools", [])),
+            **self._track_provenance,
         }
 
         # real_provider dimensions are not judgeable offline.

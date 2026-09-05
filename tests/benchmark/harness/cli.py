@@ -206,9 +206,23 @@ def _run(args) -> int:
             print(f"FATAL: preflight could not be verified: {exc}", file=sys.stderr)
             return 6
 
+    # Per-track provenance stamp (WAVE-30C §2). When --track is given, every
+    # record is tagged with the track/provider/model identity; the comparability
+    # contract guarantees the two tracks share the identical bank/limits/scoring.
+    track_prov = None
+    if args.track:
+        from .tracks import ComparabilityError, load_track, track_provenance
+        try:
+            track_prov = track_provenance(load_track(args.track))
+        except ComparabilityError as exc:
+            print(f"FATAL: --track rejected: {exc}", file=sys.stderr)
+            if seam is not None:
+                seam.close()
+            return 6
+
     recorder = Recorder(Path(args.out))
     runner = Runner(recorder, mode=args.mode, seam=seam, repo_root=repo_root,
-                    tenant=args.tenant, user=args.user)
+                    tenant=args.tenant, user=args.user, track_provenance=track_prov)
 
     rows = runner.run_all(scenarios, repetitions=args.repetitions,
                           max_workers=args.max_workers)
@@ -219,6 +233,7 @@ def _run(args) -> int:
         "generated_label": summary["generated_label"],
         "runtime_head": summary["runtime_head"],
         "mode": args.mode,
+        "track": args.track,
         "stage": args.stage,
         "scenarios_run": len(scenarios),
         "total_records": summary["total_records"],
@@ -280,6 +295,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--max-workers", type=int, default=1,
                      help="cross-scenario thread pool size (each run isolated)")
     run.add_argument("--min-scenarios", type=int, default=MIN_SCENARIOS)
+    run.add_argument("--track", choices=["A", "B"], default=None,
+                     help="stamp records with a dual-track identity "
+                          "(A=local/ECO, B=cloud); see tests/benchmark/COMPARABILITY.md")
     run.add_argument("--tenant", default="bench-tenant")
     run.add_argument("--user", default="bench-user")
     run.add_argument("--base-url", default=None, help="runtime origin (non-deterministic)")
