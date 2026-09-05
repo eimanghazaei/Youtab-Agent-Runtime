@@ -1,4 +1,4 @@
-"""File-backed secrets for the Agent Runtime service boundary.
+"""File-backed secrets for the Agent Runtime service boundary and providers.
 
 12-factor / Docker-secret / Kubernetes-secret / systemd-credential pattern: a
 secret's VALUE is never placed in the environment — only a PATH via
@@ -6,11 +6,32 @@ secret's VALUE is never placed in the environment — only a PATH via
 credential out of ``os.environ``, ``/proc/<pid>/environ``, argv, ``docker
 inspect`` and logs.
 
-Scope: the service-boundary secrets read directly from the environment
-(``YOUTAB_AGENT_RUNTIME_SERVICE_SECRET`` and
-``YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN``). Provider/model credentials continue to
-resolve through the profile-scoped credential pool / ``config.yaml`` path and are
-NOT handled here.
+Two tiers, one loader (``read_secret_file`` / ``env_or_file``):
+
+* **Boundary tier** (``require_secure_perms=False``, the default) — the
+  service-boundary secrets ``YOUTAB_AGENT_RUNTIME_SERVICE_SECRET`` and
+  ``YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN``. These are frequently delivered as
+  Docker/Kubernetes secrets, whose default mount is world-readable ``0444`` and
+  root-owned; a strict owner-only/``0400`` requirement would reject those normal
+  deliveries. The boundary tier therefore keeps the historical fail-closed
+  checks (regular file, not a symlink, non-empty, size cap, UTF-8, and on POSIX
+  a group/other-writable tamper check) without an owner/mode/DACL requirement.
+
+* **Strict tier** (``require_secure_perms=True``) — provider API keys
+  (``<PROVIDER_API_KEY_ENV>_FILE``, WAVE-30B) and the live-benchmark credential
+  files. These are Owner-installed per a documented owner-only ``0400`` (POSIX)
+  / protected owner-only DACL (Windows) procedure, so the loader verifies the
+  full OS-level posture *before returning any bytes*: opened with ``O_NOFOLLOW``
+  and validated from the same file descriptor (no TOCTOU re-open), owner ==
+  current euid, mode no broader than ``0400`` (no group/world bits, no
+  owner-write/execute), Windows protected owner-only DACL, no UTF-8 BOM,
+  absolute non-traversing path, and (opt-in) not inside the repo working tree or
+  a cloud-synced folder. If verification cannot be performed (e.g. pywin32 is
+  unavailable on Windows) the read is refused — fail closed, never degrade.
+
+The value is returned for in-memory use only and is never echoed; exception
+messages disclose the variable name and safe path metadata but never the file
+CONTENTS, an authorization header, or any fingerprint derived from the secret.
 """
 
 from __future__ import annotations
@@ -18,9 +39,28 @@ from __future__ import annotations
 import os
 import stat
 
-# Real service secrets are short; a large file signals a misconfiguration
-# (a wrong path mounted) and we refuse rather than read it all.
+# Real secrets are short; a large file signals a misconfiguration (a wrong path
+# mounted) and we refuse rather than read it all.
 _MAX_SECRET_FILE_BYTES = 64 * 1024
+
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+# Directory-name fragments that indicate a consumer cloud-sync root. Used only by
+# the opt-in ``forbid_repo_and_cloud`` guard for LOCAL secret files (never for
+# production ``/run/secrets`` delivery). Matched case-insensitively against path
+# components.
+_CLOUD_SYNC_MARKERS = (
+    "onedrive",
+    "dropbox",
+    "google drive",
+    "googledrive",
+    "google_drive",
+    "icloud drive",
+    "icloud",
+    "box sync",
+    "nextcloud",
+    "pcloud",
+)
 
 
 class SecretFileError(RuntimeError):
@@ -28,14 +68,141 @@ class SecretFileError(RuntimeError):
     never silently fall back to an inline value or a default."""
 
 
-def read_secret_file(path: str, *, var: str) -> str:
+def _path_components_lower(path: str) -> list[str]:
+    norm = os.path.normpath(path).replace("\\", "/")
+    return [part.lower() for part in norm.split("/") if part]
+
+
+def _reject_repo_or_cloud_location(path: str, *, var: str) -> None:
+    """Refuse a secret stored inside a git working tree or a cloud-sync folder.
+
+    Only invoked for LOCAL secret files (``forbid_repo_and_cloud=True``); it must
+    never gate production ``/run/secrets`` delivery.
+    """
+    components = _path_components_lower(path)
+    for marker in _CLOUD_SYNC_MARKERS:
+        if marker in components:
+            raise SecretFileError(
+                f"{var}_FILE={path!r} is inside a cloud-synced folder "
+                f"({marker!r}) — refused; store the secret outside sync roots"
+            )
+    # Walk up from the file's directory looking for a .git marker (repo working
+    # tree). A secret checked into / co-located with the repo risks accidental
+    # commit or sync.
+    probe = os.path.dirname(os.path.abspath(path))
+    seen = set()
+    while probe and probe not in seen:
+        seen.add(probe)
+        if os.path.exists(os.path.join(probe, ".git")):
+            raise SecretFileError(
+                f"{var}_FILE={path!r} is inside a git working tree ({probe!r}) "
+                f"— refused; store the secret outside the repository"
+            )
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+
+
+def _reject_traversal(path: str, *, var: str) -> None:
+    """Require an absolute path with no ``..`` components (strict tier)."""
+    if not os.path.isabs(path):
+        raise SecretFileError(
+            f"{var}_FILE={path!r} is not an absolute path — refused"
+        )
+    if ".." in path.replace("\\", "/").split("/"):
+        raise SecretFileError(
+            f"{var}_FILE={path!r} contains a '..' path segment — refused"
+        )
+
+
+def _verify_posix_secure(st: os.stat_result, path: str, *, var: str, allowed_uids) -> None:
+    """Owner + mode verification for a strict-tier POSIX secret file.
+
+    ``st`` must come from ``fstat`` on the ``O_NOFOLLOW``-opened descriptor so the
+    checks and the read observe the same inode.
+    """
+    if allowed_uids is None:
+        allowed_uids = {os.geteuid()}
+    if st.st_uid not in allowed_uids:
+        raise SecretFileError(
+            f"{var}_FILE={path!r} is not owned by the runtime account "
+            f"(uid {st.st_uid}) — refused"
+        )
+    perm = stat.S_IMODE(st.st_mode)
+    # No group/world bits and no owner write/execute: only owner-read (0o400) may
+    # remain set. "no broader than 0400".
+    if perm & 0o377:
+        raise SecretFileError(
+            f"{var}_FILE={path!r} mode {perm:#o} is broader than 0o400 — refused"
+        )
+
+
+def _verify_windows_secure(path: str, *, var: str) -> None:
+    """Owner-only protected-DACL verification for a strict-tier Windows secret."""
+    from youtab_agent_cli import windows_acl
+
+    if not windows_acl.pywin32_available():
+        raise SecretFileError(
+            f"{var}_FILE={path!r} cannot be permission-verified on Windows "
+            f"(pywin32 unavailable) — refused"
+        )
+    try:
+        ok = windows_acl.verify_owner_only_dacl(path)
+    except OSError as exc:
+        raise SecretFileError(
+            f"{var}_FILE={path!r} DACL verification failed — refused"
+        ) from exc
+    if not ok:
+        raise SecretFileError(
+            f"{var}_FILE={path!r} is not an owner-only (protected DACL) file — refused"
+        )
+
+
+def _decode(raw: bytes, *, path: str, var: str, secure: bool) -> str:
+    if secure and raw.startswith(_UTF8_BOM):
+        raise SecretFileError(
+            f"{var}_FILE={path!r} begins with a UTF-8 BOM — refused"
+        )
+    if raw.endswith(b"\r\n"):
+        raw = raw[:-2]
+    elif raw.endswith(b"\n"):
+        raw = raw[:-1]
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SecretFileError(
+            f"{var}_FILE={path!r} is not valid UTF-8 — refused"
+        ) from exc
+
+
+def read_secret_file(
+    path: str,
+    *,
+    var: str,
+    require_secure_perms: bool = False,
+    allowed_uids=None,
+    forbid_repo_and_cloud: bool = False,
+) -> str:
     """Read a secret from ``path`` with fail-closed safety checks.
 
-    Refuses missing / empty / oversized / symlinked / non-regular / unsafe-mode
-    files. Uses a bounded read and trims ONLY a single documented terminal
-    newline (``\\n`` or ``\\r\\n``) — never arbitrary secret characters. Never
-    includes the file CONTENTS in an exception message.
+    Refuses missing / empty / oversized / symlinked / non-regular / unsafe files.
+    Uses a bounded read and trims ONLY a single documented terminal newline
+    (``\\n`` or ``\\r\\n``) — never arbitrary secret characters. Never includes
+    the file CONTENTS in an exception message.
+
+    ``require_secure_perms`` selects the strict tier: an ``O_NOFOLLOW`` (POSIX)
+    read with owner/mode verification, or a protected owner-only DACL check
+    (Windows), plus BOM and traversal rejection, performed BEFORE any bytes are
+    returned. ``forbid_repo_and_cloud`` additionally refuses a secret stored in a
+    git working tree or a cloud-sync folder (for LOCAL secret files only).
     """
+    if require_secure_perms:
+        _reject_traversal(path, var=var)
+        if forbid_repo_and_cloud:
+            _reject_repo_or_cloud_location(path, var=var)
+
+    # lstat first: catches missing/symlink/non-regular without following a link.
     try:
         info = os.lstat(path)
     except OSError as exc:
@@ -53,35 +220,58 @@ def read_secret_file(path: str, *, var: str) -> str:
         )
     # On POSIX, a group/other-writable secret file is unsafe (another principal
     # could swap the value under us). Windows lstat mode bits are not meaningful
-    # here, so this check is POSIX-only.
+    # here, so this check is POSIX-only. Applies to BOTH tiers.
     if os.name == "posix" and (mode & (stat.S_IWGRP | stat.S_IWOTH)):
         raise SecretFileError(f"{var}_FILE={path!r} is group/other-writable — refused")
-    # WAVE-26 #7b note: the residual addressed by WAVE-26 is that the credential
-    # files the runtime *writes* (auth.json, .env, provider tokens) used chmod
-    # 0o600, a no-op for access control on Windows — those write paths now apply
-    # an owner-only protected DACL (see youtab_agent_cli.windows_acl). The read
-    # side here handles operator-supplied 12-factor *_FILE secrets whose DACL the
-    # operator owns; a strict owner-only requirement would reject normally-created
-    # files (which inherit broader-but-not-writable DACLs) and is intentionally
-    # NOT imposed. The POSIX group/other-writable tamper check stays POSIX-only,
-    # unchanged from before WAVE-26 (no Windows regression).
+
+    if require_secure_perms and os.name == "nt":
+        _verify_windows_secure(path, var=var)
+
+    if require_secure_perms and os.name == "posix":
+        # Re-open with O_NOFOLLOW and validate from the same descriptor so the
+        # permission checks and the read observe the same inode (no TOCTOU).
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(path, flags)
+        except OSError as exc:
+            raise SecretFileError(
+                f"{var}_FILE={path!r} could not be securely opened: {exc}"
+            ) from exc
+        try:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                raise SecretFileError(
+                    f"{var}_FILE={path!r} is not a regular file — refused"
+                )
+            _verify_posix_secure(st, path, var=var, allowed_uids=allowed_uids)
+            if st.st_size > _MAX_SECRET_FILE_BYTES:
+                raise SecretFileError(
+                    f"{var}_FILE={path!r} exceeds the size ceiling — refused"
+                )
+            raw = os.read(fd, _MAX_SECRET_FILE_BYTES + 1)
+        finally:
+            os.close(fd)
+        if len(raw) > _MAX_SECRET_FILE_BYTES:
+            raise SecretFileError(
+                f"{var}_FILE={path!r} exceeds the size ceiling — refused"
+            )
+        return _decode(raw, path=path, var=var, secure=True)
+
     with open(path, "rb") as handle:
         raw = handle.read(_MAX_SECRET_FILE_BYTES + 1)
     if len(raw) > _MAX_SECRET_FILE_BYTES:
         raise SecretFileError(f"{var}_FILE={path!r} exceeds the size ceiling — refused")
-    if raw.endswith(b"\r\n"):
-        raw = raw[:-2]
-    elif raw.endswith(b"\n"):
-        raw = raw[:-1]
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise SecretFileError(
-            f"{var}_FILE={path!r} is not valid UTF-8 — refused"
-        ) from exc
+    return _decode(raw, path=path, var=var, secure=require_secure_perms)
 
 
-def env_or_file(name: str, default: str = "") -> str:
+def env_or_file(
+    name: str,
+    default: str = "",
+    *,
+    require_secure_perms: bool = False,
+    allowed_uids=None,
+    forbid_repo_and_cloud: bool = False,
+) -> str:
     """Return a secret from ``<name>_FILE`` (preferred) or ``<name>`` (fallback).
 
     If ``<name>_FILE`` is set, the file is read with fail-closed safety checks and
@@ -89,6 +279,9 @@ def env_or_file(name: str, default: str = "") -> str:
     contract and a silent winner would hide a deployment mistake. If neither the
     file nor the inline var is set, ``default`` is returned. Reads happen at call
     time, never at import.
+
+    ``require_secure_perms`` / ``forbid_repo_and_cloud`` are forwarded to
+    :func:`read_secret_file` for the strict tier (provider keys, benchmark creds).
     """
     file_path = os.getenv(f"{name}_FILE", "").strip()
     if file_path:
@@ -97,5 +290,11 @@ def env_or_file(name: str, default: str = "") -> str:
             raise SecretFileError(
                 f"both {name} and {name}_FILE are set — refusing an ambiguous secret source"
             )
-        return read_secret_file(file_path, var=name)
+        return read_secret_file(
+            file_path,
+            var=name,
+            require_secure_perms=require_secure_perms,
+            allowed_uids=allowed_uids,
+            forbid_repo_and_cloud=forbid_repo_and_cloud,
+        )
     return os.getenv(name, default)
