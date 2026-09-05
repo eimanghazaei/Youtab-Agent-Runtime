@@ -39,7 +39,9 @@ def _requires_pywin32():
 requires_windows_dacl = _requires_pywin32()
 
 _VAR = "OPENAI_API_KEY"
-_SECRET = "sk-strict-tier-sentinel-6d8033ffa1b2c3d4e5f6"
+# Synthetic value only; deliberately NOT an ``sk-`` shape so the secret-scan gate
+# does not classify this test fixture as a real OpenAI key.
+_SECRET = "SENTINEL-strict-tier-6d8033ffa1b2c3d4e5f6"
 
 
 def _write_mode(tmp_path, value=_SECRET, *, mode=0o400, trailing="\n"):

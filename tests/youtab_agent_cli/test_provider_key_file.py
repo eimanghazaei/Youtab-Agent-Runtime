@@ -44,16 +44,16 @@ def test_resolve_credential_file_returns_none_without_file(monkeypatch):
 
 
 def test_resolve_credential_file_dual_source_fails_closed(tmp_path, monkeypatch):
-    path = _write_strict_key(tmp_path, "sk-file-value-0001")
+    path = _write_strict_key(tmp_path, "SENTINEL-file-value-0001")
     monkeypatch.setenv("OPENAI_API_KEY_FILE", path)
     with pytest.raises(SecretFileError, match="ambiguous secret source"):
         sf.resolve_credential_file("OPENAI_API_KEY", inline_present=True)
 
 
 def test_read_named_key_file_env(tmp_path, monkeypatch):
-    path = _write_strict_key(tmp_path, "sk-named-file-env-0002")
+    path = _write_strict_key(tmp_path, "SENTINEL-named-file-env-0002")
     monkeypatch.setenv("MY_CUSTOM_KEY_PATH", path)
-    assert sf.read_named_key_file_env("MY_CUSTOM_KEY_PATH") == "sk-named-file-env-0002"
+    assert sf.read_named_key_file_env("MY_CUSTOM_KEY_PATH") == "SENTINEL-named-file-env-0002"
     monkeypatch.delenv("MY_CUSTOM_KEY_PATH", raising=False)
     assert sf.read_named_key_file_env("MY_CUSTOM_KEY_PATH") is None
     assert sf.read_named_key_file_env("") is None
@@ -65,7 +65,7 @@ def test_read_named_key_file_env(tmp_path, monkeypatch):
 def test_registry_provider_key_from_file(tmp_path, monkeypatch):
     from youtab_agent_cli import config
 
-    value = "sk-deepseek-from-file-0003"
+    value = "SENTINEL-deepseek-from-file-0003"
     path = _write_strict_key(tmp_path, value)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY_FILE", path)
@@ -79,8 +79,8 @@ def test_registry_provider_key_from_file(tmp_path, monkeypatch):
 def test_registry_dual_source_fails_closed(tmp_path, monkeypatch):
     from youtab_agent_cli import config
 
-    path = _write_strict_key(tmp_path, "sk-file-0004")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-inline-0004")
+    path = _write_strict_key(tmp_path, "SENTINEL-file-0004")
+    monkeypatch.setenv("OPENAI_API_KEY", "SENTINEL-inline-0004")
     monkeypatch.setenv("OPENAI_API_KEY_FILE", path)
     monkeypatch.setattr(config, "load_env", lambda: {})
     with pytest.raises(SecretFileError, match="ambiguous secret source"):
@@ -91,24 +91,24 @@ def test_registry_plaintext_env_warns_once(tmp_path, monkeypatch, caplog):
     from youtab_agent_cli import config
 
     monkeypatch.delenv("XAI_API_KEY_FILE", raising=False)
-    monkeypatch.setenv("XAI_API_KEY", "sk-plain-0005")
+    monkeypatch.setenv("XAI_API_KEY", "SENTINEL-plain-0005")
     monkeypatch.setattr(config, "load_env", lambda: {})
     sf._warned_plaintext_vars.discard("XAI_API_KEY")
     monkeypatch.delenv("YOUTAB_AGENT_LIVE_BENCHMARK", raising=False)
     import logging
 
     with caplog.at_level(logging.WARNING, logger="youtab_agent_cli.secret_file"):
-        assert config.get_env_value_prefer_dotenv("XAI_API_KEY") == "sk-plain-0005"
+        assert config.get_env_value_prefer_dotenv("XAI_API_KEY") == "SENTINEL-plain-0005"
     assert any("XAI_API_KEY_FILE" in r.message for r in caplog.records)
     # secret value never appears in the warning
-    assert all("sk-plain-0005" not in r.message for r in caplog.records)
+    assert all("SENTINEL-plain-0005" not in r.message for r in caplog.records)
 
 
 def test_live_benchmark_blocks_plaintext_provider_key(monkeypatch):
     from youtab_agent_cli import config
 
     monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-plain-live-0006")
+    monkeypatch.setenv("OPENAI_API_KEY", "SENTINEL-plain-live-0006")
     monkeypatch.setenv("YOUTAB_AGENT_LIVE_BENCHMARK", "1")
     monkeypatch.setattr(config, "load_env", lambda: {})
     with pytest.raises(SecretFileError, match="live-benchmark"):
@@ -118,7 +118,7 @@ def test_live_benchmark_blocks_plaintext_provider_key(monkeypatch):
 def test_live_benchmark_allows_file_provider_key(tmp_path, monkeypatch):
     from youtab_agent_cli import config
 
-    value = "sk-file-live-0007"
+    value = "SENTINEL-file-live-0007"
     path = _write_strict_key(tmp_path, value)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY_FILE", path)
@@ -133,7 +133,7 @@ def test_live_benchmark_allows_file_provider_key(tmp_path, monkeypatch):
 def test_custom_getenv_key_env_from_file(tmp_path, monkeypatch):
     from youtab_agent_cli import runtime_provider
 
-    value = "sk-custom-keyenv-file-0008"
+    value = "SENTINEL-custom-keyenv-file-0008"
     path = _write_strict_key(tmp_path, value)
     monkeypatch.delenv("GLM_API_KEY", raising=False)
     monkeypatch.setenv("GLM_API_KEY_FILE", path)
@@ -143,8 +143,8 @@ def test_custom_getenv_key_env_from_file(tmp_path, monkeypatch):
 def test_custom_getenv_dual_source_fails_closed(tmp_path, monkeypatch):
     from youtab_agent_cli import runtime_provider
 
-    path = _write_strict_key(tmp_path, "sk-file-0009")
-    monkeypatch.setenv("GLM_API_KEY", "sk-inline-0009")
+    path = _write_strict_key(tmp_path, "SENTINEL-file-0009")
+    monkeypatch.setenv("GLM_API_KEY", "SENTINEL-inline-0009")
     monkeypatch.setenv("GLM_API_KEY_FILE", path)
     with pytest.raises(SecretFileError, match="ambiguous secret source"):
         runtime_provider._getenv("GLM_API_KEY")
@@ -181,7 +181,7 @@ def test_getenv_api_key_still_blocked_in_live_mode(monkeypatch):
     from youtab_agent_cli import runtime_provider
 
     monkeypatch.setenv("YOUTAB_AGENT_LIVE_BENCHMARK", "1")
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-plain-live")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "SENTINEL-plain-live")
     monkeypatch.delenv("DEEPSEEK_API_KEY_FILE", raising=False)
     with pytest.raises(SecretFileError, match="live-benchmark"):
         runtime_provider._getenv("DEEPSEEK_API_KEY")
