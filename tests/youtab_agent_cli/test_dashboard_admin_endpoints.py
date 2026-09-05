@@ -320,6 +320,21 @@ class TestPairingEndpoints:
 class TestWebhookEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_youtab_home):
+        # Isolate the process-wide gateway lifecycle registry between tests. The
+        # registry keeps an in-flight (verb, profile) reservation until the job's
+        # background thread calls finish(); a sibling test's restart job whose
+        # thread has not finished yet would make admit() return that stale job
+        # (which carries no reuse pid) instead of reusing the FakeRunningProc, so
+        # test_enable_platform_reuses_inflight_gateway_restart saw restart_pid
+        # None. It only tripped on Windows CI, where thread teardown lags, which
+        # is why the ubuntu run passed. Reset the shared state so each test is
+        # deterministic (root cause, not a retry).
+        from youtab_agent_cli import gateway_lifecycle as _lifecycle
+
+        with _lifecycle.REGISTRY._lock:
+            _lifecycle.REGISTRY._inflight.clear()
+            _lifecycle.REGISTRY._jobs.clear()
+            _lifecycle.REGISTRY._order.clear()
         self.client, _ = _client()
 
 

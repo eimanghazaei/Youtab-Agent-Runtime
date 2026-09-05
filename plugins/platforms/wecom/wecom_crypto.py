@@ -21,7 +21,12 @@ from typing import Optional
 # ``tostring``), which defusedxml deliberately does not re-export. Inbound
 # untrusted WeCom XML is parsed with ``defusedxml.ElementTree`` in
 # ``callback_adapter.py`` (XXE / entity-expansion hardened); do not parse here.
-from xml.etree import ElementTree as XmlBuilder
+#
+# noqa: S405 -- the SAST rule flags xml.etree because *parsing* untrusted XML
+# with it is unsafe. This import is used ONLY to BUILD trusted output (no
+# fromstring/parse/XML call exists in this file), so the finding is a false
+# positive; untrusted parsing stays on defusedxml in callback_adapter.py.
+from xml.etree import ElementTree as XmlBuilder  # noqa: S405
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
