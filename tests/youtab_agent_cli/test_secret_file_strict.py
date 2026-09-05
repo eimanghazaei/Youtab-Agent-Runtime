@@ -24,7 +24,7 @@ from youtab_agent_cli.secret_file import (
     read_secret_file,
 )
 
-from tests._wincompat import requires_posix_permissions
+from tests._wincompat import requires_posix_permissions, requires_symlink
 
 
 def _requires_pywin32():
@@ -203,6 +203,109 @@ def test_strict_windows_fail_closed_without_pywin32(tmp_path, monkeypatch):
     monkeypatch.setattr(windows_acl, "pywin32_available", lambda: False)
     with pytest.raises(SecretFileError, match="pywin32 unavailable"):
         read_secret_file(str(path), var=_VAR, require_secure_perms=True)
+
+
+# --- Windows SAME-HANDLE read (WAVE-30C Fix A: no path-revalidation TOCTOU) --
+
+
+@requires_windows_dacl
+def test_strict_windows_reads_exact_bytes_via_handle(tmp_path):
+    """The strict Windows read returns the exact secret sourced from the SAME
+    verified handle (not a second ``open(path)``)."""
+    from youtab_agent_cli import windows_acl
+
+    path = str(tmp_path / "provider.key")
+    windows_acl.secure_write_secret_file(path, (_SECRET + "\n").encode("utf-8"))
+    assert read_secret_file(path, var=_VAR, require_secure_perms=True) == _SECRET
+    # The low-level handle reader returns the raw bytes (incl. the newline the
+    # decoder later trims) — proving the bytes come from the verified handle.
+    raw = windows_acl.read_secret_bytes_owner_only(path, max_bytes=64 * 1024)
+    assert raw == (_SECRET + "\n").encode("utf-8")
+
+
+@requires_windows_dacl
+@requires_symlink
+def test_strict_windows_handle_reader_rejects_reparse_point(tmp_path):
+    """A symlink/junction (reparse point) is rejected on the OPEN handle itself,
+    so the ACL that is proven can never belong to a different object than the
+    bytes that would be read."""
+    from youtab_agent_cli import windows_acl
+
+    real = str(tmp_path / "real.key")
+    windows_acl.secure_write_secret_file(real, (_SECRET + "\n").encode("utf-8"))
+    link = str(tmp_path / "link.key")
+    os.symlink(real, link)
+    with pytest.raises(OSError, match="reparse point|different path"):
+        windows_acl.read_secret_bytes_owner_only(link, max_bytes=64 * 1024)
+
+
+@requires_windows_dacl
+def test_strict_windows_handle_reader_reparse_bit_fails_closed(tmp_path, monkeypatch):
+    """Paired fail-closed test (no symlink privilege needed): if the open handle
+    reports FILE_ATTRIBUTE_REPARSE_POINT, the read is refused before the DACL
+    check or any byte read — proving the reparse guard, not just symlink creation."""
+    from youtab_agent_cli import windows_acl
+
+    path = str(tmp_path / "provider.key")
+    windows_acl.secure_write_secret_file(path, (_SECRET + "\n").encode("utf-8"))
+
+    import win32file
+
+    real_info = win32file.GetFileInformationByHandle
+
+    def _reparse(handle):
+        info = list(real_info(handle))
+        info[0] = info[0] | 0x400  # force FILE_ATTRIBUTE_REPARSE_POINT
+        return tuple(info)
+
+    monkeypatch.setattr(win32file, "GetFileInformationByHandle", _reparse)
+    with pytest.raises(OSError, match="reparse point"):
+        windows_acl.read_secret_bytes_owner_only(path, max_bytes=64 * 1024)
+
+
+@requires_windows_dacl
+def test_strict_windows_read_does_not_consult_path_based_check(tmp_path, monkeypatch):
+    """TOCTOU proof: even if the PATH-based ``verify_owner_only_dacl`` is forced
+    to return True, a broad-DACL file is STILL refused — because the strict read
+    now validates the DACL on the same handle it reads from, never by path."""
+    from youtab_agent_cli import windows_acl
+
+    # Force the old path-based check to "pass" for everything.
+    monkeypatch.setattr(windows_acl, "verify_owner_only_dacl", lambda _p: True)
+
+    loose = tmp_path / "loose.key"
+    loose.write_bytes((_SECRET + "\n").encode("utf-8"))  # inherited/broad DACL
+    with pytest.raises(SecretFileError, match="owner-only|DACL|securely read"):
+        read_secret_file(str(loose), var=_VAR, require_secure_perms=True)
+
+
+@requires_windows_dacl
+def test_strict_windows_handle_reader_fails_closed_on_security_info_error(tmp_path, monkeypatch):
+    """If handle-based ``GetSecurityInfo`` raises, the read fails closed (OSError)
+    and returns no bytes — never degrades to a path-based read."""
+    from youtab_agent_cli import windows_acl
+
+    path = str(tmp_path / "provider.key")
+    windows_acl.secure_write_secret_file(path, (_SECRET + "\n").encode("utf-8"))
+
+    import win32security
+
+    def _boom(*_a, **_k):
+        raise OSError("simulated GetSecurityInfo failure")
+
+    monkeypatch.setattr(win32security, "GetSecurityInfo", _boom)
+    with pytest.raises(OSError, match="cannot read security info"):
+        windows_acl.read_secret_bytes_owner_only(path, max_bytes=64 * 1024)
+
+
+@requires_windows_dacl
+def test_strict_windows_errors_never_contain_secret(tmp_path):
+    """A refusal on a broad-DACL file must not disclose the secret value."""
+    loose = tmp_path / "loose.key"
+    loose.write_bytes((_SECRET + "\n").encode("utf-8"))
+    with pytest.raises(SecretFileError) as excinfo:
+        read_secret_file(str(loose), var=_VAR, require_secure_perms=True)
+    assert _SECRET not in str(excinfo.value)
 
 
 # --- env_or_file strict propagation + no leakage ----------------------------

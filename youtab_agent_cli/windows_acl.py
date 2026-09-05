@@ -46,6 +46,13 @@ _PathLike = Union[str, "os.PathLike[str]"]
 # NT SID of the local SYSTEM account (well-known, locale-independent).
 _SYSTEM_SID_STRING = "S-1-5-18"
 
+# Open a handle to the link/object itself and never traverse a reparse point
+# (symlink / junction). Not reliably exposed as a win32con/win32file attribute at
+# the pinned pywin32, so it is a literal here exactly as windows_ssh_runtime does.
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+# FILE_ATTRIBUTE_REPARSE_POINT — set on a symlink/junction/other reparse point.
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+
 
 def is_windows() -> bool:
     """True on native Windows (``os.name == 'nt'``)."""
@@ -65,6 +72,7 @@ def pywin32_available() -> bool:
         import ntsecuritycon  # noqa: F401
         import win32api  # noqa: F401
         import win32con  # noqa: F401
+        import win32file  # noqa: F401 — handle-based secure reads
         import win32security  # noqa: F401
     except Exception:  # noqa: BLE001 — any import failure means "not usable"
         return False
@@ -228,31 +236,18 @@ def secure_directory_owner_only(path: _PathLike) -> None:
         ) from exc
 
 
-def verify_owner_only_dacl(path: _PathLike) -> bool:
-    """Return ``True`` iff ``path`` has an owner-only, protected DACL (Windows only).
+def _descriptor_is_owner_only(descriptor: Any, allowed: Set[str], win32security: Any) -> bool:
+    """Return ``True`` iff a SECURITY_DESCRIPTOR is owner-only and protected.
 
-    Proves: owner is the current user or SYSTEM; the DACL is present (not null);
-    it is marked ``SE_DACL_PROTECTED`` (no inherited broad ACEs); and every
-    allow-ACE with a non-zero access mask names only the current user or SYSTEM
-    (so Everyone / Users / Authenticated Users / Administrators cannot read).
+    Proves: owner is in ``allowed`` (current user or SYSTEM); the DACL is present
+    (not null); it is marked ``SE_DACL_PROTECTED`` (no inherited broad ACEs); and
+    every allow-ACE with a non-zero access mask names only an allowed SID (so
+    Everyone / Users / Authenticated Users / Administrators cannot read).
 
-    Raises :class:`NotImplementedError` on POSIX and :class:`OSError` when
-    pywin32 is unavailable (a Windows caller that must not regress guards with
-    :func:`pywin32_available`).
+    The descriptor may be sourced either from a path (``GetNamedSecurityInfo``)
+    or — for the no-TOCTOU read path — from an open handle (``GetSecurityInfo``);
+    the acceptance rule is identical either way.
     """
-    _, win32api, win32con, win32security = _win32()
-    allowed = _allowed_sid_strings(win32api, win32con, win32security)
-    info = (
-        win32security.OWNER_SECURITY_INFORMATION
-        | win32security.DACL_SECURITY_INFORMATION
-    )
-    try:
-        descriptor = win32security.GetNamedSecurityInfo(
-            os.fspath(path), win32security.SE_FILE_OBJECT, info
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise OSError(f"cannot read security info for {os.fspath(path)!r}: {exc}") from exc
-
     owner = descriptor.GetSecurityDescriptorOwner()
     if owner is None or win32security.ConvertSidToStringSid(owner) not in allowed:
         return False
@@ -282,6 +277,132 @@ def verify_owner_only_dacl(path: _PathLike) -> bool:
             if win32security.ConvertSidToStringSid(sid) not in allowed:
                 return False
     return True
+
+
+def verify_owner_only_dacl(path: _PathLike) -> bool:
+    """Return ``True`` iff ``path`` has an owner-only, protected DACL (Windows only).
+
+    Proves: owner is the current user or SYSTEM; the DACL is present (not null);
+    it is marked ``SE_DACL_PROTECTED`` (no inherited broad ACEs); and every
+    allow-ACE with a non-zero access mask names only the current user or SYSTEM
+    (so Everyone / Users / Authenticated Users / Administrators cannot read).
+
+    Raises :class:`NotImplementedError` on POSIX and :class:`OSError` when
+    pywin32 is unavailable (a Windows caller that must not regress guards with
+    :func:`pywin32_available`).
+
+    NOTE: this is a *path-based* check (``GetNamedSecurityInfo``). It is retained
+    for the WRITE-side verify (``secure_write_secret_file``) and for callers that
+    prove a DACL after applying it. The strict-tier SECRET READ path must instead
+    use :func:`read_secret_bytes_owner_only`, which validates the DACL on the same
+    handle the bytes are read from (no path revalidation / TOCTOU).
+    """
+    _, win32api, win32con, win32security = _win32()
+    allowed = _allowed_sid_strings(win32api, win32con, win32security)
+    info = (
+        win32security.OWNER_SECURITY_INFORMATION
+        | win32security.DACL_SECURITY_INFORMATION
+    )
+    try:
+        descriptor = win32security.GetNamedSecurityInfo(
+            os.fspath(path), win32security.SE_FILE_OBJECT, info
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise OSError(f"cannot read security info for {os.fspath(path)!r}: {exc}") from exc
+    return _descriptor_is_owner_only(descriptor, allowed, win32security)
+
+
+def _win32_read() -> Tuple[Any, ...]:
+    """Import the pywin32 modules needed for a handle-based secure read."""
+    if not is_windows():
+        raise NotImplementedError(
+            "handle-based owner-only reads are a native-Windows feature"
+        )
+    try:
+        import win32api
+        import win32con
+        import win32file
+        import win32security
+    except Exception as exc:  # noqa: BLE001
+        raise OSError(
+            "pywin32 is required for handle-based secure secret reads on Windows"
+        ) from exc
+    return win32api, win32con, win32file, win32security
+
+
+def read_secret_bytes_owner_only(path: _PathLike, *, max_bytes: int) -> bytes:
+    """Read a secret from ``path`` through ONE verified handle (Windows only).
+
+    Closes the path-revalidation (TOCTOU) gap: the file is opened **without
+    following reparse points**, its ownership and protected owner-only DACL are
+    verified **on that same open handle** (``GetSecurityInfo`` on the handle, not
+    ``GetNamedSecurityInfo`` on the path), and the bytes are then read **from that
+    same handle** — so the ACL that is proven and the content that is returned can
+    never refer to two different filesystem objects.
+
+    Fail closed: any failure (pywin32 unavailable, open fails, reparse point, path
+    mismatch, wrong owner/DACL, read error) raises :class:`OSError` and returns no
+    bytes. Never includes the file CONTENTS in an exception message. Opening with
+    only ``FILE_SHARE_READ`` also blocks a concurrent rename/delete/write of the
+    target while the handle is held.
+
+    Reads up to ``max_bytes + 1`` so the caller can enforce the size ceiling.
+    Raises :class:`NotImplementedError` on POSIX (the caller uses ``O_NOFOLLOW``).
+    """
+    win32api, win32con, win32file, win32security = _win32_read()
+    allowed = _allowed_sid_strings(win32api, win32con, win32security)
+    target = os.fspath(path)
+    access = win32con.GENERIC_READ | win32con.READ_CONTROL
+    share = win32con.FILE_SHARE_READ
+    flags = win32con.FILE_ATTRIBUTE_NORMAL | _FILE_FLAG_OPEN_REPARSE_POINT
+    try:
+        handle = win32file.CreateFile(
+            target, access, share, None, win32con.OPEN_EXISTING, flags, None
+        )
+    except Exception as exc:  # noqa: BLE001 — normalise pywintypes.error
+        raise OSError(f"cannot securely open {target!r}: {exc}") from exc
+    try:
+        # 1) Reject a reparse point (symlink/junction): we opened the link itself,
+        #    so its attributes still carry FILE_ATTRIBUTE_REPARSE_POINT.
+        try:
+            attributes = win32file.GetFileInformationByHandle(handle)[0]
+        except Exception as exc:  # noqa: BLE001
+            raise OSError(f"cannot stat handle for {target!r}: {exc}") from exc
+        if attributes & _FILE_ATTRIBUTE_REPARSE_POINT:
+            raise OSError(f"{target!r} is a reparse point — refused")
+        # 2) Defense in depth: the handle must resolve to the expected abspath.
+        try:
+            actual = win32file.GetFinalPathNameByHandle(handle, 0)
+        except Exception as exc:  # noqa: BLE001
+            raise OSError(f"cannot resolve final path for {target!r}: {exc}") from exc
+        if actual.startswith("\\\\?\\"):
+            actual = actual[4:]
+        if os.path.normcase(actual) != os.path.normcase(os.path.abspath(target)):
+            raise OSError(f"{target!r} resolved to a different path via its handle — refused")
+        # 3) Verify owner-only protected DACL FROM THE SAME HANDLE.
+        info = (
+            win32security.OWNER_SECURITY_INFORMATION
+            | win32security.DACL_SECURITY_INFORMATION
+        )
+        try:
+            descriptor = win32security.GetSecurityInfo(
+                handle, win32security.SE_FILE_OBJECT, info
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise OSError(f"cannot read security info for {target!r}: {exc}") from exc
+        if not _descriptor_is_owner_only(descriptor, allowed, win32security):
+            raise OSError(f"{target!r} is not an owner-only (protected DACL) file — refused")
+        # 4) Read from the SAME verified handle.
+        try:
+            _, data = win32file.ReadFile(handle, max_bytes + 1)
+        except Exception as exc:  # noqa: BLE001
+            raise OSError(f"cannot read {target!r}: {exc}") from exc
+    finally:
+        try:
+            win32file.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 — close is best-effort
+            pass
+    return bytes(data)
 
 
 def secure_write_secret_file(

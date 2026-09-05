@@ -138,8 +138,15 @@ def _verify_posix_secure(st: os.stat_result, path: str, *, var: str, allowed_uid
         )
 
 
-def _verify_windows_secure(path: str, *, var: str) -> None:
-    """Owner-only protected-DACL verification for a strict-tier Windows secret."""
+def _read_windows_secure(path: str, *, var: str) -> bytes:
+    """Read a strict-tier secret on Windows through a single verified handle.
+
+    The owner-only protected DACL is validated on the SAME open handle the bytes
+    are read from (no path revalidation / TOCTOU), reparse points (symlinks /
+    junctions) are rejected, and the read fails closed if handle-based
+    verification is unavailable (e.g. pywin32 missing). Returns the raw bytes; the
+    caller decodes and enforces the size ceiling. Never discloses the CONTENTS.
+    """
     from youtab_agent_cli import windows_acl
 
     if not windows_acl.pywin32_available():
@@ -148,15 +155,15 @@ def _verify_windows_secure(path: str, *, var: str) -> None:
             f"(pywin32 unavailable) — refused"
         )
     try:
-        ok = windows_acl.verify_owner_only_dacl(path)
+        return windows_acl.read_secret_bytes_owner_only(
+            path, max_bytes=_MAX_SECRET_FILE_BYTES
+        )
+    except SecretFileError:
+        raise
     except OSError as exc:
         raise SecretFileError(
-            f"{var}_FILE={path!r} DACL verification failed — refused"
+            f"{var}_FILE={path!r} could not be securely read on Windows: {exc}"
         ) from exc
-    if not ok:
-        raise SecretFileError(
-            f"{var}_FILE={path!r} is not an owner-only (protected DACL) file — refused"
-        )
 
 
 def _decode(raw: bytes, *, path: str, var: str, secure: bool) -> str:
@@ -225,7 +232,16 @@ def read_secret_file(
         raise SecretFileError(f"{var}_FILE={path!r} is group/other-writable — refused")
 
     if require_secure_perms and os.name == "nt":
-        _verify_windows_secure(path, var=var)
+        # Read through ONE handle that is opened no-follow, has its owner-only
+        # protected DACL verified on that same handle, and is read from that same
+        # handle. This returns BEFORE the generic ``open(path, "rb")`` tail, so a
+        # strict Windows secret is never re-opened by path (no TOCTOU).
+        raw = _read_windows_secure(path, var=var)
+        if len(raw) > _MAX_SECRET_FILE_BYTES:
+            raise SecretFileError(
+                f"{var}_FILE={path!r} exceeds the size ceiling — refused"
+            )
+        return _decode(raw, path=path, var=var, secure=True)
 
     if require_secure_perms and os.name == "posix":
         # Re-open with O_NOFOLLOW and validate from the same descriptor so the
