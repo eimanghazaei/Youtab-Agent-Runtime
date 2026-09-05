@@ -298,3 +298,107 @@ def env_or_file(
             forbid_repo_and_cloud=forbid_repo_and_cloud,
         )
     return os.getenv(name, default)
+
+
+# ---------------------------------------------------------------------------
+# Provider-neutral credential file resolution (WAVE-30B §4).
+#
+# Every credential-bearing provider names its API key by an environment variable
+# (OPENAI_API_KEY, DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, GLM_API_KEY, ...). The
+# generic file contract is ``<ENV>_FILE``: adding a provider requires no change
+# here or in benchmark core — the loader keys off the variable NAME, never the
+# provider identity. Provider keys always use the strict tier.
+# ---------------------------------------------------------------------------
+
+_warned_plaintext_vars: set[str] = set()
+
+
+def live_benchmark_file_secrets_required() -> bool:
+    """True when the process is running an authorized live-provider benchmark, in
+    which case plaintext-environment provider credentials are refused and
+    file-based delivery (``<ENV>_FILE``) is mandatory."""
+    return os.getenv("YOUTAB_AGENT_LIVE_BENCHMARK", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def resolve_credential_file(
+    env_var: str,
+    *,
+    inline_present: bool,
+    forbid_repo_and_cloud: bool = False,
+) -> str | None:
+    """Return the strict-tier value of ``<env_var>_FILE`` if configured, else None.
+
+    Fail closed on a dual source (both an inline value and a ``_FILE`` path
+    configured). Provider keys are always read with ``require_secure_perms=True``.
+    """
+    if not env_var:
+        return None
+    file_path = os.getenv(f"{env_var}_FILE", "").strip()
+    if not file_path:
+        return None
+    if inline_present:
+        raise SecretFileError(
+            f"both {env_var} and {env_var}_FILE are set — refusing an ambiguous secret source"
+        )
+    return read_secret_file(
+        file_path,
+        var=env_var,
+        require_secure_perms=True,
+        forbid_repo_and_cloud=forbid_repo_and_cloud,
+    )
+
+
+def read_named_key_file_env(
+    path_env_var: str, *, forbid_repo_and_cloud: bool = False
+) -> str | None:
+    """Load a provider key given an env var that holds the PATH to the key file.
+
+    Supports a custom profile's ``api_key_file_env`` declaration. Returns None
+    when the env var is unset/empty; loads strictly otherwise.
+    """
+    if not path_env_var:
+        return None
+    path = os.getenv(path_env_var, "").strip()
+    if not path:
+        return None
+    return read_secret_file(
+        path,
+        var=path_env_var,
+        require_secure_perms=True,
+        forbid_repo_and_cloud=forbid_repo_and_cloud,
+    )
+
+
+def note_plaintext_credential(env_var: str, *, log=None) -> None:
+    """Enforce/observe legacy plaintext-environment credential use.
+
+    In live-benchmark mode a plaintext provider credential is refused (file-based
+    delivery is mandatory). Otherwise it is allowed for backwards compatibility
+    but emits a one-time non-secret warning naming ONLY the variable.
+    """
+    if not env_var:
+        return
+    if live_benchmark_file_secrets_required():
+        raise SecretFileError(
+            f"{env_var} is a plaintext-environment credential but live-benchmark "
+            f"mode requires file-based delivery via {env_var}_FILE"
+        )
+    if env_var in _warned_plaintext_vars:
+        return
+    _warned_plaintext_vars.add(env_var)
+    msg = (
+        f"credential {env_var} is provided as a plaintext environment value; "
+        f"prefer file-based delivery via {env_var}_FILE "
+        f"(see docs/ops/SECRET_FILE_SUPPORT.md)"
+    )
+    if log is not None:
+        log(msg)
+    else:
+        import logging
+
+        logging.getLogger("youtab_agent_cli.secret_file").warning(msg)

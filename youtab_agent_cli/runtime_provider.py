@@ -55,6 +55,17 @@ def _getenv(name: str, default: str = "") -> str:
     read ``os.environ``. Keeps the ``(name, default) -> str`` contract every
     call site here already relies on.
     """
+    # Provider-neutral file-based credential support (WAVE-30B §4): a custom
+    # provider whose ``key_env`` names e.g. DEEPSEEK_API_KEY transparently gains
+    # DEEPSEEK_API_KEY_FILE support here. Strict-tier; fail-closed on dual source.
+    if name:
+        from youtab_agent_cli import secret_file as _sf
+
+        _file_val = _sf.resolve_credential_file(
+            name, inline_present=bool(os.environ.get(name))
+        )
+        if _file_val is not None:
+            return _file_val
     val = _get_secret(name, default)
     return val if val is not None else default
 
@@ -688,10 +699,21 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
-            resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
-            # Fall back to inline api_key when key_env is absent or unresolvable
+            # Resolve the API key. Precedence: explicit file (api_key_file_env,
+            # a var holding the PATH to a strict-tier key file) > key_env (which
+            # itself gains <key_env>_FILE support via _getenv) > inline api_key.
+            from youtab_agent_cli import secret_file as _sf
+
+            resolved_api_key = (
+                _sf.read_named_key_file_env(
+                    str(entry.get("api_key_file_env", "") or "").strip()
+                )
+                or ""
+            ).strip()
+            if not resolved_api_key:
+                key_env = str(entry.get("key_env", "") or "").strip()
+                resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
+            # Fall back to inline api_key when neither file nor key_env resolves
             if not resolved_api_key:
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
 
@@ -1112,8 +1134,16 @@ def _resolve_named_custom_runtime(
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
+    from youtab_agent_cli import secret_file as _sf
+
     api_key_candidates = [
         (explicit_api_key or "").strip(),
+        (
+            _sf.read_named_key_file_env(
+                str(custom_provider.get("api_key_file_env", "") or "").strip()
+            )
+            or ""
+        ).strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
         _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         # Gate provider env keys on their authoritative hosts — sending

@@ -4130,23 +4130,42 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     value — matching the credential-pool seeding path's behaviour.
     """
     env_vars = load_env()
-    val = env_vars.get(key)
-    if val:
-        return val
+    dotenv_val = env_vars.get(key)
+
+    # Provider-neutral file-based credential support (WAVE-30B §4): if
+    # ``<key>_FILE`` is set, load it with the hardened strict-tier loader. This
+    # covers every credential-bearing provider (auth._resolve_api_key_provider_secret
+    # funnels each api_key_env_var through here) without any provider-specific code.
+    from youtab_agent_cli import secret_file as _secret_file
+
+    _inline_present = bool(dotenv_val) or (key in os.environ)
+    _file_val = _secret_file.resolve_credential_file(key, inline_present=_inline_present)
+    if _file_val is not None:
+        return _file_val
+
+    if dotenv_val:
+        _secret_file.note_plaintext_credential(key)
+        return dotenv_val
     try:
         from agent.secret_scope import (
             UnscopedSecretError,
             get_secret as _get_secret,
         )
     except Exception:
-        return os.environ.get(key)
+        _val = os.environ.get(key)
+        if _val:
+            _secret_file.note_plaintext_credential(key)
+        return _val
 
     try:
-        return _get_secret(key)
+        _val = _get_secret(key)
     except UnscopedSecretError:
         raise
     except Exception:
-        return os.environ.get(key)
+        _val = os.environ.get(key)
+    if _val:
+        _secret_file.note_plaintext_credential(key)
+    return _val
 
 
 # =============================================================================
