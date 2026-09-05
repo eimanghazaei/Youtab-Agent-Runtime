@@ -835,6 +835,140 @@ async def runtime_health(identity: RuntimeIdentity = Depends(require_service_ide
     }
 
 
+def _redaction_enabled() -> bool:
+    """Whether secret redaction is ON (default True; only an explicit
+    security.redact_secrets=false disables it)."""
+    try:
+        from youtab_agent_cli.config import load_config_readonly
+
+        sec = load_config_readonly().get("security")
+        if isinstance(sec, dict) and sec.get("redact_secrets") is False:
+            return False
+    except Exception:  # noqa: BLE001
+        return True
+    return True
+
+
+def _configured_model_provider_names() -> Dict[str, Optional[str]]:
+    """Safe NAMES only (never a credential) of the configured default model/provider."""
+    out: Dict[str, Optional[str]] = {"model": None, "provider": None}
+    try:
+        from youtab_agent_cli.config import load_config_readonly
+
+        model_cfg = load_config_readonly().get("model")
+        if isinstance(model_cfg, dict):
+            out["model"] = (str(model_cfg.get("model")) if model_cfg.get("model") else None)
+            out["provider"] = (
+                str(model_cfg.get("provider")) if model_cfg.get("provider") else None
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _provider_credential_source(provider: Optional[str]) -> str:
+    """"file" | "env" | "absent" — how the configured provider's key is delivered.
+    Presence/kind only; the value is never read into the response."""
+    if not provider:
+        return "absent"
+    try:
+        from youtab_agent_cli import auth as _auth
+
+        try:
+            pid = _auth.resolve_provider(provider)
+        except Exception:  # noqa: BLE001
+            pid = (provider or "").strip().lower()
+        pconfig = _auth.PROVIDER_REGISTRY.get(pid) or _auth.PROVIDER_REGISTRY.get(
+            (provider or "").strip().lower()
+        )
+        for var in getattr(pconfig, "api_key_env_vars", ()) or ():
+            if os.getenv(f"{var}_FILE", "").strip():
+                return "file"
+        if _external_credential_present(provider):
+            return "env"
+    except Exception:  # noqa: BLE001
+        return "absent"
+    return "absent"
+
+
+@router.get("/api/runtime/v1/preflight")
+async def runtime_preflight(
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Authenticated live-benchmark preflight (WAVE-30B §12).
+
+    Surfaces exactly what the harness needs to verify BEFORE a live run — the
+    running build SHA, version, provider/model NAMES, and safety posture — and
+    NOTHING sensitive: no secret value, authorization header, or raw config. The
+    harness compares ``build_sha`` against its authorized SHA and refuses to run
+    against a mismatched or production runtime.
+    """
+    from youtab_agent_cli import __version__ as engine_version
+    from youtab_runtime.run_limits import CAMPAIGN_CEILING_EUR, RUN_CEILINGS
+
+    try:
+        from youtab_agent_cli.build_info import get_build_sha
+
+        build_sha = get_build_sha(short=0)
+    except Exception:  # noqa: BLE001
+        build_sha = None
+
+    try:
+        from youtab_agent_cli import secret_file as _sf
+
+        live_benchmark = _sf.live_benchmark_file_secrets_required()
+    except Exception:  # noqa: BLE001
+        live_benchmark = False
+
+    names = _configured_model_provider_names()
+
+    # Optional active campaign (set via env by the benchmark launcher).
+    campaign_id = os.getenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "").strip() or None
+    remaining_eur: Optional[str] = None
+    campaign_ceiling_eur: Optional[str] = None
+    if campaign_id:
+        try:
+            from youtab_runtime import campaign_budget as _cb
+
+            st = _cb.status(campaign_id)
+            remaining_eur = str(st.remaining_eur)
+            campaign_ceiling_eur = str(st.ceiling_eur)
+        except Exception:  # noqa: BLE001
+            remaining_eur = None
+
+    # Audit/journal availability (best-effort import probe).
+    try:
+        import youtab_runtime.run_journal  # noqa: F401
+
+        audit_available = True
+    except Exception:  # noqa: BLE001
+        audit_available = False
+
+    return {
+        "ok": True,
+        "service_ready": True,
+        "build_sha": build_sha,
+        "engine_version": engine_version,
+        "contract_version": CONTRACT_VERSION,
+        "model": names["model"],
+        "provider": names["provider"],
+        "provider_credential_source": _provider_credential_source(names["provider"]),
+        "redaction_enabled": _redaction_enabled(),
+        "budget_enforcement_enabled": True,
+        "live_benchmark_mode": live_benchmark,
+        "campaign_id": campaign_id,
+        "campaign_ceiling_eur": campaign_ceiling_eur,
+        "remaining_eur": remaining_eur,
+        "hard_campaign_ceiling_eur": str(CAMPAIGN_CEILING_EUR),
+        "run_limit_ceilings": dict(RUN_CEILINGS),
+        "audit_available": audit_available,
+        # The benchmark uses only synthetic scenarios; no production/customer
+        # dataset is ever selected on this plane.
+        "no_production_dataset": True,
+        "auth_required": True,
+    }
+
+
 @router.get("/api/runtime/v1/capabilities")
 async def runtime_capabilities(
     identity: RuntimeIdentity = Depends(require_service_identity),

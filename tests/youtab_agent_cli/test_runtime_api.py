@@ -237,6 +237,31 @@ def test_create_run_rejects_invalid_limits(client):
     assert r.json()["detail"]["error"] == "invalid_limits"
 
 
+def test_preflight_reports_safe_posture_and_leaks_no_secret(client):
+    """WAVE-30B §12: authenticated preflight exposes the safety posture (SHA,
+    version, redaction, budget, ceilings) and never a secret."""
+    r = client.get("/api/runtime/v1/preflight", headers=_identity_headers())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    for key in (
+        "ok", "service_ready", "engine_version", "contract_version",
+        "redaction_enabled", "budget_enforcement_enabled", "live_benchmark_mode",
+        "hard_campaign_ceiling_eur", "run_limit_ceilings", "audit_available",
+        "no_production_dataset", "provider_credential_source",
+    ):
+        assert key in body, f"missing {key}: {body}"
+    assert body["redaction_enabled"] is True
+    assert body["budget_enforcement_enabled"] is True
+    assert body["hard_campaign_ceiling_eur"] == "10.00"
+    assert body["run_limit_ceilings"]["max_iterations"] >= 1
+    # the service secret must never appear anywhere in the response
+    assert SECRET not in r.text
+
+
+def test_preflight_requires_auth(client):
+    assert client.get("/api/runtime/v1/preflight").status_code == 401
+
+
 def _wait_terminal(client, run_id, headers, timeout=25):
     deadline = time.time() + timeout
     cursor = 0
