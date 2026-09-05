@@ -256,6 +256,29 @@ async def _lifespan(app: "FastAPI"):
     # sweeping stale sessions on schedule, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
 
+    # Contract A (immutable-after-startup): plugin discovery has already
+    # registered every token route (the dashboard command / interactive auth
+    # setup both discover BEFORE start_server; request-time discover_plugins()
+    # is an idempotent no-op). Seal the provider-bound token-route registry now —
+    # in lifespan startup, BEFORE uvicorn accepts traffic — so no request is ever
+    # served while the security registry could mutate. This closes the TOCTOU
+    # window between the token seam resolving an owner and the _authorization_gate
+    # re-checking it: during serving there is exactly one frozen generation.
+    from youtab_agent_cli.dashboard_auth.token_auth import (
+        freeze_token_routes,
+        verify_service_route_ownership,
+    )
+    freeze_token_routes()
+    # Fail closed: if a built-in service plugin declared a route-ownership
+    # requirement (runtime-service prefix, drain exact route) but its provider or
+    # route registration did not actually take effect — including a failure the
+    # plugin loader swallowed — this raises ServiceRouteRegistrationError and
+    # aborts startup BEFORE the server accepts a single request, rather than
+    # serving a security-critical route reachable through the interactive cookie
+    # gate. A clean deployment where the surface is intentionally disabled
+    # (secret unset) declares no requirement and passes.
+    verify_service_route_ownership()
+
     try:
         yield
     finally:
@@ -846,7 +869,37 @@ async def _authorization_gate(request: Request, call_next):
     Tenant Admin, is refused. Refusal is by scope, so a route added under a
     guarded prefix is refused until somebody grants a scope for it, rather
     than being reachable because nobody remembered it.
+
+    Non-interactive (service-to-service) token callers are a separate contract
+    and are NOT adjudicated by this interactive role/scope model — a
+    :class:`dashboard_auth.TokenPrincipal` carries no role and no interactive
+    scope. Primary isolation lives at the token seam, which binds each token
+    route to exactly one owning provider and authenticates a request only with
+    that owner. This gate keeps a defensive belt: it exempts a
+    token-authenticated request ONLY after re-confirming, against the same
+    seam registry, that the authenticated provider owns THIS route and the
+    principal carries the route's required capability. Anything inconsistent —
+    a forged ``token_authenticated`` flag, a principal whose provider is not the
+    route owner, a missing capability, an unowned/ambiguous route — is denied
+    outright (403), never passed through and never crashed on a ``.has()`` the
+    ``TokenPrincipal`` does not implement.
     """
+    if getattr(request.state, "token_authenticated", False):
+        from youtab_agent_cli.dashboard_auth import token_auth as _token_auth
+
+        principal_tok = getattr(request.state, "token_principal", None)
+        owner = _token_auth.route_owner(request.url.path)
+        provider_name = getattr(principal_tok, "provider", None)
+        caps = tuple(getattr(principal_tok, "scopes", ()) or ())
+        if (
+            owner is not None
+            and provider_name is not None
+            and provider_name == owner.provider
+            and (owner.capability is None or owner.capability in caps)
+        ):
+            return await call_next(request)
+        return JSONResponse(status_code=403, content={"detail": REFUSAL_DETAIL})
+
     scope = required_scope(request.url.path, request.method)
     # An unclassified route is now a refusal, not a pass-through. The scope is
     # still resolved first so the audit record can name what was missing.
@@ -4362,14 +4415,17 @@ async def get_gateway_job(job_id: str):
 async def gateway_drain(request: Request):
     """Begin or cancel an external (NAS-driven) gateway drain.
 
-    Authenticated by the non-interactive token-auth seam: the
-    ``dashboard_auth/drain`` plugin registers this exact path as a token route
-    and verifies the ``Authorization`` bearer secret. If that plugin isn't
-    active (no ``YOUTAB_AGENT_DASHBOARD_DRAIN_SECRET``), the route is NOT a token
-    route, so on a gated bind the cookie gate handles it (a browser session can
-    still drive it from the dashboard) and on a loopback bind the legacy
-    session-token gate applies — either way it is never unauthenticated on a
-    network-exposed bind.
+    Service-token-only, fail-closed. This endpoint is authenticated exclusively
+    by the non-interactive token-auth seam: the ``dashboard_auth/drain`` plugin
+    registers this exact path as a token route owned by the ``drain-secret``
+    provider and verifies the ``Authorization`` bearer against the configured
+    drain secret. When the drain secret is absent, empty, weak, or otherwise
+    invalid, the surface is DISABLED and this handler returns ``503
+    drain_disabled`` BEFORE any side effect — an authenticated dashboard cookie
+    session, INCLUDING one holding ``ops:manage``, can NOT drive a drain (there
+    is no cookie fallback; a future cookie-admin drain mode would require a
+    separate Owner-approved ADR). The two guards below are independent of the
+    middleware so the handler cannot be reached out of contract.
 
     Body: ``{"action": "drain"}`` (begin) or ``{"action": "cancel"}`` (cancel).
     Begin writes the ``.drain_request.json`` marker the gateway's
@@ -4383,6 +4439,26 @@ async def gateway_drain(request: Request):
     immediate, drain-skipping action maps onto the existing
     ``POST /api/gateway/restart`` force path, which supersedes a drain.
     """
+    # Independent, unconditional fail-closed guard (WAVE-21), evaluated BEFORE any
+    # marker write, state mutation, or side effect.
+    #
+    # (1) Disabled unless a VALID drain secret is configured — using the SAME
+    #     authoritative contract as the drain provider, so the handler and the
+    #     token seam cannot disagree. Absent/empty/weak/malformed → 503. This is
+    #     what stops an `ops:manage` dashboard cookie from driving a drain when
+    #     the drain surface is off (the historical opt-out exposure).
+    from plugins.dashboard_auth.drain import is_drain_enabled
+    if not is_drain_enabled():
+        raise HTTPException(status_code=503, detail={"error": "drain_disabled"})
+    # (2) Even with a valid secret, only a request the drain token seam
+    #     authenticated (the `drain-secret` provider) may drive it — never a
+    #     cookie session. Belt to the middleware's suspenders.
+    _tok = getattr(request.state, "token_principal", None)
+    if not getattr(request.state, "token_authenticated", False) or getattr(
+        _tok, "provider", None
+    ) != "drain-secret":
+        raise HTTPException(status_code=403, detail={"error": "drain_forbidden"})
+
     from gateway.drain_control import (
         clear_drain_request,
         drain_requested,
@@ -7961,12 +8037,28 @@ async def validate_custom_endpoint(body: CustomEndpointUpdate):
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
     url = base_url + "/models"
+    # Layer 1 (WAVE-27): resolve-time cloud-metadata floor — refuses a metadata
+    # URL up front with a clear message. Kept as defense-in-depth; a private/
+    # self-hosted provider is intentionally allowed here.
+    from tools.url_safety import is_always_blocked_url
+
+    if is_always_blocked_url(url):
+        return {"ok": False, "reachable": False,
+                "message": "Refusing to probe a cloud-metadata address.", "models": []}
     headers = {"Accept": "application/json"}
     if body.api_key and body.api_key.strip():
         headers["Authorization"] = f"Bearer {body.api_key.strip()}"
 
+    # Layer 2 (WAVE-28 §6.2): connect-pinning client closes the DNS-rebinding
+    # TOCTOU that Layer 1 alone cannot — a sub-second rebind between the check
+    # above and the connect would defeat a resolve-time check. create_ssrf_safe_client
+    # validates and dials the SAME IP at TCP-connect, re-validated per redirect hop;
+    # cloud-metadata/link-local are always blocked (even with allow_private_urls on),
+    # while operator-enabled self-hosted private endpoints stay reachable.
+    from tools.url_safety import create_ssrf_safe_client
+
     try:
-        with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
+        with create_ssrf_safe_client(timeout=httpx.Timeout(8.0)) as client:
             resp = client.get(url, headers=headers)
     except Exception:
         return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
@@ -8002,13 +8094,25 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
         url = value.rstrip("/") + "/models"
+        # Layer 1 (WAVE-27): resolve-time cloud-metadata floor (see
+        # validate_custom_endpoint) — kept as defense-in-depth.
+        from tools.url_safety import is_always_blocked_url
+
+        if is_always_blocked_url(url):
+            return {"ok": False, "reachable": False,
+                    "message": "Refusing to probe a cloud-metadata address."}
         # Send the optional API key so endpoints that require auth on
         # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
         # their models instead of returning an empty list behind a 401.
         api_key = (body.api_key or "").strip()
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+        # Layer 2 (WAVE-28 §6.2): connect-pinning closes the DNS-rebinding TOCTOU
+        # Layer 1 cannot — an operator-supplied base URL cannot be rebound to a
+        # private/metadata IP between check and connect.
+        from tools.url_safety import create_ssrf_safe_client
+
         try:
-            with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
+            with create_ssrf_safe_client(timeout=httpx.Timeout(8.0)) as client:
                 resp = client.get(url, headers=headers)
             return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
         except Exception:
@@ -8027,8 +8131,12 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     else:
         params["key"] = value
 
+    # WAVE-28 §6.2: connect-pinning even for the fixed hosted-provider probe URLs
+    # (dialed at the SSRF-validated IP, per-redirect-hop re-validation).
+    from tools.url_safety import create_ssrf_safe_client
+
     try:
-        with httpx.Client(timeout=httpx.Timeout(10.0)) as client:
+        with create_ssrf_safe_client(timeout=httpx.Timeout(10.0)) as client:
             resp = client.get(url, headers=headers, params=params)
     except Exception:
         return {"ok": False, "reachable": False, "message": "Could not reach the provider to verify the key."}

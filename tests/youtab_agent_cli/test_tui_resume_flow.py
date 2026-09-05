@@ -126,7 +126,8 @@ def test_oneshot_subprocess_exits_without_teardown_abort():
     )
 
     assert result.returncode == 0
-    assert result.stdout == b"ok\n"
+    # Normalize newlines: the child's stdout is CRLF-terminated on Windows.
+    assert result.stdout.replace(b"\r\n", b"\n") == b"ok\n"
     # Don't demand byte-empty stderr — an import-time warning from the heavy
     # CLI import chain shouldn't fail this. What matters is no crash traceback.
     assert b"Traceback" not in result.stderr

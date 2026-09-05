@@ -811,6 +811,40 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     return entries
 
 
+_WINDOWS_TRANSIENT_FS_ERRORS = frozenset((5, 32))  # ACCESS_DENIED, SHARING_VIOLATION
+
+
+def _windows_resilient_fs_op(op):
+    """Run a filesystem rename/rmtree, riding out the transient Windows lock.
+
+    On POSIX this simply calls ``op()`` once — an open file descriptor never
+    blocks a rename or unlink, so there is nothing to retry. On Windows a file
+    that was *just* closed can stay briefly unshareable while the OS releases
+    the handle (notably SQLite's WAL/-shm sidecars after the last connection
+    closes), so ``rename``/``rmtree`` can bounce with ``ERROR_ACCESS_DENIED``
+    (WinError 5) or ``ERROR_SHARING_VIOLATION`` (WinError 32). This retries ONLY
+    those two winerror codes a bounded number of times with a short capped
+    backoff; every other error is raised immediately, and a still-held handle
+    (a genuine leak) surfaces once the attempts are exhausted rather than being
+    masked. It does not weaken the "no open handle at remove time" contract —
+    it only tolerates the OS's release latency for a handle already closed.
+    """
+    if os.name != "nt":
+        op()
+        return
+    backoff = 0.002
+    for attempt in range(12):
+        try:
+            op()
+            return
+        except (PermissionError, OSError) as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in _WINDOWS_TRANSIENT_FS_ERRORS or attempt == 11:
+                raise
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 0.15)
+
+
 def remove_board(slug: str, *, archive: bool = True) -> dict:
     """Remove or archive a board.
 
@@ -851,11 +885,10 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         while target.exists():
             target = archive_root / f"{normed}-{ts}-{suffix}"
             suffix += 1
-        d.rename(target)
+        _windows_resilient_fs_op(lambda: d.rename(target))
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     else:
-        import shutil
-        shutil.rmtree(d)
+        _windows_resilient_fs_op(lambda: shutil.rmtree(d))
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
@@ -2151,7 +2184,7 @@ def connect(
             with _INIT_LOCK:
                 from youtab_state import apply_wal_with_fallback
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-                conn.execute("PRAGMA synchroyoutab=FULL")
+                conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.execute("PRAGMA secure_delete=ON")
@@ -2191,7 +2224,7 @@ def connect(
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
-                conn.execute("PRAGMA synchroyoutab=FULL")
+                conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 # Zero freed pages so a later torn write cannot expose stale
@@ -3663,7 +3696,17 @@ def _safe_attachment_name(raw: str) -> str:
     name = name.lstrip(".").strip()
     if not name:
         raise ValueError("invalid attachment filename")
-    return name[:200]
+    name = name[:200]
+    # A leaf like "CON"/"con.txt"/"NUL" resolves to a Windows device even inside
+    # the per-task attachments dir, so writing the blob would hang or silently
+    # discard it. Reject on Windows (where the OS resolves the device); the
+    # predicate is platform-independent so POSIX behaviour is unchanged.
+    if os.name == "nt":
+        from tools.path_security import is_windows_reserved_device_path
+
+        if is_windows_reserved_device_path(name):
+            raise ValueError("attachment filename names a Windows reserved device")
+    return name
 
 
 def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
@@ -8927,6 +8970,12 @@ def _default_spawn(
         pass
     if task.tenant:
         env["YOUTAB_AGENT_TENANT"] = task.tenant
+    # WAVE-26: the worker needs BOTH halves of the principal (tenant, user) to
+    # attribute durable usage/tool events in the run journal. tenant is exported
+    # above; carry the owning user (created_by) so the run observer can bind a
+    # fail-closed Principal.
+    if task.created_by:
+        env["YOUTAB_AGENT_KANBAN_CREATED_BY"] = task.created_by
     # Carry the authoritative gateway correlation id to the worker (contract C4).
     _apply_correlation_env(env, task)
     env["YOUTAB_AGENT_KANBAN_TASK"] = task.id

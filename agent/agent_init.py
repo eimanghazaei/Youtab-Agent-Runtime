@@ -1223,9 +1223,24 @@ def init_agent(
                     for _fb in _fb_entries:
                         _fb_explicit_key = (_fb.get("api_key") or "").strip() or None
                         if not _fb_explicit_key:
-                            _fb_key_env = (_fb.get("key_env") or _fb.get("api_key_env") or "").strip()
-                            if _fb_key_env:
-                                _fb_explicit_key = os.getenv(_fb_key_env, "").strip() or None
+                            # Provider-neutral <ENV>_FILE + api_key_file_env (WAVE-30B §4).
+                            from youtab_agent_cli import secret_file as _sf
+
+                            _fb_explicit_key = (
+                                _sf.read_named_key_file_env(
+                                    (_fb.get("api_key_file_env") or "").strip()
+                                )
+                                or ""
+                            ).strip() or None
+                            if not _fb_explicit_key:
+                                _fb_key_env = (_fb.get("key_env") or _fb.get("api_key_env") or "").strip()
+                                if _fb_key_env:
+                                    _fb_explicit_key = (
+                                        _sf.env_or_file(
+                                            _fb_key_env, "", require_secure_perms=True
+                                        ).strip()
+                                        or None
+                                    )
                         _fb_client, _fb_model = resolve_provider_client(
                             _fb["provider"], model=_fb["model"], raw_codex=True,
                             explicit_base_url=_fb.get("base_url"),

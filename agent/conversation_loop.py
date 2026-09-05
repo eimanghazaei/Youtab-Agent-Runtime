@@ -1081,7 +1081,85 @@ def _notify_context_engine_turn_complete(
         )
 
 
-def run_conversation(
+_WAVE26_OBSERVER_REGISTERED = False
+
+
+def _egress_run_context_from_env():
+    """Resolve the ambient egress context for the *current* run, from env.
+
+    WAVE-28 (§6.4): wire the audited-egress ambient context
+    (:mod:`youtab_runtime.egress_context`) into the REAL run/orchestrator
+    execution path. A runtime-plane worker is spawned by the kanban dispatcher
+    (``kanban_db._default_spawn`` → ``youtab -p <profile> chat -q ...``) with the
+    durable run identity in its environment:
+
+    * ``YOUTAB_AGENT_KANBAN_TASK``       → the durable ``run_id``
+    * ``YOUTAB_AGENT_TENANT``            → principal tenant
+    * ``YOUTAB_AGENT_KANBAN_CREATED_BY`` → principal user
+    * ``YOUTAB_AGENT_CORRELATION_ID``    → (installation/correlation, optional)
+
+    These are the SAME identifiers the WAVE-26 run observer already binds a
+    fail-closed :class:`~youtab_runtime.run_journal.Principal` from (see the
+    observer-registration block below), so egress attribution stays consistent
+    with the run journal.
+
+    Returns a context manager:
+
+    * When ALL three halves (run_id, tenant, user) are present — i.e. this
+      process is a real runtime-plane worker executing a run — return
+      :func:`egress_run_context` so every tool/provider egress attempted during
+      the run carries ``(run_id, principal)`` attribution and is exited/cleaned
+      up when the run completes, errors, or is cancelled.
+    * Otherwise (interactive CLI, gateway chat, bootstrap, tests) return a
+      no-op ``nullcontext`` so the ambient context stays unset and
+      ``egress_context.current_context()`` yields the well-defined SYSTEM
+      sentinel — matching the existing out-of-run semantics exactly. This is
+      NOT a new deny path; per the egress design, out-of-run egress falls back
+      to the SYSTEM principal (construction-time SSRF enforcement + the CI lint
+      gate still apply regardless).
+
+    Fail-open on any unexpected error: an attribution failure must never break
+    a real run, so we degrade to ``nullcontext`` (SYSTEM fallback) rather than
+    raise.
+    """
+    from contextlib import nullcontext
+
+    try:
+        run_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+        tenant = (os.environ.get("YOUTAB_AGENT_TENANT") or "").strip()
+        user = (os.environ.get("YOUTAB_AGENT_KANBAN_CREATED_BY") or "").strip()
+        if run_id and tenant and user:
+            from youtab_runtime.egress_context import egress_run_context
+            from youtab_runtime.run_journal import Principal
+
+            return egress_run_context(run_id, Principal(tenant, user))
+    except Exception:
+        logger.warning(
+            "WAVE-28 egress-context resolution failed; falling back to SYSTEM",
+            exc_info=True,
+        )
+    return nullcontext()
+
+
+def run_conversation(*args, **kwargs):
+    """Run-execution chokepoint wrapper (WAVE-28 §6.4).
+
+    Thin façade over :func:`_run_conversation_impl` (the ~6k-line run loop).
+    It enters the ambient egress context for this run BEFORE any tool/provider
+    egress can occur and guarantees the context is exited (contextvar token
+    reset) when the run returns, raises, or is cancelled — via the
+    ``with`` block's ``__exit__``. contextvars propagate to coroutines/tasks
+    created within this block, so async tool/provider calls spawned during the
+    run inherit the same attribution; the context does not leak to sibling or
+    subsequent runs.
+
+    Signature is preserved by forwarding ``*args``/``**kwargs`` unchanged.
+    """
+    with _egress_run_context_from_env():
+        return _run_conversation_impl(*args, **kwargs)
+
+
+def _run_conversation_impl(
     agent,
     user_message: Any,
     system_message: str = None,
@@ -1122,6 +1200,78 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    # WAVE-26: bind a durable per-run usage/tool observer to this worker process
+    # exactly once, so post_api_request/post_tool_call are sunk into the run
+    # journal for the durable runtime plane. Fail-open: an observability failure
+    # must never break a real run. Only runtime-plane workers (spawned with the
+    # kanban task id = durable run id and both principal halves in env) register;
+    # other entrypoints simply skip.
+    global _WAVE26_OBSERVER_REGISTERED
+    if not _WAVE26_OBSERVER_REGISTERED:
+        _WAVE26_OBSERVER_REGISTERED = True  # set first: at-most-once even on error
+        try:
+            _run_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+            _tenant = (os.environ.get("YOUTAB_AGENT_TENANT") or "").strip()
+            _user = (os.environ.get("YOUTAB_AGENT_KANBAN_CREATED_BY") or "").strip()
+            _corr = (os.environ.get("YOUTAB_AGENT_CORRELATION_ID") or "").strip() or None
+            if _run_id and _tenant and _user:
+                from youtab_runtime.run_journal import Principal
+                from youtab_runtime.run_observer import (
+                    create_run_observer,
+                    register_run_observer,
+                )
+
+                register_run_observer(
+                    create_run_observer(
+                        _run_id, Principal(_tenant, _user), correlation_id=_corr
+                    )
+                )
+        except Exception:
+            logger.warning(
+                "WAVE-26 run-observer registration failed", exc_info=True
+            )
+
+    # WAVE-30B: attach the authoritative per-run limit + shared €10 campaign-budget
+    # enforcer for a LIVE-BENCHMARK worker. No-op unless a campaign is configured in
+    # the environment (YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID) — normal runs are wholly
+    # unaffected. Reads the run's server-clamped limits from its persisted
+    # ``runtime_limits`` event. FAIL-CLOSED: when a campaign IS configured but the
+    # enforcer cannot be built (missing FX, unpriceable model, ledger error), the
+    # run aborts HERE rather than calling a paid provider unbudgeted.
+    if not getattr(agent, "_run_limit_enforcer", None):
+        _bench_campaign = (os.environ.get("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID") or "").strip()
+        if _bench_campaign:
+            _bench_run_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+            if not _bench_run_id:
+                # A campaign is configured but this process has no run id to bind
+                # the budget to — refuse rather than call a paid provider unbudgeted.
+                raise RuntimeError(
+                    "live-benchmark campaign configured but YOUTAB_AGENT_KANBAN_TASK "
+                    "is unset — cannot attach a per-run budget enforcer; refusing"
+                )
+            if _bench_run_id:
+                from youtab_runtime.run_limits import (
+                    attach_enforcer_from_environment,
+                )
+
+                _limits_dict: dict = {}
+                try:
+                    from youtab_agent_cli import kanban_db as _kb
+
+                    with _kb.connect_closing() as _conn:
+                        for _e in _kb.list_events(_conn, _bench_run_id):
+                            if getattr(_e, "kind", None) == "runtime_limits" and isinstance(
+                                getattr(_e, "payload", None), dict
+                            ):
+                                _limits_dict = dict(_e.payload)
+                except Exception as _exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        "live-benchmark campaign configured but the run's limits "
+                        f"could not be read: {_exc}"
+                    ) from _exc
+                attach_enforcer_from_environment(
+                    agent, run_id=_bench_run_id, limits_dict=_limits_dict
+                )
     if moa_config is None:
         try:
             from youtab_agent_cli.moa_config import decode_moa_turn
@@ -1291,6 +1441,22 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
+
+        # Authoritative per-run limit + cost gate (WAVE-30B §8/§10/§11). No-op
+        # for normal runs (no enforcer attached); for a live-benchmark run this
+        # reserves the iteration's worst-case cost BEFORE any provider call and
+        # stops fail-closed at the request/token/failure/budget ceiling.
+        _run_limit_enforcer = getattr(agent, "_run_limit_enforcer", None)
+        if _run_limit_enforcer is not None:
+            try:
+                _limit_stop = _run_limit_enforcer.pre_iteration(api_call_count)
+            except Exception:  # noqa: BLE001 - enforcement must fail CLOSED
+                _limit_stop = "budget_error"
+            if _limit_stop:
+                _turn_exit_reason = f"run_limit:{_limit_stop}"
+                if not agent.quiet_mode:
+                    agent._safe_print(f"\n⛔ Run limit reached ({_limit_stop}); stopping before further provider calls")
+                break
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
@@ -3157,6 +3323,16 @@ def run_conversation(
                     # charged to that old compaction, and so preflight deferral
                     # does not remain latched indefinitely.
                     agent.context_compressor.update_from_response({})
+                else:
+                    # WAVE-26: a successful response that carried NO usage block
+                    # was previously skipped silently, understating session spend
+                    # as if the call were free. Count it explicitly so the
+                    # aggregate can report an unknown-usage call count instead of
+                    # a fabricated zero. (The durable journal separately records
+                    # this via the post_api_request hook, usage_status="unknown".)
+                    agent.session_unknown_usage_calls = (
+                        getattr(agent, "session_unknown_usage_calls", 0) + 1
+                    )
 
                 if hasattr(response, 'usage') and response.usage:
                     # Cache discovered context length after successful call.
@@ -3370,6 +3546,14 @@ def run_conversation(
                 break
 
             except Exception as api_error:
+                # WAVE-30B: feed the per-run failure-threshold gate (no-op unless a
+                # live-benchmark enforcer is attached; never touches the ledger).
+                _rle = getattr(agent, "_run_limit_enforcer", None)
+                if _rle is not None:
+                    try:
+                        _rle.note_failure()
+                    except Exception:  # noqa: BLE001 - accounting must not mask the API error
+                        pass
                 # Stop spinner silently — retry status is buffered and
                 # only flushed when every retry+fallback is exhausted.
                 if thinking_spinner:
@@ -5516,6 +5700,29 @@ def run_conversation(
                     )
             except Exception:
                 pass
+
+            # Authoritative post-call reconcile for a live-benchmark run (WAVE-30B
+            # §8/§9). No-op when no enforcer is attached. Reconciles the iteration's
+            # reservation against reported usage and accumulates tokens/failures;
+            # any resulting stop is honoured at the next loop-top gate.
+            _run_limit_enforcer = getattr(agent, "_run_limit_enforcer", None)
+            if _run_limit_enforcer is not None:
+                try:
+                    _usage = agent._usage_summary_for_api_request_hook(response) or {}
+                    _in = int(_usage.get("input_tokens") or 0)
+                    _out = int(_usage.get("output_tokens") or 0)
+                    _cr = int(_usage.get("cache_read_tokens") or 0)
+                    _cw = int(_usage.get("cache_write_tokens") or 0)
+                    _run_limit_enforcer.observe_call(
+                        api_call_count=api_call_count,
+                        input_tokens=_in,
+                        output_tokens=_out,
+                        cache_read_tokens=_cr,
+                        cache_write_tokens=_cw,
+                        ok=True,
+                    )
+                except Exception:  # noqa: BLE001 - observation must never break the loop
+                    pass
 
             # Handle assistant response
             if assistant_message.content and not agent.quiet_mode:

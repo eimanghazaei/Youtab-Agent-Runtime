@@ -564,7 +564,10 @@ def fake_gateway(monkeypatch):
     # ``pids`` is a timeline consumed one observation at a time, holding the
     # last value forever: ``[100, None, 200]`` is "was up, went down, came back
     # as a different process" -- a restart that really happened.
-    state: dict[str, Any] = {"pids": [None], "exit": 0, "commands": []}
+    # ``sleep`` (default 0.0) holds the spawned child alive for that many
+    # seconds so a test can keep a job DETERMINISTICALLY in flight; 0.0 keeps
+    # every existing test's behaviour byte-for-byte unchanged.
+    state: dict[str, Any] = {"pids": [None], "exit": 0, "commands": [], "sleep": 0.0}
     cursor = {"i": 0}
 
     def probe(_profile=None):
@@ -575,7 +578,7 @@ def fake_gateway(monkeypatch):
 
     def spawn(subcommand, name):
         state["commands"].append(list(subcommand))
-        return _child(state["exit"])
+        return _child(state["exit"], sleep_s=state["sleep"])
 
     def spawn_restart(profile=None):
         return spawn(web_server._gateway_subcommand(profile, "restart"), "gateway-restart"), False
@@ -691,11 +694,20 @@ class TestHttpContract:
     def test_a_double_click_reuses_the_in_flight_job(self, gated, fake_gateway):
         """Idempotent restart, over HTTP."""
         fake_gateway["exit"] = 0
+        # Hold the first child alive so job one is still in flight when the
+        # second click lands. This is the test's PRECONDITION, not an arbitrary
+        # delay: a 0.0s child can settle in the microseconds between the two
+        # sequential POSTs on a loaded runner, and then there is no in-flight
+        # job for the dedup — the thing under test — to reuse (observed as a
+        # windows-latest flake). The reused branch is exercised deterministically
+        # here and torn down cleanly via _settle.
+        fake_gateway["sleep"] = 2.0
         client = _as(gated, OWNER)
         first = client.post("/api/gateway/restart").json()
         second = client.post("/api/gateway/restart").json()
         assert second["job_id"] == first["job_id"]
         assert second["reused"] is True
+        _settle(gated, first["job_id"])  # let the held child exit; no lingering job
 
     def test_a_restart_storm_is_refused_with_429(self, gated, fake_gateway):
         fake_gateway["exit"] = 1

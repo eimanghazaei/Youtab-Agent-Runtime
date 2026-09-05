@@ -4376,8 +4376,20 @@ def _mcp_loop_exception_handler(loop, context):
 
 
 def _ensure_mcp_loop():
-    """Start the background event loop thread if not already running."""
+    """Start the background event loop thread if not already running.
+
+    Blocks until the loop is actually running before returning. Starting the
+    thread does not make ``loop.is_running()`` true synchronously — the thread
+    has to be scheduled and enter ``run_forever`` first — so a caller that
+    immediately schedules work via ``_run_on_mcp_loop`` could otherwise race the
+    startup and get ``RuntimeError: MCP event loop is not running``. That window
+    is normally sub-millisecond but widens under CPU contention (observed on the
+    -j3 CI runner). We wait on a callback the loop runs once it is live; the
+    ``threading.Event`` uses real wall-clock, so a test that freezes
+    ``time.monotonic`` cannot break the barrier.
+    """
     global _mcp_loop, _mcp_thread
+    started: "threading.Event | None" = None
     with _lock:
         if _mcp_loop is not None and _mcp_loop.is_running():
             return
@@ -4389,6 +4401,14 @@ def _ensure_mcp_loop():
             daemon=True,
         )
         _mcp_thread.start()
+        # Queue a callback that fires only once run_forever is processing; it is
+        # scheduled thread-safely and survives being enqueued before the loop
+        # is live.
+        started = threading.Event()
+        _mcp_loop.call_soon_threadsafe(started.set)
+    # Wait OUTSIDE the lock so we never block other callers of this function.
+    if started is not None and not started.wait(timeout=30):
+        logger.warning("MCP event loop did not confirm startup within 30s")
 
 
 def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":

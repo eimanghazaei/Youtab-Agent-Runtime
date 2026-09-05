@@ -9,7 +9,7 @@ Covers:
 import time
 from unittest.mock import MagicMock, patch
 
-
+from tests import _wincompat
 from youtab_agent_cli.main import _session_browse_picker
 
 
@@ -97,6 +97,13 @@ class TestSessionBrowsePicker:
 
 class TestCursesBrowse:
     """Tests for the curses-based interactive picker via simulated key sequences."""
+
+    # The picker patches ``curses.wrapper``. On native Windows the ``curses``
+    # package exists but its ``_curses`` C-extension does not, so importing
+    # curses raises ModuleNotFoundError — probe the real missing capability
+    # (``_curses``). Production imports curses lazily inside the picker, so
+    # this file still collects on Windows.
+    pytestmark = _wincompat.requires_module("_curses")
 
     def _run_with_keys(self, sessions, key_sequence):
         """Simulate running the curses picker with a given key sequence."""

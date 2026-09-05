@@ -7,10 +7,12 @@ import subprocess
 import time
 
 import pytest
+from tests import _wincompat
 
 from tools.approval import detect_dangerous_command, detect_hardline_command
 
 
+@_wincompat.requires_posix
 @pytest.mark.parametrize(
     ("argv", "stdin", "expected_returncode", "expected_output"),
     [
@@ -59,6 +61,7 @@ def _tool_is_usable(tool: str) -> bool:
     return bool(first) and os.path.exists(first[0])
 
 
+@_wincompat.requires_posix
 @pytest.mark.parametrize(
     ("tool", "args", "stdin", "needs_tty"),
     [

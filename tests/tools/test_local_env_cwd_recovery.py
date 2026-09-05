@@ -34,7 +34,10 @@ class TestResolveSafeCwd:
         ``os.path.dirname('/') == '/'`` is the loop's exit condition."""
         sep = os.path.sep
         monkeypatch.setattr(os.path, "isdir", lambda p: p == sep)
-        assert _resolve_safe_cwd("/no/such/deep/dir") == sep
+        # Build the input with the native separator so the dirname walk reaches
+        # the filesystem root (`sep`); a hard-coded "/" never collapses to "\"
+        # on Windows and the recovery would fall through to a temp dir.
+        assert _resolve_safe_cwd(os.path.join(sep, "no", "such", "deep", "dir")) == sep
 
 
 def _fake_interrupt():

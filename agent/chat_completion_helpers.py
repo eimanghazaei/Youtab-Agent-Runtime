@@ -1793,9 +1793,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if not fb_api_key_hint:
             # key_env and api_key_env are both documented aliases (see
             # _normalize_custom_provider_entry in youtab_agent_cli/config.py).
-            fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
-            if fb_key_env:
-                fb_api_key_hint = os.getenv(fb_key_env, "").strip() or None
+            # Provider-neutral <ENV>_FILE + api_key_file_env support (WAVE-30B §4).
+            from youtab_agent_cli import secret_file as _sf
+
+            fb_api_key_hint = (
+                _sf.read_named_key_file_env(
+                    (fb.get("api_key_file_env") or "").strip()
+                )
+                or ""
+            ).strip() or None
+            if not fb_api_key_hint:
+                fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
+                if fb_key_env:
+                    fb_api_key_hint = (
+                        _sf.env_or_file(fb_key_env, "", require_secure_perms=True).strip()
+                        or None
+                    )
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
         # (not substring) — see GHSA-76xc-57q6-vm5m.

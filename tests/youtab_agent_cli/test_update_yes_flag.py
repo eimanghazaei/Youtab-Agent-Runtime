@@ -50,6 +50,30 @@ def _make_run_side_effect(
 class TestUpdateYesConfigMigration:
     """--yes auto-answers the config-migration prompt and skips API-key prompts."""
 
+    # These tests assert the platform-independent config-migration branch of
+    # cmd_update. On native Windows the full _cmd_update_impl also runs Windows-
+    # only update machinery that these tests never intended to exercise — a
+    # venv-lock guard that sys.exit(2)s when any venv python is running, plus
+    # pausing/refreshing/restarting real Windows gateway processes. Forcing
+    # _is_windows()->False routes through the same platform-neutral path the
+    # test was authored against (git update, all mocked via subprocess.run),
+    # making it deterministic and side-effect-free on Windows.
+    #
+    # Also stub three heavy, environment-sensitive prelude steps that run BEFORE
+    # the migration step regardless of platform:
+    #   - _clear_bytecode_cache(PROJECT_ROOT) os.walks the whole checkout (and
+    #     descends into nested dev worktrees like .claude/worktrees/, which the
+    #     production prune list doesn't skip).
+    #   - _build_web_ui() shells out to a real `npm install` + `npm run build`
+    #     via Popen (not the mocked subprocess.run), which can take 30s+.
+    #   - sync_skills() copies the whole bundled-skills tree into YOUTAB_AGENT_HOME.
+    # None is the behaviour under test, so stub them to fast no-ops. Passing
+    # `new=` (a lambda) means no extra mock argument is injected into the
+    # test signatures.
+    @patch("youtab_agent_cli.main._is_windows", lambda: False)
+    @patch("tools.skills_sync.sync_skills", lambda **k: {"copied": [], "updated": [], "user_modified": [], "cleaned": []})
+    @patch("youtab_agent_cli.main._build_web_ui", lambda *a, **k: True)
+    @patch("youtab_agent_cli.main._clear_bytecode_cache", lambda root: 0)
     @patch("youtab_agent_cli.config.migrate_config")
     @patch("youtab_agent_cli.config.check_config_version", return_value=(1, 2))
     @patch("youtab_agent_cli.config.get_missing_config_fields", return_value=[])
@@ -89,6 +113,11 @@ class TestUpdateYesConfigMigration:
         # The "Would you like to configure them now?" prompt text never appears.
         assert "Would you like to configure them now?" not in out
 
+    # Same platform-neutral routing + unrelated-side-effect isolation as above.
+    @patch("youtab_agent_cli.main._is_windows", lambda: False)
+    @patch("tools.skills_sync.sync_skills", lambda **k: {"copied": [], "updated": [], "user_modified": [], "cleaned": []})
+    @patch("youtab_agent_cli.main._build_web_ui", lambda *a, **k: True)
+    @patch("youtab_agent_cli.main._clear_bytecode_cache", lambda root: 0)
     @patch("youtab_agent_cli.config.migrate_config")
     @patch("youtab_agent_cli.config.check_config_version", return_value=(1, 2))
     @patch("youtab_agent_cli.config.get_missing_config_fields", return_value=[])

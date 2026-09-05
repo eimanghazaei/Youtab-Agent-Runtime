@@ -93,7 +93,7 @@ def client(tmp_path, monkeypatch):
     auth_registry.clear_providers()
     auth_registry.register_provider(RuntimeServiceProvider(secret=SECRET, scope="runtime"))
     token_auth.clear_token_routes()
-    token_auth.register_token_route_prefix("/api/runtime/v1/")
+    token_auth.register_token_route_prefix("/api/runtime/v1/", provider="runtime-service", capability="runtime")
 
     # --- one known agent --------------------------------------------------
     monkeypatch.setattr(
@@ -123,14 +123,25 @@ def client(tmp_path, monkeypatch):
 
     app.include_router(runtime.router)
 
+    # Real startup ordering (WAVE-22): the seam serves only from a VERIFIED
+    # generation. This bare test app has no lifespan to freeze/verify the
+    # registry, so drive the isolated registry through the real transition —
+    # declare ownership, freeze, verify → VERIFIED — exactly as the dashboard
+    # lifespan would before accepting traffic.
+    token_auth.require_route_ownership(
+        provider="runtime-service", path="/api/runtime/v1/", is_prefix=True,
+        capability="runtime")
+    token_auth.freeze_token_routes()
+    token_auth.verify_service_route_ownership()
+
     with TestClient(app) as c:
         yield c
 
     runtime.stop_dispatcher()
     runtime._spawn_override = None
     runtime._nonce_store = None
-    auth_registry.clear_providers()
-    token_auth.clear_token_routes()
+    # Registry is VERIFIED (frozen) — clear_* is refused after freeze; the
+    # autouse fresh-registry fixture provides per-test isolation.
 
 
 # --------------------------------------------------------------------------
@@ -171,6 +182,94 @@ def _create_run(client, tenant="tenantA", user="userA", task="add 2 and 2", nonc
     headers.update(_sign("POST", path, tenant, user, body, nonce=nonce))
     headers["Content-Type"] = "application/json"
     return client.post(path, content=body, headers=headers)
+
+
+def _create_run_body(client, body_obj, tenant="tenantA", user="userA", nonce=None):
+    import json
+
+    body = json.dumps(body_obj).encode()
+    path = "/api/runtime/v1/runs"
+    headers = _identity_headers(tenant, user)
+    headers.update(_sign("POST", path, tenant, user, body, nonce=nonce))
+    headers["Content-Type"] = "application/json"
+    return client.post(path, content=body, headers=headers)
+
+
+def test_create_run_persists_clamped_limits_event(client):
+    """WAVE-30B §8: create-run records an authoritative, server-clamped
+    runtime_limits event. Over-ceiling values are clamped down."""
+    r = _create_run_body(
+        client,
+        {
+            "agent": "default",
+            "task": "bounded run",
+            "limits": {
+                "max_iterations": 9999,   # clamped to RUN_CEILINGS
+                "max_requests": 40,
+                "max_total_tokens": 250000,
+                "max_cost_eur": "2.00",
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    headers = _identity_headers()
+    ev = client.get(
+        f"/api/runtime/v1/runs/{run_id}/events?after=0", headers=headers
+    ).json()["events"]
+    limits_events = [e for e in ev if e["kind"] == "runtime_limits"]
+    assert len(limits_events) == 1, ev
+    payload = limits_events[0]["payload"]
+    from youtab_runtime.run_limits import RUN_CEILINGS
+
+    assert payload["max_iterations"] == RUN_CEILINGS["max_iterations"]
+    assert payload["max_requests"] == 40
+    assert payload["max_total_tokens"] == 250000
+    assert payload["max_cost_eur"] == "2.00"
+
+
+def test_create_run_rejects_invalid_limits(client):
+    r = _create_run_body(
+        client,
+        {"agent": "default", "task": "bad", "limits": {"max_iterations": -5}},
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "invalid_limits"
+
+
+def test_preflight_reports_safe_posture_and_leaks_no_secret(client):
+    """WAVE-30B §12: authenticated preflight exposes the safety posture (SHA,
+    version, redaction, budget, ceilings) and never a secret."""
+    r = client.get("/api/runtime/v1/preflight", headers=_identity_headers())
+    assert r.status_code == 200, r.text
+    body = r.json()
+    for key in (
+        "ok", "service_ready", "engine_version", "contract_version",
+        "redaction_enabled", "budget_enforcement_enabled", "live_benchmark_mode",
+        "hard_campaign_ceiling_eur", "run_limit_ceilings", "audit_available",
+        "no_production_dataset", "provider_credential_source",
+    ):
+        assert key in body, f"missing {key}: {body}"
+    assert body["redaction_enabled"] is True
+    # Honest attestation: no campaign configured in this test env => not armed.
+    assert body["budget_enforcement_enabled"] is False
+    assert body["hard_campaign_ceiling_eur"] == "10.00"
+    assert body["run_limit_ceilings"]["max_iterations"] >= 1
+    # the service secret must never appear anywhere in the response
+    assert SECRET not in r.text
+
+
+def test_preflight_requires_auth(client):
+    assert client.get("/api/runtime/v1/preflight").status_code == 401
+
+
+def test_preflight_budget_armed_when_campaign_configured(client, monkeypatch):
+    """H1: budget_enforcement_enabled reflects real state — True only when a
+    campaign is configured, so the attestation cannot read green while off."""
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "campaign-xyz")
+    body = client.get("/api/runtime/v1/preflight", headers=_identity_headers()).json()
+    assert body["budget_enforcement_enabled"] is True
+    assert body["campaign_id"] == "campaign-xyz"
 
 
 def _wait_terminal(client, run_id, headers, timeout=25):

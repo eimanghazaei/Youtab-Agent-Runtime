@@ -290,13 +290,32 @@ class MemoryStore:
             yield
             return
 
-        fd = open(lock_path, "a+", encoding="utf-8")
+        # msvcrt locks a byte region, so ensure the lock file is non-empty.
+        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+            lock_path.write_text(" ", encoding="utf-8")
+
+        fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
         try:
             if fcntl:
                 fcntl.flock(fd, fcntl.LOCK_EX)
             else:
-                fd.seek(0)
-                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+                # msvcrt LK_LOCK gives up after ~10s and RAISES, which under
+                # multi-process contention (gateway + dashboard both writing
+                # MEMORY.md/USER.md) would drop a read-modify-write. Retry the
+                # non-blocking LK_NBLCK up to a generous deadline so this blocks-
+                # until-acquired like POSIX flock(LOCK_EX) (same fix as
+                # tools/skill_usage.py). Raises past the deadline rather than
+                # masking a real deadlock.
+                _deadline = time.monotonic() + 60.0
+                while True:
+                    fd.seek(0)
+                    try:
+                        msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= _deadline:
+                            raise
+                        time.sleep(0.02)
             yield
         finally:
             if fcntl:

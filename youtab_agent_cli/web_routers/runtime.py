@@ -171,6 +171,10 @@ _MODE_EVENT = "runtime_execution_mode"
 # resolved provider/model/override behind that selection.
 _ENGINE_EVENT = "runtime_engine_selection"
 
+# Event recorded at create-run carrying the authoritative, server-clamped per-run
+# limit set (WAVE-30B §8). Numeric limits + max_cost_eur only — never a secret.
+_LIMITS_EVENT = "runtime_limits"
+
 # Event recorded on a retry run naming the original run it was retried from and
 # the preserved correlation id — makes retry lineage explicit and queryable.
 _RETRIED_FROM_EVENT = "runtime_retried_from"
@@ -429,6 +433,70 @@ def _run_summary(
     }
 
 
+def _journal_usage_rollup(task: "kb.Task") -> Optional[Dict[str, Any]]:
+    """Aggregate usage/model_call journal events for this run (unknown-safe).
+
+    WAVE-26: authoritative per-run usage summed from the durable run journal,
+    preserving ``unknown`` as first-class rather than the best-effort
+    3-fields-or-null the closing run's metadata provides. Returns None when the
+    journal has no usage events for this run (deterministic/offline runs).
+    """
+    try:
+        from youtab_runtime.run_journal import Principal, list_events
+    except Exception:
+        return None
+    if not (task.tenant and task.created_by):
+        return None
+    try:
+        pr = Principal(task.tenant, task.created_by)
+    except Exception:
+        return None
+    fields = ("input_tokens", "output_tokens", "cache_read_tokens",
+              "cache_write_tokens", "reasoning_tokens", "total_tokens")
+    totals = {f: 0 for f in fields}
+    seen_known = False
+    any_unknown = False
+    cost = 0.0
+    cost_known = False
+    seq = 0
+    while True:
+        batch = list_events(task.id, pr, after_seq=seq, category="usage", limit=500)
+        if not batch:
+            break
+        for ev in batch:
+            seq = ev.seq
+            p = ev.payload
+            if p.get("usage_status") == "known":
+                seen_known = True
+                for f in fields:
+                    v = p.get(f)
+                    if v is not None:
+                        totals[f] += int(v)
+                c = (p.get("cost") or {}).get("amount_usd")
+                if c is not None:
+                    cost += float(c)
+                    cost_known = True
+            else:
+                any_unknown = True
+        if len(batch) < 500:
+            break
+    if not seen_known and not any_unknown:
+        return None
+    out: Dict[str, Any] = (
+        {f: totals[f] for f in fields} if seen_known
+        else {f: None for f in fields}
+    )
+    out["usage_status"] = (
+        "known" if seen_known and not any_unknown
+        else ("partial" if seen_known else "unknown")
+    )
+    out["cost"] = {
+        "amount_usd": cost if cost_known else None,
+        "status": "estimated" if cost_known else "unknown",
+    }
+    return out
+
+
 def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, Any]:
     runs = kb.list_runs(conn, task.id)
     attachments = kb.list_attachments(conn, task.id)
@@ -460,7 +528,7 @@ def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, A
         "current_run_id": task.current_run_id,
         "model": meta.get("model") or meta.get("model_id"),
         "provider": meta.get("provider"),
-        "usage": meta.get("usage") or meta.get("tokens"),
+        "usage": _journal_usage_rollup(task) or meta.get("usage") or meta.get("tokens"),
         # The branded engine the caller selected at create, if any (consumer-safe
         # {profile_id, public_label} only; never the provider/model it resolved to).
         "engine_selection": _engine_selection_from_events(events),
@@ -767,6 +835,144 @@ async def runtime_health(identity: RuntimeIdentity = Depends(require_service_ide
     }
 
 
+def _redaction_enabled() -> bool:
+    """Whether secret redaction is ON (default True; only an explicit
+    security.redact_secrets=false disables it)."""
+    try:
+        from youtab_agent_cli.config import load_config_readonly
+
+        sec = load_config_readonly().get("security")
+        if isinstance(sec, dict) and sec.get("redact_secrets") is False:
+            return False
+    except Exception:  # noqa: BLE001
+        return True
+    return True
+
+
+def _configured_model_provider_names() -> Dict[str, Optional[str]]:
+    """Safe NAMES only (never a credential) of the configured default model/provider."""
+    out: Dict[str, Optional[str]] = {"model": None, "provider": None}
+    try:
+        from youtab_agent_cli.config import load_config_readonly
+
+        model_cfg = load_config_readonly().get("model")
+        if isinstance(model_cfg, dict):
+            out["model"] = (str(model_cfg.get("model")) if model_cfg.get("model") else None)
+            out["provider"] = (
+                str(model_cfg.get("provider")) if model_cfg.get("provider") else None
+            )
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def _provider_credential_source(provider: Optional[str]) -> str:
+    """"file" | "env" | "absent" — how the configured provider's key is delivered.
+    Presence/kind only; the value is never read into the response."""
+    if not provider:
+        return "absent"
+    try:
+        from youtab_agent_cli import auth as _auth
+
+        try:
+            pid = _auth.resolve_provider(provider)
+        except Exception:  # noqa: BLE001
+            pid = (provider or "").strip().lower()
+        pconfig = _auth.PROVIDER_REGISTRY.get(pid) or _auth.PROVIDER_REGISTRY.get(
+            (provider or "").strip().lower()
+        )
+        for var in getattr(pconfig, "api_key_env_vars", ()) or ():
+            if os.getenv(f"{var}_FILE", "").strip():
+                return "file"
+        if _external_credential_present(provider):
+            return "env"
+    except Exception:  # noqa: BLE001
+        return "absent"
+    return "absent"
+
+
+@router.get("/api/runtime/v1/preflight")
+async def runtime_preflight(
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Authenticated live-benchmark preflight (WAVE-30B §12).
+
+    Surfaces exactly what the harness needs to verify BEFORE a live run — the
+    running build SHA, version, provider/model NAMES, and safety posture — and
+    NOTHING sensitive: no secret value, authorization header, or raw config. The
+    harness compares ``build_sha`` against its authorized SHA and refuses to run
+    against a mismatched or production runtime.
+    """
+    from youtab_agent_cli import __version__ as engine_version
+    from youtab_runtime.run_limits import CAMPAIGN_CEILING_EUR, RUN_CEILINGS
+
+    try:
+        from youtab_agent_cli.build_info import get_build_sha
+
+        build_sha = get_build_sha(short=0)
+    except Exception:  # noqa: BLE001
+        build_sha = None
+
+    try:
+        from youtab_agent_cli import secret_file as _sf
+
+        live_benchmark = _sf.live_benchmark_file_secrets_required()
+    except Exception:  # noqa: BLE001
+        live_benchmark = False
+
+    names = _configured_model_provider_names()
+
+    # Optional active campaign (set via env by the benchmark launcher).
+    campaign_id = os.getenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "").strip() or None
+    remaining_eur: Optional[str] = None
+    campaign_ceiling_eur: Optional[str] = None
+    if campaign_id:
+        try:
+            from youtab_runtime import campaign_budget as _cb
+
+            st = _cb.status(campaign_id)
+            remaining_eur = str(st.remaining_eur)
+            campaign_ceiling_eur = str(st.ceiling_eur)
+        except Exception:  # noqa: BLE001
+            remaining_eur = None
+
+    # Audit/journal availability (best-effort import probe).
+    try:
+        import youtab_runtime.run_journal  # noqa: F401
+
+        audit_available = True
+    except Exception:  # noqa: BLE001
+        audit_available = False
+
+    return {
+        "ok": True,
+        "service_ready": True,
+        "build_sha": build_sha,
+        "engine_version": engine_version,
+        "contract_version": CONTRACT_VERSION,
+        "model": names["model"],
+        "provider": names["provider"],
+        "provider_credential_source": _provider_credential_source(names["provider"]),
+        "redaction_enabled": _redaction_enabled(),
+        # Honest attestation: budget enforcement is ARMED only when a campaign is
+        # configured, in which case every worker fails closed unless it can build a
+        # RunLimitEnforcer against the durable ledger. No campaign => not enforced,
+        # and the harness's assert_live_safety refuses the live run.
+        "budget_enforcement_enabled": bool(campaign_id),
+        "live_benchmark_mode": live_benchmark,
+        "campaign_id": campaign_id,
+        "campaign_ceiling_eur": campaign_ceiling_eur,
+        "remaining_eur": remaining_eur,
+        "hard_campaign_ceiling_eur": str(CAMPAIGN_CEILING_EUR),
+        "run_limit_ceilings": dict(RUN_CEILINGS),
+        "audit_available": audit_available,
+        # The benchmark uses only synthetic scenarios; no production/customer
+        # dataset is ever selected on this plane.
+        "no_production_dataset": True,
+        "auth_required": True,
+    }
+
+
 @router.get("/api/runtime/v1/capabilities")
 async def runtime_capabilities(
     identity: RuntimeIdentity = Depends(require_service_identity),
@@ -1061,6 +1267,37 @@ async def runtime_create_run(
     except (TypeError, ValueError):
         max_runtime = None
 
+    # Authoritative, server-clamped per-run limits (WAVE-30B §8). Accepts either a
+    # nested ``limits`` object or the flat top-level fields; validates + clamps to
+    # the server ceilings and refuses invalid values. Runtime enforcement — not
+    # the harness — is the authority; the clamped set is persisted below.
+    from youtab_runtime.run_limits import RunLimitError, RunLimits
+
+    _raw_limits = payload.get("limits")
+    if not isinstance(_raw_limits, dict):
+        _raw_limits = {
+            k: payload.get(k)
+            for k in (
+                "max_input_tokens", "max_output_tokens", "max_total_tokens",
+                "max_iterations", "max_requests", "max_retries",
+                "max_concurrency", "max_cost_eur", "failure_threshold",
+            )
+            if payload.get(k) is not None
+        }
+    try:
+        run_limits = RunLimits.validate_and_clamp(_raw_limits)
+    except RunLimitError as exc:
+        raise HTTPException(
+            status_code=422, detail={"error": "invalid_limits", "reason": str(exc)}
+        ) from exc
+    # max_runtime_seconds is clamped through the same ceiling for one authority.
+    if max_runtime is not None and run_limits.max_runtime_seconds is None:
+        run_limits = RunLimits.validate_and_clamp(
+            {**run_limits.to_dict(), "max_runtime_seconds": max_runtime}
+        )
+    if run_limits.max_runtime_seconds is not None:
+        max_runtime = run_limits.max_runtime_seconds
+
     # Execution mode: real provider-backed model by default. A caller may request
     # the non-production deterministic integration worker with ``deterministic``;
     # it is honoured ONLY when the deterministic worker is enabled (non-prod), so
@@ -1114,6 +1351,10 @@ async def runtime_create_run(
                         "profile_id": engine,
                         "public_label": engine_identity.public_label,
                     })
+                # Persist the authoritative clamped per-run limits (numeric only).
+                _limits_dict = run_limits.to_dict()
+                if _limits_dict:
+                    kb._append_event(conn, run_id, _LIMITS_EVENT, _limits_dict)
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run
@@ -1203,53 +1444,129 @@ async def runtime_retry_run(
 ):
     """Retry a finished/blocked run by creating a fresh run from the same spec."""
     await _verify_signed_command(request, identity)
+    # Authorize ownership FIRST — a caller that does not own run_id gets 404 and
+    # no effect-ledger row is ever created in their namespace (reviewer A INFO-2).
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        task = _load_owned_task(conn, run_id, identity)
-        # Carry the original run's execution mode forward so a retry of a
-        # deterministic integration run stays deterministic and a retry of a
-        # real run stays real.
-        prior_mode = _mode_from_events(kb.list_events(conn, task.id))
-        retry_mode = "deterministic" if (prior_mode == "deterministic" and _deterministic_worker_enabled()) else "model"
-        # Preserve correlation lineage engine-side: the retry inherits the
-        # ORIGINAL task's correlation id (independent of the inbound header) so
-        # the whole retry chain is queryable by one correlation (contract C6).
-        # Fall back to the inbound signed correlation only if the original row
-        # predates the dedicated column (legacy).
-        lineage_correlation = task.correlation_id or identity.correlation_id
-        new_id = kb.create_task(
-            conn,
-            title=f"{task.title} (retry)",
-            body=task.body,
-            assignee=task.assignee,
-            created_by=identity.user,
-            tenant=identity.tenant,
-            skills=task.skills,
-            goal_mode=task.goal_mode,
-            max_runtime_seconds=task.max_runtime_seconds,
-            board=RUNTIME_BOARD,
-            correlation_id=lineage_correlation,
-            session_id=identity.correlation_id,
+        _load_owned_task(conn, run_id, identity)
+    # WAVE-26 effect-level idempotency: a retry spawns a fresh run (an observable
+    # effect). When the caller supplies an Idempotency-Key, atomically CLAIM the
+    # effect so a double-submitted or concurrently-retried request (even across
+    # uvicorn workers) yields exactly one child. Un-keyed retries keep the prior
+    # behaviour (each a distinct, legitimate re-attempt).
+    _retry_effect_id = None
+    _retry_principal = None
+    if identity.idempotency_key:
+        from youtab_runtime import effect_ledger as _el
+        from youtab_runtime.run_journal import Principal as _Principal
+
+        _retry_principal = _Principal(identity.tenant, identity.user)
+        _eff = _el.begin_effect(
+            run_id, _retry_principal, "runtime.retry", identity.idempotency_key,
+            correlation_id=identity.correlation_id,
         )
-        with kb.write_txn(conn):
-            kb._append_event(
-                conn,
-                new_id,
-                _MODE_EVENT,
-                {"mode": retry_mode, "correlation_id": lineage_correlation},
+        won, _eff = _el.try_claim(_eff.effect_id, _retry_principal,
+                                  correlation_id=identity.correlation_id)
+        if not won:
+            prior = _eff.detail.get("child_run_id")
+            if str(_eff.state) == "committed" and prior:
+                with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+                    child = kb.get_task(conn, prior)
+                    if child:
+                        child_mode = (
+                            "deterministic"
+                            if _mode_from_events(kb.list_events(conn, child.id))
+                            == "deterministic"
+                            else "model"
+                        )
+                        return _run_summary(child, execution_mode=child_mode)
+            # in_progress (a concurrent claimer) / unknown: outcome unproven —
+            # do not blindly re-run; the winner will record the child.
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "retry_in_progress_or_unknown",
+                        "run_id": run_id},
             )
-            # Authoritative lineage marker: this run is a retry of ``run_id``,
-            # carrying the preserved correlation (fail-closed run-txn write).
-            kb._append_event(
+        _retry_effect_id = _eff.effect_id
+    # A winning claim MUST reach a terminal effect state. If creation/dispatch
+    # raises after the claim, mark the effect unknown so a same-key retry is
+    # reconciled rather than permanently 409'd (the API process stays alive, so
+    # recover_interrupted — which only reclaims provably-dead owners — would not
+    # otherwise free the stranded in_progress claim). Mirrors atomic_write_text.
+    try:
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            task = _load_owned_task(conn, run_id, identity)
+            # Carry the original run's execution mode forward so a retry of a
+            # deterministic integration run stays deterministic and a retry of a
+            # real run stays real.
+            prior_mode = _mode_from_events(kb.list_events(conn, task.id))
+            retry_mode = "deterministic" if (prior_mode == "deterministic" and _deterministic_worker_enabled()) else "model"
+            # Preserve correlation lineage engine-side: the retry inherits the
+            # ORIGINAL task's correlation id (independent of the inbound header)
+            # so the whole retry chain is queryable by one correlation (C6).
+            # Fall back to the inbound signed correlation only if the original
+            # row predates the dedicated column (legacy).
+            lineage_correlation = task.correlation_id or identity.correlation_id
+            new_id = kb.create_task(
                 conn,
-                new_id,
-                _RETRIED_FROM_EVENT,
-                {
-                    "original_run_id": run_id,
-                    "correlation_id": lineage_correlation,
-                },
+                title=f"{task.title} (retry)",
+                body=task.body,
+                assignee=task.assignee,
+                created_by=identity.user,
+                tenant=identity.tenant,
+                skills=task.skills,
+                goal_mode=task.goal_mode,
+                max_runtime_seconds=task.max_runtime_seconds,
+                board=RUNTIME_BOARD,
+                correlation_id=lineage_correlation,
+                session_id=identity.correlation_id,
             )
-    ensure_dispatcher_running()
-    _dispatch_tick()
+            with kb.write_txn(conn):
+                kb._append_event(
+                    conn,
+                    new_id,
+                    _MODE_EVENT,
+                    {"mode": retry_mode, "correlation_id": lineage_correlation},
+                )
+                # Authoritative lineage marker: this run is a retry of ``run_id``,
+                # carrying the preserved correlation (fail-closed run-txn write).
+                kb._append_event(
+                    conn,
+                    new_id,
+                    _RETRIED_FROM_EVENT,
+                    {
+                        "original_run_id": run_id,
+                        "correlation_id": lineage_correlation,
+                    },
+                )
+        ensure_dispatcher_running()
+        _dispatch_tick()
+    except BaseException:
+        if _retry_effect_id is not None:
+            from youtab_runtime import effect_ledger as _el
+
+            # Guard the ledger write so a secondary ledger/DB failure cannot mask
+            # the original create/dispatch error (which the caller must see). If
+            # marking unknown fails, the effect stays in_progress; a later process
+            # restart's recover_interrupted reclaims it (owner then provably dead),
+            # so the idempotency key is reconciled rather than lost.
+            try:
+                _el.mark_unknown(_retry_effect_id, _retry_principal)
+            except BaseException:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "runtime_retry_run: could not mark retry effect %s unknown "
+                    "after a dispatch failure; leaving it for restart recovery",
+                    _retry_effect_id, exc_info=True,
+                )
+        raise
+    if _retry_effect_id is not None:
+        from youtab_runtime import effect_ledger as _el
+
+        _el.mark_committed(
+            _retry_effect_id, _retry_principal,
+            detail={"child_run_id": new_id},
+        )
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         new_task = kb.get_task(conn, new_id)
         return (

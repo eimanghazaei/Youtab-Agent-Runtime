@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
+from tests import _wincompat
 
 import tools.skills_sync_client as ssc
 
@@ -322,6 +323,7 @@ class TestDevGate:
 # ---------------------------------------------------------------------------
 
 class TestObjectBuilding:
+    @_wincompat.requires_posix_permissions
     def test_build_tree_blob_and_exec(self, tmp_path):
         d = tmp_path / "skill"
         d.mkdir()

@@ -13,9 +13,11 @@ import pytest
 import tools.tirith_security as _tirith_mod
 from tools.tirith_security import check_command_security, ensure_installed
 
+from tests import _wincompat
+
 
 @pytest.fixture(autouse=True)
-def _reset_resolved_path():
+def _reset_resolved_path(request, monkeypatch):
     """Pre-set cached path to skip auto-install in scan tests.
     Tests that specifically test ensure_installed / resolve behavior
     reset this to None themselves.
@@ -25,6 +27,16 @@ def _reset_resolved_path():
     _tirith_mod._install_failure_reason = ""
     _tirith_mod._crash_count = 0
     _tirith_mod._circuit_open = False
+    # tirith ships no binary on Windows, so is_platform_supported() is False
+    # there and check_command_security / ensure_installed short-circuit before
+    # reaching the exit-code-mapping, fail-open, and install LOGIC these tests
+    # exercise (the subprocess/download are mocked, so the logic itself is
+    # platform-independent). Force the platform gate open so these run on every
+    # OS instead of vacuously skipping on Windows. TestUnsupportedPlatform
+    # deliberately drives the real detection and the unsupported branch, so it
+    # opts out and keeps the genuine per-platform behaviour.
+    if request.cls is None or request.cls.__name__ != "TestUnsupportedPlatform":
+        monkeypatch.setattr(_tirith_mod, "is_platform_supported", lambda: True)
     yield
     _tirith_mod._resolved_path = None
     _tirith_mod._install_thread = None
@@ -688,6 +700,7 @@ class TestIsAppTldFinding:
 # mkdtemp OSError → no_space (disk-full leak prevention)
 # ---------------------------------------------------------------------------
 
+@_wincompat.requires_posix  # exercises _install_tirith internals past its POSIX-only platform-key resolution
 class TestMkdtempOSErrorNoSpace:
     """When tempfile.mkdtemp raises OSError (e.g. disk full), _install_tirith
     must return (None, "no_space") instead of propagating the exception.

@@ -153,7 +153,7 @@ def _make_harness(tmp_path, monkeypatch, worker_src):
     auth_registry.clear_providers()
     auth_registry.register_provider(RuntimeServiceProvider(secret=SECRET, scope="runtime"))
     token_auth.clear_token_routes()
-    token_auth.register_token_route_prefix("/api/runtime/v1/")
+    token_auth.register_token_route_prefix("/api/runtime/v1/", provider="runtime-service", capability="runtime")
 
     monkeypatch.setattr(
         "youtab_agent_cli.profiles.list_profiles", lambda: [_FakeProfile("default")]
@@ -185,6 +185,16 @@ def _make_harness(tmp_path, monkeypatch, worker_src):
         return await token_auth_middleware(request, call_next)
 
     app.include_router(runtime.router)
+
+    # Real startup ordering (WAVE-22): serve only from a VERIFIED generation.
+    # This bare harness app has no lifespan, so drive the isolated registry
+    # through the real declare → freeze → verify → VERIFIED transition.
+    token_auth.require_route_ownership(
+        provider="runtime-service", path="/api/runtime/v1/", is_prefix=True,
+        capability="runtime")
+    token_auth.freeze_token_routes()
+    token_auth.verify_service_route_ownership()
+
     client = TestClient(app)
     client.__enter__()
     return _Harness(client, db_path=db_path, sidecar=sidecar, release=release, spawned=spawned)
@@ -208,8 +218,8 @@ def _teardown_harness(h: _Harness):
     finally:
         runtime._spawn_override = None
         runtime._nonce_store = None
-        auth_registry.clear_providers()
-        token_auth.clear_token_routes()
+        # Registry is VERIFIED (frozen) — clear_* is refused after freeze; the
+        # autouse fresh-registry fixture provides per-test isolation.
 
 
 @pytest.fixture()
@@ -641,22 +651,30 @@ def test_cancellation_is_distinguishable_from_a_failure(instant):
 # ==========================================================================
 
 
-def test_forwarded_correlation_is_bound_to_the_cancelled_run(instant):
-    runtime.stop_dispatcher()
+def test_forwarded_correlation_is_bound_to_the_cancelled_run(blocking):
     correlation = "cid-cross-plane-0001"
 
     # Create through the signed path with the gateway-forwarded correlation.
     run_id = _create_run(
-        instant.client, task="corr", correlation=correlation
+        blocking.client, task="corr", correlation=correlation
     ).json()["run_id"]
 
     # The engine bound the forwarded correlation to the run (persisted).
     assert _get_task(run_id).session_id == correlation
 
+    # Wait until the worker is actually active so the cancel deterministically
+    # hits a running (cancellable) run — the blocking worker is the file's
+    # deterministic seam (a prior version raced an ``instant`` worker's
+    # completion against the cancel and flaked to "completed" under -j3 CI
+    # contention).
+    started = _wait(lambda: blocking.sidecar.exists()
+                    and "started" in blocking.sidecar.read_text(encoding="utf-8"))
+    assert started, "worker did not start"
+
     # Cancel under the SAME correlation the gateway would forward — accepted,
     # and the run stays bound to that one correlation (cross-plane agreement:
     # the id the connector emits is the id the engine persists).
-    r = _cancel(instant.client, run_id, correlation=correlation)
+    r = _cancel(blocking.client, run_id, correlation=correlation)
     assert r.status_code == 200
     assert r.json()["status"] == "cancelled"
     assert _get_task(run_id).session_id == correlation

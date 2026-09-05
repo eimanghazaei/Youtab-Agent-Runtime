@@ -1,110 +1,162 @@
 """Route-agnostic non-interactive (bearer-token) auth seam for the dashboard.
 
-This is the generic API-token capability (decisions.md Q-C): a reusable seam
-that ANY service-to-service / machine-credential provider plugs into, NOT a
-drain-specific hook. The drain bearer-secret plugin is merely the first
-consumer.
+Provider-BOUND: each token route/prefix is owned by exactly ONE provider and the
+seam authenticates a request only with that owner, so a credential minted for one
+surface can never authenticate an unrelated one. The registration/resolution
+state and the coordinator lock live in the single linearizable
+:class:`youtab_agent_cli.dashboard_auth.lifecycle.AuthRegistry`; the functions
+here are thin delegators plus the ASGI middleware.
 
-How it fits the existing auth framework:
+  * A route opts in by registering its exact path / prefix via
+    :func:`register_token_route` / :func:`register_token_route_prefix` — with a
+    required owning ``provider`` and an optional required ``capability``.
+  * :func:`token_auth_middleware` runs OUTERMOST. For a registered path it fully
+    owns the auth decision: authenticate via the route OWNER only, attach the
+    verified :class:`TokenPrincipal` + ``token_authenticated`` flag, pass through;
+    otherwise reject (401, or 503 when the owner's backing store is unreachable).
+  * Fails closed: an unowned/ambiguous route, a missing owner provider, a missing
+    capability, or a token the owner rejects → 401 (never an open pass-through).
 
-  * The interactive gate (``gated_auth_middleware``) authenticates a human
-    via a session cookie on every non-public route. A service caller has no
-    cookie — it presents a bearer token in the ``Authorization`` header on a
-    single request. That is what this seam verifies.
-
-  * A route opts in by registering its exact path via
-    :func:`register_token_route`. Only registered paths are token-authable;
-    everything else is untouched, so this can never accidentally widen the
-    auth surface of an existing route.
-
-  * :func:`token_auth_middleware` runs OUTERMOST (installed last in
-    ``web_server.py``). For a token route it fully owns the auth decision:
-    authenticate via the stacked token providers, attach the verified
-    :class:`~youtab_agent_cli.dashboard_auth.base.TokenPrincipal` to
-    ``request.state.token_principal`` + set ``request.state.token_authenticated``,
-    and pass through; otherwise reject (401 unauthenticated, or 503 when a
-    provider's backing store was unreachable). The downstream cookie/session
-    gates honour ``token_authenticated`` and skip enforcement, so a
-    token-authed service request is never bounced to ``/login``.
-
-  * Fails closed: a token route with no registered token provider, no token,
-    or an unrecognised token gets 401 — never an open pass-through.
-
-Provider stacking mirrors ``verify_session``: each ``supports_token`` provider
-is consulted in registration order until one returns a principal. A provider
-that doesn't recognise the token returns ``None`` and the seam moves on; a
-provider whose backing store is unreachable raises ``ProviderError``, which the
-seam remembers and surfaces as 503 only if NO provider accepts the token.
+Lifecycle (Contract A, ENFORCED): every route/provider is registered during
+``discover_plugins()`` — before the ASGI server accepts traffic — and
+:func:`freeze_token_routes` (from the app lifespan startup) seals the COMPLETE
+registry. After the freeze every mutator refuses; only a byte-identical idempotent
+route re-registration is a no-op. See :mod:`...lifecycle` for the linearizability
+and lock-order guarantees. ``verify_token`` is never called while the coordinator
+lock is held.
 """
 from __future__ import annotations
 
 import logging
-import threading
 from typing import Awaitable, Callable, Optional, Tuple
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
-from youtab_agent_cli.dashboard_auth import list_token_providers
+from youtab_agent_cli.dashboard_auth import lifecycle
 from youtab_agent_cli.dashboard_auth.audit import AuditEvent, audit_log
-from youtab_agent_cli.dashboard_auth.base import ProviderError, TokenPrincipal
+from youtab_agent_cli.dashboard_auth.base import TokenPrincipal
+
+# Re-export the registry types so existing callers keep importing them from here.
+from youtab_agent_cli.dashboard_auth.lifecycle import (  # noqa: F401
+    FrozenRegistryError,
+    LifecycleState,
+    RegistryNotVerifiedError,
+    ServiceRouteRegistrationError,
+    TokenRouteOwner,
+    TokenRouteOwnershipError,
+    TokenRouteRegistrationError,
+)
 
 _log = logging.getLogger(__name__)
 
-# Exact paths that accept non-interactive bearer-token auth. A route registers
-# itself here at import/startup; the seam only acts on registered paths.
-_token_routes: set[str] = set()
-# Path PREFIXES that accept non-interactive bearer-token auth. A whole
-# versioned surface with parametric sub-paths (e.g. ``/api/runtime/v1/runs/{id}
-# /events``) can't enumerate every concrete path up front, so it registers its
-# stable prefix once. A prefix match is deliberately anchored at a path segment
-# boundary (the registered value ends in ``/``) so ``/api/runtime/v1/`` can
-# never accidentally match an unrelated ``/api/runtime/v1x`` route.
-_token_route_prefixes: set[str] = set()
-_lock = threading.Lock()
+
+# --- registration + resolution (delegate to the single AuthRegistry) --------
+
+def register_token_route(
+    path: str, *, provider: str, capability: Optional[str] = None
+) -> None:
+    """Mark ``path`` (exact) as token-authable, owned by ``provider`` (+ optional
+    ``capability``). Idempotent for the SAME owner; a conflicting owner raises
+    :class:`TokenRouteOwnershipError`; a NEW route after freeze raises
+    :class:`TokenRouteRegistrationError`."""
+    lifecycle._default.register_token_route(path, provider=provider, capability=capability)
 
 
-def register_token_route(path: str) -> None:
-    """Mark ``path`` (exact match) as token-authable.
+def register_token_route_prefix(
+    prefix: str, *, provider: str, capability: Optional[str] = None
+) -> None:
+    """Mark every path under ``prefix`` (segment-anchored) as token-authable, owned
+    by ``provider``. Same idempotency / conflict / freeze semantics as
+    :func:`register_token_route`."""
+    lifecycle._default.register_token_route_prefix(
+        prefix, provider=provider, capability=capability)
 
-    Idempotent. Call at module import / app setup so the seam knows which
-    routes to guard. Registering a route does NOT make it public — it makes
-    it authenticate by token instead of by session cookie.
-    """
-    with _lock:
-        _token_routes.add(path)
 
-
-def register_token_route_prefix(prefix: str) -> None:
-    """Mark every path under ``prefix`` (segment-anchored) as token-authable.
-
-    For a whole version-pinned API surface with parametric sub-paths that a
-    single exact registration can't cover. The prefix is normalised to end in
-    ``/`` so the match is anchored at a path-segment boundary — registering
-    ``/api/runtime/v1`` guards ``/api/runtime/v1/...`` but never a sibling like
-    ``/api/runtime/v1x``. Idempotent. Same fail-closed contract as
-    :func:`register_token_route`: it makes the surface authenticate by token
-    instead of by session cookie, it does NOT make it public.
-    """
-    normalised = prefix if prefix.endswith("/") else prefix + "/"
-    with _lock:
-        _token_route_prefixes.add(normalised)
+def route_owner(path: str) -> Optional[TokenRouteOwner]:
+    """The single provider/capability owning ``path``, or ``None`` (unowned or
+    ambiguous — callers fail closed on ``None``)."""
+    return lifecycle._default.route_owner(path)
 
 
 def is_token_route(path: str) -> bool:
-    """True if ``path`` is token-authable (exact match or under a prefix)."""
-    with _lock:
-        if path in _token_routes:
-            return True
-        return any(path.startswith(p) for p in _token_route_prefixes)
+    """True if ``path`` is token-authable (a definite owner OR ambiguous — the
+    seam owns and rejects the ambiguous case rather than letting it fall to the
+    cookie gate)."""
+    return lifecycle._default.is_token_route(path)
 
 
 def clear_token_routes() -> None:
-    """Test-only: drop all registered token routes (exact + prefix)."""
-    with _lock:
-        _token_routes.clear()
-        _token_route_prefixes.clear()
+    """Drop all registered token routes. Refused once frozen (raises). Nothing on
+    the serving path calls this; test isolation is a fresh injected registry."""
+    lifecycle._default.clear_token_routes()
 
+
+def require_route_ownership(
+    *, provider: str, path: str, is_prefix: bool, capability: Optional[str] = None
+) -> None:
+    """Declare that a security-critical route MUST be owned by ``provider`` (with
+    ``capability``) or startup aborts. A built-in service plugin calls this
+    BEFORE registering its provider/route so a swallowed registration failure
+    still fails closed at :func:`verify_service_route_ownership`. Delegates to the
+    single :class:`~...lifecycle.AuthRegistry`."""
+    lifecycle._default.require_route_ownership(
+        provider=provider, path=path, is_prefix=is_prefix, capability=capability
+    )
+
+
+def verify_service_route_ownership() -> None:
+    """Abort startup (fail-closed) if any declared service-route ownership is
+    unmet. Called from the dashboard app's lifespan startup after
+    :func:`freeze_token_routes`, before serving. Delegates to
+    :func:`lifecycle.verify_service_route_ownership`."""
+    lifecycle.verify_service_route_ownership()
+
+
+def freeze_token_routes() -> None:
+    """Seal the COMPLETE dashboard-auth registry (providers + token routes).
+
+    Backwards-compatible name; delegates to
+    :func:`lifecycle.freeze_dashboard_auth`. Idempotent. Called from the dashboard
+    app's lifespan startup once discovery has registered everything and BEFORE the
+    server accepts traffic."""
+    lifecycle.freeze_dashboard_auth()
+
+
+def is_frozen() -> bool:
+    """True once the shared dashboard-auth registry has been frozen."""
+    return lifecycle.is_frozen()
+
+
+def is_verified() -> bool:
+    """True only when the shared registry reached VERIFIED — the sole state in
+    which token authentication may serve."""
+    return lifecycle.is_verified()
+
+
+def _registry_verified() -> bool:
+    """Fail-closed read of the serving gate.
+
+    Returns ``True`` ONLY when the shared registry is explicitly
+    ``LifecycleState.VERIFIED``. Every other state fails closed:
+
+      * ``BUILDING`` — the registry never froze (e.g. the ASGI lifespan was
+        disabled, bypassed, or misconfigured, so ``freeze``/verify never ran);
+      * ``FROZEN_UNVERIFIED`` — it froze but verification was skipped, raced, or
+        aborted;
+      * an unknown / invalid state value, or ANY error reading the state — an
+        unreadable lifecycle must never fail open.
+
+    The comparison is against the explicit enum member, not a combination of
+    booleans, so there is no ambiguous middle case.
+    """
+    try:
+        return lifecycle.registry_state() is LifecycleState.VERIFIED
+    except Exception:  # noqa: BLE001 — an unreadable lifecycle state must fail closed
+        return False
+
+
+# --- bearer extraction ------------------------------------------------------
 
 def _client_ip(request: Request) -> str:
     fwd = request.headers.get("x-forwarded-for", "")
@@ -117,8 +169,6 @@ def extract_bearer_token(request: Request) -> str:
     """Return the bearer token from the ``Authorization`` header, or "".
 
     Accepts ``<scheme> <token>`` where scheme is "bearer" (case-insensitive).
-    Returns an empty string for a missing/malformed header or a non-bearer
-    scheme — the caller treats "" as "no token presented".
     """
     auth = request.headers.get("authorization", "")
     parts = auth.split(" ", 1)
@@ -130,41 +180,22 @@ def extract_bearer_token(request: Request) -> str:
 def authenticate_token(
     request: Request,
 ) -> Tuple[Optional[TokenPrincipal], Optional[str]]:
-    """Try every token provider against the request's bearer token.
+    """Authenticate the request's bearer token with the ROUTE OWNER only.
 
-    Returns ``(principal, unreachable_provider_name)``:
-      * ``(TokenPrincipal, None)`` — a provider recognised and accepted the token.
-      * ``(None, None)`` — no token, or no provider recognised it (reject 401).
-      * ``(None, name)`` — no provider accepted it AND at least one provider's
-        backing store was unreachable (the caller surfaces 503, not 401, so a
-        transient outage doesn't read as "bad credentials").
+    Resolves the (owner, provider) snapshot for ``request.url.path`` under the ONE
+    coordinator lock, releases it, and only then calls the owner provider's
+    ``verify_token`` (no lock held). Returns ``(principal, unreachable_name)``:
 
-    Never raises: a provider ``ProviderError`` is caught and remembered.
+      * ``(TokenPrincipal, None)`` — the owner recognised + accepted the token and
+        the principal carries the route's required capability.
+      * ``(None, None)`` — no token, unowned/ambiguous route, owner's provider
+        absent, capability missing, or the owner rejected the token (reject 401).
+      * ``(None, name)`` — the owner's backing store was unreachable (503 upstream).
     """
     token = extract_bearer_token(request)
     if not token:
         return None, None
-    unreachable: Optional[str] = None
-    for provider in list_token_providers():
-        try:
-            principal = provider.verify_token(token=token)
-        except ProviderError as e:
-            _log.warning(
-                "dashboard-auth: token provider %r unreachable during verify: %s",
-                provider.name, e,
-            )
-            if unreachable is None:
-                unreachable = provider.name
-            continue
-        except Exception as e:  # noqa: BLE001 — a buggy provider must not 500 the gate
-            _log.warning(
-                "dashboard-auth: token provider %r raised during verify: %s",
-                provider.name, e,
-            )
-            continue
-        if principal is not None:
-            return principal, None
-    return None, unreachable
+    return lifecycle.verify_token_against_snapshot(request.url.path, token)
 
 
 async def token_auth_middleware(
@@ -173,21 +204,40 @@ async def token_auth_middleware(
 ) -> Response:
     """Outermost auth seam for token-authable routes.
 
-    No-op pass-through for any path not registered via
-    :func:`register_token_route`. For a registered path, token auth is the
-    only accepted scheme:
-
-      * valid token  → attach principal + ``token_authenticated`` flag, pass through.
-      * unreachable  → 503 (provider backing store down; not "bad credentials").
-      * otherwise    → 401 unauthenticated.
-
-    Runs before the cookie/session gates (installed last in ``web_server.py``).
-    The cookie gates honour ``request.state.token_authenticated`` and skip
-    enforcement, so a token-authed request is never redirected to ``/login``.
+    No-op pass-through for a path with no registered owner. For a registered path
+    the registry must be VERIFIED to serve (otherwise 503 ``service_unverified``,
+    evaluated before any provider verification, handler, or side effect); token
+    auth is then the only accepted scheme: valid token → attach principal +
+    ``token_authenticated`` and pass through; owner unreachable → 503; otherwise
+    401. The downstream cookie/session gates honour ``token_authenticated`` and
+    skip enforcement.
     """
     path = request.url.path
     if not is_token_route(path):
         return await call_next(request)
+
+    # VERIFIED-only serving (fail closed on every other state). A token-owned
+    # route may authenticate a request ONLY while the shared registry is
+    # explicitly VERIFIED. This runs BEFORE provider token verification, the
+    # route handler, and any protected side effect, so:
+    #   * BUILDING           → 503 (a server whose ASGI lifespan was disabled,
+    #                          bypassed, or misconfigured never froze/verified —
+    #                          lifespan execution is not the sole security control);
+    #   * FROZEN_UNVERIFIED  → 503 (froze but verification skipped/raced/aborted);
+    #   * unknown/unreadable → 503 (`_registry_verified` fails closed on error).
+    # There is no test-mode/env bypass, no implicit auto-verification, and no
+    # fall-through to the cookie/session gate: an unverified generation is denied.
+    if not _registry_verified():
+        audit_log(
+            AuditEvent.TOKEN_AUTH_FAILURE,
+            reason="registry_not_verified",
+            path=path,
+            ip=_client_ip(request),
+        )
+        return JSONResponse(
+            {"error": "service_unverified", "detail": "Service Unavailable"},
+            status_code=503,
+        )
 
     principal, unreachable = authenticate_token(request)
     if principal is not None:

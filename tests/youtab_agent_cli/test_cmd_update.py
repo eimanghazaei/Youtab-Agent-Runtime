@@ -221,7 +221,11 @@ class TestCmdUpdateBranchFallback:
             branch="main", verify_ok=True, commit_count="0"
         )
 
-        with patch.object(
+        # Neutralise the Windows-only process-holder guards / gateway
+        # pause-restart side effects (they abort with sys.exit(2) and even
+        # spawn a real gateway on Windows). Forcing _is_windows() False makes
+        # this git-logic test follow the exact POSIX code path CI validates.
+        with patch.object(hm, "_is_windows", return_value=False), patch.object(
             hm,
             "_get_origin_url",
             return_value="https://github.com/example/youtab-agent-runtime.git",
@@ -281,6 +285,8 @@ class TestCmdUpdateMigrationPrompt:
     ):
         """Only the version moved → apply non-interactively, never prompt."""
         with patch("shutil.which", return_value=None), patch(
+            "youtab_agent_cli.main._is_windows", return_value=False
+        ), patch(
             "subprocess.run"
         ) as mock_run, patch("builtins.input") as mock_input, patch(
             "youtab_agent_cli.config.get_missing_env_vars", return_value=[]
@@ -375,6 +381,7 @@ class TestCmdUpdateProfileSkillSync:
         empty_sync = {"copied": [], "updated": [], "user_modified": [], "cleaned": []}
 
         with (
+            patch("youtab_agent_cli.main._is_windows", return_value=False),
             patch("youtab_agent_cli.profiles.list_profiles", return_value=all_profiles),
             patch("youtab_agent_cli.profiles.seed_profile_skills", side_effect=fake_seed),
             patch("tools.skills_sync.sync_skills", return_value=empty_sync),
@@ -409,6 +416,7 @@ class TestCmdUpdateProfileSkillSync:
         empty_sync = {"copied": [], "updated": [], "user_modified": [], "cleaned": []}
 
         with (
+            patch("youtab_agent_cli.main._is_windows", return_value=False),
             patch("youtab_agent_cli.profiles.list_profiles", return_value=[default_p]),
             patch("youtab_agent_cli.profiles.seed_profile_skills", side_effect=fake_seed),
             patch("tools.skills_sync.sync_skills", return_value=empty_sync),
@@ -469,7 +477,10 @@ class TestCmdUpdateBranchFlag:
         )
         args = SimpleNamespace(branch="bb/gui")
 
-        cmd_update(args)
+        # Skip the Windows-only process-holder guards (they sys.exit(2) before
+        # the branch logic runs); this test targets the git branch selection.
+        with patch("youtab_agent_cli.main._is_windows", return_value=False):
+            cmd_update(args)
 
         commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
 
@@ -496,7 +507,10 @@ class TestCmdUpdateBranchFlag:
         )
         args = SimpleNamespace(branch="nonexistent")
 
-        with pytest.raises(SystemExit) as exc_info:
+        # Skip the Windows-only process-holder guards (they sys.exit(2) before
+        # the branch logic runs); this test targets the git branch selection.
+        with patch("youtab_agent_cli.main._is_windows", return_value=False), \
+                pytest.raises(SystemExit) as exc_info:
             cmd_update(args)
         assert exc_info.value.code == 1
 

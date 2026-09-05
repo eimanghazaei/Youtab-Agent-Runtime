@@ -30,6 +30,8 @@ from youtab_agent_cli.main import (
     _write_web_ui_build_stamp,
 )
 
+from tests import _wincompat
+
 
 @pytest.fixture(autouse=True)
 def _isolated_youtab_home(tmp_path, monkeypatch):
@@ -142,7 +144,11 @@ class TestBuildWebUISkipsWhenFresh:
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("youtab_agent_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        # _do_build_web_ui resolves npm via _resolve_node_runtime_npm() (which on
+        # native Windows returns the real npm.cmd, bypassing shutil.which); pin it
+        # so the asserted argv is platform-independent.
+        with patch("youtab_agent_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("youtab_agent_cli.main.shutil.which", return_value="/usr/bin/npm"), \
              patch("youtab_agent_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
              patch("youtab_agent_cli.main._run_with_idle_timeout", return_value=build_cp):
             result = _build_web_ui(web_dir)
@@ -164,7 +170,8 @@ class TestBuildWebUISkipsWhenFresh:
 
         install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
-        with patch("youtab_agent_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+        with patch("youtab_agent_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+             patch("youtab_agent_cli.main.shutil.which", return_value="/usr/bin/npm"), \
              patch("youtab_agent_cli.main.subprocess.run", return_value=install_cp), \
              patch("youtab_agent_cli.main._run_with_idle_timeout", return_value=build_cp) as mock_idle:
             result = _build_web_ui(web_dir)
@@ -235,10 +242,15 @@ class TestBuildWebUIFlock:
 
 
 
+    @_wincompat.requires_module("fcntl")
     def test_contended_lock_without_dist_waits_then_skips_fresh_build(self, tmp_path):
         """First-ever build race: the waiter blocks, and once it acquires the
         lock the callee's own staleness check (running under the lock) sees
-        the winner's output and skips a duplicate build."""
+        the winner's output and skips a duplicate build.
+
+        The cross-process serialization is flock-based and therefore POSIX-only;
+        on Windows _build_web_ui degrades to an unserialized build (proven by
+        test_windows_no_flock_builds_unserialized below)."""
         import fcntl
         import threading
         from youtab_agent_cli.main import _build_web_ui as build
@@ -270,6 +282,29 @@ class TestBuildWebUIFlock:
     def test_lock_file_is_gitignored(self):
         gitignore = Path(__file__).resolve().parents[2] / ".gitignore"
         assert ".web_ui_build.lock" in gitignore.read_text(encoding="utf-8")
+
+    def test_windows_no_flock_builds_unserialized(self, tmp_path):
+        """Paired Windows fail-safe for the flock path: when ``fcntl`` is
+        unavailable (native Windows), _build_web_ui must NOT crash on the missing
+        module — it falls through to an unserialized _do_build_web_ui and still
+        returns its result. Forcing the ImportError exercises the exact Windows
+        branch on every platform."""
+        import builtins
+
+        web_dir, _ = _make_web_dir(tmp_path)
+        real_import = builtins.__import__
+
+        def _no_fcntl(name, *a, **k):
+            if name == "fcntl":
+                raise ImportError("no fcntl on this platform (simulated)")
+            return real_import(name, *a, **k)
+
+        with patch("builtins.__import__", side_effect=_no_fcntl), \
+             patch("youtab_agent_cli.main._do_build_web_ui", return_value=True) as mock_build:
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        mock_build.assert_called_once()  # built without any flock serialization
 
 
 def _link_shims(bin_dir: Path, *names: str) -> None:

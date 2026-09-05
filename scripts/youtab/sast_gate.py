@@ -56,7 +56,7 @@ def _ruff(root: Path, codes: str) -> tuple[int, list[dict[str, object]]]:
             *SCAN_TARGETS,
         ],
         cwd=root,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         capture_output=True,
         check=False,
     )

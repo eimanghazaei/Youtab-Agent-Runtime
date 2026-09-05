@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import sys
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -599,9 +600,11 @@ class TestProfileRestoration:
         from youtab_agent_cli.backup import run_import
         run_import(args)
 
-        # Only valid profile should get a wrapper
-        assert (wrapper_dir / "valid").exists()
-        assert not (wrapper_dir / "empty").exists()
+        # Only valid profile should get a wrapper. create_wrapper_script writes a
+        # POSIX shell script (extensionless) on POSIX and a ``.bat`` on Windows.
+        wrapper_suffix = ".bat" if sys.platform == "win32" else ""
+        assert (wrapper_dir / f"valid{wrapper_suffix}").exists()
+        assert not (wrapper_dir / f"empty{wrapper_suffix}").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -910,8 +913,11 @@ class TestQuickSnapshotProjectsKanban:
 
         monkeypatch.setattr(bk, "_safe_copy_db", _spy)
         snap_id = create_quick_snapshot(youtab_home=youtab_home)
-        # The board db was copied via _safe_copy_db (not raw copy).
-        assert any(s.endswith("boards/work/kanban.db") for s in called["db"]), called["db"]
+        # The board db was copied via _safe_copy_db (not raw copy). Compare with
+        # forward-slash-normalized paths so the check holds on Windows too.
+        assert any(
+            s.replace("\\", "/").endswith("boards/work/kanban.db") for s in called["db"]
+        ), called["db"]
         copy = youtab_home / "state-snapshots" / snap_id / "kanban" / "boards" / "work" / "kanban.db"
         rows = sqlite3.connect(str(copy)).execute("SELECT * FROM tasks").fetchall()
         assert rows == [("w1", "ship")]
@@ -1243,8 +1249,12 @@ class TestMemoryProviderExternalPaths:
         restored = dst_home / ".honcho" / "config.json"
         assert restored.exists()
         assert restored.read_text(encoding="utf-8") == '{"peer":"bob"}'
-        # Credential-shaped file tightened.
-        assert (restored.stat().st_mode & 0o777) == 0o600
+        # Credential-shaped file tightened. POSIX mode bits are only
+        # filesystem-enforced on POSIX; Windows synthesises st_mode and
+        # governs access via ACLs, so guard just the bit check and keep the
+        # rest (restore location + no-leak) running on Windows.
+        if os.name == "posix":
+            assert (restored.stat().st_mode & 0o777) == 0o600
         # External state did NOT leak into YOUTAB_AGENT_HOME.
         assert not (youtab_home / "_external").exists()
 

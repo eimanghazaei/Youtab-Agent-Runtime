@@ -3,6 +3,7 @@
 import os
 import re
 import pytest
+from tests import _wincompat
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -391,6 +392,7 @@ class TestSearchPathValidation:
         assert "search failed" in result.error.lower() or "Search error" in result.error
 
 
+@_wincompat.requires_posix
 class TestSearchFilesFallbackHiddenPaths:
     def _make_env(self):
         env = MagicMock()
@@ -561,6 +563,7 @@ class _DeletedTestGitBaselineCheck:
 class TestAtomicWriteNewFilePermissions:
     """_atomic_write should apply umask-default perms to new files (not 0600)."""
 
+    @_wincompat.requires_posix
     def test_new_file_gets_umask_default_permissions(self, tmp_path):
         """Newly created file should get umask-computed perms, not mktemp's 0600.
 

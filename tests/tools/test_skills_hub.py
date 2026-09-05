@@ -106,7 +106,7 @@ class TestSkillsShGroupings:
              patch.object(src, "_write_cache"), \
              patch.object(src, "_get_skillsh_groupings", return_value=groupings), \
              patch.object(src, "inspect", return_value=meta), \
-             patch("tools.skills_hub.httpx.get", return_value=resp):
+             patch("tools.skills_hub._ssrf_safe_http_get_following", return_value=resp):
             skills = src._list_skills_in_repo("NVIDIA/skills", "skills/")
 
         assert len(skills) == 1
@@ -241,7 +241,14 @@ class TestSkillsShSource:
         )
         mock_fetch.side_effect = lambda ident: resolved_bundle if "cli-tool/components" in ident else None
 
-        bundle = self._source().fetch("skills-sh/owner/repo/my-skill")
+        # GitHub API calls now flow through the SSRF-pinning helper; skills.sh
+        # HTML pages still use the bare httpx.get. Route both through the same
+        # URL-keyed side effect (WAVE-28 §6.3).
+        with patch(
+            "tools.skills_hub._ssrf_safe_http_get_following",
+            side_effect=_httpx_get_side_effect,
+        ):
+            bundle = self._source().fetch("skills-sh/owner/repo/my-skill")
 
         assert bundle is not None
         assert bundle.source == "skills.sh"
@@ -257,7 +264,7 @@ class TestFindSkillInRepoTree:
         auth.get_headers.return_value = {"Accept": "application/vnd.github.v3+json"}
         return GitHubSource(auth=auth)
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get_following")
     def test_finds_deeply_nested_skill(self, mock_get):
         tree_entries = [
             {"path": "README.md", "type": "blob"},
@@ -282,7 +289,7 @@ class TestFindSkillInRepoTree:
         result = self._source()._find_skill_in_repo_tree("davila7/claude-code-templates", "senior-backend")
         assert result == "davila7/claude-code-templates/cli-tool/components/skills/development/senior-backend"
 
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get_following")
     def test_returns_none_when_repo_api_fails(self, mock_get):
         mock_get.return_value = MagicMock(status_code=404)
         result = self._source()._find_skill_in_repo_tree("owner/repo", "my-skill")
@@ -427,9 +434,11 @@ class TestCheckForSkillUpdates:
         )
         skill_dir = tmp_path / "demo-skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("same content", encoding="utf-8")
+        (skill_dir / "SKILL.md").write_text("same content", encoding="utf-8", newline="")
         (skill_dir / "references").mkdir()
-        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n", encoding="utf-8")
+        (skill_dir / "references" / "checklist.md").write_text(
+            "- [ ] security\n", encoding="utf-8", newline=""
+        )
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
@@ -763,7 +772,7 @@ class TestOptionalSkillSourceBinaryAssets:
             wav_bytes
         )
         (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.txt").write_text(
-            "hello\n", encoding="utf-8"
+            "hello\n", encoding="utf-8", newline=""
         )
         pycache_dir = skill_dir / "assets" / "neutts-cli" / "src" / "neutts_cli" / "__pycache__"
         pycache_dir.mkdir(parents=True)
@@ -895,7 +904,7 @@ class TestDownloadDirectoryViaTree:
         return GitHubSource(auth=auth)
 
     @patch.object(GitHubSource, "_fetch_file_content")
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get_following")
     def test_tree_api_downloads_subdirectories(self, mock_get, mock_fetch):
         """Tree API returns files from nested subdirectories."""
         repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
@@ -922,7 +931,7 @@ class TestDownloadDirectoryViaTree:
         assert len(files) == 3
 
     @patch.object(GitHubSource, "_download_directory_recursive", return_value={"SKILL.md": "# ok"})
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get_following")
     def test_falls_back_on_truncated_tree(self, mock_get, mock_fallback):
         """When tree is truncated, fall back to recursive Contents API."""
         repo_resp = MagicMock(status_code=200, json=lambda: {"default_branch": "main"})
@@ -944,7 +953,7 @@ class TestDownloadDirectoryRecursive:
         return GitHubSource(auth=auth)
 
     @patch.object(GitHubSource, "_fetch_file_content")
-    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub._ssrf_safe_http_get_following")
     def test_recursive_downloads_subdirectories(self, mock_get, mock_fetch):
         """Contents API recursion includes subdirectories."""
         root_resp = MagicMock(status_code=200, json=lambda: [
@@ -1275,7 +1284,9 @@ class TestLoadYoutabIndex:
             resp.json.return_value = {"skills": [{"name": "x"}]}
             return resp
 
-        monkeypatch.setattr(hub.httpx, "get", fake_get)
+        # _load_youtab_index routes through the SSRF-pinning helper, not the
+        # bare module-level httpx.get (WAVE-28 §6.3).
+        monkeypatch.setattr(hub, "_ssrf_safe_http_get_following", fake_get)
 
         data = hub._load_youtab_index()
         assert data == {"skills": [{"name": "x"}]}
@@ -1302,7 +1313,8 @@ class TestLoadYoutabIndex:
         def fake_get(url, *args, **kwargs):
             raise httpx.DecodingError("brotli boom")
 
-        monkeypatch.setattr(hub.httpx, "get", fake_get)
+        # _load_youtab_index routes through the SSRF-pinning helper (WAVE-28 §6.3).
+        monkeypatch.setattr(hub, "_ssrf_safe_http_get_following", fake_get)
 
         data = hub._load_youtab_index()
         assert data == {"skills": [{"name": "stale"}]}

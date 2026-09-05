@@ -1,0 +1,59 @@
+# Focused security check for the provider-bound token-auth change (WAVE-12/13).
+# Runs ONLY the seam/gate + real-app isolation suites and the directly affected
+# existing auth tests — not the full backend suite. Narrowly scoped: one Python
+# version, read-only permissions, no secrets, strict timeout, path-filtered so
+# it fires only when the token-auth / dashboard-auth / authorization-gate code
+# or its tests change. It does not replace or weaken CodeQL.
+name: token-auth-security
+
+on:
+  pull_request:
+    paths:
+      - "youtab_agent_cli/dashboard_auth/**"
+      - "youtab_agent_cli/web_server.py"
+      - "youtab_agent_cli/authz.py"
+      - "plugins/dashboard_auth/**"
+      - "tests/youtab_agent_cli/test_token_route_provider_binding.py"
+      - "tests/youtab_agent_cli/test_token_registry_concurrency.py"
+      - "tests/youtab_runtime/test_authorization_gate_service_token_isolation.py"
+      - "tests/youtab_agent_cli/test_dashboard_token_auth.py"
+      - "tests/youtab_agent_cli/test_runtime_token_prefix.py"
+      - ".github/workflows/token-auth-security.yml"
+
+# Read-only: this job builds nothing, publishes nothing, deploys nothing.
+permissions:
+  contents: read
+
+# Cancel a superseded run when a new commit is pushed to the same PR ref.
+concurrency:
+  group: token-auth-security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  token-auth-security:
+    name: token-auth-security
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install (deps + dev extra only; no provider extras, no services)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run token-auth security + isolation + concurrency tests
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/youtab_agent_cli/test_token_route_provider_binding.py \
+            tests/youtab_agent_cli/test_token_registry_concurrency.py \
+            tests/youtab_runtime/test_authorization_gate_service_token_isolation.py \
+            tests/youtab_agent_cli/test_dashboard_token_auth.py \
+            tests/youtab_agent_cli/test_runtime_token_prefix.py

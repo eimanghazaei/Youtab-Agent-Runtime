@@ -1469,7 +1469,13 @@ def _get_env_config() -> Dict[str, Any]:
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
+        expanded = os.path.expanduser(docker_cwd_source)
+        # A POSIX-absolute source (a host/container path like /Users/... or
+        # /home/...) must NOT go through os.path.abspath on Windows: that splices
+        # in a drive letter (C:\Users\...), so the _HOST_CWD_PREFIXES and
+        # /workspace checks below no longer match and the remap is silently lost.
+        # Only a genuinely relative path needs abspath.
+        candidate = expanded if expanded.startswith("/") else os.path.abspath(expanded)
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
