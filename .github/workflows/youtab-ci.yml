@@ -109,6 +109,19 @@ jobs:
       # the extra would regenerate uv.lock.
       - name: Install the tflite runtime the wake-word regression tests need
         run: python -m pip install 'ai-edge-litert==2.1.6'
+      # Discord Voice decrypts RTP with PyNaCl's AEAD. WAVE-29 bumped PyNaCl to
+      # 1.6.2 (CVE-2025-69277 fix) via a uv override, but this job installs with
+      # `pip install -e`, which does NOT honor [tool.uv] override-dependencies —
+      # so PyNaCl is installed explicitly here at the locked version, matching
+      # uv.lock. tests/gateway/test_discord_voice_crypto.py exercises the real
+      # VoiceReceiver crypto path and asserts the running PyNaCl is >=1.6.2, so a
+      # regression to a vulnerable pin fails the required gate rather than
+      # silently validating a vulnerable build. `discord.py` itself is not needed
+      # (VoiceReceiver imports without it; the native Opus decoder is stubbed).
+      # Kept out of the `dev` extra for the same reason as the pins above: it is
+      # CI tooling and would otherwise force a uv.lock regeneration.
+      - name: Install the PyNaCl the Discord Voice crypto tests need
+        run: python -m pip install 'pynacl==1.6.2'
       # `scripts/run_tests.sh` refuses to run unless it finds a venv carrying
       # pytest at .venv/ or venv/, or YOUTAB_AGENT_PYTHON pointing at a python
       # that has it. `pip install -e '.[dev]'` above installs into the
@@ -153,27 +166,32 @@ jobs:
       # (uv, pip-audit, rapidocr-onnxruntime) installed with bare `pip install`,
       # never shipped and deliberately absent from uv.lock; auditing the
       # interpreter conflated those tools with project dependencies (e.g. uv's
-      # own CVEs). `uv export` resolves, from the lock, exactly the extras this
-      # job installs (dev,web,slack,wakeword-ingest) plus their transitives — so
-      # the gate audits what ships/tests here, deterministically, with no tool
-      # noise. `--no-deps` audits precisely those exported pins without asking
-      # pip to re-resolve/download (the lock already carries the full closure).
+      # own CVEs). `uv export --all-extras` resolves, from the lock, EVERY extra
+      # this project ships — the core install plus every opt-in adapter/backend
+      # (telegram, discord[voice], google, fal, matrix, teams, dingtalk, ...) —
+      # so the gate audits the entire shipped surface, deterministically, with no
+      # tool noise. `--no-deps` audits precisely those exported pins without
+      # asking pip to re-resolve (the lock already carries the full closure);
+      # every exported package resolves to a Linux-installable wheel or a
+      # pure-Python sdist, so nothing compiles here.
       #
-      # The other opt-in adapter/backend extras (telegram, discord, google, fal,
-      # matrix, teams, ...) are NOT installed here, so they are outside this
-      # blocking gate today. WAVE-28 audited them out-of-band (uv export
-      # --all-extras -> OSV) and fixed every advisory found at the source via the
-      # [tool.uv] floors in pyproject.toml — tornado>=6.5.8, pyasn1>=0.6.4,
-      # httplib2>=0.32.0, msgpack>=1.2.1 — with ONE exception that cannot be
-      # fixed repo-side: pynacl is pulled by discord.py[voice], whose LATEST
-      # release (2.7.1) hard-caps PyNaCl<1.6, so CVE-2025-69277 (PYSEC-2026-3002,
-      # a Moderate libsodium input-validation issue, fixed in 1.6.2) has no
-      # satisfiable bump while Discord voice is supported. Flipping this gate to
-      # `--all-extras` is prepared (cve_audit.py --no-deps makes it robust) but
-      # left OWNER-GATED on that one decision: (a) an Owner-approved narrow,
-      # expiring allowlist exception, (b) dropping discord.py[voice], or (c) an
-      # upstream discord.py release that relaxes the cap. It is NOT suppressed
-      # here to fake a green --all-extras gate.
+      # WAVE-29 flipped this from the installed-subset to the FULL `--all-extras`
+      # surface. Every advisory previously found only under an opt-in extra is now
+      # closed at the source and enforced by this blocking gate:
+      #   * tornado>=6.5.8, pyasn1>=0.6.4, httplib2>=0.32.0, msgpack>=1.2.1
+      #     ([tool.uv] constraint floors), and
+      #   * pynacl: discord.py[voice] pulls PyNaCl, and discord.py 2.7.1 (latest)
+      #     hard-caps PyNaCl<1.6, so CVE-2025-69277 / PYSEC-2026-3002 (a
+      #     libsodium input-validation issue fixed in 1.6.2) had no satisfiable
+      #     in-cap bump. WAVE-29 closed it with a narrow, reproducible
+      #     [tool.uv] override-dependencies = ["pynacl>=1.6.2"]: the <1.6 cap is
+      #     defensive, not a real API break — nacl.secret.Aead and the AEAD
+      #     bindings our VoiceReceiver uses are identical in 1.5.0 and 1.6.2, and
+      #     Discord voice is exercised by the crypto/RTP regression suite. The
+      #     override is visible in uv.lock (hash-pinned) and to this gate.
+      # cve_allowlist.toml remains EMPTY: nothing is suppressed — every finding is
+      # fixed at the source. A new applicable Critical/High/Medium advisory (or a
+      # scanner error) fails this required job, fail-closed.
       #
       # ai-edge-litert is a genuine LOCKED dependency (Darwin-only, macOS tflite
       # interpreter) — uv export filters it out on this Linux runner by its
@@ -183,11 +201,11 @@ jobs:
       - name: Install pip-audit for the CVE gate
         if: ${{ !cancelled() }}
         run: python -m pip install 'pip-audit==2.10.1'
-      - name: CVE audit (pip-audit over the locked project graph) [blocking]
+      - name: CVE audit (pip-audit over the FULL locked project graph, all extras) [blocking]
         if: ${{ !cancelled() }}
         run: |
           uv export --format requirements-txt --no-hashes --no-emit-project --frozen \
-            --extra dev --extra web --extra slack --extra wakeword-ingest \
+            --all-extras \
             -o "$RUNNER_TEMP/audit-reqs.txt"
           python scripts/youtab/cve_audit.py --requirement "$RUNNER_TEMP/audit-reqs.txt" --no-deps --output "$RUNNER_TEMP/cve-audit.json"
       - name: CycloneDX SBOM (artifact, never fails)

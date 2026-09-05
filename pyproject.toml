@@ -418,6 +418,30 @@ constraint-dependencies = [
   "msgpack>=1.2.1",
 ]
 
+# ── WAVE-29 §3: narrow, reproducible override to close the PyNaCl advisory
+# without dropping Discord Voice. ─────────────────────────────────────────────
+# PyNaCl < 1.6.2 bundles a libsodium affected by CVE-2025-69277 /
+# PYSEC-2026-3002 (GHSA-mrfv-m5wm-5w6w, "Incomplete List of Disallowed Inputs");
+# the fix ships in PyNaCl 1.6.2. PyNaCl is a runtime dependency of
+# discord.py[voice] (our Discord voice-receive path calls nacl.secret.Aead).
+#
+# discord.py 2.7.1 (the latest release; verified against PyPI on 2026-09-05)
+# still declares `PyNaCl>=1.5.0,<1.6` under its `voice` extra. That upper bound
+# is DEFENSIVE, not a real API break: nacl.secret.Aead (KEY_SIZE/NONCE_SIZE/
+# encrypt/decrypt) and the xchacha20poly1305_ietf AEAD bindings our
+# VoiceReceiver uses are byte-for-byte identical in 1.5.0 and 1.6.2, and
+# discord.py's own voice modules (voice_client/voice_state/player/gateway)
+# import and run unchanged against 1.6.2 (proven by co-install + import + Aead
+# round-trip during WAVE-29). A `constraint-dependencies` floor cannot express
+# this — it would collide with discord.py's `<1.6` cap and fail resolution — so
+# a scoped override is the only correct, reproducible mechanism. The override is
+# restricted to this single package; uv.lock pins the exact version with
+# per-artifact hashes, so it is reproducible, hash-verified, and visible to the
+# SBOM and the full-extras CVE gate.
+override-dependencies = [
+  "pynacl>=1.6.2",
+]
+
 [build-system]
 requires = ["setuptools>=77.0,<84"]
 build-backend = "setuptools.build_meta"

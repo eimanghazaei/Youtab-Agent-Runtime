@@ -13,7 +13,15 @@ import secrets
 import socket
 import struct
 from typing import Optional
-from defusedxml import ElementTree as ET
+
+# Security / trust boundary: this module only *constructs* the outbound
+# encrypted-reply envelope from trusted, internally-generated values (our own
+# ciphertext, signature, timestamp and nonce). It never parses untrusted input,
+# so it uses the stdlib ElementTree builder API (``Element``/``SubElement``/
+# ``tostring``), which defusedxml deliberately does not re-export. Inbound
+# untrusted WeCom XML is parsed with ``defusedxml.ElementTree`` in
+# ``callback_adapter.py`` (XXE / entity-expansion hardened); do not parse here.
+from xml.etree import ElementTree as XmlBuilder
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -116,12 +124,12 @@ class WXBizMsgCrypt:
         timestamp = timestamp or str(int(__import__("time").time()))
         encrypt = self._encrypt_bytes(plaintext.encode("utf-8"))
         signature = _sha1_signature(self.token, timestamp, nonce, encrypt)
-        root = ET.Element("xml")
-        ET.SubElement(root, "Encrypt").text = encrypt
-        ET.SubElement(root, "MsgSignature").text = signature
-        ET.SubElement(root, "TimeStamp").text = timestamp
-        ET.SubElement(root, "Nonce").text = nonce
-        return ET.tostring(root, encoding="unicode")
+        root = XmlBuilder.Element("xml")
+        XmlBuilder.SubElement(root, "Encrypt").text = encrypt
+        XmlBuilder.SubElement(root, "MsgSignature").text = signature
+        XmlBuilder.SubElement(root, "TimeStamp").text = timestamp
+        XmlBuilder.SubElement(root, "Nonce").text = nonce
+        return XmlBuilder.tostring(root, encoding="unicode")
 
     def _encrypt_bytes(self, raw: bytes) -> str:
         try:

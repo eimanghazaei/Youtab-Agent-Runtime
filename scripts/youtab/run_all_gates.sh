@@ -128,10 +128,32 @@ begin unit-integration-e2e
 # passes on retry is not genuinely green. Every test here must pass on its
 # first execution. Do not remove this flag to quiet an intermittent failure;
 # fix the flake at its root cause instead.
+# `tests/gateway/test_wecom_callback.py` joins the required set (WAVE-29). The
+# WeCom encrypted-reply defect — encrypt() raising AttributeError because it
+# called stdlib ElementTree constructors through the defusedxml module, which
+# does not re-export them — shipped undetected precisely because NO required CI
+# job collected tests/gateway. This file is deterministic and in-process: it
+# exercises the crypto round trip, signature/ciphertext/XML failure paths, XXE
+# and billion-laughs rejection on the inbound parser, and secret-leak guards.
+# Its deps (cryptography, defusedxml — both core; aiohttp — slack extra) are all
+# present in this job. Only this vetted file is added, not the whole directory,
+# which also carries socket-binding, subprocess and timing-sensitive tests. A
+# collection guard (tests/gateway/test_ci_gate_collection.py) asserts the
+# critical WeCom cases stay collected so they cannot silently drop out again.
+#
+# tests/gateway/test_discord_voice_crypto.py joins for WAVE-29: it exercises the
+# real VoiceReceiver RTP/AEAD decrypt path on PyNaCl 1.6.2 (the CVE-2025-69277
+# fix kept compatible with Discord Voice via the uv override) and asserts the
+# running PyNaCl is >=1.6.2. The python-security job installs `pynacl==1.6.2`
+# explicitly because `pip install -e` does not honor the uv override; `discord`
+# is not required (the receiver imports without it, the Opus decoder is stubbed).
 scripts/run_tests.sh \
   tests/youtab_runtime \
   tests/youtab_agent_cli \
   tests/tools \
+  tests/gateway/test_wecom_callback.py \
+  tests/gateway/test_ci_gate_collection.py \
+  tests/gateway/test_discord_voice_crypto.py \
   --file-retries 0 \
   -q | tee "$evidence_dir/unit-integration-e2e.log"
 record unit-integration-e2e $?
