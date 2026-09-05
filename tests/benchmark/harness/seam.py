@@ -140,7 +140,8 @@ class HttpRuntimeSeam:
     name = "runtime_http"
 
     def __init__(self, base_url: str, service_secret: str, *, tenant: str,
-                 user: str, roles=("member",), timeout: float = 60.0) -> None:
+                 user: str, roles=("member",), timeout: float = 60.0,
+                 limits: dict | None = None) -> None:
         from youtab_runtime.run_journal import Principal
         from .auth_client import AuthClient
 
@@ -149,6 +150,12 @@ class HttpRuntimeSeam:
                                   roles=roles, timeout=timeout)
         self.tenant = tenant
         self.user = user
+        # Authoritative per-run limits sent on every create_run (WAVE-30B §8).
+        self._limits = dict(limits) if limits else None
+
+    def preflight(self) -> dict:
+        """The runtime's authenticated safety posture (for the live-run gate)."""
+        return self._client.preflight()
 
     def close(self) -> None:
         self._client.close()
@@ -157,10 +164,15 @@ class HttpRuntimeSeam:
             tenant: str, user: str, run_id: str,
             wait_timeout: float = 120.0) -> Observation:
         # Create + dispatch the run through the true security boundary.
+        _max_runtime = None
+        if self._limits and self._limits.get("max_runtime_seconds") is not None:
+            _max_runtime = int(self._limits["max_runtime_seconds"])
         resp = self._client.create_run(
             agent=scenario.params.get("agent", "default"),
             task=scenario.params.get("task", scenario.title),
             engine=scenario.engine,
+            max_runtime_seconds=_max_runtime,
+            limits=self._limits,
             idempotency_key=scenario.params.get("idempotency_key"),
         )
         resp.raise_for_status()

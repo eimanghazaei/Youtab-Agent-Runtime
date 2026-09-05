@@ -52,12 +52,19 @@ def load_scenarios(path: Path | None = None) -> List[Scenario]:
     return scenarios
 
 
-def validate(path: Path | None = None) -> List[Scenario]:
+def validate(path: Path | None = None, *, require_full_bank: bool = True) -> List[Scenario]:
     """Validate the manifest and return the scenarios; raises on any defect.
 
     Deliberately fails LOUDLY (never vacuously): it first asserts the bank is
     non-empty and meets the minimum, so a manifest that silently lost its
     scenarios cannot pass validation.
+
+    ``require_full_bank`` (default True) enforces the >=40 scenario floor and full
+    family coverage — the mandatory contract for an official full deterministic or
+    live benchmark. An explicitly-identified Canary passes ``require_full_bank=
+    False`` to run a single selected scenario WITHOUT weakening any of the
+    per-scenario validity checks (unique ids, known oracle/executor, valid
+    expected_verdict). The floor is never silently bypassed for a full run.
     """
     data = load_manifest(path)
     version = data.get("schema_version")
@@ -65,9 +72,11 @@ def validate(path: Path | None = None) -> List[Scenario]:
         raise ValueError(
             f"manifest schema_version {version!r} != {MANIFEST_SCHEMA_VERSION!r}")
     scenarios = load_scenarios(path)
-    if len(scenarios) < MIN_SCENARIOS:
+    if require_full_bank and len(scenarios) < MIN_SCENARIOS:
         raise ValueError(
             f"task bank has {len(scenarios)} scenarios; require >= {MIN_SCENARIOS}")
+    if not scenarios:
+        raise ValueError("task bank is empty")
 
     ids = [s.id for s in scenarios]
     dupes = sorted({i for i in ids if ids.count(i) > 1})
@@ -90,9 +99,10 @@ def validate(path: Path | None = None) -> List[Scenario]:
                 f"scenario {s.id!r}: real_provider scenarios must expect "
                 f"'unknown' in deterministic mode (got {s.expected_verdict!r})")
 
-    covered = {s.family for s in scenarios}
-    missing = sorted(set(FAMILIES) - covered)
-    if missing:
-        raise ValueError(f"families with no scenario: {missing}")
+    if require_full_bank:
+        covered = {s.family for s in scenarios}
+        missing = sorted(set(FAMILIES) - covered)
+        if missing:
+            raise ValueError(f"families with no scenario: {missing}")
 
     return scenarios

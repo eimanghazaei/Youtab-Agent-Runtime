@@ -189,6 +189,7 @@ class AuthClient:
         title: Optional[str] = None,
         skills: Optional[Iterable[str]] = None,
         max_runtime_seconds: Optional[int] = None,
+        limits: Optional[Mapping[str, Any]] = None,
         idempotency_key: Optional[str] = None,
     ) -> httpx.Response:
         """POST /runs — create + dispatch a run (signed, optionally idempotent)."""
@@ -203,9 +204,23 @@ class AuthClient:
             payload["skills"] = list(skills)
         if max_runtime_seconds is not None:
             payload["max_runtime_seconds"] = max_runtime_seconds
+        # Authoritative per-run limits (WAVE-30B §8) — the runtime clamps + enforces.
+        if limits:
+            payload["limits"] = dict(limits)
         return self._signed_post(
             f"{_API_PREFIX}/runs", payload, idempotency_key=idempotency_key
         )
+
+    def preflight(self) -> dict[str, Any]:
+        """GET /preflight — the authenticated safety posture used to gate a live
+        run (build SHA, redaction, budget enforcement, ceilings). Raises on a
+        non-200 rather than returning an unverified posture."""
+        resp = self._get(f"{_API_PREFIX}/preflight")
+        if resp.status_code != 200:
+            raise BenchmarkAuthError(
+                f"preflight failed with HTTP {resp.status_code}"
+            )
+        return resp.json()
 
     def get_run(self, run_id: str) -> httpx.Response:
         """GET /runs/{run_id} — durable run detail (principal-scoped, 404 on mismatch)."""
