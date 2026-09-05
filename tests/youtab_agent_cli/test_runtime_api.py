@@ -184,6 +184,59 @@ def _create_run(client, tenant="tenantA", user="userA", task="add 2 and 2", nonc
     return client.post(path, content=body, headers=headers)
 
 
+def _create_run_body(client, body_obj, tenant="tenantA", user="userA", nonce=None):
+    import json
+
+    body = json.dumps(body_obj).encode()
+    path = "/api/runtime/v1/runs"
+    headers = _identity_headers(tenant, user)
+    headers.update(_sign("POST", path, tenant, user, body, nonce=nonce))
+    headers["Content-Type"] = "application/json"
+    return client.post(path, content=body, headers=headers)
+
+
+def test_create_run_persists_clamped_limits_event(client):
+    """WAVE-30B §8: create-run records an authoritative, server-clamped
+    runtime_limits event. Over-ceiling values are clamped down."""
+    r = _create_run_body(
+        client,
+        {
+            "agent": "default",
+            "task": "bounded run",
+            "limits": {
+                "max_iterations": 9999,   # clamped to RUN_CEILINGS
+                "max_requests": 40,
+                "max_total_tokens": 250000,
+                "max_cost_eur": "2.00",
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    headers = _identity_headers()
+    ev = client.get(
+        f"/api/runtime/v1/runs/{run_id}/events?after=0", headers=headers
+    ).json()["events"]
+    limits_events = [e for e in ev if e["kind"] == "runtime_limits"]
+    assert len(limits_events) == 1, ev
+    payload = limits_events[0]["payload"]
+    from youtab_runtime.run_limits import RUN_CEILINGS
+
+    assert payload["max_iterations"] == RUN_CEILINGS["max_iterations"]
+    assert payload["max_requests"] == 40
+    assert payload["max_total_tokens"] == 250000
+    assert payload["max_cost_eur"] == "2.00"
+
+
+def test_create_run_rejects_invalid_limits(client):
+    r = _create_run_body(
+        client,
+        {"agent": "default", "task": "bad", "limits": {"max_iterations": -5}},
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "invalid_limits"
+
+
 def _wait_terminal(client, run_id, headers, timeout=25):
     deadline = time.time() + timeout
     cursor = 0

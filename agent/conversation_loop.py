@@ -1400,6 +1400,22 @@ def _run_conversation_impl(
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
 
+        # Authoritative per-run limit + cost gate (WAVE-30B §8/§10/§11). No-op
+        # for normal runs (no enforcer attached); for a live-benchmark run this
+        # reserves the iteration's worst-case cost BEFORE any provider call and
+        # stops fail-closed at the request/token/failure/budget ceiling.
+        _run_limit_enforcer = getattr(agent, "_run_limit_enforcer", None)
+        if _run_limit_enforcer is not None:
+            try:
+                _limit_stop = _run_limit_enforcer.pre_iteration(api_call_count)
+            except Exception:  # noqa: BLE001 - enforcement must fail CLOSED
+                _limit_stop = "budget_error"
+            if _limit_stop:
+                _turn_exit_reason = f"run_limit:{_limit_stop}"
+                if not agent.quiet_mode:
+                    agent._safe_print(f"\n⛔ Run limit reached ({_limit_stop}); stopping before further provider calls")
+                break
+
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
             try:
@@ -5634,6 +5650,29 @@ def _run_conversation_impl(
                     )
             except Exception:
                 pass
+
+            # Authoritative post-call reconcile for a live-benchmark run (WAVE-30B
+            # §8/§9). No-op when no enforcer is attached. Reconciles the iteration's
+            # reservation against reported usage and accumulates tokens/failures;
+            # any resulting stop is honoured at the next loop-top gate.
+            _run_limit_enforcer = getattr(agent, "_run_limit_enforcer", None)
+            if _run_limit_enforcer is not None:
+                try:
+                    _usage = agent._usage_summary_for_api_request_hook(response) or {}
+                    _in = int(_usage.get("input_tokens") or 0)
+                    _out = int(_usage.get("output_tokens") or 0)
+                    _cr = int(_usage.get("cache_read_tokens") or 0)
+                    _cw = int(_usage.get("cache_write_tokens") or 0)
+                    _run_limit_enforcer.observe_call(
+                        api_call_count=api_call_count,
+                        input_tokens=_in,
+                        output_tokens=_out,
+                        cache_read_tokens=_cr,
+                        cache_write_tokens=_cw,
+                        ok=True,
+                    )
+                except Exception:  # noqa: BLE001 - observation must never break the loop
+                    pass
 
             # Handle assistant response
             if assistant_message.content and not agent.quiet_mode:

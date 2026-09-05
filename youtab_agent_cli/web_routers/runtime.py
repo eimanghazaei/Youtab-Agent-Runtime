@@ -171,6 +171,10 @@ _MODE_EVENT = "runtime_execution_mode"
 # resolved provider/model/override behind that selection.
 _ENGINE_EVENT = "runtime_engine_selection"
 
+# Event recorded at create-run carrying the authoritative, server-clamped per-run
+# limit set (WAVE-30B §8). Numeric limits + max_cost_eur only — never a secret.
+_LIMITS_EVENT = "runtime_limits"
+
 # Event recorded on a retry run naming the original run it was retried from and
 # the preserved correlation id — makes retry lineage explicit and queryable.
 _RETRIED_FROM_EVENT = "runtime_retried_from"
@@ -1125,6 +1129,37 @@ async def runtime_create_run(
     except (TypeError, ValueError):
         max_runtime = None
 
+    # Authoritative, server-clamped per-run limits (WAVE-30B §8). Accepts either a
+    # nested ``limits`` object or the flat top-level fields; validates + clamps to
+    # the server ceilings and refuses invalid values. Runtime enforcement — not
+    # the harness — is the authority; the clamped set is persisted below.
+    from youtab_runtime.run_limits import RunLimitError, RunLimits
+
+    _raw_limits = payload.get("limits")
+    if not isinstance(_raw_limits, dict):
+        _raw_limits = {
+            k: payload.get(k)
+            for k in (
+                "max_input_tokens", "max_output_tokens", "max_total_tokens",
+                "max_iterations", "max_requests", "max_retries",
+                "max_concurrency", "max_cost_eur", "failure_threshold",
+            )
+            if payload.get(k) is not None
+        }
+    try:
+        run_limits = RunLimits.validate_and_clamp(_raw_limits)
+    except RunLimitError as exc:
+        raise HTTPException(
+            status_code=422, detail={"error": "invalid_limits", "reason": str(exc)}
+        ) from exc
+    # max_runtime_seconds is clamped through the same ceiling for one authority.
+    if max_runtime is not None and run_limits.max_runtime_seconds is None:
+        run_limits = RunLimits.validate_and_clamp(
+            {**run_limits.to_dict(), "max_runtime_seconds": max_runtime}
+        )
+    if run_limits.max_runtime_seconds is not None:
+        max_runtime = run_limits.max_runtime_seconds
+
     # Execution mode: real provider-backed model by default. A caller may request
     # the non-production deterministic integration worker with ``deterministic``;
     # it is honoured ONLY when the deterministic worker is enabled (non-prod), so
@@ -1178,6 +1213,10 @@ async def runtime_create_run(
                         "profile_id": engine,
                         "public_label": engine_identity.public_label,
                     })
+                # Persist the authoritative clamped per-run limits (numeric only).
+                _limits_dict = run_limits.to_dict()
+                if _limits_dict:
+                    kb._append_event(conn, run_id, _LIMITS_EVENT, _limits_dict)
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run
