@@ -23,6 +23,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _GATE_SCRIPT = _REPO_ROOT / "scripts" / "youtab" / "run_all_gates.sh"
+_CI_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "youtab-ci.yml"
 
 # The (class, method) pairs that must remain collected. These are the cases that
 # prove the encrypted-reply fix and the inbound-XML hardening; losing any of
@@ -79,3 +80,23 @@ def test_wecom_tests_are_wired_into_required_gate():
             f"{path} is not referenced in {_GATE_SCRIPT.name}; a critical "
             "Gateway security test would not run in required CI"
         )
+
+
+@pytest.mark.skipif(not _CI_WORKFLOW.exists(), reason="CI workflow not present")
+def test_ci_installs_fixed_pynacl_for_the_voice_crypto_gate():
+    """Tie the runtime PyNaCl>=1.6.2 assertion to the CI install.
+
+    test_discord_voice_crypto.py uses importorskip('nacl.secret') and asserts
+    the running PyNaCl is >=1.6.2 — but that only fires if PyNaCl is actually
+    installed in the required job. `pip install -e` does NOT honor the uv
+    override-dependencies pin, so the job installs it explicitly. If that install
+    line is removed, the voice crypto suite would silently SKIP with a green
+    build, losing the belt-and-suspenders check that a vulnerable PyNaCl is not
+    the one exercised. This guard fails closed on that regression.
+    """
+    text = _CI_WORKFLOW.read_text(encoding="utf-8")
+    assert "pynacl==1.6.2" in text.lower(), (
+        "the python-security job must install pynacl==1.6.2 so "
+        "test_discord_voice_crypto.py runs (and asserts the fixed version) "
+        "rather than silently skipping"
+    )

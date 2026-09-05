@@ -284,14 +284,15 @@ class TestWecomEncryptedReplyRoundtrip:
         back = crypt.decrypt(f["MsgSignature"], f["TimeStamp"], f["Nonce"], f["Encrypt"])
         assert back.decode("utf-8") == payload
 
-    def test_ciphertext_field_is_xml_escaped_when_needed(self):
-        # The Encrypt field is base64 (no metacharacters), but assert the builder
-        # escapes rather than concatenates by feeding an angle bracket through a
-        # field we control and re-parsing the whole envelope without error.
+    def test_builder_escapes_metacharacters_in_fields(self):
+        # The Encrypt field is base64 (no metacharacters), so to prove the
+        # builder ESCAPES field text rather than string-concatenating it, feed an
+        # angle bracket through a field we control (Nonce) and require the whole
+        # envelope to still parse and the value to come back intact. A
+        # concatenating builder would emit invalid XML here.
         crypt = _crypt()
         out = crypt.encrypt("<xml><Content><![CDATA[x]]></Content></xml>",
                             nonce="a<b", timestamp="1")
-        # nonce with '<' must come back intact after XML round-trip.
         assert _envelope_fields(out)["Nonce"] == "a<b"
 
     def test_empty_content_roundtrips(self):
@@ -413,11 +414,11 @@ class TestWecomInboundXmlHardening:
             adapter._build_event(_app(), payload)
 
     def test_malformed_xml_rejected(self):
+        # Malformed XML must raise a parse error, not be swallowed into a None
+        # return. defusedxml surfaces the stdlib ParseError.
         adapter = WecomCallbackAdapter(_config())
-        with _pytest.raises(Exception) as exc:
+        with _pytest.raises(ET.ParseError):
             adapter._build_event(_app(), "<xml><Content>no close")
-        # Not a silent None: a parse error propagates.
-        assert exc.type is not None
 
     def test_wellformed_inbound_still_parses(self):
         adapter = WecomCallbackAdapter(_config())
