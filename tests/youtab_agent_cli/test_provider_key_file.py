@@ -150,6 +150,43 @@ def test_custom_getenv_dual_source_fails_closed(tmp_path, monkeypatch):
         runtime_provider._getenv("GLM_API_KEY")
 
 
+@pytest.mark.parametrize("name,is_cred", [
+    ("OPENAI_API_KEY", True),
+    ("DEEPSEEK_API_KEY", True),
+    ("ANTHROPIC_TOKEN", True),
+    ("HF_TOKEN", True),
+    ("GLM_API_KEY", True),
+    ("OPENROUTER_BASE_URL", False),
+    ("CUSTOM_BASE_URL", False),
+    ("AZURE_FOUNDRY_BASE_URL", False),
+    ("YOUTAB_AGENT_YOUTAB_TIMEOUT_SECONDS", False),
+    ("YOUTAB_AGENT_INFERENCE_PROVIDER", False),
+])
+def test_looks_like_credential_env(name, is_cred):
+    assert sf.looks_like_credential_env(name) is is_cred
+
+
+def test_getenv_base_url_not_blocked_in_live_mode(monkeypatch):
+    """NEW-1: a non-credential env var (base URL) must NOT be refused under
+    live-benchmark mode by the generic _getenv reader."""
+    from youtab_agent_cli import runtime_provider
+
+    monkeypatch.setenv("YOUTAB_AGENT_LIVE_BENCHMARK", "1")
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.delenv("OPENROUTER_BASE_URL_FILE", raising=False)
+    assert runtime_provider._getenv("OPENROUTER_BASE_URL") == "https://openrouter.ai/api/v1"
+
+
+def test_getenv_api_key_still_blocked_in_live_mode(monkeypatch):
+    from youtab_agent_cli import runtime_provider
+
+    monkeypatch.setenv("YOUTAB_AGENT_LIVE_BENCHMARK", "1")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-plain-live")
+    monkeypatch.delenv("DEEPSEEK_API_KEY_FILE", raising=False)
+    with pytest.raises(SecretFileError, match="live-benchmark"):
+        runtime_provider._getenv("DEEPSEEK_API_KEY")
+
+
 def test_live_benchmark_helper_reads_flag(monkeypatch):
     monkeypatch.setenv("YOUTAB_AGENT_LIVE_BENCHMARK", "yes")
     assert sf.live_benchmark_file_secrets_required() is True

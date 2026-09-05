@@ -380,14 +380,39 @@ def read_named_key_file_env(
     )
 
 
+def looks_like_credential_env(env_var: str) -> bool:
+    """True only for env-var NAMES that denote a secret credential.
+
+    ``note_plaintext_credential`` is reached from generic readers (e.g.
+    ``runtime_provider._getenv``, which also reads base URLs, timeouts and the
+    provider name), so the plaintext refusal/warning must NOT fire for
+    non-credential vars — otherwise a live benchmark that sets, say,
+    ``OPENROUTER_BASE_URL`` would be wrongly refused. Match clear credential
+    suffixes/substrings and exclude obvious non-secrets.
+    """
+    u = (env_var or "").upper()
+    if not u:
+        return False
+    if u.endswith(("_URL", "_BASE_URL", "_ENDPOINT", "_HOST", "_REGION",
+                   "_PROVIDER", "_MODEL", "_TIMEOUT", "_SECONDS")) or "TIMEOUT" in u:
+        return False
+    return (
+        "API_KEY" in u
+        or "APIKEY" in u
+        or u.endswith(("_KEY", "_TOKEN", "_SECRET"))
+        or "_TOKEN_" in u
+    )
+
+
 def note_plaintext_credential(env_var: str, *, log=None) -> None:
     """Enforce/observe legacy plaintext-environment credential use.
 
     In live-benchmark mode a plaintext provider credential is refused (file-based
     delivery is mandatory). Otherwise it is allowed for backwards compatibility
-    but emits a one-time non-secret warning naming ONLY the variable.
+    but emits a one-time non-secret warning naming ONLY the variable. No-ops for
+    non-credential env names (see :func:`looks_like_credential_env`).
     """
-    if not env_var:
+    if not env_var or not looks_like_credential_env(env_var):
         return
     if live_benchmark_file_secrets_required():
         raise SecretFileError(

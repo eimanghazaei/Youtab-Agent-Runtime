@@ -1242,6 +1242,13 @@ def _run_conversation_impl(
         _bench_campaign = (os.environ.get("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID") or "").strip()
         if _bench_campaign:
             _bench_run_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+            if not _bench_run_id:
+                # A campaign is configured but this process has no run id to bind
+                # the budget to — refuse rather than call a paid provider unbudgeted.
+                raise RuntimeError(
+                    "live-benchmark campaign configured but YOUTAB_AGENT_KANBAN_TASK "
+                    "is unset — cannot attach a per-run budget enforcer; refusing"
+                )
             if _bench_run_id:
                 from youtab_runtime.run_limits import (
                     attach_enforcer_from_environment,
