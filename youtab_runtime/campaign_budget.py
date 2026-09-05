@@ -462,7 +462,20 @@ def reconcile(
         if actual_eur is None:
             actual_str = None  # unknown usage: keep the reservation counted
         else:
-            actual_str = str(_to_decimal(actual_eur, field="actual_eur"))
+            _actual_d = _to_decimal(actual_eur, field="actual_eur")
+            actual_str = str(_actual_d)
+            # A reconciled actual exceeding the reservation means the pre-call
+            # worst-case (× retry multiplier) under-estimated this call. The
+            # committed total absorbs the true amount and the NEXT reserve fails
+            # closed at the ceiling, but flag it so the miscalibration is visible.
+            if _actual_d > Decimal(existing["reserved_eur"]):
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "campaign_budget: reconciled actual €%s exceeds reservation €%s "
+                    "for %s (raise the reservation worst-case / retry multiplier)",
+                    _actual_d, existing["reserved_eur"], existing["reservation_id"],
+                )
         conn.execute(
             "UPDATE reservation SET actual_eur = ?, state = 'reconciled', "
             "reconciled_at = ? WHERE reservation_id = ?",

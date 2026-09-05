@@ -251,7 +251,8 @@ def test_preflight_reports_safe_posture_and_leaks_no_secret(client):
     ):
         assert key in body, f"missing {key}: {body}"
     assert body["redaction_enabled"] is True
-    assert body["budget_enforcement_enabled"] is True
+    # Honest attestation: no campaign configured in this test env => not armed.
+    assert body["budget_enforcement_enabled"] is False
     assert body["hard_campaign_ceiling_eur"] == "10.00"
     assert body["run_limit_ceilings"]["max_iterations"] >= 1
     # the service secret must never appear anywhere in the response
@@ -260,6 +261,15 @@ def test_preflight_reports_safe_posture_and_leaks_no_secret(client):
 
 def test_preflight_requires_auth(client):
     assert client.get("/api/runtime/v1/preflight").status_code == 401
+
+
+def test_preflight_budget_armed_when_campaign_configured(client, monkeypatch):
+    """H1: budget_enforcement_enabled reflects real state — True only when a
+    campaign is configured, so the attestation cannot read green while off."""
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "campaign-xyz")
+    body = client.get("/api/runtime/v1/preflight", headers=_identity_headers()).json()
+    assert body["budget_enforcement_enabled"] is True
+    assert body["campaign_id"] == "campaign-xyz"
 
 
 def _wait_terminal(client, run_id, headers, timeout=25):

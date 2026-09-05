@@ -174,3 +174,120 @@ def test_snapshot_shape(ledger):
     snap = e.snapshot()
     assert snap.requests_made == 1
     assert snap.stopped_reason is None
+
+
+def test_per_run_cost_cap_stops_before_campaign_ceiling(ledger):
+    # Run cap €0.10, worst_case €0.06 -> 2nd reservation would exceed the run cap
+    # even though the €10 campaign still has room.
+    e = _enforcer(ledger, RunLimits(max_cost_eur="0.10"), worst_case="0.06")
+    assert e.pre_iteration(1) is None
+    assert e.pre_iteration(2) == "run_cost_cap"
+
+
+def test_note_failure_trips_threshold(ledger):
+    e = _enforcer(ledger, RunLimits(failure_threshold=2))
+    e.pre_iteration(1)
+    assert e.note_failure() is None
+    assert e.note_failure() == "failure_threshold"
+    assert e.total_failures == 2
+
+
+def test_within_iteration_retry_actuals_sum_not_overwrite(ledger):
+    # M3: two observe_calls for the same iteration accumulate (0.10 + 0.10) rather
+    # than the second overwriting the first.
+    e = _enforcer(ledger, RunLimits(), worst_case="4.00", actual="0.10")
+    e.pre_iteration(1)
+    e.observe_call(api_call_count=1, input_tokens=10, output_tokens=10)
+    e.observe_call(api_call_count=1, input_tokens=10, output_tokens=10)
+    # reservation 4.00 replaced by summed actual 0.20 -> remaining 9.80
+    assert cb.remaining_eur("camp", db_path=ledger) == Decimal("9.80")
+
+
+def test_attach_wires_enforcer_and_clamps_iterations(ledger, monkeypatch):
+    from youtab_runtime import run_limits as rl
+
+    class _Agent:
+        model = "m"
+        provider = "p"
+        max_iterations = 500
+
+    # stub the pricing bridges so no real pricing engine is needed
+    monkeypatch.setattr(cb, "price_worst_case_eur", lambda *a, **k: Decimal("0.05"))
+    monkeypatch.setattr(cb, "price_actual_eur", lambda *a, **k: Decimal("0.01"))
+
+    agent = _Agent()
+    enf = rl.attach_run_limit_enforcer(
+        agent,
+        limits=RunLimits(max_iterations=8, max_cost_eur="2.00", max_retries=1),
+        run_id="runX",
+        campaign_id="campX",
+        fx_usd_to_eur="0.86",
+        fx_source="t",
+        fx_asof="d",
+        model="m",
+        provider="p",
+        db_path=ledger,
+    )
+    assert agent._run_limit_enforcer is enf
+    assert agent.max_iterations == 8            # clamped from 500
+    assert enf.retry_multiplier == 2            # 1 + max_retries(1)
+    assert enf.pre_iteration(1) is None         # reserves fine under the run cap
+
+
+def test_attach_from_environment_noop_without_campaign(monkeypatch):
+    from youtab_runtime import run_limits as rl
+
+    class _Agent:
+        model = "m"
+        provider = "p"
+        max_iterations = 50
+
+    monkeypatch.delenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", raising=False)
+    assert rl.attach_enforcer_from_environment(
+        _Agent(), run_id="r", limits_dict={"max_iterations": 5}
+    ) is None
+
+
+def test_attach_from_environment_end_to_end_stops_at_budget_ceiling(ledger, monkeypatch):
+    """Integration: env-configured campaign -> enforcer wired -> the run stops
+    fail-closed at the campaign ceiling (the loop-top gate breaks on this reason)."""
+    from youtab_runtime import run_limits as rl
+
+    class _Agent:
+        model = "m"
+        provider = "p"
+        max_iterations = 500
+
+    monkeypatch.setattr(cb, "price_worst_case_eur", lambda *a, **k: Decimal("4.00"))
+    monkeypatch.setattr(cb, "price_actual_eur", lambda *a, **k: Decimal("4.00"))
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "camp")  # reuse the tmp ledger campaign
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_FX_USD_EUR", "1.0")
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_FX_SOURCE", "test")
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_FX_ASOF", "2026-09-05")
+    # point the helper at the tmp ledger by monkeypatching the default db path
+    monkeypatch.setattr(cb, "_default_db_path", lambda: __import__("pathlib").Path(ledger))
+
+    agent = _Agent()
+    enf = rl.attach_enforcer_from_environment(
+        agent, run_id="run1", limits_dict={"max_iterations": 10}
+    )
+    assert enf is not None and agent._run_limit_enforcer is enf
+    assert enf.pre_iteration(1) is None       # reserve 4.00
+    assert enf.pre_iteration(2) is None       # reserve 8.00 (total 8.00)
+    assert enf.pre_iteration(3) == "budget_ceiling"  # 12.00 > €10 -> fail closed
+
+
+def test_attach_from_environment_fails_closed_without_fx(monkeypatch):
+    from youtab_runtime import run_limits as rl
+
+    class _Agent:
+        model = "m"
+        provider = "p"
+        max_iterations = 50
+
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "campE")
+    monkeypatch.delenv("YOUTAB_AGENT_BENCHMARK_FX_USD_EUR", raising=False)
+    with pytest.raises(RunLimitError, match="FX snapshot"):
+        rl.attach_enforcer_from_environment(
+            _Agent(), run_id="r", limits_dict={"max_iterations": 5}
+        )

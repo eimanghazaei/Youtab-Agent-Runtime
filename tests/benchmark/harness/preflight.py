@@ -90,12 +90,13 @@ def _parts_lower(path: Path) -> list[str]:
 def validate_output_dir(out: Path, *, repo_root: Path, force: bool = False) -> Path:
     """Validate the artifact output directory. Raises :class:`PreflightError` on
     an unsafe location; creates it owner-only and writes a retention marker."""
-    out = Path(out)
-    if not out.is_absolute():
-        out = (Path.cwd() / out).resolve()
-    # Not a symlink.
-    if out.is_symlink():
-        raise PreflightError(f"output dir {out} is a symlink — refused")
+    raw = Path(out)
+    # Reject a symlinked FINAL component before resolving, then resolve the whole
+    # path (following any symlinked PARENT) so containment/cloud checks see the
+    # real target — a symlinked parent cannot smuggle artifacts back into the repo.
+    if raw.is_symlink():
+        raise PreflightError(f"output dir {raw} is a symlink — refused")
+    out = raw.resolve() if raw.is_absolute() else (Path.cwd() / raw).resolve()
     # Outside the repo working tree.
     try:
         out.relative_to(repo_root.resolve())
@@ -161,10 +162,26 @@ def verify_runtime_sha(
     """
     if not expected_sha:
         raise PreflightError("no authorized SHA supplied (--expected-sha) — refusing live run")
+    # The authorized SHA must be a full or a deliberately-long (>=12) hex prefix the
+    # OPERATOR supplies. A short/typo'd value that could match a broad commit set is
+    # refused. The value being verified (build_sha / HEAD) is NEVER allowed to be a
+    # prefix of expected_sha — otherwise the runtime under test could report a
+    # 1-char SHA and satisfy the pin (H2/A#3).
+    exp = expected_sha.strip().lower()
+    if len(exp) < 12 or any(c not in "0123456789abcdef" for c in exp):
+        raise PreflightError(
+            f"authorized SHA {expected_sha!r} must be a >=12-char hex commit id"
+        )
+
+    def _matches(reported: str) -> bool:
+        r = (reported or "").strip().lower()
+        if len(r) < 40 or any(c not in "0123456789abcdef" for c in r):
+            return False  # reported build must be a full 40-hex commit id
+        return r == exp or r.startswith(exp)
+
     build_sha = (preflight or {}).get("build_sha")
     if build_sha:
-        if not (build_sha == expected_sha or build_sha.startswith(expected_sha)
-                or expected_sha.startswith(build_sha)):
+        if not _matches(build_sha):
             raise PreflightError(
                 f"runtime build SHA {build_sha!r} != authorized {expected_sha!r}"
             )
@@ -176,8 +193,7 @@ def verify_runtime_sha(
             "runtime reported no build SHA and local git HEAD is unavailable — "
             "cannot verify the runtime is the authorized build"
         )
-    if not (head == expected_sha or head.startswith(expected_sha)
-            or expected_sha.startswith(head)):
+    if not _matches(head):
         raise PreflightError(
             f"local runtime HEAD {head!r} != authorized {expected_sha!r}"
         )
@@ -185,7 +201,13 @@ def verify_runtime_sha(
         status = _git(["status", "--porcelain"], cwd=repo_root)
         if status is None:
             raise PreflightError("could not determine worktree cleanliness — refusing")
-        dirty = [ln for ln in status.splitlines() if ln.strip() and "scratchpad/" not in ln]
+        # Only an UNTRACKED top-level scratchpad/ is ignored (porcelain "?? scratchpad/…").
+        # Any modified/renamed TRACKED file — including a nested path merely
+        # containing "scratchpad" — still marks the worktree dirty.
+        dirty = [
+            ln for ln in status.splitlines()
+            if ln.strip() and not ln.startswith("?? scratchpad/")
+        ]
         if dirty:
             raise PreflightError(
                 f"source worktree is not clean ({len(dirty)} change(s)) — refusing live run"
@@ -203,3 +225,11 @@ def assert_live_safety(preflight: Mapping[str, Any]) -> None:
         raise PreflightError("runtime budget enforcement is disabled — refusing")
     if p.get("no_production_dataset") is not True:
         raise PreflightError("runtime reports a production dataset selected — refusing")
+    # A live-benchmark runtime MUST source the provider key from a file (strict
+    # tier), never a plaintext environment value — compensating gate for any read
+    # path that might not itself refuse plaintext under live-benchmark mode (A#1).
+    if p.get("live_benchmark_mode") is True and p.get("provider_credential_source") != "file":
+        raise PreflightError(
+            "live-benchmark mode requires a file-based provider credential "
+            f"(provider_credential_source={p.get('provider_credential_source')!r}) — refusing"
+        )

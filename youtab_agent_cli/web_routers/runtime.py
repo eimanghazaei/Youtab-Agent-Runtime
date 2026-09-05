@@ -954,7 +954,11 @@ async def runtime_preflight(
         "provider": names["provider"],
         "provider_credential_source": _provider_credential_source(names["provider"]),
         "redaction_enabled": _redaction_enabled(),
-        "budget_enforcement_enabled": True,
+        # Honest attestation: budget enforcement is ARMED only when a campaign is
+        # configured, in which case every worker fails closed unless it can build a
+        # RunLimitEnforcer against the durable ledger. No campaign => not enforced,
+        # and the harness's assert_live_safety refuses the live run.
+        "budget_enforcement_enabled": bool(campaign_id),
         "live_benchmark_mode": live_benchmark,
         "campaign_id": campaign_id,
         "campaign_ceiling_eur": campaign_ceiling_eur,

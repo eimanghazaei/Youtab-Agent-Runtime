@@ -67,6 +67,12 @@ def _getenv(name: str, default: str = "") -> str:
         if _file_val is not None:
             return _file_val
     val = _get_secret(name, default)
+    # A plaintext-environment credential warns once, and is REFUSED under
+    # live-benchmark mode (file-based delivery is mandatory) — WAVE-30B A#1.
+    if name and val and val != default:
+        from youtab_agent_cli import secret_file as _sf
+
+        _sf.note_plaintext_credential(name)
     return val if val is not None else default
 
 
@@ -704,18 +710,25 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             # itself gains <key_env>_FILE support via _getenv) > inline api_key.
             from youtab_agent_cli import secret_file as _sf
 
-            resolved_api_key = (
+            _file_key = (
                 _sf.read_named_key_file_env(
                     str(entry.get("api_key_file_env", "") or "").strip()
                 )
                 or ""
             ).strip()
+            _inline_key = str(entry.get("api_key", "") or "").strip()
+            if _file_key and _inline_key:
+                raise _sf.SecretFileError(
+                    "custom provider sets both api_key_file_env and an inline "
+                    "api_key — refusing an ambiguous secret source"
+                )
+            resolved_api_key = _file_key
             if not resolved_api_key:
                 key_env = str(entry.get("key_env", "") or "").strip()
                 resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when neither file nor key_env resolves
             if not resolved_api_key:
-                resolved_api_key = str(entry.get("api_key", "") or "").strip()
+                resolved_api_key = _inline_key
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
@@ -1136,14 +1149,20 @@ def _resolve_named_custom_runtime(
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
     from youtab_agent_cli import secret_file as _sf
 
+    _cp_file_key = (
+        _sf.read_named_key_file_env(
+            str(custom_provider.get("api_key_file_env", "") or "").strip()
+        )
+        or ""
+    ).strip()
+    if _cp_file_key and str(custom_provider.get("api_key", "") or "").strip():
+        raise _sf.SecretFileError(
+            "custom provider sets both api_key_file_env and an inline api_key "
+            "— refusing an ambiguous secret source"
+        )
     api_key_candidates = [
         (explicit_api_key or "").strip(),
-        (
-            _sf.read_named_key_file_env(
-                str(custom_provider.get("api_key_file_env", "") or "").strip()
-            )
-            or ""
-        ).strip(),
+        _cp_file_key,
         str(custom_provider.get("api_key", "") or "").strip(),
         _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         # Gate provider env keys on their authoritative hosts — sending

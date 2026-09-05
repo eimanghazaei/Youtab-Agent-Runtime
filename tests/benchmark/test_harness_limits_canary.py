@@ -148,9 +148,20 @@ def test_output_dir_ok_writes_retention(tmp_path):
 # --- SHA / worktree gate ----------------------------------------------------
 
 
+_SHA = "dfd4063c108297c268ade3c9527deceeb92447b2"       # 40-hex
+_OTHER = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"     # 40-hex, different
+
+
 def test_verify_sha_container_match():
     pf.verify_runtime_sha(
-        {"build_sha": "abc123def456"}, expected_sha="abc123def456",
+        {"build_sha": _SHA}, expected_sha=_SHA,
+        repo_root=_REPO_ROOT, require_clean_worktree=False,
+    )
+
+
+def test_verify_sha_container_match_long_operator_prefix():
+    pf.verify_runtime_sha(
+        {"build_sha": _SHA}, expected_sha=_SHA[:16],  # deliberate >=12 operator prefix
         repo_root=_REPO_ROOT, require_clean_worktree=False,
     )
 
@@ -158,33 +169,75 @@ def test_verify_sha_container_match():
 def test_verify_sha_container_mismatch():
     with pytest.raises(pf.PreflightError, match="!= authorized"):
         pf.verify_runtime_sha(
-            {"build_sha": "aaaaaaaa"}, expected_sha="bbbbbbbb",
+            {"build_sha": _OTHER}, expected_sha=_SHA,
+            repo_root=_REPO_ROOT, require_clean_worktree=False,
+        )
+
+
+def test_verify_sha_rejects_short_reported_build(monkeypatch):
+    # H2/A#3: a runtime reporting a 1-char SHA must NOT satisfy the pin.
+    with pytest.raises(pf.PreflightError, match="!= authorized"):
+        pf.verify_runtime_sha(
+            {"build_sha": _SHA[0]}, expected_sha=_SHA,
+            repo_root=_REPO_ROOT, require_clean_worktree=False,
+        )
+
+
+def test_verify_sha_rejects_too_short_expected():
+    with pytest.raises(pf.PreflightError, match=">=12-char hex"):
+        pf.verify_runtime_sha(
+            {"build_sha": _SHA}, expected_sha="dfd4",
             repo_root=_REPO_ROOT, require_clean_worktree=False,
         )
 
 
 def test_verify_sha_source_head(monkeypatch):
-    monkeypatch.setattr(pf, "_git", lambda args, cwd: "headsha123" if args[0] == "rev-parse" else "")
+    monkeypatch.setattr(pf, "_git", lambda args, cwd: _SHA if args[0] == "rev-parse" else "")
     pf.verify_runtime_sha(
-        {}, expected_sha="headsha123", repo_root=_REPO_ROOT, require_clean_worktree=True,
+        {}, expected_sha=_SHA, repo_root=_REPO_ROOT, require_clean_worktree=True,
     )
 
 
 def test_verify_sha_source_dirty_worktree(monkeypatch):
     def fake_git(args, cwd):
         if args[0] == "rev-parse":
-            return "headsha123"
-        return " M some_file.py"  # dirty
+            return _SHA
+        return " M some_file.py"  # dirty tracked file
     monkeypatch.setattr(pf, "_git", fake_git)
     with pytest.raises(pf.PreflightError, match="not clean"):
         pf.verify_runtime_sha(
-            {}, expected_sha="headsha123", repo_root=_REPO_ROOT, require_clean_worktree=True,
+            {}, expected_sha=_SHA, repo_root=_REPO_ROOT, require_clean_worktree=True,
+        )
+
+
+def test_verify_sha_source_untracked_scratchpad_is_clean(monkeypatch):
+    # B-L1: an untracked top-level scratchpad/ does NOT make the worktree dirty,
+    # but a tracked path merely containing "scratchpad" DOES.
+    def fake_git(args, cwd):
+        if args[0] == "rev-parse":
+            return _SHA
+        return "?? scratchpad/notes.md"
+    monkeypatch.setattr(pf, "_git", fake_git)
+    pf.verify_runtime_sha(
+        {}, expected_sha=_SHA, repo_root=_REPO_ROOT, require_clean_worktree=True,
+    )
+
+
+def test_verify_sha_source_tracked_scratchpad_is_dirty(monkeypatch):
+    def fake_git(args, cwd):
+        if args[0] == "rev-parse":
+            return _SHA
+        return " M src/scratchpad/foo.py"  # tracked, modified
+    monkeypatch.setattr(pf, "_git", fake_git)
+    with pytest.raises(pf.PreflightError, match="not clean"):
+        pf.verify_runtime_sha(
+            {}, expected_sha=_SHA, repo_root=_REPO_ROOT, require_clean_worktree=True,
         )
 
 
 def test_verify_sha_requires_expected():
     with pytest.raises(pf.PreflightError, match="no authorized SHA"):
-        pf.verify_runtime_sha({"build_sha": "x"}, expected_sha="", repo_root=_REPO_ROOT)
+        pf.verify_runtime_sha({"build_sha": _SHA}, expected_sha="", repo_root=_REPO_ROOT)
 
 
 # --- live-safety posture asserts -------------------------------------------
@@ -211,6 +264,23 @@ def test_assert_live_safety_refuses_bad_posture(key):
     posture[key] = False
     with pytest.raises(pf.PreflightError):
         pf.assert_live_safety(posture)
+
+
+def test_assert_live_safety_requires_file_credential_in_live_mode():
+    # A#1 compensating gate: live-benchmark mode demands a file-based provider key.
+    posture = _good_posture()
+    posture["live_benchmark_mode"] = True
+    posture["provider_credential_source"] = "env"
+    with pytest.raises(pf.PreflightError, match="file-based provider credential"):
+        pf.assert_live_safety(posture)
+    posture["provider_credential_source"] = "file"
+    pf.assert_live_safety(posture)  # ok
+
+
+def test_assert_live_safety_no_file_requirement_outside_live_mode():
+    posture = _good_posture()  # no live_benchmark_mode key => not live
+    posture["provider_credential_source"] = "env"
+    pf.assert_live_safety(posture)  # tolerated when not a live-benchmark run
 
 
 # --- auth_client sends limits ----------------------------------------------

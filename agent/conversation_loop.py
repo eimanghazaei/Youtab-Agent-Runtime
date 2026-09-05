@@ -1230,6 +1230,41 @@ def _run_conversation_impl(
             logger.warning(
                 "WAVE-26 run-observer registration failed", exc_info=True
             )
+
+    # WAVE-30B: attach the authoritative per-run limit + shared €10 campaign-budget
+    # enforcer for a LIVE-BENCHMARK worker. No-op unless a campaign is configured in
+    # the environment (YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID) — normal runs are wholly
+    # unaffected. Reads the run's server-clamped limits from its persisted
+    # ``runtime_limits`` event. FAIL-CLOSED: when a campaign IS configured but the
+    # enforcer cannot be built (missing FX, unpriceable model, ledger error), the
+    # run aborts HERE rather than calling a paid provider unbudgeted.
+    if not getattr(agent, "_run_limit_enforcer", None):
+        _bench_campaign = (os.environ.get("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID") or "").strip()
+        if _bench_campaign:
+            _bench_run_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+            if _bench_run_id:
+                from youtab_runtime.run_limits import (
+                    attach_enforcer_from_environment,
+                )
+
+                _limits_dict: dict = {}
+                try:
+                    from youtab_agent_cli import kanban_db as _kb
+
+                    with _kb.connect_closing() as _conn:
+                        for _e in _kb.list_events(_conn, _bench_run_id):
+                            if getattr(_e, "kind", None) == "runtime_limits" and isinstance(
+                                getattr(_e, "payload", None), dict
+                            ):
+                                _limits_dict = dict(_e.payload)
+                except Exception as _exc:  # noqa: BLE001
+                    raise RuntimeError(
+                        "live-benchmark campaign configured but the run's limits "
+                        f"could not be read: {_exc}"
+                    ) from _exc
+                attach_enforcer_from_environment(
+                    agent, run_id=_bench_run_id, limits_dict=_limits_dict
+                )
     if moa_config is None:
         try:
             from youtab_agent_cli.moa_config import decode_moa_turn
@@ -3504,6 +3539,14 @@ def _run_conversation_impl(
                 break
 
             except Exception as api_error:
+                # WAVE-30B: feed the per-run failure-threshold gate (no-op unless a
+                # live-benchmark enforcer is attached; never touches the ledger).
+                _rle = getattr(agent, "_run_limit_enforcer", None)
+                if _rle is not None:
+                    try:
+                        _rle.note_failure()
+                    except Exception:  # noqa: BLE001 - accounting must not mask the API error
+                        pass
                 # Stop spinner silently — retry status is buffered and
                 # only flushed when every retry+fallback is exhausted.
                 if thinking_spinner:

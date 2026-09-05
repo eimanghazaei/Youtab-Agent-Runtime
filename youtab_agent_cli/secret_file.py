@@ -297,7 +297,13 @@ def env_or_file(
             allowed_uids=allowed_uids,
             forbid_repo_and_cloud=forbid_repo_and_cloud,
         )
-    return os.getenv(name, default)
+    inline = os.getenv(name, default)
+    # When a caller opts into the strict tier (provider keys / benchmark creds) but
+    # only a plaintext-environment value is present, warn once — and refuse under
+    # live-benchmark mode (file-based delivery is mandatory) — WAVE-30B A#1.
+    if require_secure_perms and inline and inline != default:
+        note_plaintext_credential(name)
+    return inline
 
 
 # ---------------------------------------------------------------------------
