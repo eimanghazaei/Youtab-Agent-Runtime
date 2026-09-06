@@ -164,6 +164,37 @@ def _endpoint_for_provider(provider: str) -> str:
     return _ENDPOINT_DEFAULT_BY_PROVIDER.get(p, "")
 
 
+def inference_base_url_for_local_provider(provider: str) -> str:
+    """The OpenAI-compatible *inference* base_url for a local model server.
+
+    :func:`_endpoint_for_provider` returns the server *root* the availability
+    probe uses (Ollama's ``/api/tags`` lives at the root). The OpenAI-compatible
+    inference surface is under ``/v1``; append it when absent so a worker's
+    OpenAI client dials ``/v1/chat/completions`` rather than the bare root
+    (which 404s). This derives a local engine's *execution* endpoint from the
+    same protected env its availability probe + attestation used.
+
+    The worker provider resolver consumes this for the local providers that
+    route through its OpenAI-compatible "custom" path — ``ollama``, ``vllm``,
+    ``llamacpp`` (``resolve_provider(...) == "custom"``). ``lmstudio`` is a
+    member of :data:`LOCAL_SERVER_PROVIDERS` (it is a local server for the
+    availability probe) but resolves inference via its OWN provider-registry
+    path, not through this helper.
+
+    Returns ``""`` for a non-local provider or an unauthorised / unresolved
+    endpoint (public host without opt-in, credentials-in-URL, malformed) — the
+    caller then fails closed rather than falling back to a cloud default.
+    """
+    p = (provider or "").strip().lower()
+    if p not in LOCAL_SERVER_PROVIDERS:
+        return ""
+    root = _endpoint_for_provider(p)
+    if not root:
+        return ""
+    root = root.rstrip("/")
+    return root if root.endswith("/v1") else root + "/v1"
+
+
 def normalize_endpoint(url: str) -> str:
     """The host:port *target* identity for comparison — path is deliberately dropped.
 
