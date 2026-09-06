@@ -177,15 +177,24 @@ class HttpRuntimeSeam:
         _max_runtime = None
         if self._limits and self._limits.get("max_runtime_seconds") is not None:
             _max_runtime = int(self._limits["max_runtime_seconds"])
-        # Engine binding: a scenario-level engine wins; otherwise the track's
-        # bound engine (Track A ``eco.v01``). Fail CLOSED when an engine is
-        # required but none resolves — never silently run the worker default.
+        # Engine binding. Fail CLOSED when an engine is required but none resolves
+        # (never run the worker default) AND when a scenario tries to override the
+        # attested track engine (the live gate verified only the bound engine, so
+        # a per-scenario engine must not silently dispatch an unattested one).
         engine = scenario.engine or self._engine
-        if self._require_engine and not engine:
-            raise RuntimeError(
-                "local_runtime requires a bound engine (Track A eco.v01); none "
-                "resolved — refusing to dispatch on the worker's default model"
-            )
+        if self._require_engine:
+            if not engine:
+                raise RuntimeError(
+                    "local_runtime requires a bound engine (Track A eco.v01); none "
+                    "resolved — refusing to dispatch on the worker's default model"
+                )
+            if self._engine and scenario.engine and scenario.engine != self._engine:
+                raise RuntimeError(
+                    f"scenario engine {scenario.engine!r} conflicts with the bound "
+                    f"track engine {self._engine!r} — refusing to dispatch an "
+                    "unattested engine"
+                )
+            engine = self._engine  # the attested engine is authoritative
         resp = self._client.create_run(
             agent=scenario.params.get("agent", "default"),
             task=scenario.params.get("task", scenario.title),

@@ -39,6 +39,12 @@ from youtab_agent_cli import agent_identity
 # on infrastructure the Owner controls.
 _ALLOW_PUBLIC_ENDPOINT_ENV = "YOUTAB_ECO_ALLOW_PUBLIC_ENDPOINT"
 _TAILNET_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+# 6to4 (2002::/16) and Teredo (2001::/32) IPv6 literals embed a PUBLIC IPv4
+# destination yet report ``is_private`` — treat them as public (fail closed).
+_V6_PUBLIC_TUNNELS = (
+    ipaddress.ip_network("2002::/16"),
+    ipaddress.ip_network("2001::/32"),
+)
 
 # Providers whose availability is a reachability probe against a model server
 # (as opposed to an external-credential presence check). Kept in step with
@@ -132,6 +138,8 @@ def endpoint_is_authorized(url: str) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False  # a hostname, not an IP — not an authorised target
+    if isinstance(ip, ipaddress.IPv6Address) and any(ip in n for n in _V6_PUBLIC_TUNNELS):
+        return _public_endpoint_allowed()  # 6to4/Teredo embed a public dest
     if ip.is_loopback or ip.is_private or ip.is_link_local:
         return True
     if ip in _TAILNET_CGNAT:

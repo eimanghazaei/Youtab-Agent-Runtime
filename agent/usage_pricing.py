@@ -44,6 +44,12 @@ LOCAL_ZERO_PROVIDERS = frozenset(
 _LOCAL_ZERO_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 # The Owner's self-hosted inference box can sit on the Tailscale CGNAT range.
 _LOCAL_ZERO_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+# 6to4 (2002::/16) and Teredo (2001::/32) IPv6 literals embed a PUBLIC IPv4
+# destination yet report ``is_private`` in the stdlib — never treat them as local.
+_LOCAL_ZERO_V6_PUBLIC_TUNNELS = (
+    ipaddress.ip_network("2002::/16"),
+    ipaddress.ip_network("2001::/32"),
+)
 
 
 def is_verified_local_zero_endpoint(base_url: Optional[str]) -> bool:
@@ -78,6 +84,10 @@ def is_verified_local_zero_endpoint(base_url: Optional[str]) -> bool:
         ip = ipaddress.ip_address(host)
     except ValueError:
         return False  # a hostname, not an IP literal — never €0
+    if isinstance(ip, ipaddress.IPv6Address) and any(
+        ip in n for n in _LOCAL_ZERO_V6_PUBLIC_TUNNELS
+    ):
+        return False  # 6to4/Teredo embed a public IPv4 dest — not local
     if ip.is_loopback or ip.is_private or ip.is_link_local:
         return True
     return ip in _LOCAL_ZERO_CGNAT

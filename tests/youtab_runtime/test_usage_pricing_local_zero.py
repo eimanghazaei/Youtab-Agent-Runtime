@@ -49,6 +49,8 @@ def test_verified_local_endpoint_accepts_local_targets(url):
     "http://evil.example.com:11434",     # bare hostname -> never trusted
     "http://ollama.local:11434",         # dot-less-ish hostname (not an IP literal)
     "http://user:pass@127.0.0.1:11434",  # credentials-in-URL
+    "http://[2002:0808:0808::]:11434",   # 6to4 embedding public 8.8.8.8
+    "http://[2001::1]:11434",            # Teredo
     "",                                   # empty
     "not a url",
 ])

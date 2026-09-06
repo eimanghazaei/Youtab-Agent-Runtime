@@ -412,11 +412,25 @@ def test_preflight_engine_attestation_missing_model_tag(client, monkeypatch):
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     r = _preflight(client, engine="eco.v01")
     assert r.status_code == 200, r.text
-    att = r.json()["engine_attestation"]
+    body = r.json()
+    att = body["engine_attestation"]
     assert att["model"] is None
     assert att["model_identifier_status"] == "OWNER_MODEL_IDENTIFIER_REQUIRED"
     # No concrete model => no digest probe.
     assert att["ollama_digest_status"] == "not_applicable"
+    # An unresolved model must NOT report budget enforcement armed (M1 / R2 nit):
+    # the run cannot proceed, so the posture is honest.
+    assert body["budget_enforcement_enabled"] is False
+
+
+def test_preflight_nonopen_campaign_is_not_armed(client, monkeypatch):
+    # A stale/never-opened campaign id must not read budget-armed (M1): the worker
+    # would fail closed on reserve, so a false-green preflight is refused.
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "does-not-exist")
+    body = _preflight(client).json()
+    assert body["remaining_eur"] is None
+    assert body["budget_enforcement_enabled"] is False
+    assert body["budget_enforcement_source"] == "none"
 
 
 def test_preflight_public_endpoint_is_not_local_zero(client, monkeypatch):
@@ -473,6 +487,9 @@ def test_endpoint_class_classifies_hosts():
     assert runtime._endpoint_class("http://8.8.8.8:11434") == "public"
     assert runtime._endpoint_class("http://ollama.example.com:11434") == "hostname"
     assert runtime._endpoint_class("") == "unavailable"
+    # 6to4 / Teredo embed a public dest -> classified public, never verified-local.
+    assert runtime._endpoint_class("http://[2002:0808:0808::]:11434") == "public"
+    assert runtime._endpoint_class("http://[2001::1]:11434") == "public"
 
 
 def test_ollama_digest_probe_fails_closed_when_unreachable():

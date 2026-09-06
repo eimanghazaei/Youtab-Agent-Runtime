@@ -196,6 +196,12 @@ def _run(args) -> int:
               "(--track A); refusing to run on the worker's default model",
               file=sys.stderr)
         return 6
+    # An engine-bound (local) track cannot run as a cloud real_provider — a
+    # nonsensical mode/track mix that must be rejected, not silently accepted.
+    if track_engine and args.mode == MODE_REAL_PROVIDER:
+        print("FATAL: an engine-bound track (--track A) cannot run "
+              "--mode real_provider; use --mode local_runtime", file=sys.stderr)
+        return 6
 
     # Live-run safety gate (WAVE-30B §12/§13): validate the output dir and verify
     # the runtime is the authorized build with a sound safety posture BEFORE any

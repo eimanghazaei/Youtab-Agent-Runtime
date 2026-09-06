@@ -127,11 +127,36 @@ def test_seam_refuses_local_run_without_bound_engine(tmp_path):
         seam.close()
 
 
+def test_seam_refuses_scenario_engine_conflicting_with_bound_engine(tmp_path):
+    from tests.benchmark.harness.seam import HttpRuntimeSeam
+
+    seam = HttpRuntimeSeam(
+        "http://127.0.0.1:1", "x" * 50, tenant="t", user="u",
+        engine="eco.v01", require_engine=True,
+    )
+    scenario = types.SimpleNamespace(engine="amour.v03", params={}, title="t",
+                                     mode="deterministic")
+    try:
+        with pytest.raises(RuntimeError):
+            seam.run(scenario, home=tmp_path, workspace=tmp_path,
+                     tenant="t", user="u", run_id="r1")
+    finally:
+        seam.close()
+
+
 def test_cli_refuses_local_runtime_without_engine_bound_track(tmp_path):
     from tests.benchmark.harness.cli import main
 
     out = tmp_path / "out"  # value irrelevant; guard fires before dir validation
     rc = main(["run", "--mode", "local_runtime", "--out", str(out)])
+    assert rc == 6
+
+
+def test_cli_refuses_engine_bound_track_under_real_provider(tmp_path):
+    from tests.benchmark.harness.cli import main
+
+    out = tmp_path / "out"
+    rc = main(["run", "--mode", "real_provider", "--track", "A", "--out", str(out)])
     assert rc == 6
 
 

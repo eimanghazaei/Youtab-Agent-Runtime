@@ -895,6 +895,13 @@ def _provider_credential_source(provider: Optional[str]) -> str:
 
 _CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
 _LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+# 6to4 (2002::/16) and Teredo (2001::/32) IPv6 literals embed a PUBLIC IPv4
+# destination yet report ``is_private`` in the stdlib — treat them as public so
+# they can never be classified as a verified-local target.
+_V6_PUBLIC_TUNNELS = (
+    ipaddress.ip_network("2002::/16"),
+    ipaddress.ip_network("2001::/32"),
+)
 
 
 def _endpoint_class(url: Optional[str]) -> str:
@@ -922,6 +929,8 @@ def _endpoint_class(url: Optional[str]) -> str:
         return "hostname"
     if ip.is_loopback:
         return "loopback"
+    if isinstance(ip, ipaddress.IPv6Address) and any(ip in n for n in _V6_PUBLIC_TUNNELS):
+        return "public"  # 6to4/Teredo embed a public IPv4 dest
     if ip.is_link_local:
         return "link_local"
     if ip in _CGNAT_NET:
@@ -981,6 +990,11 @@ def _engine_attestation(engine: str) -> Optional[Dict[str, Any]]:
     endpoint), local-vs-cloud, the resolved provider-cost policy, and — for a
     verified-local Ollama engine — the model manifest digest. ``None`` for an
     unknown/unbound engine (a fail-closed state the caller surfaces as such).
+
+    Note: ``model``/``model_ref`` carry the Owner-supplied concrete tag. This is
+    only returned on this authenticated SERVICE surface (``require_service_identity``)
+    to the operator who set it — the gateway must NOT forward these fields to an
+    end-user surface (see ``agent_identity``'s tag-confidentiality principle).
     """
     conn = engine_connection.resolve_connection(engine)
     if conn is None:
@@ -1005,6 +1019,13 @@ def _engine_attestation(engine: str) -> Optional[Dict[str, Any]]:
         model_ref = None
         model_status = "OWNER_MODEL_IDENTIFIER_REQUIRED"
 
+    # Cost policy is decided from provider+endpoint (the same inputs the pricing
+    # layer's ``classify_local_zero`` uses). The €0 branch in ``estimate_usage_cost``
+    # only fires when the model has NO pricing entry; for a local Ollama tag that is
+    # always the case (Ollama's /v1/models advertises no prices), so the two agree.
+    # If a local model were ever given an explicit override/custom-contract entry,
+    # that entry would price the call and this policy label would be optimistic —
+    # not a concern for ECO, which carries no such entry.
     if local_zero:
         cost_policy = "local_zero_verified"
     elif is_local:
@@ -1116,15 +1137,20 @@ async def runtime_preflight(
         if attestation is None:
             engine_error = "unknown_or_unbound_engine"
     cost_policy = (attestation or {}).get("provider_cost_policy")
+    model_status = (attestation or {}).get("model_identifier_status")
 
-    # Budget enforcement is honestly ARMED when EITHER a cloud campaign is
-    # configured (worker fails closed unless it can build a RunLimitEnforcer
-    # against the durable €10 ledger) OR the requested engine resolves to a
-    # verified local-zero cost policy (every call priced at exactly €0 via the
-    # verified-local path, and any non-local/unknown model still fails closed).
-    # The local-zero arm needs no campaign and no FX snapshot — a €0 conversion
-    # requires neither, so none is fabricated (WAVE-30D §B5).
-    budget_enforced = bool(campaign_id) or cost_policy == "local_zero_verified"
+    # Budget enforcement is honestly ARMED only when it can actually enforce:
+    #  * campaign arm — a campaign id is set AND that campaign is genuinely OPEN
+    #    (``remaining_eur`` resolved). A stale/never-opened id must not read armed
+    #    (M1): the worker would fail closed on reserve, and a false-green preflight
+    #    would erode the "budget armed before the first call" guarantee.
+    #  * local-zero arm — the engine resolves to a verified local-zero cost policy
+    #    AND its model is actually RESOLVED (an unset YOUTAB_ECO_MODEL cannot run,
+    #    so it must not report armed). Needs no campaign and no FX snapshot — a €0
+    #    conversion requires neither, so none is fabricated (WAVE-30D §B5).
+    campaign_armed = bool(campaign_id) and remaining_eur is not None
+    local_zero_armed = cost_policy == "local_zero_verified" and model_status == "resolved"
+    budget_enforced = campaign_armed or local_zero_armed
 
     return {
         "ok": True,
@@ -1138,8 +1164,8 @@ async def runtime_preflight(
         "redaction_enabled": _redaction_enabled(),
         "budget_enforcement_enabled": budget_enforced,
         "budget_enforcement_source": (
-            "campaign_ledger" if campaign_id
-            else ("local_zero_verified" if cost_policy == "local_zero_verified" else "none")
+            "campaign_ledger" if campaign_armed
+            else ("local_zero_verified" if local_zero_armed else "none")
         ),
         "live_benchmark_mode": live_benchmark,
         "campaign_id": campaign_id,
