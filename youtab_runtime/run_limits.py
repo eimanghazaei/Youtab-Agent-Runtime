@@ -59,6 +59,14 @@ _INT_FIELDS = (
     "failure_threshold",
 )
 
+# Integer limits for which ZERO is a semantically valid value (a disabled
+# feature) rather than an invalid non-positive limit. ``max_retries=0`` means
+# "retries disabled" — it is exactly what the Stage-1 canary profile requests
+# (one request, no retry). Every OTHER integer limit still requires a strictly
+# positive value (a run with zero iterations/requests/tokens is meaningless).
+# Negative values remain invalid for all fields, here included.
+_ZERO_ALLOWED_INT_FIELDS = frozenset({"max_retries"})
+
 
 class RunLimitError(ValueError):
     """A per-run limit set is invalid (negative, non-numeric, ...)."""
@@ -97,11 +105,22 @@ class RunLimits:
         for field in _INT_FIELDS:
             if field not in raw or raw[field] is None:
                 continue
+            rawval = raw[field]
+            # ``bool`` is an int subclass, but True/False is never a valid limit
+            # value — reject it as a non-integer rather than silently coercing to
+            # 1/0 (which would let ``max_iterations=True`` mean one iteration).
+            if isinstance(rawval, bool):
+                raise RunLimitError(f"{field} must be an integer")
             try:
-                iv = int(raw[field])
+                iv = int(rawval)
             except (TypeError, ValueError) as exc:
                 raise RunLimitError(f"{field} must be an integer") from exc
-            if iv <= 0:
+            # max_retries=0 is valid ("retries disabled"); it rejects only
+            # negatives. Every other integer limit requires a positive value.
+            if field in _ZERO_ALLOWED_INT_FIELDS:
+                if iv < 0:
+                    raise RunLimitError(f"{field} must be >= 0")
+            elif iv <= 0:
                 raise RunLimitError(f"{field} must be positive")
             ceiling = RUN_CEILINGS.get(field)
             values[field] = min(iv, ceiling) if ceiling is not None else iv
