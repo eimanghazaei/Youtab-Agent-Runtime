@@ -307,19 +307,35 @@ def test_create_run_with_known_engine_records_selection_and_overrides(client, mo
 
     monkeypatch.setattr(kb, "create_task_ex", _spy)
 
+    # WAVE-30D §B1: the ECO local engine must be pinned to the Owner-supplied
+    # concrete model tag (never the committed placeholder). Set it for the happy
+    # path; the fail-closed-when-unset path is covered separately below.
+    _eco_tag = "youtab-qwen35-9b-agent-64k:latest"
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", _eco_tag)
+
     r = _create_run(client, engine="eco.v01")
     assert r.status_code == 200, r.text
     run_id = r.json()["run_id"]
 
-    # bound engine drives the model/provider override into create_task
-    assert captured.get("model_override") == "qwen3.5:9b"
+    # bound engine drives the Owner-supplied model + provider override into create_task
+    assert captured.get("model_override") == _eco_tag
     assert captured.get("provider_override") == "ollama"
 
     # the consumer-safe selection is recorded and surfaced in detail
     detail = client.get(f"/api/runtime/v1/runs/{run_id}", headers=_identity_headers()).json()
     assert detail["engine_selection"] == {"profile_id": "eco.v01", "public_label": "Eco v.01"}
     # detail must not leak the resolved provider/model behind the selection
-    assert "qwen3.5:9b" not in json.dumps(detail["engine_selection"])
+    assert _eco_tag not in json.dumps(detail["engine_selection"])
+    assert "ollama" not in json.dumps(detail["engine_selection"])
+
+
+def test_create_run_eco_without_model_tag_fails_closed(client, monkeypatch):
+    # WAVE-30D §B1: without YOUTAB_ECO_MODEL the ECO engine has only the committed
+    # placeholder; create-run must refuse rather than silently run it.
+    monkeypatch.delenv("YOUTAB_ECO_MODEL", raising=False)
+    r = _create_run(client, engine="eco.v01")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "eco_model_unconfigured"
 
 
 def test_create_run_unknown_engine_is_422(client):
@@ -348,3 +364,118 @@ def test_create_run_without_engine_is_unchanged(client, monkeypatch):
     assert captured.get("provider_override") is None
     detail = client.get(f"/api/runtime/v1/runs/{run_id}", headers=_identity_headers()).json()
     assert detail["engine_selection"] is None
+
+
+# --------------------------------------------------------------------------
+# WAVE-30D §B3: preflight engine attestation (effective binding + cost policy)
+# --------------------------------------------------------------------------
+
+_ECO_TAG = "youtab-qwen35-9b-agent-64k:latest"
+_ECO_DIGEST = "b7b9afeaf023a549a9e6fc7960694f3c32fc490d415bbdf1751e2f390cf4ae48"
+
+
+def _preflight(client, *, engine=None):
+    params = {"engine": engine} if engine else None
+    return client.get("/api/runtime/v1/preflight", headers=_identity_headers(),
+                      params=params)
+
+
+def test_preflight_engine_attestation_local_zero(client, monkeypatch):
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", _ECO_TAG)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)  # -> loopback default
+    monkeypatch.setattr(runtime, "_ollama_model_digest",
+                        lambda endpoint, model: (_ECO_DIGEST, "verified_present"))
+
+    r = _preflight(client, engine="eco.v01")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    att = body["engine_attestation"]
+    assert att["engine_profile"] == "eco.v01"
+    assert att["provider"] == "ollama"
+    assert att["model"] == _ECO_TAG
+    assert att["model_identifier_status"] == "resolved"
+    assert att["execution"] == "local"
+    assert att["endpoint_class"] == "loopback"
+    assert att["endpoint_authorized"] is True
+    assert att["provider_cost_policy"] == "local_zero_verified"
+    assert att["ollama_model_digest"] == _ECO_DIGEST
+    assert att["ollama_digest_status"] == "verified_present"
+    # Budget enforcement is honestly ARMED via the local-zero policy — no campaign,
+    # no FX fabricated (WAVE-30D §B5).
+    assert body["budget_enforcement_enabled"] is True
+    assert body["budget_enforcement_source"] == "local_zero_verified"
+    assert body["no_production_dataset"] is True
+
+
+def test_preflight_engine_attestation_missing_model_tag(client, monkeypatch):
+    monkeypatch.delenv("YOUTAB_ECO_MODEL", raising=False)
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+    r = _preflight(client, engine="eco.v01")
+    assert r.status_code == 200, r.text
+    att = r.json()["engine_attestation"]
+    assert att["model"] is None
+    assert att["model_identifier_status"] == "OWNER_MODEL_IDENTIFIER_REQUIRED"
+    # No concrete model => no digest probe.
+    assert att["ollama_digest_status"] == "not_applicable"
+
+
+def test_preflight_public_endpoint_is_not_local_zero(client, monkeypatch):
+    # A public endpoint (no opt-in) resolves to no endpoint => not local-zero.
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", _ECO_TAG)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://8.8.8.8:11434")
+    monkeypatch.delenv("YOUTAB_ECO_ALLOW_PUBLIC_ENDPOINT", raising=False)
+    att = _preflight(client, engine="eco.v01").json()["engine_attestation"]
+    assert att["execution"] == "local"
+    assert att["endpoint_authorized"] is False
+    assert att["provider_cost_policy"] != "local_zero_verified"
+    assert _preflight(client, engine="eco.v01").json()["budget_enforcement_enabled"] is False
+
+
+def test_preflight_authorized_public_endpoint_still_not_local_zero(client, monkeypatch):
+    # Even WITH the public opt-in, a public IP is metered/cloud-shaped — it must
+    # never be classified as free local inference (WAVE-30D §B2 adversarial).
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", _ECO_TAG)
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://8.8.8.8:11434")
+    monkeypatch.setenv("YOUTAB_ECO_ALLOW_PUBLIC_ENDPOINT", "1")
+    att = _preflight(client, engine="eco.v01").json()["engine_attestation"]
+    assert att["endpoint_authorized"] is True
+    assert att["endpoint_class"] == "public"
+    assert att["provider_cost_policy"] == "unpriced"
+    assert att["ollama_digest_status"] == "not_applicable"
+
+
+def test_preflight_unknown_engine_reports_attestation_error(client):
+    body = _preflight(client, engine="ghost.v99").json()
+    assert body["engine_attestation"] is None
+    assert body["engine_attestation_error"] == "unknown_or_unbound_engine"
+
+
+def test_preflight_without_engine_is_backward_compatible(client, monkeypatch):
+    monkeypatch.delenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", raising=False)
+    body = _preflight(client).json()
+    assert body["engine_attestation"] is None
+    assert body["engine_attestation_error"] is None
+    assert body["budget_enforcement_enabled"] is False  # no campaign, no engine
+    assert body["service_ready"] is True
+    assert body["redaction_enabled"] is True
+
+
+# --------------------------------------------------------------------------
+# WAVE-30D: attestation helper units (no app needed)
+# --------------------------------------------------------------------------
+
+def test_endpoint_class_classifies_hosts():
+    assert runtime._endpoint_class("http://127.0.0.1:11434") == "loopback"
+    assert runtime._endpoint_class("http://localhost:11434") == "loopback"
+    assert runtime._endpoint_class("http://192.168.1.5:11434") == "private"
+    assert runtime._endpoint_class("http://169.254.1.1:11434") == "link_local"
+    assert runtime._endpoint_class("http://100.108.46.86:11434") == "cgnat"
+    assert runtime._endpoint_class("http://8.8.8.8:11434") == "public"
+    assert runtime._endpoint_class("http://ollama.example.com:11434") == "hostname"
+    assert runtime._endpoint_class("") == "unavailable"
+
+
+def test_ollama_digest_probe_fails_closed_when_unreachable():
+    # Unreachable/empty endpoints must fail closed, never raise.
+    assert runtime._ollama_model_digest("http://127.0.0.1:1", "m") == (None, "probe_failed")
+    assert runtime._ollama_model_digest("", "m") == (None, "probe_failed")

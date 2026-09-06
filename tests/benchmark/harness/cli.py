@@ -37,6 +37,7 @@ from typing import List, Optional
 from .preflight import (
     STAGE_PROFILES,
     PreflightError,
+    assert_engine_attestation,
     assert_live_safety,
     validate_output_dir,
     verify_runtime_sha,
@@ -127,7 +128,8 @@ def _select_scenarios(scenarios: List[Scenario], args) -> List[Scenario]:
     return selected
 
 
-def _build_seam(args, repo_root: Path, limits: Optional[dict]):
+def _build_seam(args, repo_root: Path, limits: Optional[dict], *,
+                engine: Optional[str] = None, require_engine: bool = False):
     if args.mode == MODE_DETERMINISTIC:
         return None  # runner builds the deterministic substrate seam
     if not args.base_url or not args.secret_file:
@@ -137,7 +139,8 @@ def _build_seam(args, repo_root: Path, limits: Optional[dict]):
 
     secret = _read_secret_file(Path(args.secret_file))
     return HttpRuntimeSeam(
-        args.base_url, secret, tenant=args.tenant, user=args.user, limits=limits)
+        args.base_url, secret, tenant=args.tenant, user=args.user, limits=limits,
+        engine=engine, require_engine=require_engine)
 
 
 def _run(args) -> int:
@@ -169,6 +172,31 @@ def _run(args) -> int:
     if args.canary:
         args.max_workers = 1
 
+    # Load the dual-track contract EARLY (before the seam) so a live Track A run
+    # can bind the track's engine profile (WAVE-30D §B1). ``track_prov`` is the
+    # per-record provenance stamp (WAVE-30C §2); ``track_engine`` is the engine
+    # the live seam pins.
+    track = None
+    track_prov = None
+    track_engine = None
+    if args.track:
+        from .tracks import ComparabilityError, load_track, track_provenance
+        try:
+            track = load_track(args.track)
+        except ComparabilityError as exc:
+            print(f"FATAL: --track rejected: {exc}", file=sys.stderr)
+            return 6
+        track_prov = track_provenance(track)
+        track_engine = (track.get("per_track", {}) or {}).get("engine_profile")
+
+    # A live local_runtime run MUST bind an engine (Track A eco.v01) — never
+    # dispatch on the worker's default model (WAVE-30D §B1).
+    if args.mode == MODE_LOCAL_RUNTIME and not track_engine:
+        print("FATAL: --mode local_runtime requires an engine-bound track "
+              "(--track A); refusing to run on the worker's default model",
+              file=sys.stderr)
+        return 6
+
     # Live-run safety gate (WAVE-30B §12/§13): validate the output dir and verify
     # the runtime is the authorized build with a sound safety posture BEFORE any
     # provider call.
@@ -185,7 +213,8 @@ def _run(args) -> int:
                   file=sys.stderr)
             return 6
 
-    seam = _build_seam(args, repo_root, limits)
+    seam = _build_seam(args, repo_root, limits, engine=track_engine,
+                       require_engine=(args.mode == MODE_LOCAL_RUNTIME))
 
     if is_live and seam is not None:
         try:
@@ -197,6 +226,14 @@ def _run(args) -> int:
                 repo_root=repo_root,
                 require_clean_worktree=args.require_clean_worktree,
             )
+            # Verify the runtime's EFFECTIVE engine binding matches the Track A
+            # contract before the first task (engine/provider/model/endpoint-class/
+            # cost-policy + optional model digest) — fail closed on any mismatch.
+            if args.mode == MODE_LOCAL_RUNTIME and track is not None:
+                assert_engine_attestation(
+                    posture, track,
+                    expected_model_digest=args.expected_model_digest,
+                )
         except PreflightError as exc:
             seam.close()
             print(f"FATAL: preflight refused the live run: {exc}", file=sys.stderr)
@@ -204,20 +241,6 @@ def _run(args) -> int:
         except Exception as exc:  # noqa: BLE001 - any preflight failure is fatal
             seam.close()
             print(f"FATAL: preflight could not be verified: {exc}", file=sys.stderr)
-            return 6
-
-    # Per-track provenance stamp (WAVE-30C §2). When --track is given, every
-    # record is tagged with the track/provider/model identity; the comparability
-    # contract guarantees the two tracks share the identical bank/limits/scoring.
-    track_prov = None
-    if args.track:
-        from .tracks import ComparabilityError, load_track, track_provenance
-        try:
-            track_prov = track_provenance(load_track(args.track))
-        except ComparabilityError as exc:
-            print(f"FATAL: --track rejected: {exc}", file=sys.stderr)
-            if seam is not None:
-                seam.close()
             return 6
 
     recorder = Recorder(Path(args.out))
@@ -332,6 +355,10 @@ def build_parser() -> argparse.ArgumentParser:
                      help="durable campaign id for the shared €10 budget ledger")
     run.add_argument("--expected-sha", default=None,
                      help="authorized runtime build SHA (required for a live run)")
+    run.add_argument("--expected-model-digest", default=None,
+                     help="Owner-supplied full 64-hex Ollama model manifest digest; "
+                          "when set, a live Track A run verifies the runtime-attested "
+                          "digest matches EXACTLY (no-prefix) before dispatch")
     run.add_argument("--require-clean-worktree", dest="require_clean_worktree",
                      action="store_true", default=True)
     run.add_argument("--no-require-clean-worktree", dest="require_clean_worktree",

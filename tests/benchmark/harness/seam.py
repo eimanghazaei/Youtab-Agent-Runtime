@@ -141,7 +141,8 @@ class HttpRuntimeSeam:
 
     def __init__(self, base_url: str, service_secret: str, *, tenant: str,
                  user: str, roles=("member",), timeout: float = 60.0,
-                 limits: dict | None = None) -> None:
+                 limits: dict | None = None, engine: str | None = None,
+                 require_engine: bool = False) -> None:
         from youtab_runtime.run_journal import Principal
         from .auth_client import AuthClient
 
@@ -152,10 +153,19 @@ class HttpRuntimeSeam:
         self.user = user
         # Authoritative per-run limits sent on every create_run (WAVE-30B §8).
         self._limits = dict(limits) if limits else None
+        # Track-level engine binding (WAVE-30D §B1). When set, every create_run
+        # pins this engine (e.g. Track A ``eco.v01``) unless the scenario carries
+        # its own; ``require_engine`` makes a missing binding fail closed rather
+        # than dispatch on the worker's default model.
+        self._engine = (engine or "").strip() or None
+        self._require_engine = bool(require_engine)
 
     def preflight(self) -> dict:
-        """The runtime's authenticated safety posture (for the live-run gate)."""
-        return self._client.preflight()
+        """The runtime's authenticated safety posture (for the live-run gate).
+
+        Passes the bound engine so the posture carries the effective per-engine
+        attestation the live gate verifies."""
+        return self._client.preflight(engine=self._engine)
 
     def close(self) -> None:
         self._client.close()
@@ -167,10 +177,19 @@ class HttpRuntimeSeam:
         _max_runtime = None
         if self._limits and self._limits.get("max_runtime_seconds") is not None:
             _max_runtime = int(self._limits["max_runtime_seconds"])
+        # Engine binding: a scenario-level engine wins; otherwise the track's
+        # bound engine (Track A ``eco.v01``). Fail CLOSED when an engine is
+        # required but none resolves — never silently run the worker default.
+        engine = scenario.engine or self._engine
+        if self._require_engine and not engine:
+            raise RuntimeError(
+                "local_runtime requires a bound engine (Track A eco.v01); none "
+                "resolved — refusing to dispatch on the worker's default model"
+            )
         resp = self._client.create_run(
             agent=scenario.params.get("agent", "default"),
             task=scenario.params.get("task", scenario.title),
-            engine=scenario.engine,
+            engine=engine,
             max_runtime_seconds=_max_runtime,
             limits=self._limits,
             idempotency_key=scenario.params.get("idempotency_key"),
@@ -193,7 +212,7 @@ class HttpRuntimeSeam:
             workspace=workspace, pre_hash=hash_tree(workspace),
             self_reported_success=bool(detail.get("result")),
             reported_usage=detail.get("usage"),
-            timings={}, engine_pinned=scenario.engine,
+            timings={}, engine_pinned=engine,
             provenance={"seam": self.name},
         )
 

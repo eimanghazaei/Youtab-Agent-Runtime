@@ -211,11 +211,14 @@ class AuthClient:
             f"{_API_PREFIX}/runs", payload, idempotency_key=idempotency_key
         )
 
-    def preflight(self) -> dict[str, Any]:
+    def preflight(self, *, engine: Optional[str] = None) -> dict[str, Any]:
         """GET /preflight — the authenticated safety posture used to gate a live
-        run (build SHA, redaction, budget enforcement, ceilings). Raises on a
+        run (build SHA, redaction, budget enforcement, ceilings). When ``engine``
+        is given it is passed as a query param so the runtime returns the
+        effective per-engine binding attestation (WAVE-30D §B3). Raises on a
         non-200 rather than returning an unverified posture."""
-        resp = self._get(f"{_API_PREFIX}/preflight")
+        params = {"engine": engine} if engine else None
+        resp = self._get(f"{_API_PREFIX}/preflight", params=params)
         if resp.status_code != 200:
             raise BenchmarkAuthError(
                 f"preflight failed with HTTP {resp.status_code}"

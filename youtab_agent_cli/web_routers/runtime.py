@@ -39,12 +39,14 @@ existence).
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -891,8 +893,165 @@ def _provider_credential_source(provider: Optional[str]) -> str:
     return "absent"
 
 
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+_LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+
+def _endpoint_class(url: Optional[str]) -> str:
+    """Classify an endpoint host for attestation (no raw endpoint is exposed).
+
+    Returns one of loopback|private|link_local|cgnat|public|hostname|unavailable|
+    invalid. A bare hostname is reported as ``hostname`` (never trusted as local).
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return "unavailable"
+    if not raw.startswith("http"):
+        raw = "http://" + raw
+    try:
+        host = (urlparse(raw).hostname or "").lower().rstrip(".")
+    except Exception:  # noqa: BLE001
+        return "invalid"
+    if not host:
+        return "invalid"
+    if host in _LOOPBACK_NAMES:
+        return "loopback"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return "hostname"
+    if ip.is_loopback:
+        return "loopback"
+    if ip.is_link_local:
+        return "link_local"
+    if ip in _CGNAT_NET:
+        return "cgnat"
+    if ip.is_private:
+        return "private"
+    return "public"
+
+
+def _ollama_model_digest(endpoint: Optional[str], model: str) -> Tuple[Optional[str], str]:
+    """Fail-closed probe of a local Ollama server for ``model``'s manifest digest.
+
+    Reads GET ``/api/tags`` and returns the matching model's 64-hex sha256 manifest
+    digest (``sha256:`` prefix stripped) with status ``verified_present``. Never
+    raises; a probe/parse failure yields ``(None, "probe_failed")`` and a missing
+    tag yields ``(None, "model_not_found")``. Only ever called for a verified-local
+    endpoint. Module-level so tests can monkeypatch it without a live server.
+    """
+    raw = (endpoint or "").strip().rstrip("/")
+    if not raw:
+        return (None, "probe_failed")
+    if raw.endswith("/v1"):
+        raw = raw[:-3]
+    try:
+        import httpx
+
+        with httpx.Client(timeout=3.0) as client:
+            resp = client.get(f"{raw}/api/tags")
+        if resp.status_code != 200:
+            return (None, "probe_failed")
+        data = resp.json()
+    except Exception:  # noqa: BLE001 — a probe failure must never break preflight
+        return (None, "probe_failed")
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        return (None, "probe_failed")
+    want = (model or "").strip()
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or entry.get("model") or "")
+        if name == want:
+            digest = str(entry.get("digest") or "").strip().lower()
+            if digest.startswith("sha256:"):
+                digest = digest[len("sha256:"):]
+            if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+                return (digest, "verified_present")
+            return (None, "probe_failed")
+    return (None, "model_not_found")
+
+
+def _engine_attestation(engine: str) -> Optional[Dict[str, Any]]:
+    """Resolve the effective engine binding for an authenticated pre-run check.
+
+    Returns the attestation the harness verifies BEFORE the first task: the
+    effective engine/provider/model, an endpoint CLASSIFICATION (never the raw
+    endpoint), local-vs-cloud, the resolved provider-cost policy, and — for a
+    verified-local Ollama engine — the model manifest digest. ``None`` for an
+    unknown/unbound engine (a fail-closed state the caller surfaces as such).
+    """
+    conn = engine_connection.resolve_connection(engine)
+    if conn is None:
+        return None
+    from agent import usage_pricing as _up
+
+    provider = conn.provider
+    endpoint = conn.endpoint  # internal — classified, never returned raw
+    is_local = conn.is_local_server()
+    authorized = engine_connection.endpoint_is_authorized(endpoint) if is_local else True
+    local_zero = _up.classify_local_zero(provider, endpoint)
+
+    model: Optional[str] = conn.model
+    model_status = "resolved"
+    model_ref: Optional[str] = conn.model_ref
+    # ECO must be pinned to the Owner-supplied concrete tag; when it is not
+    # configured the resolved value is only the committed placeholder — report it
+    # as required-but-absent and do not present the placeholder as the effective
+    # model (the harness then refuses to dispatch).
+    if engine == agent_identity.ECO_PROFILE_ID and not agent_identity.eco_model_configured():
+        model = None
+        model_ref = None
+        model_status = "OWNER_MODEL_IDENTIFIER_REQUIRED"
+
+    if local_zero:
+        cost_policy = "local_zero_verified"
+    elif is_local:
+        cost_policy = "unpriced"  # local provider but endpoint not verified-local
+    else:
+        cost_policy = "campaign_budget_eur"
+
+    att: Dict[str, Any] = {
+        "engine_profile": engine,
+        "engine_bound": True,
+        "provider": provider,
+        "model": model,
+        "model_ref": model_ref,
+        "model_identifier_status": model_status,
+        "execution": "local" if is_local else "cloud",
+        "endpoint_class": _endpoint_class(endpoint) if is_local else "cloud",
+        "endpoint_authorized": bool(authorized),
+        "provider_cost_policy": cost_policy,
+    }
+    if provider == "ollama" and local_zero and model:
+        digest, dstatus = _ollama_model_digest(endpoint, model)
+        att["ollama_model_digest"] = digest
+        att["ollama_digest_status"] = dstatus
+    else:
+        att["ollama_model_digest"] = None
+        att["ollama_digest_status"] = "not_applicable"
+    return att
+
+
+def _no_production_dataset() -> bool:
+    """The benchmark plane never selects a production/customer dataset.
+
+    This is an invariant of the plane (only synthetic scenarios are dispatched),
+    but it is reported through a real gate rather than a bare literal: an explicit
+    opt-in env would have to be set to ever admit production data, and setting it
+    flips this to False so the harness's live-safety gate refuses the run.
+    """
+    return not _is_truthy_env("YOUTAB_AGENT_ALLOW_PRODUCTION_DATASET")
+
+
+def _is_truthy_env(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @router.get("/api/runtime/v1/preflight")
 async def runtime_preflight(
+    request: Request,
     identity: RuntimeIdentity = Depends(require_service_identity),
 ):
     """Authenticated live-benchmark preflight (WAVE-30B §12).
@@ -944,6 +1103,29 @@ async def runtime_preflight(
     except Exception:  # noqa: BLE001
         audit_available = False
 
+    # Optional per-engine attestation (WAVE-30D §B3). When the harness asks for a
+    # specific engine (``?engine=eco.v01``) the runtime resolves the EFFECTIVE
+    # binding it would execute and reports it so the harness can verify the exact
+    # engine/provider/model/endpoint-class/cost-policy BEFORE the first task, and
+    # refuse on any mismatch. Absent the param, behaviour is unchanged.
+    engine_param = (request.query_params.get("engine") or "").strip()
+    attestation: Optional[Dict[str, Any]] = None
+    engine_error: Optional[str] = None
+    if engine_param:
+        attestation = _engine_attestation(engine_param)
+        if attestation is None:
+            engine_error = "unknown_or_unbound_engine"
+    cost_policy = (attestation or {}).get("provider_cost_policy")
+
+    # Budget enforcement is honestly ARMED when EITHER a cloud campaign is
+    # configured (worker fails closed unless it can build a RunLimitEnforcer
+    # against the durable €10 ledger) OR the requested engine resolves to a
+    # verified local-zero cost policy (every call priced at exactly €0 via the
+    # verified-local path, and any non-local/unknown model still fails closed).
+    # The local-zero arm needs no campaign and no FX snapshot — a €0 conversion
+    # requires neither, so none is fabricated (WAVE-30D §B5).
+    budget_enforced = bool(campaign_id) or cost_policy == "local_zero_verified"
+
     return {
         "ok": True,
         "service_ready": True,
@@ -954,11 +1136,11 @@ async def runtime_preflight(
         "provider": names["provider"],
         "provider_credential_source": _provider_credential_source(names["provider"]),
         "redaction_enabled": _redaction_enabled(),
-        # Honest attestation: budget enforcement is ARMED only when a campaign is
-        # configured, in which case every worker fails closed unless it can build a
-        # RunLimitEnforcer against the durable ledger. No campaign => not enforced,
-        # and the harness's assert_live_safety refuses the live run.
-        "budget_enforcement_enabled": bool(campaign_id),
+        "budget_enforcement_enabled": budget_enforced,
+        "budget_enforcement_source": (
+            "campaign_ledger" if campaign_id
+            else ("local_zero_verified" if cost_policy == "local_zero_verified" else "none")
+        ),
         "live_benchmark_mode": live_benchmark,
         "campaign_id": campaign_id,
         "campaign_ceiling_eur": campaign_ceiling_eur,
@@ -966,10 +1148,11 @@ async def runtime_preflight(
         "hard_campaign_ceiling_eur": str(CAMPAIGN_CEILING_EUR),
         "run_limit_ceilings": dict(RUN_CEILINGS),
         "audit_available": audit_available,
-        # The benchmark uses only synthetic scenarios; no production/customer
-        # dataset is ever selected on this plane.
-        "no_production_dataset": True,
+        "no_production_dataset": _no_production_dataset(),
         "auth_required": True,
+        # Per-engine effective-binding attestation (None unless ?engine= given).
+        "engine_attestation": attestation,
+        "engine_attestation_error": engine_error,
     }
 
 
@@ -1239,6 +1422,25 @@ async def runtime_create_run(
         bound = agent_identity.engine_binding_for_profile(engine)
         if bound:
             provider_override, model_override = bound
+
+        # WAVE-30D B1 (fail CLOSED): the ECO local engine (Track A) must be
+        # pinned to the Owner-supplied concrete model tag. Its committed binding
+        # is only a provider-neutral placeholder, so without YOUTAB_ECO_MODEL a
+        # run would silently execute the placeholder. Refuse before dispatch —
+        # never a silent downgrade to the placeholder or the worker default. The
+        # tag itself is never echoed (only its presence is checked).
+        if engine == agent_identity.ECO_PROFILE_ID and not agent_identity.eco_model_configured():
+            raise HTTPException(
+                status_code=422, detail={"error": "eco_model_unconfigured"}
+            )
+        # A local-server engine must resolve to a concrete provider+model pin;
+        # it must never dispatch on the worker's profile-default model (that
+        # would falsely attribute the run to the branded engine).
+        _pin = engine_connection.resolve_connection(engine)
+        if _pin is not None and _pin.is_local_server() and not (bound and model_override):
+            raise HTTPException(
+                status_code=422, detail={"error": "engine_unbound"}
+            )
 
         # Split-brain guard (fail CLOSED): a local-server engine (e.g. ECO on an
         # on-prem Ollama) must execute against the SAME server its availability
