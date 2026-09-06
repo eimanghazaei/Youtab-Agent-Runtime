@@ -263,13 +263,34 @@ def test_preflight_requires_auth(client):
     assert client.get("/api/runtime/v1/preflight").status_code == 401
 
 
-def test_preflight_budget_armed_when_campaign_configured(client, monkeypatch):
-    """H1: budget_enforcement_enabled reflects real state — True only when a
-    campaign is configured, so the attestation cannot read green while off."""
+def test_preflight_budget_armed_when_campaign_configured(client, tmp_path, monkeypatch):
+    """budget_enforcement_enabled reflects REAL state (WAVE-30D M1): armed only
+    when the campaign is actually OPEN in the durable ledger — not merely when a
+    campaign id is configured (a stale/never-opened id would fail closed at
+    reserve, so it must not read green here)."""
+    from youtab_runtime import campaign_budget as cb
+
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
     monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "campaign-xyz")
+    cb.open_campaign(
+        "campaign-xyz", ceiling_eur="10.00", fx_usd_to_eur="0.92",
+        fx_source="test-fixture", fx_asof="2026-09-06",
+    )
     body = client.get("/api/runtime/v1/preflight", headers=_identity_headers()).json()
     assert body["budget_enforcement_enabled"] is True
+    assert body["budget_enforcement_source"] == "campaign_ledger"
     assert body["campaign_id"] == "campaign-xyz"
+    assert body["remaining_eur"] is not None
+
+
+def test_preflight_configured_but_unopened_campaign_is_not_armed(client, tmp_path, monkeypatch):
+    """A configured-but-never-opened campaign must NOT read armed (WAVE-30D M1)."""
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "never-opened")
+    body = client.get("/api/runtime/v1/preflight", headers=_identity_headers()).json()
+    assert body["remaining_eur"] is None
+    assert body["budget_enforcement_enabled"] is False
+    assert body["budget_enforcement_source"] == "none"
 
 
 def _wait_terminal(client, run_id, headers, timeout=25):
