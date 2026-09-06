@@ -943,43 +943,23 @@ def _endpoint_class(url: Optional[str]) -> str:
 def _ollama_model_digest(endpoint: Optional[str], model: str) -> Tuple[Optional[str], str]:
     """Fail-closed probe of a local Ollama server for ``model``'s manifest digest.
 
-    Reads GET ``/api/tags`` and returns the matching model's 64-hex sha256 manifest
-    digest (``sha256:`` prefix stripped) with status ``verified_present``. Never
-    raises; a probe/parse failure yields ``(None, "probe_failed")`` and a missing
-    tag yields ``(None, "model_not_found")``. Only ever called for a verified-local
-    endpoint. Module-level so tests can monkeypatch it without a live server.
+    Delegates the raw outbound call to the audited ``agent.model_metadata`` probe
+    (its sanctioned egress site) so no raw HTTP client is constructed in the web
+    router. Returns the 64-hex sha256 digest with ``verified_present``; any
+    failure/unknown tag yields ``(None, "probe_failed")``. Only ever called for a
+    verified-local endpoint. Module-level so tests can monkeypatch it.
     """
-    raw = (endpoint or "").strip().rstrip("/")
-    if not raw:
+    if not (endpoint or "").strip() or not (model or "").strip():
         return (None, "probe_failed")
-    if raw.endswith("/v1"):
-        raw = raw[:-3]
     try:
-        import httpx
+        from agent.model_metadata import query_ollama_model_digest
 
-        with httpx.Client(timeout=3.0) as client:
-            resp = client.get(f"{raw}/api/tags")
-        if resp.status_code != 200:
-            return (None, "probe_failed")
-        data = resp.json()
+        digest = query_ollama_model_digest(model, endpoint)
     except Exception:  # noqa: BLE001 — a probe failure must never break preflight
         return (None, "probe_failed")
-    models = data.get("models") if isinstance(data, dict) else None
-    if not isinstance(models, list):
-        return (None, "probe_failed")
-    want = (model or "").strip()
-    for entry in models:
-        if not isinstance(entry, dict):
-            continue
-        name = str(entry.get("name") or entry.get("model") or "")
-        if name == want:
-            digest = str(entry.get("digest") or "").strip().lower()
-            if digest.startswith("sha256:"):
-                digest = digest[len("sha256:"):]
-            if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
-                return (digest, "verified_present")
-            return (None, "probe_failed")
-    return (None, "model_not_found")
+    if digest:
+        return (digest, "verified_present")
+    return (None, "probe_failed")
 
 
 def _engine_attestation(engine: str) -> Optional[Dict[str, Any]]:

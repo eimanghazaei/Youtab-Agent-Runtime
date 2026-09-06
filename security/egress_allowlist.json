@@ -85,10 +85,10 @@
       "file": "agent/model_metadata.py",
       "symbol": "httpx.Client",
       "fingerprint": "d1ffa121ac176501",
-      "reason": "Local/provider model-catalog probes: server_url/base_url from operator config or hardcoded catalog hosts (OpenRouter/Anthropic/codex).",
+      "reason": "Local/provider model-catalog probes: server_url/base_url from operator config or hardcoded catalog hosts (OpenRouter/Anthropic/codex); incl. query_ollama_model_digest (WAVE-30D /api/tags manifest-digest probe of a verified-local endpoint).",
       "category": "fixed_destination_infra",
       "owner_action": "NONE",
-      "occurrences": 3
+      "occurrences": 4
     },
     {
       "file": "agent/model_metadata.py",
