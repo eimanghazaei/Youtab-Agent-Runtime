@@ -1882,6 +1882,15 @@
       "reason": "Hardcoded nodejs.org dist index + zip (Windows managed-node self-heal bootstrap).",
       "category": "fixed_destination_infra",
       "owner_action": "NONE"
+    },
+    {
+      "file": "youtab_runtime/ollama_native.py",
+      "symbol": "httpx.Client",
+      "fingerprint": "02f3a3a4d2a57790",
+      "reason": "WAVE-30F diagnostic native Ollama /api/chat client for the controlled bottleneck-attribution matrix (paths A/B). LOCAL-ONLY and fail-closed: _assert_local_host() refuses unless the host resolves entirely to loopback/RFC-1918/link-local, so the prompt and any bearer key can never egress to a public/cloud host; base_url comes from operator provider config, not agent/user input. NOT wired into the live conversation loop (diagnostic-only). A raw client is required here because the SSRF-safe adapters intentionally block the loopback/private range where a local Ollama server lives.",
+      "category": "fixed_destination_infra",
+      "owner_action": "NONE",
+      "occurrences": 2
     }
   ]
 }
