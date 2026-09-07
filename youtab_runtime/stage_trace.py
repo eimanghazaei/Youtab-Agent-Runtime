@@ -63,7 +63,8 @@ class Stage:
     PROMPT_CONSTRUCT = "prompt.construct"
     PROMPT_TOKENIZE = "prompt.tokenize"  # attrs: input_tokens=int
     MODEL_TTFT = "model.ttft"
-    MODEL_GENERATE = "model.generate"  # attrs: output_tokens=int
+    MODEL_CALL = "model.call"  # authoritative per-call wall (live OpenAI-compat path)
+    MODEL_GENERATE = "model.generate"  # attrs: output_tokens=int (native eval leg)
     TOOLS_DISCOVER = "tools.discover"
     TOOLS_SCHEMA_LOAD = "tools.schema_load"  # attrs: cache_state, tool_count
     TOOLS_SELECT = "tools.select"

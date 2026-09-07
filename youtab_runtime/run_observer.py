@@ -38,7 +38,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from youtab_runtime import redaction
 from youtab_runtime.run_journal import (
@@ -49,6 +49,12 @@ from youtab_runtime.run_journal import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _prune(**kwargs: Any) -> Dict[str, Any]:
+    """Drop None-valued kwargs so an unmeasured attribute is simply absent
+    (null != zero) rather than a null noise field on the span."""
+    return {k: v for k, v in kwargs.items() if v is not None}
 
 # Token buckets carried on a known usage payload (the shape produced by
 # ``run_agent._usage_summary_for_api_request_hook`` / ``normalize_usage``).
@@ -267,6 +273,13 @@ class RunObserver:
                     clean_timings = sanitize_timings(timings)
                     if clean_timings:
                         payload["timings"] = clean_timings
+                        # R8: also fan the numeric legs out into per-stage timing
+                        # spans (model.call/ttft/generate/prompt.tokenize/init) so
+                        # the percentile + cold/warm aggregator sees them. Same
+                        # data, no extra provider call, no hot-path edit.
+                        self._emit_timing_spans_from_call(
+                            req_id=req_id, provider=provider, timings=clean_timings
+                        )
                 except Exception as timings_exc:  # pragma: no cover - defensive
                     logger.debug("usage timings sanitize failed: %s", timings_exc)
 
@@ -316,6 +329,121 @@ class RunObserver:
                            exc_info=True)
             return None
 
+    # -- R8 timing spans (WAVE-30H) ----------------------------------------- #
+    def _record_timing_span(
+        self,
+        stage: str,
+        *,
+        duration_ns: Optional[int],
+        ok: bool = True,
+        clock: str = "monotonic",
+        dedupe_key: Optional[str] = None,
+        **attrs: Any,
+    ) -> None:
+        """Persist one R8 stage span into the ``timing`` journal category.
+
+        Reuses stage_trace's attribute-safety validator so a bridged span obeys
+        the same no-free-text rule as a first-class span, and shares the exact
+        payload shape :func:`stage_trace_report.read_journal` reads back. Never
+        raises — timing observability must not break a live run.
+        """
+        try:
+            from youtab_runtime import stage_trace as _st
+
+            clean = _st._validate_attrs(attrs)
+            payload = {
+                "duration_ns": duration_ns,  # None == not measured (never 0)
+                "ok": ok,
+                "clock": clock,
+                "t_start_epoch_ns": None,
+                "t_end_epoch_ns": None,
+                "attrs": clean,
+            }
+            append_event(
+                self.run_id,
+                self.principal,
+                "timing",
+                stage,
+                payload,
+                correlation_id=self.correlation_id,
+                dedupe_key=dedupe_key,
+                db_path=self.db_path,
+            )
+        except Exception as exc:  # never break a run for observability
+            logger.debug("run_observer timing span %s failed: %s", stage, exc)
+
+    def _emit_timing_spans_from_call(
+        self,
+        *,
+        req_id: Optional[str],
+        provider: Optional[str],
+        timings: Mapping[str, Any],
+    ) -> None:
+        """Derive per-stage spans from one model call's numeric timing record.
+
+        Honest mapping (measured legs only; a missing leg is simply not emitted —
+        null != zero):
+        * ``model.call``  <- wall_ms  (authoritative on the live OpenAI-compat
+          path, which exposes NO native timings)
+        * ``model.ttft``  <- ttft_ms
+        * ``model.generate`` <- eval_duration_ms  (native generation leg)
+        * ``prompt.tokenize`` <- prompt_eval_duration_ms (native prefill; labelled
+          reason_code so it is never mistaken for client-side tokenization)
+        * ``model.init``  <- load_duration_ms, cache_state from cold_start
+        """
+        def _ms_to_ns(ms: Any) -> Optional[int]:
+            try:
+                v = float(ms)
+            except (TypeError, ValueError):
+                return None
+            return int(v * 1_000_000) if v >= 0 else None
+
+        prov = _safe_ident(provider)
+        cache_state: Optional[str] = None
+        cold = timings.get("cold_start")
+        if isinstance(cold, bool):
+            cache_state = "cold" if cold else "warm"
+        base = f"{req_id}:" if req_id else None
+
+        wall = _ms_to_ns(timings.get("wall_ms"))
+        if wall is not None:
+            self._record_timing_span(
+                "model.call", duration_ns=wall,
+                dedupe_key=(base + "model.call") if base else None,
+                **_prune(provider=prov, cache_state=cache_state),
+            )
+        ttft = _ms_to_ns(timings.get("ttft_ms"))
+        if ttft is not None:
+            self._record_timing_span(
+                "model.ttft", duration_ns=ttft,
+                dedupe_key=(base + "model.ttft") if base else None,
+                **_prune(provider=prov, cache_state=cache_state),
+            )
+        gen = _ms_to_ns(timings.get("eval_duration_ms"))
+        if gen is not None:
+            self._record_timing_span(
+                "model.generate", duration_ns=gen,
+                dedupe_key=(base + "model.generate") if base else None,
+                **_prune(provider=prov, output_tokens=_as_int_or_none(
+                    timings.get("eval_count"))),
+            )
+        prefill = _ms_to_ns(timings.get("prompt_eval_duration_ms"))
+        if prefill is not None:
+            self._record_timing_span(
+                "prompt.tokenize", duration_ns=prefill,
+                dedupe_key=(base + "prompt.tokenize") if base else None,
+                reason_code="native_prompt_eval",
+                **_prune(provider=prov, input_tokens=_as_int_or_none(
+                    timings.get("prompt_eval_count"))),
+            )
+        init = _ms_to_ns(timings.get("load_duration_ms"))
+        if init is not None:
+            self._record_timing_span(
+                "model.init", duration_ns=init,
+                dedupe_key=(base + "model.init") if base else None,
+                **_prune(provider=prov, cache_state=cache_state),
+            )
+
     # -- tool call / result -------------------------------------------------- #
     def on_post_tool_call(
         self,
@@ -357,6 +485,24 @@ class RunObserver:
             status=status,
             error_type=error_type,
             error_message=error_message,
+        )
+        # R8: a per-tool-call latency span for the percentile aggregator.
+        try:
+            dur = int(duration_ms)
+        except (TypeError, ValueError):
+            dur = None
+        has_error = bool(error_message) or bool(error_type)
+        norm = _normalise_tool_status(status, error_type, error_message, has_error)
+        self._record_timing_span(
+            "tool.call",
+            duration_ns=(dur * 1_000_000) if dur is not None else None,
+            ok=(norm == "ok"),
+            dedupe_key=(f"{call_id}:tool.call" if call_id else None),
+            **_prune(
+                tool_name=(name[:128] if name else None),
+                result=(norm[:128] if norm else None),
+                reason_code=(str(error_type)[:128] if error_type else None),
+            ),
         )
         return call_event, result_event
 
