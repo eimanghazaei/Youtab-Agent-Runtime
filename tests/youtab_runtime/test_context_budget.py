@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from youtab_runtime.context_budget import (
     CANARY_TASK_CLASS,
+    FULL_CTX_CAPABILITY,
     TASK_CLASS_BUDGETS,
     budget_for,
     estimate_schema_tokens,
     estimate_tokens,
     measure_prompt_categories,
     numeric_category_summary,
+    plan_context,
     within_budget,
 )
 
@@ -102,3 +104,69 @@ def test_known_blocks_attribution():
     )
     assert cats["block_kanban_guidance"]["chars"] == len(kanban_guidance)
     assert cats["block_absent"]["chars"] == 0  # not present → zero, not fabricated
+    # The unattributed remainder is the system-other minus the found block, and is
+    # never negative (honest floor for what the accounting could not yet name).
+    assert cats["system_unattributed"]["chars"] == (
+        cats["system_other"]["chars"] - len(kanban_guidance)
+    )
+    assert cats["system_unattributed"]["chars"] >= 0
+
+
+def test_task_vs_history_split_and_percentages():
+    system = "You are an agent."
+    tools = [{"type": "function", "function": {"name": "kanban_show", "description": "d",
+                                               "parameters": {"type": "object"}}}]
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "old turn"},
+        {"role": "assistant", "content": "old reply"},
+        {"role": "user", "content": "the actual task"},
+    ]
+    cats = measure_prompt_categories(system_prompt=system, tool_defs=tools, messages=messages)
+    # The task is only the LAST non-system message; the rest is history.
+    assert cats["task"]["chars"] == len("the actual task")
+    assert cats["history"]["chars"] == len("old turn") + len("old reply")
+    # Percentages cover the disjoint top-level categories and sum to ~100%.
+    pct = cats["percentages"]
+    assert set(pct) == {"system_prompt_total", "tool_schemas", "conversation"}
+    assert abs(sum(pct.values()) - 100.0) < 0.5
+
+
+def test_plan_context_reserves_output_and_tool_loop_and_fits():
+    # A lean simple prompt fits with output + tool-loop reserved.
+    plan = plan_context("simple", 6_000, num_ctx=64_000)
+    assert plan.reserve_output_tokens == 2_000
+    assert plan.reserve_tool_loop_tokens == 2_000
+    assert plan.required_tokens == 10_000
+    assert plan.headroom_tokens == 54_000
+    assert plan.fits is True
+    assert plan.must_escalate is False
+    assert plan.ctx_capability == FULL_CTX_CAPABILITY
+
+
+def test_plan_context_refuses_silent_truncation_and_escalates():
+    # Prompt + reserves exceed a small configured ctx → must escalate, never drop.
+    plan = plan_context("simple", 7_000, num_ctx=8_000)
+    assert plan.required_tokens == 11_000
+    assert plan.fits is False
+    assert plan.must_escalate is True
+    assert plan.dropped == ()  # this planner NEVER silently truncates
+    assert plan.recommended_ctx >= plan.required_tokens
+    assert plan.recommended_ctx <= FULL_CTX_CAPABILITY
+
+
+def test_plan_context_boundary_classes_retain_64k_capability():
+    # Every class retains the full 64K capability regardless of its prompt target.
+    for cls, ctx in (("simple", 8_000), ("tool_heavy", 16_000),
+                     ("memory_rag", 32_000), ("document", 64_000)):
+        plan = plan_context(cls, 1_000, num_ctx=ctx)
+        assert plan.num_ctx == ctx
+        assert plan.ctx_capability == 64_000
+        assert plan.fits is True
+    # A document-class prompt whose reserves push it PAST the 64K ctx escalates
+    # rather than truncating; recommended_ctx is capped at the 64K ceiling and the
+    # caller must then shed content explicitly (never silently).
+    plan = plan_context("document", 61_000, num_ctx=64_000)  # +4000 reserves = 65000 > 64000
+    assert plan.fits is False
+    assert plan.must_escalate is True
+    assert plan.recommended_ctx == FULL_CTX_CAPABILITY

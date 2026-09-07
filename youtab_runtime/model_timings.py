@@ -10,9 +10,17 @@ This module is the pure, dependency-light core of the fix. It:
 * extracts the **native Ollama timing fields** when the provider returns them —
   ``total_duration``, ``load_duration``, ``prompt_eval_count``,
   ``prompt_eval_cached_count``, ``prompt_eval_duration``, ``eval_count``,
-  ``eval_duration`` (Ollama's native API + newer OpenAI-compat responses expose
-  these; see https://github.com/ollama/ollama/blob/main/docs/api.md) — converting
-  the **nanosecond** duration fields to milliseconds with no fabrication;
+  ``eval_duration`` — converting the **nanosecond** duration fields to
+  milliseconds with no fabrication. IMPORTANT (WAVE-30F): these fields are emitted
+  only by Ollama's **native** endpoints (``/api/chat`` / ``/api/generate``). The
+  runtime's live traffic uses Ollama's **OpenAI-compat** endpoint
+  (``/v1/chat/completions``), which does NOT carry them, so on the live path this
+  extractor correctly returns ``{}`` and the record is marked
+  ``native_timings_available: False``. Authoritative native timings for the exact
+  runtime prompt are obtained out-of-band by :mod:`youtab_runtime.ollama_native`
+  (the controlled bottleneck-attribution matrix), whose ``/api/chat`` raw timing
+  dict is fed straight through this same extractor. See
+  https://github.com/ollama/ollama/blob/main/docs/api.md;
 * derives ``prompt_eval_tokens_per_second`` / ``eval_tokens_per_second`` **only**
   when both the matching count and duration are present (never estimated);
 * assembles a single **all-numeric** timing record (wall-clock + optional TTFT +

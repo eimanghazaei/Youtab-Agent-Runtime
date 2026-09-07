@@ -161,11 +161,13 @@ def measure_prompt_categories(
 
     schema_chars, schema_tokens = estimate_schema_tokens(tool_defs)
 
-    conv_text = "".join(
-        str(m.get("content") or "")
-        for m in messages
-        if str(m.get("role")) != "system"
-    )
+    non_system = [m for m in messages if str(m.get("role")) != "system"]
+    conv_text = "".join(str(m.get("content") or "") for m in non_system)
+    # Split the conversation into the CURRENT task turn (the last non-system
+    # message — the actual scenario/user content) and prior HISTORY, so a trivial
+    # canary's task content can be shown to be a tiny fraction of the request.
+    task_text = str(non_system[-1].get("content") or "") if non_system else ""
+    history_text = "".join(str(m.get("content") or "") for m in non_system[:-1])
 
     categories: Dict[str, Any] = {
         "system_prompt_total": _measure(system_prompt),
@@ -173,12 +175,31 @@ def measure_prompt_categories(
         "skills_index": _measure(skills_block),
         "tool_schemas": {"chars": schema_chars, "est_tokens": schema_tokens},
         "conversation": _measure(conv_text),
+        "task": _measure(task_text),
+        "history": _measure(history_text),
     }
 
+    # Attribute caller-supplied named blocks (identity, constitutional/security
+    # policy, kanban/runtime guidance, memory/RAG snapshot, deferred-tool index …)
+    # found inside the system prompt, then report the still-UNATTRIBUTED remainder
+    # of the system prompt so nothing is silently hidden. ``system_unattributed`` =
+    # system_other minus the skills-index-free found blocks; it is a floor, honest
+    # about what the accounting could not yet name.
+    attributed_chars = 0
     if known_blocks:
         for name, text in known_blocks.items():
             present = text if (text and text in system_prompt) else ""
-            categories[f"block_{name}"] = _measure(present)
+            block = _measure(present)
+            categories[f"block_{name}"] = block
+            # Only count a found block toward the remainder if it lives OUTSIDE the
+            # skills index (which is already carved into its own category).
+            if present and present not in skills_block:
+                attributed_chars += block["chars"]
+        remainder_chars = max(0, categories["system_other"]["chars"] - attributed_chars)
+        categories["system_unattributed"] = {
+            "chars": remainder_chars,
+            "est_tokens": int(math.ceil(remainder_chars / CHARS_PER_TOKEN)),
+        }
 
     total_chars = (
         categories["system_prompt_total"]["chars"]
@@ -192,7 +213,107 @@ def measure_prompt_categories(
     )
     categories["total"] = {"chars": total_chars, "est_tokens": total_tokens}
     categories["tool_count"] = len(list(tool_defs or []))
+    # Percentage of the total estimated tokens per top-level category, so the
+    # dominant contributor is obvious at a glance. Only the disjoint top-level
+    # categories are included (skills_index is a subset of the system prompt and is
+    # reported separately, not double-counted in the percentages).
+    categories["percentages"] = _category_percentages(categories, total_tokens)
     return categories
+
+
+def _category_percentages(categories: Mapping[str, Any], total_tokens: int) -> Dict[str, float]:
+    """Percent-of-total est_tokens for the disjoint top-level request categories."""
+    if total_tokens <= 0:
+        return {}
+    disjoint = ("system_prompt_total", "tool_schemas", "conversation")
+    out: Dict[str, float] = {}
+    for name in disjoint:
+        val = categories.get(name)
+        if isinstance(val, Mapping) and "est_tokens" in val:
+            out[name] = round(100.0 * float(val["est_tokens"]) / float(total_tokens), 1)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Context planning — reserve output + tool-loop, never silently truncate       #
+# --------------------------------------------------------------------------- #
+# Default reservations (estimated tokens) kept below the model's context so a
+# call always leaves room to answer and to run at least one tool round-trip.
+DEFAULT_OUTPUT_RESERVE = 2_000
+DEFAULT_TOOL_LOOP_RESERVE = 2_000
+FULL_CTX_CAPABILITY = 64_000
+
+
+@dataclass(frozen=True)
+class ContextPlan:
+    """A concrete, honest plan for one call's context usage.
+
+    ``fits`` is True iff the estimated prompt PLUS the output and tool-loop
+    reservations sit within the configured ``num_ctx``. When it does not fit,
+    ``must_escalate`` is True and ``recommended_ctx`` names the smallest capacity
+    (never above the authorized 64K) that would fit — the planner refuses to
+    silently truncate; the caller must escalate context or shed content
+    explicitly. ``dropped`` is always empty here by design (this planner never
+    drops); any real dropping/summarizing must be done by the caller and reported.
+    """
+
+    task_class: str
+    num_ctx: int
+    est_prompt_tokens: int
+    reserve_output_tokens: int
+    reserve_tool_loop_tokens: int
+    required_tokens: int
+    headroom_tokens: int
+    fits: bool
+    must_escalate: bool
+    within_prompt_target: bool
+    recommended_ctx: int
+    ctx_capability: int
+    dropped: Tuple[str, ...] = ()
+
+
+def plan_context(
+    task_class: str,
+    est_prompt_tokens: int,
+    *,
+    num_ctx: Optional[int] = None,
+    reserve_output_tokens: int = DEFAULT_OUTPUT_RESERVE,
+    reserve_tool_loop_tokens: int = DEFAULT_TOOL_LOOP_RESERVE,
+) -> ContextPlan:
+    """Plan context for a call without ever silently truncating.
+
+    ``num_ctx`` defaults to the class's full capability (64K) when unset. The plan
+    reserves ``reserve_output_tokens`` for the answer and ``reserve_tool_loop_tokens``
+    for continuation, then checks the prompt fits in the remainder. If it does not,
+    ``must_escalate`` is set and ``recommended_ctx`` is the smallest capacity up to
+    64K that fits (or 64K when even that is insufficient — the caller must then shed
+    content explicitly and report it). The full 64K capability is always retained.
+    """
+    b = budget_for(task_class)
+    ctx = int(num_ctx) if (isinstance(num_ctx, int) and num_ctx > 0) else b.ctx_capability
+    est = max(0, int(est_prompt_tokens))
+    required = est + max(0, reserve_output_tokens) + max(0, reserve_tool_loop_tokens)
+    headroom = ctx - required
+    fits = headroom >= 0
+    # Smallest capacity up to the 64K ceiling that would fit the required tokens.
+    if required <= ctx:
+        recommended = ctx
+    else:
+        recommended = min(FULL_CTX_CAPABILITY, max(ctx, required))
+    return ContextPlan(
+        task_class=b.task_class,
+        num_ctx=ctx,
+        est_prompt_tokens=est,
+        reserve_output_tokens=max(0, reserve_output_tokens),
+        reserve_tool_loop_tokens=max(0, reserve_tool_loop_tokens),
+        required_tokens=required,
+        headroom_tokens=headroom,
+        fits=fits,
+        must_escalate=not fits,
+        within_prompt_target=within_budget(task_class, est),
+        recommended_ctx=recommended,
+        ctx_capability=b.ctx_capability,
+    )
 
 
 def numeric_category_summary(categories: Mapping[str, Any]) -> Dict[str, int]:

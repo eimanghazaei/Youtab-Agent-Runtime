@@ -28,6 +28,19 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
+
+# WAVE-30F: anchor the process-lifetime phase clock early in the agent-stack
+# import so the per-run worker's startup phases (agent construction → first model
+# send) can be attributed at an authorized canary. The head slice (process start +
+# heavy imports, before this point) is derived from the dispatcher's timestamped
+# "spawned" journal event. Fail-soft: lifecycle observability must never break the
+# cold-start path.
+try:  # pragma: no cover - trivial import guard
+    from youtab_runtime.phase_timing import mark as _phase_mark
+    _phase_mark("agent_stack_imported")
+except Exception:  # pragma: no cover - defensive
+    def _phase_mark(_name: str) -> None:
+        return None
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -568,6 +581,7 @@ def init_agent(
             remain skipped.
     """
     _install_safe_stdio()
+    _phase_mark("agent_init_start")  # WAVE-30F lifecycle phase marker (fail-soft)
 
     agent.model = model
     agent.max_iterations = max_iterations

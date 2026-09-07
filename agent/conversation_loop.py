@@ -2158,6 +2158,15 @@ def _run_conversation_impl(
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
         
         api_start_time = time.time()
+        # WAVE-30F: record the "first model send" lifecycle milestone (fail-soft).
+        # The mark updates each call; the first call's value — captured in the first
+        # per-call timing event below — is the one that attributes the ~13.3s of
+        # per-run worker startup between agent-construction start and first send.
+        try:
+            from youtab_runtime.phase_timing import mark as _pt_mark
+            _pt_mark("first_model_send")
+        except Exception:
+            pass
         # WAVE-30E: clear any prior call's streaming TTFT so this call's timing
         # record only carries a TTFT actually measured for THIS call (the
         # streaming path re-stamps it on its first chunk).
@@ -5718,6 +5727,18 @@ def _run_conversation_impl(
                             _nctx = getattr(agent, "_ollama_num_ctx", None)
                             if isinstance(_nctx, int) and _nctx > 0:
                                 _timings["ctx_num_ctx"] = _nctx
+                        except Exception:
+                            pass
+                        # WAVE-30F: on the FIRST model call, attach the all-numeric
+                        # lifecycle phase snapshot (agent_stack_imported /
+                        # agent_init_start / first_model_send, ms since the phase
+                        # clock's T0). Only once per run — later calls don't repeat
+                        # startup — so the breakdown rides the first usage event.
+                        try:
+                            if api_call_count == 1:
+                                from youtab_runtime.phase_timing import snapshot as _pt_snapshot
+                                for _pk, _pv in _pt_snapshot().items():
+                                    _timings[_pk] = _pv
                         except Exception:
                             pass
                     except Exception:

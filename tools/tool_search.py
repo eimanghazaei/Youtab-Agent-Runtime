@@ -258,6 +258,29 @@ def reset_loadout_policy_cache() -> None:
     _CACHED_LOADOUT_CONFIG = None
 
 
+def _matches_always_on(name: str, always_on: Any) -> bool:
+    """True if ``name`` is pinned always-on, by literal match OR glob pattern.
+
+    WAVE-30F: ``always_on`` entries are matched literally AND as ``fnmatch`` globs,
+    so an operator can write ``always_on: ["kanban_*"]`` and have every kanban tool
+    stay eager — the previous behaviour treated ``"kanban_*"`` as a single literal
+    tool name that matched nothing (a silent footgun). A literal name like
+    ``"kanban_show"`` still matches itself. This governs only the experimental,
+    default-off lean loadout; it never widens tool scope (it keeps tools EAGER, the
+    safe direction), so it cannot hide or remove capability.
+    """
+    if not always_on:
+        return False
+    try:
+        if name in always_on:
+            return True
+        import fnmatch
+        return any(("*" in p or "?" in p or "[" in p) and fnmatch.fnmatchcase(name, p)
+                   for p in always_on)
+    except Exception:
+        return name in always_on
+
+
 def is_deferrable_tool_name(name: str, *, config: Optional["ToolSearchConfig"] = None) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
@@ -278,7 +301,9 @@ def is_deferrable_tool_name(name: str, *, config: Optional["ToolSearchConfig"] =
     if name in _core_tool_names():
         # Core tool: deferrable ONLY under the opt-in lean loadout, and never for
         # a task-scoped always-on tool.
-        if getattr(config, "defer_core", False) and name not in getattr(config, "always_on", frozenset()):
+        if getattr(config, "defer_core", False) and not _matches_always_on(
+            name, getattr(config, "always_on", frozenset())
+        ):
             return True
         return False
     # Check registry toolset for MCP prefix.
