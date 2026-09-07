@@ -188,6 +188,11 @@ _RETRIED_FROM_EVENT = "runtime_retried_from"
 # own process (WAVE-30H R3). The grant is a signed, tenant-scoped authorization
 # token — never a secret (the engine holds only the Brain PUBLIC key).
 _GRANT_EVENT = "runtime_execution_grant"
+# Companion event carrying the frozen per-run capability manifest (WAVE-30H
+# correction 2). Persisted with the grant so the worker rebuilds the SAME
+# CapabilityBinding it was admitted under — "*" cannot authorize a tool
+# registered after admission.
+_GRANT_MANIFEST_EVENT = "runtime_capability_manifest"
 
 
 def _resolve_task_mode(task_id: str) -> str:
@@ -432,9 +437,12 @@ async def _admit_execution_grant(request: Request, identity: RuntimeIdentity):
 
     Managed mode REQUIRES a valid Simorgh grant (fail-closed on missing/invalid/
     expired/replayed/mismatched); local-standalone mode REFUSES a managed grant.
-    Returns the raw grant header string when one was admitted (managed), else
-    ``None``. The sealed :class:`AdmittedCommand` is re-created in the worker via
-    ``managed_execution.re_admit_worker_grant`` from the persisted grant.
+    Returns ``(grant_header, manifest)`` where ``grant_header`` is the raw grant
+    header string when one was admitted (managed) else ``None``, and ``manifest``
+    is the frozen per-run capability manifest (correction 2) to persist alongside
+    the grant, else ``None``. The sealed :class:`AdmittedCommand` — including this
+    capability binding — is re-created in the worker via
+    ``managed_execution.re_admit_worker_grant`` from the persisted grant+manifest.
     """
     from youtab_runtime import managed_execution as mx
 
@@ -445,6 +453,20 @@ async def _admit_execution_grant(request: Request, identity: RuntimeIdentity):
             workspace = (
                 request.headers.get(rca.WORKSPACE_HEADER) or rca.WORKSPACE_UNSCOPED
             ).strip() or rca.WORKSPACE_UNSCOPED
+            # Freeze the per-run capability manifest from the LIVE registry now, so
+            # "*" authorizes exactly what is registered/authorized/operational at
+            # admission — never a tool registered later. Built before admit() so it
+            # is sealed into (and proof-bound to) the AdmittedCommand.
+            capability_binding = None
+            if grant_header:
+                from tools.registry import registry as _registry
+
+                from youtab_agent_cli import capability_manifest as _cm
+
+                envelope = mx.decode_grant_header(grant_header)
+                capability_binding = _cm.build_ingress_binding(
+                    envelope, registry=_registry
+                )
             mx.admit_managed_run(
                 grant_header=grant_header,
                 identity=mx.AdmissionIdentity(
@@ -452,11 +474,17 @@ async def _admit_execution_grant(request: Request, identity: RuntimeIdentity):
                 ),
                 boundary=_get_grant_boundary(),
                 public_keys=mx.load_brain_public_keys(),
+                capability_binding=capability_binding,
             )
-            return grant_header
+            manifest = (
+                _cm.binding_to_persisted(capability_binding)
+                if capability_binding is not None
+                else None
+            )
+            return grant_header, manifest
         # local-standalone: must not accept a managed grant implicitly.
         mx.reject_grant_in_standalone(grant_header)
-        return None
+        return None, None
     except mx.ManagedAdmissionError as exc:
         raise HTTPException(
             status_code=exc.http_status, detail={"error": exc.code}
@@ -1597,7 +1625,7 @@ async def runtime_create_run(
     # Execution-authority gate (WAVE-30H R3): AFTER transport auth, BEFORE any
     # run is created. Managed mode requires a valid Simorgh grant; standalone
     # refuses one. Fail-closed inside (raises HTTPException on any bad grant).
-    grant_header = await _admit_execution_grant(request, identity)
+    grant_header, grant_manifest = await _admit_execution_grant(request, identity)
     payload = await _json_body(request)
     agent = str(payload.get("agent") or "").strip()
     task_text = str(payload.get("task") or "").strip()
@@ -1805,6 +1833,12 @@ async def runtime_create_run(
                 # signed authorization token, not a secret. Absent in standalone.
                 if grant_header:
                     kb._append_event(conn, run_id, _GRANT_EVENT, {"grant": grant_header})
+                    # Persist the frozen capability manifest next to the grant so
+                    # the worker re-admits under the SAME bound tool set.
+                    if grant_manifest is not None:
+                        kb._append_event(
+                            conn, run_id, _GRANT_MANIFEST_EVENT, grant_manifest
+                        )
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run

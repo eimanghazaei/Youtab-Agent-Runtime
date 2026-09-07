@@ -50,12 +50,16 @@ def establish_managed_admission(agent) -> bool:
     from youtab_agent_cli import kanban_db as kb
 
     grant_header = None
+    manifest_payload = None
     conn = kb.connect()
     try:
         for event in kb.list_events(conn, task_id):
-            if getattr(event, "kind", None) == "runtime_execution_grant":
-                payload = getattr(event, "payload", None) or {}
+            kind = getattr(event, "kind", None)
+            payload = getattr(event, "payload", None) or {}
+            if kind == "runtime_execution_grant":
                 grant_header = payload.get("grant") or grant_header
+            elif kind == "runtime_capability_manifest":
+                manifest_payload = payload or manifest_payload
     finally:
         try:
             conn.close()
@@ -68,11 +72,26 @@ def establish_managed_admission(agent) -> bool:
             "refusing to execute (no bypass, no standalone fallback)"
         )
 
+    # Reconstruct the SAME capability binding the ingress froze (correction 2), so
+    # the worker enforces exactly the tool set authorized at admission — never a
+    # tool registered after. A tampered persisted manifest fails the hash check.
+    capability_binding = None
+    if manifest_payload is not None:
+        from youtab_agent_cli import capability_manifest as cm
+
+        try:
+            capability_binding = cm.binding_from_persisted(manifest_payload)
+        except ValueError as exc:
+            raise ManagedWorkerAdmissionError(
+                f"managed run {task_id} capability manifest integrity failure"
+            ) from exc
+
     try:
         admitted = mx.re_admit_worker_grant(
             grant_header=grant_header,
             boundary=mx.AuthorityBoundary(),
             public_keys=mx.load_brain_public_keys(),
+            capability_binding=capability_binding,
         )
     except mx.ManagedAdmissionError as exc:
         raise ManagedWorkerAdmissionError(

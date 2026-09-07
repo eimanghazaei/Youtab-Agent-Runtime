@@ -35,7 +35,7 @@ from typing import Mapping
 
 from pydantic import ValidationError
 
-from .admission import AdmittedCommand
+from .admission import AdmittedCommand, CapabilityBinding
 from .contracts import BrainCommandEnvelopeV2
 from .policy import AdmissionError, AuthorityBoundary
 
@@ -177,6 +177,7 @@ def admit_managed_run(
     boundary: AuthorityBoundary,
     public_keys: Mapping[str, str],
     now=None,
+    capability_binding: CapabilityBinding | None = None,
 ) -> AdmittedCommand:
     """Ingress admission for a managed run. Returns the sealed AdmittedCommand.
 
@@ -184,6 +185,11 @@ def admit_managed_run(
     scope + single-use nonce (via ``boundary.admit``) -> identity/workspace
     binding. Any failure raises :class:`ManagedAdmissionError`; the run is never
     created without a valid grant.
+
+    ``capability_binding`` (correction 2) is the per-run authorized tool manifest
+    the caller froze from the live registry + agent ACL; it is sealed into the
+    admitted context so ``"*"`` cannot later authorize a newly registered tool.
+    The caller builds it (youtab_runtime does not import the tool registry).
     """
     if not grant_header or not grant_header.strip():
         raise ManagedAdmissionError(
@@ -201,7 +207,9 @@ def admit_managed_run(
     envelope = decode_grant_header(grant_header)
     public_key = _resolve_key(public_keys, envelope.key_id)
     try:
-        admitted = boundary.admit(envelope, public_key, now=now)
+        admitted = boundary.admit(
+            envelope, public_key, now=now, capability_binding=capability_binding
+        )
     except AdmissionError as exc:
         # Durable replay store unavailable — unavailable, not rejected.
         raise ManagedAdmissionError(
@@ -237,16 +245,25 @@ def re_admit_worker_grant(
     boundary: AuthorityBoundary,
     public_keys: Mapping[str, str],
     now=None,
+    capability_binding: CapabilityBinding | None = None,
 ) -> AdmittedCommand:
     """Worker-side re-admission of the persisted grant (see AuthorityBoundary.re_admit).
 
     Re-verifies signature/expiry/scope and re-seals the AdmittedCommand in the
     worker process WITHOUT re-burning the nonce (ingress already consumed it).
+
+    ``capability_binding`` (correction 2) is reconstructed from the manifest the
+    ingress FROZE and persisted with the grant — NOT from the worker's own live
+    registry — so the worker enforces exactly the tool set authorized at
+    admission, and a tool registered between ingress and worker (or mid-run) is
+    never swept in.
     """
     envelope = decode_grant_header(grant_header)
     public_key = _resolve_key(public_keys, envelope.key_id)
     try:
-        return boundary.re_admit(envelope, public_key, now=now)
+        return boundary.re_admit(
+            envelope, public_key, now=now, capability_binding=capability_binding
+        )
     except ValueError as exc:
         raise ManagedAdmissionError(
             "grant_rejected", "persisted execution grant rejected at worker", 401

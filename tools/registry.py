@@ -931,6 +931,49 @@ class ToolRegistry:
             )
         return manifest
 
+    def capability_manifest_pairs(
+        self,
+        allowed_toolsets: Set[str],
+        *,
+        acl_tool_names: Optional[Set[str]] = None,
+        exclude_toolsets: Set[str] = frozenset(),
+        require_available: bool = True,
+    ) -> List[Tuple[str, str]]:
+        """Freeze the ``(tool_name, schema_hash)`` pairs a grant may actually use.
+
+        WAVE-30H correction 2. This is the snapshot that gets bound into the
+        admitted execution context so the ``"*"`` full-envelope authorizes exactly
+        the tools that were registered, authorized and operational AT ADMISSION —
+        never a tool registered later. A tool is included only when ALL hold:
+
+        * its toolset is authorized by the grant — ``"*"`` in ``allowed_toolsets``
+          means the full entitled envelope, otherwise the toolset must be listed;
+        * its toolset is NOT in ``exclude_toolsets`` (authority-bearing toolsets
+          are never swept in by ``"*"``; they stay deny-by-default);
+        * it is within the agent ACL (``acl_tool_names``) when one is supplied;
+        * it is operational (``check_fn`` passes) when ``require_available``.
+
+        Returns a sorted, de-duplicated list. No fixed ceiling: the manifest is
+        exactly as long as the authorized, available registry is.
+        """
+        wildcard = "*" in allowed_toolsets
+        check_results: Dict[Callable, bool] = {}
+        pairs: Set[Tuple[str, str]] = set()
+        for entry in self._snapshot_entries():
+            if entry.toolset in exclude_toolsets:
+                continue
+            if not wildcard and entry.toolset not in allowed_toolsets:
+                continue
+            if acl_tool_names is not None and entry.name not in acl_tool_names:
+                continue
+            if require_available and entry.check_fn is not None:
+                if entry.check_fn not in check_results:
+                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                if not check_results[entry.check_fn]:
+                    continue
+            pairs.add((entry.name, entry.schema_hash))
+        return sorted(pairs)
+
     def get_schema(self, name: str) -> Optional[dict]:
         """Return a tool's raw schema dict, bypassing check_fn filtering.
 

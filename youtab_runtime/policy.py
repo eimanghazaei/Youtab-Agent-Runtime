@@ -11,7 +11,12 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .admission import _ADMISSION_CAPABILITY, AdmittedCommand, seal_admitted_command
+from .admission import (
+    _ADMISSION_CAPABILITY,
+    AdmittedCommand,
+    CapabilityBinding,
+    seal_admitted_command,
+)
 from .contracts import (
     BrainCommandEnvelope,
     BrainCommandEnvelopeV2,
@@ -126,6 +131,7 @@ class AuthorityBoundary:
         public_key_b64: str,
         *,
         now=None,
+        capability_binding: CapabilityBinding | None = None,
     ) -> AdmittedCommand:
         """Verify + authorize a Brain command and mint the sealed execution
         context. Returns an :class:`AdmittedCommand` — the ONLY value that can
@@ -133,7 +139,13 @@ class AuthorityBoundary:
         every check; never returns without a valid, replay-fresh admission.
 
         This is the INGRESS admission: it consumes the grant's single-use nonce
-        (durable, atomic) so the same grant cannot be admitted twice."""
+        (durable, atomic) so the same grant cannot be admitted twice.
+
+        ``capability_binding`` (correction 2) freezes the per-run authorized tool
+        manifest into the sealed context so the ``"*"`` full-envelope cannot later
+        authorize a newly registered tool. Managed admission always supplies it;
+        it is optional here only so the boundary's own unit tests and the
+        local-standalone trust mode can admit without a live registry."""
         self._verify_and_scope(envelope, public_key_b64, now=now)
         # Durable, atomic single-use replay claim keyed by (tenant, nonce). The
         # store's claim is a single check-and-record op (no check-then-act
@@ -150,7 +162,12 @@ class AuthorityBoundary:
         # Only now — after signature, scope and durable-replay checks pass — is
         # the sealed, unforgeable context minted. ``_ADMISSION_CAPABILITY`` is
         # module-private to youtab_runtime; tool/agent code cannot obtain it.
-        return seal_admitted_command(_ADMISSION_CAPABILITY, envelope, now=moment)
+        return seal_admitted_command(
+            _ADMISSION_CAPABILITY,
+            envelope,
+            now=moment,
+            capability_binding=capability_binding,
+        )
 
     def re_admit(
         self,
@@ -158,6 +175,7 @@ class AuthorityBoundary:
         public_key_b64: str,
         *,
         now=None,
+        capability_binding: CapabilityBinding | None = None,
     ) -> AdmittedCommand:
         """Re-seal a grant already admitted at ingress, WITHOUT re-claiming its
         nonce — for the worker process that executes a managed run.
@@ -173,7 +191,12 @@ class AuthorityBoundary:
         already consumed and which would otherwise fail as ``replayed``)."""
         self._verify_and_scope(envelope, public_key_b64, now=now)
         moment = (now or datetime.now(UTC)).astimezone(UTC)
-        return seal_admitted_command(_ADMISSION_CAPABILITY, envelope, now=moment)
+        return seal_admitted_command(
+            _ADMISSION_CAPABILITY,
+            envelope,
+            now=moment,
+            capability_binding=capability_binding,
+        )
 
     def decide_tool(
         self, admitted: AdmittedCommand, intent: ToolIntent
@@ -194,14 +217,31 @@ class AuthorityBoundary:
                 execute_in_runtime=False,
                 reason="authority-bearing toolset is never executable in the managed runtime",
             )
-        # "*" is the Simorgh maximum-envelope sentinel: the engine narrows it to
-        # whatever is actually registered/authorized/operational and never widens
-        # it. Any other value is an explicit toolset allow-list.
+        # "*" is the Simorgh maximum-envelope sentinel: it authorizes the agent's
+        # full entitled toolset, NOT "any toolset that ever exists". Any other
+        # value is an explicit toolset allow-list.
         allowed = envelope.allowed_toolsets
         if "*" not in allowed and intent.toolset not in allowed:
             return ManagedToolDecision(
                 execute_in_runtime=False,
                 reason="toolset is outside the Brain-issued task contract",
+            )
+        # correction 2: the "*" sentinel (and even a named toolset) must never
+        # authorize a tool that was not in the per-run capability manifest frozen
+        # at admission — i.e. a tool registered AFTER this grant was admitted, or
+        # one outside the agent ACL / tenant / Simorgh policy captured then. When
+        # a binding is present it is the authoritative allow-list of tool NAMES;
+        # a name absent from it is denied unless the bound policy opted into
+        # dynamic inclusion. (No binding == boundary unit test / local-standalone,
+        # which keep the pre-manifest behaviour.)
+        binding = admitted.capability_binding
+        if binding is not None and not binding.authorizes(intent.tool_name):
+            return ManagedToolDecision(
+                execute_in_runtime=False,
+                reason=(
+                    "tool is not in the capability manifest bound at admission "
+                    "(a newly registered or unentitled tool is never swept in by '*')"
+                ),
             )
         if intent.effect_class in {EffectClass.NONE, EffectClass.READ}:
             return ManagedToolDecision(
