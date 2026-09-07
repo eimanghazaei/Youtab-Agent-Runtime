@@ -40,6 +40,7 @@ existence).
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import os
 import threading
@@ -49,6 +50,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 
 from youtab_agent_cli import agent_identity
@@ -180,6 +182,12 @@ _LIMITS_EVENT = "runtime_limits"
 # Event recorded on a retry run naming the original run it was retried from and
 # the preserved correlation id — makes retry lineage explicit and queryable.
 _RETRIED_FROM_EVENT = "runtime_retried_from"
+
+# Event recorded at create-run (managed trust mode only) carrying the Simorgh
+# execution grant that authorised the run, so the worker can re-admit it in its
+# own process (WAVE-30H R3). The grant is a signed, tenant-scoped authorization
+# token — never a secret (the engine holds only the Brain PUBLIC key).
+_GRANT_EVENT = "runtime_execution_grant"
 
 
 def _resolve_task_mode(task_id: str) -> str:
@@ -332,6 +340,19 @@ _nonce_store: "Optional[rca.NonceStore]" = None
 _nonce_store_lock = threading.Lock()
 
 
+def _nonce_memory_opt_in() -> bool:
+    """Whether the process-local in-memory nonce store is EXPLICITLY allowed.
+
+    Off by default. The in-memory store only protects a single process for its
+    lifetime; it cannot see nonces burned by sibling workers, and it forgets
+    everything on restart — both reopen replay. It is acceptable only for a
+    single-process/dev/test deployment that opts in deliberately.
+    """
+    return (os.environ.get("YOUTAB_RUNTIME_NONCE_ALLOW_MEMORY") or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _get_nonce_store() -> "rca.NonceStore":
     global _nonce_store
     with _nonce_store_lock:
@@ -339,15 +360,118 @@ def _get_nonce_store() -> "rca.NonceStore":
             try:
                 db_path = str(kb.kanban_db_path(board=RUNTIME_BOARD).parent / "runtime_command_nonces.db")  # noqa: E501
                 _nonce_store = rca.SqliteNonceStore(db_path)
-            except Exception as exc:  # noqa: BLE001 — fall back to in-memory
-                _log.warning("runtime nonce store falling back to memory: %s", exc)
-                _nonce_store = rca._MemoryNonceStore()
+            except Exception as exc:  # noqa: BLE001
+                # A durable, cross-process nonce store is a security precondition
+                # for accepting mutating commands. Silently degrading to a
+                # process-local memory store (the previous behaviour) reopened
+                # cross-process and post-restart replay. Fail closed by default;
+                # only fall back when memory is EXPLICITLY opted in. Do not cache
+                # the failure — a later request retries construction.
+                if _nonce_memory_opt_in():
+                    _log.warning(
+                        "runtime nonce store using EXPLICITLY opted-in in-memory "
+                        "store (process-local replay protection only): %s", exc,
+                    )
+                    _nonce_store = rca._MemoryNonceStore()
+                else:
+                    _log.error(
+                        "runtime nonce store unavailable; refusing signed "
+                        "commands (set YOUTAB_RUNTIME_NONCE_ALLOW_MEMORY=1 only "
+                        "for a single-process deployment): %s", exc,
+                    )
+                    raise rca.CommandAuthError(
+                        "nonce_store_unavailable",
+                        "runtime nonce store is unavailable",
+                        503,
+                    ) from exc
         return _nonce_store
+
+
+_grant_boundary: "Optional[Any]" = None
+_grant_boundary_lock = threading.Lock()
+
+
+def _get_grant_boundary():
+    """Lazy AuthorityBoundary with a DURABLE, cross-process grant-nonce store.
+
+    The grant's single-use nonce lives in its OWN table (separate from the HMAC
+    transport nonces) so the two namespaces never interfere. Fail-closed exactly
+    like ``_get_nonce_store``: a durable store is required for managed admission;
+    only an explicit opt-in permits the process-local in-memory claimer.
+    """
+    global _grant_boundary
+    with _grant_boundary_lock:
+        if _grant_boundary is None:
+            from youtab_runtime.policy import AuthorityBoundary
+            try:
+                db_path = str(
+                    kb.kanban_db_path(board=RUNTIME_BOARD).parent
+                    / "runtime_grant_nonces.db"
+                )
+                store = rca.SqliteNonceStore(db_path)
+            except Exception as exc:  # noqa: BLE001
+                if _nonce_memory_opt_in():
+                    _log.warning(
+                        "grant admission using EXPLICITLY opted-in in-memory nonce "
+                        "store (process-local replay protection only): %s", exc,
+                    )
+                    store = rca._MemoryNonceStore()
+                else:
+                    _log.error(
+                        "grant admission nonce store unavailable; refusing managed "
+                        "runs (set YOUTAB_RUNTIME_NONCE_ALLOW_MEMORY=1 only for a "
+                        "single-process deployment): %s", exc,
+                    )
+                    raise
+            _grant_boundary = AuthorityBoundary(nonce_store=store)
+        return _grant_boundary
+
+
+async def _admit_execution_grant(request: Request, identity: RuntimeIdentity):
+    """Enforce the trust-mode execution-authority gate for a mutating managed run.
+
+    Managed mode REQUIRES a valid Simorgh grant (fail-closed on missing/invalid/
+    expired/replayed/mismatched); local-standalone mode REFUSES a managed grant.
+    Returns the raw grant header string when one was admitted (managed), else
+    ``None``. The sealed :class:`AdmittedCommand` is re-created in the worker via
+    ``managed_execution.re_admit_worker_grant`` from the persisted grant.
+    """
+    from youtab_runtime import managed_execution as mx
+
+    grant_header = request.headers.get(mx.GRANT_HEADER)
+    try:
+        mode = mx.current_trust_mode()
+        if mode is mx.TrustMode.MANAGED:
+            workspace = (
+                request.headers.get(rca.WORKSPACE_HEADER) or rca.WORKSPACE_UNSCOPED
+            ).strip() or rca.WORKSPACE_UNSCOPED
+            mx.admit_managed_run(
+                grant_header=grant_header,
+                identity=mx.AdmissionIdentity(
+                    tenant=identity.tenant, user=identity.user, workspace=workspace
+                ),
+                boundary=_get_grant_boundary(),
+                public_keys=mx.load_brain_public_keys(),
+            )
+            return grant_header
+        # local-standalone: must not accept a managed grant implicitly.
+        mx.reject_grant_in_standalone(grant_header)
+        return None
+    except mx.ManagedAdmissionError as exc:
+        raise HTTPException(
+            status_code=exc.http_status, detail={"error": exc.code}
+        ) from exc
 
 
 async def _verify_signed_command(request: Request, identity: RuntimeIdentity) -> None:
     """Verify the signed-command envelope on a mutating request. Raise on failure."""
     body = await request.body()
+    # Canonical v2 binds the workspace (field 5). The gateway sends it on
+    # ``X-Youtab-Workspace-Id`` (``-`` when unscoped) and signs the SAME value;
+    # the engine MUST verify against that value, not the default, or a
+    # workspace-scoped request would fail (or, worse, be verified under the
+    # wrong workspace). For v1 requests the param is ignored by the v1 builder.
+    workspace = (request.headers.get(rca.WORKSPACE_HEADER) or rca.WORKSPACE_UNSCOPED).strip()
     try:
         rca.verify_command(
             method=request.method,
@@ -358,6 +482,7 @@ async def _verify_signed_command(request: Request, identity: RuntimeIdentity) ->
             headers=request.headers,
             secret=_runtime_secret(),
             store=_get_nonce_store(),
+            workspace=workspace or rca.WORKSPACE_UNSCOPED,
         )
     except rca.CommandAuthError as exc:
         raise HTTPException(status_code=exc.http_status, detail={"error": exc.code}) from exc  # noqa: E501
@@ -583,6 +708,57 @@ def _event_projection(run_id: str, e: "kb.Event") -> Dict[str, Any]:
 
 def _is_cancelled(events: "List[kb.Event]") -> bool:
     return any(e.kind == _CANCEL_EVENT_KIND for e in events)
+
+
+def _summary_signals(conn: "Any", task_ids: "List[str]") -> "Dict[str, Tuple[bool, str]]":
+    """Batch-read the cancel + execution-mode signals for many runs in ONE query.
+
+    Returns ``{task_id: (cancelled, execution_mode)}``. This replaces the
+    per-task ``list_events`` fan-out in the run-list projection — that N+1 loaded
+    the FULL event history of every run only to detect a cancel event and the
+    mode. Here a single query selects just the two relevant event kinds for the
+    whole page and reproduces the exact semantics of ``_is_cancelled`` (any
+    cancel event) and ``_mode_from_events`` (first valid mode event in
+    created-order, default ``"model"``). Rows are ordered created-ascending, so
+    the FIRST mode row per task wins, matching ``_mode_from_events``.
+    """
+    if not task_ids:
+        return {}
+    cancelled: set[str] = set()
+    mode_seen: set[str] = set()
+    mode: Dict[str, str] = {}
+    # Chunk the IN(...) set to stay under SQLite's bound-variable limit (default
+    # 999; the two kind params leave headroom). Each task_id lands in exactly one
+    # chunk, so per-task created-order — and thus first-valid-mode-wins — is
+    # preserved without any cross-chunk merge concern.
+    chunk_size = 900
+    for start in range(0, len(task_ids), chunk_size):
+        chunk = task_ids[start:start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            "SELECT task_id, kind, payload FROM task_events "
+            "WHERE kind IN (?, ?) "
+            f"AND task_id IN ({placeholders}) "
+            "ORDER BY created_at ASC, id ASC",
+            (_CANCEL_EVENT_KIND, _MODE_EVENT, *chunk),
+        ).fetchall()
+        for r in rows:
+            tid = r["task_id"]
+            if r["kind"] == _CANCEL_EVENT_KIND:
+                cancelled.add(tid)
+            elif r["kind"] == _MODE_EVENT and tid not in mode_seen:
+                try:
+                    payload = json.loads(r["payload"]) if r["payload"] else None
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    m = str(payload.get("mode") or "").strip().lower()
+                    if m in ("model", "deterministic"):
+                        mode[tid] = m
+                        mode_seen.add(tid)
+    return {
+        tid: (tid in cancelled, mode.get(tid, "model")) for tid in task_ids
+    }
 
 
 def _load_owned_task(conn: "Any", run_id: str, identity: RuntimeIdentity) -> "kb.Task":
@@ -1244,21 +1420,30 @@ async def runtime_list_runs(
 ):
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        # Tenant is the DB-level filter; user ownership is enforced per row so a
-        # tenant admin still can't read another user's runs through this surface.
-        tasks = kb.list_tasks(
-            conn, tenant=identity.tenant, include_archived=True,
-            order_by="created-desc",
-        )
-        owned = [t for t in tasks if t.created_by == identity.user]
-        # Project status (with cancel detection) before optional status filter.
-        summaries = []
-        for t in owned:
-            events = kb.list_events(conn, t.id)
-            summaries.append(_run_summary(
-                t, cancelled=_is_cancelled(events), execution_mode=_mode_from_events(events)
-            ))
+
+    def _collect() -> "List[Dict[str, Any]]":
+        # Runs on a worker thread (see run_in_threadpool below): the kanban
+        # store is synchronous SQLite, and doing it inline on the event loop
+        # blocks every other request that uvicorn worker is serving. The
+        # connection is opened and closed entirely within this thread.
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            # Tenant is the DB-level filter; user ownership is enforced per row so
+            # a tenant admin still can't read another user's runs here.
+            tasks = kb.list_tasks(
+                conn, tenant=identity.tenant, include_archived=True,
+                order_by="created-desc",
+            )
+            owned = [t for t in tasks if t.created_by == identity.user]
+            # One batched query for cancel/mode signals instead of a per-task
+            # full-history list_events fan-out (the N+1).
+            signals = _summary_signals(conn, [t.id for t in owned])
+            out: List[Dict[str, Any]] = []
+            for t in owned:
+                cancelled, mode = signals.get(t.id, (False, "model"))
+                out.append(_run_summary(t, cancelled=cancelled, execution_mode=mode))
+            return out
+
+    summaries = await run_in_threadpool(_collect)
     if status is not None:
         summaries = [s for s in summaries if s["status"] == status]
     total = len(summaries)
@@ -1273,10 +1458,13 @@ async def runtime_list_runs(
 async def runtime_run_detail(
     run_id: str, identity: RuntimeIdentity = Depends(require_service_identity)
 ):
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        task = _load_owned_task(conn, run_id, identity)
-        events = kb.list_events(conn, task.id)
-        return _run_detail(conn, task, cancelled=_is_cancelled(events))
+    def _detail() -> "Dict[str, Any]":
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            return _run_detail(conn, task, cancelled=_is_cancelled(events))
+
+    return await run_in_threadpool(_detail)
 
 
 @router.get("/api/runtime/v1/runs/{run_id}/events")
@@ -1295,19 +1483,23 @@ async def runtime_run_events(
     """
     after = max(0, int(after))
     limit = max(1, min(int(limit), 2000))
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        task = _load_owned_task(conn, run_id, identity)
-        all_events = kb.list_events(conn, task.id)
-        cancelled = _is_cancelled(all_events)
-        fresh = [e for e in all_events if e.id > after][:limit]
-        cursor = fresh[-1].id if fresh else after
-        status = _run_status(task, cancelled=cancelled)
-    return {
-        "events": [_event_projection(run_id, e) for e in fresh],
-        "cursor": cursor,
-        "status": status,
-        "terminal": status in _TERMINAL_PRODUCT_STATUSES,
-    }
+
+    def _collect() -> "Dict[str, Any]":
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            task = _load_owned_task(conn, run_id, identity)
+            all_events = kb.list_events(conn, task.id)
+            cancelled = _is_cancelled(all_events)
+            fresh = [e for e in all_events if e.id > after][:limit]
+            cursor = fresh[-1].id if fresh else after
+            status = _run_status(task, cancelled=cancelled)
+        return {
+            "events": [_event_projection(run_id, e) for e in fresh],
+            "cursor": cursor,
+            "status": status,
+            "terminal": status in _TERMINAL_PRODUCT_STATUSES,
+        }
+
+    return await run_in_threadpool(_collect)
 
 
 @router.get("/api/runtime/v1/runs/{run_id}/artifacts")
@@ -1402,6 +1594,10 @@ async def runtime_create_run(
     ``model_override``/``provider_override`` without touching the profile.
     """
     await _verify_signed_command(request, identity)
+    # Execution-authority gate (WAVE-30H R3): AFTER transport auth, BEFORE any
+    # run is created. Managed mode requires a valid Simorgh grant; standalone
+    # refuses one. Fail-closed inside (raises HTTPException on any bad grant).
+    grant_header = await _admit_execution_grant(request, identity)
     payload = await _json_body(request)
     agent = str(payload.get("agent") or "").strip()
     task_text = str(payload.get("task") or "").strip()
@@ -1603,6 +1799,12 @@ async def runtime_create_run(
                     _limits_dict["worker_attempt_limit"] = _task_max_retries
                 if _limits_dict:
                     kb._append_event(conn, run_id, _LIMITS_EVENT, _limits_dict)
+                # Persist the admitted Simorgh grant (managed mode only) so the
+                # worker can re-admit it in its own process (re_admit_worker_grant)
+                # and gate tool execution by the sealed AdmittedCommand. It is a
+                # signed authorization token, not a secret. Absent in standalone.
+                if grant_header:
+                    kb._append_event(conn, run_id, _GRANT_EVENT, {"grant": grant_header})
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run
@@ -1632,6 +1834,9 @@ async def runtime_cancel_run(
     product-cancel intent, kills any live worker, and blocks the task.
     """
     await _verify_signed_command(request, identity)
+    # Managed cancel is a governed mutation: it requires the same execution
+    # authority (a Simorgh grant) in managed mode; standalone refuses a grant.
+    await _admit_execution_grant(request, identity)
     worker_pid = None
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         # ATOMIC check-then-act. The ownership decision, the authoritative
@@ -1692,6 +1897,9 @@ async def runtime_retry_run(
 ):
     """Retry a finished/blocked run by creating a fresh run from the same spec."""
     await _verify_signed_command(request, identity)
+    # Managed retry is a governed mutation: it requires execution authority (a
+    # Simorgh grant) in managed mode; standalone refuses a grant.
+    await _admit_execution_grant(request, identity)
     # Authorize ownership FIRST — a caller that does not own run_id gets 404 and
     # no effect-ledger row is ever created in their namespace (reviewer A INFO-2).
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
