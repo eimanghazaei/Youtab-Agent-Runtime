@@ -17,7 +17,11 @@ from typing import Optional
 
 
 def _root(agent) -> Optional[str]:
-    return getattr(agent, "_execution_tree_root", None)
+    # A managed root_run_id is always a non-empty STRING. Requiring str (not just
+    # truthiness) makes every gate a no-op for a non-managed agent AND robust to
+    # test doubles (a MagicMock auto-vivifies attributes as truthy Mocks).
+    root = getattr(agent, "_execution_tree_root", None)
+    return root if isinstance(root, str) and root else None
 
 
 def _agent_instance_id(agent) -> str:

@@ -1240,7 +1240,9 @@ def _build_child_agent(
     # the whole execution tree. Refuse to spawn past it (fail-closed) — this is in
     # ADDITION to the local _get_max_spawn_depth guard, never a widening of it.
     _tree_root = getattr(parent_agent, "_execution_tree_root", None)
-    if _tree_root:
+    # Managed only: root_run_id is a non-empty str (isinstance guards against a
+    # MagicMock parent auto-vivifying the attribute as a truthy Mock in tests).
+    if isinstance(_tree_root, str) and _tree_root:
         from youtab_runtime import execution_tree_budget as _etb
 
         try:
@@ -1576,11 +1578,13 @@ def _build_child_agent(
     # Simorgh-gated (enforce_managed_tool_authority) and (b) its conversation loop
     # debits the ONE shared tree budget (the remaining root budget), never a fresh
     # or unlimited one. Non-managed parents carry neither, so this is a no-op.
-    _parent_admitted = getattr(parent_agent, "_admitted_command", None)
-    if _parent_admitted is not None:
-        child._admitted_command = _parent_admitted
+    # Managed only: gate on a real str root_run_id so a non-managed parent (or a
+    # MagicMock test double) never copies mock authority/budget onto the child.
     _parent_tree_root = getattr(parent_agent, "_execution_tree_root", None)
-    if _parent_tree_root is not None:
+    if isinstance(_parent_tree_root, str) and _parent_tree_root:
+        _parent_admitted = getattr(parent_agent, "_admitted_command", None)
+        if _parent_admitted is not None:
+            child._admitted_command = _parent_admitted
         child._execution_tree_root = _parent_tree_root
         child._execution_tree_limits = getattr(
             parent_agent, "_execution_tree_limits", None
@@ -2006,6 +2010,29 @@ def _run_single_child(
     Returns a structured result dict.
     """
     child_start = time.monotonic()
+
+    # WAVE-30H R5: acquire the managed max_concurrent_agents permit for this
+    # delegated child BEFORE it runs. This is the single common chokepoint every
+    # delegation path funnels through, so the tree's live-agent count is enforced
+    # for success, failure, timeout, cancellation and retry alike (the permit is
+    # released in the outermost `finally` below; a crash that skips it is
+    # reclaimed by the reaper via the recorded pid+incarnation). No-op for a
+    # non-managed child. Fail-closed: past the ceiling the child is refused, not
+    # silently run unbudgeted.
+    from agent import managed_budget_gate as _mbg
+
+    try:
+        _mbg.acquire_delegation_permit(child)
+    except Exception as _permit_exc:  # noqa: BLE001 - TreeConcurrency/DepthExceeded
+        return {
+            "task_index": task_index,
+            "status": "error",
+            "summary": None,
+            "error": f"delegation refused by execution-tree budget: {_permit_exc}",
+            "api_calls": 0,
+            "duration_seconds": 0.0,
+            "_child_role": getattr(child, "_delegate_role", None),
+        }
 
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
@@ -2592,6 +2619,14 @@ def _run_single_child(
                 child_pool.release_lease(leased_cred_id)
             except Exception as exc:
                 logger.debug("Failed to release credential lease: %s", exc)
+
+        # WAVE-30H R5: release the managed concurrency permit on EVERY exit path
+        # (success/failure/timeout/cancellation). Idempotent + no-op if none was
+        # acquired, so it is always safe here.
+        try:
+            _mbg.release_delegation_permit(child)
+        except Exception as exc:  # noqa: BLE001 - release must never mask the result
+            logger.debug("Failed to release delegation permit: %s", exc)
 
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.
