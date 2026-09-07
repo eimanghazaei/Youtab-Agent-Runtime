@@ -1458,6 +1458,19 @@ def _run_conversation_impl(
                     agent._safe_print(f"\n⛔ Run limit reached ({_limit_stop}); stopping before further provider calls")
                 break
 
+        # WAVE-30H R5: the managed execution-tree shared budget (from the Simorgh
+        # grant reasoning, keyed on root_run_id). Unconditional for managed runs,
+        # independent of any benchmark campaign; a no-op for non-managed runs.
+        # Enforces the tree deadline + debits one shared iteration, fail-closed.
+        from agent import managed_budget_gate as _mbg
+
+        _tree_stop = _mbg.execution_tree_pre_iteration(agent)
+        if _tree_stop:
+            _turn_exit_reason = f"run_limit:{_tree_stop}"
+            if not agent.quiet_mode:
+                agent._safe_print(f"\n⛔ Execution-tree budget reached ({_tree_stop}); stopping before further provider calls")
+            break
+
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
             try:
@@ -3475,6 +3488,23 @@ def _run_conversation_impl(
                                 agent.session_id, total_tokens, e,
                             )
                     
+                    # WAVE-30H R5: debit actual tokens against the managed
+                    # execution-tree shared budget (no-op for non-managed runs).
+                    # Tokens are already spent; on overflow this saturates the
+                    # remaining budget and records a stop honoured at the loop top.
+                    try:
+                        from agent import managed_budget_gate as _mbg
+
+                        _tree_tok_stop = _mbg.execution_tree_debit_tokens(
+                            agent,
+                            input_tokens=canonical_usage.input_tokens,
+                            output_tokens=canonical_usage.output_tokens,
+                        )
+                        if _tree_tok_stop:
+                            agent._tree_token_stop = _tree_tok_stop
+                    except Exception:  # noqa: BLE001 - accounting must never crash the turn
+                        pass
+
                     if agent.verbose_logging:
                         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
                     

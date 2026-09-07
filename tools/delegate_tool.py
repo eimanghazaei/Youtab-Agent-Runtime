@@ -1236,6 +1236,26 @@ def _build_child_agent(
     orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
     effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"
 
+    # WAVE-30H R5: for a managed run, the Simorgh grant's max_spawn_depth bounds
+    # the whole execution tree. Refuse to spawn past it (fail-closed) — this is in
+    # ADDITION to the local _get_max_spawn_depth guard, never a widening of it.
+    _tree_root = getattr(parent_agent, "_execution_tree_root", None)
+    if _tree_root:
+        from youtab_runtime import execution_tree_budget as _etb
+
+        try:
+            _grant_max_depth = _etb.snapshot(_tree_root).max_spawn_depth
+        except _etb.TreeBudgetError as exc:
+            raise ValueError(
+                "managed delegation could not verify the execution-tree spawn "
+                "depth budget; refusing to spawn"
+            ) from exc
+        if child_depth > _grant_max_depth:
+            raise ValueError(
+                f"delegation depth {child_depth} exceeds the Simorgh grant's "
+                f"max_spawn_depth {_grant_max_depth} for this execution tree"
+            )
+
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
     # subagent_id is generated here so the progress callback, the
     # spawn_requested event, and the _active_subagents registry all share
@@ -1551,6 +1571,20 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # WAVE-30H R3/R5: a delegated child inherits the parent's sealed admitted
+    # context AND the SAME execution-tree budget root, so (a) its tool calls stay
+    # Simorgh-gated (enforce_managed_tool_authority) and (b) its conversation loop
+    # debits the ONE shared tree budget (the remaining root budget), never a fresh
+    # or unlimited one. Non-managed parents carry neither, so this is a no-op.
+    _parent_admitted = getattr(parent_agent, "_admitted_command", None)
+    if _parent_admitted is not None:
+        child._admitted_command = _parent_admitted
+    _parent_tree_root = getattr(parent_agent, "_execution_tree_root", None)
+    if _parent_tree_root is not None:
+        child._execution_tree_root = _parent_tree_root
+        child._execution_tree_limits = getattr(
+            parent_agent, "_execution_tree_limits", None
+        )
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
