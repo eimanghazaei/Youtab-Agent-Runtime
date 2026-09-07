@@ -99,6 +99,28 @@ def establish_managed_admission(agent) -> bool:
         ) from exc
 
     agent._admitted_command = admitted
+    # R5: open the ONE durable shared execution-tree budget from the grant's
+    # reasoning, keyed on root_run_id, UNCONDITIONALLY for this managed run (never
+    # gated on a benchmark campaign env var). The root run seeds it; delegated
+    # children re-open the SAME key and only debit the remaining budget. Expose
+    # the root id + reasoning-derived RunLimits so the agent loop can enforce.
+    env = admitted.envelope
+    reasoning = getattr(env, "reasoning", None)
+    if reasoning is not None and hasattr(reasoning, "max_cost_micros"):
+        from youtab_runtime import execution_tree_budget as etb
+
+        root_run_id = getattr(env, "root_run_id", None) or getattr(env, "task_id")
+        try:
+            etb.open_tree(
+                root_run_id, etb.reasoning_to_tree_params(reasoning)
+            )
+            agent._execution_tree_root = root_run_id
+            agent._execution_tree_limits = etb.reasoning_to_run_limits(reasoning)
+        except Exception as exc:  # noqa: BLE001 - a managed run must not proceed unbudgeted
+            raise ManagedWorkerAdmissionError(
+                f"managed run {task_id} could not open its execution-tree budget"
+            ) from exc
+
     # R4 (corrected): physically namespace the memory store by the grant's
     # tenant/workspace so this managed run can never read or write another
     # tenant's memory. The namespace is installed as an IMMUTABLE PER-RUN context
@@ -107,7 +129,6 @@ def establish_managed_admission(agent) -> bool:
     # process serving more than one. This worker is a single-run subprocess, so
     # setting it once here scopes the whole run. Read by
     # tools.memory_tool.get_memory_dir; sanitized there against path traversal.
-    env = admitted.envelope
     try:
         from tools import memory_tool as _mt
 

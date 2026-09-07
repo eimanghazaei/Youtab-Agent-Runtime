@@ -176,10 +176,23 @@ except ManagedWorkerAdmissionError as exc:
 
 from agent.tool_executor import enforce_managed_tool_authority
 
+# R5: the shared execution-tree budget was opened in THIS worker process from the
+# grant's reasoning; debit one iteration to prove it is live and shared.
+from youtab_runtime import execution_tree_budget as etb
+tree_root = getattr(agent, "_execution_tree_root", None)
+tree_snap = None
+if tree_root is not None:
+    etb.consume(tree_root, iterations=1, tokens=10)
+    s = etb.snapshot(tree_root)
+    tree_snap = {"iterations_used": s.iterations_used, "max_iterations": s.max_iterations,
+                 "tokens_used": s.tokens_used}
+
 result = {
     "established": bool(established),
     "has_admitted": agent._admitted_command is not None,
     "pid": os.getpid(),
+    "tree_root": tree_root,
+    "tree_snap": tree_snap,
     # a read tool in the frozen manifest -> allowed (None)
     "read_block": enforce_managed_tool_authority(agent, "safe_read", {}),
     # an effectful tool in the manifest -> blocked (effect gate)
@@ -257,6 +270,9 @@ def test_worker_subprocess_readmits_and_gates_real_tools(tmp_path, monkeypatch):
     # a tool registered after admission is NOT swept in by "*"
     assert res["late_block"] is not None
     assert "capability manifest" in res["late_block"]
+    # R5: the shared execution-tree budget was opened in the worker and debited
+    assert res["tree_root"] == "run-subproc0001"
+    assert res["tree_snap"] == {"iterations_used": 1, "max_iterations": 5, "tokens_used": 10}
 
 
 # ── worker negative controls ─────────────────────────────────────────────────
