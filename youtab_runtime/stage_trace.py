@@ -53,12 +53,16 @@ class Stage:
     """Canonical stage identifiers. Arbitrary strings are also permitted; these
     are the ones the R8 requirement enumerates so aggregation can label them."""
 
+    REQUEST_RECEIVE = "request.receive"  # ingress: create_run handler entry->ack
     ADMISSION_VERIFY = "admission.verify_signature"
     GRANT_VERIFY = "grant.verify"
     GRANT_PERSIST = "grant.persist"
     QUEUE_WAIT = "queue.wait"  # cross-process -> clock="epoch"
     DISPATCH_SCHEDULE = "dispatch.schedule"
+    WORKER_SPAWN = "worker.spawn"  # cross-process (enqueue->process start) -> epoch
+    WORKER_READY = "worker.ready"  # process start->first real work -> epoch
     WORKER_STARTUP = "worker.startup"  # cross-process -> clock="epoch"
+    ENGINE_RESOLVE = "engine.resolve"  # profile id -> (provider, model, endpoint, client)
     MODEL_INIT = "model.init"  # attrs: cache_state="cold"|"warm"
     PROMPT_CONSTRUCT = "prompt.construct"
     PROMPT_TOKENIZE = "prompt.tokenize"  # attrs: input_tokens=int
@@ -70,11 +74,14 @@ class Stage:
     TOOLS_SELECT = "tools.select"
     TOOL_CALL = "tool.call"  # attrs: tool_name, ok
     RETRY_BACKOFF = "retry.backoff"  # attrs: attempt, provider_throttled
-    MEMORY_RETRIEVE = "memory.retrieve"  # attrs: kind="vector"|"graph"|"memory"
+    MEMORY_RETRIEVE = "memory.retrieve"  # file-backed memory (kind="memory")
+    VECTOR_RETRIEVE = "memory.vector_retrieve"  # vector store (separate percentile)
+    GRAPH_RETRIEVE = "memory.graph_retrieve"  # graph store (separate percentile)
     CHILD_SPAWN = "child.spawn"
     CHILD_WAIT = "child.wait"
     OUTPUT_VALIDATE = "output.validate"
     OUTPUT_PERSIST = "output.persist"
+    OUTPUT_DELIVER = "output.deliver"  # final response returned/delivered to caller
     RUN_TOTAL = "run.total"  # top-level, usually clock="epoch"
 
 
@@ -456,6 +463,24 @@ def span(
             t_end_epoch_ns=end_epoch,
             attrs=_validate_attrs(box),
         )
+
+
+def stage_span(stage_attr: str, **attrs: Any) -> Any:
+    """:func:`span` keyed by a :class:`Stage` attribute NAME (single-sourced), e.g.
+    ``stage_span("TOOLS_SCHEMA_LOAD", tool_count=n)``.
+
+    Callers wrap the import so observability can never break the traced path::
+
+        try:
+            from youtab_runtime.stage_trace import stage_span as _stage_span
+        except Exception:  # pragma: no cover
+            from contextlib import nullcontext
+            def _stage_span(_n, **_a):
+                return nullcontext({})
+
+    Still self-noops (no clock reads, no emit) when tracing is disabled.
+    """
+    return span(getattr(Stage, stage_attr), **attrs)
 
 
 def record(

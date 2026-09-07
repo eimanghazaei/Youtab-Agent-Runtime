@@ -41,6 +41,33 @@ try:  # pragma: no cover - trivial import guard
 except Exception:  # pragma: no cover - defensive
     def _phase_mark(_name: str) -> None:
         return None
+
+# WAVE-30H R8: causally-valid per-stage latency spans. Self-noops when tracing is
+# off (default) or unavailable — instrumenting agent construction must never break
+# or slow the cold-start path it measures.
+try:  # pragma: no cover - observability import guard
+    from youtab_runtime import stage_trace as _st
+except Exception:  # pragma: no cover - defensive
+    _st = None  # type: ignore[assignment]
+
+
+def _stage_span(stage_attr: str, **attrs: Any):
+    """A stage_trace span that self-noops when tracing is disabled/unavailable.
+
+    ``stage_attr`` is the NAME of a :class:`stage_trace.Stage` constant (e.g.
+    ``"TOOLS_DISCOVER"``) so the canonical value stays single-sourced; when
+    tracing is unavailable the constant is never dereferenced.
+    """
+    from contextlib import nullcontext
+
+    if _st is None:
+        return nullcontext({})
+    try:
+        return _st.span(getattr(_st.Stage, stage_attr), **attrs)
+    except Exception:  # pragma: no cover - defensive; never break construction
+        return nullcontext({})
+
+
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -997,6 +1024,13 @@ def init_agent(
     # Claude uses its own timeout path and is not covered here.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
+    # WAVE-30H R8: measure engine/provider resolution + client construction as one
+    # causally-bounded stage (engine.resolve). Boundary = from here through the end
+    # of the per-provider client-build if/elif below. Monotonic (intra-process).
+    # This is distinct from model.init (server-side native load_duration, emitted by
+    # run_observer) — do not conflate the two.
+    _engine_resolve_t0 = time.monotonic_ns() if _st is not None else None
+
     if agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
@@ -1376,6 +1410,17 @@ def init_agent(
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
+    if _st is not None and _engine_resolve_t0 is not None:
+        try:
+            _st.record(
+                _st.Stage.ENGINE_RESOLVE,
+                duration_ns=time.monotonic_ns() - _engine_resolve_t0,
+                provider=(agent.provider or None),
+                model_id=(agent.model or None),
+            )
+        except Exception:  # pragma: no cover - observability never breaks init
+            pass
+
     # Keep a stable identity for the pool entry that supplied this runtime.
     # OAuth refreshes can replace the runtime token before a failed request is
     # recovered, so the mutable API-key value alone cannot reliably attribute
@@ -1411,16 +1456,22 @@ def init_agent(
     # Get available tools with filtering. Capture the registry generation this
     # snapshot is derived from FIRST, so a later concurrent refresh can tell
     # whether it holds a newer or staler view (see refresh_agent_mcp_tools).
-    try:
-        from tools.registry import registry as _snapshot_registry
-        agent._tool_snapshot_generation = _snapshot_registry._generation
-    except Exception:
-        agent._tool_snapshot_generation = 0
-    agent.tools = _ra().get_tool_definitions(
-        enabled_toolsets=enabled_toolsets,
-        disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
-    )
+    with _stage_span("TOOLS_DISCOVER"):
+        try:
+            from tools.registry import registry as _snapshot_registry
+            agent._tool_snapshot_generation = _snapshot_registry._generation
+        except Exception:
+            agent._tool_snapshot_generation = 0
+    with _stage_span("TOOLS_SCHEMA_LOAD") as _box_schema:
+        agent.tools = _ra().get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=agent.quiet_mode,
+        )
+        try:
+            _box_schema["tool_count"] = len(agent.tools or [])
+        except Exception:  # pragma: no cover - attr set must never break init
+            pass
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()

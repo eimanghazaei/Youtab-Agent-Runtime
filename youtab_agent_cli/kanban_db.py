@@ -8028,9 +8028,23 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
             )
+        # R8 (WAVE-30H): stamp a wall-clock ns mark at spawn so the worker can
+        # compute QUEUE_WAIT (spawn − enqueue) and WORKER_STARTUP (worker T0 − spawn)
+        # as cross-process (clock="epoch") gaps — the coarse seconds-grained task
+        # timestamps cannot resolve these sub-second-to-second boundaries.
+        try:
+            import time as _t
+            _spawned_epoch_ns = _t.time_ns()
+        except Exception:  # pragma: no cover - observability never breaks spawn
+            _spawned_epoch_ns = None
         _append_event(
             conn, task_id, "spawned",
-            {"pid": int(pid), "incarnation": incarnation}, run_id=run_id,
+            {
+                "pid": int(pid),
+                "incarnation": incarnation,
+                "spawned_epoch_ns": _spawned_epoch_ns,
+            },
+            run_id=run_id,
         )
 
 
@@ -8578,6 +8592,7 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        _dispatch_t0 = time.monotonic_ns()  # R8: DISPATCH_SCHEDULE (claim -> spawn)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -8597,6 +8612,21 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        # R8: attribute the dispatcher's per-task scheduling work (claim -> workspace
+        # resolution -> ready to spawn), correlated by run_id. Intra-process monotonic.
+        try:
+            from youtab_runtime import stage_trace as _st_disp
+            with _st_disp.trace_context_scope(
+                run_id=getattr(claimed, "id", None),
+                tenant=getattr(claimed, "tenant", None),
+                user=getattr(claimed, "created_by", None),
+            ):
+                _st_disp.record(
+                    _st_disp.Stage.DISPATCH_SCHEDULE,
+                    duration_ns=time.monotonic_ns() - _dispatch_t0,
+                )
+        except Exception:  # pragma: no cover - observability never breaks dispatch
+            pass
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only

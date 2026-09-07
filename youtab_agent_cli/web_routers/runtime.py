@@ -1643,6 +1643,16 @@ async def runtime_create_run(
     when that engine is bound to a provider/model, pins the run to it via
     ``model_override``/``provider_override`` without touching the profile.
     """
+    # WAVE-30H R8: ingress marks. REQUEST_RECEIVE = synchronous ingress latency
+    # (monotonic, recorded at ack with the now-known run_id). enqueue_epoch_ns is a
+    # wall-clock mark carried into the create event so the dispatcher can compute
+    # QUEUE_WAIT as a cross-process (clock="epoch") gap — the coarse seconds-grained
+    # task timestamps cannot resolve a sub-second local queue wait.
+    _req_recv_t0 = time.monotonic_ns()
+    try:
+        from youtab_runtime import stage_trace as _st_ing
+    except Exception:  # pragma: no cover - observability never blocks ingress
+        _st_ing = None
     await _verify_signed_command(request, identity)
     # Execution-authority gate (WAVE-30H R3): AFTER transport auth, BEFORE any
     # run is created. Managed mode requires a valid Simorgh grant; standalone
@@ -1793,6 +1803,7 @@ async def runtime_create_run(
     want_det = bool(payload.get("deterministic", False))
     mode = "deterministic" if (want_det and _deterministic_worker_enabled()) else "model"
 
+    _enqueue_epoch_ns = _st_ing.mark_epoch() if _st_ing is not None else None
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         run_id, created = kb.create_task_ex(
             conn,
@@ -1831,7 +1842,12 @@ async def runtime_create_run(
                     conn,
                     run_id,
                     _MODE_EVENT,
-                    {"mode": mode, "correlation_id": identity.correlation_id},
+                    {
+                        "mode": mode,
+                        "correlation_id": identity.correlation_id,
+                        # R8: ns wall-clock enqueue mark for cross-process QUEUE_WAIT.
+                        "enqueue_epoch_ns": _enqueue_epoch_ns,
+                    },
                 )
                 # Record the branded engine selection (consumer-safe: profile_id
                 # + public label only; never the provider/model it resolved to).
@@ -1867,6 +1883,22 @@ async def runtime_create_run(
     # actually executes and finalises.
     ensure_dispatcher_running()
     _dispatch_tick()
+    # R8: total synchronous ingress latency, now fully correlated (run_id known).
+    if _st_ing is not None:
+        try:
+            with _st_ing.trace_context_scope(
+                run_id=run_id,
+                tenant=identity.tenant,
+                user=identity.user,
+                correlation_id=identity.correlation_id,
+            ):
+                _st_ing.record(
+                    _st_ing.Stage.REQUEST_RECEIVE,
+                    duration_ns=time.monotonic_ns() - _req_recv_t0,
+                    result=("created" if created else "idempotent_hit"),
+                )
+        except Exception:  # pragma: no cover - observability never blocks ingress
+            pass
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         task = kb.get_task(conn, run_id)
         return (

@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
+
+# WAVE-30H R8: child-agent spawn/wait latency spans (self-noops when tracing off).
+try:  # pragma: no cover - observability import guard
+    from youtab_runtime.stage_trace import stage_span as _stage_span
+except Exception:  # pragma: no cover - defensive
+    from contextlib import nullcontext
+
+    def _stage_span(_stage_attr, **_attrs):
+        return nullcontext({})
 from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
@@ -2245,12 +2254,14 @@ def _run_single_child(
                 )
 
         _child_context = contextvars.copy_context()
-        _child_future = _timeout_executor.submit(
-            _child_context.run,
-            _run_with_thread_capture,
-        )
+        with _stage_span("CHILD_SPAWN"):
+            _child_future = _timeout_executor.submit(
+                _child_context.run,
+                _run_with_thread_capture,
+            )
         try:
-            result = _child_future.result(timeout=child_timeout)
+            with _stage_span("CHILD_WAIT"):
+                result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
             # Signal the child to stop so its thread can exit cleanly.
             try:

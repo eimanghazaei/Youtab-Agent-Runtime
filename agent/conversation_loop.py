@@ -25,6 +25,15 @@ import ssl
 import time
 from typing import Any, Dict, List, Optional
 
+# WAVE-30H R8: per-stage latency spans (self-noops when tracing is off/unavailable).
+try:  # pragma: no cover - observability import guard
+    from youtab_runtime.stage_trace import stage_span as _stage_span
+except Exception:  # pragma: no cover - defensive
+    from contextlib import nullcontext
+
+    def _stage_span(_stage_attr, **_attrs):
+        return nullcontext({})
+
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
@@ -511,7 +520,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     # First turn of a new session (or recovering from a broken stored
     # prompt) — build from scratch.
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    with _stage_span("PROMPT_CONSTRUCT") as _box_sysprompt:
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
+        try:
+            _box_sysprompt["result"] = "built"
+        except Exception:  # pragma: no cover
+            pass
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
@@ -1245,6 +1259,51 @@ def _run_conversation_impl(
                         tenant=_tenant, user=_user, run_id=_run_id,
                         root_run_id=_root, correlation_id=_corr, agent_id=_agent_id,
                     )
+                    # R8: emit the two cross-process startup gaps (clock="epoch") now
+                    # that the trace context is bound. The gateway stamped an enqueue
+                    # mark (runtime_execution_mode event) and the dispatcher a spawn
+                    # mark (spawned event); this worker's process-start wall epoch is
+                    # phase_timing._T0_WALL. Missing marks stay unrecorded (null, never
+                    # inferred); ordering is guarded so no negative duration is emitted.
+                    try:
+                        from youtab_agent_cli import kanban_db as _kb_r8
+                        from youtab_runtime import phase_timing as _pt_r8
+
+                        _enqueue_ns = None
+                        _spawned_ns = None
+                        with _kb_r8.connect_closing() as _c_r8:
+                            for _ev in _kb_r8.list_events(_c_r8, _run_id):
+                                _k = getattr(_ev, "kind", None)
+                                _p = getattr(_ev, "payload", None)
+                                if not isinstance(_p, dict):
+                                    continue
+                                if _k == "runtime_execution_mode" and _enqueue_ns is None:
+                                    _enqueue_ns = _p.get("enqueue_epoch_ns")
+                                elif _k == "spawned" and _spawned_ns is None:
+                                    _spawned_ns = _p.get("spawned_epoch_ns")
+                        _worker_t0_ns = int(getattr(_pt_r8, "_T0_WALL", 0) * 1_000_000_000) or None
+                        if (
+                            isinstance(_enqueue_ns, int)
+                            and isinstance(_spawned_ns, int)
+                            and _spawned_ns >= _enqueue_ns
+                        ):
+                            _st.record(
+                                _st.Stage.QUEUE_WAIT,
+                                duration_ns=_spawned_ns - _enqueue_ns,
+                                clock="epoch",
+                            )
+                        if (
+                            isinstance(_spawned_ns, int)
+                            and _worker_t0_ns
+                            and _worker_t0_ns >= _spawned_ns
+                        ):
+                            _st.record(
+                                _st.Stage.WORKER_STARTUP,
+                                duration_ns=_worker_t0_ns - _spawned_ns,
+                                clock="epoch",
+                            )
+                    except Exception:
+                        logger.debug("R8 cross-process startup spans failed", exc_info=True)
                 except Exception:
                     logger.debug("R8 trace-context bind failed", exc_info=True)
         except Exception:
@@ -1962,6 +2021,20 @@ def _run_conversation_impl(
         # separately (compression needs them: 50+ tools = 20-30K tokens).
         # total_chars is a rough (~) proxy — verbose log + hook metric only.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
+        # WAVE-30H R8: the live OpenAI-compat path emits no native prompt_eval, so
+        # this client estimate is the only input-token count available there. Record
+        # it with duration_ns=None (occurred-but-not-timed) so it carries the count
+        # WITHOUT entering the native-prefill duration percentile (null != zero).
+        try:
+            from youtab_runtime import stage_trace as _st_tok
+            _st_tok.record(
+                _st_tok.Stage.PROMPT_TOKENIZE,
+                duration_ns=None,
+                reason_code="client_estimate",
+                input_tokens=int(approx_tokens),
+            )
+        except Exception:  # pragma: no cover - observability never breaks the turn
+            pass
         request_pressure_tokens = approx_tokens + (
             _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
         )
@@ -2772,6 +2845,7 @@ def _run_conversation_impl(
                     
                     # Sleep in small increments to stay responsive to interrupts
                     sleep_end = time.time() + wait_time
+                    _backoff_t0 = time.monotonic_ns()
                     _backoff_touch_counter = 0
                     while time.time() < sleep_end:
                         if agent._interrupt_requested:
@@ -2807,6 +2881,23 @@ def _run_conversation_impl(
                                 f"retry backoff ({retry_count}/{max_retries}), "
                                 f"{int(sleep_end - time.time())}s remaining"
                             )
+                    # WAVE-30H R8: attribute the actual backoff wait (attempt +
+                    # whether upstream throttling drove it). Deliberate wait, but a
+                    # real, causally-linked latency component of a retrying run.
+                    try:
+                        from youtab_runtime import stage_trace as _st_bk
+                        _bk_throttled = bool(
+                            _failure_hint
+                            and ("rate" in _failure_hint.lower() or "429" in _failure_hint)
+                        )
+                        _st_bk.record(
+                            _st_bk.Stage.RETRY_BACKOFF,
+                            duration_ns=time.monotonic_ns() - _backoff_t0,
+                            attempt=int(retry_count),
+                            provider_throttled=_bk_throttled,
+                        )
+                    except Exception:  # pragma: no cover - never break the retry
+                        pass
                     if _retry.restart_with_redirected_messages:
                         break  # rebuild this iteration from the correction
                     continue  # Retry the API call
@@ -6668,7 +6759,13 @@ def _run_conversation_impl(
                 agent._mute_post_response = False
                 
                 # Check if response only has think block with no actual content after it
-                if not agent._has_content_after_think_block(final_response):
+                with _stage_span("OUTPUT_VALIDATE") as _box_val:
+                    _final_has_content = agent._has_content_after_think_block(final_response)
+                    try:
+                        _box_val["result"] = "ok" if _final_has_content else "empty"
+                    except Exception:  # pragma: no cover
+                        pass
+                if not _final_has_content:
                     # ── Partial stream recovery ─────────────────────
                     # If content was already streamed to the user before
                     # the connection died, use it as the final response
@@ -7362,9 +7459,10 @@ def _run_conversation_impl(
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
     from agent.turn_finalizer import finalize_turn
-    return finalize_turn(
-        agent,
-        final_response=final_response,
+    with _stage_span("OUTPUT_PERSIST"):
+        _finalized_turn = finalize_turn(
+            agent,
+            final_response=final_response,
         api_call_count=api_call_count,
         interrupted=interrupted,
         failed=failed,
@@ -7378,7 +7476,8 @@ def _run_conversation_impl(
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
-    )
+        )
+    return _finalized_turn
 
 
 
