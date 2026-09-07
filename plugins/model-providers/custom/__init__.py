@@ -37,6 +37,15 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
+        # WAVE-30E: optional Ollama keep_alive (opt-in; warm-path only). A
+        # duration string ("30m"), seconds, or "-1"/0 to keep the model resident
+        # indefinitely / evict immediately. Sent only when the caller supplied it
+        # so non-Ollama OpenAI-compatible backends (vLLM/llama.cpp) that don't
+        # recognize keep_alive are unaffected by default.
+        _keep_alive = ctx.get("ollama_keep_alive")
+        if _keep_alive is not None and str(_keep_alive).strip() != "":
+            extra_body["keep_alive"] = _keep_alive
+
         # Reasoning / thinking control for custom OpenAI-compatible endpoints
         # (GLM-5.2 on Volcengine ARK, vLLM, Ollama, llama.cpp, …).
         #

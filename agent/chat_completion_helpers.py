@@ -1330,6 +1330,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
+            ollama_keep_alive=getattr(agent, "_ollama_keep_alive", None),
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,
             openrouter_min_coding_score=agent.openrouter_min_coding_score,
@@ -1371,6 +1372,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
         ollama_num_ctx=agent._ollama_num_ctx,
+        ollama_keep_alive=getattr(agent, "_ollama_keep_alive", None),
         provider_preferences=_prefs or None,
         openrouter_min_coding_score=agent.openrouter_min_coding_score,
         qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
@@ -3066,6 +3068,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
             attempt_request_client["value"] = request_client
             last_chunk_time["t"] = time.time()
+            # WAVE-30E: remember when THIS attempt opened the stream so the first
+            # chunk can yield a real time-to-first-token (per successful attempt).
+            _diag["opened_at"] = last_chunk_time["t"]
             agent._touch_activity("waiting for provider response (streaming)")
             return request_client.chat.completions.create(**stream_kwargs)
 
@@ -3168,6 +3173,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
                 if _diag.get("first_chunk_at") is None:
                     _diag["first_chunk_at"] = last_chunk_time["t"]
+                    # WAVE-30E: real streaming time-to-first-token = first chunk
+                    # minus this attempt's stream-open. Stashed on the agent for
+                    # the per-call timing record; best-effort, never interrupts.
+                    try:
+                        _opened_at = _diag.get("opened_at")
+                        if _opened_at is not None:
+                            _ttft = last_chunk_time["t"] - _opened_at
+                            if _ttft >= 0:
+                                agent._last_ttft_s = _ttft
+                    except Exception:
+                        pass
                 # Approximate byte size from the chunk's delta payload —
                 # exact wire bytes aren't exposed by the SDK. A full
                 # repr() per chunk was 5.5-8.8 µs of pure CPU on the

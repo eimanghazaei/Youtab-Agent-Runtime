@@ -587,6 +587,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 model=model,
                 base_url=params.get("base_url"),
                 ollama_num_ctx=params.get("ollama_num_ctx"),
+                ollama_keep_alive=params.get("ollama_keep_alive"),
                 session_id=params.get("session_id"),
             )
         )

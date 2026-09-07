@@ -223,6 +223,7 @@ class RunObserver:
         usage: Any = None,
         base_url: Optional[str] = None,
         turn_id: Optional[str] = None,
+        timings: Any = None,
         **_ignored: Any,
     ) -> Optional[RunEvent]:
         """Persist one authoritative ``usage`` / ``model_call`` event.
@@ -231,6 +232,12 @@ class RunObserver:
         double-counts. When usage is missing the event records
         ``usage_status="unknown"`` with ``null`` token fields and an ``unknown``
         cost — never ``0``.
+
+        ``timings`` (WAVE-30E) is an OPTIONAL all-numeric per-call timing record
+        (runtime wall-clock + streaming TTFT + native Ollama load/prompt-eval/eval
+        durations and counts + cold/warm flag). It is re-sanitized to numeric
+        leaves here before persistence, so it can never smuggle prompt/response
+        text or a secret into the journal.
         """
         try:
             req_id = (api_request_id or "").strip() or None
@@ -248,6 +255,20 @@ class RunObserver:
                 "model": _safe_ident(model),
                 "api_mode": _safe_ident(api_mode),
             }
+
+            # WAVE-30E: attach the all-numeric timing record when present. Fail
+            # soft — timing observability must never drop the authoritative usage
+            # row. Re-sanitize (numeric leaves + the two safe boolean flags only)
+            # so no free text can ride in even if a caller mis-populates it.
+            if timings is not None:
+                try:
+                    from youtab_runtime.model_timings import sanitize_timings
+
+                    clean_timings = sanitize_timings(timings)
+                    if clean_timings:
+                        payload["timings"] = clean_timings
+                except Exception as timings_exc:  # pragma: no cover - defensive
+                    logger.debug("usage timings sanitize failed: %s", timings_exc)
 
             if _usage_is_present(usage):
                 buckets = {f: _as_int_or_none(usage.get(f)) for f in _TOKEN_FIELDS}

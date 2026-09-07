@@ -96,6 +96,21 @@ class ToolSearchConfig:
     # Absolute cap on the embedded listing, regardless of context size.
     # Effective budget = min(listing_max_tokens, threshold_pct% of context).
     listing_max_tokens: int = 20000
+    # WAVE-30E task-scoped loadout (default OFF → unchanged behaviour). When
+    # ``defer_core`` is set, CORE Youtab tools become eligible for deferral behind
+    # the tool_search bridge too — EXCEPT the ``always_on`` allowlist (the task's
+    # task-scoped primary tools, e.g. the kanban tools for a kanban worker), which
+    # stay eager. Deferred core tools remain fully DISCOVERABLE and CALLABLE via
+    # tool_search/tool_describe/tool_call — nothing is removed, only progressively
+    # disclosed. This shrinks the initial prompt for small local models.
+    #
+    # SCOPE NOTE: these fields live in the GLOBAL ``tools.tool_search`` config, not
+    # a per-provider/per-track scope. Default OFF keeps every run (cloud, Track B,
+    # normal) byte-identical. If an operator turns ``defer_core`` on, it applies to
+    # ALL runs served by that config — enable it in a local-ECO-only deployment, or
+    # add a per-provider gate, if Track-A-only isolation is required (follow-up).
+    defer_core: bool = False
+    always_on: frozenset = field(default_factory=frozenset)
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -145,6 +160,13 @@ class ToolSearchConfig:
             listing = "auto"
         listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 20000)))
 
+        defer_core = _coerce_bool(raw.get("defer_core"), False)
+        always_on_raw = raw.get("always_on")
+        if isinstance(always_on_raw, (list, tuple, set, frozenset)):
+            always_on = frozenset(str(n).strip() for n in always_on_raw if str(n).strip())
+        else:
+            always_on = frozenset()
+
         return cls(
             enabled=enabled,
             threshold_pct=threshold_pct,
@@ -152,6 +174,8 @@ class ToolSearchConfig:
             max_search_limit=max_search_limit,
             listing=listing,
             listing_max_tokens=listing_max_tokens,
+            defer_core=defer_core,
+            always_on=always_on,
         )
 
 
@@ -167,6 +191,19 @@ def _safe_float(value: Any, fallback: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _coerce_bool(value: Any, fallback: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return fallback
+    s = str(value).strip().lower()
+    if s in ("true", "1", "yes", "on"):
+        return True
+    if s in ("false", "0", "no", "off"):
+        return False
+    return fallback
 
 
 def load_config() -> ToolSearchConfig:
@@ -201,17 +238,48 @@ def _core_tool_names() -> frozenset[str]:
         return frozenset()
 
 
-def is_deferrable_tool_name(name: str) -> bool:
+# WAVE-30E: cached task-scoped loadout policy for the dispatch-side callers
+# (``scoped_deferrable_names`` / ``resolve_underlying_call``) that classify a
+# tool name without an in-hand config. Resolved once from ``load_config`` so it
+# is IDENTICAL to the config the assembly used within a process (both read the
+# same config file); ``reset_loadout_policy_cache`` lets tests flip it.
+_CACHED_LOADOUT_CONFIG: Optional["ToolSearchConfig"] = None
+
+
+def resolve_loadout_config() -> "ToolSearchConfig":
+    global _CACHED_LOADOUT_CONFIG
+    if _CACHED_LOADOUT_CONFIG is None:
+        _CACHED_LOADOUT_CONFIG = load_config()
+    return _CACHED_LOADOUT_CONFIG
+
+
+def reset_loadout_policy_cache() -> None:
+    global _CACHED_LOADOUT_CONFIG
+    _CACHED_LOADOUT_CONFIG = None
+
+
+def is_deferrable_tool_name(name: str, *, config: Optional["ToolSearchConfig"] = None) -> bool:
     """Return True if a tool with this name is *eligible* for deferral.
 
-    A tool is deferrable iff it is registered with an MCP toolset prefix
-    OR it is not in ``_YOUTAB_AGENT_CORE_TOOLS``. Core tools are never deferred
-    even when their toolset is technically plugin-provided (this protects
-    against accidental shadowing).
+    Baseline rule: a tool is deferrable iff registered with an MCP toolset prefix
+    OR not in ``_YOUTAB_AGENT_CORE_TOOLS``. Core tools are never deferred (this
+    protects against accidental shadowing).
+
+    WAVE-30E task-scoped loadout: when ``config.defer_core`` is set, a CORE tool
+    ALSO becomes deferrable — unless it is in ``config.always_on`` (the task's
+    primary tools) — so a small local model gets a compact initial prompt while
+    every core tool stays reachable via the bridge. Default config leaves
+    ``defer_core`` off, preserving the baseline exactly.
     """
     if name in BRIDGE_TOOL_NAMES:
         return False
+    if config is None:
+        config = resolve_loadout_config()
     if name in _core_tool_names():
+        # Core tool: deferrable ONLY under the opt-in lean loadout, and never for
+        # a task-scoped always-on tool.
+        if getattr(config, "defer_core", False) and name not in getattr(config, "always_on", frozenset()):
+            return True
         return False
     # Check registry toolset for MCP prefix.
     try:
@@ -227,13 +295,21 @@ def is_deferrable_tool_name(name: str) -> bool:
         return False
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def classify_tools(
+    tool_defs: List[Dict[str, Any]],
+    *,
+    config: Optional["ToolSearchConfig"] = None,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable).
 
     ``visible`` retains every tool that must stay in the model-facing array:
-    every core tool, plus any tool we can't classify. ``deferrable`` is the
-    candidate set for catalog entry.
+    every non-deferrable tool (core tools, always-on tools, unclassifiable
+    tools), plus later the bridge tools. ``deferrable`` is the candidate set for
+    catalog entry. ``config`` threads the task-scoped loadout policy so assembly
+    and dispatch classify identically.
     """
+    if config is None:
+        config = resolve_loadout_config()
     visible: List[Dict[str, Any]] = []
     deferrable: List[Dict[str, Any]] = []
     for td in tool_defs:
@@ -243,7 +319,7 @@ def classify_tools(tool_defs: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
             # Should never happen — bridge tools are added after classification —
             # but be defensive.
             continue
-        if is_deferrable_tool_name(name):
+        if is_deferrable_tool_name(name, config=config):
             deferrable.append(td)
         else:
             visible.append(td)
@@ -789,12 +865,21 @@ def assemble_tool_defs(
     if config is None:
         config = load_config()
 
+    # WAVE-30E: assembly is the authority on the loadout policy for THIS process's
+    # tool list. Prime the dispatch-side cache from it so a later ``tool_call``
+    # (which consults ``resolve_loadout_config``) classifies deferrable EXACTLY as
+    # this assembly did — even if the config file is hot-edited after assembly.
+    # Without this, assembly (fresh config) and dispatch (stale cache) could
+    # disagree and reject a legitimately-discovered deferred tool.
+    global _CACHED_LOADOUT_CONFIG
+    _CACHED_LOADOUT_CONFIG = config
+
     # Defensive: strip any bridge tools that may already be in the list
     # (e.g. someone called assemble twice).
     incoming = [td for td in tool_defs
                 if (td.get("function") or {}).get("name") not in BRIDGE_TOOL_NAMES]
 
-    visible, deferrable = classify_tools(incoming)
+    visible, deferrable = classify_tools(incoming, config=config)
     if not deferrable:
         return AssemblyResult(tool_defs=incoming, activated=False)
 
@@ -926,10 +1011,11 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
     ``tool_executor`` unwrap so a restricted-toolset session can never invoke
     an out-of-scope tool via the bridge.
     """
+    config = resolve_loadout_config()
     names: set[str] = set()
     for td in tool_defs:
         name = (td.get("function") or {}).get("name", "")
-        if name and is_deferrable_tool_name(name):
+        if name and is_deferrable_tool_name(name, config=config):
             names.add(name)
     return frozenset(names)
 

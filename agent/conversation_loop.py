@@ -2158,6 +2158,10 @@ def _run_conversation_impl(
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
         
         api_start_time = time.time()
+        # WAVE-30E: clear any prior call's streaming TTFT so this call's timing
+        # record only carries a TTFT actually measured for THIS call (the
+        # streaming path re-stamps it on its first chunk).
+        agent._last_ttft_s = None
         retry_count = 0
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
@@ -5670,6 +5674,54 @@ def _run_conversation_impl(
                     )
                     _assistant_text = assistant_message.content or ""
                     _api_ended_at = api_start_time + api_duration
+                    # WAVE-30E: assemble the all-numeric per-call timing record
+                    # (runtime wall-clock + streaming TTFT + native Ollama
+                    # load/prompt-eval/eval when the provider returns them). Fully
+                    # fail-soft so timing observability can never break the loop.
+                    _timings = None
+                    try:
+                        from youtab_runtime.model_timings import (
+                            build_call_timings,
+                            extract_native_ollama_timings,
+                        )
+                        _ttft_s = getattr(agent, "_last_ttft_s", None)
+                        _timings = build_call_timings(
+                            wall_s=api_duration,
+                            ttft_s=_ttft_s,
+                            native=extract_native_ollama_timings(response),
+                            cold_start=getattr(agent, "_model_cold_start", None),
+                        )
+                        # WAVE-30E: per-category token accounting for THIS request
+                        # (system / skills-index / tool-schemas / conversation).
+                        # All-numeric estimates merged under ``budget_*`` keys so
+                        # they ride the same redaction-clean event; the exact
+                        # serialized count is the provider's prompt_eval_count in
+                        # the native timing fields above.
+                        try:
+                            from youtab_runtime.context_budget import (
+                                measure_prompt_categories,
+                                numeric_category_summary,
+                            )
+                            _sys_prompt = ""
+                            if api_messages and str(api_messages[0].get("role")) == "system":
+                                _sys_prompt = str(api_messages[0].get("content") or "")
+                            _cats = measure_prompt_categories(
+                                system_prompt=_sys_prompt,
+                                tool_defs=agent.tools,
+                                messages=api_messages,
+                            )
+                            for _k, _v in numeric_category_summary(_cats).items():
+                                _timings[f"budget_{_k}"] = _v
+                            # Effective requested context window (task-aware ctx
+                            # selection is observable; the full 64K capability is
+                            # unchanged — this only records what THIS call asked for).
+                            _nctx = getattr(agent, "_ollama_num_ctx", None)
+                            if isinstance(_nctx, int) and _nctx > 0:
+                                _timings["ctx_num_ctx"] = _nctx
+                        except Exception:
+                            pass
+                    except Exception:
+                        _timings = None
                     _invoke_hook(
                         "post_api_request",
                         task_id=effective_task_id,
@@ -5694,6 +5746,7 @@ def _run_conversation_impl(
                             finish_reason=finish_reason,
                         ),
                         usage=agent._usage_summary_for_api_request_hook(response),
+                        timings=_timings,
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),

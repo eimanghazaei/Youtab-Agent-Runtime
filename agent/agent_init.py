@@ -2621,6 +2621,18 @@ def init_agent(
             agent._ollama_num_ctx,
         )
 
+    # WAVE-30E: optional Ollama keep_alive (config ``model.ollama_keep_alive``).
+    # A duration string ("30m", "-1" for indefinite) or number of seconds sent
+    # per request so the ECO model stays resident between interactive runs,
+    # keeping the ~26s cold-load off the WARM critical path. Left unset by default
+    # (Ollama's own server default applies), so this changes nothing unless the
+    # operator opts in — and it is a WARM-path optimization only: cold-start
+    # performance is measured and reported separately, never masked by it.
+    agent._ollama_keep_alive = None
+    _keep_alive_cfg = _model_cfg.get("ollama_keep_alive") if isinstance(_model_cfg, dict) else None
+    if _keep_alive_cfg is not None and str(_keep_alive_cfg).strip() != "":
+        agent._ollama_keep_alive = str(_keep_alive_cfg).strip()
+
     # Codex gpt-5.x autoraise notice: show at most once per profile/config
     # state. Without the persisted marker the notice re-fires on every agent
     # init — and the gateway rebuilds the agent per inbound message, so Discord
