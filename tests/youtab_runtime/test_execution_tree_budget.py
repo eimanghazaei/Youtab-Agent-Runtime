@@ -129,20 +129,63 @@ def test_zero_cost_ceiling_denies_any_cost(db):
 
 def test_spawn_depth_ceiling(db):
     tb.open_tree("root-d", _params(max_spawn_depth=2), db_path=db)
-    tb.enter_agent("root-d", depth=2, db_path=db)  # ok
-    tb.exit_agent("root-d", db_path=db)
+    tb.acquire_agent_slot("root-d", "a1", depth=2, db_path=db)  # ok
+    tb.release_agent_slot("root-d", "a1", db_path=db)
     with pytest.raises(tb.TreeDepthExceeded):
-        tb.enter_agent("root-d", depth=3, db_path=db)
+        tb.acquire_agent_slot("root-d", "a2", depth=3, db_path=db)
 
 
 def test_concurrent_agent_ceiling(db):
     tb.open_tree("root-c", _params(max_concurrent_agents=2), db_path=db)
-    tb.enter_agent("root-c", depth=1, db_path=db)
-    tb.enter_agent("root-c", depth=1, db_path=db)  # 2 live
+    tb.acquire_agent_slot("root-c", "a1", depth=1, db_path=db)
+    tb.acquire_agent_slot("root-c", "a2", depth=1, db_path=db)  # 2 live
     with pytest.raises(tb.TreeConcurrencyExceeded):
-        tb.enter_agent("root-c", depth=1, db_path=db)  # would be 3
-    tb.exit_agent("root-c", db_path=db)
-    tb.enter_agent("root-c", depth=1, db_path=db)  # slot freed -> ok
+        tb.acquire_agent_slot("root-c", "a3", depth=1, db_path=db)  # would be 3
+    tb.release_agent_slot("root-c", "a1", db_path=db)
+    tb.acquire_agent_slot("root-c", "a3", depth=1, db_path=db)  # slot freed -> ok
+    assert tb.active_agent_count("root-c", db_path=db) == 2
+
+
+def test_acquire_is_idempotent_no_double_permit(db):
+    tb.open_tree("root-i", _params(max_concurrent_agents=1), db_path=db)
+    tb.acquire_agent_slot("root-i", "a1", depth=1, db_path=db)
+    # re-acquiring the SAME agent_id must not consume a second permit
+    tb.acquire_agent_slot("root-i", "a1", depth=1, db_path=db)
+    assert tb.active_agent_count("root-i", db_path=db) == 1
+
+
+def test_release_is_idempotent(db):
+    tb.open_tree("root-ri", _params(), db_path=db)
+    tb.acquire_agent_slot("root-ri", "a1", depth=1, db_path=db)
+    tb.release_agent_slot("root-ri", "a1", db_path=db)
+    tb.release_agent_slot("root-ri", "a1", db_path=db)  # no-op, no underflow
+    assert tb.active_agent_count("root-ri", db_path=db) == 0
+
+
+def test_crashed_owner_permit_is_reclaimable_no_leak(db):
+    # An agent acquires with a pid/incarnation then "crashes" (never releases).
+    tb.open_tree("root-reap", _params(max_concurrent_agents=1), db_path=db)
+    tb.acquire_agent_slot("root-reap", "dead", depth=1, pid=4242, incarnation="inc-A", db_path=db)
+    # The permit is held -> a new agent cannot acquire...
+    with pytest.raises(tb.TreeConcurrencyExceeded):
+        tb.acquire_agent_slot("root-reap", "fresh", depth=1, db_path=db)
+    # ...until the reaper reclaims the dead owner's permit (pid/incarnation dead).
+    reclaimed = tb.reap_dead_agents(
+        "root-reap", is_alive=lambda pid, inc: False, db_path=db
+    )
+    assert reclaimed == ["dead"]
+    assert tb.active_agent_count("root-reap", db_path=db) == 0
+    tb.acquire_agent_slot("root-reap", "fresh", depth=1, db_path=db)  # now succeeds
+
+
+def test_reaper_keeps_live_owner_permit(db):
+    tb.open_tree("root-live", _params(max_concurrent_agents=2), db_path=db)
+    tb.acquire_agent_slot("root-live", "alive", depth=1, pid=1, incarnation="inc", db_path=db)
+    reclaimed = tb.reap_dead_agents(
+        "root-live", is_alive=lambda pid, inc: True, db_path=db
+    )
+    assert reclaimed == []
+    assert tb.active_agent_count("root-live", db_path=db) == 1
 
 
 def test_retry_ceiling(db):

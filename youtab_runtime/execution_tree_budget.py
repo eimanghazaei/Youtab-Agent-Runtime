@@ -262,6 +262,21 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
                )"""
         )
         conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    # Concurrency permits as a durable MEMBERSHIP table (not a raw counter): one
+    # row per live agent instance, so a permit cannot leak on crash — a dead
+    # owner's row is reclaimable by reap_dead_agents (R5 + R7). Idempotent create
+    # so both fresh and pre-existing DBs converge.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS execution_tree_agent (
+             root_run_id TEXT NOT NULL,
+             agent_id    TEXT NOT NULL,
+             depth       INTEGER NOT NULL,
+             pid         INTEGER,
+             incarnation TEXT,
+             acquired_at TEXT NOT NULL,
+             PRIMARY KEY (root_run_id, agent_id)
+           )"""
+    )
 
 
 @contextmanager
@@ -297,14 +312,25 @@ def _load(conn: sqlite3.Connection, root_run_id: str) -> sqlite3.Row:
     return row
 
 
-def _snapshot_from(row: sqlite3.Row) -> TreeBudgetSnapshot:
+def _active_agents(conn: sqlite3.Connection, root_run_id: str) -> int:
+    """Live concurrent-agent count = number of membership rows (leak-safe truth)."""
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM execution_tree_agent WHERE root_run_id = ?",
+            (root_run_id,),
+        ).fetchone()[0]
+    )
+
+
+def _build_snapshot(conn: sqlite3.Connection, root_run_id: str) -> TreeBudgetSnapshot:
+    row = _load(conn, root_run_id)
     return TreeBudgetSnapshot(
         root_run_id=row["root_run_id"],
         iterations_used=row["iterations_used"],
         tokens_used=row["tokens_used"],
         cost_micros_used=row["cost_micros_used"],
         retries_used=row["retries_used"],
-        live_agents=row["live_agents"],
+        live_agents=_active_agents(conn, root_run_id),
         max_iterations=row["max_iterations"],
         max_total_tokens=row["max_total_tokens"],
         max_cost_micros=row["max_cost_micros"],
@@ -335,7 +361,7 @@ def open_tree(
             "SELECT * FROM execution_tree WHERE root_run_id = ?", (root_run_id,)
         ).fetchone()
         if existing is not None:
-            return _snapshot_from(existing)  # child/retry: never reseed
+            return _build_snapshot(conn, root_run_id)  # child/retry: never reseed
         conn.execute(
             "INSERT INTO execution_tree (root_run_id, max_iterations, max_spawn_depth, "
             "max_concurrent_agents, max_total_tokens, max_cost_micros, max_retries, "
@@ -352,7 +378,7 @@ def open_tree(
                 _clock(),
             ),
         )
-        return _load(conn, root_run_id)
+        return _build_snapshot(conn, root_run_id)
 
 
 def consume(
@@ -391,7 +417,7 @@ def consume(
             "WHERE root_run_id = ?",
             (iterations, tokens, cost_micros, root_run_id),
         )
-        return _load(conn, root_run_id)
+        return _build_snapshot(conn, root_run_id)
 
 
 def register_retry(
@@ -408,47 +434,108 @@ def register_retry(
             "WHERE root_run_id = ?",
             (root_run_id,),
         )
-        return _load(conn, root_run_id)
+        return _build_snapshot(conn, root_run_id)
 
 
-def enter_agent(
+def acquire_agent_slot(
     root_run_id: str,
+    agent_id: str,
     *,
     depth: int,
+    pid: Optional[int] = None,
+    incarnation: Optional[str] = None,
     db_path: Optional[str | os.PathLike] = None,
 ) -> TreeBudgetSnapshot:
-    """Atomically admit one more concurrent agent at ``depth`` into the tree.
+    """Atomically acquire a concurrency permit for ONE agent instance.
 
-    Fail-closed on spawn depth (``TreeDepthExceeded``) or concurrency
-    (``TreeConcurrencyExceeded``) before incrementing the live-agent counter.
-    Pair with :func:`exit_agent` (use a try/finally at the call site).
+    A permit is a durable MEMBERSHIP ROW keyed by ``(root_run_id, agent_id)`` —
+    NOT a raw counter — so a permit cannot leak on crash: a dead owner's row is
+    reclaimable by :func:`reap_dead_agents`. Fail-closed on spawn depth
+    (:class:`TreeDepthExceeded`) and concurrency (:class:`TreeConcurrencyExceeded`).
+
+    IDEMPOTENT: re-acquiring the SAME ``agent_id`` (e.g. a retry of the same
+    instance) is a no-op that succeeds without consuming a second permit. Records
+    ``pid``/``incarnation`` so a crashed owner's permit can be reclaimed (R7).
     """
+    if not agent_id:
+        raise TreeBudgetError("agent_id is required to acquire a concurrency permit")
     path = _resolve_db_path(db_path)
     with _immediate_txn(path) as conn:
         row = _load(conn, root_run_id)
         if depth > row["max_spawn_depth"]:
             raise TreeDepthExceeded(depth, row["max_spawn_depth"])
-        if row["live_agents"] + 1 > row["max_concurrent_agents"]:
-            raise TreeConcurrencyExceeded(row["live_agents"], row["max_concurrent_agents"])
-        conn.execute(
-            "UPDATE execution_tree SET live_agents = live_agents + 1 "
-            "WHERE root_run_id = ?",
-            (root_run_id,),
-        )
-        return _load(conn, root_run_id)
+        already = conn.execute(
+            "SELECT 1 FROM execution_tree_agent WHERE root_run_id = ? AND agent_id = ?",
+            (root_run_id, agent_id),
+        ).fetchone()
+        if already is None:
+            live = _active_agents(conn, root_run_id)
+            if live + 1 > row["max_concurrent_agents"]:
+                raise TreeConcurrencyExceeded(live, row["max_concurrent_agents"])
+            conn.execute(
+                "INSERT INTO execution_tree_agent (root_run_id, agent_id, depth, "
+                "pid, incarnation, acquired_at) VALUES (?,?,?,?,?,?)",
+                (root_run_id, agent_id, int(depth), pid, incarnation, _clock()),
+            )
+        return _build_snapshot(conn, root_run_id)
 
 
-def exit_agent(
-    root_run_id: str, *, db_path: Optional[str | os.PathLike] = None
+def release_agent_slot(
+    root_run_id: str,
+    agent_id: str,
+    *,
+    db_path: Optional[str | os.PathLike] = None,
 ) -> None:
-    """Atomically release one concurrent-agent slot (floored at zero)."""
+    """Atomically release an agent's permit. IDEMPOTENT — releasing an
+    already-released (or never-acquired) permit is a no-op, so a
+    success/failure/timeout/cancellation ``finally`` can always call it safely."""
     path = _resolve_db_path(db_path)
     with _immediate_txn(path) as conn:
         conn.execute(
-            "UPDATE execution_tree SET live_agents = MAX(0, live_agents - 1) "
-            "WHERE root_run_id = ?",
-            (root_run_id,),
+            "DELETE FROM execution_tree_agent WHERE root_run_id = ? AND agent_id = ?",
+            (root_run_id, agent_id),
         )
+
+
+def active_agent_count(
+    root_run_id: str, *, db_path: Optional[str | os.PathLike] = None
+) -> int:
+    """Current live-agent permit count for the tree."""
+    path = _resolve_db_path(db_path)
+    with _immediate_txn(path) as conn:
+        return _active_agents(conn, root_run_id)
+
+
+def reap_dead_agents(
+    root_run_id: str,
+    *,
+    is_alive,
+    db_path: Optional[str | os.PathLike] = None,
+) -> list[str]:
+    """Reclaim permits whose owning process/incarnation is dead (no leak on crash).
+
+    ``is_alive(pid, incarnation) -> bool`` decides liveness — the caller wires the
+    R7 PID-incarnation check so a recycled PID never keeps a stale permit alive
+    NOR reclaims a genuinely live one. Rows with no recorded pid are left intact
+    (in-process agents rely on their ``finally`` release). Returns the reclaimed
+    ``agent_id`` list.
+    """
+    path = _resolve_db_path(db_path)
+    reclaimed: list[str] = []
+    with _immediate_txn(path) as conn:
+        rows = conn.execute(
+            "SELECT agent_id, pid, incarnation FROM execution_tree_agent "
+            "WHERE root_run_id = ? AND pid IS NOT NULL",
+            (root_run_id,),
+        ).fetchall()
+        for r in rows:
+            if not is_alive(r["pid"], r["incarnation"]):
+                conn.execute(
+                    "DELETE FROM execution_tree_agent WHERE root_run_id = ? AND agent_id = ?",
+                    (root_run_id, r["agent_id"]),
+                )
+                reclaimed.append(r["agent_id"])
+    return reclaimed
 
 
 def check_deadline(
@@ -472,4 +559,4 @@ def snapshot(
 ) -> TreeBudgetSnapshot:
     path = _resolve_db_path(db_path)
     with _immediate_txn(path) as conn:
-        return _snapshot_from(_load(conn, root_run_id))
+        return _build_snapshot(conn, root_run_id)

@@ -12,11 +12,59 @@ budget must not keep calling a provider.
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 
 def _root(agent) -> Optional[str]:
     return getattr(agent, "_execution_tree_root", None)
+
+
+def _agent_instance_id(agent) -> str:
+    return str(getattr(agent, "_subagent_id", None) or f"agent-{id(agent)}")
+
+
+def acquire_delegation_permit(agent) -> None:
+    """Acquire the managed max_concurrent_agents permit for a delegated child.
+
+    No-op for a non-managed run (no ``_execution_tree_root``). Raises
+    ``TreeConcurrencyExceeded`` / ``TreeDepthExceeded`` when the grant's tree
+    ceiling is reached — the caller MUST refuse to run the child (fail-closed).
+    Records the host pid + incarnation so a crash-leaked permit is reclaimable by
+    the reaper (R5/R7). Idempotent per agent instance. Pair with
+    :func:`release_delegation_permit` in a ``finally``.
+    """
+    root = _root(agent)
+    if not root:
+        return
+    from youtab_runtime import execution_tree_budget as etb
+    from youtab_runtime import process_incarnation as pi
+
+    agent_id = _agent_instance_id(agent)
+    depth = int(getattr(agent, "_delegate_depth", 1) or 1)
+    etb.acquire_agent_slot(
+        root,
+        agent_id,
+        depth=depth,
+        pid=os.getpid(),
+        incarnation=pi.current_incarnation(),
+    )
+    agent._delegation_permit = (root, agent_id)
+
+
+def release_delegation_permit(agent) -> None:
+    """Release a delegated child's concurrency permit. Idempotent and safe to call
+    from any lifecycle end (success, failure, timeout, cancellation, retry)."""
+    permit = getattr(agent, "_delegation_permit", None)
+    if not permit:
+        return
+    root, agent_id = permit
+    from youtab_runtime import execution_tree_budget as etb
+
+    try:
+        etb.release_agent_slot(root, agent_id)
+    finally:
+        agent._delegation_permit = None
 
 
 def execution_tree_pre_iteration(agent, *, now=None) -> Optional[str]:

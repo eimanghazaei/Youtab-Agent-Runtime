@@ -15,9 +15,11 @@ from youtab_runtime import execution_tree_budget as tb
 
 
 class _Agent:
-    def __init__(self, root=None):
+    def __init__(self, root=None, subagent_id=None, depth=1):
         if root is not None:
             self._execution_tree_root = root
+        self._subagent_id = subagent_id
+        self._delegate_depth = depth
 
 
 def _params(**over):
@@ -102,3 +104,63 @@ def test_zero_tokens_is_noop():
     agent = _Agent(root="run-z")
     assert mbg.execution_tree_debit_tokens(agent, input_tokens=0, output_tokens=0) is None
     assert tb.snapshot("run-z").tokens_used == 0
+
+
+# ── delegation concurrency permit ────────────────────────────────────────────
+
+
+def test_delegation_permit_noop_for_non_managed():
+    agent = _Agent(root=None, subagent_id="sa-1")
+    mbg.acquire_delegation_permit(agent)  # no raise, no state
+    assert getattr(agent, "_delegation_permit", None) is None
+    mbg.release_delegation_permit(agent)  # safe no-op
+
+
+def test_delegation_permit_acquire_and_release():
+    tb.open_tree("run-perm", _params(max_concurrent_agents=2))
+    a = _Agent(root="run-perm", subagent_id="sa-a")
+    mbg.acquire_delegation_permit(a)
+    assert tb.active_agent_count("run-perm") == 1
+    assert a._delegation_permit == ("run-perm", "sa-a")
+    mbg.release_delegation_permit(a)
+    assert tb.active_agent_count("run-perm") == 0
+    assert a._delegation_permit is None
+
+
+def test_delegation_permit_release_is_idempotent():
+    tb.open_tree("run-perm2", _params())
+    a = _Agent(root="run-perm2", subagent_id="sa-a")
+    mbg.acquire_delegation_permit(a)
+    mbg.release_delegation_permit(a)
+    mbg.release_delegation_permit(a)  # no underflow / no raise
+    assert tb.active_agent_count("run-perm2") == 0
+
+
+def test_delegation_permit_refused_past_ceiling():
+    tb.open_tree("run-perm3", _params(max_concurrent_agents=1))
+    a = _Agent(root="run-perm3", subagent_id="sa-a")
+    b = _Agent(root="run-perm3", subagent_id="sa-b")
+    mbg.acquire_delegation_permit(a)
+    with pytest.raises(tb.TreeConcurrencyExceeded):
+        mbg.acquire_delegation_permit(b)
+    assert tb.active_agent_count("run-perm3") == 1  # b did not leak a permit
+
+
+def test_delegation_permit_refused_past_depth():
+    tb.open_tree("run-perm4", _params(max_spawn_depth=1))
+    a = _Agent(root="run-perm4", subagent_id="sa-a", depth=2)
+    with pytest.raises(tb.TreeDepthExceeded):
+        mbg.acquire_delegation_permit(a)
+    assert tb.active_agent_count("run-perm4") == 0
+
+
+def test_delegation_permit_records_incarnation_for_reaping():
+    tb.open_tree("run-perm5", _params(max_concurrent_agents=1))
+    a = _Agent(root="run-perm5", subagent_id="sa-a")
+    mbg.acquire_delegation_permit(a)
+    # a crash skips release; the reaper reclaims via the recorded live incarnation
+    from youtab_runtime import process_incarnation as pi
+
+    reclaimed = tb.reap_dead_agents("run-perm5", is_alive=pi.is_alive_incarnation)
+    assert reclaimed == []  # THIS process is alive -> not reclaimed
+    assert tb.active_agent_count("run-perm5") == 1
