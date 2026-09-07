@@ -304,6 +304,62 @@ def get_sink() -> Callable[[Mapping[str, Any]], None]:
     return _sink
 
 
+class RunJournalSink:
+    """Bridge spans into the durable, principal-bound :mod:`run_journal` under a
+    ``timing`` category — so production has ONE event store (deduped, redacted,
+    per-run ``seq``), not a parallel file.
+
+    A span carries a principal only when the trace context has ``tenant`` +
+    ``user`` + ``run_id`` (true for every managed/worker run). When it does not
+    (e.g. a bare experiment with no principal bound), the span is handed to a
+    fallback sink instead of being dropped — losing a measurement silently would
+    violate the null!=zero honesty rule at the storage layer too.
+    """
+
+    def __init__(
+        self, fallback: Optional[Callable[[Mapping[str, Any]], None]] = None
+    ) -> None:
+        self._fallback = fallback if fallback is not None else _JsonlSink()
+
+    def __call__(self, record: Mapping[str, Any]) -> None:
+        ctx = record.get("ctx") or {}
+        tenant = ctx.get("tenant")
+        user = ctx.get("user")
+        run_id = ctx.get("run_id")
+        if not (tenant and user and run_id):
+            try:
+                self._fallback(record)
+            except Exception:  # noqa: BLE001 - observability never raises
+                _note_drop()
+            return
+        try:
+            from youtab_runtime.run_journal import Principal, append_event
+
+            payload = {
+                "duration_ns": record.get("duration_ns"),
+                "ok": record.get("ok"),
+                "clock": record.get("clock"),
+                "t_start_epoch_ns": record.get("t_start_epoch_ns"),
+                "t_end_epoch_ns": record.get("t_end_epoch_ns"),
+                "attrs": record.get("attrs") or {},
+                "attempt": ctx.get("attempt"),
+                "root_run_id": ctx.get("root_run_id"),
+                "agent_id": ctx.get("agent_id"),
+                "engine": ctx.get("engine"),
+                "provider": ctx.get("provider"),
+            }
+            append_event(
+                run_id,
+                Principal(tenant, user),
+                "timing",
+                str(record.get("stage")),
+                payload,
+                correlation_id=ctx.get("correlation_id"),
+            )
+        except Exception:  # noqa: BLE001 - observability must never break a run
+            _note_drop()
+
+
 class MemorySink:
     """A thread-safe in-memory sink for tests and short experiments."""
 

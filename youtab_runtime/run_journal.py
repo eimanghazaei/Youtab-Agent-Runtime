@@ -45,7 +45,8 @@ EVENT_SCHEMA_VERSION = "run_event.v1"
 #: Legal event categories (contract 3). Kind is a category-specific verb the
 #: emitter chooses; the substrate does not constrain kinds beyond non-empty.
 CATEGORIES = frozenset(
-    {"usage", "tool_call", "tool_result", "egress", "effect", "process", "lifecycle"}
+    {"usage", "tool_call", "tool_result", "egress", "effect", "process",
+     "lifecycle", "timing"}
 )
 
 _PROCESS_ID = uuid.uuid4().hex
