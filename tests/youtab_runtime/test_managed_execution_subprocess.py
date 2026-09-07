@@ -217,18 +217,59 @@ def _run_worker(tmp_path: Path, db_path: Path, task_id: str) -> tuple[int, dict]
     env["YOUTAB_AGENT_HOME"] = str(tmp_path / "home")
     env["WORKER_RESULT"] = str(result_file)
     env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
-    proc = subprocess.run(
+
+    # Spawn the worker in its OWN process group / session so that on a timeout or
+    # a cancelled test run we can tear down the WHOLE tree (worker + any grandchild
+    # it spawned) — never leaving a detached process behind. POSIX: start_new_session
+    # + killpg; Windows: CREATE_NEW_PROCESS_GROUP + taskkill /T.
+    popen_kwargs: dict = {}
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    else:
+        popen_kwargs["creationflags"] = getattr(
+            subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+        )
+    proc = subprocess.Popen(
         [sys.executable, str(script)],
         env=env,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        timeout=120,
+        **popen_kwargs,
     )
+    try:
+        _out, err = proc.communicate(timeout=120)
+        rc = proc.returncode
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        _out, err = proc.communicate()
+        rc = proc.returncode if proc.returncode is not None else -1
+        err = (err or "") + "\n[worker timed out; process tree killed]"
     data = {}
     if result_file.exists():
         data = json.loads(result_file.read_text(encoding="utf-8"))
-    data["_stderr"] = proc.stderr[-2000:]
-    return proc.returncode, data
+    data["_stderr"] = (err or "")[-2000:]
+    return rc, data
+
+
+def _kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Kill the worker and every descendant, leaving nothing detached behind."""
+    try:
+        if os.name == "posix":
+            import signal as _signal
+
+            os.killpg(os.getpgid(proc.pid), _signal.SIGKILL)
+        else:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=15,
+            )
+    except (OSError, subprocess.SubprocessError, ProcessLookupError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
 
 
 # ── positive control: real worker process gates real tools ───────────────────
