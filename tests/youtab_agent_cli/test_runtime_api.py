@@ -237,6 +237,110 @@ def test_create_run_rejects_invalid_limits(client):
     assert r.json()["detail"]["error"] == "invalid_limits"
 
 
+def _task_after_create(run_id):
+    """Read the persisted runtime task row for a created run."""
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        return kb.get_task(conn, run_id)
+
+
+def _limits_event_payload(client, run_id):
+    ev = client.get(
+        f"/api/runtime/v1/runs/{run_id}/events?after=0", headers=_identity_headers()
+    ).json()["events"]
+    evs = [e for e in ev if e["kind"] == "runtime_limits"]
+    assert len(evs) == 1, ev
+    return evs[0]["payload"]
+
+
+def test_create_run_canary_retries_bound_worker_attempts_to_one(client):
+    """WAVE-30D dispatcher-attempt fix: the canary's ``max_retries=0`` (no retry)
+    must persist ``tasks.max_retries=1`` so the dispatcher circuit breaker trips
+    on the FIRST worker failure — one attempt, no silent respawn (which would let
+    a second worker issue a second model request even under ``max_requests=1``)."""
+    r = _create_run_body(
+        client,
+        {
+            "agent": "default",
+            "task": "canary",
+            "limits": {
+                "max_iterations": 1,
+                "max_requests": 1,
+                "max_retries": 0,
+                "max_total_tokens": 4608,
+                "max_runtime_seconds": 60,
+                "failure_threshold": 1,
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+
+    task = _task_after_create(run_id)
+    # 1 + max_retries(0) = 1 total worker attempt (breaker trips on first failure).
+    assert task.max_retries == 1
+
+    payload = _limits_event_payload(client, run_id)
+    # The run limit is recorded honestly as zero retries...
+    assert payload["max_retries"] == 0
+    # ...and the derived dispatcher respawn ceiling is exposed explicitly rather
+    # than left implicit while the dispatcher silently respawns.
+    assert payload["worker_attempt_limit"] == 1
+
+
+def test_create_run_pilot_retries_allow_one_respawn(client):
+    """A run that declares one retry (``max_retries=1``, pilot/full) maps to two
+    worker attempts — identical to the prior dispatcher default, so only the
+    zero-retry canary changes behaviour."""
+    r = _create_run_body(
+        client,
+        {
+            "agent": "default",
+            "task": "pilot",
+            "limits": {"max_iterations": 4, "max_requests": 40, "max_retries": 1},
+        },
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    task = _task_after_create(run_id)
+    assert task.max_retries == 2  # 1 + 1
+    assert _limits_event_payload(client, run_id)["worker_attempt_limit"] == 2
+
+
+def test_create_run_retry_budget_is_authoritative_and_ceiling_bounded(client):
+    """A run that explicitly requests >=2 retries authoritatively raises its own
+    worker-attempt budget ABOVE the dispatcher default (2) — that is intended
+    (the run owns its budget) — but never unbounded: max_retries is clamped to
+    RUN_CEILINGS (3), so worker attempts are capped at 4."""
+    from youtab_runtime.run_limits import RUN_CEILINGS
+
+    r = _create_run_body(
+        client,
+        {"agent": "default", "task": "explicit-budget",
+         "limits": {"max_requests": 40, "max_retries": 99}},  # clamped to 3
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    task = _task_after_create(run_id)
+    assert task.max_retries == RUN_CEILINGS["max_retries"] + 1 == 4
+    assert _limits_event_payload(client, run_id)["worker_attempt_limit"] == 4
+
+
+def test_create_run_without_retry_budget_leaves_dispatcher_default(client):
+    """Ordinary runs (no retry budget in the request) must NOT pin the per-task
+    breaker — ``tasks.max_retries`` stays NULL so the dispatcher's own default /
+    config failure limit is preserved (Track B + normal runtime recovery)."""
+    r = _create_run_body(
+        client,
+        {"agent": "default", "task": "ordinary", "limits": {"max_requests": 40}},
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    task = _task_after_create(run_id)
+    assert task.max_retries is None
+    payload = _limits_event_payload(client, run_id)
+    assert "worker_attempt_limit" not in payload
+
+
 def test_preflight_reports_safe_posture_and_leaks_no_secret(client):
     """WAVE-30B §12: authenticated preflight exposes the safety posture (SHA,
     version, redaction, budget, ceilings) and never a secret."""

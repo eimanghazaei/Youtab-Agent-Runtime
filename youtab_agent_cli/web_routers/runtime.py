@@ -1506,6 +1506,40 @@ async def runtime_create_run(
     if run_limits.max_runtime_seconds is not None:
         max_runtime = run_limits.max_runtime_seconds
 
+    # Authoritative worker-attempt bound (WAVE-30D dispatcher-attempt fix).
+    #
+    # The dispatcher's per-task circuit breaker owns worker (re)spawn and already
+    # enforces this run's ``max_runtime_seconds``. The run's authoritative retry
+    # budget must bound the number of worker ATTEMPTS the same way — otherwise a
+    # worker that times out or crashes is silently respawned by the dispatcher's
+    # default failure limit, and the fresh worker issues ANOTHER model request even
+    # though the run declared ``max_requests=1`` / no retries (the WAVE-30D canary
+    # ``t_f6ef707c`` defect: claimed→spawned→timed_out→claimed→spawned→timed_out→
+    # gave_up = two attempts, two potential model requests).
+    #
+    # ``tasks.max_retries`` is the consecutive-failure count at which the breaker
+    # trips, i.e. the TOTAL attempts allowed (``1`` trips on the first failure =
+    # one attempt / zero retries). The run-level ``RunLimits.max_retries`` counts
+    # RETRIES (``0`` = no retry — see run_limits.py), so worker attempts =
+    # ``1 + max_retries``:
+    #   * canary  max_retries=0 → 1 attempt  (no respawn — the fix)
+    #   * pilot   max_retries=1 → 2 attempts (unchanged: was DEFAULT_FAILURE_LIMIT=2)
+    #   * full    max_retries=1 → 2 attempts (unchanged: was DEFAULT_FAILURE_LIMIT=2)
+    # Left ``None`` for ordinary runs that send no retry budget, preserving the
+    # dispatcher default (``DEFAULT_FAILURE_LIMIT``; an ordinary run's breaker is
+    # never touched). When a retry budget IS declared it becomes authoritative:
+    # the attempt count is exactly ``1 + max_retries``, which for a run that asks
+    # for >=2 retries is DELIBERATELY higher than the dispatcher default of 2 —
+    # the run owns its own attempt budget. It is never unbounded: ``max_retries``
+    # is clamped to ``RUN_CEILINGS["max_retries"]`` (3), so attempts <= 4, and
+    # cost stays bounded by the durable campaign ledger. Only zero-retry runs (the
+    # canary) tighten below the default; the stage profiles use only 0/1.
+    _task_max_retries = (
+        int(run_limits.max_retries) + 1
+        if run_limits.max_retries is not None
+        else None
+    )
+
     # Execution mode: real provider-backed model by default. A caller may request
     # the non-production deterministic integration worker with ``deterministic``;
     # it is honoured ONLY when the deterministic worker is enabled (non-prod), so
@@ -1525,6 +1559,7 @@ async def runtime_create_run(
             skills=skills,
             goal_mode=goal_mode,
             max_runtime_seconds=max_runtime,
+            max_retries=_task_max_retries,
             model_override=model_override,
             provider_override=provider_override,
             board=RUNTIME_BOARD,
@@ -1560,7 +1595,12 @@ async def runtime_create_run(
                         "public_label": engine_identity.public_label,
                     })
                 # Persist the authoritative clamped per-run limits (numeric only).
+                # Record the derived dispatcher worker-attempt bound alongside them
+                # so evidence shows the respawn ceiling explicitly rather than
+                # implying "zero retries" while the dispatcher silently respawns.
                 _limits_dict = run_limits.to_dict()
+                if _task_max_retries is not None:
+                    _limits_dict["worker_attempt_limit"] = _task_max_retries
                 if _limits_dict:
                     kb._append_event(conn, run_id, _LIMITS_EVENT, _limits_dict)
         task = kb.get_task(conn, run_id)
