@@ -153,7 +153,7 @@ def format_experiment(results: list[CellResult], *, stage: str = "model.call") -
     wall), plus the baseline delta so the dominant variable is obvious."""
     base = next((r for r in results if r.cell.axis == "baseline"), None)
     base_p50 = base.stage_p50(stage) if base else None
-    head = f"{'cell':<24} {'axis':<14} {'p50_ms':>10} {'p95_ms':>10} {'Δ vs base':>12} {'err':>4}"
+    head = f"{'cell':<24} {'axis':<14} {'p50_ms':>10} {'p95_ms':>10} {'d_vs_base':>12} {'err':>4}"
     lines = [f"# experiment focus stage: {stage}", head, "-" * len(head)]
     for r in results:
         s = r.stats.get(stage)

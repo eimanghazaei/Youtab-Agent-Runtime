@@ -80,7 +80,7 @@ def test_format_experiment_shows_delta():
     cells = lx.one_variable_matrix(BASELINE, {"process_cold": [True]})
     results = lx.run_experiment(cells, lx.synthetic_call_fn, repetitions=4)
     text = lx.format_experiment(results, stage="model.call")
-    assert "process_cold=True" in text and "Δ vs base" in text
+    assert "process_cold=True" in text and "d_vs_base" in text
 
 
 # --- CLI ---------------------------------------------------------------------
