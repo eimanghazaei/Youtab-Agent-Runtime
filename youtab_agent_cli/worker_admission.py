@@ -80,11 +80,23 @@ def establish_managed_admission(agent) -> bool:
         ) from exc
 
     agent._admitted_command = admitted
-    # R4: physically namespace the memory store by the grant's tenant/workspace so
-    # this managed run can never read or write another tenant's memory. Read by
+    # R4 (corrected): physically namespace the memory store by the grant's
+    # tenant/workspace so this managed run can never read or write another
+    # tenant's memory. The namespace is installed as an IMMUTABLE PER-RUN context
+    # (contextvars), taken from the admitted grant envelope — NOT a mutable
+    # process-global env var, which would leak across concurrent runs in a
+    # process serving more than one. This worker is a single-run subprocess, so
+    # setting it once here scopes the whole run. Read by
     # tools.memory_tool.get_memory_dir; sanitized there against path traversal.
     env = admitted.envelope
-    os.environ["YOUTAB_AGENT_MEMORY_NAMESPACE"] = f"{env.tenant_id}/{env.workspace_id}"
+    try:
+        from tools import memory_tool as _mt
+
+        _mt.set_memory_namespace(env.tenant_id, env.workspace_id)
+    except Exception:  # noqa: BLE001 — memory tool optional; fail-closed handled below
+        # If the memory tool cannot be imported the run has no memory surface to
+        # isolate; the tool_executor authority gate still governs every call.
+        logger.warning("memory tool unavailable; no per-run namespace installed")
     logger.info(
         "managed run %s: Simorgh admitted execution context established", task_id
     )
