@@ -3,8 +3,10 @@
 Exercises the REAL functions along create_run -> persist -> worker re-admit ->
 tool_executor authority gate, at the function level (no subprocess), plus the
 required negative controls: forged, expired, replayed, cross-tenant and
-missing-grant. The full subprocess E2E (FastAPI create_run -> dispatcher spawn ->
-worker) additionally runs in CI where the web/httpx stack is present.
+missing-grant. The REAL cross-process link (persist -> worker PROCESS -> re-admit
+-> actual tool_executor gate) is proven in
+``test_managed_execution_subprocess`` (runs locally and on Linux CI); the full
+HTTP create_run + HMAC ingress hop is covered by the connector golden tests.
 """
 
 from __future__ import annotations
