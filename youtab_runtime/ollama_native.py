@@ -46,7 +46,7 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 # The native Ollama timing fields that ride on the FINAL (``done: true``) message
 # of an ``/api/chat`` response. Copied verbatim (nanoseconds / integer counts);
@@ -62,6 +62,37 @@ _NATIVE_TIMING_KEYS = (
 )
 
 DEFAULT_NATIVE_BASE_URL = "http://localhost:11434"
+
+
+def _assert_local_host(url: str) -> None:
+    """Fail closed unless ``url``'s host resolves entirely to loopback/private IPs.
+
+    Enforces the module's "local Ollama only" promise in code (not just by
+    convention): if a misconfigured or cloud/attacker ``base_url`` is ever passed,
+    the runtime prompt + any bearer key must NOT egress. Every resolved address for
+    the host must be loopback, link-local, or RFC-1918 private; otherwise raise.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    host = (urlparse(url).hostname or "").strip()
+    if not host:
+        raise ValueError("native Ollama base_url has no host")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError as exc:  # unresolvable host → refuse rather than leak
+        raise ValueError(f"native Ollama host {host!r} did not resolve: {exc}") from exc
+    addrs = {info[4][0] for info in infos}
+    if not addrs:
+        raise ValueError(f"native Ollama host {host!r} did not resolve")
+    for a in addrs:
+        ip = ipaddress.ip_address(a)
+        if not (ip.is_loopback or ip.is_private or ip.is_link_local):
+            raise ValueError(
+                f"native Ollama base_url must be local (loopback/private); host "
+                f"{host!r} resolved to non-local {a} — refusing to send prompt/key"
+            )
 
 
 def derive_native_base_url(openai_base_url: Optional[str]) -> str:
@@ -146,20 +177,27 @@ def parse_native_stream(
     *,
     opened_at: Optional[float] = None,
     first_token_clock: Optional[Any] = None,
+    line_recv_times: Optional[Sequence[float]] = None,
 ) -> NativeChatResult:
     """Parse an NDJSON ``/api/chat`` stream into one aggregated result.
 
     Each non-empty line is one JSON object. Intermediate objects carry
     ``message.content`` fragments (and possibly ``tool_calls``); the final object
-    has ``done: true`` and the native timing block. ``ttft_s`` is measured as the
-    delay from ``opened_at`` to the first object that actually carries content or a
-    tool call, using ``first_token_clock()`` (a monotonic clock injected so tests
-    are deterministic); when either is absent, TTFT is left unmeasured (never
-    zero-filled).
+    has ``done: true`` and the native timing block.
+
+    ``ttft_s`` is the delay from ``opened_at`` to when the FIRST content/tool-call
+    line was RECEIVED. The authoritative source is ``line_recv_times`` — the
+    monotonic receive timestamp captured per line by :func:`native_chat` as bytes
+    arrive (so TTFT reflects real time-to-first-token, not parse time). The
+    ``first_token_clock`` callable is a fallback for deterministic unit tests that
+    simulate receive-time reads. When neither is available, TTFT is left unmeasured
+    (never zero-filled). ``line_recv_times`` is indexed by RAW line position
+    (including blanks) so it stays aligned with the input iterable.
     """
     result = NativeChatResult()
     parts: List[str] = []
-    for line in lines:
+    recv = list(line_recv_times) if line_recv_times is not None else None
+    for idx, line in enumerate(lines):
         s = line.strip() if isinstance(line, str) else ""
         if not s:
             continue
@@ -177,11 +215,17 @@ def parse_native_stream(
         frag = message.get("content")
         tcs = _extract_tool_calls(message)
         produced = bool((isinstance(frag, str) and frag) or tcs)
-        if produced and result.ttft_s is None and opened_at is not None and first_token_clock is not None:
-            try:
-                result.ttft_s = max(0.0, float(first_token_clock()) - float(opened_at))
-            except (TypeError, ValueError):
-                result.ttft_s = None
+        if produced and result.ttft_s is None and opened_at is not None:
+            token_t: Optional[float] = None
+            if recv is not None and idx < len(recv):
+                token_t = recv[idx]              # real receive time of this line
+            elif first_token_clock is not None:
+                try:
+                    token_t = float(first_token_clock())
+                except (TypeError, ValueError):
+                    token_t = None
+            if token_t is not None:
+                result.ttft_s = max(0.0, token_t - float(opened_at))
         if isinstance(frag, str) and frag:
             parts.append(frag)
         if tcs:
@@ -221,6 +265,7 @@ def native_chat(
     import httpx  # lazy: keep module import-safe and network-free
 
     root = derive_native_base_url(base_url)
+    _assert_local_host(root)  # fail closed: never egress the prompt/key to a non-local host
     url = f"{root}/api/chat"
     payload: Dict[str, Any] = {"model": model, "messages": list(messages), "stream": bool(stream)}
     if tools:
@@ -238,13 +283,17 @@ def native_chat(
     started = time.monotonic()
     if stream:
         collected: List[str] = []
+        recv_times: List[float] = []
         with httpx.Client(timeout=timeout) as client:
             with client.stream("POST", url, json=payload, headers=headers) as resp:
                 resp.raise_for_status()
                 for line in resp.iter_lines():
+                    # Timestamp each line AS IT ARRIVES so TTFT reflects real
+                    # time-to-first-token, not post-drain parse time (HIGH-1).
+                    recv_times.append(time.monotonic())
                     collected.append(line)
         result = parse_native_stream(
-            collected, opened_at=started, first_token_clock=time.monotonic
+            collected, opened_at=started, line_recv_times=recv_times
         )
     else:
         with httpx.Client(timeout=timeout) as client:

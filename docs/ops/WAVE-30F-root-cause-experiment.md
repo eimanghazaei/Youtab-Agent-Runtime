@@ -40,17 +40,30 @@ Same model + digest + task + generation options + prompt payload across four pat
 
 Attribution (`youtab_runtime/bottleneck_matrix.py`, pure + deterministic):
 components `model_cold_load`, `model_prompt_evaluation`, `model_generation`,
-`runtime_overhead` (= path C wall), `transport_residual` (= D − model total(B) −
-runtime(C)). Each is scored `PROVEN_PRIMARY` (≥50% of D wall), `PROVEN_SECONDARY`
-(≥20%), `DISPROVEN` (measured, below), or `UNRESOLVED` (inputs absent — never
-blamed). No component (Mac / SSH / Ollama / Qwen / Runtime) is blamed without this
-comparison.
+`runtime_overhead` (= path C wall), `transport_residual` (= D − model cost − C,
+where model cost = the cold load **attributed to D** + prompt-eval + generation).
+Each is scored `PROVEN_PRIMARY` (≥50% of D wall), `PROVEN_SECONDARY` (≥20%),
+`DISPROVEN` (measured, below), or `UNRESOLVED` (inputs absent — never blamed). No
+component (Mac / SSH / Ollama / Qwen / Runtime) is blamed without this comparison.
+
+**Cold-load correctness (critical):** path D uses the compat endpoint and has no
+native timings, so its cold/warm state is an EXPLICIT fact the driver must set on
+`paths["D"].cold_start`. The cold-load magnitude is taken only from whichever of
+A/B genuinely ran cold (`load_duration > COLD_LOAD_THRESHOLD_MS`). If D ran warm,
+`model_cold_load` is 0 and the residual does not absorb a load D never paid (this
+prevents a false SSH/transport blame). If D's state is unknown, or the raw residual
+is materially negative (non-comparable process spawns), `model_cold_load` /
+`transport_residual` are `UNRESOLVED`, never guessed.
 
 ### Running the matrix at an authorized canary
 1. Capture the exact runtime-assembled `messages`, `agent.tools`, and options
-   (`num_ctx`, `keep_alive`, temperature, `num_predict`) at dispatch (path D).
-2. `run_ab_paths(base_url, model, runtime_messages, runtime_tools, options)` →
-   paths A and B (local Ollama native; never a cloud provider).
+   (`num_ctx`, `keep_alive`, temperature, `num_predict`) at dispatch (path D), and
+   record whether D ran cold or warm (did you evict the model first?) →
+   `paths["D"].cold_start`.
+2. To measure the cold-load magnitude, run one native path COLD (evict the model,
+   e.g. `keep_alive: 0`, then load). `run_ab_paths` runs A then B in-process, so B
+   is warm by the time it runs — A carries the cold load; B isolates warm
+   prompt-eval/generation. TTFT is timestamped at byte-receive time, not parse time.
 3. Path C: run the worker with inference stubbed (assembly + loop, no send).
 4. `classify_bottlenecks({A,B,C,D})` → ranked findings.
 5. Record cold vs warm separately (below). One exact-SHA canary only — it must not
@@ -64,10 +77,12 @@ dominated by cold Python process start + one-shot agent construction; nothing is
 amortised across runs (worker pools are ADR-gated, out of scope).
 
 Instrumentation: `youtab_runtime/phase_timing.py` records monotonic marks
-(`agent_stack_imported`, `agent_init_start`, `first_model_send`) emitted as
-all-numeric `lifecycle_*_ms` on the first per-call timing event. The import-head
-slice (process start + heavy imports, before the phase clock's T0) is derived from
-the dispatcher's timestamped `spawned` journal event minus the first-event marks.
+(`agent_stack_imported` — the T0 anchor, ≈0 by construction; `agent_init_start`;
+`first_model_send`) emitted as all-numeric `lifecycle_*_ms` on the first per-call
+timing event, alongside a wall-clock `lifecycle_t0_epoch_ms` anchor. The import-head
+slice (process start + heavy imports, before T0) is then computable across processes
+as `T0_epoch − dispatcher spawned-event wall timestamp` — monotonic marks alone
+can't be related to the spawn event, so the epoch anchor is required.
 
 Static top suspects (ranked by code shape; the canary confirms the split), each
 with a SAFE, isolation-preserving fix (no shared pools/caches):

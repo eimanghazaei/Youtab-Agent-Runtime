@@ -14,6 +14,7 @@ import pytest
 from youtab_runtime.model_timings import extract_native_ollama_timings
 from youtab_runtime.ollama_native import (
     DEFAULT_NATIVE_BASE_URL,
+    _assert_local_host,
     derive_native_base_url,
     parse_native_nonstream,
     parse_native_stream,
@@ -34,6 +35,25 @@ from youtab_runtime.ollama_native import (
 )
 def test_derive_native_base_url(given, expected):
     assert derive_native_base_url(given) == expected
+
+
+@pytest.mark.parametrize("url", [
+    "http://127.0.0.1:11434",
+    "http://192.168.1.5:11434",   # RFC-1918 private (LAN Ollama)
+    "http://10.0.0.9:11434",
+    "http://[::1]:11434",         # IPv6 loopback
+])
+def test_assert_local_host_accepts_loopback_and_private(url):
+    _assert_local_host(url)  # must not raise
+
+
+@pytest.mark.parametrize("url", [
+    "http://8.8.8.8:11434",       # public IP → refuse
+    "http://1.1.1.1/v1",
+])
+def test_assert_local_host_rejects_public(url):
+    with pytest.raises(ValueError):
+        _assert_local_host(url)
 
 
 def _final_stream_line():
@@ -102,6 +122,22 @@ def test_parse_stream_ttft_omitted_without_clock():
     lines = [json.dumps(_final_stream_line())]
     result = parse_native_stream(lines)  # no clock injected
     assert result.ttft_s is None
+
+
+def test_parse_stream_ttft_from_receive_times_not_drain_time():
+    # The receive-time path (what native_chat uses): the first CONTENT line arrived
+    # at t=100.3; the final line (with timings) arrived much later at t=120.0. TTFT
+    # must be 0.3s (first token), NOT ~20s (full stream drain) — this is the HIGH-1
+    # regression guard.
+    lines = [
+        json.dumps({"model": "qwen3.5:9b", "message": {"content": ""}, "done": False}),  # empty content
+        json.dumps({"message": {"content": "Hi"}, "done": False}),   # FIRST real token
+        json.dumps(_final_stream_line()),
+    ]
+    recv = [100.05, 100.3, 120.0]  # aligned to raw line positions
+    result = parse_native_stream(lines, opened_at=100.0, line_recv_times=recv)
+    assert result.ttft_s == pytest.approx(0.3)
+    assert result.raw_timings["prompt_eval_count"] == 21421
 
 
 def test_parse_nonstream():

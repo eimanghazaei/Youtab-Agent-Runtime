@@ -5700,33 +5700,36 @@ def _run_conversation_impl(
                             native=extract_native_ollama_timings(response),
                             cold_start=getattr(agent, "_model_cold_start", None),
                         )
-                        # WAVE-30E: per-category token accounting for THIS request
-                        # (system / skills-index / tool-schemas / conversation).
-                        # All-numeric estimates merged under ``budget_*`` keys so
-                        # they ride the same redaction-clean event; the exact
-                        # serialized count is the provider's prompt_eval_count in
-                        # the native timing fields above.
+                        # WAVE-30E/30F: per-category token accounting for the INITIAL
+                        # request (system / skills-index / tool-schemas / conversation),
+                        # merged under ``budget_*`` keys on the same redaction-clean
+                        # event. Gated to the FIRST call: system prompt + agent.tools
+                        # are assembled once per run, so re-serializing the ~16K-char
+                        # tool array every call would add pure overhead to the very
+                        # path being profiled (MEDIUM-2). The exact serialized count is
+                        # the provider prompt_eval_count in the native fields above.
                         try:
-                            from youtab_runtime.context_budget import (
-                                measure_prompt_categories,
-                                numeric_category_summary,
-                            )
-                            _sys_prompt = ""
-                            if api_messages and str(api_messages[0].get("role")) == "system":
-                                _sys_prompt = str(api_messages[0].get("content") or "")
-                            _cats = measure_prompt_categories(
-                                system_prompt=_sys_prompt,
-                                tool_defs=agent.tools,
-                                messages=api_messages,
-                            )
-                            for _k, _v in numeric_category_summary(_cats).items():
-                                _timings[f"budget_{_k}"] = _v
-                            # Effective requested context window (task-aware ctx
-                            # selection is observable; the full 64K capability is
-                            # unchanged — this only records what THIS call asked for).
-                            _nctx = getattr(agent, "_ollama_num_ctx", None)
-                            if isinstance(_nctx, int) and _nctx > 0:
-                                _timings["ctx_num_ctx"] = _nctx
+                            if api_call_count == 1:
+                                from youtab_runtime.context_budget import (
+                                    measure_prompt_categories,
+                                    numeric_category_summary,
+                                )
+                                _sys_prompt = ""
+                                if api_messages and str(api_messages[0].get("role")) == "system":
+                                    _sys_prompt = str(api_messages[0].get("content") or "")
+                                _cats = measure_prompt_categories(
+                                    system_prompt=_sys_prompt,
+                                    tool_defs=agent.tools,
+                                    messages=api_messages,
+                                )
+                                for _k, _v in numeric_category_summary(_cats).items():
+                                    _timings[f"budget_{_k}"] = _v
+                                # Effective requested context window (task-aware ctx
+                                # selection is observable; the full 64K capability is
+                                # unchanged — records what THIS call asked for).
+                                _nctx = getattr(agent, "_ollama_num_ctx", None)
+                                if isinstance(_nctx, int) and _nctx > 0:
+                                    _timings["ctx_num_ctx"] = _nctx
                         except Exception:
                             pass
                         # WAVE-30F: on the FIRST model call, attach the all-numeric

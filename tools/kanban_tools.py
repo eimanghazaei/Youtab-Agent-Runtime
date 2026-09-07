@@ -1447,13 +1447,15 @@ _DESC_TASK_ID_DEFAULT = (
 )
 
 # WAVE-30F (F1): the full board-resolution rule is server-side behaviour the model
-# never computes, so it only needs to appear ONCE in the tool array (on
-# ``kanban_show``, which a worker always calls first). The other 12 kanban tools
-# carry a short stub with the same actionable semantics — omit → active board,
-# pass a slug → override — eliminating the 350-char blob's 9 redundant wire copies
-# (~780 tok) with no loss of any parameter, optionality, or validation. Likewise
-# for the task-id default. This is true duplication removal, NOT tool hiding: every
-# tool keeps its ``board``/``task_id`` parameter, fully visible and unchanged.
+# never computes (it has no env/symlink visibility), so it only needs to appear
+# ONCE in the tool array — on ``kanban_show``, the authoritative carrier of the
+# full rule. The other 11 board-bearing kanban tools carry a short stub with the
+# same actionable semantics — omit → active board, pass a slug → override —
+# eliminating the 350-char blob's 11 redundant wire copies (~594 est tok) with no
+# loss of any parameter, optionality, or validation. This is true duplication
+# removal, NOT tool hiding: every tool keeps its ``board`` parameter, fully visible
+# and unchanged. (The task-id default is left as-is — its dedup saving is
+# negligible and not worth the churn.)
 _DESC_BOARD = (
     "Kanban board slug to target. When omitted, the call resolves the "
     "active board the usual way: YOUTAB_AGENT_KANBAN_DB env → "

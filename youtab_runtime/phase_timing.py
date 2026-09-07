@@ -22,8 +22,13 @@ import time
 from typing import Dict
 
 # Captured when this module is first imported. Import it early in the worker
-# entrypoint so this approximates the process-start instant.
+# entrypoint so this approximates the process-start instant. ``_T0`` is monotonic
+# (for correct intra-process deltas); ``_T0_WALL`` is the matching wall-clock epoch,
+# emitted as ``lifecycle_t0_epoch_ms`` so the import-head slice IS computable across
+# processes: head ≈ (worker phase-clock T0 wall) − (dispatcher "spawned" wall ts).
+# Without this anchor the monotonic marks cannot be related to the spawn event.
 _T0 = time.monotonic()
+_T0_WALL = time.time()
 
 # Ordered marks: phase name → elapsed ms since _T0.
 _MARKS: "Dict[str, float]" = {}
@@ -63,6 +68,9 @@ def snapshot(prefix: str = "lifecycle_") -> Dict[str, float]:
     redaction chokepoint (numeric values, snake_case keys). Returns a copy.
     """
     out: Dict[str, float] = {}
+    # Wall-clock epoch anchor for T0 (ms) — lets the head slice be computed against
+    # the dispatcher's wall-clock "spawned" timestamp (monotonic marks alone can't).
+    out[f"{prefix}t0_epoch_ms"] = round(_T0_WALL * 1000.0, 3)
     for name, ms in _MARKS.items():
         key = f"{prefix}{name}_ms"
         if _SAFE_MARK.fullmatch(name):

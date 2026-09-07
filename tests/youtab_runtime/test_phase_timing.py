@@ -13,10 +13,17 @@ def test_mark_and_snapshot_are_numeric_and_prefixed():
     pt.mark("agent_stack_imported")
     pt.mark("first_model_send")
     snap = pt.snapshot()
-    assert set(snap) == {"lifecycle_agent_stack_imported_ms", "lifecycle_first_model_send_ms"}
+    # Marks + the always-present wall-clock epoch anchor.
+    assert set(snap) == {
+        "lifecycle_agent_stack_imported_ms",
+        "lifecycle_first_model_send_ms",
+        "lifecycle_t0_epoch_ms",
+    }
     for v in snap.values():
         assert isinstance(v, float)
         assert v >= 0.0
+    # The epoch anchor is a real wall-clock time (well after 2020), not a delta.
+    assert snap["lifecycle_t0_epoch_ms"] > 1_500_000_000_000
 
 
 def test_invalid_marks_are_ignored_failsoft():
@@ -24,7 +31,7 @@ def test_invalid_marks_are_ignored_failsoft():
     pt.mark("UPPER")          # uppercase → ignored
     pt.mark("ok_name")        # kept
     snap = pt.snapshot()
-    assert snap == {"lifecycle_ok_name_ms": snap.get("lifecycle_ok_name_ms")}
+    assert set(snap) == {"lifecycle_ok_name_ms", "lifecycle_t0_epoch_ms"}
     assert "lifecycle_ok_name_ms" in snap
 
 
