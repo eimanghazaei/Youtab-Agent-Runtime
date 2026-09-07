@@ -1226,6 +1226,27 @@ def _run_conversation_impl(
                         _run_id, Principal(_tenant, _user), correlation_id=_corr
                     )
                 )
+                # R8 (WAVE-30H): bind this worker's immutable per-run trace context
+                # and route first-class stage_trace spans (memory retrieval, child
+                # spawn/wait, and any future span) into the same principal-bound run
+                # journal. The observer-bridged model/tool spans do NOT depend on
+                # this; this is only for spans emitted directly in worker code.
+                try:
+                    from youtab_runtime import stage_trace as _st
+
+                    _root = (
+                        os.environ.get("YOUTAB_AGENT_KANBAN_RUN_ID") or ""
+                    ).strip() or _run_id
+                    _agent_id = (
+                        os.environ.get("YOUTAB_AGENT_PROFILE") or ""
+                    ).strip() or None
+                    _st.set_sink(_st.RunJournalSink())
+                    _st.bind_trace_context(
+                        tenant=_tenant, user=_user, run_id=_run_id,
+                        root_run_id=_root, correlation_id=_corr, agent_id=_agent_id,
+                    )
+                except Exception:
+                    logger.debug("R8 trace-context bind failed", exc_info=True)
         except Exception:
             logger.warning(
                 "WAVE-26 run-observer registration failed", exc_info=True

@@ -445,6 +445,7 @@ async def _admit_execution_grant(request: Request, identity: RuntimeIdentity):
     ``managed_execution.re_admit_worker_grant`` from the persisted grant+manifest.
     """
     from youtab_runtime import managed_execution as mx
+    from youtab_runtime import stage_trace as _st
 
     grant_header = request.headers.get(mx.GRANT_HEADER)
     try:
@@ -458,24 +459,39 @@ async def _admit_execution_grant(request: Request, identity: RuntimeIdentity):
             # admission — never a tool registered later. Built before admit() so it
             # is sealed into (and proof-bound to) the AdmittedCommand.
             capability_binding = None
-            if grant_header:
-                from tools.registry import registry as _registry
+            with _st.trace_context_scope(
+                correlation_id=getattr(identity, "correlation_id", None),
+                tenant=identity.tenant, user=identity.user,
+            ):
+                if grant_header:
+                    from tools.registry import registry as _registry
 
-                from youtab_agent_cli import capability_manifest as _cm
+                    from youtab_agent_cli import capability_manifest as _cm
 
-                envelope = mx.decode_grant_header(grant_header)
-                capability_binding = _cm.build_ingress_binding(
-                    envelope, registry=_registry
-                )
-            mx.admit_managed_run(
-                grant_header=grant_header,
-                identity=mx.AdmissionIdentity(
-                    tenant=identity.tenant, user=identity.user, workspace=workspace
-                ),
-                boundary=_get_grant_boundary(),
-                public_keys=mx.load_brain_public_keys(),
-                capability_binding=capability_binding,
-            )
+                    envelope = mx.decode_grant_header(grant_header)
+                    # R8: freezing the per-run manifest = the tools discovery +
+                    # schema-hash work at ingress; measure it as its own stage.
+                    with _st.span(_st.Stage.TOOLS_DISCOVER) as _sp:
+                        capability_binding = _cm.build_ingress_binding(
+                            envelope, registry=_registry
+                        )
+                        try:
+                            _sp["tool_count"] = len(
+                                getattr(capability_binding, "tool_hashes", None) or {}
+                            )
+                        except Exception:
+                            pass
+                with _st.span(_st.Stage.GRANT_VERIFY):
+                    mx.admit_managed_run(
+                        grant_header=grant_header,
+                        identity=mx.AdmissionIdentity(
+                            tenant=identity.tenant, user=identity.user,
+                            workspace=workspace,
+                        ),
+                        boundary=_get_grant_boundary(),
+                        public_keys=mx.load_brain_public_keys(),
+                        capability_binding=capability_binding,
+                    )
             manifest = (
                 _cm.binding_to_persisted(capability_binding)
                 if capability_binding is not None
@@ -500,18 +516,24 @@ async def _verify_signed_command(request: Request, identity: RuntimeIdentity) ->
     # workspace-scoped request would fail (or, worse, be verified under the
     # wrong workspace). For v1 requests the param is ignored by the v1 builder.
     workspace = (request.headers.get(rca.WORKSPACE_HEADER) or rca.WORKSPACE_UNSCOPED).strip()
+    from youtab_runtime import stage_trace as _st
+
     try:
-        rca.verify_command(
-            method=request.method,
-            path=request.url.path,
-            tenant=identity.tenant,
-            user=identity.user,
-            body=body,
-            headers=request.headers,
-            secret=_runtime_secret(),
-            store=_get_nonce_store(),
-            workspace=workspace or rca.WORKSPACE_UNSCOPED,
-        )
+        with _st.trace_context_scope(
+            correlation_id=getattr(identity, "correlation_id", None),
+            tenant=identity.tenant, user=identity.user,
+        ), _st.span(_st.Stage.ADMISSION_VERIFY):
+            rca.verify_command(
+                method=request.method,
+                path=request.url.path,
+                tenant=identity.tenant,
+                user=identity.user,
+                body=body,
+                headers=request.headers,
+                secret=_runtime_secret(),
+                store=_get_nonce_store(),
+                workspace=workspace or rca.WORKSPACE_UNSCOPED,
+            )
     except rca.CommandAuthError as exc:
         raise HTTPException(status_code=exc.http_status, detail={"error": exc.code}) from exc  # noqa: E501
 

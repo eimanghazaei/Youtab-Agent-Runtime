@@ -831,3 +831,58 @@ def test_unsigned_mutation_is_401(client):
     headers["Content-Type"] = "application/json"
     r = client.post("/api/runtime/v1/runs", content=body, headers=headers)
     assert r.status_code == 401
+
+
+# --------------------------------------------------------------------------
+# R8 (WAVE-30H): the admission HMAC-verify stage emits a causally-valid span
+# --------------------------------------------------------------------------
+def test_admission_verify_emits_stage_span(client):
+    """The signed-command verification on a real create-run is measured as an
+    ``admission.verify_signature`` span, carrying the request correlation id and
+    NO secret/body content."""
+    from youtab_runtime import stage_trace as st
+
+    sink = st.MemorySink()
+    st.set_sink(sink)
+    try:
+        r = _create_run(client)
+        assert r.status_code in (200, 201, 202)
+    finally:
+        st.set_sink(None)
+
+    spans = [s for s in sink.records if s["stage"] == st.Stage.ADMISSION_VERIFY]
+    assert spans, "expected an admission.verify_signature span"
+    sp = spans[0]
+    assert sp["ok"] is True
+    assert sp["clock"] == "monotonic"
+    assert sp["duration_ns"] is not None and sp["duration_ns"] >= 0
+    assert sp["ctx"].get("correlation_id") == "cid-test"
+    # no body/secret ever rides in a span (attrs is empty or safe-only)
+    assert all(k in st.SAFE_STR_KEYS or not isinstance(v, str)
+               for k, v in (sp.get("attrs") or {}).items())
+
+
+def test_admission_verify_span_records_failure_on_tampered_body(client):
+    """A tampered (401) request still emits a span, marked ok=False — a failed
+    stage is data, not hidden."""
+    import json
+
+    from youtab_runtime import stage_trace as st
+
+    sink = st.MemorySink()
+    st.set_sink(sink)
+    try:
+        signed_body = json.dumps({"agent": "default", "task": "original"}).encode()
+        tampered_body = json.dumps({"agent": "default", "task": "TAMPERED"}).encode()
+        path = "/api/runtime/v1/runs"
+        headers = _identity_headers()
+        headers.update(_sign("POST", path, "tenantA", "userA", signed_body))
+        headers["Content-Type"] = "application/json"
+        r = client.post(path, content=tampered_body, headers=headers)
+        assert r.status_code == 401
+    finally:
+        st.set_sink(None)
+
+    spans = [s for s in sink.records if s["stage"] == st.Stage.ADMISSION_VERIFY]
+    assert spans and spans[0]["ok"] is False
+    assert "reason_code" in (spans[0].get("attrs") or {})
