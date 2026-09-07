@@ -186,7 +186,19 @@ class AuthorityBoundary:
             raise TypeError("decide_tool requires an AdmittedCommand from admit()")
         admitted.verify_proof()
         envelope = admitted.envelope
-        if intent.toolset not in envelope.allowed_toolsets:
+        # Authority-bearing toolsets are NEVER executable in the managed runtime,
+        # regardless of the grant envelope (incl. the "*" full-envelope). admit()
+        # already refuses a grant that lists them; this is defence in depth.
+        if intent.toolset in self.FORBIDDEN_TOOLSETS:
+            return ManagedToolDecision(
+                execute_in_runtime=False,
+                reason="authority-bearing toolset is never executable in the managed runtime",
+            )
+        # "*" is the Simorgh maximum-envelope sentinel: the engine narrows it to
+        # whatever is actually registered/authorized/operational and never widens
+        # it. Any other value is an explicit toolset allow-list.
+        allowed = envelope.allowed_toolsets
+        if "*" not in allowed and intent.toolset not in allowed:
             return ManagedToolDecision(
                 execute_in_runtime=False,
                 reason="toolset is outside the Brain-issued task contract",

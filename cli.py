@@ -17863,6 +17863,22 @@ def main(
                         # status lines).  The response is printed once below.
                         cli.agent.stream_delta_callback = None
                         cli.agent.tool_gen_callback = None
+                        # Managed runs: establish the sealed Simorgh admitted
+                        # execution context BEFORE any tool can run. Fail closed —
+                        # a managed run with no valid grant must not execute.
+                        try:
+                            from youtab_agent_cli.worker_admission import (
+                                ManagedWorkerAdmissionError,
+                                establish_managed_admission,
+                            )
+
+                            establish_managed_admission(cli.agent)
+                        except ManagedWorkerAdmissionError as _adm_exc:
+                            print(
+                                f"managed_admission_failed: {_adm_exc}",
+                                file=sys.stderr,
+                            )
+                            sys.exit(3)
                         try:
                             result = cli.agent.run_conversation(
                                 user_message=effective_query,
