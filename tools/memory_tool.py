@@ -25,6 +25,8 @@ Design:
 
 import json
 import logging
+import os
+import re
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -32,6 +34,33 @@ from youtab_constants import get_youtab_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text
+
+# WAVE-30H R4: managed runs physically namespace the memory store by the grant's
+# tenant/workspace so one managed run can never read or write another tenant's
+# memory. The worker sets this at admission (see worker_admission); standalone
+# leaves it unset and the flat profile-scoped path is unchanged.
+MEMORY_NAMESPACE_ENV = "YOUTAB_AGENT_MEMORY_NAMESPACE"
+_NAMESPACE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitized_namespace_parts() -> list:
+    """Sanitized ``[tenant, workspace]`` path parts, or [] when unset (standalone).
+
+    Each component is reduced to a safe charset (no path separators / traversal),
+    so a hostile tenant/workspace id cannot escape the namespace root.
+    """
+    raw = (os.environ.get(MEMORY_NAMESPACE_ENV) or "").strip()
+    if not raw:
+        return []
+    parts = []
+    for component in raw.split("/"):
+        component = component.strip()
+        if not component:
+            continue
+        safe = _NAMESPACE_COMPONENT_RE.sub("_", component)
+        safe = safe.strip(".") or "_"  # guard ".."-style traversal
+        parts.append(safe)
+    return parts
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -51,8 +80,16 @@ logger = logging.getLogger(__name__)
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_youtab_home() / "memories"
+    """Return the memories directory, tenant/workspace-namespaced in managed mode.
+
+    Standalone (namespace env unset): the flat ``<home>/memories`` path, unchanged.
+    Managed (env set by the worker at admission): ``<home>/memories/<tenant>/<workspace>``
+    so a managed run's memory is physically isolated from other tenants (R4).
+    """
+    base = get_youtab_home() / "memories"
+    for part in _sanitized_namespace_parts():
+        base = base / part
+    return base
 
 # Stable header prefixes for the system-prompt memory blocks rendered by
 # MemoryStore._render_block. Exported so compression's prompt-retention check
@@ -1252,6 +1289,12 @@ registry.register(
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
+    # WAVE-30H R4: memory operations are memory-writes, so the managed authority
+    # gate routes them through the grant's allowed_memory_scopes (a run may only
+    # touch memory its Simorgh grant authorizes). Effect class is advisory
+    # metadata; it never gates the standalone path.
+    side_effect_class="memory_write",
+    capabilities=("memory",),
 )
 
 

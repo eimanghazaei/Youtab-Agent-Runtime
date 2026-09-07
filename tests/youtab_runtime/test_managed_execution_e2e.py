@@ -34,7 +34,7 @@ _KEYS = {KEY_ID: _PUB}
 _NOW = datetime(2026, 9, 7, 12, 0, 0, tzinfo=UTC)
 
 
-def _grant_header(*, signer=_SIGNER, toolsets=("*",), nonce="grant-e2e-0123456789abcdef0123", **over):
+def _grant_header(*, signer=_SIGNER, toolsets=("*",), mem_scopes=(), nonce="grant-e2e-0123456789abcdef0123", **over):
     fields = dict(
         schema_version="youtab.agent-command.v2",
         issuer="youtab-one-brain",
@@ -46,7 +46,7 @@ def _grant_header(*, signer=_SIGNER, toolsets=("*",), nonce="grant-e2e-012345678
         membership_generation=1, authorization_epoch=1,
         agent_id="agent-default", engine_id="engine-local",
         trace_id="trace-e2e0123", nonce=nonce, objective="do the thing",
-        allowed_toolsets=toolsets, allowed_memory_scopes=(),
+        allowed_toolsets=toolsets, allowed_memory_scopes=mem_scopes,
         allowed_artifact_scopes=(), effect_proposal_scopes=(),
         reasoning={"max_iterations": 5, "max_spawn_depth": 1, "max_concurrent_agents": 1,
                    "max_total_tokens": 1000, "max_cost_micros": 0, "max_retries": 0,
@@ -84,6 +84,10 @@ def registered_tools():
         name="e2e_forbidden_tool", toolset="cognitive_authority",
         schema={"name": "e2e_forbidden_tool"}, handler=lambda a, **k: "ok",
         side_effect_class="read"))
+    registry.register_spec(ToolSpec(
+        name="e2e_memory_tool", toolset="memory", schema={"name": "e2e_memory_tool"},
+        handler=lambda a, **k: "ok", side_effect_class="memory_write"))
+    names = names + ("e2e_memory_tool",)
     try:
         yield names
     finally:
@@ -121,6 +125,27 @@ def test_forbidden_toolset_hard_denied_under_full_envelope(monkeypatch, register
     agent = _Agent(_admit_worker())
     reason = enforce_managed_tool_authority(agent, "e2e_forbidden_tool", {})
     assert reason and "authority-bearing" in reason.lower()
+
+
+# --- R4: memory-scope enforcement at the gate -----------------------------
+
+def test_memory_write_allowed_within_authorized_scope(monkeypatch, registered_tools):
+    monkeypatch.setenv("YOUTAB_RUNTIME_TRUST_MODE", "managed")
+    admitted = re_admit_worker_grant(
+        grant_header=_grant_header(mem_scopes=("*",)),
+        boundary=AuthorityBoundary(), public_keys=_KEYS, now=_NOW)
+    agent = _Agent(admitted)
+    assert enforce_managed_tool_authority(agent, "e2e_memory_tool", {"action": "add"}) is None
+
+
+def test_memory_write_denied_when_grant_authorizes_no_memory(monkeypatch, registered_tools):
+    monkeypatch.setenv("YOUTAB_RUNTIME_TRUST_MODE", "managed")
+    admitted = re_admit_worker_grant(
+        grant_header=_grant_header(mem_scopes=()),  # grant authorizes NO memory
+        boundary=AuthorityBoundary(), public_keys=_KEYS, now=_NOW)
+    agent = _Agent(admitted)
+    reason = enforce_managed_tool_authority(agent, "e2e_memory_tool", {"action": "add"})
+    assert reason and "memory" in reason.lower()
 
 
 # --- item 6: no bypass, no standalone fallback ----------------------------

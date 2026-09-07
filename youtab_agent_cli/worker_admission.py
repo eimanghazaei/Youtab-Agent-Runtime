@@ -80,6 +80,11 @@ def establish_managed_admission(agent) -> bool:
         ) from exc
 
     agent._admitted_command = admitted
+    # R4: physically namespace the memory store by the grant's tenant/workspace so
+    # this managed run can never read or write another tenant's memory. Read by
+    # tools.memory_tool.get_memory_dir; sanitized there against path traversal.
+    env = admitted.envelope
+    os.environ["YOUTAB_AGENT_MEMORY_NAMESPACE"] = f"{env.tenant_id}/{env.workspace_id}"
     logger.info(
         "managed run %s: Simorgh admitted execution context established", task_id
     )

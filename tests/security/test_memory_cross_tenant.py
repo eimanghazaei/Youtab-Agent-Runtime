@@ -102,18 +102,20 @@ POISON = (
 
 
 def _admitted_boundary():
+    # decide_tool requires the SEALED AdmittedCommand returned by admit() (the
+    # finding #5 fix): a bare envelope can no longer reach a tool decision.
     private, public = keypair()
     envelope = signed_envelope(private)
     boundary = AuthorityBoundary()
-    boundary.admit(envelope, public)
-    return boundary, envelope
+    admitted = boundary.admit(envelope, public)
+    return boundary, admitted
 
 
 def test_poisoned_tool_output_in_write_args_stays_a_proposal_not_execution():
-    boundary, envelope = _admitted_boundary()
+    boundary, admitted = _admitted_boundary()
     # A tool result (poisoned memory content) fed back into a write call's args.
     decision = boundary.decide_tool(
-        envelope,
+        admitted,
         ToolIntent(
             tool_name="write_file",
             toolset="safe",
@@ -127,9 +129,9 @@ def test_poisoned_tool_output_in_write_args_stays_a_proposal_not_execution():
 
 
 def test_poisoned_content_driving_a_network_effect_cannot_self_authorize():
-    boundary, envelope = _admitted_boundary()
+    boundary, admitted = _admitted_boundary()
     decision = boundary.decide_tool(
-        envelope,
+        admitted,
         ToolIntent(
             tool_name="send_external",
             toolset="safe",
@@ -146,9 +148,9 @@ def test_poison_in_the_objective_itself_does_not_grant_effect_authority():
     private, public = keypair()
     envelope = signed_envelope(private, objective=POISON)
     boundary = AuthorityBoundary()
-    boundary.admit(envelope, public)  # a poisoned objective is still just a task
+    admitted = boundary.admit(envelope, public)  # a poisoned objective is still just a task
     decision = boundary.decide_tool(
-        envelope,
+        admitted,
         ToolIntent(
             tool_name="grant_authority",
             toolset="safe",

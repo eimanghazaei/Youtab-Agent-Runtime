@@ -208,6 +208,22 @@ class AuthorityBoundary:
                 execute_in_runtime=True,
                 reason="effect-free/read-only operation admitted by task contract",
             )
+        # Memory writes are the agent's OWN authorized long-term memory (not an
+        # external effect), but they are governed by the grant's memory scope
+        # (R4): a run may write memory only if Simorgh authorized a memory scope.
+        # "*" is the full-envelope sentinel. An empty scope set means the grant
+        # did not authorize memory writes -> deny (never infer authority).
+        if intent.effect_class is EffectClass.MEMORY_WRITE:
+            mem_scopes = envelope.allowed_memory_scopes
+            if "*" in mem_scopes or len(mem_scopes) > 0:
+                return ManagedToolDecision(
+                    execute_in_runtime=True,
+                    reason="memory write within the grant's authorized memory scope",
+                )
+            return ManagedToolDecision(
+                execute_in_runtime=False,
+                reason="memory write is outside the grant's authorized memory scope",
+            )
         arguments = json.dumps(
             intent.arguments, sort_keys=True, separators=(",", ":"), default=str
         ).encode("utf-8")
