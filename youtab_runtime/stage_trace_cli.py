@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
     else:
         total = sum(s.count for s in stats.values())
-        print(f"# R8 stage-latency report — {total} spans across {len(stats)} stages")
+        print(f"# R8 stage-latency report - {total} spans across {len(stats)} stages")
         print(rep.format_report(stats))
     return 0
 

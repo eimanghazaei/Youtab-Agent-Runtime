@@ -46,9 +46,11 @@ except Exception:  # pragma: no cover - defensive
 # off (default) or unavailable — instrumenting agent construction must never break
 # or slow the cold-start path it measures.
 try:  # pragma: no cover - observability import guard
-    from youtab_runtime import stage_trace as _st
+    # NB: aliased _st_mod (not _st) — init_agent already binds a LOCAL `_st`
+    # (session title), which would otherwise shadow a module global named _st.
+    from youtab_runtime import stage_trace as _st_mod
 except Exception:  # pragma: no cover - defensive
-    _st = None  # type: ignore[assignment]
+    _st_mod = None  # type: ignore[assignment]
 
 
 def _stage_span(stage_attr: str, **attrs: Any):
@@ -60,10 +62,10 @@ def _stage_span(stage_attr: str, **attrs: Any):
     """
     from contextlib import nullcontext
 
-    if _st is None:
+    if _st_mod is None:
         return nullcontext({})
     try:
-        return _st.span(getattr(_st.Stage, stage_attr), **attrs)
+        return _st_mod.span(getattr(_st_mod.Stage, stage_attr), **attrs)
     except Exception:  # pragma: no cover - defensive; never break construction
         return nullcontext({})
 
@@ -1029,7 +1031,7 @@ def init_agent(
     # of the per-provider client-build if/elif below. Monotonic (intra-process).
     # This is distinct from model.init (server-side native load_duration, emitted by
     # run_observer) — do not conflate the two.
-    _engine_resolve_t0 = time.monotonic_ns() if _st is not None else None
+    _engine_resolve_t0 = time.monotonic_ns() if _st_mod is not None else None
 
     if agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -1410,10 +1412,10 @@ def init_agent(
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
-    if _st is not None and _engine_resolve_t0 is not None:
+    if _st_mod is not None and _engine_resolve_t0 is not None:
         try:
-            _st.record(
-                _st.Stage.ENGINE_RESOLVE,
+            _st_mod.record(
+                _st_mod.Stage.ENGINE_RESOLVE,
                 duration_ns=time.monotonic_ns() - _engine_resolve_t0,
                 provider=(agent.provider or None),
                 model_id=(agent.model or None),
