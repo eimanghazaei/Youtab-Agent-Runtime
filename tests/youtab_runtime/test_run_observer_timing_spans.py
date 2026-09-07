@@ -114,6 +114,30 @@ def test_tool_call_span_emitted(tmp_path):
     assert stats["tool.call"].count_error == 0
 
 
+def test_process_cold_warm_split_is_distinct_from_model_coldstart(tmp_path):
+    db = tmp_path / "j.db"
+    obs = _obs(db)
+    # First call in a fresh subprocess: process_cold True, model residency warm.
+    obs.on_post_api_request(
+        api_request_id="t1:api:1", provider="ollama",
+        usage={"input_tokens": 1, "output_tokens": 1},
+        timings={"wall_ms": 13000.0, "process_cold": True, "cold_start": False},
+    )
+    # Second call, same run/process: process warm.
+    obs.on_post_api_request(
+        api_request_id="t1:api:2", provider="ollama",
+        usage={"input_tokens": 1, "output_tokens": 1},
+        timings={"wall_ms": 900.0, "process_cold": False, "cold_start": False},
+    )
+    stats = rep.aggregate(rep.read_journal("acme", "alice", db_path=db))
+    mc = stats["model.call"]
+    # process split reflects the cold subprocess vs the warm follow-up
+    assert mc.proc_cold_count == 1 and mc.proc_warm_count == 1
+    assert mc.proc_cold_p50_ms == 13000.0 and mc.proc_warm_p50_ms == 900.0
+    # model residency split is separate: both calls were model-warm
+    assert mc.warm_count == 2 and mc.cold_count == 0
+
+
 def test_tool_call_error_span(tmp_path):
     db = tmp_path / "j.db"
     obs = _obs(db)

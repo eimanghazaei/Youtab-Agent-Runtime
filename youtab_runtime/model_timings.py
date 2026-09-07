@@ -170,7 +170,7 @@ def sanitize_timings(raw: Any) -> Dict[str, Any]:
         # key any more than in a value.
         if not isinstance(key, str) or not _SAFE_KEY.fullmatch(key):
             continue
-        if key in ("cold_start", "native_timings_available"):
+        if key in ("cold_start", "native_timings_available", "process_cold"):
             out[key] = bool(val)
             continue
         if _is_finite_number(val) and val >= 0:

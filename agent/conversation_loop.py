@@ -5774,6 +5774,16 @@ def _run_conversation_impl(
                                     _timings[_pk] = _pv
                         except Exception:
                             pass
+                        # R8: a genuinely-KNOWN cold/warm fact — was this the first
+                        # model call in this fresh per-run subprocess? (Each run is a
+                        # new process; the first call pays process cold-start.) This
+                        # is process residency, deliberately NOT the model's own
+                        # cold_start (which stays native-derived or omitted, never
+                        # guessed). The observer routes it into its own split.
+                        try:
+                            _timings["process_cold"] = bool(api_call_count == 1)
+                        except Exception:
+                            pass
                     except Exception:
                         _timings = None
                     _invoke_hook(

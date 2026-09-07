@@ -403,6 +403,10 @@ class RunObserver:
         cold = timings.get("cold_start")
         if isinstance(cold, bool):
             cache_state = "cold" if cold else "warm"
+        # Distinct, genuinely-known process residency (first call in a fresh
+        # per-run subprocess) — NEVER conflated with model cold_start above.
+        proc_cold = timings.get("process_cold")
+        process_cold = bool(proc_cold) if isinstance(proc_cold, bool) else None
         base = f"{req_id}:" if req_id else None
 
         wall = _ms_to_ns(timings.get("wall_ms"))
@@ -410,7 +414,8 @@ class RunObserver:
             self._record_timing_span(
                 "model.call", duration_ns=wall,
                 dedupe_key=(base + "model.call") if base else None,
-                **_prune(provider=prov, cache_state=cache_state),
+                **_prune(provider=prov, cache_state=cache_state,
+                         process_cold=process_cold),
             )
         ttft = _ms_to_ns(timings.get("ttft_ms"))
         if ttft is not None:

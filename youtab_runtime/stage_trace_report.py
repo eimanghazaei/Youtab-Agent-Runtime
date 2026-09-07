@@ -58,10 +58,16 @@ class StageStats:
     min_ms: Optional[float] = None
     max_ms: Optional[float] = None
     mean_ms: Optional[float] = None
-    cold_count: int = 0
+    cold_count: int = 0  # model residency (native load_duration)
     warm_count: int = 0
     cold_p50_ms: Optional[float] = None
     warm_p50_ms: Optional[float] = None
+    # Process residency: first model call in a fresh per-run subprocess. A
+    # distinct, always-known signal — never conflated with model cold/warm above.
+    proc_cold_count: int = 0
+    proc_warm_count: int = 0
+    proc_cold_p50_ms: Optional[float] = None
+    proc_warm_p50_ms: Optional[float] = None
     clocks: set[str] = field(default_factory=set)
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,11 +94,20 @@ def _is_cold(attrs: Mapping[str, Any]) -> Optional[bool]:
     return None
 
 
+def _is_process_cold(attrs: Mapping[str, Any]) -> Optional[bool]:
+    pc = attrs.get("process_cold")
+    if isinstance(pc, bool):
+        return pc
+    return None
+
+
 def aggregate(records: Iterable[Mapping[str, Any]]) -> dict[str, StageStats]:
     """Group records by stage and compute latency statistics per stage."""
     durations: dict[str, list[float]] = {}
     cold_durs: dict[str, list[float]] = {}
     warm_durs: dict[str, list[float]] = {}
+    pcold_durs: dict[str, list[float]] = {}
+    pwarm_durs: dict[str, list[float]] = {}
     stats: dict[str, StageStats] = {}
 
     for rec in records:
@@ -123,6 +138,11 @@ def aggregate(records: Iterable[Mapping[str, Any]]) -> dict[str, StageStats]:
             cold_durs.setdefault(stage, []).append(dur_ns)
         elif cold is False:
             warm_durs.setdefault(stage, []).append(dur_ns)
+        pcold = _is_process_cold(attrs)
+        if pcold is True:
+            pcold_durs.setdefault(stage, []).append(dur_ns)
+        elif pcold is False:
+            pwarm_durs.setdefault(stage, []).append(dur_ns)
 
     for stage, st in stats.items():
         vals = durations.get(stage, [])
@@ -141,6 +161,14 @@ def aggregate(records: Iterable[Mapping[str, Any]]) -> dict[str, StageStats]:
             st.cold_p50_ms = _round(_ns_to_ms(percentile(cvals, 50) or 0.0))
         if wvals:
             st.warm_p50_ms = _round(_ns_to_ms(percentile(wvals, 50) or 0.0))
+        pcvals = pcold_durs.get(stage, [])
+        pwvals = pwarm_durs.get(stage, [])
+        st.proc_cold_count = len(pcvals)
+        st.proc_warm_count = len(pwvals)
+        if pcvals:
+            st.proc_cold_p50_ms = _round(_ns_to_ms(percentile(pcvals, 50) or 0.0))
+        if pwvals:
+            st.proc_warm_p50_ms = _round(_ns_to_ms(percentile(pwvals, 50) or 0.0))
     return stats
 
 
@@ -245,6 +273,22 @@ def format_report(stats: Mapping[str, StageStats], *, order: Optional[list[str]]
             f"{_fmt(s.cold_p50_ms):>9} {_fmt(s.warm_p50_ms):>9} "
             f"{'/'.join(sorted(s.clocks)):>10}"
         )
+
+    # Process cold-vs-warm (first model call in a fresh per-run subprocess) — a
+    # distinct, always-known signal. Only shown for stages that carry it.
+    proc_rows = [s for s in rows if s.proc_cold_count or s.proc_warm_count]
+    if proc_rows:
+        phead = (
+            f"\n{'stage':<28} {'pc_n':>5} {'pw_n':>5} {'proc_cold_p50':>14} "
+            f"{'proc_warm_p50':>14}   (process residency)"
+        )
+        lines.append(phead)
+        lines.append("-" * (len(phead) - 1))
+        for s in proc_rows:
+            lines.append(
+                f"{s.stage:<28} {s.proc_cold_count:>5} {s.proc_warm_count:>5} "
+                f"{_fmt(s.proc_cold_p50_ms):>14} {_fmt(s.proc_warm_p50_ms):>14}"
+            )
     return "\n".join(lines)
 
 
