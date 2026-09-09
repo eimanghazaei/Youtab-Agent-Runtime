@@ -32,16 +32,34 @@ APPROVAL_DECISION = "run_approval_decision"
 PAUSE = "run_pause"
 RESUME = "run_resume"
 CHECKPOINT = "run_checkpoint"
+# A pause was ACCEPTED but the worker could not persist a valid, restorable
+# checkpoint (serialization / size / integrity / DB-write failure). Fail-closed:
+# the worker stops here — the run is neither completed nor cancelled and CANNOT
+# be resumed until a valid checkpoint exists (an explicit recovery action).
+PAUSE_FAILED_EVENT = "run_pause_failed"
 
 CONTROL_EVENT_KINDS = frozenset(
-    {QUESTION, ANSWER, APPROVAL_REQUEST, APPROVAL_DECISION, PAUSE, RESUME, CHECKPOINT}
+    {QUESTION, ANSWER, APPROVAL_REQUEST, APPROVAL_DECISION, PAUSE, RESUME,
+     CHECKPOINT, PAUSE_FAILED_EVENT}
 )
 
 # ── derived non-terminal statuses ─────────────────────────────────────────────
 AWAITING_INPUT = "awaiting_input"
 AWAITING_APPROVAL = "awaiting_approval"
+# Pause sub-states are DISTINCT (fail-closed observability):
+#   pause_requested — a run_pause is recorded; the worker has not yet reached a
+#                     boundary and acknowledged it (still executing).
+#   paused          — the worker persisted a valid run_checkpoint and stopped;
+#                     resumable from the exact saved state.
+#   pause_failed    — the worker accepted the pause but could NOT persist a valid
+#                     checkpoint; it stopped fail-closed. NOT resumable; needs an
+#                     explicit authorized recovery action.
+PAUSE_REQUESTED = "pause_requested"
 PAUSED = "paused"
-INTERACTIVE_STATUSES = frozenset({AWAITING_INPUT, AWAITING_APPROVAL, PAUSED})
+PAUSE_FAILED = "pause_failed"
+INTERACTIVE_STATUSES = frozenset(
+    {AWAITING_INPUT, AWAITING_APPROVAL, PAUSE_REQUESTED, PAUSED, PAUSE_FAILED}
+)
 
 # decision values
 APPROVE = "approve"
@@ -66,6 +84,8 @@ def interactive_status(events: Iterable[Any]) -> Optional[str]:
     decided: set[str] = set()
     last_pause: Optional[int] = None
     last_resume: Optional[int] = None
+    last_checkpoint: Optional[int] = None
+    last_pause_failed: Optional[int] = None
 
     for e in events:
         k = getattr(e, "kind", None)
@@ -83,6 +103,10 @@ def interactive_status(events: Iterable[Any]) -> Optional[str]:
             last_pause = eid if last_pause is None else max(last_pause, eid)
         elif k == RESUME:
             last_resume = eid if last_resume is None else max(last_resume, eid)
+        elif k == CHECKPOINT:
+            last_checkpoint = eid if last_checkpoint is None else max(last_checkpoint, eid)
+        elif k == PAUSE_FAILED_EVENT:
+            last_pause_failed = eid if last_pause_failed is None else max(last_pause_failed, eid)
 
     candidates: list[tuple[int, str]] = []
     for qid, eid in open_q.items():
@@ -91,15 +115,49 @@ def interactive_status(events: Iterable[Any]) -> Optional[str]:
     for aid, eid in open_a.items():
         if aid not in decided:
             candidates.append((eid, AWAITING_APPROVAL))
+    # Active (unresumed) pause epoch → distinguish requested / paused / failed by
+    # the worker's acknowledgement recorded AFTER the pause.
     if last_pause is not None and (last_resume is None or last_pause > last_resume):
-        candidates.append((last_pause, PAUSED))
+        failed_after = last_pause_failed is not None and last_pause_failed >= last_pause
+        cp_after = last_checkpoint is not None and last_checkpoint >= last_pause
+        if failed_after and (last_checkpoint is None or last_pause_failed > last_checkpoint):
+            candidates.append((max(last_pause, last_pause_failed), PAUSE_FAILED))
+        elif cp_after:
+            candidates.append((max(last_pause, last_checkpoint), PAUSED))
+        else:
+            candidates.append((last_pause, PAUSE_REQUESTED))
 
     if not candidates:
         return None
     return max(candidates, key=lambda c: c[0])[1]
 
 
+def _active_pause(events: Iterable[Any]) -> bool:
+    """An ACCEPTED, unresumed pause epoch is active — the worker's cue to
+    checkpoint-and-stop. DISTINCT from the projected status (which further tells
+    requested / paused / failed apart); a worker must act on the pause regardless
+    of whether it has yet persisted a checkpoint."""
+    last_pause = None
+    last_resume = None
+    for e in events:
+        k = getattr(e, "kind", None)
+        eid = getattr(e, "id", 0)
+        if k == PAUSE:
+            last_pause = eid if last_pause is None else max(last_pause, eid)
+        elif k == RESUME:
+            last_resume = eid if last_resume is None else max(last_resume, eid)
+    return last_pause is not None and (last_resume is None or last_pause > last_resume)
+
+
 def is_paused(events: Iterable[Any]) -> bool:
+    """Backwards-compatible worker cue: an active (unresumed) pause epoch."""
+    return _active_pause(events)
+
+
+def has_valid_checkpoint_for_resume(events: Iterable[Any]) -> bool:
+    """Resume is authorized ONLY when the active pause epoch has a valid, restorable
+    checkpoint (status == ``paused``). ``pause_requested`` (worker still running)
+    and ``pause_failed`` (fail-closed, no restorable state) both refuse resume."""
     return interactive_status(events) == PAUSED
 
 

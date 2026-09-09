@@ -885,7 +885,25 @@ _CONTROL_REDACT_KINDS = frozenset({_rc.QUESTION, _rc.ANSWER, _rc.APPROVAL_REQUES
 
 
 def _redact_control_payload(kind: str, payload: Any) -> Any:
-    if kind not in _CONTROL_REDACT_KINDS or not isinstance(payload, dict):
+    if not isinstance(payload, dict):
+        return payload
+    # A run_checkpoint's ``state.messages_json`` is the FULL serialized
+    # conversation — tool-call arguments, tool results, and the user's answer
+    # text (which A9 scrubs at the run_answer projection). The worker restores
+    # from the DURABLE log, never from this consumer projection, so withhold the
+    # conversation blob here: otherwise a secret typed into an answer would leak
+    # back through GET /runs/{id}/events despite the A9 scrub. Non-sensitive state
+    # keys (schema version, iteration) survive for observability.
+    if kind == _rc.CHECKPOINT and isinstance(payload.get("state"), dict):
+        state = dict(payload["state"])
+        blob = state.get("messages_json")
+        if isinstance(blob, str):
+            state["messages_json"] = (
+                f"<redacted: conversation state withheld from event stream "
+                f"({len(blob.encode('utf-8', 'surrogatepass'))} bytes)>"
+            )
+        return {**payload, "state": state}
+    if kind not in _CONTROL_REDACT_KINDS:
         return payload
     from youtab_runtime import redaction as _R
 
@@ -2237,14 +2255,14 @@ async def runtime_pause_run(
     request: Request,
     identity: RuntimeIdentity = Depends(require_service_identity),
 ):
-    """Request a pause (ADR-0004, A6). Records a ``run_pause`` signal and enters
-    the non-terminal ``paused`` status. The production ``youtab chat`` worker
-    cooperatively observes this at its next turn boundary: it persists a
-    ``run_checkpoint`` of the conversation, blocks, and stops — resumable from
-    that checkpoint (NOT a cancel/restart; no step is re-executed). Fail-open: an
-    un-checkpointable conversation continues to completion rather than blocking
-    un-resumably. Idempotent; a pause of a terminal run is a no-op that preserves
-    the terminal status.
+    """Request a pause (ADR-0004, A6). Records a ``run_pause`` and reports
+    ``pause_requested``. The production ``youtab chat`` worker acknowledges it at
+    its next turn boundary and either persists a valid ``run_checkpoint`` (→
+    ``paused``, resumable, NOT a cancel/restart, no step re-executed) or, if it
+    cannot persist a valid checkpoint, records ``run_pause_failed`` and stops
+    FAIL-CLOSED (→ ``pause_failed``, non-completed, non-cancelled, NOT resumable
+    until an explicit recovery action). Idempotent over an active pause epoch; a
+    pause of a terminal run is a no-op that preserves the terminal status.
     """
     await _verify_signed_command(request, identity)
     await _admit_execution_grant(request, identity)
@@ -2257,10 +2275,12 @@ async def runtime_pause_run(
                                  interactive=_interactive_status(events))
             if status in _TERMINAL_PRODUCT_STATUSES:
                 return {"run_id": run_id, "status": status}
-            if status == _rc.PAUSED:
-                return {"run_id": run_id, "status": _rc.PAUSED}
+            if _rc.is_paused(events):
+                # A pause epoch is already active — idempotent; report its sub-state
+                # (pause_requested / paused / pause_failed) rather than stacking.
+                return {"run_id": run_id, "status": _rc.interactive_status(events)}
             kb._append_event(conn, task.id, _rc.PAUSE, {"by": identity.user})
-    return {"run_id": run_id, "status": _rc.PAUSED}
+    return {"run_id": run_id, "status": _rc.PAUSE_REQUESTED}
 
 
 @router.post("/api/runtime/v1/runs/{run_id}/resume")
@@ -2269,12 +2289,15 @@ async def runtime_resume_run(
     request: Request,
     identity: RuntimeIdentity = Depends(require_service_identity),
 ):
-    """Authorize a resume from the persisted checkpoint (ADR-0004, A6).
+    """Authorize a resume from a VALID persisted checkpoint (ADR-0004, A6).
 
-    Fail-closed: a terminal (completed/cancelled) run cannot be resumed (409);
-    a run that is not paused cannot be resumed (409). On success the run is
-    re-queued so the dispatcher spawns a fresh worker that loads the latest
-    checkpoint and continues from the SAME state — no step is re-executed.
+    Fail-closed: a terminal (completed/cancelled) run cannot be resumed (409); a
+    run that is not ``paused`` with a valid checkpoint cannot be resumed (409). A
+    ``pause_failed`` run (accepted pause, no restorable checkpoint) is refused
+    with a distinct error and requires an explicit recovery action — it is never
+    silently resumed or restarted. On success the run is re-queued so the
+    dispatcher spawns a fresh worker that loads the checkpoint and continues from
+    the SAME state — no step is re-executed.
     """
     await _verify_signed_command(request, identity)
     await _admit_execution_grant(request, identity)
@@ -2285,7 +2308,10 @@ async def runtime_resume_run(
             cancelled = _is_cancelled(events)
             if _run_status(task, cancelled=cancelled) in _TERMINAL_PRODUCT_STATUSES:
                 raise HTTPException(status_code=409, detail={"error": "run_terminal"})
-            if _interactive_status(events) != _rc.PAUSED:
+            if _interactive_status(events) == _rc.PAUSE_FAILED:
+                raise HTTPException(status_code=409,
+                                    detail={"error": "pause_failed_requires_recovery"})
+            if not _rc.has_valid_checkpoint_for_resume(events):
                 raise HTTPException(status_code=409, detail={"error": "run_not_paused"})
             kb._append_event(conn, task.id, _rc.RESUME, {"by": identity.user})
     # Re-queue OUTSIDE the append txn (unblock_task opens its own write txn), then

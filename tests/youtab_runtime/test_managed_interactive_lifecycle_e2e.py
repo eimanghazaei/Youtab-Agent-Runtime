@@ -503,7 +503,9 @@ def test_pause_checkpoints_and_resume_continues_from_state(tmp_path):
         # let a few steps run, then pause
         _wait(client, run_id, lambda x: len(_work_steps(x)) >= 1)
         pr = _post(client, f"/api/runtime/v1/runs/{run_id}/pause", {}, grant=_mint())
-        assert pr.status_code == 200 and pr.json()["status"] == "paused"
+        # /pause records the request; status is pause_requested until the worker
+        # acknowledges with a valid checkpoint (fail-closed distinction).
+        assert pr.status_code == 200 and pr.json()["status"] == rc.PAUSE_REQUESTED
         # worker checkpoints + stops; run is PAUSED (non-terminal), not cancelled
         paused = _wait(client, run_id, lambda x: x["status"] == rc.PAUSED
                        and "run_checkpoint" in _kinds(x))

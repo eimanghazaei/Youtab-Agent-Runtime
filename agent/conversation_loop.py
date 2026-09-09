@@ -1176,42 +1176,77 @@ def _managed_pause_run_id() -> Optional[str]:
 
 
 def _maybe_checkpoint_and_pause(messages: List[Dict[str, Any]], iteration: int) -> bool:
-    """At a turn boundary: if this managed run has an UNRESUMED pause, persist a
-    conversation checkpoint, block the task, and return True (the loop must stop
-    cleanly). Returns False (keep running) when not a managed run, when no pause
-    is pending, or when the conversation cannot be checkpointed safely — pausing
-    without a restorable checkpoint would strand the run, so we fail OPEN."""
+    """At a turn boundary: if an ACCEPTED pause is active for this managed run,
+    STOP — fail-closed. On a valid, integrity-checked checkpoint, persist a
+    ``run_checkpoint`` (resumable) and block. If the checkpoint cannot be built,
+    validated or persisted, emit a durable ``run_pause_failed`` and block anyway:
+    the worker MUST NOT continue executing model calls / tools / side effects
+    after an accepted pause. The run is left non-completed and non-cancelled, and
+    resume is refused until a valid checkpoint exists (explicit recovery).
+
+    Returns True when the loop must STOP (pause accepted — success OR failure).
+    Returns False ONLY when this is not a managed run or no pause is active.
+    """
     run_id = _managed_pause_run_id()
     if not run_id:
         return False
-    try:
-        from youtab_agent_cli import kanban_db as kb
-        from youtab_runtime import run_control as rc
+    from youtab_agent_cli import kanban_db as kb
+    from youtab_runtime import run_control as rc
 
+    # Read to detect a pause. A read error here yields NO confirmed pause, so we
+    # keep running (correct when there genuinely is none). Once a pause IS
+    # confirmed below, every subsequent failure is handled fail-CLOSED (stop).
+    try:
         with kb.connect_closing() as conn:
             events = kb.list_events(conn, run_id)
-            if not rc.is_paused(events):
-                return False
-            state = rc.conversation_checkpoint_state(messages, iteration=iteration)
-            if state is None:
-                # Cannot persist a restorable checkpoint -> do NOT pause; record
-                # why and let the run continue to completion (fail-open, never a
-                # half-pause that cannot be resumed).
-                with kb.write_txn(conn):
-                    kb._append_event(conn, run_id, "run_checkpoint_failed",
-                                     {"reason": "conversation not serializable or exceeds size cap"})
-                return False
-            with kb.write_txn(conn):
-                kb._append_event(conn, run_id, rc.CHECKPOINT, {"state": state})
-        # block_task manages its own write transaction — do not nest it.
-        with kb.connect_closing() as conn2:
-            kb.block_task(conn2, run_id, reason="paused")
-        logger.info("managed run %s paused at turn boundary (iteration %s); checkpoint persisted",
-                    run_id, iteration)
-        return True
-    except Exception:  # noqa: BLE001 - pause must never break a live run
-        logger.debug("managed pause/checkpoint failed; continuing run", exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.debug("pause-check read failed; no confirmed pause, continuing", exc_info=True)
         return False
+    if not rc.is_paused(events):
+        return False
+
+    # ── A pause is ACCEPTED. The worker STOPS from here no matter what. ──
+    state = rc.conversation_checkpoint_state(messages, iteration=iteration)
+    ok = state is not None
+    if ok:
+        # Integrity: the persisted state must round-trip back to a message list,
+        # or it is not a valid, restorable checkpoint.
+        class _Probe:
+            kind = rc.CHECKPOINT
+            payload = {"state": state}
+        try:
+            ok = rc.conversation_from_checkpoint([_Probe()]) is not None
+        except Exception:  # noqa: BLE001
+            ok = False
+
+    try:
+        with kb.connect_closing() as conn:
+            with kb.write_txn(conn):
+                if ok:
+                    kb._append_event(conn, run_id, rc.CHECKPOINT, {"state": state})
+                else:
+                    kb._append_event(
+                        conn, run_id, rc.PAUSE_FAILED_EVENT,
+                        {"reason": "checkpoint serialization/size/integrity failure"})
+    except Exception:  # noqa: BLE001 — could not record the outcome; still STOP.
+        logger.error("managed pause: failed to persist %s for run %s; halting fail-closed",
+                     "checkpoint" if ok else "pause_failed", run_id, exc_info=True)
+        ok = False
+
+    # Block in its own transaction so the run stops being claimed; non-terminal.
+    try:
+        with kb.connect_closing() as conn2:
+            kb.block_task(conn2, run_id, reason=("paused" if ok else "pause_failed"))
+    except Exception:  # noqa: BLE001 — worker still halts regardless.
+        logger.error("managed pause: block_task failed for run %s; worker halting anyway",
+                     run_id, exc_info=True)
+
+    if ok:
+        logger.info("managed run %s paused with valid checkpoint (iteration %s)", run_id, iteration)
+    else:
+        logger.error("managed run %s PAUSE FAILED (no valid checkpoint) — halted fail-closed; "
+                     "resume refused until an explicit recovery action", run_id)
+    return True  # STOP the loop in ALL accepted-pause cases (never continue)
 
 
 def _maybe_restore_conversation() -> Optional[List[Dict[str, Any]]]:
@@ -1599,12 +1634,16 @@ def _run_conversation_impl(
         # re-dispatched by /resume restores the checkpoint and continues.
         if _maybe_checkpoint_and_pause(messages, api_call_count):
             agent._persist_session(messages, conversation_history)
+            # Stopped for an accepted pause (either successfully checkpointed, or
+            # fail-closed on a checkpoint failure). NOT completed, NOT cancelled;
+            # the authoritative sub-state (paused / pause_failed) is the persisted
+            # run_checkpoint / run_pause_failed event, projected by run_control.
             return {
                 "final_response": None,
                 "messages": messages,
                 "api_calls": api_call_count,
                 "completed": False,
-                "paused": True,
+                "stopped_for_pause": True,
             }
 
         # Check for interrupt request (e.g., user sent new message)

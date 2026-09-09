@@ -106,15 +106,102 @@ def test_resume_signal_clears_pause(managed_task):
     assert _maybe_checkpoint_and_pause(CONV, 1) is False
 
 
-def test_unserializable_conversation_fails_open(managed_task):
+def _events(tid):
+    with kb.connect_closing() as conn:
+        return kb.list_events(conn, tid)
+
+
+def test_unserializable_conversation_fails_CLOSED(managed_task):
+    # An accepted pause whose conversation cannot be serialized must FAIL CLOSED:
+    # STOP (return True), emit run_pause_failed, block, persist NO checkpoint, and
+    # refuse resume. It must NOT continue executing (return False was the bug).
     _append(managed_task, rc.PAUSE, {"by": "u"})
-    bad = [{"role": "user", "content": {1, 2}}]  # not serializable
-    # fail-open: do NOT pause (would strand the run), keep running, record why
-    assert _maybe_checkpoint_and_pause(bad, 1) is False
+    bad = [{"role": "user", "content": {1, 2, 3}}]  # a set -> not JSON-serializable
+    assert _maybe_checkpoint_and_pause(bad, 1) is True   # STOP, do not continue
     kinds = _kinds(managed_task)
     assert rc.CHECKPOINT not in kinds
-    assert "run_checkpoint_failed" in kinds
-    assert _status(managed_task) != "blocked"
+    assert rc.PAUSE_FAILED_EVENT in kinds
+    assert _status(managed_task) == "blocked"            # halted, non-terminal
+    evs = _events(managed_task)
+    assert rc.interactive_status(evs) == rc.PAUSE_FAILED
+    assert rc.has_valid_checkpoint_for_resume(evs) is False
+    assert _maybe_restore_conversation() is None         # nothing valid to resume
+
+
+def test_oversized_conversation_fails_CLOSED(managed_task):
+    _append(managed_task, rc.PAUSE, {"by": "u"})
+    big = [{"role": "user", "content": "x" * 5_000_000}]  # exceeds the 4MB cap
+    assert rc.conversation_checkpoint_state(big) is None   # cap rejects it
+    assert _maybe_checkpoint_and_pause(big, 1) is True      # fail-closed STOP
+    kinds = _kinds(managed_task)
+    assert rc.CHECKPOINT not in kinds and rc.PAUSE_FAILED_EVENT in kinds
+    assert _status(managed_task) == "blocked"
+
+
+def test_corrupt_checkpoint_state_fails_CLOSED(managed_task, monkeypatch):
+    # A checkpoint state that does not round-trip (integrity failure) must be
+    # rejected -> pause_failed, never persisted as a valid checkpoint.
+    _append(managed_task, rc.PAUSE, {"by": "u"})
+    monkeypatch.setattr(rc, "conversation_checkpoint_state",
+                        lambda msgs, iteration=None: {"v": 1, "messages_json": "{not-json"})
+    assert _maybe_checkpoint_and_pause(CONV, 1) is True
+    kinds = _kinds(managed_task)
+    assert rc.CHECKPOINT not in kinds and rc.PAUSE_FAILED_EVENT in kinds
+    assert _status(managed_task) == "blocked"
+
+
+def test_db_write_failure_still_fails_CLOSED(managed_task, monkeypatch):
+    # If persisting the pause outcome raises, the worker must STILL stop (never
+    # continue model/tool execution after an accepted pause).
+    _append(managed_task, rc.PAUSE, {"by": "u"})
+    def boom(*a, **k):
+        raise RuntimeError("db down")
+
+    blocked = {"called": False}
+    monkeypatch.setattr(kb, "_append_event", boom)  # every outcome write fails
+    monkeypatch.setattr(kb, "block_task",
+                        lambda *a, **k: blocked.__setitem__("called", True))
+    # Must STILL stop (return True) and still ATTEMPT to block — never continue.
+    assert _maybe_checkpoint_and_pause(CONV, 1) is True
+    assert blocked["called"] is True
+
+
+def test_no_execution_continues_after_any_accepted_pause_failure(managed_task, monkeypatch):
+    # The load-bearing guarantee: for EVERY failure mode, once a pause is accepted
+    # the helper returns True (the loop returns -> no further model/tool calls).
+    _append(managed_task, rc.PAUSE, {"by": "u"})
+    monkeypatch.setattr(rc, "conversation_checkpoint_state",
+                        lambda msgs, iteration=None: None)  # force failure
+    assert _maybe_checkpoint_and_pause(CONV, 7) is True     # never False after accepted pause
+
+
+def test_side_effect_completed_before_pause_is_preserved_no_reexecution(managed_task):
+    # Cooperative-boundary property: the pause is observed AFTER a tool result is
+    # already in the conversation, so a valid checkpoint captures it and resume
+    # replays it -> the side effect is neither lost nor re-executed.
+    _append(managed_task, rc.PAUSE, {"by": "u"})
+    assert _maybe_checkpoint_and_pause(CONV, 3) is True
+    restored = _maybe_restore_conversation()
+    assert restored == CONV
+    assert any(m.get("role") == "tool" for m in restored)  # completed tool result present
+
+
+def test_checkpoint_conversation_withheld_from_consumer_projection():
+    # A run_checkpoint's messages_json (full conversation: tool args/results +
+    # A9-scrubbed answer text) must NOT surface through the consumer event stream.
+    from youtab_agent_cli.web_routers.runtime import _redact_control_payload
+    import json as _json
+
+    secret = "sk-super-secret-key-leaked-in-a-tool-result"
+    payload = {"state": {"v": 1, "iteration": 2,
+                         "messages_json": _json.dumps([{"role": "tool", "content": secret}])}}
+    red = _redact_control_payload(rc.CHECKPOINT, payload)
+    blob = _json.dumps(red)
+    assert secret not in blob                              # conversation withheld
+    assert "redacted" in red["state"]["messages_json"]
+    assert red["state"]["iteration"] == 2                 # non-sensitive metadata kept
+    # the raw durable event is unchanged (the worker restores from the log)
+    assert secret in payload["state"]["messages_json"]
 
 
 def test_not_managed_run_is_noop(tmp_path, monkeypatch):
