@@ -372,6 +372,19 @@ def invalidate_check_fn_cache() -> None:
         _check_fn_last_good.clear()
 
 
+def _check_fn_strict(fn: Callable) -> bool:
+    """Evaluate ``check_fn`` with NO cache and NO anti-flap grace — the honest,
+    current verdict. The TTL cache + 60s failure grace in ``_check_fn_cached``
+    exist to smooth DISCOVERY (so a flaky probe does not strip a tool from the
+    catalogue mid-session); they must NOT let a tool whose dependency is actually
+    gone be EXECUTED. This is the invocation-time probe (WAVE-30H Phase-C / C9):
+    an exception or False means unavailable, full stop."""
+    try:
+        return bool(fn())
+    except Exception:
+        return False
+
+
 class ToolRegistry:
     """Singleton registry that collects tool schemas + handlers from tool files."""
 
@@ -861,6 +874,20 @@ class ToolRegistry:
         """Return sorted list of all registered tool names."""
         return sorted(entry.name for entry in self._snapshot_entries())
 
+    def available_strict(self, name: str) -> bool:
+        """Invocation-time availability: the tool exists AND its ``check_fn``
+        passes RIGHT NOW (no discovery cache, no anti-flap grace). A tool with no
+        ``check_fn`` is always available. Used to fail closed before executing a
+        tool whose dependency vanished while it was still inside the discovery
+        grace window (WAVE-30H Phase-C / C9) — capability-preserving: it blocks
+        only a genuinely-unavailable tool, it never hides an available one."""
+        entry = self.get_entry(name)
+        if entry is None:
+            return False
+        if entry.check_fn is None:
+            return True
+        return _check_fn_strict(entry.check_fn)
+
     def describe_index(
         self, authorized_names: Optional[Set[str]] = None
     ) -> List[dict]:
@@ -938,6 +965,7 @@ class ToolRegistry:
         acl_tool_names: Optional[Set[str]] = None,
         exclude_toolsets: Set[str] = frozenset(),
         require_available: bool = True,
+        context_available_toolsets: Set[str] = frozenset(),
     ) -> List[Tuple[str, str]]:
         """Freeze the ``(tool_name, schema_hash)`` pairs a grant may actually use.
 
@@ -951,7 +979,26 @@ class ToolRegistry:
         * its toolset is NOT in ``exclude_toolsets`` (authority-bearing toolsets
           are never swept in by ``"*"``; they stay deny-by-default);
         * it is within the agent ACL (``acl_tool_names``) when one is supplied;
-        * it is operational (``check_fn`` passes) when ``require_available``.
+        * it is operational (``check_fn`` passes) when ``require_available`` —
+          EXCEPT for toolsets in ``context_available_toolsets`` (see below).
+
+        ``context_available_toolsets`` (WAVE-30H Gate-2 Phase-B fix) names toolsets
+        whose ``check_fn`` is an EXECUTION-CONTEXT gate — availability that is a
+        property of the RUN's execution context, not of a dependency/credential —
+        which the freezing (ingress) process cannot satisfy but the dispatched
+        worker WILL. The canonical case: the kanban task-lifecycle toolset
+        (``kanban_complete``/``kanban_block``/``kanban_heartbeat``) whose
+        ``_check_kanban_mode`` is gated on the worker-only ``YOUTAB_AGENT_KANBAN_TASK``
+        env. If such a tool were filtered out here, a managed kanban run could
+        never be authorized to call its own completion tool (the worker re-admits
+        this frozen manifest). Deferring the context gate is NOT bypassing
+        availability: the invocation-time strict gate (:meth:`available_strict`,
+        WAVE-30H Phase-C / C9) re-evaluates the SAME ``check_fn`` in the worker's
+        real context and fails closed if it is not genuinely operational there
+        (e.g. the run is not actually a kanban worker). Inclusion here stays fully
+        gated by the grant's ``allowed_toolsets`` and ``exclude_toolsets`` and the
+        agent ACL — it is per-grant, never a global authorization, and the worker
+        still cannot exceed the frozen set.
 
         Returns a sorted, de-duplicated list. No fixed ceiling: the manifest is
         exactly as long as the authorized, available registry is.
@@ -966,7 +1013,14 @@ class ToolRegistry:
                 continue
             if acl_tool_names is not None and entry.name not in acl_tool_names:
                 continue
-            if require_available and entry.check_fn is not None:
+            # Operational availability check — skipped only for toolsets whose
+            # availability is an execution-context gate the dispatched worker
+            # satisfies (re-checked strictly at invocation by available_strict).
+            if (
+                require_available
+                and entry.check_fn is not None
+                and entry.toolset not in context_available_toolsets
+            ):
                 if entry.check_fn not in check_results:
                     check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
                 if not check_results[entry.check_fn]:

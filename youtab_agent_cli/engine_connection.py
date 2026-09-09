@@ -237,6 +237,24 @@ def endpoints_agree(a: str, b: str) -> bool:
     return normalize_endpoint(a) == nb
 
 
+# Opt-in, process-scoped resolve cache (WAVE-30H worker pool). A pre-warmed pool
+# worker resolves the ECO connection ONCE at warm boot and reuses it per task,
+# eliminating the ~2.7 s engine.resolve from the run critical path. DEFAULT OFF:
+# only a process that sets ``YOUTAB_ECO_RESOLVE_CACHE`` (the pool worker) caches,
+# so ordinary dispatcher/availability callers keep re-resolving live config.
+_RESOLVE_CACHE: "dict[str, Optional[ResolvedConnection]]" = {}
+
+
+def _resolve_cache_enabled() -> bool:
+    return (os.environ.get("YOUTAB_ECO_RESOLVE_CACHE", "") or "").strip() not in ("", "0", "false")
+
+
+def invalidate_resolve_cache() -> None:
+    """Drop the opt-in resolve cache (e.g. after a config change in a long-lived
+    warm worker). Safe no-op when the cache was never populated."""
+    _RESOLVE_CACHE.clear()
+
+
 def resolve_connection(profile_id: Optional[str]) -> Optional[ResolvedConnection]:
     """Resolve a product ``profile_id`` to its canonical connection, or ``None``.
 
@@ -247,13 +265,18 @@ def resolve_connection(profile_id: Optional[str]) -> Optional[ResolvedConnection
     """
     if not profile_id:
         return None
+    _cache = _resolve_cache_enabled()
+    if _cache and profile_id in _RESOLVE_CACHE:
+        return _RESOLVE_CACHE[profile_id]
     bound = agent_identity.engine_binding_for_profile(profile_id)
     if not bound:
+        if _cache:
+            _RESOLVE_CACHE[profile_id] = None
         return None
     provider, model = bound
     provider = (provider or "").strip().lower()
     endpoint = _endpoint_for_provider(provider) if provider in LOCAL_SERVER_PROVIDERS else ""
-    return ResolvedConnection(
+    _resolved = ResolvedConnection(
         product_profile_id=profile_id,
         # connection_ref is an opaque server-side handle, not the raw endpoint.
         connection_ref=f"{provider}:{profile_id}",
@@ -263,6 +286,9 @@ def resolve_connection(profile_id: Optional[str]) -> Optional[ResolvedConnection
         model=model,
         availability_policy="probe" if provider in LOCAL_SERVER_PROVIDERS else "credential",
     )
+    if _cache:
+        _RESOLVE_CACHE[profile_id] = _resolved
+    return _resolved
 
 
 class ConnectionMismatchError(RuntimeError):

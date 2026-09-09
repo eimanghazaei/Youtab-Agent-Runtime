@@ -99,6 +99,11 @@ _TERMINAL_PRODUCT_STATUSES = {"completed", "cancelled"}
 # projected as ``cancelled`` and distinguished from an ordinary archive).
 _CANCEL_EVENT_KIND = "runtime_cancel_requested"
 
+# WAVE-30H Phase-A (ADR-0004): the managed interactive-lifecycle control contract
+# — clarification (question/answer), approval (request/decision) and REAL
+# pause/checkpoint/resume — is defined canonically in youtab_runtime.run_control.
+from youtab_runtime import run_control as _rc  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Dispatcher — drive real execution
@@ -118,6 +123,79 @@ _spawn_override = None
 _ticker_thread: "Optional[threading.Thread]" = None
 _ticker_stop = threading.Event()
 _ticker_lock = threading.Lock()
+
+# WAVE-30H task 2a — optional pre-warmed single-use worker pool (default OFF). When
+# YOUTAB_AGENT_RUNTIME_WORKER_POOL is set, the real-model spawn path hands each run
+# to a warm, pre-imported, single-use worker instead of cold-spawning a fresh
+# youtab process, eliminating the per-run import + engine.resolve startup cost.
+# Per-run tenant/grant/capability/memory/env binding is IDENTICAL (the worker uses
+# kanban_db.build_worker_invocation, same as a fresh spawn) and each worker serves
+# exactly one run then exits.
+_worker_pool = None
+_worker_pool_disabled = False  # sticky: a failed/invalid config disables the pool
+_worker_pool_lock = threading.Lock()
+
+_WORKER_POOL_MAX_SIZE = 16  # hard safety ceiling on pooled processes
+
+
+def _worker_pool_enabled() -> bool:
+    return (os.environ.get("YOUTAB_AGENT_RUNTIME_WORKER_POOL", "") or "").strip() not in ("", "0", "false")
+
+
+def _worker_pool_size() -> Optional[int]:
+    """Validated pool size, or None when the configured value is INVALID/UNSAFE.
+
+    Fail-closed: a non-integer, non-positive, or over-ceiling size returns None so
+    the caller disables the pool and uses the classic cold spawn — never a crash
+    and never an unbounded process fleet."""
+    raw = (os.environ.get("YOUTAB_AGENT_RUNTIME_WORKER_POOL_SIZE", "2") or "").strip()
+    try:
+        size = int(raw)
+    except (ValueError, TypeError):
+        _log.warning("worker pool: invalid size %r; disabling pool (fail-closed cold spawn)", raw)
+        return None
+    if size < 1 or size > _WORKER_POOL_MAX_SIZE:
+        _log.warning("worker pool: size %d out of [1,%d]; disabling pool (fail-closed)", size, _WORKER_POOL_MAX_SIZE)
+        return None
+    return size
+
+
+def _get_worker_pool():
+    """Return the live pool, or None to signal a fail-closed fallback to cold spawn.
+
+    Any invalid/unsafe config or a pool-creation failure disables the pool
+    stickily so the board keeps running on the classic spawn path."""
+    global _worker_pool, _worker_pool_disabled
+    with _worker_pool_lock:
+        if _worker_pool_disabled:
+            return None
+        if _worker_pool is None:
+            size = _worker_pool_size()
+            if size is None:
+                _worker_pool_disabled = True  # invalid config -> fail closed
+                return None
+            try:
+                from youtab_agent_cli.worker_pool import WorkerPool
+                _worker_pool = WorkerPool(size=size, runner="cli", warm_full=True)
+                _log.info("runtime worker pool started (size=%s)", size)
+            except Exception as exc:  # noqa: BLE001 — creation failure must not stall the board
+                _worker_pool_disabled = True
+                _log.warning("worker pool creation failed (%s); disabling pool (fail-closed cold spawn)", exc)
+                return None
+        return _worker_pool
+
+
+def _shutdown_worker_pool() -> None:
+    global _worker_pool, _worker_pool_disabled
+    with _worker_pool_lock:
+        if _worker_pool is not None:
+            try:
+                proof = _worker_pool.close()
+                _log.info("runtime worker pool shut down: %s", proof)
+            except Exception as exc:  # noqa: BLE001 — teardown must not raise
+                _log.warning("runtime worker pool shutdown error: %s", exc)
+            _worker_pool = None
+        _worker_pool_disabled = False  # allow a re-enable after a clean shutdown
 
 
 def _deterministic_worker_enabled() -> bool:
@@ -194,6 +272,16 @@ _GRANT_EVENT = "runtime_execution_grant"
 # registered after admission.
 _GRANT_MANIFEST_EVENT = "runtime_capability_manifest"
 
+# WAVE-30H Gate-2 Phase-B: toolsets whose availability is an EXECUTION-CONTEXT
+# gate the dispatched worker satisfies but the ingress process cannot. Every run
+# on this plane is dispatched as a kanban worker, so the kanban task-lifecycle
+# toolset (kanban_complete/block/heartbeat/show/...) is part of the run's context;
+# its _check_kanban_mode gate is keyed on the worker-only YOUTAB_AGENT_KANBAN_TASK
+# env. Including it in the frozen manifest is still fully gated by the grant's
+# allowed_toolsets + the agent ACL (never a global authorization), and the
+# invocation-time strict gate (available_strict) re-checks it in the worker.
+_WORKER_EXECUTION_CONTEXT_TOOLSETS = frozenset({"kanban"})
+
 
 def _resolve_task_mode(task_id: str) -> str:
     """Return the recorded execution mode for a task ("model" by default).
@@ -227,6 +315,14 @@ def _mode_aware_spawn(task, workspace, *, board=None):
     mode = _resolve_task_mode(task.id)
     if mode == "deterministic" and _deterministic_worker_enabled():
         return _deterministic_spawn(task, workspace, board=board)
+    # Real model path: a warm single-use pool worker when enabled (default OFF)
+    # AND the config is valid AND the pool started; else the classic cold spawn.
+    # Both return a real pid + bind per-run context identically; the pool only
+    # pre-pays interpreter import. A disabled/failed pool fails closed to cold spawn.
+    if _worker_pool_enabled():
+        pool = _get_worker_pool()
+        if pool is not None:
+            return pool.spawn(task, workspace, board=board)
     return kb._default_spawn(task, workspace, board=board)
 
 
@@ -259,8 +355,10 @@ def ensure_dispatcher_running() -> None:
 
 
 def stop_dispatcher() -> None:
-    """Stop the background ticker (test teardown / shutdown)."""
+    """Stop the background ticker (test teardown / shutdown) and tear down the
+    worker pool if one was started (zero-survivor)."""
     _ticker_stop.set()
+    _shutdown_worker_pool()
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +571,25 @@ async def _admit_execution_grant(request: Request, identity: RuntimeIdentity):
                     # schema-hash work at ingress; measure it as its own stage.
                     with _st.span(_st.Stage.TOOLS_DISCOVER) as _sp:
                         capability_binding = _cm.build_ingress_binding(
-                            envelope, registry=_registry
+                            envelope,
+                            registry=_registry,
+                            # WAVE-30H Gate-2 Phase-B fix: every run on this runtime
+                            # plane is dispatched as a kanban worker (create_task →
+                            # dispatch_once → a ``youtab … chat -q "work kanban task
+                            # <id>"`` worker), so the kanban task-lifecycle toolset
+                            # (kanban_complete/block/heartbeat) is part of the run's
+                            # execution context. Its availability gate
+                            # (_check_kanban_mode) is keyed on the worker-only
+                            # YOUTAB_AGENT_KANBAN_TASK env, which is absent in THIS
+                            # ingress process — so without this the completion tool
+                            # is wrongly dropped from the frozen manifest and the
+                            # worker (which re-admits it) can never be authorized to
+                            # complete its own task. Deferring that execution-context
+                            # gate to the invocation-time strict gate (C9) is NOT an
+                            # availability bypass and stays fully grant/ACL gated
+                            # (a grant that does not authorize "kanban"/"*" still
+                            # excludes these tools).
+                            context_available_toolsets=_WORKER_EXECUTION_CONTEXT_TOOLSETS,
                         )
                         try:
                             _sp["tool_count"] = len(
@@ -560,10 +676,25 @@ def _agent_projection(p: Any) -> Dict[str, Any]:
     }
 
 
-def _run_status(task: "kb.Task", *, cancelled: bool) -> str:
+def _run_status(task: "kb.Task", *, cancelled: bool,
+                interactive: "Optional[str]" = None) -> str:
     if cancelled and task.status in ("archived", "blocked", "done"):
         return "cancelled"
-    return _STATUS_MAP.get(task.status, task.status)
+    base = _STATUS_MAP.get(task.status, task.status)
+    # A non-terminal run that is waiting on the user (question/approval) or has
+    # been paused projects that interactive status over the coarse kanban status
+    # (ADR-0004). Terminal runs and cancels always win and never show these.
+    if (
+        interactive in _rc.INTERACTIVE_STATUSES
+        and base not in _TERMINAL_PRODUCT_STATUSES
+    ):
+        return interactive
+    return base
+
+
+def _interactive_status(events: "List[kb.Event]") -> "Optional[str]":
+    """Derive the interactive lifecycle status from the ordered event log."""
+    return _rc.interactive_status(events)
 
 
 def _mode_from_events(events: "List[kb.Event]") -> str:
@@ -592,13 +723,14 @@ def _engine_selection_from_events(events: "List[kb.Event]") -> Optional[Dict[str
 
 
 def _run_summary(
-    task: "kb.Task", *, cancelled: bool = False, execution_mode: str = "model"
+    task: "kb.Task", *, cancelled: bool = False, execution_mode: str = "model",
+    interactive: "Optional[str]" = None,
 ) -> Dict[str, Any]:
     return {
         "run_id": task.id,
         "agent_id": task.assignee,
         "agent_name": task.assignee,
-        "status": _run_status(task, cancelled=cancelled),
+        "status": _run_status(task, cancelled=cancelled, interactive=interactive),
         "execution_mode": execution_mode,
         "created_at": task.created_at,
         "started_at": task.started_at,
@@ -695,7 +827,10 @@ def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, A
             if r.summary:
                 result = r.summary
                 break
-    summary = _run_summary(task, cancelled=cancelled, execution_mode=mode)
+    summary = _run_summary(
+        task, cancelled=cancelled, execution_mode=mode,
+        interactive=_interactive_status(events),
+    )
     summary.update({
         "task": task.body,
         "title": task.title,
@@ -740,6 +875,26 @@ def _artifact_ref(run_id: str, a: "kb.Attachment") -> Dict[str, Any]:
     }
 
 
+# Interactive control events carry user/agent FREE TEXT (a clarification answer,
+# a question prompt, an approval action) that reaches the user-visible event
+# stream. These are redacted at the projection boundary (A9) so a secret typed
+# into an answer never leaks — while the raw value stays in the durable log for
+# the worker to consume. NOT applied to grant/manifest events (their high-entropy
+# base64 must survive verbatim for worker re-admission).
+_CONTROL_REDACT_KINDS = frozenset({_rc.QUESTION, _rc.ANSWER, _rc.APPROVAL_REQUEST})
+
+
+def _redact_control_payload(kind: str, payload: Any) -> Any:
+    if kind not in _CONTROL_REDACT_KINDS or not isinstance(payload, dict):
+        return payload
+    from youtab_runtime import redaction as _R
+
+    scrubbed = {
+        k: (_R.scrub_text(v) if isinstance(v, str) else v) for k, v in payload.items()
+    }
+    return _R.redact_mapping(scrubbed)
+
+
 def _event_projection(run_id: str, e: "kb.Event") -> Dict[str, Any]:
     # Surface the correlation id carried on authoritative dispatch/lineage
     # events (contract C5), so a consumer can trace events by correlation.
@@ -750,7 +905,7 @@ def _event_projection(run_id: str, e: "kb.Event") -> Dict[str, Any]:
         "id": e.id,          # monotonic cursor
         "run_id": run_id,
         "kind": e.kind,
-        "payload": e.payload,
+        "payload": _redact_control_payload(e.kind, e.payload),
         "created_at": e.created_at,
         "correlation_id": correlation_id,
     }
@@ -1541,7 +1696,10 @@ async def runtime_run_events(
             cancelled = _is_cancelled(all_events)
             fresh = [e for e in all_events if e.id > after][:limit]
             cursor = fresh[-1].id if fresh else after
-            status = _run_status(task, cancelled=cancelled)
+            status = _run_status(
+                task, cancelled=cancelled,
+                interactive=_interactive_status(all_events),
+            )
         return {
             "events": [_event_projection(run_id, e) for e in fresh],
             "cursor": cursor,
@@ -1975,6 +2133,172 @@ async def runtime_cancel_run(
                 _log.warning("runtime cancel: block failed for %s: %s", run_id, exc)
         task = kb.get_task(conn, run_id)
         return {"run_id": run_id, "status": _run_status(task, cancelled=True)}
+
+
+@router.post("/api/runtime/v1/runs/{run_id}/answer")
+async def runtime_answer_run(
+    run_id: str,
+    request: Request,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Answer a clarification question the agent raised (ADR-0004, A4).
+
+    Records the user's answer to an OPEN question so the SAME run resumes. Same
+    governed-mutation authority as cancel: signed + (managed) grant-gated +
+    (tenant,user)-owned. Idempotent: a duplicate answer for an already-answered
+    question is a no-op (exactly-once consumption by the worker). Fail-closed:
+    an answer for a question that was never asked / already answered is refused.
+    """
+    await _verify_signed_command(request, identity)
+    await _admit_execution_grant(request, identity)
+    body = await _json_body(request)
+    question_id = str(body.get("question_id") or "").strip()
+    if not question_id:
+        raise HTTPException(status_code=422, detail={"error": "question_id_required"})
+    if "answer" not in body:
+        raise HTTPException(status_code=422, detail={"error": "answer_required"})
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        with kb.write_txn(conn):
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            # Idempotent exactly-once replay is a NON-mutating read-back, so it is
+            # evaluated BEFORE the terminal guard: the worker may consume the
+            # answer and drive the run to a terminal state between the original
+            # answer and a retried duplicate, but a duplicate for an already-
+            # answered question must still succeed (200 already_answered), never
+            # 409 run_terminal. The terminal guard below only blocks NEW answers.
+            if _rc.answer_for(events, question_id) is not None:
+                return {"run_id": run_id, "question_id": question_id, "already_answered": True}
+            if _run_status(task, cancelled=_is_cancelled(events)) in _TERMINAL_PRODUCT_STATUSES:
+                raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+            open_q = any(
+                e.kind == _rc.QUESTION and (e.payload or {}).get("question_id") == question_id
+                for e in events
+            )
+            if not open_q:
+                raise HTTPException(status_code=409, detail={"error": "no_such_open_question"})
+            kb._append_event(conn, task.id, _rc.ANSWER,
+                             {"question_id": question_id, "answer": body["answer"],
+                              "by": identity.user})
+    return {"run_id": run_id, "question_id": question_id, "accepted": True}
+
+
+@router.post("/api/runtime/v1/runs/{run_id}/approve")
+async def runtime_approve_run(
+    run_id: str,
+    request: Request,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Approve or deny an approval the agent requested (ADR-0004, A5).
+
+    ``{"approval_id": "...", "decision": "approve"|"deny"}``. Approve continues
+    the effect; deny fails that effect CLOSED (the worker never performs it).
+    Idempotent by approval_id; fail-closed on an unknown/closed approval.
+    """
+    await _verify_signed_command(request, identity)
+    await _admit_execution_grant(request, identity)
+    body = await _json_body(request)
+    approval_id = str(body.get("approval_id") or "").strip()
+    decision = str(body.get("decision") or "").strip().lower()
+    if not approval_id:
+        raise HTTPException(status_code=422, detail={"error": "approval_id_required"})
+    if decision not in (_rc.APPROVE, _rc.DENY):
+        raise HTTPException(status_code=422, detail={"error": "decision_must_be_approve_or_deny"})
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        with kb.write_txn(conn):
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            # Idempotent replay BEFORE the terminal guard (same rationale as
+            # /answer): the worker may consume the decision and drive the run
+            # terminal between the original decision and a retried duplicate; a
+            # duplicate for an already-decided approval must still return 200
+            # (already_decided, ORIGINAL decision stands), never 409 run_terminal.
+            prior = _rc.decision_for(events, approval_id)
+            if prior is not None:
+                return {"run_id": run_id, "approval_id": approval_id,
+                        "already_decided": True, "decision": prior}
+            if _run_status(task, cancelled=_is_cancelled(events)) in _TERMINAL_PRODUCT_STATUSES:
+                raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+            open_a = any(
+                e.kind == _rc.APPROVAL_REQUEST and (e.payload or {}).get("approval_id") == approval_id
+                for e in events
+            )
+            if not open_a:
+                raise HTTPException(status_code=409, detail={"error": "no_such_open_approval"})
+            kb._append_event(conn, task.id, _rc.APPROVAL_DECISION,
+                             {"approval_id": approval_id, "decision": decision,
+                              "by": identity.user})
+    return {"run_id": run_id, "approval_id": approval_id, "decision": decision}
+
+
+@router.post("/api/runtime/v1/runs/{run_id}/pause")
+async def runtime_pause_run(
+    run_id: str,
+    request: Request,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Request a pause (ADR-0004, A6). Records a ``run_pause`` signal and enters
+    the non-terminal ``paused`` status. The production ``youtab chat`` worker
+    cooperatively observes this at its next turn boundary: it persists a
+    ``run_checkpoint`` of the conversation, blocks, and stops — resumable from
+    that checkpoint (NOT a cancel/restart; no step is re-executed). Fail-open: an
+    un-checkpointable conversation continues to completion rather than blocking
+    un-resumably. Idempotent; a pause of a terminal run is a no-op that preserves
+    the terminal status.
+    """
+    await _verify_signed_command(request, identity)
+    await _admit_execution_grant(request, identity)
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        with kb.write_txn(conn):
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            cancelled = _is_cancelled(events)
+            status = _run_status(task, cancelled=cancelled,
+                                 interactive=_interactive_status(events))
+            if status in _TERMINAL_PRODUCT_STATUSES:
+                return {"run_id": run_id, "status": status}
+            if status == _rc.PAUSED:
+                return {"run_id": run_id, "status": _rc.PAUSED}
+            kb._append_event(conn, task.id, _rc.PAUSE, {"by": identity.user})
+    return {"run_id": run_id, "status": _rc.PAUSED}
+
+
+@router.post("/api/runtime/v1/runs/{run_id}/resume")
+async def runtime_resume_run(
+    run_id: str,
+    request: Request,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Authorize a resume from the persisted checkpoint (ADR-0004, A6).
+
+    Fail-closed: a terminal (completed/cancelled) run cannot be resumed (409);
+    a run that is not paused cannot be resumed (409). On success the run is
+    re-queued so the dispatcher spawns a fresh worker that loads the latest
+    checkpoint and continues from the SAME state — no step is re-executed.
+    """
+    await _verify_signed_command(request, identity)
+    await _admit_execution_grant(request, identity)
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        with kb.write_txn(conn):
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            cancelled = _is_cancelled(events)
+            if _run_status(task, cancelled=cancelled) in _TERMINAL_PRODUCT_STATUSES:
+                raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+            if _interactive_status(events) != _rc.PAUSED:
+                raise HTTPException(status_code=409, detail={"error": "run_not_paused"})
+            kb._append_event(conn, task.id, _rc.RESUME, {"by": identity.user})
+    # Re-queue OUTSIDE the append txn (unblock_task opens its own write txn), then
+    # ensure the dispatcher is ticking so a fresh worker re-claims and resumes
+    # from the checkpoint. The worker paused itself by blocking the task; flipping
+    # blocked->ready makes it claimable again for a brand-new worker process.
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        try:
+            kb.unblock_task(conn, run_id)
+        except Exception as exc:  # noqa: BLE001 — resume event is the source of truth
+            _log.warning("runtime resume: unblock failed for %s: %s", run_id, exc)
+    ensure_dispatcher_running()
+    return {"run_id": run_id, "status": "running"}
 
 
 @router.post("/api/runtime/v1/runs/{run_id}/retry")

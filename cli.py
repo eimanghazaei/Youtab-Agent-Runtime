@@ -13370,6 +13370,33 @@ class YoutabCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if agent is None:
             return None
 
+        # Managed runs (e.g. a dispatcher-spawned kanban worker running
+        # ``youtab … chat -q "work kanban task <id>"`` — query mode, NOT ``-Q``
+        # quiet mode): establish the sealed Simorgh admitted execution context on
+        # THIS agent object before any tool can run, so the tool_executor
+        # authority gate can consume it. Without this the agent reaches a tool
+        # with no ``_admitted_command`` and the gate (correctly) fails closed on
+        # every call. The quiet/machine-readable single-query branch in ``main()``
+        # already does this for ``-Q`` runs; the interactive + human-facing
+        # single-query path (this method) is the one the real non-goal kanban
+        # worker and the pooled worker take, so it must establish it here too.
+        # ``establish_managed_admission`` is a no-op (returns False) in
+        # local-standalone trust mode or for a non-kanban run, re-admits ONLY the
+        # exact persisted, signed, ingress-verified grant + frozen manifest (it
+        # never mints/broadens authority), and fails closed
+        # (``ManagedWorkerAdmissionError``) on a missing/expired/forged/replayed/
+        # cross-tenant/tampered context — in which case a managed run must not run.
+        try:
+            from youtab_agent_cli.worker_admission import (
+                ManagedWorkerAdmissionError,
+                establish_managed_admission,
+            )
+
+            establish_managed_admission(agent)
+        except ManagedWorkerAdmissionError as _adm_exc:
+            print(f"managed_admission_failed: {_adm_exc}", file=sys.stderr)
+            sys.exit(3)
+
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
         #            translate for Anthropic/Gemini/Bedrock).

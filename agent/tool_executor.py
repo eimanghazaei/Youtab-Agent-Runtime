@@ -386,6 +386,20 @@ def enforce_managed_tool_authority(
     from tools.registry import registry
     from youtab_runtime.policy import AuthorityBoundary, EffectClass, ToolIntent
 
+    # Invocation-time OPERATIONAL availability gate (WAVE-30H Phase-C / C9). The
+    # per-run capability manifest was frozen at admission from tools that were
+    # available THEN; the discovery path additionally keeps a tool listed for a
+    # 60s anti-flap grace after a transient check_fn failure. Neither may let a
+    # tool whose dependency is ACTUALLY gone be executed: re-probe strictly (no
+    # cache, no grace) right before the call and FAIL CLOSED if unavailable.
+    # Capability-preserving — blocks only a genuinely-unavailable tool.
+    if registry.get_entry(function_name) is not None and not registry.available_strict(function_name):
+        return (
+            f"tool '{function_name}' is not operational at invocation time "
+            "(dependency unavailable; the discovery anti-flap grace does not "
+            "authorize execution) — failing closed"
+        )
+
     toolset = registry.get_toolset_for_tool(function_name) or function_name
     entry = registry.get_entry(function_name)
     sec = getattr(entry, "side_effect_class", "none") if entry else "none"

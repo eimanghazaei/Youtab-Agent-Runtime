@@ -48,18 +48,32 @@ def build_ingress_binding(
     registry,
     acl_tool_names: Optional[Iterable[str]] = None,
     dynamic_inclusion: bool = False,
+    context_available_toolsets: Optional[Iterable[str]] = None,
 ) -> CapabilityBinding:
     """Freeze the per-run capability manifest from the LIVE registry at ingress.
 
     Authority-bearing toolsets are excluded outright, so ``"*"`` never sweeps them
     in; ``decide_tool`` additionally hard-denies them. ``acl_tool_names``, when
     supplied, narrows the manifest to the agent's own allow-list of tool names.
+
+    ``context_available_toolsets`` (WAVE-30H Gate-2 Phase-B fix) names toolsets
+    whose availability is an EXECUTION-CONTEXT gate the dispatched worker will
+    satisfy but the ingress process cannot (e.g. the kanban task-lifecycle
+    toolset, gated on the worker-only ``YOUTAB_AGENT_KANBAN_TASK`` env). The
+    freeze stops dropping those grant-authorized, entitled tools at admission; the
+    invocation-time strict gate re-checks them in the worker and fails closed if
+    not genuinely operational there. Still fully grant/ACL/forbidden gated.
     """
     allowed = set(envelope.allowed_toolsets)
     pairs = registry.capability_manifest_pairs(
         allowed,
         acl_tool_names=set(acl_tool_names) if acl_tool_names is not None else None,
         exclude_toolsets=AuthorityBoundary.FORBIDDEN_TOOLSETS,
+        context_available_toolsets=(
+            set(context_available_toolsets)
+            if context_available_toolsets is not None
+            else frozenset()
+        ),
     )
     policy_version, acl_version = _versions(envelope)
     return CapabilityBinding.build(

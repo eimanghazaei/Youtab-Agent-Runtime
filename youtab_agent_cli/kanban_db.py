@@ -9025,25 +9025,22 @@ def _apply_correlation_env(env: "dict[str, str]", task: Task) -> "dict[str, str]
     return env
 
 
-def _default_spawn(
-    task: Task,
+def build_worker_invocation(
+    task: "Task",
     workspace: str,
     *,
     board: Optional[str] = None,
-) -> Optional[int]:
-    """Fire-and-forget ``youtab -p <profile> chat -q ...`` subprocess.
+) -> "tuple[dict, list]":
+    """Build the (env, cmd) for a kanban worker WITHOUT spawning it.
 
-    Returns the spawned child's PID so the dispatcher can detect crashes
-    before the claim TTL expires. The child's completion is still observed
-    via the ``complete`` / ``block`` transitions the worker writes itself;
-    the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
-
-    ``board`` pins the child's kanban context to that board: the child's
-    ``YOUTAB_AGENT_KANBAN_DB`` / ``YOUTAB_AGENT_KANBAN_BOARD`` / workspaces_root env
-    vars all resolve to the same board the dispatcher claimed the task
-    from. Workers cannot accidentally see other boards.
+    Extracted from :func:`_default_spawn` so a pre-warmed single-use worker
+    pool (see ``youtab_agent_cli.worker_pool``) reproduces the EXACT same
+    per-run binding a fresh dispatcher subprocess would get: profile, tenant,
+    created_by, correlation, task id, workspace, board, kanban DB/workspaces
+    root, model/provider override, toolsets, goal-mode, timeouts. The pool
+    hands the returned env+cmd to a warm worker; :func:`_default_spawn` calls
+    this then Popens. Behaviour-preserving.
     """
-    import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
@@ -9197,6 +9194,29 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+    return env, cmd
+
+
+def _default_spawn(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
+    """Fire-and-forget ``youtab -p <profile> chat -q ...`` subprocess.
+
+    Returns the spawned child's PID so the dispatcher can detect crashes
+    before the claim TTL expires. The child's completion is still observed
+    via the ``complete`` / ``block`` transitions the worker writes itself;
+    the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
+
+    ``board`` pins the child's kanban context to that board: the child's
+    ``YOUTAB_AGENT_KANBAN_DB`` / ``YOUTAB_AGENT_KANBAN_BOARD`` / workspaces_root env
+    vars all resolve to the same board the dispatcher claimed the task
+    from. Workers cannot accidentally see other boards.
+    """
+    import subprocess
+    env, cmd = build_worker_invocation(task, workspace, board=board)
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `youtab kanban log` on a specific board reads its own file and
