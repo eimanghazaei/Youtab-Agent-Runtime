@@ -886,3 +886,129 @@ def test_admission_verify_span_records_failure_on_tampered_body(client):
     spans = [s for s in sink.records if s["stage"] == st.Stage.ADMISSION_VERIFY]
     assert spans and spans[0]["ok"] is False
     assert "reason_code" in (spans[0].get("attrs") or {})
+
+
+# --------------------------------------------------------------------------
+# WAVE-30H — a retry inherits the ORIGINAL run's COMPLETE execution binding
+# (Greptile blocker #2). Row-level provider/model pin + engine selection +
+# cost policy are reproduced; a corrupt binding or a non-atomic persist fails
+# closed — a retry is NEVER silently downgraded to a default model.
+# --------------------------------------------------------------------------
+
+
+def _seed_bound_original(*, model="ollama/qwen-test", provider="ollama",
+                         profile_id="eco.v01", limits=None, engine_payload=None):
+    """Create an original run owned by (tenantA, userA) carrying a full binding.
+
+    Seeded directly through kanban so the test does not depend on a live
+    engine-model configuration; the retry endpoint reads the same durable row +
+    events regardless of how they were recorded.
+    """
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        oid = kb.create_task(
+            conn, title="bound original", body="do work",
+            assignee="default", created_by="userA", tenant="tenantA",
+            model_override=model, provider_override=provider,
+            board=runtime.RUNTIME_BOARD, correlation_id="cid-test",
+        )
+        with kb.write_txn(conn):
+            kb._append_event(conn, oid, runtime._MODE_EVENT,
+                             {"mode": "model", "correlation_id": "cid-test"})
+            if engine_payload is not None:
+                kb._append_event(conn, oid, runtime._ENGINE_EVENT, engine_payload)
+            elif profile_id is not None:
+                kb._append_event(conn, oid, runtime._ENGINE_EVENT,
+                                 {"profile_id": profile_id, "public_label": "ECO"})
+            if limits is not None:
+                kb._append_event(conn, oid, runtime._LIMITS_EVENT, limits)
+    return oid
+
+
+def _post_retry(client, run_id, correlation="cid-retry-x"):
+    path = f"/api/runtime/v1/runs/{run_id}/retry"
+    headers = _identity_headers_corr(correlation)
+    headers.update(_sign("POST", path, "tenantA", "userA", b"", correlation=correlation))
+    return client.post(path, headers=headers)
+
+
+def test_retry_inherits_full_execution_binding(client):
+    oid = _seed_bound_original(
+        limits={"max_cost_eur": 3, "worker_attempt_limit": 1})
+    r = _post_retry(client, oid)
+    assert r.status_code == 200, r.text
+    new_id = r.json()["run_id"]
+    assert new_id != oid
+
+    # Row-level provider/model pin inherited (the anti-default guarantee).
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        child = kb.get_task(conn, new_id)
+        assert child.model_override == "ollama/qwen-test"
+        assert child.provider_override == "ollama"
+
+    # Engine selection + cost policy re-recorded on the child's own stream.
+    events = client.get(
+        f"/api/runtime/v1/runs/{new_id}/events", headers=_identity_headers()
+    ).json()["events"]
+    eng = next(e for e in events if e["kind"] == "runtime_engine_selection")
+    assert eng["payload"]["profile_id"] == "eco.v01"
+    lim = next(e for e in events if e["kind"] == "runtime_limits")
+    assert lim["payload"]["max_cost_eur"] == 3
+
+
+def test_retry_of_unbound_original_inherits_no_pin(client):
+    # A legitimately unbound original (no engine, no override) is reproduced
+    # faithfully — the child carries no override, which is the ORIGINAL binding,
+    # not a new default substitution.
+    oid = _seed_bound_original(model=None, provider=None, profile_id=None)
+    r = _post_retry(client, oid)
+    assert r.status_code == 200, r.text
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        child = kb.get_task(conn, r.json()["run_id"])
+        assert child.model_override is None
+        assert child.provider_override is None
+
+
+def test_retry_fails_closed_on_corrupt_engine_binding(client):
+    # A recorded engine selection whose profile_id is empty is a corrupt binding:
+    # refuse (422), and create NO child.
+    oid = _seed_bound_original(engine_payload={"profile_id": "", "public_label": "ECO"})
+    before = _count_retry_children()
+    r = _post_retry(client, oid)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "retry_binding_invalid"
+    assert _count_retry_children() == before  # no child leaked
+
+
+def _count_retry_children():
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks "
+            "WHERE title LIKE '%(retry)' AND status != 'archived'"
+        ).fetchone()
+        return rows["n"]
+
+
+def test_retry_fails_closed_when_binding_cannot_be_persisted(client, monkeypatch):
+    # If persisting the engine-selection event fails, the child must be ARCHIVED
+    # (never dispatched on a partial binding) and the caller gets a 500 — never a
+    # child that would run on a default model.
+    oid = _seed_bound_original()
+    real_append = kb._append_event
+
+    def boom(conn, task_id, kind, payload, **kw):
+        if kind == runtime._ENGINE_EVENT:
+            raise RuntimeError("simulated binding-persist failure")
+        return real_append(conn, task_id, kind, payload, **kw)
+
+    monkeypatch.setattr(kb, "_append_event", boom)
+    r = _post_retry(client, oid)
+    assert r.status_code == 500, r.text
+    assert r.json()["detail"]["error"] == "retry_binding_not_persisted"
+
+    # No dispatchable retry child survives; any created child is archived.
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        leaked = conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks "
+            "WHERE title LIKE '%(retry)' AND status != 'archived'"
+        ).fetchone()["n"]
+    assert leaked == 0

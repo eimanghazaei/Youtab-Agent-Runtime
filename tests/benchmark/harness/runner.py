@@ -145,6 +145,24 @@ class Runner:
         finally:
             home_ctx.close()
 
+    def _resolve_engine_pinned(
+        self, scenario: Scenario, observation: Optional[Observation]
+    ) -> Optional[str]:
+        """Persist the EFFECTIVE attested engine from the actual Observation.
+
+        Provenance must reflect what really executed, not only what the scenario
+        requested. The authoritative source is ``observation.engine_pinned`` — the
+        seam attests the bound engine (fail-closed for a Track A engine-bound run,
+        see ``seam.py``), so a *successful engine-bound execution never persists
+        ``engine_pinned=null``*. ``scenario.engine`` is only the request; it is the
+        fallback when there is no observation at all (an ``unknown``/harness
+        record). The deterministic-worker default applies only when neither an
+        attested nor a requested engine exists, in deterministic mode.
+        """
+        attested = observation.engine_pinned if observation is not None else None
+        return attested or scenario.engine or (
+            "deterministic-worker" if self.mode == MODE_DETERMINISTIC else None)
+
     def _emit_record(
         self,
         scenario: Scenario,
@@ -170,8 +188,7 @@ class Runner:
             mode=self.mode,
             runtime_head=self._head,
             platform_tag=platform_tag(),
-            engine_pinned=scenario.engine or (
-                "deterministic-worker" if self.mode == MODE_DETERMINISTIC else None),
+            engine_pinned=self._resolve_engine_pinned(scenario, observation),
             principal=principal,
             run_id=run_id,
             verdict=verdict_str,

@@ -722,6 +722,76 @@ def _engine_selection_from_events(events: "List[kb.Event]") -> Optional[Dict[str
     return None
 
 
+def _limits_from_events(events: "List[kb.Event]") -> Optional[Dict[str, Any]]:
+    """The authoritative clamped per-run limits (cost policy) recorded at create.
+
+    Numeric-only ``{...max_cost_eur, worker_attempt_limit}`` projection; never a
+    secret. ``None`` when the original run recorded no limits event.
+    """
+    for e in events:
+        if e.kind == _LIMITS_EVENT and isinstance(e.payload, dict):
+            return dict(e.payload)
+    return None
+
+
+def _retry_execution_binding(
+    task: "kb.Task", events: "List[kb.Event]"
+) -> Dict[str, Any]:
+    """Assemble the authoritative execution binding a retry child MUST inherit.
+
+    A retry re-executes the ORIGINAL run; it must run on the SAME substrate and
+    must never silently downgrade to the worker-default provider/model. The
+    binding has two durable layers, both reproduced on the child:
+
+    * the row-level resolved ``provider_override`` / ``model_override`` — the pin
+      the dispatcher hands the worker (the load-bearing guarantee against a
+      default-model run);
+    * the create-time provenance events — the branded engine/profile selection
+      (``runtime_engine_selection``) and the clamped cost-policy limits
+      (``runtime_limits``).
+
+    The per-run Simorgh grant is deliberately NOT part of this binding: a fresh
+    grant is re-minted per run by :func:`_admit_execution_grant` (a per-run
+    authority is never copied/replayed).
+
+    Fail closed (HTTP 422) when the recorded binding is invalid or internally
+    conflicting, so a broken original is refused rather than retried onto a
+    default model.
+    """
+    model_override = (task.model_override or "").strip() or None
+    provider_override = (task.provider_override or "").strip() or None
+    engine_selection = _engine_selection_from_events(events)
+    limits = _limits_from_events(events)
+
+    # invalid/conflicting: a provider pin with no model pin cannot resolve a
+    # concrete model — it would fall through to a default. Refuse.
+    if provider_override and not model_override:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "retry_binding_invalid",
+                    "reason": "provider_override without model_override"},
+        )
+    # invalid: a recorded engine-selection EVENT whose profile_id is empty is a
+    # corrupt binding. Checked on the RAW event (``_engine_selection_from_events``
+    # silently skips empty ids) so the retry is refused rather than quietly
+    # dropping the pin and re-running unbound.
+    for e in events:
+        if e.kind == _ENGINE_EVENT and isinstance(e.payload, dict):
+            if not str(e.payload.get("profile_id") or "").strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": "retry_binding_invalid",
+                            "reason": "engine selection event has empty profile_id"},
+                )
+            break
+    return {
+        "model_override": model_override,
+        "provider_override": provider_override,
+        "engine_selection": engine_selection,
+        "limits": limits,
+    }
+
+
 def _run_summary(
     task: "kb.Task", *, cancelled: bool = False, execution_mode: str = "model",
     interactive: "Optional[str]" = None,
@@ -2389,11 +2459,18 @@ async def runtime_retry_run(
     try:
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
             task = _load_owned_task(conn, run_id, identity)
+            _orig_events = kb.list_events(conn, task.id)
             # Carry the original run's execution mode forward so a retry of a
             # deterministic integration run stays deterministic and a retry of a
             # real run stays real.
-            prior_mode = _mode_from_events(kb.list_events(conn, task.id))
+            prior_mode = _mode_from_events(_orig_events)
             retry_mode = "deterministic" if (prior_mode == "deterministic" and _deterministic_worker_enabled()) else "model"
+            # WAVE-30H: inherit the ORIGINAL run's COMPLETE authoritative execution
+            # binding — resolved provider/model pin (row) + branded engine selection
+            # + clamped cost policy — so the retry re-executes on the SAME substrate
+            # and can NEVER silently downgrade to the worker-default model. Fails
+            # closed (HTTP 422) if that recorded binding is invalid or conflicting.
+            _binding = _retry_execution_binding(task, _orig_events)
             # Preserve correlation lineage engine-side: the retry inherits the
             # ORIGINAL task's correlation id (independent of the inbound header)
             # so the whole retry chain is queryable by one correlation (C6).
@@ -2410,27 +2487,70 @@ async def runtime_retry_run(
                 skills=task.skills,
                 goal_mode=task.goal_mode,
                 max_runtime_seconds=task.max_runtime_seconds,
+                # Row-level provider/model pin — inherited ATOMICALLY in the child's
+                # own create_task transaction (the load-bearing anti-default guard).
+                model_override=_binding["model_override"],
+                provider_override=_binding["provider_override"],
                 board=RUNTIME_BOARD,
                 correlation_id=lineage_correlation,
                 session_id=identity.correlation_id,
             )
-            with kb.write_txn(conn):
-                kb._append_event(
-                    conn,
-                    new_id,
-                    _MODE_EVENT,
-                    {"mode": retry_mode, "correlation_id": lineage_correlation},
-                )
-                # Authoritative lineage marker: this run is a retry of ``run_id``,
-                # carrying the preserved correlation (fail-closed run-txn write).
-                kb._append_event(
-                    conn,
-                    new_id,
-                    _RETRIED_FROM_EVENT,
-                    {
-                        "original_run_id": run_id,
-                        "correlation_id": lineage_correlation,
-                    },
+            # The child row now carries its authoritative provider/model pin. Persist
+            # the remaining binding provenance (mode, lineage, engine selection, cost
+            # policy) atomically. If ANY of it cannot be written, ARCHIVE the child so
+            # it can never be dispatched on a partial binding — fail closed, never a
+            # default-model run (Owner directive: "cannot be persisted atomically").
+            try:
+                with kb.write_txn(conn):
+                    kb._append_event(
+                        conn,
+                        new_id,
+                        _MODE_EVENT,
+                        {"mode": retry_mode, "correlation_id": lineage_correlation},
+                    )
+                    # Authoritative lineage marker: this run is a retry of ``run_id``,
+                    # carrying the preserved correlation (fail-closed run-txn write).
+                    kb._append_event(
+                        conn,
+                        new_id,
+                        _RETRIED_FROM_EVENT,
+                        {
+                            "original_run_id": run_id,
+                            "correlation_id": lineage_correlation,
+                        },
+                    )
+                    # Re-record the branded engine selection so the child's own
+                    # stream attests the same profile the original was pinned to.
+                    if _binding["engine_selection"] is not None:
+                        kb._append_event(
+                            conn,
+                            new_id,
+                            _ENGINE_EVENT,
+                            {
+                                "profile_id": _binding["engine_selection"]["profile_id"],
+                                "public_label":
+                                    _binding["engine_selection"].get("public_label"),
+                            },
+                        )
+                    # Re-record the authoritative clamped cost policy / limits.
+                    if _binding["limits"]:
+                        kb._append_event(
+                            conn, new_id, _LIMITS_EVENT, _binding["limits"]
+                        )
+            except BaseException:
+                # Fail closed: an incompletely-bound child must never dispatch.
+                try:
+                    kb.archive_task(conn, new_id)
+                except BaseException:
+                    _log.warning(
+                        "runtime_retry_run: could not archive child %s after a "
+                        "binding-persist failure; it must not be dispatched",
+                        new_id, exc_info=True,
+                    )
+                raise HTTPException(
+                    status_code=500,
+                    detail={"error": "retry_binding_not_persisted",
+                            "run_id": run_id},
                 )
         ensure_dispatcher_running()
         _dispatch_tick()
