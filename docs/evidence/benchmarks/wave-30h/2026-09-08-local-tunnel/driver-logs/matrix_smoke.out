@@ -1,0 +1,63 @@
+tunnel: LIVE (b7b9afeaf023a549)
+F:\Youtab_AI_COS_Platform\Youtab-Agent-Runtime\.venv-qual\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+  from starlette.testclient import TestClient as TestClient  # noqa
+state.db (async_delegation): linked SQLite 3.49.1 is vulnerable to the WAL-reset corruption bug (https://sqlite.org/wal.html#walresetbug) — using journal_mode=DELETE instead of enabling WAL. Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); Youtab-managed installs can repair the embedded runtime with `youtab update`. See `youtab doctor`. This warning fires once per process per database.
+[cold] rep 1/1 ...
+check_fn _browser_cdp_check returned False; dependent tools will be unavailable this turn
+check_fn _browser_dialog_check returned False; dependent tools will be unavailable this turn
+Auxiliary: marking openrouter unhealthy for 60s (payment / credit error). Subsequent auxiliary calls will skip it until 14:31:45.
+Auxiliary Youtab client unavailable: no Youtab authentication found (run: youtab auth).
+Auxiliary: marking youtab unhealthy for 60s (payment / credit error). Subsequent auxiliary calls will skip it until 14:31:45.
+resolve_provider_client: youtab requested but Youtab Portal not configured (run: youtab auth)
+Auxiliary: marking openrouter unhealthy for 60s (payment / credit error). Subsequent auxiliary calls will skip it until 14:31:45.
+Auxiliary Youtab client unavailable: no Youtab authentication found (run: youtab auth).
+Auxiliary: marking youtab unhealthy for 60s (payment / credit error). Subsequent auxiliary calls will skip it until 14:31:45.
+resolve_provider_client: youtab requested but Youtab Portal not configured (run: youtab auth)
+check_fn check_browser_vision_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_close_terminal_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_computer_use_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_cronjob_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_discord_tool_requirements returned False; dependent tools will be unavailable this turn
+check_fn _check_feishu returned False; dependent tools will be unavailable this turn
+check_fn _check_feishu returned False; dependent tools will be unavailable this turn
+check_fn check_bfl_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_focus_pane_requirements returned False; dependent tools will be unavailable this turn
+check_fn _check_ha_available returned False; dependent tools will be unavailable this turn
+check_fn check_image_generation_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_open_preview_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_react_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_read_terminal_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_video_generation_requirements returned False; dependent tools will be unavailable this turn
+Auxiliary: marking openrouter unhealthy for 60s (payment / credit error). Subsequent auxiliary calls will skip it until 14:31:45.
+Auxiliary Youtab client unavailable: no Youtab authentication found (run: youtab auth).
+Auxiliary: marking youtab unhealthy for 60s (payment / credit error). Subsequent auxiliary calls will skip it until 14:31:45.
+resolve_provider_client: youtab requested but Youtab Portal not configured (run: youtab auth)
+Auxiliary: marking openrouter unhealthy for 60s (payment / credit error). Subsequent auxiliary calls will skip it until 14:31:45.
+Auxiliary Youtab client unavailable: no Youtab authentication found (run: youtab auth).
+Auxiliary: marking youtab unhealthy for 60s (payment / credit error). Subsequent auxiliary calls will skip it until 14:31:46.
+resolve_provider_client: youtab requested but Youtab Portal not configured (run: youtab auth)
+check_fn check_vision_requirements returned False; dependent tools will be unavailable this turn
+check_fn check_web_api_key returned False; dependent tools will be unavailable this turn
+check_fn check_x_search_requirements returned False; dependent tools will be unavailable this turn
+check_fn _check_xai_video_requirements returned False; dependent tools will be unavailable this turn
+check_fn _check_yuanbao returned False; dependent tools will be unavailable this turn
+check_fn _check_spotify_available returned False; dependent tools will be unavailable this turn
+kanban.db (kanban.db): linked SQLite 3.49.1 is vulnerable to the WAL-reset corruption bug (https://sqlite.org/wal.html#walresetbug) — using journal_mode=DELETE instead of enabling WAL. Upgrade to SQLite 3.51.3+ (or backports 3.50.7 / 3.44.6); Youtab-managed installs can repair the embedded runtime with `youtab update`. See `youtab doctor`. This warning fires once per process per database.
+  -> terminal=True status=completed e2e_ms=232125.0 stages=['kanban_show', 'kanban_complete']
+Traceback (most recent call last):
+  File "F:\Youtab_AI_COS_Platform\Youtab-Agent-Runtime\scratchpad\pool_e2e_matrix.py", line 583, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "F:\Youtab_AI_COS_Platform\Youtab-Agent-Runtime\scratchpad\pool_e2e_matrix.py", line 579, in main
+    return args.func(args)
+           ^^^^^^^^^^^^^^^
+  File "F:\Youtab_AI_COS_Platform\Youtab-Agent-Runtime\scratchpad\pool_e2e_matrix.py", line 505, in cmd_matrix
+    client, signer, runtime, teardown = _build_app(tmp, pool=pool, pool_size=1)
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "F:\Youtab_AI_COS_Platform\Youtab-Agent-Runtime\scratchpad\pool_e2e_matrix.py", line 109, in _build_app
+    auth_registry.clear_providers()
+  File "F:\Youtab_AI_COS_Platform\Youtab-Agent-Runtime\youtab_agent_cli\dashboard_auth\registry.py", line 60, in clear_providers
+    lifecycle._default.clear_providers()
+  File "F:\Youtab_AI_COS_Platform\Youtab-Agent-Runtime\youtab_agent_cli\dashboard_auth\lifecycle.py", line 245, in clear_providers
+    raise FrozenRegistryError(
+youtab_agent_cli.dashboard_auth.lifecycle.FrozenRegistryError: dashboard-auth registry is frozen; refusing provider clearing

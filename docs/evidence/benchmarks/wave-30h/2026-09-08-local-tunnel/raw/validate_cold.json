@@ -1,0 +1,38 @@
+{
+  "tag": "cold-validate",
+  "t_wall_start": 1788950704.2377324,
+  "grant_root_run_id": "run-82cefe985c54",
+  "grant_nonce": "grant-8d43762380014be3b114666e366f7c1ad028cdfc",
+  "create_status": 200,
+  "create_ms": 1109.0,
+  "run_id": "t_f4004426",
+  "terminal": false,
+  "status": "timeout",
+  "e2e_ms": 201187.0,
+  "event_first_offset_s": {
+    "created": 1.109,
+    "runtime_execution_mode": 1.109,
+    "runtime_engine_selection": 1.109,
+    "runtime_limits": 1.109,
+    "runtime_execution_grant": 1.109,
+    "runtime_capability_manifest": 1.109,
+    "claimed": 1.109,
+    "spawned": 1.109,
+    "heartbeat": 8.625
+  },
+  "kind_counts": {
+    "claimed": 1,
+    "created": 1,
+    "heartbeat": 4,
+    "runtime_capability_manifest": 1,
+    "runtime_engine_selection": 1,
+    "runtime_execution_grant": 1,
+    "runtime_execution_mode": 1,
+    "runtime_limits": 1,
+    "spawned": 1
+  },
+  "pids": [
+    49624
+  ],
+  "t_wall_end": 1788950905.4137583
+}
