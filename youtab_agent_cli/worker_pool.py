@@ -363,6 +363,16 @@ class WorkerPool:
                 w.proc.kill()
             except Exception:
                 pass
+        # REAP the killed child so it does not linger as a zombie. On POSIX a
+        # SIGKILL'd child stays in the process table (state Z) until its parent
+        # waitpid()s it, and ``os.kill(pid, 0)`` reports a zombie as ALIVE — which
+        # would make the zero-survivor teardown falsely report survivors (the
+        # Windows path has no zombies, so this only bites on Linux). ``proc.wait``
+        # performs that waitpid; bounded so a wedged reap can never hang close().
+        try:
+            w.proc.wait(timeout=10)
+        except Exception:
+            pass
 
     def close(self) -> dict:
         """Zero-survivor teardown of every warm worker (and its tree)."""

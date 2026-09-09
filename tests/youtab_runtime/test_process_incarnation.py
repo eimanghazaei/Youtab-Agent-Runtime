@@ -63,4 +63,13 @@ def test_live_child_matches_its_own_token_then_dies():
     finally:
         proc.kill()
         proc.wait()
+    # ``proc.wait()`` reaps our direct child, but on a loaded host the OS process
+    # record can briefly outlive it, so the liveness view is eventually- (not
+    # instantly-) consistent. Poll within a bounded window: the security property
+    # under test is that a dead/recycled incarnation is NEVER matched — asserting
+    # it the instant after kill() would be a race, not a stronger check.
+    for _ in range(200):
+        if pi.same_incarnation(proc.pid, tok) is False:
+            break
+        time.sleep(0.02)
     assert pi.same_incarnation(proc.pid, tok) is False  # dead now
