@@ -42,9 +42,19 @@ class CustomProfile(ProviderProfile):
         # indefinitely / evict immediately. Sent only when the caller supplied it
         # so non-Ollama OpenAI-compatible backends (vLLM/llama.cpp) that don't
         # recognize keep_alive are unaffected by default.
+        # WAVE-30H task 5: route the configured value through a bounded,
+        # memory-aware, fail-closed policy before sending it. An unbounded/
+        # indefinite pin is never honoured verbatim; under memory pressure the
+        # residency is capped; an unparseable value omits keep_alive (baseline).
         _keep_alive = ctx.get("ollama_keep_alive")
         if _keep_alive is not None and str(_keep_alive).strip() != "":
-            extra_body["keep_alive"] = _keep_alive
+            try:
+                from youtab_runtime.keepalive_policy import resolve_keep_alive
+                _eff = resolve_keep_alive(_keep_alive)
+            except Exception:
+                _eff = None  # fail-closed: on policy error, omit rather than pin
+            if _eff is not None:
+                extra_body["keep_alive"] = _eff
 
         # Reasoning / thinking control for custom OpenAI-compatible endpoints
         # (GLM-5.2 on Volcengine ARK, vLLM, Ollama, llama.cpp, …).

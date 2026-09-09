@@ -27,10 +27,15 @@ def test_keep_alive_sent_only_when_provided():
     assert "keep_alive" not in extra3
 
 
-def test_keep_alive_indefinite_and_evict_values_pass_through():
+def test_keep_alive_indefinite_is_bounded_and_evict_forwarded():
+    # WAVE-30H task 5: an indefinite ("-1") pin is a memory-safety hazard on a
+    # shared runtime; the bounded/fail-closed policy caps it to the ceiling
+    # (default 1800s) rather than forwarding an unbounded pin. Evict (0) is still
+    # forwarded, and an in-bounds finite value ("30m") is forwarded UNCHANGED.
     prof = _custom_profile()
     extra_indef, _ = prof.build_api_kwargs_extras(ollama_keep_alive="-1")
-    assert extra_indef["keep_alive"] == "-1"
+    assert extra_indef["keep_alive"] == 1800  # bounded to the ceiling, never unbounded
     extra_evict, _ = prof.build_api_kwargs_extras(ollama_keep_alive=0)
-    # 0 is a meaningful value (evict immediately) — still forwarded.
     assert extra_evict["keep_alive"] == 0
+    extra_over, _ = prof.build_api_kwargs_extras(ollama_keep_alive="2h")
+    assert extra_over["keep_alive"] == 1800  # 7200s clamped to the ceiling
