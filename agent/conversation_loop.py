@@ -1155,6 +1155,84 @@ def _egress_run_context_from_env():
     return nullcontext()
 
 
+# ── WAVE-30H: managed cooperative pause / checkpoint / resume ─────────────────
+#
+# ADR-0004. A managed ``youtab chat`` worker (dispatched with
+# ``YOUTAB_AGENT_KANBAN_TASK`` = the durable run id) cooperatively observes a
+# ``run_pause`` signal at each TURN BOUNDARY (top of the tool-calling loop,
+# before the next model call). On pause it persists a ``run_checkpoint`` of the
+# conversation, blocks the task, and stops — it is NOT cancelled and NO tool is
+# re-run. A resumed run is dispatched to a FRESH worker that restores the
+# conversation from the checkpoint and continues from the exact saved state.
+#
+# Both helpers are FAIL-OPEN: any error (not a managed run, DB error, an
+# un-serializable/oversized conversation) leaves the run running normally — a
+# normal (non-kanban) run never touches this path.
+
+
+def _managed_pause_run_id() -> Optional[str]:
+    rid = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+    return rid or None
+
+
+def _maybe_checkpoint_and_pause(messages: List[Dict[str, Any]], iteration: int) -> bool:
+    """At a turn boundary: if this managed run has an UNRESUMED pause, persist a
+    conversation checkpoint, block the task, and return True (the loop must stop
+    cleanly). Returns False (keep running) when not a managed run, when no pause
+    is pending, or when the conversation cannot be checkpointed safely — pausing
+    without a restorable checkpoint would strand the run, so we fail OPEN."""
+    run_id = _managed_pause_run_id()
+    if not run_id:
+        return False
+    try:
+        from youtab_agent_cli import kanban_db as kb
+        from youtab_runtime import run_control as rc
+
+        with kb.connect_closing() as conn:
+            events = kb.list_events(conn, run_id)
+            if not rc.is_paused(events):
+                return False
+            state = rc.conversation_checkpoint_state(messages, iteration=iteration)
+            if state is None:
+                # Cannot persist a restorable checkpoint -> do NOT pause; record
+                # why and let the run continue to completion (fail-open, never a
+                # half-pause that cannot be resumed).
+                with kb.write_txn(conn):
+                    kb._append_event(conn, run_id, "run_checkpoint_failed",
+                                     {"reason": "conversation not serializable or exceeds size cap"})
+                return False
+            with kb.write_txn(conn):
+                kb._append_event(conn, run_id, rc.CHECKPOINT, {"state": state})
+        # block_task manages its own write transaction — do not nest it.
+        with kb.connect_closing() as conn2:
+            kb.block_task(conn2, run_id, reason="paused")
+        logger.info("managed run %s paused at turn boundary (iteration %s); checkpoint persisted",
+                    run_id, iteration)
+        return True
+    except Exception:  # noqa: BLE001 - pause must never break a live run
+        logger.debug("managed pause/checkpoint failed; continuing run", exc_info=True)
+        return False
+
+
+def _maybe_restore_conversation() -> Optional[List[Dict[str, Any]]]:
+    """On worker start: the checkpointed conversation to RESUME from, or None.
+    A fresh worker re-dispatched after ``/resume`` replays these messages (which
+    already contain every completed tool call + result) so the model continues
+    from the exact saved state without re-executing any tool."""
+    run_id = _managed_pause_run_id()
+    if not run_id:
+        return None
+    try:
+        from youtab_agent_cli import kanban_db as kb
+        from youtab_runtime import run_control as rc
+
+        with kb.connect_closing() as conn:
+            return rc.conversation_from_checkpoint(kb.list_events(conn, run_id))
+    except Exception:  # noqa: BLE001 - a restore failure must not break startup
+        logger.debug("checkpoint restore failed; starting fresh", exc_info=True)
+        return None
+
+
 def run_conversation(*args, **kwargs):
     """Run-execution chokepoint wrapper (WAVE-28 §6.4).
 
@@ -1406,6 +1484,20 @@ def _run_conversation_impl(
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages
     conversation_history = _ctx.conversation_history
+    # WAVE-30H (ADR-0004): resume from a persisted checkpoint. A managed worker
+    # re-dispatched by /resume restores the EXACT saved conversation (already
+    # containing every completed tool call + its result), so the model continues
+    # from that state and NO tool is re-executed. The redundant re-dispatch user
+    # turn just built into ``messages`` is intentionally discarded. No-op (None)
+    # for a fresh run or any non-managed run.
+    _resumed_messages = _maybe_restore_conversation()
+    if _resumed_messages:
+        messages = _resumed_messages
+        conversation_history = list(_resumed_messages)
+        logger.info(
+            "managed run resumed from checkpoint: %s messages restored (no tool re-execution)",
+            len(messages),
+        )
     active_system_prompt = _ctx.active_system_prompt
     effective_task_id = _ctx.effective_task_id
     turn_id = _ctx.turn_id
@@ -1498,6 +1590,22 @@ def _run_conversation_impl(
 
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
+
+        # WAVE-30H (ADR-0004): managed cooperative pause at the turn boundary.
+        # No-op unless this is a managed kanban worker with an UNRESUMED pause.
+        # The prior turn's tool calls + results are already in ``messages``, so
+        # checkpointing here and resuming later re-executes NO tool. Returns a
+        # non-completion result and stops cleanly (NOT a cancel); a fresh worker
+        # re-dispatched by /resume restores the checkpoint and continues.
+        if _maybe_checkpoint_and_pause(messages, api_call_count):
+            agent._persist_session(messages, conversation_history)
+            return {
+                "final_response": None,
+                "messages": messages,
+                "api_calls": api_call_count,
+                "completed": False,
+                "paused": True,
+            }
 
         # Check for interrupt request (e.g., user sent new message)
         if agent._interrupt_requested:
