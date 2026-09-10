@@ -15,7 +15,9 @@ unprovable outcome).
 
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -31,6 +33,60 @@ from .schema import (
 
 
 _DONE = {"done", "completed", "succeeded"}
+
+# WAVE-30H A5: the durable evidence artifacts a run produces. Their presence in a
+# target directory means it already holds evidence and must NEVER be truncated,
+# overwritten, or replaced (append-only history — see :class:`EvidenceExistsError`).
+_EVIDENCE_FILES = ("results.jsonl", "summary.json", "provenance.json", "MANIFEST.sha256")
+PROVENANCE_FILE = "provenance.json"
+MANIFEST_FILE = "MANIFEST.sha256"
+
+
+class EvidenceExistsError(RuntimeError):
+    """The output directory already holds benchmark evidence.
+
+    WAVE-30H A5 fail-closed guard: previous benchmark evidence is append-only and
+    can never be truncated, overwritten, or deleted by a subsequent run. Every run
+    must write into a fresh (unique) evidence directory.
+    """
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def verify_manifest(out_dir: Path) -> Dict[str, Any]:
+    """Recompute checksums for a finalized evidence dir and compare to MANIFEST.sha256.
+
+    Returns ``{"ok": bool, "mismatches": [...], "missing": [...]}``. Tamper-evidence
+    for benchmark evidence: any post-finalize edit/truncation/replacement of a
+    recorded artifact makes its recomputed digest diverge from the frozen manifest.
+    """
+    out_dir = Path(out_dir)
+    manifest_path = out_dir / MANIFEST_FILE
+    if not manifest_path.exists():
+        return {"ok": False, "mismatches": [], "missing": [MANIFEST_FILE]}
+    expected: Dict[str, str] = {}
+    for line in manifest_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        digest, _, name = line.partition("  ")
+        expected[name] = digest
+    mismatches: List[str] = []
+    missing: List[str] = []
+    for name, digest in expected.items():
+        fp = out_dir / name
+        if not fp.exists():
+            missing.append(name)
+        elif _sha256_file(fp) != digest:
+            mismatches.append(name)
+    return {"ok": not mismatches and not missing,
+            "mismatches": mismatches, "missing": missing}
 
 
 def compute_honesty_divergence(
@@ -59,8 +115,19 @@ class Recorder:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.results_path = self.out_dir / "results.jsonl"
         self.summary_path = self.out_dir / "summary.json"
-        # Truncate a stale results file so a re-run does not accrete records.
-        self.results_path.write_text("", encoding="utf-8")
+        # WAVE-30H A5: benchmark evidence is APPEND-ONLY across runs. Never truncate
+        # or overwrite a prior run's artifacts — if this directory already holds any
+        # evidence file, fail closed and require a fresh (unique) evidence dir. This
+        # replaces the previous unconditional ``results.jsonl`` truncation, which
+        # silently destroyed prior evidence on a re-run into the same directory.
+        for name in _EVIDENCE_FILES:
+            fp = self.out_dir / name
+            if fp.exists() and fp.stat().st_size > 0:
+                raise EvidenceExistsError(
+                    f"{self.out_dir} already holds benchmark evidence ({name}); "
+                    "refusing to truncate/overwrite prior evidence — use a fresh "
+                    "run directory (see harness.preflight.mint_run_evidence_dir)"
+                )
         self._records: List[Dict[str, Any]] = []
 
     def record(self, record: BenchmarkRecord) -> Dict[str, Any]:
@@ -137,4 +204,42 @@ class Recorder:
             json.dumps(summary, indent=2, ensure_ascii=False, sort_keys=True),
             encoding="utf-8",
         )
+        self._write_provenance_and_manifest(summary)
         return summary
+
+    def _write_provenance_and_manifest(self, summary: Dict[str, Any]) -> None:
+        """WAVE-30H A5: write immutable provenance + a SHA-256 manifest.
+
+        ``provenance.json`` binds the evidence to the exact runtime Git SHA, schema
+        version, mode(s) and a UTC creation timestamp. ``MANIFEST.sha256`` records
+        the SHA-256 of every evidence artifact (sha256sum format) so any later
+        edit/truncation/replacement is detectable via :func:`verify_manifest`.
+        Both are written once at finalize; the __init__ guard prevents a later run
+        from overwriting them.
+        """
+        provenance = {
+            "schema_version": SCHEMA_VERSION,
+            "generated_label": GENERATED_LABEL,
+            "runtime_head": summary.get("runtime_head", "unknown"),
+            "created_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "modes": summary.get("modes", []),
+            "platform_tags": summary.get("platform_tags", []),
+            "total_records": summary.get("total_records", 0),
+            "evidence_policy": "append-only; artifacts are immutable once written",
+        }
+        provenance_path = self.out_dir / PROVENANCE_FILE
+        provenance_path.write_text(
+            json.dumps(provenance, indent=2, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        # Checksum every artifact that exists (results may be empty on a zero-record
+        # run but summary + provenance always exist). Manifest lists itself last but
+        # never checksums itself (a file cannot certify its own post-write digest).
+        lines: List[str] = []
+        for name in ("results.jsonl", "summary.json", PROVENANCE_FILE):
+            fp = self.out_dir / name
+            if fp.exists():
+                lines.append(f"{_sha256_file(fp)}  {name}")
+        (self.out_dir / MANIFEST_FILE).write_text(
+            "\n".join(lines) + "\n", encoding="utf-8"
+        )

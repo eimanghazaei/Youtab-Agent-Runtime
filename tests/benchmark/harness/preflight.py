@@ -18,7 +18,9 @@ provider call:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -112,13 +114,22 @@ def validate_output_dir(out: Path, *, repo_root: Path, force: bool = False) -> P
             raise PreflightError(
                 f"output dir {out} is inside a cloud-synced folder ({marker!r}) — refused"
             )
-    # No collision with prior untrusted artifacts.
-    results = out / "results.jsonl"
-    if results.exists() and results.stat().st_size > 0 and not force:
-        raise PreflightError(
-            f"output dir {out} already holds results.jsonl — refusing to overwrite "
-            f"prior artifacts (pass force=True to override)"
-        )
+    # WAVE-30H A5: benchmark evidence is APPEND-ONLY and immutable. Refuse if the
+    # target already holds ANY evidence artifact — and ``force`` can NEVER override
+    # this (it must not be possible to overwrite/replace historical evidence). The
+    # ``force`` parameter is retained for signature/CLI compatibility but no longer
+    # bypasses evidence protection.
+    _EVIDENCE_ARTIFACTS = (
+        "results.jsonl", "summary.json", "provenance.json", "MANIFEST.sha256",
+    )
+    for _name in _EVIDENCE_ARTIFACTS:
+        _fp = out / _name
+        if _fp.exists() and _fp.stat().st_size > 0:
+            raise PreflightError(
+                f"output dir {out} already holds benchmark evidence ({_name}) — "
+                "refusing to overwrite/replace historical evidence (force cannot "
+                "override). Use a fresh run directory (mint_run_evidence_dir)."
+            )
     out.mkdir(parents=True, exist_ok=True)
     if os.name == "posix":
         try:
@@ -133,6 +144,48 @@ def validate_output_dir(out: Path, *, repo_root: Path, force: bool = False) -> P
             encoding="utf-8",
         )
     return out
+
+
+def _sha_slug(runtime_head: Optional[str]) -> str:
+    s = re.sub(r"[^0-9a-fA-F]", "", (runtime_head or ""))[:12]
+    return s or "unknownsha"
+
+
+def mint_run_evidence_dir(
+    base_dir: Path, *, runtime_head: Optional[str], run_id: Optional[str] = None,
+) -> Path:
+    """Create a UNIQUE per-run evidence directory under ``base_dir`` (WAVE-30H A5).
+
+    Every live/evidence run writes into its own timestamped, SHA- and run-bound
+    subdirectory so no run can ever truncate, overwrite, or replace another run's
+    evidence. The directory name is
+    ``run-<UTC-YYYYmmddTHHMMSSZ>-<sha12>[-<run_id-slug>]`` and MUST NOT already
+    exist — an existing target fails closed (append-only history is preserved).
+
+    ``base_dir`` should already have passed :func:`validate_output_dir` (outside the
+    repo, not a symlink, not cloud-synced). Returns the created run directory.
+    """
+    base = Path(base_dir)
+    base.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    name = f"run-{stamp}-{_sha_slug(runtime_head)}"
+    if run_id:
+        slug = re.sub(r"[^0-9A-Za-z_.-]", "-", str(run_id))[:24].strip("-")
+        if slug:
+            name = f"{name}-{slug}"
+    run_dir = base / name
+    if run_dir.exists():
+        raise PreflightError(
+            f"run evidence dir {run_dir} already exists — refusing to reuse "
+            "(append-only: never overwrite historical evidence)"
+        )
+    run_dir.mkdir(parents=False, exist_ok=False)
+    if os.name == "posix":
+        try:
+            os.chmod(run_dir, 0o700)
+        except OSError:
+            pass
+    return run_dir
 
 
 def _git(args: list[str], *, cwd: Path) -> Optional[str]:

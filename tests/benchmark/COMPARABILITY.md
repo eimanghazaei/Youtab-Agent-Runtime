@@ -35,7 +35,10 @@ and the validator proves it equals the spec **and** the real task bank on disk:
   `Runner.verdict_matches_expected` gate. Verdicts never read the agent's
   self-report.
 - **Evidence / output schema** — the same `BenchmarkRecord` fields in
-  `results.jsonl` + `summary.json`.
+  `results.jsonl` + `summary.json`, plus a per-run `provenance.json` and
+  `MANIFEST.sha256`. Evidence is **append-only and immutable** (WAVE-30H A5):
+  each run writes a unique directory, prior evidence is never truncated,
+  overwritten, replaced, or deleted, and `--force` cannot override this.
 - **Technically-meaningful run limits** — identical for both tracks:
   `max_iterations`, `max_requests`, `max_retries`, `max_concurrency`,
   `max_total_tokens`, `max_runtime_seconds`, `failure_threshold`. (Cost is **not**

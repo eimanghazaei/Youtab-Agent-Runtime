@@ -18,5 +18,11 @@ an earlier one.
   `MANIFEST.sha256`. Never write new results into an older generation's directory.
 - **Honest labels.** Every record states its environment, whether it is production evidence,
   whether a tunnel was present, and its known limitations.
+- **Harness-enforced (WAVE-30H A5).** The harness now enforces this policy in code, not by
+  convention: each live run writes a **unique** minted directory
+  (`preflight.mint_run_evidence_dir`), the recorder **refuses** to truncate/overwrite an
+  existing evidence directory (`EvidenceExistsError`), `--force` can **never** overwrite
+  historical evidence, and every run emits `provenance.json` + `MANIFEST.sha256`
+  (verify with `tests.benchmark.harness.recorder.verify_manifest`).
 - **Traceability.** Every headline claim in a record must trace to a raw record in that record's
   `raw/` (see each record's `PROVENANCE.md`).

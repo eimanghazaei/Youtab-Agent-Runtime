@@ -39,10 +39,11 @@ from .preflight import (
     PreflightError,
     assert_engine_attestation,
     assert_live_safety,
+    mint_run_evidence_dir,
     validate_output_dir,
     verify_runtime_sha,
 )
-from .recorder import Recorder
+from .recorder import EvidenceExistsError, Recorder
 from .runner import Runner
 from .schema import (
     MODE_DETERMINISTIC,
@@ -207,17 +208,23 @@ def _run(args) -> int:
     # the runtime is the authorized build with a sound safety posture BEFORE any
     # provider call.
     if is_live:
-        try:
-            out_dir = validate_output_dir(Path(args.out), repo_root=repo_root,
-                                          force=args.force)
-        except PreflightError as exc:
-            print(f"FATAL: output dir rejected: {exc}", file=sys.stderr)
-            return 6
-        args.out = str(out_dir)
         if not args.expected_sha:
             print("FATAL: a live run requires --expected-sha (the authorized SHA)",
                   file=sys.stderr)
             return 6
+        try:
+            base_dir = validate_output_dir(Path(args.out), repo_root=repo_root,
+                                           force=args.force)
+            # WAVE-30H A5: never write a live run into the base dir directly — mint a
+            # UNIQUE timestamped/SHA/run-bound evidence subdir so this run can never
+            # truncate, overwrite, or replace another run's evidence (append-only).
+            run_dir = mint_run_evidence_dir(
+                base_dir, runtime_head=args.expected_sha, run_id=args.campaign_id,
+            )
+        except PreflightError as exc:
+            print(f"FATAL: output dir rejected: {exc}", file=sys.stderr)
+            return 6
+        args.out = str(run_dir)
 
     seam = _build_seam(args, repo_root, limits, engine=track_engine,
                        require_engine=(args.mode == MODE_LOCAL_RUNTIME))
@@ -249,7 +256,17 @@ def _run(args) -> int:
             print(f"FATAL: preflight could not be verified: {exc}", file=sys.stderr)
             return 6
 
-    recorder = Recorder(Path(args.out))
+    try:
+        recorder = Recorder(Path(args.out))
+    except EvidenceExistsError as exc:
+        # WAVE-30H A5: the target already holds benchmark evidence — fail closed
+        # with a clean message rather than truncating/overwriting it. A live run
+        # writes into a freshly minted unique dir, so this only guards accidental
+        # re-use of an evidence directory.
+        if seam is not None:
+            seam.close()
+        print(f"FATAL: {exc}", file=sys.stderr)
+        return 6
     runner = Runner(recorder, mode=args.mode, seam=seam, repo_root=repo_root,
                     tenant=args.tenant, user=args.user, track_provenance=track_prov)
 
