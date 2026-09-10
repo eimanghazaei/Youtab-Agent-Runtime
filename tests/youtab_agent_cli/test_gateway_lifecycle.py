@@ -943,6 +943,27 @@ def _events(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _wait_for_event_kinds(path: Path, required: set[str], *, timeout_s: float = 10.0) -> set[str]:
+    """Wait until every required audit event kind is durably written.
+
+    A job's TERMINAL audit line is emitted by the on_terminal callback AFTER the
+    job is already observably terminal (gateway_lifecycle.start_job_thread docs:
+    "on_terminal(job, recovered) is invoked once, after the job is terminal"), so
+    a reader that polled the job STATE to terminal (``_settle``) can briefly
+    out-run the audit write on a loaded host. Poll for the events themselves.
+    This does NOT weaken the assertion: a genuinely missing event still times out
+    and the caller's ``in`` check fails, exactly as before.
+    """
+    deadline = time.monotonic() + timeout_s
+    kinds: set[str] = set()
+    while time.monotonic() < deadline:
+        kinds = {e["event"] for e in _events(path)}
+        if required <= kinds:
+            return kinds
+        time.sleep(0.02)
+    return kinds
+
+
 class TestAudit:
     def test_a_requested_restart_is_recorded(self, gated, fake_gateway, audit_log_file):
         job = _as(gated, OWNER).post("/api/gateway/restart").json()
@@ -963,7 +984,13 @@ class TestAudit:
         bad_job = _as(gated, OWNER).post("/api/gateway/restart").json()
         _settle(gated, bad_job["job_id"])
 
-        kinds = {e["event"] for e in _events(audit_log_file)}
+        # Both terminal audit lines are written on the job thread AFTER the job
+        # is observably terminal, so wait for them to land (bounded) rather than
+        # racing the writer. The assertion is unchanged: a missing event fails.
+        kinds = _wait_for_event_kinds(
+            audit_log_file,
+            {"gateway_lifecycle_succeeded", "gateway_lifecycle_failed"},
+        )
         assert "gateway_lifecycle_succeeded" in kinds
         assert "gateway_lifecycle_failed" in kinds
 
