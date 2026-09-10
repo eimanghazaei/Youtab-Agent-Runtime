@@ -310,12 +310,20 @@ def _immediate_txn(db_path: Path) -> Iterator[sqlite3.Connection]:
                 conn.isolation_level = None
                 conn.execute("BEGIN IMMEDIATE")
                 break  # write lock held
-            except sqlite3.OperationalError as exc:
+            except BaseException as exc:
+                # Guaranteed close of THIS connection on ANY acquire failure — never
+                # leak a handle (a non-OperationalError such as a DatabaseError from
+                # corruption must not escape with the connection still open). Only a
+                # transient "database is locked" that is NOT the final attempt is
+                # retried; every other error, and the last locked attempt, re-raises
+                # (fail-loud). A locked BEGIN IMMEDIATE never started a transaction.
                 conn.close()
                 conn = None
-                if not _is_locked_error(exc) or attempt == _TXN_MAX_ATTEMPTS - 1:
-                    raise
-                time.sleep(_TXN_BACKOFF_S * (attempt + 1))
+                if (_is_locked_error(exc)
+                        and attempt < _TXN_MAX_ATTEMPTS - 1):
+                    time.sleep(_TXN_BACKOFF_S * (attempt + 1))
+                    continue
+                raise
         assert conn is not None  # loop broke with a held lock or already re-raised
         try:
             yield conn

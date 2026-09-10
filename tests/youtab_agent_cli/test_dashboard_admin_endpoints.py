@@ -437,6 +437,60 @@ class TestWebhookEndpoints:
         assert data["restart_pid"] == 5151
         assert load_config()["platforms"]["webhook"]["enabled"] is True
 
+    def test_enable_platform_publishes_restart_pid_before_job_thread_runs(
+        self, monkeypatch
+    ):
+        """Deterministic guard for the restart-pid publish-ordering race.
+
+        The child pid is recorded SYNCHRONOUSLY under the admission lock
+        (LifecycleRegistry.record_pid), not only by run_job on the background
+        thread. Force the interleaving by BLOCKING the job thread: if
+        ``restart_pid`` still surfaces, it can only have been published
+        synchronously. On the pre-fix code (pid written solely by run_job) this
+        fails deterministically as ``restart_pid is None`` — the exact Windows-CI
+        flake where a concurrent enable/restart reuse returned a null pid.
+        """
+        import threading
+
+        import youtab_agent_cli.web_server as ws
+        from youtab_agent_cli import gateway_lifecycle as lc
+
+        with lc.REGISTRY._lock:
+            lc.REGISTRY._inflight.clear()
+            lc.REGISTRY._jobs.clear()
+            lc.REGISTRY._order.clear()
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+
+        class FakeRunningProc:
+            pid = 5151
+
+            def poll(self):
+                return None
+
+        monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", FakeRunningProc())
+
+        def fail_spawn_action(subcommand, name):
+            raise AssertionError("must not spawn a second concurrent restart")
+
+        monkeypatch.setattr(ws, "_spawn_youtab_action", fail_spawn_action)
+
+        # Hold the job thread so run_job (the ONLY other writer of job.pid) cannot
+        # publish the pid while the response is built. start_job_thread resolves
+        # run_job as a module global at call time, so this patch takes effect.
+        gate = threading.Event()
+
+        def blocked_run_job(job, proc, *args, **kwargs):
+            gate.wait(5)  # released in finally; never the source of the pid here
+
+        monkeypatch.setattr(lc, "run_job", blocked_run_job)
+
+        try:
+            r = self.client.post("/api/webhooks/enable")
+            assert r.status_code == 200
+            assert r.json()["restart_pid"] == 5151
+        finally:
+            gate.set()
+
 
 class TestOpsEndpoints:
     @pytest.fixture(autouse=True)

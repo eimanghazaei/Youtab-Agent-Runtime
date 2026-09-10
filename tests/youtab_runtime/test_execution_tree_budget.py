@@ -223,6 +223,50 @@ def _worker(db_path, root, n):
     return ok
 
 
+def test_immediate_txn_closes_connection_on_non_locked_acquire_error(db, monkeypatch):
+    """LOW-1: ANY acquire failure closes the connection — not just OperationalError.
+
+    A non-locked error during acquire (e.g. a DatabaseError from corruption in
+    _initialize_schema/BEGIN IMMEDIATE) must not escape with the connection still
+    open. Pre-fix the retry loop only closed inside ``except OperationalError``, so
+    a DatabaseError propagated with the handle leaked. Here we force that error and
+    assert the connection was closed AND the error still propagates (fail-loud).
+    """
+    import sqlite3
+
+    proxies = []
+    real_connect = tb._connect
+
+    class _Proxy:
+        def __init__(self, real):
+            object.__setattr__(self, "_real", real)
+            object.__setattr__(self, "closed", False)
+
+        def __getattr__(self, name):
+            return getattr(object.__getattribute__(self, "_real"), name)
+
+        def close(self):
+            object.__setattr__(self, "closed", True)
+            return object.__getattribute__(self, "_real").close()
+
+    def fake_connect(path):
+        p = _Proxy(real_connect(path))
+        proxies.append(p)
+        return p
+
+    def boom(_conn):
+        raise sqlite3.DatabaseError("simulated non-locked acquire failure")
+
+    monkeypatch.setattr(tb, "_connect", fake_connect)
+    monkeypatch.setattr(tb, "_initialize_schema", boom)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        tb.open_tree("leak-probe", _params(), db_path=db)
+
+    assert proxies, "acquire never opened a connection"
+    assert all(p.closed for p in proxies), "connection leaked on a non-locked acquire error"
+
+
 def test_multiprocess_debit_never_exceeds_ceiling(db):
     # 8 processes each try 50 single-iteration debits against a ceiling of 100:
     # the tree must grant EXACTLY 100 and no more, proving the debit is atomic

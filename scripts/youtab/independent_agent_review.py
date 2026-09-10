@@ -65,10 +65,38 @@ def _gate_passes(rec: dict, head_sha: str) -> tuple[bool, list[str]]:
     if verdict != "PROVEN":
         reasons.append(f"verdict is not PROVEN (fail-closed): {verdict!r}")
     unresolved = rec.get("unresolved_findings") or []
+    resolved = rec.get("resolved_findings") or []  # optional: found-and-fixed
     for finding in unresolved:
         sev = str((finding or {}).get("severity", "")).lower()
         if sev in BLOCKING_SEVERITIES:
             reasons.append(f"unresolved {sev} finding: {(finding or {}).get('summary')}")
+    # LOW-2: findings_by_severity must be internally CONSISTENT with the finding
+    # lists — a record cannot claim blocking findings exist (a non-zero
+    # Critical/High/Medium count) while enumerating none of them. Every reported
+    # blocking-severity finding must be accounted for in unresolved_findings or
+    # resolved_findings; otherwise the record is contradictory and fails closed
+    # (so a mis-authored record cannot pass with unaddressed high-severity counts).
+    fbs = rec.get("findings_by_severity")
+    if not isinstance(fbs, dict):
+        reasons.append("findings_by_severity must be an object")
+    else:
+        def _count(items: list, sev: str) -> int:
+            return sum(1 for f in items
+                       if str((f or {}).get("severity", "")).lower() == sev)
+
+        for sev in BLOCKING_SEVERITIES:
+            reported = next((v for k, v in fbs.items()
+                             if str(k).lower() == sev), 0)
+            if not isinstance(reported, int) or isinstance(reported, bool) or reported < 0:
+                reasons.append(f"findings_by_severity[{sev}] must be a non-negative int")
+                continue
+            accounted = _count(unresolved, sev) + _count(resolved, sev)
+            if reported > accounted:
+                reasons.append(
+                    f"contradictory record: findings_by_severity[{sev}]={reported} "
+                    f"but only {accounted} {sev} finding(s) listed in "
+                    "unresolved_findings/resolved_findings"
+                )
     return (not reasons), reasons
 
 

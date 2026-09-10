@@ -4355,6 +4355,15 @@ def _begin_lifecycle_job(
 
     _lifecycle_audit(request, AuditEvent.GATEWAY_LIFECYCLE_REQUESTED, job, pid=proc.pid)
 
+    # Publish the child pid SYNCHRONOUSLY, under the admission lock, the instant it
+    # is known — before the response is built and before the job thread starts.
+    # Otherwise ``job.pid`` is written only by ``run_job`` on the background thread,
+    # so this response (and any concurrent caller reusing this in-flight job) could
+    # observe ``pid: null`` until that thread is scheduled — the Windows-CI race
+    # where an enable/restart reuse returned ``restart_pid: null``. Idempotent with
+    # ``run_job``'s later assignment (same value).
+    lifecycle.REGISTRY.record_pid(job, proc.pid)
+
     log_path = _ACTION_LOG_DIR / _ACTION_LOG_FILES[action]
 
     def _on_terminal(finished, recovered: bool) -> None:
