@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,6 +33,14 @@ from typing import Any, Iterator, Mapping, Optional
 SCHEMA_VERSION = 1
 _lock = threading.RLock()
 _secured_paths: set[str] = set()
+
+# Bounded retry for acquiring the shared write lock when a transient SQLITE_BUSY
+# ("database is locked") outlives ``busy_timeout`` under heavy cross-process
+# contention (many spawned workers debiting one tree on a slow host, especially
+# with a DELETE-journal fallback). Retrying the ACQUIRE is safe and does not relax
+# the ceiling: a locked BEGIN IMMEDIATE never started a transaction.
+_TXN_MAX_ATTEMPTS = 8
+_TXN_BACKOFF_S = 0.05
 
 
 # --- errors -----------------------------------------------------------------
@@ -279,20 +288,41 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _is_locked_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and "locked" in str(exc).lower()
+
+
 @contextmanager
 def _immediate_txn(db_path: Path) -> Iterator[sqlite3.Connection]:
     with _lock:
-        conn = _connect(db_path)
-        try:
-            _initialize_schema(conn)
-            conn.isolation_level = None
-            conn.execute("BEGIN IMMEDIATE")
+        # Acquire the shared write lock with a bounded retry on transient
+        # "database is locked". A locked BEGIN IMMEDIATE never started a
+        # transaction and ``_initialize_schema`` is idempotent (IF NOT EXISTS), so
+        # retrying the acquire cannot double-debit or corrupt state. The debit
+        # itself still runs inside ONE BEGIN IMMEDIATE..COMMIT — atomicity and the
+        # ceiling check are unchanged. On exhaustion the OperationalError is
+        # re-raised (fail-loud), never silently skipped.
+        conn: Optional[sqlite3.Connection] = None
+        for attempt in range(_TXN_MAX_ATTEMPTS):
+            conn = _connect(db_path)
             try:
-                yield conn
-                conn.execute("COMMIT")
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
+                _initialize_schema(conn)
+                conn.isolation_level = None
+                conn.execute("BEGIN IMMEDIATE")
+                break  # write lock held
+            except sqlite3.OperationalError as exc:
+                conn.close()
+                conn = None
+                if not _is_locked_error(exc) or attempt == _TXN_MAX_ATTEMPTS - 1:
+                    raise
+                time.sleep(_TXN_BACKOFF_S * (attempt + 1))
+        assert conn is not None  # loop broke with a held lock or already re-raised
+        try:
+            yield conn
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
         finally:
             conn.close()
 
