@@ -116,7 +116,7 @@ def cmd_post(args: argparse.Namespace) -> int:
          "-f", f"state={state}",
          "-f", f"context={CONTEXT}",
          "-f", f"description={desc}"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:
         print(proc.stderr, file=sys.stderr)
