@@ -284,6 +284,17 @@ def _cancel(client, run_id, *, tenant=TENANT, user=USER, grant_header=None):
     return client.post(path, content=body, headers=h)
 
 
+def _retry(client, run_id, *, tenant=TENANT, user=USER, grant_header=None):
+    body = b"{}"
+    path = f"/api/runtime/v1/runs/{run_id}/retry"
+    h = _headers(tenant, user)
+    h.update(_sign("POST", path, tenant, user, body, h["X-Youtab-Correlation-Id"]))
+    h["Content-Type"] = "application/json"
+    if grant_header is not None:
+        h[mx.GRANT_HEADER] = grant_header
+    return client.post(path, content=body, headers=h)
+
+
 def _events(client, run_id, *, after=0, tenant=TENANT, user=USER):
     return client.get(
         f"/api/runtime/v1/runs/{run_id}/events?after={after}",
@@ -345,6 +356,58 @@ def test_managed_create_admits_persists_and_worker_completes(managed):
     assert data["status"] == "completed"
     assert "worker_admission_error" not in kinds, payloads.get("worker_admission_error")
     assert "worker_started" in kinds
+    assert payloads["worker_admitted"][0]["has_admitted"] is True
+    assert payloads["worker_admitted"][0]["established"] is True
+
+
+# ── A2/A12 managed RETRY: re-minted grant is persisted onto the child ─────────
+
+
+def test_managed_retry_persists_fresh_grant_and_child_worker_completes(managed):
+    """WAVE-30H regression: a managed retry MUST persist its freshly-admitted
+    grant + frozen manifest onto the CHILD run, so the dispatched retry worker can
+    re-admit from its OWN events (worker_admission.establish_managed_admission).
+
+    Before the fix, runtime_retry_run admitted a grant (proving authority) but
+    discarded it — the child had no runtime_execution_grant event, so in managed
+    trust mode its worker raised ManagedWorkerAdmissionError and fail-closed
+    never executed. This exercises the real ingress → dispatch → child-worker path
+    with real Ed25519 grants (no mocks) and proves the child can now complete.
+    """
+    # An original managed run completes.
+    orig_env, orig_header = _mint_grant()
+    run_id = _create(managed, grant_header=orig_header).json()["run_id"]
+    _wait_terminal(managed, run_id)
+
+    # Retry WITH a fresh valid grant — re-minted for THIS request (never copied
+    # from the original), matching the "grant re-minted fresh per run" invariant.
+    retry_env, retry_header = _mint_grant()
+    r = _retry(managed, run_id, grant_header=retry_header)
+    assert r.status_code == 200, r.text
+    child_id = r.json()["run_id"]
+    assert child_id != run_id
+
+    # The freshly-admitted grant + frozen capability manifest are PERSISTED onto
+    # the CHILD (the defect: they were dropped). Exactly one each, no identity/
+    # scope drift, and it is THIS retry's grant — not the original's.
+    cev = _events(managed, child_id, after=0).json()["events"]
+    child_grants = [e for e in cev if e["kind"] == "runtime_execution_grant"]
+    child_manifests = [e for e in cev if e["kind"] == "runtime_capability_manifest"]
+    assert len(child_grants) == 1, cev
+    assert len(child_manifests) == 1, cev
+    persisted = mx.decode_grant_header(child_grants[0]["payload"]["grant"])
+    assert persisted.tenant_id == retry_env.tenant_id == TENANT
+    assert persisted.user_id == retry_env.user_id == USER
+    assert persisted.workspace_id == retry_env.workspace_id
+    assert persisted.command_id == retry_env.command_id      # this retry's grant…
+    assert persisted.command_id != orig_env.command_id       # …re-minted, not copied
+    assert child_manifests[0]["payload"].get("tool_hashes") is not None
+
+    # The real dispatched CHILD worker re-admits from its OWN persisted grant and
+    # reaches completion — proving a managed retry can actually execute.
+    data, kinds, payloads = _wait_terminal(managed, child_id)
+    assert data["status"] == "completed"
+    assert "worker_admission_error" not in kinds, payloads.get("worker_admission_error")
     assert payloads["worker_admitted"][0]["has_admitted"] is True
     assert payloads["worker_admitted"][0]["established"] is True
 

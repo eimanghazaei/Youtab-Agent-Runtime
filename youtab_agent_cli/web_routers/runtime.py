@@ -2406,8 +2406,16 @@ async def runtime_retry_run(
     """Retry a finished/blocked run by creating a fresh run from the same spec."""
     await _verify_signed_command(request, identity)
     # Managed retry is a governed mutation: it requires execution authority (a
-    # Simorgh grant) in managed mode; standalone refuses a grant.
-    await _admit_execution_grant(request, identity)
+    # Simorgh grant) in managed mode; standalone refuses a grant. Capture the
+    # freshly-admitted grant + frozen capability manifest so they can be PERSISTED
+    # onto the child run below (WAVE-30H): a managed retry re-mints its own grant
+    # here, and the dispatched child worker re-admits it from its OWN persisted
+    # events (worker_admission.establish_managed_admission). Without persisting it,
+    # a managed retry child has no grant to re-admit and fails closed at worker
+    # admission — created but never able to execute. Mirrors create_run.
+    _retry_grant_header, _retry_grant_manifest = await _admit_execution_grant(
+        request, identity
+    )
     # Authorize ownership FIRST — a caller that does not own run_id gets 404 and
     # no effect-ledger row is ever created in their namespace (reviewer A INFO-2).
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
@@ -2537,6 +2545,26 @@ async def runtime_retry_run(
                         kb._append_event(
                             conn, new_id, _LIMITS_EVENT, _binding["limits"]
                         )
+                    # Persist the freshly-admitted Simorgh grant + frozen capability
+                    # manifest onto the CHILD (managed mode only) so the dispatched
+                    # retry worker can re-admit via re_admit_worker_grant and gate
+                    # tool execution by the sealed AdmittedCommand — mirroring
+                    # create_run. The grant is re-minted per retry request (this is
+                    # THIS retry's authority, never copied from the original run).
+                    # Inside the same fail-closed write_txn: if it cannot be
+                    # persisted, the child is archived below and the retry fails
+                    # closed (500) rather than dispatching on an incomplete binding.
+                    # Absent in standalone (grant_header is None there).
+                    if _retry_grant_header:
+                        kb._append_event(
+                            conn, new_id, _GRANT_EVENT,
+                            {"grant": _retry_grant_header},
+                        )
+                        if _retry_grant_manifest is not None:
+                            kb._append_event(
+                                conn, new_id, _GRANT_MANIFEST_EVENT,
+                                _retry_grant_manifest,
+                            )
             except BaseException:
                 # Fail closed: an incompletely-bound child must never dispatch.
                 try:
