@@ -1167,7 +1167,7 @@ def test_resolve_youtab_argv_module_actually_runs():
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
-    assert "Youtab Agent Runtime" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
+    assert "Youtab RunTime" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
 
 
 # ---------------------------------------------------------------------------

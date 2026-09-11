@@ -39,7 +39,7 @@ def test_default_banner_uses_exact_youtab_logo_asset_and_ocean_blue_branding():
     """The official PNG is bundled byte-for-byte; guessed logo art must not return."""
     logo_bytes = banner.YOUTAB_LOGO_ASSET.read_bytes()
     git_blob = hashlib.sha1(
-        f"blob {len(logo_bytes)}\\0".encode() + logo_bytes,
+        f"blob {len(logo_bytes)}\0".encode() + logo_bytes,
         usedforsecurity=False,
     ).hexdigest()
 
