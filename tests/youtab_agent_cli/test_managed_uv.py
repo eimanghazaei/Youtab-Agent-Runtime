@@ -283,13 +283,18 @@ class TestUpdateManagedUv:
 
         uv = _managed_uv(tmp_path)
         _make_executable(uv)
-        # Fresh stamp under the isolated YOUTAB_AGENT_HOME.
-        import youtab_constants
-        stamp = youtab_constants.get_youtab_home() / "cache" / ".uv_self_update_stamp"
+        # Isolate the stamp fully under tmp_path. The stamp is written AND read via
+        # the getter that production actually uses for it: `_uv_self_update_is_fresh`
+        # and `_touch_uv_self_update_stamp` re-import `youtab_constants.get_youtab_home`
+        # at call time, so that getter — not `managed_uv.get_youtab_home` — must be
+        # patched, otherwise the freshness check inspects (and the test writes to) the
+        # real user home and the result becomes environment-dependent.
+        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
 
-        with patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
+        with patch("youtab_constants.get_youtab_home", return_value=tmp_path), \
+             patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
              patch("youtab_agent_cli.managed_uv.subprocess.run") as mock_run, \
              patch(
                  "youtab_agent_cli.managed_uv.repair_vulnerable_runtime",
@@ -310,14 +315,17 @@ class TestUpdateManagedUv:
 
         uv = _managed_uv(tmp_path)
         _make_executable(uv)
-        import youtab_constants
-        stamp = youtab_constants.get_youtab_home() / "cache" / ".uv_self_update_stamp"
+        # Isolate the stamp under tmp_path via the getter production actually uses
+        # for it (re-imported from youtab_constants at call time); never touch the
+        # real user home.
+        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
         old = _time.time() - UV_SELF_UPDATE_INTERVAL_SECONDS - 60
         _os.utime(stamp, (old, old))
 
-        with patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
+        with patch("youtab_constants.get_youtab_home", return_value=tmp_path), \
+             patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
              patch("youtab_agent_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
              patch("youtab_agent_cli.managed_uv.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.2.0")

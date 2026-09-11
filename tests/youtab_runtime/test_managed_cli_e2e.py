@@ -99,11 +99,39 @@ def _run_cli(tmp_path: Path, db_path: Path, task_id: str, *, quiet_Q: bool = Fal
     env = dict(os.environ)
     env.pop("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", None)
     env.pop("YOUTAB_MANAGED_BINDING_LEGACY_CREATED_BEFORE", None)
+    # ── Hermetic environment (Batch2 #F2 CI-portability fix) ──────────────────
+    # This subprocess must behave IDENTICALLY on a developer machine and on a
+    # clean CI runner. It previously inherited the developer's ambient provider
+    # credentials/config, so ``main()``'s first-run guard (_has_any_provider_
+    # configured) passed locally but on clean CI printed setup guidance to STDOUT
+    # and exited 1 BEFORE the managed pre-admission path — an opaque rc=1 that
+    # made every scenario a false pass locally. Strip ALL inherited provider
+    # configuration so the outcome never depends on the host, then explicitly
+    # supply one SAFE, NON-CLOUD provider condition (an isolated loopback base
+    # URL — OPENAI_BASE_URL alone satisfies the guard for local models) that is
+    # sufficient to pass the first-run guard WITHOUT real credentials. Refusal
+    # scenarios still exit at pre-admission BEFORE any client/socket/budget, so
+    # no network or model call is ever made; the valid scenario only needs
+    # provider-client CONSTRUCTION (the sentinel), not a live model.
+    for _leak in list(env):
+        if (
+            _leak.endswith(("_API_KEY", "_TOKEN", "_BASE_URL", "_API_BASE"))
+            or _leak in {"OPENAI_ORG_ID", "OPENAI_ORGANIZATION", "YOUTAB_PORTAL_TOKEN"}
+        ):
+            env.pop(_leak, None)
     env["YOUTAB_RUNTIME_TRUST_MODE"] = "managed"
     env["YOUTAB_BRAIN_PUBLIC_KEYS"] = _KEYS_JSON
     env["YOUTAB_AGENT_KANBAN_DB"] = str(db_path)
     env["YOUTAB_AGENT_KANBAN_TASK"] = task_id
     env["YOUTAB_AGENT_HOME"] = str(home)
+    # Isolated loopback provider: passes the first-run guard deterministically on
+    # any host; port 9 (discard) is not served, so should a run ever reach an
+    # actual dial it fails closed rather than contacting a real endpoint. A
+    # non-secret dummy key (deliberately NOT ``sk-`` shaped, so no secret scanner
+    # false-positive) lets an OpenAI-compatible client construct if the resolved
+    # profile is OpenAI-shaped.
+    env["OPENAI_BASE_URL"] = "http://127.0.0.1:9/v1"
+    env["OPENAI_API_KEY"] = "e2e-local-not-a-real-key"
     env["E2E_CLIENT_SENTINEL"] = str(client_sentinel)
     env["E2E_NET_SENTINEL"] = str(net_sentinel)
     # sitecustomize dir FIRST so it is imported at interpreter startup, then the repo.
@@ -125,15 +153,26 @@ def _run_cli(tmp_path: Path, db_path: Path, task_id: str, *, quiet_Q: bool = Fal
     }
 
 
+def _diag(res) -> str:
+    """Render BOTH streams + the sentinel/rc state, so a failure can never be an
+    opaque rc=1 again (Batch2 #F2)."""
+    return (
+        f"\nrc={res['rc']} client_constructed={res['client_constructed']} "
+        f"network_attempted={res['network_attempted']} budget_opened={res['budget_opened']}"
+        f"\n--- STDERR (last 1500) ---\n{res['stderr'][-1500:]}"
+        f"\n--- STDOUT (last 1500) ---\n{res['stdout'][-1500:]}"
+    )
+
+
 def _assert_refused_before_construction(res, *, error_substr):
     """A pre-admission refusal: exit 3, the exact refusal reason, and PROOF nothing
     was constructed/dialed/budgeted (preadmit ran before _init_agent)."""
-    assert res["rc"] == 3, res["stderr"][-1200:]
-    assert "managed_admission_failed" in res["stderr"], res["stderr"][-1200:]
-    assert error_substr in res["stderr"], res["stderr"][-1200:]
-    assert not res["client_constructed"], "provider client was constructed on refusal"
-    assert not res["network_attempted"], "a socket was opened on refusal"
-    assert not res["budget_opened"], "execution-tree budget was opened on refusal"
+    assert res["rc"] == 3, _diag(res)
+    assert "managed_admission_failed" in res["stderr"], _diag(res)
+    assert error_substr in res["stderr"], _diag(res)
+    assert not res["client_constructed"], "provider client was constructed on refusal" + _diag(res)
+    assert not res["network_attempted"], "a socket was opened on refusal" + _diag(res)
+    assert not res["budget_opened"], "execution-tree budget was opened on refusal" + _diag(res)
 
 
 def _mint(nonce, *, now=None, signer=None, **over):
@@ -276,7 +315,7 @@ def test_cli_valid_binding_passes_preadmission_and_reaches_construction(tmp_path
     res = _run_cli(tmp_path, db, task_id)
     # Construction was reached -> preadmit admitted the valid binding and ran BEFORE
     # _init_agent (the sentinel only fires from provider-client resolution).
-    assert res["client_constructed"], res["stderr"][-1200:]
+    assert res["client_constructed"], _diag(res)
     # It was NOT stopped by a PRE-admission refusal (a post-construction drift/model
     # failure may still occur — construction happening is the discriminator that the
     # gate did not block a valid run).
