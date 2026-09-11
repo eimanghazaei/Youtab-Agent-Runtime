@@ -26,6 +26,121 @@ class ManagedWorkerAdmissionError(RuntimeError):
     """A managed run could not establish its admitted context — refuse to run."""
 
 
+# WAVE-30H: the generic "missing binding -> proceed" fallback is REMOVED. A managed
+# run with no binding fails closed by default. A bounded migration window for
+# pre-binding legacy runs is available ONLY behind this explicitly-dated, audited,
+# fail-closed-on-expiry/parse-error flag (never "forever").
+_LEGACY_QUARANTINE_ENV = "YOUTAB_MANAGED_BINDING_LEGACY_UNTIL"
+
+
+def _legacy_binding_quarantine_active() -> bool:
+    """True iff the legacy-binding migration flag names a FUTURE ISO date.
+
+    Absent, unparseable, or past -> False (fail closed). The flag cannot be set to a
+    non-date, so it can never be made permanent (mirrors the trust-mode posture).
+    """
+    raw = (os.environ.get(_LEGACY_QUARANTINE_ENV) or "").strip()
+    if not raw:
+        return False
+    try:
+        from datetime import datetime, timezone
+
+        until = datetime.fromisoformat(raw)
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=timezone.utc)
+        return datetime.now(timezone.utc) < until
+    except Exception:  # noqa: BLE001 — any parse failure fails closed
+        return False
+
+
+def _enforce_effective_binding(agent, envelope, binding, task_id, *, require_client_match):
+    """Validate the canonical effective binding and dispatch EXCLUSIVELY from it.
+
+    Raises :class:`ManagedWorkerAdmissionError` (fail closed) on any invalid binding
+    BEFORE the caller opens a provider client or consumes budget. Presence,
+    integrity (hash), corruption and cross-tenant are enforced for every managed
+    run; a fully-resolved substrate and provider/model/endpoint-drift-free dispatch
+    are additionally enforced for a real-model worker (``require_client_match``).
+    """
+    from youtab_agent_cli import effective_binding as _eb
+
+    # 1. Present (no silent legacy fallback).
+    if binding is None:
+        if _legacy_binding_quarantine_active():
+            _audit_binding_quarantine(task_id, "missing_binding")
+            return
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} has no effective binding; refusing "
+            "(no fallback, no standalone downgrade)"
+        )
+    # 2. Corrupt / malformed.
+    if binding.get("__corrupt__"):
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} effective binding is corrupt; refusing"
+        )
+    # 3. Integrity — the self-hash must match (tamper/forgery fails closed).
+    if not _eb.verify_binding(binding):
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} effective binding hash mismatch "
+            "(tampered/malformed); refusing"
+        )
+    # 5. Cross-tenant (defense in depth; ingress already binds tenant).
+    env_tenant = getattr(envelope, "tenant_id", None)
+    if binding.get("tenant") and env_tenant and binding.get("tenant") != env_tenant:
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} binding tenant mismatch; refusing"
+        )
+    if not require_client_match:
+        return  # deterministic/stub worker: no provider client, no substrate to match
+    # 4. Fully resolved — a real-model worker must have a concrete bound substrate.
+    if (
+        binding.get("model_identifier_status") != "resolved"
+        or not binding.get("model")
+        or not binding.get("provider")
+    ):
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} effective binding is not fully resolved; refusing"
+        )
+    # 9. Dispatch-from-it — the worker's resolved substrate must EQUAL the binding
+    # (no config drift). Fingerprint compares the normalized endpoint authority.
+    a_provider = (getattr(agent, "provider", None) or "").strip().lower()
+    a_model = (getattr(agent, "model", None) or "").strip()
+    if a_provider and a_provider != str(binding.get("provider") or "").lower():
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} worker provider drifted from the bound identity; refusing"
+        )
+    if a_model and a_model != str(binding.get("model") or ""):
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} worker model drifted from the bound identity; refusing"
+        )
+    a_base = getattr(agent, "base_url", None)
+    if a_base is not None and _eb.compute_endpoint_fingerprint(a_base) != binding.get(
+        "endpoint_fingerprint"
+    ):
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} worker endpoint drifted from the bound identity; refusing"
+        )
+
+
+def _audit_binding_quarantine(task_id, reason) -> None:
+    """Record an auditable event that a managed run proceeded under the legacy
+    migration flag (so production can assert zero such events)."""
+    try:
+        from youtab_agent_cli import kanban_db as kb
+
+        conn = kb.connect()
+        try:
+            with kb.write_txn(conn):
+                kb._append_event(
+                    conn, task_id, "runtime_binding_quarantine",
+                    {"reason": reason, "flag_until": os.environ.get(_LEGACY_QUARANTINE_ENV)},
+                )
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — auditing must never mask the run
+        logger.warning("could not record binding quarantine audit for %s", task_id)
+
+
 def establish_managed_admission(agent) -> bool:
     """Attach the sealed Simorgh AdmittedCommand to ``agent`` for a managed run.
 
@@ -106,14 +221,29 @@ def establish_managed_admission(agent) -> bool:
         ) from exc
 
     agent._admitted_command = admitted
-    # WAVE-30H: attach the canonical effective binding so a delegated child can
-    # INHERIT the parent's provider/model (or fail closed on an unattested drift;
-    # see tools/delegate_tool._build_child_agent). A corrupt/absent binding attaches
-    # None — delegation then treats the parent as carrying no inheritable identity.
-    if isinstance(binding_payload, dict) and not binding_payload.get("__corrupt__"):
-        agent._runtime_effective_binding = binding_payload
-    else:
-        agent._runtime_effective_binding = None
+    env = admitted.envelope
+    # WAVE-30H: PRE-DISPATCH binding enforcement. The worker validates the canonical
+    # effective binding and dispatches EXCLUSIVELY from it — inside this function,
+    # which returns BEFORE run_conversation constructs any provider client or debits
+    # any budget. Fail-closed (ManagedWorkerAdmissionError -> worker exit 3): a
+    # missing / corrupt / tampered(hash) / cross-tenant binding is refused, and for a
+    # real-model worker an unresolved binding or any provider/model/endpoint drift
+    # from the bound identity is refused. The deterministic/stub worker (no provider
+    # client) enforces presence/integrity/tenant only.
+    _require_client_match = bool(
+        getattr(agent, "provider", None) and getattr(agent, "model", None)
+    )
+    _enforce_effective_binding(
+        agent, env, binding_payload, task_id,
+        require_client_match=_require_client_match,
+    )
+    # Passed enforcement — attach the binding as the SOLE dispatch authority so a
+    # delegated child inherits the EXACT parent identity (or fails closed).
+    agent._runtime_effective_binding = (
+        binding_payload
+        if isinstance(binding_payload, dict) and not binding_payload.get("__corrupt__")
+        else None
+    )
     # R5: open the ONE durable shared execution-tree budget from the grant's
     # reasoning, keyed on root_run_id, UNCONDITIONALLY for this managed run (never
     # gated on a benchmark campaign env var). The root run seeds it; delegated

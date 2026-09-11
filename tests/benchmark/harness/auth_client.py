@@ -191,9 +191,18 @@ class AuthClient:
         max_runtime_seconds: Optional[int] = None,
         limits: Optional[Mapping[str, Any]] = None,
         idempotency_key: Optional[str] = None,
+        expected_binding_digest: Optional[str] = None,
     ) -> httpx.Response:
-        """POST /runs — create + dispatch a run (signed, optionally idempotent)."""
+        """POST /runs — create + dispatch a run (signed, optionally idempotent).
+
+        ``expected_binding_digest`` (WAVE-30H) pins the substrate attested at
+        preflight: the runtime creates the run ONLY if its binding digest matches,
+        closing the preflight->create TOCTOU. Sent as a SIGNED payload field (the
+        command signature covers the body), so it is tamper-evident in transit.
+        """
         payload: dict[str, Any] = {"agent": agent, "task": task}
+        if expected_binding_digest is not None:
+            payload["expected_binding_digest"] = expected_binding_digest
         if engine is not None:
             payload["engine"] = engine
         if goal_mode is not None:

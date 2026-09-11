@@ -1,35 +1,33 @@
-"""WAVE-30H — a delegated MANAGED child inherits the parent's effective binding, or
-records an explicit, parent-linked rebinding; provider/model drift fails closed and
-a cost-escalating drift (free local parent -> billed cloud child) is refused.
+"""WAVE-30H — a delegated MANAGED child inherits the EXACT parent effective binding
+(substrate-digest verified, endpoint included), or FAILS CLOSED.
 
-Deterministic, offline. Mirrors the FakeAgent/_build_child_agent pattern in
-tests/tools/test_delegate_kanban_isolation.py; the kanban write is stubbed so no DB
-is touched and the recorded child-binding event is captured in-memory.
+A tampered parent binding, or ANY provider/model/endpoint drift, refuses the child
+(a signed single-use rebind authorization — the only sanctioned way to change a
+child's substrate — is a separate primitive; until it lands, drift is refused, never
+silently recorded-and-run). Deterministic, offline; mirrors the FakeAgent pattern in
+tests/tools/test_delegate_kanban_isolation.py.
 """
 from __future__ import annotations
 
-import contextlib
 import types
 
 import pytest
 
-
-def _binding(**over):
-    base = {
-        "binding_version": 1, "provider": "ollama", "model": "qwen:tag",
-        "model_ref": "ollama/qwen:tag", "model_identifier_status": "resolved",
-        "execution": "local", "endpoint_class": "loopback",
-        "provider_cost_policy": "local_zero_verified",
-        "digest_status": "not_probed", "model_digest": None,
-        "bound_at": "2026-09-11T00:00:00Z",
-    }
-    base.update(over)
-    return base
+from youtab_agent_cli import effective_binding as eb
 
 
-def _install(monkeypatch, *, parent_binding, recorded, managed=True):
+def _binding(*, provider="ollama", model="qwen:tag", endpoint="http://127.0.0.1:11434"):
+    # Built via the real builder so it carries a valid binding_hash/fingerprint.
+    return eb.build_effective_binding(
+        provider=provider, model=model, endpoint=endpoint,
+        run_id="parent-run-1", root_run_id="parent-run-1", tenant="t1",
+    )
+
+
+def _install(monkeypatch, *, parent_binding, managed=True,
+             parent_provider="ollama", parent_model="qwen:tag",
+             parent_base_url="http://127.0.0.1:11434"):
     import run_agent
-    from youtab_agent_cli import kanban_db as kb
     from youtab_runtime import execution_tree_budget as etb
     from tools import delegate_tool
 
@@ -44,27 +42,15 @@ def _install(monkeypatch, *, parent_binding, recorded, managed=True):
         etb, "snapshot", lambda root: types.SimpleNamespace(max_spawn_depth=8)
     )
 
-    # Stub the kanban write so the child-binding event is captured, not persisted.
-    class _Conn:
-        def close(self):
-            pass
-
-    monkeypatch.setattr(kb, "connect", lambda: _Conn())
-    monkeypatch.setattr(kb, "write_txn", lambda conn: contextlib.nullcontext())
-    monkeypatch.setattr(
-        kb, "_append_event",
-        lambda conn, run_id, kind, payload: recorded.append((run_id, kind, payload)),
-    )
-
     env = types.SimpleNamespace(task_id="parent-run-1", root_run_id="parent-run-1")
     admitted = types.SimpleNamespace(envelope=env)
 
     class Parent:
         enabled_toolsets = ["terminal"]
         valid_tool_names = {"terminal"}
-        model = "qwen:tag"
-        provider = "ollama"
-        base_url = "http://127.0.0.1:11434"
+        model = parent_model
+        provider = parent_provider
+        base_url = parent_base_url
         api_mode = "chat_completions"
         platform = "cli"
         session_id = "parent-session"
@@ -86,53 +72,44 @@ def _build(delegate_tool, parent, **over):
     return delegate_tool._build_child_agent(**kwargs)
 
 
-def test_child_inherits_parent_binding_by_default(monkeypatch):
-    recorded = []
-    dt, parent = _install(monkeypatch, parent_binding=_binding(), recorded=recorded)
-    child = _build(dt, parent)  # no override -> child runs on parent's substrate
+def test_child_inherits_exact_parent_binding(monkeypatch):
+    dt, parent = _install(monkeypatch, parent_binding=_binding())
+    child = _build(dt, parent)  # no override -> identical substrate
     assert child._runtime_effective_binding is parent._runtime_effective_binding
-    assert recorded == []  # inheritance records nothing new
+
+
+def test_provider_model_drift_fails_closed(monkeypatch):
+    dt, parent = _install(monkeypatch, parent_binding=_binding())
+    with pytest.raises(ValueError, match="substrate drift"):
+        _build(dt, parent, model="gpt-x", override_provider="openai",
+               override_base_url="https://api.openai.com")
 
 
 def test_cost_escalating_drift_fails_closed(monkeypatch):
-    # A free local-zero parent must never spawn a billed cloud child silently.
-    recorded = []
-    dt, parent = _install(monkeypatch, parent_binding=_binding(), recorded=recorded)
-    with pytest.raises(ValueError, match="local-zero parent"):
+    # A local-zero parent spawning a cloud child is a substrate drift → refused.
+    dt, parent = _install(monkeypatch, parent_binding=_binding())
+    with pytest.raises(ValueError, match="substrate drift"):
         _build(dt, parent, model="gpt-x", override_provider="openai",
                override_base_url="https://api.openai.com")
-    assert recorded == []  # refused before any rebinding was recorded
 
 
-def test_benign_cloud_rebind_is_recorded_and_linked(monkeypatch):
-    # A cloud parent spawning a different cloud model records an explicit,
-    # parent-linked child binding (non-silent) and attaches it to the child.
-    recorded = []
-    parent_binding = _binding(
-        provider="openai", model="gpt-a", model_ref="openai/gpt-a",
-        execution="cloud", endpoint_class="cloud",
-        provider_cost_policy="campaign_budget_eur", digest_status="not_applicable",
-    )
-    dt, parent = _install(monkeypatch, parent_binding=parent_binding, recorded=recorded)
-    child = _build(dt, parent, model="gpt-b", override_provider="openai",
-                   override_base_url="https://api.openai.com")
-    assert len(recorded) == 1
-    run_id, kind, payload = recorded[0]
-    assert run_id == "parent-run-1"
-    assert kind == "runtime_child_effective_binding"
-    assert payload["provider"] == "openai" and payload["model"] == "gpt-b"
-    assert payload["parent_run_id"] == "parent-run-1"
-    assert payload["parent_binding_version"] == 1
-    assert payload["subagent_id"]
-    assert child._runtime_effective_binding["model"] == "gpt-b"
+def test_endpoint_only_drift_fails_closed(monkeypatch):
+    # Same provider+model but a DIFFERENT endpoint must NOT silently inherit
+    # (the latent bug a bare provider+model check missed). Substrate digest differs.
+    dt, parent = _install(monkeypatch, parent_binding=_binding())
+    with pytest.raises(ValueError, match="substrate drift"):
+        _build(dt, parent, override_base_url="http://127.0.0.1:11435")
+
+
+def test_tampered_parent_binding_fails_closed(monkeypatch):
+    b = _binding()
+    b["model"] = "evil-swap"  # breaks the binding_hash
+    dt, parent = _install(monkeypatch, parent_binding=b)
+    with pytest.raises(ValueError, match="integrity failure"):
+        _build(dt, parent)
 
 
 def test_standalone_child_has_no_binding(monkeypatch):
-    # A non-managed parent (no tree root / no binding) is untouched.
-    recorded = []
-    dt, parent = _install(
-        monkeypatch, parent_binding=None, recorded=recorded, managed=False
-    )
+    dt, parent = _install(monkeypatch, parent_binding=None, managed=False)
     child = _build(dt, parent)
     assert getattr(child, "_runtime_effective_binding", None) is None
-    assert recorded == []

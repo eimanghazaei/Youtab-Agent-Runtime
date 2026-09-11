@@ -66,6 +66,11 @@ def managed_pool(tmp_path, monkeypatch):
         name = "default"; description = "t"; model = "m"; provider = "p"
         skill_count = 1; is_default = True
     _profiles.list_profiles = lambda: [_P()]
+    # WAVE-30H: a managed model-run must resolve a concrete substrate at create.
+    monkeypatch.setattr(
+        runtime, "_profile_default_identity",
+        lambda agent: ("p", "m", "http://127.0.0.1:11434"),
+    )
     auth_registry.clear_providers()
     auth_registry.register_provider(RuntimeServiceProvider(secret=SECRET, scope="runtime"))
     token_auth.clear_token_routes()

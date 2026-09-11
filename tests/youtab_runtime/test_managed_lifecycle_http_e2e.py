@@ -154,6 +154,13 @@ def managed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "youtab_agent_cli.profiles.list_profiles", lambda: [_FakeProfile()]
     )
+    # WAVE-30H: a managed model-run must resolve a concrete substrate at create; the
+    # fake profile's identity is what this suite's stub worker "runs". Resolve it so
+    # the binding is fully resolved (and fail-closed would otherwise refuse it).
+    monkeypatch.setattr(
+        "youtab_agent_cli.web_routers.runtime._profile_default_identity",
+        lambda agent: ("local", "local-deterministic", "http://127.0.0.1:11434"),
+    )
 
     worker_py = tmp_path / "managed_worker.py"
     worker_py.write_text(_WORKER_SRC, encoding="utf-8")

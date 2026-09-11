@@ -189,6 +189,12 @@ def managed_client(tmp_path, worker_mode, *, deadline="20"):
         provider = "local"; skill_count = 1; is_default = True
 
     _profiles.list_profiles = lambda: [_FakeProfile()]
+    # WAVE-30H: a managed model-run must resolve a concrete substrate at create;
+    # resolve the fake profile's identity so the binding is fully resolved.
+    _orig_pdi = runtime._profile_default_identity
+    runtime._profile_default_identity = (
+        lambda agent: ("local", "local-deterministic", "http://127.0.0.1:11434")
+    )
     auth_registry.clear_providers()
     auth_registry.register_provider(RuntimeServiceProvider(secret=SECRET, scope="runtime"))
     token_auth.clear_token_routes()
@@ -226,6 +232,7 @@ def managed_client(tmp_path, worker_mode, *, deadline="20"):
         runtime._spawn_override = None
         runtime._nonce_store = None
         _profiles.list_profiles = _orig_list
+        runtime._profile_default_identity = _orig_pdi
         for k, v in prev.items():
             if v is None:
                 os.environ.pop(k, None)

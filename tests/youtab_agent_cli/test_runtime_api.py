@@ -896,6 +896,37 @@ def test_admission_verify_span_records_failure_on_tampered_body(client):
 # --------------------------------------------------------------------------
 
 
+def test_create_run_validates_expected_binding_digest(client, monkeypatch):
+    # WAVE-30H: atomic preflight->create. A matching substrate digest creates the
+    # run; a mismatch fails closed (412, no enqueue); a malformed digest is 422.
+    from youtab_agent_cli import effective_binding as eb
+    from youtab_agent_cli.web_routers import runtime as R
+
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("openai", "gpt-x", "https://api.openai.com"),
+    )
+    good = eb.binding_digest(eb.build_effective_binding(
+        provider="openai", model="gpt-x", endpoint="https://api.openai.com"))
+
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_binding_digest": good},
+        nonce="digest-ok-00000000")
+    assert r.status_code in (200, 201), r.text
+
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_binding_digest": "a" * 64},
+        nonce="digest-mismatch-000")
+    assert r.status_code == 412, r.text
+    assert r.json()["detail"]["error"] == "binding_digest_mismatch"
+
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_binding_digest": "not-hex"},
+        nonce="digest-malformed-0")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "malformed_binding_digest"
+
+
 def _seed_bound_original(*, model="ollama/qwen-test", provider="ollama",
                          profile_id="eco.v01", limits=None, engine_payload=None):
     """Create an original run owned by (tenantA, userA) carrying a full binding.
@@ -921,6 +952,16 @@ def _seed_bound_original(*, model="ollama/qwen-test", provider="ollama",
                                  {"profile_id": profile_id, "public_label": "ECO"})
             if limits is not None:
                 kb._append_event(conn, oid, runtime._LIMITS_EVENT, limits)
+            # WAVE-30H: an attested run carries a canonical effective binding (real
+            # create_run always persists one); seed it so retry inherits it.
+            kb._append_event(
+                conn, oid, runtime.eb.BINDING_EVENT,
+                runtime.eb.build_effective_binding(
+                    provider=provider, model=model,
+                    endpoint="http://127.0.0.1:11434",
+                    run_id=oid, root_run_id=oid, tenant="tenantA",
+                ),
+            )
     return oid
 
 

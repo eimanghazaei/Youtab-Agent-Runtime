@@ -159,13 +159,26 @@ class HttpRuntimeSeam:
         # than dispatch on the worker's default model.
         self._engine = (engine or "").strip() or None
         self._require_engine = bool(require_engine)
+        # WAVE-30H: the substrate digest attested at the last preflight; sent on
+        # create so the run is created ONLY if the runtime binds the same substrate.
+        self._expected_binding_digest: str | None = None
 
     def preflight(self) -> dict:
         """The runtime's authenticated safety posture (for the live-run gate).
 
         Passes the bound engine so the posture carries the effective per-engine
-        attestation the live gate verifies."""
-        return self._client.preflight(engine=self._engine)
+        attestation the live gate verifies, and captures the attested substrate
+        digest to pin the subsequent create (atomic preflight->create)."""
+        posture = self._client.preflight(engine=self._engine)
+        try:
+            from youtab_agent_cli import effective_binding as _eb
+
+            binding = posture.get("effective_binding")
+            if isinstance(binding, dict) and binding:
+                self._expected_binding_digest = _eb.binding_digest(binding)
+        except Exception:  # noqa: BLE001 — digest pinning is best-effort here
+            self._expected_binding_digest = None
+        return posture
 
     def close(self) -> None:
         self._client.close()
@@ -202,6 +215,7 @@ class HttpRuntimeSeam:
             max_runtime_seconds=_max_runtime,
             limits=self._limits,
             idempotency_key=scenario.params.get("idempotency_key"),
+            expected_binding_digest=self._expected_binding_digest,
         )
         resp.raise_for_status()
         created = resp.json()

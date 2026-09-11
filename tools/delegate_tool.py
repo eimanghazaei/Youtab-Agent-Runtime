@@ -1598,72 +1598,40 @@ def _build_child_agent(
         child._execution_tree_limits = getattr(
             parent_agent, "_execution_tree_limits", None
         )
-        # WAVE-30H: a managed child must run on the parent's BOUND identity, or an
-        # EXPLICIT, separately-recorded child binding — never a silent substrate
-        # switch under inherited authority. Gated on the parent actually carrying a
-        # binding, so non-managed/legacy parents (and test doubles) are untouched.
+        # WAVE-30H: a managed child inherits the EXACT parent binding, or fails
+        # closed. Gated on the parent actually carrying a binding, so non-managed/
+        # legacy parents (and test doubles) are untouched.
         _parent_binding = getattr(parent_agent, "_runtime_effective_binding", None)
         if isinstance(_parent_binding, dict):
             from youtab_agent_cli import effective_binding as _eb
 
-            _cp = (effective_provider or "").strip().lower()
-            _cm = (effective_model or "").strip()
-            _same = (
-                _cp == str(_parent_binding.get("provider") or "").lower()
-                and _cm == str(_parent_binding.get("model") or "")
+            # Parent binding integrity — a tampered/forged parent binding fails closed.
+            if not _eb.verify_binding(_parent_binding):
+                raise ValueError(
+                    "managed delegation refused: parent binding hash integrity failure"
+                )
+            # Compare SUBSTRATE identity (provider/model/model_ref/execution/
+            # endpoint_class/endpoint_fingerprint/cost_policy) — NOT the per-run hash,
+            # which differs by run_id. This catches an endpoint drift that a bare
+            # provider+model check would miss.
+            _child_substrate = _eb.build_effective_binding(
+                provider=effective_provider, model=effective_model,
+                endpoint=effective_base_url,
             )
-            if _same:
-                # Inherit the parent binding unchanged (the common case: no
-                # delegation.* provider/model override).
+            if _eb.binding_digest(_child_substrate) == _eb.binding_digest(_parent_binding):
+                # EXACT same substrate → inherit the parent binding unchanged.
                 child._runtime_effective_binding = _parent_binding
             else:
-                # Explicit drift: build the child's own binding, LINKED to the
-                # parent run + binding version, and fail closed on the dangerous
-                # cost-escalating drift (a free local parent must never spend real
-                # money through a drifted cloud child that was never separately
-                # budget-authorized).
-                _env = getattr(_parent_admitted, "envelope", None)
-                _parent_run_id = getattr(_env, "task_id", None)
-                _child_binding = _eb.build_effective_binding(
-                    provider=effective_provider, model=effective_model,
-                    endpoint=effective_base_url,
-                    extra={
-                        "parent_run_id": _parent_run_id,
-                        "root_run_id": getattr(_env, "root_run_id", None),
-                        "parent_binding_version": _parent_binding.get("binding_version"),
-                        "subagent_id": subagent_id,
-                    },
+                # Substrate drift. Rebinding a managed child to a DIFFERENT substrate
+                # requires an explicit signed, single-use rebind authorization
+                # (predecessor-hash + monotonic version + nonce), which is a separate
+                # Codex-reviewed security primitive not yet landed. Until then ANY
+                # drift FAILS CLOSED — never a silent record-and-run.
+                raise ValueError(
+                    "managed delegation substrate drift (provider/model/endpoint "
+                    "differs from the parent binding) requires a signed rebind "
+                    "authorization; refusing to run the child"
                 )
-                if (_parent_binding.get("provider_cost_policy") == "local_zero_verified"
-                        and _child_binding["provider_cost_policy"] != "local_zero_verified"):
-                    raise ValueError(
-                        "managed delegation drift refused: a local-zero parent "
-                        "cannot spawn a metered/cloud child without explicit "
-                        "re-authorization"
-                    )
-                # Record the explicit rebinding on the PARENT run (durable, linked);
-                # fail closed if it cannot be persisted (never run unattested).
-                if _parent_run_id:
-                    try:
-                        from youtab_agent_cli import kanban_db as _kb
-
-                        _c = _kb.connect()
-                        try:
-                            with _kb.write_txn(_c):
-                                _kb._append_event(
-                                    _c, _parent_run_id,
-                                    _eb.CHILD_BINDING_EVENT, _child_binding,
-                                )
-                        finally:
-                            _c.close()
-                    except ValueError:
-                        raise
-                    except Exception as exc:  # noqa: BLE001
-                        raise ValueError(
-                            "managed delegation rebinding could not be recorded; "
-                            "refusing to run the child unattested"
-                        ) from exc
-                child._runtime_effective_binding = _child_binding
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id

@@ -1253,6 +1253,43 @@ def _configured_inference_base_url() -> str:
     return ""
 
 
+def _profile_default_identity(agent: str) -> "tuple[Optional[str], Optional[str], Optional[str]]":
+    """Pure (no-network) resolution of the (provider, model, base_url) the dispatched
+    worker for ``agent`` would actually use.
+
+    Mirrors the worker's own precedence (``model.default`` then ``model.model``) and
+    reads the AGENT PROFILE's config home (the home the dispatcher injects), not the
+    server's — closing the two create-vs-dispatch divergences that left a managed
+    run's binding unresolved while the worker ran a real model. Falls back to the
+    server config if profile-home scoping is unavailable. Never probes the network
+    (the worker's local auto-detect branch is deliberately NOT mirrored here).
+    """
+    m: Any = {}
+    try:
+        from youtab_agent_cli import config as _cfg
+        from youtab_agent_cli import profiles as _profiles
+
+        home = _profiles.resolve_profile_env(agent)
+        token = _cfg.set_youtab_home_override(home)
+        try:
+            m = _cfg.load_config_readonly().get("model") or {}
+        finally:
+            _cfg.reset_youtab_home_override(token)
+    except Exception:  # noqa: BLE001 — fall back to server-scoped config
+        try:
+            from youtab_agent_cli.config import load_config_readonly as _lcr
+
+            m = _lcr().get("model") or {}
+        except Exception:  # noqa: BLE001
+            m = {}
+    if not isinstance(m, dict):
+        m = {}
+    model = (str(m.get("default") or m.get("model") or "").strip()) or None
+    provider = (str(m.get("provider") or "").strip()) or None
+    base_url = (str(m.get("base_url") or "").strip()) or None
+    return provider, model, base_url
+
+
 def _external_credential_present(provider: str) -> bool:
     """True iff a usable credential is installed for an external provider.
 
@@ -2138,24 +2175,53 @@ async def runtime_create_run(
     want_det = bool(payload.get("deterministic", False))
     mode = "deterministic" if (want_det and _deterministic_worker_enabled()) else "model"
 
-    # WAVE-30H canonical binding: resolve the effective execution identity PURELY
-    # (config/classification only — NO network/Ollama probe on this hot path) and
-    # persist it as a durable immutable event (below) so retries/respawns/children
-    # inherit the SAME provider/model and the harness can reconcile attested ==
-    # bound == dispatched. The model-manifest digest stays deferred to preflight.
+    # WAVE-30H canonical binding: resolve the EFFECTIVE execution identity PURELY
+    # (config/classification only — NO network probe on this hot path). A bound
+    # engine uses its resolved connection; otherwise we resolve the worker's PROFILE
+    # default (the identity the dispatched worker truly uses). The binding itself is
+    # built + persisted AFTER the run id is known (inside the create txn below).
     _conn_for_binding = engine_connection.resolve_connection(engine) if engine else None
     if _conn_for_binding is not None:
         _bind_provider = _conn_for_binding.provider
         _bind_model = _conn_for_binding.model
         _bind_endpoint = _conn_for_binding.endpoint
     else:
-        _bind_names = _configured_model_provider_names()
-        _bind_provider = _bind_names.get("provider")
-        _bind_model = _bind_names.get("model")
-        _bind_endpoint = _configured_inference_base_url()
-    effective_binding_payload = eb.build_effective_binding(
+        _bind_provider, _bind_model, _bind_endpoint = _profile_default_identity(agent)
+
+    from youtab_runtime import managed_execution as _mx_bind
+    _is_managed = _mx_bind.current_trust_mode() is _mx_bind.TrustMode.MANAGED
+
+    # Atomic preflight->create: when the caller pins an expected binding digest (the
+    # benchmark does, derived from its preflight attestation), the run is created
+    # ONLY if the substrate digest matches — closing the TOCTOU between what was
+    # attested and what is enqueued. Opt-in (absent = unvalidated); checked before
+    # any enqueue so a mismatch creates no task, no binding, no dispatch.
+    _substrate_binding = eb.build_effective_binding(
         provider=_bind_provider, model=_bind_model, endpoint=_bind_endpoint,
     )
+    _expected_digest = str(payload.get("expected_binding_digest") or "").strip().lower()
+    if _expected_digest:
+        if len(_expected_digest) != 64 or any(
+            c not in "0123456789abcdef" for c in _expected_digest
+        ):
+            raise HTTPException(status_code=422, detail={"error": "malformed_binding_digest"})
+        if _expected_digest != eb.binding_digest(_substrate_binding):
+            raise HTTPException(status_code=412, detail={"error": "binding_digest_mismatch"})
+
+    # A managed, real-model run MUST bind a concrete, fully-resolved model before it
+    # is executable — never enqueue an unresolved managed model-run (the worker would
+    # otherwise resolve the substrate from mutable config at dispatch). The
+    # deterministic integration worker (mode != "model") and standalone are exempt.
+    if _is_managed and mode == "model" and not (_bind_model and str(_bind_model).strip()):
+        raise HTTPException(status_code=422, detail={"error": "managed_model_unresolved"})
+    # Pin the row from the resolved identity so the dispatcher + any respawn dispatch
+    # FROM the binding and never re-resolve mutable config (managed model-runs only;
+    # an explicit engine binding already set model_override above).
+    if _is_managed and mode == "model" and _bind_model:
+        if not model_override:
+            model_override = _bind_model
+        if not provider_override and _bind_provider:
+            provider_override = _bind_provider
 
     _enqueue_epoch_ns = _st_ing.mark_epoch() if _st_ing is not None else None
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
@@ -2203,10 +2269,17 @@ async def runtime_create_run(
                         "enqueue_epoch_ns": _enqueue_epoch_ns,
                     },
                 )
-                # WAVE-30H: persist the canonical immutable effective binding
-                # (exactly-once per created run, like the mode/engine events) so
-                # retries/respawns/children inherit it and evidence can reconcile
-                # attested == bound == dispatched. Append-only; never mutated.
+                # WAVE-30H: build + persist the canonical immutable binding now that
+                # run_id is known — scoped to this run (run_id/tenant/workspace) and
+                # SELF-HASHED so the worker fails closed on a tampered/forged binding.
+                # Pure; no probe. Append-only; never mutated (a rebind appends a new
+                # version). Exactly-once per created run, like the mode/engine events.
+                effective_binding_payload = eb.build_effective_binding(
+                    provider=_bind_provider, model=_bind_model, endpoint=_bind_endpoint,
+                    run_id=run_id, root_run_id=run_id,
+                    tenant=identity.tenant,
+                    workspace=getattr(identity, "workspace", None),
+                )
                 kb._append_event(
                     conn, run_id, eb.BINDING_EVENT, effective_binding_payload
                 )

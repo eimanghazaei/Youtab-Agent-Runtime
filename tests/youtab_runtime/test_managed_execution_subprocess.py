@@ -133,8 +133,17 @@ def _ingress_manifest(envelope):
     return cm.build_ingress_binding(envelope, registry=reg)
 
 
-def _persist_run(db_path: Path, task_id: str, *, grant_header, manifest_payload):
-    """Persist the grant (+ optional manifest) exactly as the ingress endpoint does."""
+def _persist_run(db_path: Path, task_id: str, *, grant_header, manifest_payload,
+                 seed_binding=True):
+    """Persist the grant (+ optional manifest) exactly as the ingress endpoint does.
+
+    WAVE-30H: also seeds the canonical effective binding the real create_run always
+    persists, keyed to the grant's tenant so the worker's pre-dispatch gate admits
+    it. Pass ``seed_binding=False`` to exercise the missing-binding fail-closed path.
+    """
+    from youtab_agent_cli import effective_binding as _eb
+    from youtab_runtime import managed_execution as _mx
+
     conn = kb.connect(db_path=db_path)
     try:
         with kb.write_txn(conn):
@@ -142,6 +151,15 @@ def _persist_run(db_path: Path, task_id: str, *, grant_header, manifest_payload)
                 kb._append_event(conn, task_id, "runtime_execution_grant", {"grant": grant_header})
             if manifest_payload is not None:
                 kb._append_event(conn, task_id, "runtime_capability_manifest", manifest_payload)
+            if seed_binding and grant_header is not None:
+                env = _mx.decode_grant_header(grant_header)
+                binding = _eb.build_effective_binding(
+                    provider="ollama", model="qwen:test",
+                    endpoint="http://127.0.0.1:11434",
+                    run_id=task_id, root_run_id=getattr(env, "root_run_id", task_id),
+                    tenant=getattr(env, "tenant_id", None),
+                )
+                kb._append_event(conn, task_id, _eb.BINDING_EVENT, binding)
     finally:
         conn.close()
 
@@ -337,6 +355,49 @@ def test_worker_refuses_tampered_manifest(tmp_path):
     persisted = cm.binding_to_persisted(binding)
     persisted["tool_hashes"].append(["exfiltrate", "deadbeef"])  # widen, hash now stale
     _persist_run(db_path, task_id, grant_header=header, manifest_payload=persisted)
+    rc, res = _run_worker(tmp_path, db_path, task_id)
+    assert rc == 3, res.get("_stderr")
+    assert "admission_error" in res
+
+
+def test_worker_refuses_when_binding_missing(tmp_path):
+    # WAVE-30H: a managed run with a valid grant + manifest but NO effective binding
+    # fails closed at the pre-dispatch gate — rc 3, BEFORE any tool/budget/provider.
+    task_id = "task-nobinding"
+    db_path = tmp_path / "kanban.db"
+    envelope, header = _grant_header(nonce="grant-subproc-nobinding-0123456789ab")
+    persisted = cm.binding_to_persisted(_ingress_manifest(envelope))
+    _persist_run(db_path, task_id, grant_header=header, manifest_payload=persisted,
+                 seed_binding=False)
+    rc, res = _run_worker(tmp_path, db_path, task_id)
+    assert rc == 3, res.get("_stderr")
+    assert "admission_error" in res
+    assert "binding" in res["admission_error"]
+
+
+def test_worker_refuses_tampered_binding(tmp_path):
+    # A persisted binding whose identity was mutated after it was hashed fails the
+    # worker's self-hash verification — rc 3, fail closed.
+    from youtab_agent_cli import effective_binding as eb
+
+    task_id = "task-tamperedbinding"
+    db_path = tmp_path / "kanban.db"
+    envelope, header = _grant_header(nonce="grant-subproc-tamperbind-0123456789ab")
+    persisted = cm.binding_to_persisted(_ingress_manifest(envelope))
+    _persist_run(db_path, task_id, grant_header=header, manifest_payload=persisted,
+                 seed_binding=False)
+    binding = eb.build_effective_binding(
+        provider="ollama", model="qwen:test", endpoint="http://127.0.0.1:11434",
+        run_id=task_id, root_run_id=getattr(envelope, "root_run_id", task_id),
+        tenant=getattr(envelope, "tenant_id", None),
+    )
+    binding["model"] = "evil-swap"  # mutate after hashing -> hash no longer matches
+    conn = kb.connect(db_path=db_path)
+    try:
+        with kb.write_txn(conn):
+            kb._append_event(conn, task_id, eb.BINDING_EVENT, binding)
+    finally:
+        conn.close()
     rc, res = _run_worker(tmp_path, db_path, task_id)
     assert rc == 3, res.get("_stderr")
     assert "admission_error" in res
