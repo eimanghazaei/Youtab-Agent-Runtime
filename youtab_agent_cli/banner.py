@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 from youtab_constants import get_youtab_home
@@ -67,24 +68,76 @@ def _skin_color(key: str, fallback: str) -> str:
 
 from youtab_agent_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
 
-YOUTAB_RUNTIME_LOGO = """[bold #A6E9FF]█   █  ███  █   █ █████  ███  ████      ████  █   █ █   █ █████ █████ █   █ █████[/]
-[bold #72D4FF] █ █  █   █ █   █   █   █   █ █   █     █   █ █   █ ██  █   █     █   ██ ██ █    [/]
-[#33B8FF]  █   █   █ █   █   █   █████ ████      ████  █   █ █ █ █   █     █   █ █ █ ████ [/]
-[#0096FF]  █   █   █ █   █   █   █   █ █   █     █  █  █   █ █  ██   █     █   █   █ █    [/]
-[#0067C5]  █    ███   ███    █   █   █ ████      █   █  ███  █   █   █   █████ █   █ █████[/]"""
+# Text-only fallback for narrow terminals or an unreadable image asset.
+# The normal banner is rendered from the exact repository PNG below.
+YOUTAB_RUNTIME_LOGO = "[bold #0096FF]Youtab RunTime[/]"
+YOUTAB_LOGO_HERO = ""
+YOUTAB_LOGO_ASSET = Path(__file__).with_name("assets") / "Youtab_AI_COS.PNG"
 
-# Terminal-safe rendition of website/static/img/logo.png.
-YOUTAB_LOGO_HERO = """[#A6E9FF]        ╭──────────────╮[/]
-[#72D4FF]      ╭─╯              ╰─╮[/]
-[#5ACBFF]     │    ██      ██     │[/]
-[#42BEFF]     │     ██    ██      │[/]
-[#33B8FF]     │      ██  ██       │[/]
-[#1AA8FF]     │       ████        │[/]
-[#0096FF]     │        ██         │[/]
-[#007FD9]     │        ██         │[/]
-[#006FC9]     │        ██         │[/]
-[#0067C5]      ╰─╮              ╭─╯[/]
-[#0059AD]        ╰──────────────╯[/]"""
+
+@lru_cache(maxsize=8)
+def _render_youtab_logo(columns: int):
+    """Render the exact Youtab PNG as true-color terminal half-blocks."""
+    from PIL import Image
+    from rich.text import Text
+
+    with Image.open(YOUTAB_LOGO_ASSET) as source:
+        image = source.convert("RGBA")
+
+    # Crop transparent/black padding while retaining the logo's blue glow.
+    content_box = image.convert("RGB").getbbox() or image.getchannel("A").getbbox()
+    if content_box:
+        image = image.crop(content_box)
+
+    target_width = max(24, min(int(columns), 72))
+    target_height = max(2, round(image.height * target_width / max(image.width, 1)))
+    if target_height % 2:
+        target_height += 1
+    image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+
+    rendered = Text()
+    for y in range(0, image.height, 2):
+        for x in range(image.width):
+            top = image.getpixel((x, y))
+            bottom = image.getpixel((x, y + 1))
+            top_visible = top[3] >= 24
+            bottom_visible = bottom[3] >= 24
+
+            if top_visible and bottom_visible:
+                style = (
+                    f"#{top[0]:02x}{top[1]:02x}{top[2]:02x} "
+                    f"on #{bottom[0]:02x}{bottom[1]:02x}{bottom[2]:02x}"
+                )
+                rendered.append("▀", style=style)
+            elif top_visible:
+                rendered.append(
+                    "▀",
+                    style=f"#{top[0]:02x}{top[1]:02x}{top[2]:02x}",
+                )
+            elif bottom_visible:
+                rendered.append(
+                    "▄",
+                    style=f"#{bottom[0]:02x}{bottom[1]:02x}{bottom[2]:02x}",
+                )
+            else:
+                rendered.append(" ")
+        if y + 2 < image.height:
+            rendered.append("\n")
+
+    return rendered
+
+
+def _print_youtab_logo(console: "Console", term_width: int) -> bool:
+    """Print the repository-owned Youtab logo; return False on safe fallback."""
+    try:
+        console.print(
+            _render_youtab_logo(min(term_width - 8, 72)),
+            justify="center",
+        )
+        return True
+    except Exception:
+        logger.debug("Could not render Youtab banner logo", exc_info=True)
+        return False
 
 
 
@@ -644,15 +697,19 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     text = _skin_color("banner_text", "#D8F3FF")
     session_color = _skin_color("session_border", "#8B8682")
 
-    # Use the skin's custom Youtab hero art if provided
+    # Custom skins may still provide their own hero. The default skin uses the
+    # repository PNG rendered above the panel, so no guessed Unicode mark is
+    # substituted for the official artwork.
     try:
         from youtab_agent_cli.skin_engine import get_active_skin
         _bskin = get_active_skin()
-        _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else YOUTAB_LOGO_HERO
+        _hero = _bskin.banner_hero if hasattr(_bskin, "banner_hero") else ""
     except Exception:
         _bskin = None
-        _hero = YOUTAB_LOGO_HERO
-    left_lines = ["", _hero, ""]
+        _hero = ""
+    left_lines = [""]
+    if _hero:
+        left_lines.extend([_hero, ""])
     if (provider or "").strip().lower() == "moa":
         # MoA virtual provider: ``model`` is a preset name. Show the preset and
         # its aggregator so the banner is meaningful instead of a bare slug.
@@ -908,8 +965,16 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     console.print()
     term_width = shutil.get_terminal_size().columns
-    if term_width >= 95:
-        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else YOUTAB_RUNTIME_LOGO
-        console.print(_logo)
+    _custom_logo = (
+        _bskin.banner_logo
+        if _bskin and hasattr(_bskin, "banner_logo") and _bskin.banner_logo
+        else ""
+    )
+    if term_width >= 95 and _custom_logo:
+        console.print(_custom_logo)
+        console.print()
+    elif term_width >= 60:
+        if not _print_youtab_logo(console, term_width):
+            console.print(YOUTAB_RUNTIME_LOGO, justify="center")
         console.print()
     console.print(outer_panel)

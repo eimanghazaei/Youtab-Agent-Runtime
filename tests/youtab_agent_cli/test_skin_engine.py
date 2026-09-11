@@ -26,8 +26,8 @@ class TestSkinConfig:
         assert skin.get_branding("agent_name") == "Youtab RunTime"
         assert skin.get_color("banner_title") == "#0096FF"
         assert skin.get_color("banner_border") == "#0067C5"
-        assert "#0096FF" in skin.banner_logo
-        assert "╭──────────────╮" in skin.banner_hero
+        assert skin.banner_logo == ""
+        assert skin.banner_hero == ""
 
 
     def test_get_spinner_wings_empty_for_default(self):
