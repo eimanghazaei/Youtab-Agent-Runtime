@@ -19,6 +19,21 @@ def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(cap
     assert capsys.readouterr().out == "fallback text\n"
 
 
+def test_banner_hides_internal_skill_categories_without_disabling_them():
+    """Internal skill groups stay available but are omitted from the banner."""
+    catalog = {
+        "autonomous-ai-agents": ["claude-code", "codex"],
+        "email": ["himalaya"],
+        "software-development": ["dogfood"],
+        "creative": ["architecture-diagram"],
+    }
+
+    visible = banner._get_banner_visible_skills(catalog)
+
+    assert visible == {"creative": ["architecture-diagram"]}
+    assert catalog["autonomous-ai-agents"] == ["claude-code", "codex"]
+
+
 def test_default_banner_uses_youtab_runtime_ocean_blue_branding():
     """The legacy Hermes wordmark and caduceus must not return."""
     assert "YOUTAB RunTime" not in banner.YOUTAB_RUNTIME_LOGO

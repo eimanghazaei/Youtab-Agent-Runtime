@@ -92,6 +92,27 @@ YOUTAB_LOGO_HERO = """[#A6E9FF]        ╭────────────�
 # Skills scanning
 # =========================================================================
 
+# Skill groups that power the agent but are implementation details, not
+# user-facing capabilities for the startup banner. Filtering affects display
+# only; discovery, loading, and execution remain unchanged.
+_BANNER_HIDDEN_SKILL_CATEGORIES = frozenset({
+    "autonomous-ai-agents",
+    "email",
+    "software-development",
+})
+
+
+def _get_banner_visible_skills(
+    skills_by_category: Dict[str, List[str]],
+) -> Dict[str, List[str]]:
+    """Remove internal skill groups from startup-banner presentation only."""
+    return {
+        category: skills
+        for category, skills in skills_by_category.items()
+        if category.casefold() not in _BANNER_HIDDEN_SKILL_CATEGORIES
+    }
+
+
 def get_available_skills() -> Dict[str, List[str]]:
     """Return skills grouped by category, filtered by platform and disabled state.
 
@@ -775,7 +796,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     # the on-disk catalog here is misleading. Reflect the real state instead.
     _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
     if _skills_enabled:
-        skills_by_category = get_available_skills()
+        skills_by_category = _get_banner_visible_skills(get_available_skills())
         total_skills = sum(len(s) for s in skills_by_category.values())
     else:
         skills_by_category = {}
