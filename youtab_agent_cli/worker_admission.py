@@ -53,14 +53,26 @@ def _legacy_binding_quarantine_active() -> bool:
         return False
 
 
-def _enforce_effective_binding(agent, envelope, binding, task_id, *, require_client_match):
+def _enforce_effective_binding(
+    agent, envelope, binding, task_id, *,
+    require_client_match, authoritative_run_id, authoritative_workspace,
+):
     """Validate the canonical effective binding and dispatch EXCLUSIVELY from it.
 
     Raises :class:`ManagedWorkerAdmissionError` (fail closed) on any invalid binding
     BEFORE the caller opens a provider client or consumes budget. Presence,
-    integrity (hash), corruption and cross-tenant are enforced for every managed
-    run; a fully-resolved substrate and provider/model/endpoint-drift-free dispatch
-    are additionally enforced for a real-model worker (``require_client_match``).
+    integrity (hash), corruption, cross-tenant, and run/workspace SCOPE are enforced
+    for every managed run; a fully-resolved substrate and provider/model/endpoint-
+    drift-free dispatch are additionally enforced for a real-model worker
+    (``require_client_match``).
+
+    ``authoritative_run_id`` is the dispatcher-assigned run this worker process is
+    actually executing (``YOUTAB_AGENT_KANBAN_TASK``) and ``authoritative_workspace``
+    is the workspace the run's re-verified grant was admitted under — BOTH sourced
+    from the persisted run/task context, INDEPENDENT of the binding payload's own
+    self-reported ``run_id``/``workspace``. Comparing the binding's scope against
+    them catches a wholesale, self-consistent binding lifted from ANOTHER run or
+    workspace of the SAME tenant (which the self-hash and the tenant check cannot).
     """
     from youtab_agent_cli import effective_binding as _eb
 
@@ -89,6 +101,37 @@ def _enforce_effective_binding(agent, envelope, binding, task_id, *, require_cli
     if binding.get("tenant") and env_tenant and binding.get("tenant") != env_tenant:
         raise ManagedWorkerAdmissionError(
             f"managed run {task_id} binding tenant mismatch; refusing"
+        )
+    # 6. Run-scope — the binding must belong to THE RUN this worker is executing,
+    # not merely to some run of the same tenant. ``authoritative_run_id`` is the
+    # dispatcher-assigned run (YOUTAB_AGENT_KANBAN_TASK), an INDEPENDENT source from
+    # the binding's self-reported run_id, so a wholesale same-tenant binding copied
+    # from another run (valid self-hash, matching tenant) is caught here. A binding
+    # with no run scope is malformed/stale and refused. Enforced for EVERY managed
+    # run (before any provider client or budget debit), not only real-model workers.
+    b_run = binding.get("run_id")
+    if not b_run:
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} effective binding carries no run scope "
+            "(stale/malformed); refusing"
+        )
+    if authoritative_run_id and b_run != authoritative_run_id:
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} binding run_id does not match the executing run "
+            "(cross-run/stale binding substitution); refusing"
+        )
+    # 7. Workspace-scope — the binding's workspace must equal the workspace this run
+    # was admitted under (the re-verified grant envelope's workspace_id). Defends
+    # against a same-tenant CROSS-WORKSPACE binding substitution. Both sides
+    # normalize the unscoped sentinel so an unscoped run is not a spurious mismatch.
+    from youtab_agent_cli.runtime_command_auth import WORKSPACE_UNSCOPED as _WS_UNSCOPED
+
+    b_ws = binding.get("workspace") or _WS_UNSCOPED
+    auth_ws = authoritative_workspace or _WS_UNSCOPED
+    if b_ws != auth_ws:
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} binding workspace does not match the admitted "
+            "workspace (cross-workspace binding substitution); refusing"
         )
     if not require_client_match:
         return  # deterministic/stub worker: no provider client, no substrate to match
@@ -229,13 +272,22 @@ def establish_managed_admission(agent) -> bool:
     # missing / corrupt / tampered(hash) / cross-tenant binding is refused, and for a
     # real-model worker an unresolved binding or any provider/model/endpoint drift
     # from the bound identity is refused. The deterministic/stub worker (no provider
-    # client) enforces presence/integrity/tenant only.
+    # client) enforces presence/integrity/tenant/run-scope/workspace-scope only.
+    #
+    # The authoritative run/workspace context is sourced from the PERSISTED run/task
+    # context — the dispatcher-assigned run this worker serves (task_id ==
+    # YOUTAB_AGENT_KANBAN_TASK) and the workspace the run's re-verified grant was
+    # admitted under (env.workspace_id) — NEVER from the binding payload's own
+    # self-reported scope, so a cross-run/cross-workspace substituted binding fails
+    # closed here, before any provider client or budget debit.
     _require_client_match = bool(
         getattr(agent, "provider", None) and getattr(agent, "model", None)
     )
     _enforce_effective_binding(
         agent, env, binding_payload, task_id,
         require_client_match=_require_client_match,
+        authoritative_run_id=task_id,
+        authoritative_workspace=getattr(env, "workspace_id", None),
     )
     # Passed enforcement — attach the binding as the SOLE dispatch authority so a
     # delegated child inherits the EXACT parent identity (or fails closed).

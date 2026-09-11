@@ -6,8 +6,10 @@ provider + model + normalized endpoint fingerprint + endpoint-class + cost-polic
 workspace it belongs to. The binding is persisted as a durable, immutable,
 append-only event (:data:`BINDING_EVENT`) on the run's own event stream at create
 time, validated + dispatched-from by the worker BEFORE any provider client or
-budget consumption, inherited UNCHANGED by retries/respawns, and inherited
-EXACTLY by delegated children. Nothing ever mutates a prior binding event.
+budget consumption, RE-SCOPED to the child run on retry (same substrate, the
+child's own ``run_id`` — see :func:`rescope_binding`), inherited UNCHANGED on
+respawn (same run), and inherited EXACTLY (same substrate) by delegated children.
+Nothing ever mutates a prior binding event.
 
 Integrity: every binding carries a ``binding_hash`` — sha256 over its canonical
 identity fields (including run_id/tenant/workspace, excluding the volatile
@@ -260,6 +262,47 @@ def build_effective_binding(
     # Hash LAST over identity fields only (independent of bound_at / extra links).
     binding["binding_hash"] = compute_binding_hash(binding)
     return binding
+
+
+def rescope_binding(
+    binding: Mapping[str, Any],
+    *,
+    run_id: str,
+    root_run_id: Optional[str] = None,
+    tenant: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Re-scope an inherited binding to a NEW run, preserving its exact substrate.
+
+    A retry spawns a fresh run (a new ``run_id``) that must re-execute on the SAME
+    provider/model/endpoint substrate as the original but is a DIFFERENT run, so it
+    must carry its OWN run scope (else the worker's run-scope gate would reject it
+    as a cross-run/stale binding). This copies every substrate/identity field
+    UNCHANGED and overrides ONLY the run-scope fields — ``run_id`` always;
+    ``root_run_id`` / ``tenant`` / ``workspace`` when supplied — then recomputes
+    ``binding_hash`` so the child binding self-verifies.
+
+    The SUBSTRATE :func:`binding_digest` is INVARIANT across the re-scope (it
+    excludes run/tenant/workspace), so ``binding_digest(child) ==
+    binding_digest(parent)`` PROVES the child runs on the parent's exact substrate,
+    while ``child["run_id"]`` equals the child's own run so the worker run-scope
+    gate is satisfied. ``root_run_id`` defaults to the parent's (lineage
+    preserved); ``binding_version`` and the deferred digest fields carry over
+    unchanged. Never mutates the input.
+    """
+    if not isinstance(binding, Mapping):
+        raise TypeError("rescope_binding requires a binding mapping")
+    child: Dict[str, Any] = dict(binding)
+    child.pop("binding_hash", None)
+    child["run_id"] = run_id or None
+    child["root_run_id"] = root_run_id or binding.get("root_run_id") or run_id or None
+    if tenant is not None:
+        child["tenant"] = tenant or None
+    if workspace is not None:
+        child["workspace"] = workspace or None
+    # Hash LAST over the re-scoped identity so the child binding self-verifies.
+    child["binding_hash"] = compute_binding_hash(child)
+    return child
 
 
 def effective_binding_from_events(events: Sequence[Any]) -> Optional[Dict[str, Any]]:

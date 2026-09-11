@@ -82,3 +82,41 @@ def test_classify_endpoint_local_vs_public():
     assert eb.classify_endpoint("http://10.0.0.5:11434") == "private"
     assert eb.classify_endpoint("https://api.openai.com") == "hostname"
     assert eb.classify_endpoint("") == "unavailable"
+
+
+def test_rescope_preserves_substrate_and_reruns_scope():
+    parent = eb.build_effective_binding(
+        provider="ollama", model="qwen:tag", endpoint="http://127.0.0.1:11434",
+        run_id="run-A", root_run_id="run-A", tenant="t1", workspace="w1",
+    )
+    child = eb.rescope_binding(parent, run_id="run-B", tenant="t1", workspace="w1")
+    # New run scope, preserved lineage root, and the child self-verifies.
+    assert child["run_id"] == "run-B"
+    assert child["root_run_id"] == "run-A"  # lineage preserved
+    assert eb.verify_binding(child)
+    # SUBSTRATE is invariant (digest excludes run/tenant/workspace) => provably no
+    # provider/model/endpoint drift across the re-scope.
+    assert eb.binding_digest(child) == eb.binding_digest(parent)
+    # ...but the per-run hash DIFFERS (run_id is a hashed identity field), so a
+    # child binding can never be replayed as the parent's and vice versa.
+    assert child["binding_hash"] != parent["binding_hash"]
+    # The input is never mutated.
+    assert parent["run_id"] == "run-A"
+
+
+def test_rescope_can_move_workspace_and_tenant_scope():
+    parent = eb.build_effective_binding(
+        provider="ollama", model="m", run_id="run-A", tenant="t1", workspace="w1",
+    )
+    child = eb.rescope_binding(parent, run_id="run-B", tenant="t2", workspace="w2")
+    assert (child["tenant"], child["workspace"]) == ("t2", "w2")
+    assert eb.verify_binding(child)
+    assert eb.binding_digest(child) == eb.binding_digest(parent)
+
+
+def test_rescope_defaults_root_to_new_run_when_parent_has_none():
+    parent = eb.build_effective_binding(provider="ollama", model="m")  # no run scope
+    child = eb.rescope_binding(parent, run_id="run-B")
+    assert child["run_id"] == "run-B"
+    assert child["root_run_id"] == "run-B"
+    assert eb.verify_binding(child)

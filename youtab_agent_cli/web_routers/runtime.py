@@ -370,7 +370,9 @@ def stop_dispatcher() -> None:
 class RuntimeIdentity:
     """Verified caller context: service identity + gateway-forwarded end user."""
 
-    __slots__ = ("tenant", "user", "roles", "correlation_id", "idempotency_key")
+    __slots__ = (
+        "tenant", "user", "roles", "correlation_id", "idempotency_key", "workspace",
+    )
 
     def __init__(
         self,
@@ -380,12 +382,18 @@ class RuntimeIdentity:
         roles: List[str],
         correlation_id: str,
         idempotency_key: Optional[str],
+        workspace: str,
     ) -> None:
         self.tenant = tenant
         self.user = user
         self.roles = roles
         self.correlation_id = correlation_id
         self.idempotency_key = idempotency_key
+        # Canonical v2 workspace binding (``-`` when unscoped). Authoritative for the
+        # run's effective-binding scope; identical to the value the signed command is
+        # verified against and the Simorgh grant is admitted under, so the worker's
+        # workspace-scope gate (binding.workspace == grant env.workspace_id) holds.
+        self.workspace = workspace
 
 
 def _runtime_secret() -> str:
@@ -425,12 +433,20 @@ def require_service_identity(request: Request) -> RuntimeIdentity:
     roles = [r.strip() for r in roles_raw.split(",") if r.strip()] if roles_raw else []
     correlation_id = _header(request, _H_CORRELATION) or f"cid-{uuid.uuid4().hex}"
     idem = _header(request, _H_IDEMPOTENCY) or None
+    # Canonical v2 workspace (``-`` when unscoped) — the SAME value the signed
+    # command is verified against (`_verify_signed_command`) and the grant is
+    # admitted under (`_admit_execution_grant`), captured once so the run binding is
+    # scoped to it and the worker's workspace-scope gate can match it.
+    workspace = (
+        request.headers.get(rca.WORKSPACE_HEADER) or rca.WORKSPACE_UNSCOPED
+    ).strip() or rca.WORKSPACE_UNSCOPED
     return RuntimeIdentity(
         tenant=tenant,
         user=user,
         roles=roles,
         correlation_id=correlation_id,
         idempotency_key=idem,
+        workspace=workspace,
     )
 
 
@@ -2278,7 +2294,7 @@ async def runtime_create_run(
                     provider=_bind_provider, model=_bind_model, endpoint=_bind_endpoint,
                     run_id=run_id, root_run_id=run_id,
                     tenant=identity.tenant,
-                    workspace=getattr(identity, "workspace", None),
+                    workspace=identity.workspace,
                 )
                 kb._append_event(
                     conn, run_id, eb.BINDING_EVENT, effective_binding_payload
@@ -2733,15 +2749,25 @@ async def runtime_retry_run(
                         kb._append_event(
                             conn, new_id, _LIMITS_EVENT, _binding["limits"]
                         )
-                    # WAVE-30H: re-record the parent's immutable effective binding
-                    # UNCHANGED (same binding_version) so the child executes on — and
-                    # attests — the identical provider/model substrate. Inside this
-                    # fail-closed write_txn: if it cannot be persisted the child is
-                    # archived below (never dispatched on an unrecorded binding).
+                    # WAVE-30H: re-issue the parent's effective binding on the CHILD,
+                    # RE-SCOPED to the child's own run (same provider/model substrate —
+                    # binding_digest is invariant, proving no drift — but run_id =
+                    # new_id, root_run_id = parent lineage, scoped to the child's
+                    # authoritative tenant/workspace). A retry is a DIFFERENT run, so
+                    # the child binding must carry the child's run scope or the worker
+                    # run-scope gate would refuse it as a cross-run/stale binding. The
+                    # hash is recomputed so it self-verifies. Inside this fail-closed
+                    # write_txn: if it cannot be persisted the child is archived below
+                    # (never dispatched on an unrecorded binding).
                     if _binding.get("effective_binding") is not None:
-                        kb._append_event(
-                            conn, new_id, eb.BINDING_EVENT,
+                        _child_binding = eb.rescope_binding(
                             _binding["effective_binding"],
+                            run_id=new_id,
+                            tenant=identity.tenant,
+                            workspace=identity.workspace,
+                        )
+                        kb._append_event(
+                            conn, new_id, eb.BINDING_EVENT, _child_binding,
                         )
                     # Persist the freshly-admitted Simorgh grant + frozen capability
                     # manifest onto the CHILD (managed mode only) so the dispatched

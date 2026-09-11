@@ -134,12 +134,17 @@ def _ingress_manifest(envelope):
 
 
 def _persist_run(db_path: Path, task_id: str, *, grant_header, manifest_payload,
-                 seed_binding=True):
+                 seed_binding=True, binding_run_id=None, binding_workspace=None):
     """Persist the grant (+ optional manifest) exactly as the ingress endpoint does.
 
     WAVE-30H: also seeds the canonical effective binding the real create_run always
     persists, keyed to the grant's tenant so the worker's pre-dispatch gate admits
     it. Pass ``seed_binding=False`` to exercise the missing-binding fail-closed path.
+    ``binding_run_id`` / ``binding_workspace`` override the binding's run/workspace
+    scope so an ADVERSARIAL test can seed a wholesale, self-consistent binding lifted
+    from another run/workspace of the SAME tenant (the run-scope / workspace-scope
+    substitution controls). Both default to this run's own authoritative scope
+    (task_id / the grant's workspace) — a legitimate binding.
     """
     from youtab_agent_cli import effective_binding as _eb
     from youtab_runtime import managed_execution as _mx
@@ -153,11 +158,18 @@ def _persist_run(db_path: Path, task_id: str, *, grant_header, manifest_payload,
                 kb._append_event(conn, task_id, "runtime_capability_manifest", manifest_payload)
             if seed_binding and grant_header is not None:
                 env = _mx.decode_grant_header(grant_header)
+                _run = binding_run_id or task_id
+                _ws = (
+                    binding_workspace
+                    if binding_workspace is not None
+                    else getattr(env, "workspace_id", None)
+                )
                 binding = _eb.build_effective_binding(
                     provider="ollama", model="qwen:test",
                     endpoint="http://127.0.0.1:11434",
-                    run_id=task_id, root_run_id=getattr(env, "root_run_id", task_id),
+                    run_id=_run, root_run_id=getattr(env, "root_run_id", _run),
                     tenant=getattr(env, "tenant_id", None),
+                    workspace=_ws,
                 )
                 kb._append_event(conn, task_id, _eb.BINDING_EVENT, binding)
     finally:
@@ -401,6 +413,52 @@ def test_worker_refuses_tampered_binding(tmp_path):
     rc, res = _run_worker(tmp_path, db_path, task_id)
     assert rc == 3, res.get("_stderr")
     assert "admission_error" in res
+
+
+def test_worker_refuses_cross_run_substituted_binding(tmp_path):
+    # ADVERSARIAL run-scope: a wholesale, self-consistent binding lifted from
+    # ANOTHER run of the SAME tenant/workspace (valid self-hash, matching tenant)
+    # is injected into this run's stream. It passes hash + tenant but its run_id is
+    # NOT the run this worker executes (YOUTAB_AGENT_KANBAN_TASK) -> refused at the
+    # pre-dispatch gate, rc 3, BEFORE any provider client or budget: the worker
+    # never reaches the tree-budget section, so no snapshot is recorded (zero spend,
+    # zero provider calls).
+    task_id = "task-crossrun"
+    db_path = tmp_path / "kanban.db"
+    # Anchor the grant window to the real clock so the worker's re-admission (which
+    # re-verifies expiry) succeeds and execution reaches the binding gate — the gate
+    # under test — rather than being short-circuited by an expired grant.
+    now = datetime.now(UTC).replace(microsecond=0)
+    envelope, header = _grant_header(nonce="grant-subproc-crossrun-0123456789abc", now=now)
+    persisted = cm.binding_to_persisted(_ingress_manifest(envelope))
+    _persist_run(db_path, task_id, grant_header=header, manifest_payload=persisted,
+                 binding_run_id="task-SOME-OTHER-RUN")
+    rc, res = _run_worker(tmp_path, db_path, task_id)
+    assert rc == 3, res.get("_stderr")
+    assert "admission_error" in res
+    assert "cross-run" in res["admission_error"]
+    assert "tree_snap" not in res  # zero budget: the tree was never opened/consumed
+
+
+def test_worker_refuses_cross_workspace_substituted_binding(tmp_path):
+    # ADVERSARIAL workspace-scope: a self-consistent binding scoped to a DIFFERENT
+    # workspace of the SAME tenant. The run is admitted under the grant's workspace
+    # ("-"); the binding claims "workspace-beta" -> refused at the pre-dispatch gate,
+    # rc 3, BEFORE any provider client or budget (no tree snapshot => zero spend).
+    task_id = "task-crossws"
+    db_path = tmp_path / "kanban.db"
+    # Anchor the grant window to the real clock (see the cross-run test) so
+    # re-admission succeeds and execution reaches the workspace-scope gate.
+    now = datetime.now(UTC).replace(microsecond=0)
+    envelope, header = _grant_header(nonce="grant-subproc-crossws-0123456789abcd", now=now)
+    persisted = cm.binding_to_persisted(_ingress_manifest(envelope))
+    _persist_run(db_path, task_id, grant_header=header, manifest_payload=persisted,
+                 binding_workspace="workspace-beta")
+    rc, res = _run_worker(tmp_path, db_path, task_id)
+    assert rc == 3, res.get("_stderr")
+    assert "admission_error" in res
+    assert "cross-workspace" in res["admission_error"]
+    assert "tree_snap" not in res  # zero budget: the tree was never opened/consumed
 
 
 # ── ingress negative controls (the admission the endpoint runs) ──────────────

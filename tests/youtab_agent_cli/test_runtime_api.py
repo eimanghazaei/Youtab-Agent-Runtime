@@ -995,6 +995,26 @@ def test_retry_inherits_full_execution_binding(client):
     lim = next(e for e in events if e["kind"] == "runtime_limits")
     assert lim["payload"]["max_cost_eur"] == 3
 
+    # WAVE-30H run-scope: the child binding is RE-SCOPED to the child's own run —
+    # same SUBSTRATE (binding_digest invariant, proving no drift) but run_id ==
+    # new_id (so the worker run-scope gate admits it, not rejects it as cross-run),
+    # root_run_id == the original (lineage preserved), and it self-verifies.
+    child_binding = next(
+        e["payload"] for e in events if e["kind"] == runtime.eb.BINDING_EVENT
+    )
+    parent_binding = runtime.eb.build_effective_binding(
+        provider="ollama", model="ollama/qwen-test",
+        endpoint="http://127.0.0.1:11434", run_id=oid, root_run_id=oid,
+        tenant="tenantA",
+    )
+    assert child_binding["run_id"] == new_id
+    assert child_binding["run_id"] != oid
+    assert child_binding["root_run_id"] == oid
+    assert runtime.eb.verify_binding(child_binding)
+    assert runtime.eb.binding_digest(child_binding) == runtime.eb.binding_digest(
+        parent_binding
+    )
+
 
 def test_retry_of_unbound_original_inherits_no_pin(client):
     # A legitimately unbound original (no engine, no override) is reproduced
