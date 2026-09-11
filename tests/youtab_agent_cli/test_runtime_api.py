@@ -927,6 +927,134 @@ def test_create_run_validates_expected_binding_digest(client, monkeypatch):
     assert r.json()["detail"]["error"] == "malformed_binding_digest"
 
 
+def test_engine_bound_preflight_binding_carries_endpoint_fingerprint(client, monkeypatch):
+    # WAVE-30H #1: the engine-bound preflight binding must carry endpoint_fingerprint
+    # so its binding_digest equals what create derives for the SAME engine (else the
+    # run self-rejects 412). resolve_connection is the shared source for BOTH preflight
+    # (_engine_attestation) and create, so a matching endpoint => matching digest.
+    import types
+
+    from youtab_agent_cli import effective_binding as eb
+    from youtab_agent_cli.web_routers import runtime as R
+
+    conn = types.SimpleNamespace(
+        provider="ollama", model="qwen:test", model_ref="ollama/qwen:test",
+        endpoint="http://127.0.0.1:11434", is_local_server=lambda: True,
+    )
+    monkeypatch.setattr(R.engine_connection, "resolve_connection", lambda e: conn)
+    monkeypatch.setattr(R.engine_connection, "endpoint_is_authorized", lambda ep: True)
+    monkeypatch.setattr(R, "_ollama_model_digest", lambda ep, m: (None, "not_applicable"))
+
+    # A non-ECO resolvable engine so the ECO placeholder-model branch does not fire.
+    resp = client.get("/api/runtime/v1/preflight?engine=alpha.v06", headers=_identity_headers())
+    assert resp.status_code == 200, resp.text
+    pf = resp.json()["effective_binding"]
+    assert pf.get("endpoint_fingerprint"), "preflight binding must carry endpoint_fingerprint"
+    # create computes the substrate binding from the SAME resolved connection.
+    create_binding = eb.build_effective_binding(
+        provider="ollama", model="qwen:test", endpoint="http://127.0.0.1:11434")
+    assert eb.binding_digest(pf) == eb.binding_digest(create_binding)
+
+
+def test_create_run_validates_expected_model_digest(client, monkeypatch):
+    # WAVE-30H #7: a valid attested digest on a probe-eligible ollama-local substrate
+    # is pinned (digest_status="attested"); malformed is 422; a cloud substrate is
+    # 422 model_digest_not_applicable.
+    from youtab_agent_cli.web_routers import runtime as R
+
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("ollama", "qwen:test", "http://127.0.0.1:11434"),
+    )
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_model_digest": "a" * 64},
+        nonce="mdigest-ok-000000")
+    assert r.status_code in (200, 201), r.text
+    rid = r.json()["run_id"]
+    events = client.get(
+        f"/api/runtime/v1/runs/{rid}/events", headers=_identity_headers()
+    ).json()["events"]
+    binding = next(e["payload"] for e in events if e["kind"] == runtime.eb.BINDING_EVENT)
+    assert binding["digest_status"] == "attested"
+    assert binding["model_digest"] == "a" * 64
+    assert runtime.eb.verify_binding(binding)
+
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_model_digest": "nothex"},
+        nonce="mdigest-bad-00000")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "malformed_model_digest"
+
+    # Cloud substrate -> not probe-eligible -> pinning a digest is refused.
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("openai", "gpt-x", "https://api.openai.com"),
+    )
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_model_digest": "a" * 64},
+        nonce="mdigest-cloud-000")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "model_digest_not_applicable"
+
+
+def test_idempotent_replay_binding_digest_mismatch_fails_closed(client, monkeypatch):
+    # WAVE-30H #8: a replayed Idempotency-Key that pins a DIFFERENT expected digest
+    # than the existing run's persisted binding must 412 — never silently return a run
+    # bound to a different substrate. A matching replay returns the same run (200).
+    import json
+
+    from youtab_agent_cli import effective_binding as eb
+    from youtab_agent_cli.web_routers import runtime as R
+
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("openai", "gpt-x", "https://api.openai.com"),
+    )
+    d_match = eb.binding_digest(eb.build_effective_binding(
+        provider="openai", model="gpt-x", endpoint="https://api.openai.com"))
+
+    def _create(digest, nonce):
+        body = json.dumps({"agent": "default", "task": "t",
+                           "expected_binding_digest": digest}).encode()
+        path = "/api/runtime/v1/runs"
+        headers = _identity_headers()
+        headers.update(_sign("POST", path, "tenantA", "userA", body, nonce=nonce))
+        headers["Content-Type"] = "application/json"
+        headers["Idempotency-Key"] = "idem-digest-8"
+        return client.post(path, content=body, headers=headers)
+
+    r1 = _create(d_match, "idem8-a")
+    assert r1.status_code in (200, 201), r1.text
+    rid = r1.json()["run_id"]
+    # Matching replay -> same run.
+    r2 = _create(d_match, "idem8-b")
+    assert r2.status_code == 200 and r2.json()["run_id"] == rid, r2.text
+    # Mismatching replay -> fail closed (the run is NOT re-bound / re-returned clean).
+    r3 = _create("a" * 64, "idem8-c")
+    assert r3.status_code == 412, r3.text
+    assert r3.json()["detail"]["error"] == "binding_digest_mismatch"
+
+
+def test_retry_refuses_tampered_parent_binding(client):
+    # WAVE-30H #4: a tampered-at-rest parent binding must NOT be laundered into a
+    # fresh valid child binding on retry — fail closed, create no child.
+    oid = _seed_bound_original()
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        events = kb.list_events(conn, oid)
+        parent = next(e.payload for e in events if e.kind == runtime.eb.BINDING_EVENT)
+        parent = dict(parent)
+        parent["model"] = "ollama/EVIL"  # tamper substrate, keep the stale hash
+        parent["binding_version"] = 2    # higher version -> this is now the CURRENT binding
+        assert not runtime.eb.verify_binding(parent)
+        with kb.write_txn(conn):
+            kb._append_event(conn, oid, runtime.eb.BINDING_EVENT, parent)
+    before = _count_retry_children()
+    r = _post_retry(client, oid)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "retry_binding_invalid"
+    assert _count_retry_children() == before  # no laundered child created
+
+
 def _seed_bound_original(*, model="ollama/qwen-test", provider="ollama",
                          profile_id="eco.v01", limits=None, engine_payload=None):
     """Create an original run owned by (tenantA, userA) carrying a full binding.

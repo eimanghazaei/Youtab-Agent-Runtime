@@ -242,6 +242,11 @@ def _run(args) -> int:
     seam = _build_seam(args, repo_root, limits, engine=track_engine,
                        require_engine=(args.mode == MODE_LOCAL_RUNTIME))
 
+    # WAVE-30H #6: the authoritative evidence SHA is the runtime's verified build_sha
+    # (set only after verify_runtime_sha proves it == --expected-sha), threaded into
+    # the Runner so every record/summary stamps the runtime build, not the harness
+    # checkout HEAD. None for a deterministic (non-live) run → Runner keeps local HEAD.
+    runtime_build_sha = None
     if is_live and seam is not None:
         try:
             posture = seam.preflight()
@@ -252,6 +257,7 @@ def _run(args) -> int:
                 repo_root=repo_root,
                 require_clean_worktree=args.require_clean_worktree,
             )
+            runtime_build_sha = (posture.get("build_sha") or "").strip() or None
             # Verify the runtime's EFFECTIVE engine binding matches the Track A
             # contract before the first task (engine/provider/model/endpoint-class/
             # cost-policy + optional model digest) — fail closed on any mismatch.
@@ -293,7 +299,8 @@ def _run(args) -> int:
         print(f"FATAL: {exc}", file=sys.stderr)
         return 6
     runner = Runner(recorder, mode=args.mode, seam=seam, repo_root=repo_root,
-                    tenant=args.tenant, user=args.user, track_provenance=track_prov)
+                    tenant=args.tenant, user=args.user, track_provenance=track_prov,
+                    runtime_build_sha=runtime_build_sha)
 
     rows = runner.run_all(scenarios, repetitions=args.repetitions,
                           max_workers=args.max_workers)
@@ -348,10 +355,7 @@ def _run(args) -> int:
     # from the attested identity must NEVER certify green — even if every verdict
     # passed. The evidence is kept (it documents the drift); the run fails closed.
     if identity_gate_exit_code(summary):
-        for d in (summary.get("identity_divergences") or []):
-            print(f"IDENTITY-DIVERGENCE {d['scenario_id']}: attested "
-                  f"{d['attested']!r} != dispatched {d['dispatched']!r}",
-                  file=sys.stderr)
+        _print_identity_divergences(summary)
         print("FATAL: runtime dispatched a provider/model different from the "
               "attested identity — refusing to certify this run", file=sys.stderr)
         exit_code = 6
@@ -362,6 +366,30 @@ def _run(args) -> int:
     print(f"\nresults: {recorder.results_path}")
     print(f"summary: {recorder.summary_path}")
     return exit_code
+
+
+def _print_identity_divergences(summary: dict) -> None:
+    """Print every identity divergence to stderr, for EVERY kind.
+
+    WAVE-30H #5: the divergence dict names its two populated sides dynamically by the
+    ``kind`` (``attested_vs_bound`` carries ``attested``+``bound``, not ``dispatched``;
+    ``bound_vs_dispatched`` carries no ``attested``; ``dispatched_missing`` is a
+    non-pair). The old printer hard-coded ``d['attested']``/``d['dispatched']`` and
+    raised KeyError inside this fail-closed reporting path for two of three pair
+    kinds. Derive the sides from the kind so every divergence prints cleanly.
+    """
+    for d in (summary.get("identity_divergences") or []):
+        kind = d.get("kind", "identity")
+        left, _, right = kind.partition("_vs_")
+        sid = d.get("scenario_id", "?")
+        if right:  # a pair: attested_vs_bound / bound_vs_dispatched / attested_vs_dispatched
+            print(f"IDENTITY-DIVERGENCE {sid} [{kind}]: "
+                  f"{left} {d.get(left)!r} != {right} {d.get(right)!r}",
+                  file=sys.stderr)
+        else:  # dispatched_missing (or any future non-pair kind)
+            print(f"IDENTITY-DIVERGENCE {sid} [{kind}]: "
+                  f"attested {d.get('attested')!r} bound {d.get('bound')!r} "
+                  f"dispatched {d.get('dispatched')!r}", file=sys.stderr)
 
 
 def identity_gate_exit_code(summary: dict) -> int:

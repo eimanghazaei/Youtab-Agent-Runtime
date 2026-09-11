@@ -1705,6 +1705,29 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    # WAVE-30H #3: a managed run is bound to a sealed substrate (the effective
+    # binding validated at admission). Provider/model/base_url/client fallback would
+    # silently drift OFF that substrate with no signed rebind authorization — the
+    # signed rebind ACCEPT path is intentionally deferred, so ANY managed fallback
+    # must FAIL CLOSED here (never escape the sealed substrate). Gated on BOTH the
+    # MANAGED trust mode AND the per-agent admitted context (set at admission,
+    # inherited by delegated children): a real managed worker satisfies both, while a
+    # standalone run / MagicMock test double (which auto-creates _admitted_command but
+    # runs in standalone trust mode) does not — so non-managed fallback resilience is
+    # preserved. The run then surfaces the original provider error and terminates.
+    if getattr(agent, "_admitted_command", None) is not None:
+        try:
+            from youtab_runtime import managed_execution as _mx
+
+            _is_managed = _mx.current_trust_mode() is _mx.TrustMode.MANAGED
+        except Exception:  # noqa: BLE001 — if trust mode is unavailable, do not block
+            _is_managed = False
+        if _is_managed:
+            logger.error(
+                "managed run: provider fallback disabled (sealed substrate); refusing "
+                "to drift from the bound identity without a signed rebind authorization"
+            )
+            return False
     if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the

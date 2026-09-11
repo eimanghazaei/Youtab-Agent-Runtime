@@ -49,7 +49,7 @@ def _binding(provider="ollama", model="qwen:tag", endpoint="http://127.0.0.1:114
 
 
 def _enforce(agent, env, binding, task_id=_RUN, *, require_client_match=False,
-             authoritative_run_id=_RUN, authoritative_workspace=_WS):
+             authoritative_run_id=_RUN, authoritative_workspace=_WS, created_at=None):
     """Call the gate with the authoritative run/workspace context defaulting to the
     legitimate values (``_RUN`` / ``_WS``) so a test overrides only what it probes."""
     return _enforce_effective_binding(
@@ -57,6 +57,7 @@ def _enforce(agent, env, binding, task_id=_RUN, *, require_client_match=False,
         require_client_match=require_client_match,
         authoritative_run_id=authoritative_run_id,
         authoritative_workspace=authoritative_workspace,
+        created_at=created_at,
     )
 
 
@@ -177,32 +178,137 @@ def test_matching_real_worker_passes():
     _enforce(a, _env(), b, require_client_match=True)  # no raise
 
 
-# ── legacy quarantine: fail-closed by default, bounded, audited ──────────────
+# ── model-manifest digest re-probe (WAVE-30H #7 — tag->manifest TOCTOU) ──────
 
-def test_legacy_quarantine_allows_missing_when_future_dated(monkeypatch):
+def _attested(model_digest="a" * 64, model="qwen:tag", endpoint="http://127.0.0.1:11434"):
+    return eb.build_effective_binding(
+        provider="ollama", model=model, endpoint=endpoint,
+        run_id=_RUN, root_run_id=_RUN, tenant="t1", workspace=_WS,
+        model_digest=model_digest,
+    )
+
+
+def _real_ollama_agent():
+    return _agent(provider="ollama", model="qwen:tag", base_url="http://127.0.0.1:11434")
+
+
+def test_attested_manifest_toctou_fails_closed(monkeypatch):
+    # The tag was re-pointed to a DIFFERENT manifest between attestation and execution.
+    import agent.model_metadata as mm
+    monkeypatch.setattr(mm, "query_ollama_model_digest",
+                        lambda model, base_url, api_key="": "b" * 64)
+    with pytest.raises(ManagedWorkerAdmissionError, match="manifest digest drifted"):
+        _enforce(_real_ollama_agent(), _env(), _attested(), require_client_match=True)
+
+
+def test_attested_manifest_probe_failure_fails_closed(monkeypatch):
+    import agent.model_metadata as mm
+    monkeypatch.setattr(mm, "query_ollama_model_digest", lambda *a, **k: None)
+    with pytest.raises(ManagedWorkerAdmissionError, match="manifest digest drifted"):
+        _enforce(_real_ollama_agent(), _env(), _attested(), require_client_match=True)
+
+
+def test_attested_manifest_match_passes(monkeypatch):
+    import agent.model_metadata as mm
+    # Uppercase live digest -> constant-time compare is case-normalized -> matches.
+    monkeypatch.setattr(mm, "query_ollama_model_digest", lambda *a, **k: "A" * 64)
+    _enforce(_real_ollama_agent(), _env(), _attested(), require_client_match=True)  # no raise
+
+
+def test_tampered_attested_digest_fails_hash():
+    # Mutating the pinned digest after hashing breaks the self-hash (it is now a
+    # _HASH_FIELD) — caught at the integrity gate BEFORE any re-probe.
+    b = _attested()
+    b["model_digest"] = "c" * 64
+    with pytest.raises(ManagedWorkerAdmissionError, match="hash mismatch"):
+        _enforce(_real_ollama_agent(), _env(), b, require_client_match=True)
+
+
+def test_not_probed_binding_skips_reprobe(monkeypatch):
+    # An ordinary not_probed run must NOT trigger a manifest re-probe (no regression).
+    import agent.model_metadata as mm
+
+    def _boom(*a, **k):
+        raise AssertionError("must not re-probe a not_probed binding")
+
+    monkeypatch.setattr(mm, "query_ollama_model_digest", _boom)
+    b = _binding(provider="ollama", model="qwen:tag", endpoint="http://127.0.0.1:11434")
+    assert b["digest_status"] == "not_probed"
+    _enforce(_real_ollama_agent(), _env(), b, require_client_match=True)  # no raise, no probe
+
+
+# ── legacy quarantine: fail-closed by default, SCOPED to pre-contract, audited ──
+
+# The migration window requires BOTH the future-dated flag AND the operator-declared
+# contract-epoch cutoff, AND a run created before that cutoff, AND a successful audit.
+_CUTOFF = "1000000000"          # 2001-09-09; the "contract shipped" epoch
+_PRE_CONTRACT_CREATED = 999_999_000   # < cutoff -> genuinely legacy
+_POST_CONTRACT_CREATED = 2_000_000_000  # >= cutoff -> NOT legacy
+
+
+def _quarantine_window(monkeypatch):
     monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", "2099-01-01")
+    monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_CREATED_BEFORE", _CUTOFF)
+
+
+def test_legacy_quarantine_allows_missing_only_for_pre_contract_run(monkeypatch):
+    _quarantine_window(monkeypatch)
     import youtab_agent_cli.worker_admission as wa
     audited = {}
     monkeypatch.setattr(
         wa, "_audit_binding_quarantine",
-        lambda task_id, reason: audited.update({"task_id": task_id, "reason": reason}),
+        lambda task_id, reason: audited.update({"task_id": task_id, "reason": reason}) or True,
     )
-    _enforce(_agent(), _env(), None)
+    _enforce(_agent(), _env(), None, created_at=_PRE_CONTRACT_CREATED)
     assert audited == {"task_id": _RUN, "reason": "missing_binding"}
+
+
+def test_post_contract_missing_binding_fails_closed(monkeypatch):
+    # WAVE-30H #9: a run created AT/AFTER the contract epoch is not legacy — a
+    # missing binding on it is a defect/tamper and fails closed even in the window.
+    _quarantine_window(monkeypatch)
+    with pytest.raises(ManagedWorkerAdmissionError, match="no effective binding"):
+        _enforce(_agent(), _env(), None, created_at=_POST_CONTRACT_CREATED)
+
+
+def test_unknown_created_at_fails_closed(monkeypatch):
+    _quarantine_window(monkeypatch)
+    with pytest.raises(ManagedWorkerAdmissionError, match="no effective binding"):
+        _enforce(_agent(), _env(), None, created_at=None)
+
+
+def test_missing_cutoff_fails_closed_even_with_flag(monkeypatch):
+    # WAVE-30H #9: the flag alone (no operator-declared cutoff) no longer bypasses —
+    # closes the previous "any future date is global fail-open" hole.
+    monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", "2099-01-01")
+    monkeypatch.delenv("YOUTAB_MANAGED_BINDING_LEGACY_CREATED_BEFORE", raising=False)
+    with pytest.raises(ManagedWorkerAdmissionError, match="no effective binding"):
+        _enforce(_agent(), _env(), None, created_at=_PRE_CONTRACT_CREATED)
+
+
+def test_audit_write_failure_fails_closed(monkeypatch):
+    # WAVE-30H #9: a swallowed audit-write failure must NOT let the run proceed.
+    _quarantine_window(monkeypatch)
+    import youtab_agent_cli.worker_admission as wa
+    monkeypatch.setattr(wa, "_audit_binding_quarantine", lambda task_id, reason: False)
+    with pytest.raises(ManagedWorkerAdmissionError, match="audit write failed"):
+        _enforce(_agent(), _env(), None, created_at=_PRE_CONTRACT_CREATED)
 
 
 def test_legacy_quarantine_does_not_excuse_a_present_foreign_binding(monkeypatch):
     # The quarantine only covers a truly MISSING binding. A present but cross-run
     # binding is still refused even inside the migration window (no scope bypass).
-    monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", "2099-01-01")
+    _quarantine_window(monkeypatch)
     with pytest.raises(ManagedWorkerAdmissionError, match="cross-run"):
-        _enforce(_agent(), _env(), _binding(run_id="run-OTHER"))
+        _enforce(_agent(), _env(), _binding(run_id="run-OTHER"),
+                 created_at=_PRE_CONTRACT_CREATED)
 
 
 def test_legacy_quarantine_expired_fails_closed(monkeypatch):
     monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", "2000-01-01")
+    monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_CREATED_BEFORE", _CUTOFF)
     with pytest.raises(ManagedWorkerAdmissionError, match="no effective binding"):
-        _enforce(_agent(), _env(), None)
+        _enforce(_agent(), _env(), None, created_at=_PRE_CONTRACT_CREATED)
 
 
 @pytest.mark.parametrize("val", ["forever", "not-a-date", ""])

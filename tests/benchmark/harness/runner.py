@@ -51,6 +51,7 @@ class Runner:
         user: str = "bench-user",
         work_root: Optional[Path] = None,
         track_provenance: Optional[Dict[str, Any]] = None,
+        runtime_build_sha: Optional[str] = None,
     ) -> None:
         self.recorder = recorder
         self.mode = mode
@@ -59,7 +60,13 @@ class Runner:
         self.tenant = tenant
         self.user = user
         self.work_root = Path(work_root) if work_root else None
-        self._head = runtime_head(self.repo_root)
+        # WAVE-30H #6: the AUTHORITATIVE evidence SHA is the runtime's own verified
+        # build_sha (from the preflight posture, already checked == --expected-sha by
+        # verify_runtime_sha), NOT the harness checkout's git HEAD — for a container/
+        # remote runtime those differ, and stamping the harness HEAD misattributes
+        # the build. Fall back to the local HEAD only when no build_sha is supplied
+        # (a source runtime, where verify_runtime_sha proved HEAD == expected).
+        self._head = (runtime_build_sha or "").strip() or runtime_head(self.repo_root)
         # Per-track provenance stamp (WAVE-30C §2): track/provider/model identity
         # carried into every record so a result set is self-describing. None in
         # the default (untracked) deterministic gate — nothing is added.
@@ -105,20 +112,24 @@ class Runner:
             oracle_params = obs.provenance.get("_oracle_params", scenario.params)
             verdict = oracle(obs, oracle_params)
             per_rec = _metrics.per_record_metrics(obs, verdict, wall_ms=wall_ms)
-            # Carry the ACTUALLY-dispatched provider/model (the seam reads it from the
-            # run detail) alongside the run-level attested identity in base_provenance.
-            # Additive: absent for deterministic / non-cloud seams, so those records
-            # are unchanged; present only for a real runtime run, where the recorder
-            # fails closed if dispatched != attested (WAVE-30H Track-B).
-            dispatched = {
+            # Carry the full 3-way identity the seam observed: the runtime's canonical
+            # BOUND identity (from runtime_effective_binding) AND the ACTUALLY-
+            # dispatched provider/model (from the closing run detail). WAVE-30H #5:
+            # bound_* was previously dropped here, so the recorder's attested<->bound
+            # and bound<->dispatched reconciliation was dead on the real path. Both
+            # groups are additive: absent for deterministic / non-cloud seams (those
+            # records unchanged); present for a real runtime run, where the recorder
+            # fails closed on any drift AND on a missing dispatched identity.
+            identity = {
                 k: obs.provenance[k]
-                for k in ("dispatched_provider", "dispatched_model")
+                for k in ("bound_provider", "bound_model", "bound_binding_version",
+                          "dispatched_provider", "dispatched_model")
                 if obs.provenance.get(k)
             }
             return self._emit_record(
                 scenario, repetition, obs.run_id, principal, verdict,
                 observation=obs, wall_ms=wall_ms,
-                provenance={**base_provenance, "platform": obs.platform, **dispatched},
+                provenance={**base_provenance, "platform": obs.platform, **identity},
                 per_record_metrics=per_rec,
             )
         except CapabilityUnavailable as exc:

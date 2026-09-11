@@ -824,6 +824,18 @@ def _retry_execution_binding(
             detail={"error": "retry_binding_missing",
                     "reason": "attested run has no persisted effective binding"},
         )
+    # WAVE-30H #4: the parent's ORIGINAL stored hash MUST self-verify BEFORE we pin
+    # the child row from it or rescope it. A tampered-at-rest parent (fields changed,
+    # stale hash) would otherwise be (a) used to pin the child's provider/model row to
+    # the tampered substrate and (b) laundered by rescope_binding into a fresh VALID
+    # child hash over the tampered fields — bypassing the worker's tamper gate. Verify
+    # here, while the binding still carries the PARENT's run scope.
+    if binding is not None and not eb.verify_binding(binding):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "retry_binding_invalid",
+                    "reason": "effective binding hash mismatch (tampered/malformed)"},
+        )
     if binding is not None and not model_override:
         # Pin the child row from the binding ONLY when it carries a RESOLVED
         # concrete model — that is the drift that must be frozen (a cloud/branded
@@ -1585,6 +1597,14 @@ def _engine_attestation(engine: str) -> Optional[Dict[str, Any]]:
         "model_identifier_status": model_status,
         "execution": "local" if is_local else "cloud",
         "endpoint_class": _endpoint_class(endpoint) if is_local else "cloud",
+        # WAVE-30H #1: expose the non-secret normalized-authority fingerprint so the
+        # preflight binding carries the SAME endpoint_fingerprint create derives from
+        # this engine's resolved connection endpoint. Without it the engine-bound
+        # preflight binding had endpoint_fingerprint=None while create supplied a real
+        # hash -> binding_digest mismatch -> the run self-rejected (HTTP 412). This is
+        # a derived hash of the already-resolved endpoint; no raw endpoint/credential
+        # is exposed (mirrors effective_binding.compute_endpoint_fingerprint).
+        "endpoint_fingerprint": eb.compute_endpoint_fingerprint(endpoint),
         "endpoint_authorized": bool(authorized),
         "provider_cost_policy": cost_policy,
     }
@@ -1716,6 +1736,10 @@ async def runtime_preflight(
             "model_identifier_status": attestation.get("model_identifier_status"),
             "execution": attestation.get("execution"),
             "endpoint_class": attestation.get("endpoint_class"),
+            # WAVE-30H #1: carry the endpoint_fingerprint so this binding's
+            # binding_digest (which includes it) equals the digest create computes
+            # for the SAME engine — the atomic preflight->create match.
+            "endpoint_fingerprint": attestation.get("endpoint_fingerprint"),
             "provider_cost_policy": attestation.get("provider_cost_policy"),
             "digest_status": _digest_status,
             "model_digest": _att_digest,
@@ -2224,22 +2248,92 @@ async def runtime_create_run(
         if _expected_digest != eb.binding_digest(_substrate_binding):
             raise HTTPException(status_code=412, detail={"error": "binding_digest_mismatch"})
 
-    # A managed, real-model run MUST bind a concrete, fully-resolved model before it
-    # is executable — never enqueue an unresolved managed model-run (the worker would
-    # otherwise resolve the substrate from mutable config at dispatch). The
-    # deterministic integration worker (mode != "model") and standalone are exempt.
-    if _is_managed and mode == "model" and not (_bind_model and str(_bind_model).strip()):
-        raise HTTPException(status_code=422, detail={"error": "managed_model_unresolved"})
-    # Pin the row from the resolved identity so the dispatcher + any respawn dispatch
-    # FROM the binding and never re-resolve mutable config (managed model-runs only;
-    # an explicit engine binding already set model_override above).
-    if _is_managed and mode == "model" and _bind_model:
+    # WAVE-30H #7: an optional attested model-manifest digest pins the concrete model
+    # artifact into the persisted binding (digest_status="attested"); the worker
+    # re-probes + fails closed on a tag->manifest re-point. It is only meaningful for
+    # a probe-eligible ollama-local substrate (the same eligibility the builder uses
+    # for "not_probed") — reject it fail-closed otherwise so a caller cannot pin a
+    # digest that will never be verified.
+    _expected_model_digest = str(payload.get("expected_model_digest") or "").strip().lower()
+    if _expected_model_digest:
+        if len(_expected_model_digest) != 64 or any(
+            c not in "0123456789abcdef" for c in _expected_model_digest
+        ):
+            raise HTTPException(status_code=422, detail={"error": "malformed_model_digest"})
+        if _substrate_binding.get("digest_status") != "not_probed":
+            raise HTTPException(status_code=422, detail={"error": "model_digest_not_applicable"})
+
+    # A managed, real-model run MUST carry a fully-resolved identity before it is
+    # executable (never enqueue an unresolved managed model-run — the worker would
+    # otherwise resolve the substrate from mutable config at dispatch). WAVE-30H
+    # hardening: require present tenant/workspace and a RESOLVED endpoint too, so an
+    # unresolvable local endpoint fails fast at create (422) rather than as a deferred
+    # worker endpoint-drift refusal. The deterministic integration worker (mode !=
+    # "model") and standalone are exempt.
+    if _is_managed and mode == "model":
+        if not (_bind_model and str(_bind_model).strip()):
+            raise HTTPException(status_code=422, detail={"error": "managed_model_unresolved"})
+        if not (identity.tenant and identity.tenant.strip()):
+            raise HTTPException(status_code=422, detail={"error": "managed_tenant_required"})
+        if not (identity.workspace and identity.workspace.strip()):
+            raise HTTPException(status_code=422, detail={"error": "managed_workspace_required"})
+        if (
+            _substrate_binding["execution"] == "local"
+            and _substrate_binding["endpoint_class"] in ("unavailable", "invalid")
+        ):
+            raise HTTPException(status_code=422, detail={"error": "managed_endpoint_unresolved"})
+        # Pin the row from the resolved identity so the dispatcher + any respawn
+        # dispatch FROM the binding and never re-resolve mutable config (an explicit
+        # engine binding already set model_override above).
         if not model_override:
             model_override = _bind_model
         if not provider_override and _bind_provider:
             provider_override = _bind_provider
 
     _enqueue_epoch_ns = _st_ing.mark_epoch() if _st_ing is not None else None
+
+    def _persist_run_metadata(conn, rid):
+        """Create-once metadata persisted INSIDE create_task_ex's own write_txn.
+
+        WAVE-30H (race): the resolved mode + the canonical immutable binding + engine
+        selection + clamped limits + the admitted Simorgh grant all commit ATOMICALLY
+        with the task row insert, so the run is never visible to the dispatcher before
+        its binding/grant exist (closing the two-transaction ready-task race). Runs
+        exactly once per created run (create_task_ex does not call this on an
+        idempotent hit). Uses _append_event directly (no nested write_txn); a raise
+        here rolls back the whole insert (no orphan task) — fail closed.
+        """
+        kb._append_event(conn, rid, _MODE_EVENT, {
+            "mode": mode,
+            "correlation_id": identity.correlation_id,
+            # R8: ns wall-clock enqueue mark for cross-process QUEUE_WAIT.
+            "enqueue_epoch_ns": _enqueue_epoch_ns,
+        })
+        # The canonical immutable binding — scoped to this run (run_id/tenant/
+        # workspace), SELF-HASHED, and (WAVE-30H #7) pinning the attested model digest
+        # when supplied so the worker fails closed on a tag->manifest re-point.
+        effective_binding_payload = eb.build_effective_binding(
+            provider=_bind_provider, model=_bind_model, endpoint=_bind_endpoint,
+            run_id=rid, root_run_id=rid,
+            tenant=identity.tenant, workspace=identity.workspace,
+            model_digest=(_expected_model_digest or None),
+        )
+        kb._append_event(conn, rid, eb.BINDING_EVENT, effective_binding_payload)
+        if engine_identity is not None:
+            kb._append_event(conn, rid, _ENGINE_EVENT, {
+                "profile_id": engine,
+                "public_label": engine_identity.public_label,
+            })
+        _limits_dict = run_limits.to_dict()
+        if _task_max_retries is not None:
+            _limits_dict["worker_attempt_limit"] = _task_max_retries
+        if _limits_dict:
+            kb._append_event(conn, rid, _LIMITS_EVENT, _limits_dict)
+        if grant_header:
+            kb._append_event(conn, rid, _GRANT_EVENT, {"grant": grant_header})
+            if grant_manifest is not None:
+                kb._append_event(conn, rid, _GRANT_MANIFEST_EVENT, grant_manifest)
+
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         run_id, created = kb.create_task_ex(
             conn,
@@ -2260,73 +2354,24 @@ async def runtime_create_run(
             # session_id write below stays UNCHANGED as the legacy overload.
             correlation_id=identity.correlation_id,
             session_id=identity.correlation_id,
+            # Persist binding/grant/mode atomically with the row (see hook).
+            on_created=_persist_run_metadata,
         )
-        # Record the resolved mode as a create-time event (survives restart,
-        # visible in the run's own event stream, read by the dispatcher spawn).
-        # The correlation id is stamped on this authoritative dispatch event
-        # (fail-closed inside the run txn) so the run's own stream is queryable
-        # by correlation independent of the tasks column (contract C4).
-        #
-        # Append ONLY when the run was NEWLY created. On an idempotent retry
-        # (same Idempotency-Key) create_task_ex returns the EXISTING run and
-        # ``created`` is False; re-appending would duplicate the mode/engine
-        # events on that run. The create-time events therefore stay exactly-once
-        # per run, matching the idempotent create semantics.
-        if created:
-            with kb.write_txn(conn):
-                kb._append_event(
-                    conn,
-                    run_id,
-                    _MODE_EVENT,
-                    {
-                        "mode": mode,
-                        "correlation_id": identity.correlation_id,
-                        # R8: ns wall-clock enqueue mark for cross-process QUEUE_WAIT.
-                        "enqueue_epoch_ns": _enqueue_epoch_ns,
-                    },
+        # WAVE-30H #8: on an idempotent hit the run already exists with its persisted
+        # binding; a caller pinning an expected digest must have that digest match the
+        # EXISTING run's substrate — else a replayed Idempotency-Key could attach the
+        # attestation to a run bound to a DIFFERENT substrate (the replay-path TOCTOU
+        # the create-time digest check would otherwise miss). binding_digest is
+        # substrate-only, so it compares identically to the create-time check.
+        if not created and _expected_digest:
+            _existing = eb.effective_binding_from_events(kb.list_events(conn, run_id))
+            if not isinstance(_existing, dict) or _existing.get("__corrupt__"):
+                raise HTTPException(
+                    status_code=412,
+                    detail={"error": "binding_unverifiable_for_idempotent_run"},
                 )
-                # WAVE-30H: build + persist the canonical immutable binding now that
-                # run_id is known — scoped to this run (run_id/tenant/workspace) and
-                # SELF-HASHED so the worker fails closed on a tampered/forged binding.
-                # Pure; no probe. Append-only; never mutated (a rebind appends a new
-                # version). Exactly-once per created run, like the mode/engine events.
-                effective_binding_payload = eb.build_effective_binding(
-                    provider=_bind_provider, model=_bind_model, endpoint=_bind_endpoint,
-                    run_id=run_id, root_run_id=run_id,
-                    tenant=identity.tenant,
-                    workspace=identity.workspace,
-                )
-                kb._append_event(
-                    conn, run_id, eb.BINDING_EVENT, effective_binding_payload
-                )
-                # Record the branded engine selection (consumer-safe: profile_id
-                # + public label only; never the provider/model it resolved to).
-                if engine_identity is not None:
-                    kb._append_event(conn, run_id, _ENGINE_EVENT, {
-                        "profile_id": engine,
-                        "public_label": engine_identity.public_label,
-                    })
-                # Persist the authoritative clamped per-run limits (numeric only).
-                # Record the derived dispatcher worker-attempt bound alongside them
-                # so evidence shows the respawn ceiling explicitly rather than
-                # implying "zero retries" while the dispatcher silently respawns.
-                _limits_dict = run_limits.to_dict()
-                if _task_max_retries is not None:
-                    _limits_dict["worker_attempt_limit"] = _task_max_retries
-                if _limits_dict:
-                    kb._append_event(conn, run_id, _LIMITS_EVENT, _limits_dict)
-                # Persist the admitted Simorgh grant (managed mode only) so the
-                # worker can re-admit it in its own process (re_admit_worker_grant)
-                # and gate tool execution by the sealed AdmittedCommand. It is a
-                # signed authorization token, not a secret. Absent in standalone.
-                if grant_header:
-                    kb._append_event(conn, run_id, _GRANT_EVENT, {"grant": grant_header})
-                    # Persist the frozen capability manifest next to the grant so
-                    # the worker re-admits under the SAME bound tool set.
-                    if grant_manifest is not None:
-                        kb._append_event(
-                            conn, run_id, _GRANT_MANIFEST_EVENT, grant_manifest
-                        )
+            if eb.binding_digest(_existing) != _expected_digest:
+                raise HTTPException(status_code=412, detail={"error": "binding_digest_mismatch"})
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run
@@ -2689,116 +2734,78 @@ async def runtime_retry_run(
             # Fall back to the inbound signed correlation only if the original
             # row predates the dedicated column (legacy).
             lineage_correlation = task.correlation_id or identity.correlation_id
-            new_id = kb.create_task(
-                conn,
-                title=f"{task.title} (retry)",
-                body=task.body,
-                assignee=task.assignee,
-                created_by=identity.user,
-                tenant=identity.tenant,
-                skills=task.skills,
-                goal_mode=task.goal_mode,
-                max_runtime_seconds=task.max_runtime_seconds,
-                # Row-level provider/model pin — inherited ATOMICALLY in the child's
-                # own create_task transaction (the load-bearing anti-default guard).
-                model_override=_binding["model_override"],
-                provider_override=_binding["provider_override"],
-                board=RUNTIME_BOARD,
-                correlation_id=lineage_correlation,
-                session_id=identity.correlation_id,
-            )
-            # The child row now carries its authoritative provider/model pin. Persist
-            # the remaining binding provenance (mode, lineage, engine selection, cost
-            # policy) atomically. If ANY of it cannot be written, ARCHIVE the child so
-            # it can never be dispatched on a partial binding — fail closed, never a
-            # default-model run (Owner directive: "cannot be persisted atomically").
+            def _persist_child(conn, rid):
+                # WAVE-30H (race): persist the child's mode / lineage / engine /
+                # limits / RE-SCOPED binding / re-minted grant INSIDE create_task_ex's
+                # own write_txn — atomic with the child row insert — so the child is
+                # never visible to the dispatcher before its binding/grant exist
+                # (closing the same two-transaction race as create_run). A raise here
+                # rolls the child insert back entirely (no orphan, no archive needed)
+                # and is remapped to a fail-closed 500 below.
+                kb._append_event(
+                    conn, rid, _MODE_EVENT,
+                    {"mode": retry_mode, "correlation_id": lineage_correlation},
+                )
+                # Authoritative lineage marker: this run is a retry of ``run_id``.
+                kb._append_event(
+                    conn, rid, _RETRIED_FROM_EVENT,
+                    {"original_run_id": run_id, "correlation_id": lineage_correlation},
+                )
+                # Re-record the branded engine selection (same profile as the original).
+                if _binding["engine_selection"] is not None:
+                    kb._append_event(conn, rid, _ENGINE_EVENT, {
+                        "profile_id": _binding["engine_selection"]["profile_id"],
+                        "public_label": _binding["engine_selection"].get("public_label"),
+                    })
+                # Re-record the authoritative clamped cost policy / limits.
+                if _binding["limits"]:
+                    kb._append_event(conn, rid, _LIMITS_EVENT, _binding["limits"])
+                # Re-issue the parent's effective binding on the CHILD, RE-SCOPED to
+                # the child's own run (same provider/model substrate — binding_digest
+                # invariant, proving no drift — but run_id=rid, root=parent lineage).
+                # The parent binding was already verify_binding'd in
+                # _retry_execution_binding (#4), so rescope never launders a tampered
+                # parent into a fresh valid child hash.
+                if _binding.get("effective_binding") is not None:
+                    _child_binding = eb.rescope_binding(
+                        _binding["effective_binding"],
+                        run_id=rid, tenant=identity.tenant, workspace=identity.workspace,
+                    )
+                    kb._append_event(conn, rid, eb.BINDING_EVENT, _child_binding)
+                # Re-minted per-retry Simorgh grant + frozen manifest (managed only;
+                # this retry's own authority, never copied from the original run).
+                if _retry_grant_header:
+                    kb._append_event(conn, rid, _GRANT_EVENT, {"grant": _retry_grant_header})
+                    if _retry_grant_manifest is not None:
+                        kb._append_event(
+                            conn, rid, _GRANT_MANIFEST_EVENT, _retry_grant_manifest
+                        )
+
             try:
-                with kb.write_txn(conn):
-                    kb._append_event(
-                        conn,
-                        new_id,
-                        _MODE_EVENT,
-                        {"mode": retry_mode, "correlation_id": lineage_correlation},
-                    )
-                    # Authoritative lineage marker: this run is a retry of ``run_id``,
-                    # carrying the preserved correlation (fail-closed run-txn write).
-                    kb._append_event(
-                        conn,
-                        new_id,
-                        _RETRIED_FROM_EVENT,
-                        {
-                            "original_run_id": run_id,
-                            "correlation_id": lineage_correlation,
-                        },
-                    )
-                    # Re-record the branded engine selection so the child's own
-                    # stream attests the same profile the original was pinned to.
-                    if _binding["engine_selection"] is not None:
-                        kb._append_event(
-                            conn,
-                            new_id,
-                            _ENGINE_EVENT,
-                            {
-                                "profile_id": _binding["engine_selection"]["profile_id"],
-                                "public_label":
-                                    _binding["engine_selection"].get("public_label"),
-                            },
-                        )
-                    # Re-record the authoritative clamped cost policy / limits.
-                    if _binding["limits"]:
-                        kb._append_event(
-                            conn, new_id, _LIMITS_EVENT, _binding["limits"]
-                        )
-                    # WAVE-30H: re-issue the parent's effective binding on the CHILD,
-                    # RE-SCOPED to the child's own run (same provider/model substrate —
-                    # binding_digest is invariant, proving no drift — but run_id =
-                    # new_id, root_run_id = parent lineage, scoped to the child's
-                    # authoritative tenant/workspace). A retry is a DIFFERENT run, so
-                    # the child binding must carry the child's run scope or the worker
-                    # run-scope gate would refuse it as a cross-run/stale binding. The
-                    # hash is recomputed so it self-verifies. Inside this fail-closed
-                    # write_txn: if it cannot be persisted the child is archived below
-                    # (never dispatched on an unrecorded binding).
-                    if _binding.get("effective_binding") is not None:
-                        _child_binding = eb.rescope_binding(
-                            _binding["effective_binding"],
-                            run_id=new_id,
-                            tenant=identity.tenant,
-                            workspace=identity.workspace,
-                        )
-                        kb._append_event(
-                            conn, new_id, eb.BINDING_EVENT, _child_binding,
-                        )
-                    # Persist the freshly-admitted Simorgh grant + frozen capability
-                    # manifest onto the CHILD (managed mode only) so the dispatched
-                    # retry worker can re-admit via re_admit_worker_grant and gate
-                    # tool execution by the sealed AdmittedCommand — mirroring
-                    # create_run. The grant is re-minted per retry request (this is
-                    # THIS retry's authority, never copied from the original run).
-                    # Inside the same fail-closed write_txn: if it cannot be
-                    # persisted, the child is archived below and the retry fails
-                    # closed (500) rather than dispatching on an incomplete binding.
-                    # Absent in standalone (grant_header is None there).
-                    if _retry_grant_header:
-                        kb._append_event(
-                            conn, new_id, _GRANT_EVENT,
-                            {"grant": _retry_grant_header},
-                        )
-                        if _retry_grant_manifest is not None:
-                            kb._append_event(
-                                conn, new_id, _GRANT_MANIFEST_EVENT,
-                                _retry_grant_manifest,
-                            )
+                new_id = kb.create_task(
+                    conn,
+                    title=f"{task.title} (retry)",
+                    body=task.body,
+                    assignee=task.assignee,
+                    created_by=identity.user,
+                    tenant=identity.tenant,
+                    skills=task.skills,
+                    goal_mode=task.goal_mode,
+                    max_runtime_seconds=task.max_runtime_seconds,
+                    # Row-level provider/model pin — inherited ATOMICALLY with the
+                    # child's binding/grant in create_task_ex's own transaction.
+                    model_override=_binding["model_override"],
+                    provider_override=_binding["provider_override"],
+                    board=RUNTIME_BOARD,
+                    correlation_id=lineage_correlation,
+                    session_id=identity.correlation_id,
+                    on_created=_persist_child,
+                )
+            except HTTPException:
+                raise
             except BaseException:
-                # Fail closed: an incompletely-bound child must never dispatch.
-                try:
-                    kb.archive_task(conn, new_id)
-                except BaseException:
-                    _log.warning(
-                        "runtime_retry_run: could not archive child %s after a "
-                        "binding-persist failure; it must not be dispatched",
-                        new_id, exc_info=True,
-                    )
+                # The child insert was rolled back atomically (no partial child to
+                # archive). Fail closed: never dispatch on an incomplete binding.
                 raise HTTPException(
                     status_code=500,
                     detail={"error": "retry_binding_not_persisted",

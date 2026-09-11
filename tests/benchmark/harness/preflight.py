@@ -339,7 +339,7 @@ def assert_engine_attestation(
             )
         if not att.get("endpoint_authorized"):
             raise PreflightError("engine endpoint is not authorized — refusing")
-        if att.get("endpoint_class") not in _VERIFIED_LOCAL_CLASSES:
+        if (att.get("endpoint_class") or "").strip().lower() not in _VERIFIED_LOCAL_CLASSES:
             raise PreflightError(
                 f"endpoint class {att.get('endpoint_class')!r} is not a verified-local "
                 "class (loopback/private/link_local/cgnat) — refusing"
@@ -452,7 +452,9 @@ def assert_cloud_attestation(
     # Endpoint class + cost policy come from the runtime-attested binding (never
     # hardcoded). A live Track B cloud run must be metered — a binding that attests
     # a local/free cost policy is refused (a billed run cannot masquerade as free).
-    endpoint_class = (binding.get("endpoint_class") or "").strip() or "cloud"
+    # Canonicalize case so a runtime reporting "Cloud"/"LOOPBACK" is not spuriously
+    # refused (WAVE-30H #hardening: scheme/class comparisons are case-insensitive).
+    endpoint_class = ((binding.get("endpoint_class") or "").strip() or "cloud").lower()
     cost_policy = (binding.get("provider_cost_policy") or "").strip()
     if cost_policy != "campaign_budget_eur":
         raise PreflightError(

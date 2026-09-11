@@ -2925,6 +2925,7 @@ def create_task_ex(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    on_created=None,
 ) -> tuple[str, bool]:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3304,6 +3305,17 @@ def create_task_ex(
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+                # WAVE-30H #race: run create-once side effects (e.g. persisting the
+                # effective binding + grant + mode events) INSIDE this same
+                # BEGIN IMMEDIATE transaction, so the row and its binding commit
+                # atomically. Under SQLite snapshot isolation the dispatcher's
+                # connection cannot see the row until commit — closing the window
+                # where a worker could be spawned for a task with no binding yet. The
+                # hook MUST use _append_event directly (no nested write_txn). A hook
+                # exception rolls back the whole insert (no orphan task), which is the
+                # correct fail-closed outcome.
+                if on_created is not None:
+                    on_created(conn, task_id)
             return task_id, True
         except sqlite3.IntegrityError:
             if attempt == 1:

@@ -29,6 +29,8 @@ from .schema import (
     SCHEMA_VERSION,
     BenchmarkRecord,
     FAMILIES,
+    MODE_LOCAL_RUNTIME,
+    MODE_REAL_PROVIDER,
 )
 
 
@@ -238,6 +240,33 @@ class Recorder:
                         left: {"provider": lp or None, "model": lm or None},
                         right: {"provider": rp or None, "model": rm or None},
                     })
+            # WAVE-30H #5b: a real managed run that carries an attested/bound identity
+            # MUST also expose a DISPATCHED identity (what the worker actually ran on).
+            # Previously a missing dispatched identity produced zero pair-divergences
+            # and passed as clean — a real run could certify green with no proof of
+            # what executed. Fail closed. Mode-gated to the real-runtime tracks so
+            # deterministic / Track-A records (which never populate attested/bound)
+            # stay clean and this cannot false-positive the deterministic gate.
+            attested_or_bound = bool(
+                sides["attested"][0] or sides["attested"][1]
+                or sides["bound"][0] or sides["bound"][1]
+            )
+            dp, dm = sides["dispatched"]
+            if (
+                r.get("mode") in (MODE_LOCAL_RUNTIME, MODE_REAL_PROVIDER)
+                and attested_or_bound
+                and not (dp or dm)
+            ):
+                identity_divergences.append({
+                    "scenario_id": r["scenario_id"],
+                    "run_id": r["run_id"],
+                    "kind": "dispatched_missing",
+                    "attested": {"provider": sides["attested"][0] or None,
+                                 "model": sides["attested"][1] or None},
+                    "bound": {"provider": sides["bound"][0] or None,
+                              "model": sides["bound"][1] or None},
+                    "dispatched": {"provider": None, "model": None},
+                })
 
         summary = {
             "schema_version": SCHEMA_VERSION,

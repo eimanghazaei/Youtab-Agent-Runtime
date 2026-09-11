@@ -28,9 +28,18 @@ class ManagedWorkerAdmissionError(RuntimeError):
 
 # WAVE-30H: the generic "missing binding -> proceed" fallback is REMOVED. A managed
 # run with no binding fails closed by default. A bounded migration window for
-# pre-binding legacy runs is available ONLY behind this explicitly-dated, audited,
-# fail-closed-on-expiry/parse-error flag (never "forever").
+# GENUINELY pre-binding-contract runs is available ONLY behind BOTH of these
+# explicitly-set, audited, fail-closed flags (never "forever", never global):
+#   * _LEGACY_QUARANTINE_ENV   — a FUTURE ISO date the window stays open until;
+#   * _LEGACY_CREATED_BEFORE_ENV — the epoch (int seconds) the binding contract
+#     shipped. Only a run CREATED BEFORE this epoch is genuinely legacy and eligible
+#     for the window; a post-contract run always persists a binding in its create
+#     txn, so a missing binding on it is a defect/tamper and fails closed regardless.
+# WAVE-30H #9 closes the previous "any future date bypasses missing-binding for ALL
+# runs" fail-open: the window now requires positive pre-contract evidence AND a
+# successful audit write.
 _LEGACY_QUARANTINE_ENV = "YOUTAB_MANAGED_BINDING_LEGACY_UNTIL"
+_LEGACY_CREATED_BEFORE_ENV = "YOUTAB_MANAGED_BINDING_LEGACY_CREATED_BEFORE"
 
 
 def _legacy_binding_quarantine_active() -> bool:
@@ -53,9 +62,26 @@ def _legacy_binding_quarantine_active() -> bool:
         return False
 
 
+def _legacy_contract_cutoff_epoch() -> "int | None":
+    """The operator-declared epoch the binding contract shipped, or None.
+
+    A run is genuinely legacy ONLY if it was created BEFORE this epoch. Absent or
+    unparseable -> None, so NO run qualifies for the quarantine (fail closed). This
+    is what scopes the migration window to real pre-contract runs instead of every
+    missing-binding run."""
+    raw = (os.environ.get(_LEGACY_CREATED_BEFORE_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 def _enforce_effective_binding(
     agent, envelope, binding, task_id, *,
     require_client_match, authoritative_run_id, authoritative_workspace,
+    created_at=None,
 ):
     """Validate the canonical effective binding and dispatch EXCLUSIVELY from it.
 
@@ -76,10 +102,27 @@ def _enforce_effective_binding(
     """
     from youtab_agent_cli import effective_binding as _eb
 
-    # 1. Present (no silent legacy fallback).
+    # 1. Present (no silent legacy fallback). WAVE-30H #9: the migration window is
+    # NOT global — it applies ONLY to a run that (a) the operator opened the window
+    # for (future-dated flag), AND (b) is GENUINELY pre-contract (created before the
+    # operator-declared contract epoch), AND (c) whose quarantine audit write
+    # SUCCEEDS. A post-contract run always persists a binding in its create txn, so a
+    # missing binding on it is a defect/tamper and fails closed. Unknown created_at,
+    # absent cutoff, or a swallowed audit all fail closed.
     if binding is None:
-        if _legacy_binding_quarantine_active():
-            _audit_binding_quarantine(task_id, "missing_binding")
+        cutoff = _legacy_contract_cutoff_epoch()
+        genuinely_legacy = (
+            _legacy_binding_quarantine_active()
+            and cutoff is not None
+            and created_at is not None
+            and int(created_at) < cutoff
+        )
+        if genuinely_legacy:
+            if not _audit_binding_quarantine(task_id, "missing_binding"):
+                raise ManagedWorkerAdmissionError(
+                    f"managed run {task_id} legacy-quarantine audit write failed; "
+                    "refusing (no unaudited proceed)"
+                )
             return
         raise ManagedWorkerAdmissionError(
             f"managed run {task_id} has no effective binding; refusing "
@@ -163,11 +206,35 @@ def _enforce_effective_binding(
         raise ManagedWorkerAdmissionError(
             f"managed run {task_id} worker endpoint drifted from the bound identity; refusing"
         )
+    # 10. Model-manifest digest (WAVE-30H #7). When the binding pins an ATTESTED
+    # manifest digest, re-probe the live manifest at the worker's (now drift-checked)
+    # endpoint and constant-time compare — the LAST point before the provider client
+    # is built and budget is debited. Closes the tag->manifest TOCTOU (a tag
+    # re-pointed between the preflight attestation and execution). Only for an
+    # attested binding; an ordinary not_probed run is never probed here (no regression).
+    if binding.get("digest_status") == "attested":
+        import hmac as _hmac
+
+        from agent.model_metadata import query_ollama_model_digest as _probe
+
+        _live = (
+            _probe(binding.get("model"), getattr(agent, "base_url", "") or "") or ""
+        ).strip().lower()
+        _pinned = str(binding.get("model_digest") or "").strip().lower()
+        if not _live or not _pinned or not _hmac.compare_digest(_live, _pinned):
+            raise ManagedWorkerAdmissionError(
+                f"managed run {task_id} model manifest digest drifted from the attested "
+                "binding (tag re-pointed); refusing"
+            )
 
 
-def _audit_binding_quarantine(task_id, reason) -> None:
+def _audit_binding_quarantine(task_id, reason) -> bool:
     """Record an auditable event that a managed run proceeded under the legacy
-    migration flag (so production can assert zero such events)."""
+    migration flag (so production can assert zero such events).
+
+    Returns True iff the audit event was durably written. WAVE-30H #9: a swallowed
+    audit-write failure must NOT let the run proceed unaudited — the caller refuses
+    when this returns False."""
     try:
         from youtab_agent_cli import kanban_db as kb
 
@@ -180,36 +247,55 @@ def _audit_binding_quarantine(task_id, reason) -> None:
                 )
         finally:
             conn.close()
-    except Exception:  # noqa: BLE001 — auditing must never mask the run
+        return True
+    except Exception:  # noqa: BLE001 — audit failure fails closed (caller refuses)
         logger.warning("could not record binding quarantine audit for %s", task_id)
+        return False
 
 
-def establish_managed_admission(agent) -> bool:
-    """Attach the sealed Simorgh AdmittedCommand to ``agent`` for a managed run.
+class _ManagedGrantContext:
+    """The loaded + re-admitted grant for a managed kanban worker (no side effects)."""
 
-    Returns True when an admitted context was established; False when this is not
-    a managed kanban run (local-standalone trust mode, or not a dispatched
-    kanban worker). Raises :class:`ManagedWorkerAdmissionError` (fail closed)
-    when a managed kanban run has no valid persisted grant.
+    __slots__ = ("task_id", "admitted", "capability_binding", "binding", "created_at")
+
+    def __init__(self, task_id, admitted, capability_binding, binding, created_at):
+        self.task_id = task_id
+        self.admitted = admitted
+        self.capability_binding = capability_binding
+        self.binding = binding
+        self.created_at = created_at
+
+
+def _load_managed_grant_context():
+    """Load + re-admit THIS kanban worker's persisted grant. Pure verification.
+
+    Returns None when this is not a managed kanban worker (standalone trust mode, or
+    not a dispatched kanban worker). Raises :class:`ManagedWorkerAdmissionError`
+    (fail closed) on a missing grant, a manifest integrity failure, or a grant
+    re-admission failure (bad signature / expiry / scope). Attaches nothing, opens no
+    budget, installs no namespace — safe to run BEFORE the agent (and its provider
+    client) is constructed.
     """
     from youtab_runtime import managed_execution as mx
 
     if mx.current_trust_mode() is not mx.TrustMode.MANAGED:
-        return False  # standalone: no managed admission
+        return None  # standalone: no managed admission
 
     task_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
     if not task_id:
         # Managed trust mode but not a kanban-dispatched worker. The ingress
-        # endpoint is the admission authority for managed runs; there is nothing
-        # to reconstruct here. The tool_executor gate still fails closed if a
-        # tool is reached without an admitted context.
-        return False
+        # endpoint is the admission authority for managed runs; nothing to
+        # reconstruct here (the tool_executor gate still fails closed without an
+        # admitted context).
+        return None
 
+    from youtab_agent_cli import effective_binding as _eb
     from youtab_agent_cli import kanban_db as kb
 
     grant_header = None
     manifest_payload = None
     binding_payload = None
+    created_at = None
     conn = kb.connect()
     try:
         events = list(kb.list_events(conn, task_id))
@@ -220,11 +306,16 @@ def establish_managed_admission(agent) -> bool:
                 grant_header = payload.get("grant") or grant_header
             elif kind == "runtime_capability_manifest":
                 manifest_payload = payload or manifest_payload
-        # WAVE-30H: the canonical immutable effective binding this run was bound to
-        # (None for a legacy run with no binding event).
-        from youtab_agent_cli import effective_binding as _eb
-
+        # The canonical immutable binding this run was bound to (None for a legacy
+        # run with no binding event).
         binding_payload = _eb.effective_binding_from_events(events)
+        # created_at scopes the legacy-binding quarantine to genuinely pre-contract
+        # runs (WAVE-30H #9); best-effort — unknown fails closed at the gate.
+        try:
+            _task = kb.get_task(conn, task_id)
+            created_at = getattr(_task, "created_at", None)
+        except Exception:  # noqa: BLE001
+            created_at = None
     finally:
         try:
             conn.close()
@@ -263,6 +354,59 @@ def establish_managed_admission(agent) -> bool:
             f"managed run {task_id} grant re-admission failed: {exc.code}"
         ) from exc
 
+    return _ManagedGrantContext(
+        task_id, admitted, capability_binding, binding_payload, created_at
+    )
+
+
+def preadmit_managed_run() -> bool:
+    """Fail-closed managed gate that runs BEFORE the agent/provider client is built.
+
+    WAVE-30H #2: the CLI previously constructed ``AIAgent`` (which resolves a provider
+    client and performs Ollama/OpenRouter/LM-Studio HTTP) BEFORE admission, so a
+    managed run with a missing / forged / expired grant or a missing / corrupt /
+    tampered / cross-tenant / cross-run / cross-workspace binding did all that client
+    construction and network I/O before the gate refused. This runs the
+    CLIENT-INDEPENDENT checks first (no agent needed), so the caller can refuse and
+    exit BEFORE any client or network. The provider/model/endpoint DRIFT + attested
+    model-digest re-probe still run post-construction in
+    :func:`establish_managed_admission` (``require_client_match=True``). Returns False
+    when this is not a managed kanban worker; raises
+    :class:`ManagedWorkerAdmissionError` (fail closed) on any invalid grant/binding.
+    """
+    ctx = _load_managed_grant_context()
+    if ctx is None:
+        return False
+    env = ctx.admitted.envelope
+    _enforce_effective_binding(
+        None, env, ctx.binding, ctx.task_id,
+        require_client_match=False,
+        authoritative_run_id=ctx.task_id,
+        authoritative_workspace=getattr(env, "workspace_id", None),
+        created_at=ctx.created_at,
+    )
+    return True
+
+
+def establish_managed_admission(agent) -> bool:
+    """Attach the sealed Simorgh AdmittedCommand to ``agent`` for a managed run.
+
+    Returns True when an admitted context was established; False when this is not
+    a managed kanban run (local-standalone trust mode, or not a dispatched
+    kanban worker). Raises :class:`ManagedWorkerAdmissionError` (fail closed)
+    when a managed kanban run has no valid persisted grant.
+
+    :func:`preadmit_managed_run` SHOULD have already run the client-independent gate
+    before the agent was constructed (WAVE-30H #2); this re-runs the full gate
+    (idempotent, no nonce re-burn) and adds the provider/model/endpoint drift +
+    attested model-digest re-probe now that the agent's resolved substrate is known.
+    """
+    ctx = _load_managed_grant_context()
+    if ctx is None:
+        return False
+    task_id = ctx.task_id
+    admitted = ctx.admitted
+    binding_payload = ctx.binding
     agent._admitted_command = admitted
     env = admitted.envelope
     # WAVE-30H: PRE-DISPATCH binding enforcement. The worker validates the canonical
@@ -288,6 +432,7 @@ def establish_managed_admission(agent) -> bool:
         require_client_match=_require_client_match,
         authoritative_run_id=task_id,
         authoritative_workspace=getattr(env, "workspace_id", None),
+        created_at=ctx.created_at,
     )
     # Passed enforcement — attach the binding as the SOLE dispatch authority so a
     # delegated child inherits the EXACT parent identity (or fails closed).

@@ -96,6 +96,17 @@ class AuthClient:
             raise BenchmarkAuthError(
                 "service secret is missing or below the 43-char signing floor"
             )
+        # WAVE-30H hardening: the base_url path selects a tenant/deployment and must
+        # be credential-free — reject an embedded userinfo (scheme://user:secret@host)
+        # so a credential can never be smuggled through the endpoint or leak into logs.
+        from urllib.parse import urlsplit
+
+        _parts = urlsplit(base_url)
+        if _parts.username or _parts.password:
+            raise BenchmarkAuthError(
+                "base_url must not embed credentials (userinfo); the path selects a "
+                "tenant/deployment and must be credential-free"
+            )
         self._base_url = base_url.rstrip("/")
         self._secret = service_secret
         self.principal = principal
@@ -192,15 +203,21 @@ class AuthClient:
         limits: Optional[Mapping[str, Any]] = None,
         idempotency_key: Optional[str] = None,
         expected_binding_digest: Optional[str] = None,
+        expected_model_digest: Optional[str] = None,
     ) -> httpx.Response:
         """POST /runs — create + dispatch a run (signed, optionally idempotent).
 
         ``expected_binding_digest`` (WAVE-30H) pins the substrate attested at
         preflight: the runtime creates the run ONLY if its binding digest matches,
-        closing the preflight->create TOCTOU. Sent as a SIGNED payload field (the
-        command signature covers the body), so it is tamper-evident in transit.
+        closing the preflight->create TOCTOU. ``expected_model_digest`` (WAVE-30H #7)
+        pins the attested model-manifest digest into the persisted binding so the
+        worker re-probes and fails closed on a tag->manifest re-point. Both are sent
+        as SIGNED payload fields (the command signature covers the body), so they are
+        tamper-evident in transit.
         """
         payload: dict[str, Any] = {"agent": agent, "task": task}
+        if expected_model_digest is not None:
+            payload["expected_model_digest"] = expected_model_digest
         if expected_binding_digest is not None:
             payload["expected_binding_digest"] = expected_binding_digest
         if engine is not None:

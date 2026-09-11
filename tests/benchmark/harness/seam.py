@@ -162,6 +162,9 @@ class HttpRuntimeSeam:
         # WAVE-30H: the substrate digest attested at the last preflight; sent on
         # create so the run is created ONLY if the runtime binds the same substrate.
         self._expected_binding_digest: str | None = None
+        # WAVE-30H #7: the model-manifest digest attested at preflight; sent on create
+        # so the worker can re-probe + fail closed on a tag->manifest re-point.
+        self._expected_model_digest: str | None = None
 
     def preflight(self) -> dict:
         """The runtime's authenticated safety posture (for the live-run gate).
@@ -170,14 +173,23 @@ class HttpRuntimeSeam:
         attestation the live gate verifies, and captures the attested substrate
         digest to pin the subsequent create (atomic preflight->create)."""
         posture = self._client.preflight(engine=self._engine)
-        try:
-            from youtab_agent_cli import effective_binding as _eb
+        from youtab_agent_cli import effective_binding as _eb
 
-            binding = posture.get("effective_binding")
-            if isinstance(binding, dict) and binding:
-                self._expected_binding_digest = _eb.binding_digest(binding)
-        except Exception:  # noqa: BLE001 — digest pinning is best-effort here
-            self._expected_binding_digest = None
+        # Fail closed (WAVE-30H hardening): a PRESENT binding MUST yield a digest.
+        # Never swallow a derivation error into None — that would silently disable the
+        # atomic preflight->create pin and let an unpinned run proceed. None is used
+        # ONLY for the legitimate "no binding present" case; a derivation error
+        # propagates and cli.py maps it to a fatal (exit 6) refusal.
+        binding = posture.get("effective_binding")
+        self._expected_binding_digest = (
+            _eb.binding_digest(binding) if isinstance(binding, dict) and binding else None
+        )
+        # The attested model-manifest digest (WAVE-30H #7), forwarded on create so the
+        # worker re-probes and fails closed on a tag->manifest re-point. Absent when
+        # the runtime did not attest one (ordinary not_probed run) -> not pinned.
+        self._expected_model_digest = (
+            (posture.get("engine_attestation") or {}).get("ollama_model_digest") or None
+        )
         return posture
 
     def close(self) -> None:
@@ -216,6 +228,7 @@ class HttpRuntimeSeam:
             limits=self._limits,
             idempotency_key=scenario.params.get("idempotency_key"),
             expected_binding_digest=self._expected_binding_digest,
+            expected_model_digest=self._expected_model_digest,
         )
         resp.raise_for_status()
         created = resp.json()

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import types
 
+import pytest
+
 from youtab_agent_cli import effective_binding as eb
 
 
@@ -120,3 +122,40 @@ def test_rescope_defaults_root_to_new_run_when_parent_has_none():
     assert child["run_id"] == "run-B"
     assert child["root_run_id"] == "run-B"
     assert eb.verify_binding(child)
+
+
+def test_rescope_refuses_non_self_verifying_binding():
+    # WAVE-30H #4: a tampered-at-rest parent (fields changed, stale hash) must NOT be
+    # laundered into a fresh valid child hash.
+    parent = eb.build_effective_binding(provider="ollama", model="m", run_id="run-A")
+    tampered = dict(parent)
+    tampered["model"] = "evil"  # hash no longer matches
+    assert not eb.verify_binding(tampered)
+    with pytest.raises(ValueError, match="does not self-verify"):
+        eb.rescope_binding(tampered, run_id="run-B")
+
+
+def test_attested_digest_is_hashed_and_tamper_evident():
+    # WAVE-30H #7: a pinned model_digest is covered by binding_hash.
+    b = eb.build_effective_binding(
+        provider="ollama", model="qwen:tag", endpoint="http://127.0.0.1:11434",
+        run_id="run-A", model_digest="a" * 64,
+    )
+    assert b["digest_status"] == "attested"
+    assert b["model_digest"] == "a" * 64
+    assert eb.verify_binding(b)
+    b["model_digest"] = "b" * 64  # mutate after hashing
+    assert not eb.verify_binding(b)
+
+
+def test_attested_digest_excluded_from_substrate_digest():
+    # WAVE-30H #7 must NOT re-break #1: the SUBSTRATE digest is invariant whether or
+    # not a model_digest is attested (same substrate -> same binding_digest), so a
+    # preflight (which may probe) and the pure create still match atomically.
+    common = dict(provider="ollama", model="qwen:tag",
+                  endpoint="http://127.0.0.1:11434", run_id="run-A")
+    attested = eb.build_effective_binding(model_digest="a" * 64, **common)
+    not_probed = eb.build_effective_binding(**common)
+    assert eb.binding_digest(attested) == eb.binding_digest(not_probed)
+    # ...but the per-run hashes DIFFER (the digest is a hashed identity field).
+    assert attested["binding_hash"] != not_probed["binding_hash"]

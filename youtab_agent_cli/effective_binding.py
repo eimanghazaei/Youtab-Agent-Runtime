@@ -12,18 +12,21 @@ respawn (same run), and inherited EXACTLY (same substrate) by delegated children
 Nothing ever mutates a prior binding event.
 
 Integrity: every binding carries a ``binding_hash`` — sha256 over its canonical
-identity fields (including run_id/tenant/workspace, excluding the volatile
-``bound_at`` and the deferred ``digest_status``/``model_digest``). :func:`verify_binding`
-recomputes and constant-time compares it, so a tampered/malformed binding fails
-closed. :func:`binding_digest` is the SUBSTRATE-only digest (no run/tenant) used to
-make benchmark preflight→create atomic: the same substrate yields the same digest
-at preflight (no run_id yet) and at create.
+identity fields (including run_id/tenant/workspace AND digest_status/model_digest,
+excluding only the volatile ``bound_at``). :func:`verify_binding` recomputes and
+constant-time compares it, so a tampered/malformed binding fails closed.
+:func:`binding_digest` is the SUBSTRATE-only digest (no run/tenant, no model_digest)
+used to make benchmark preflight→create atomic: the same substrate yields the same
+digest at preflight (which may have probed the manifest) and at the pure create.
 
 :func:`build_effective_binding` is PURE — config/string/``ipaddress`` classification
 only — so it runs on the ``create_run`` hot path with NO network/Ollama probe. The
-model-manifest digest is the only networked attestation input and is never resolved
-here (``digest_status`` starts ``"not_probed"``/``"not_applicable"``, ``model_digest``
-is ``None``); it is filled only by the separate preflight attestation step.
+model-manifest digest is never PROBED here; it is only PINNED when an already-
+attested digest is passed in (from an authenticated preflight), which sets
+``digest_status="attested"`` and is covered by ``binding_hash`` (tamper-evident at
+rest). Absent that, ``digest_status`` starts ``"not_probed"``/``"not_applicable"``
+and ``model_digest`` is ``None``. The worker re-probes and compares an ``attested``
+digest before executing, closing the tag→manifest TOCTOU.
 
 No secret ever enters a binding: provider/model are identifiers, the endpoint is
 reduced to a non-reversible FINGERPRINT + a CLASS (never the raw URL, never
@@ -52,14 +55,19 @@ BINDING_FIELDS = (
     "binding_hash", "bound_at",
 )
 
-# Fields covered by binding_hash (per-run identity; EXCLUDES the volatile bound_at
-# and the DEFERRED digest_status/model_digest so a preflight-probed binding and the
-# create-time pure binding of the SAME identity hash identically, and so the hash is
-# not a moving target once written).
+# Fields covered by binding_hash (per-run identity; EXCLUDES only the volatile
+# bound_at). digest_status/model_digest ARE hashed: the model-manifest digest is
+# attested ONCE at create from an authenticated preflight (never re-filled on a
+# persisted binding), so covering it makes a tag->manifest re-point tamper-evident
+# at rest (WAVE-30H #7). Note the SUBSTRATE digest (_DIGEST_FIELDS) still excludes
+# it, so preflight (which may probe) and the pure create binding of the SAME
+# substrate still yield an identical binding_digest (the atomic preflight->create
+# match, WAVE-30H #1).
 _HASH_FIELDS = (
     "binding_version", "provider", "model", "model_ref",
     "model_identifier_status", "execution", "endpoint_class",
     "endpoint_fingerprint", "provider_cost_policy",
+    "digest_status", "model_digest",
     "run_id", "root_run_id", "tenant", "workspace",
 )
 
@@ -198,6 +206,8 @@ def build_effective_binding(
     binding_version: int = 1,
     bound_at: Optional[str] = None,
     model_identifier_status: Optional[str] = None,
+    model_digest: Optional[str] = None,
+    digest_status: Optional[str] = None,
     run_id: Optional[str] = None,
     root_run_id: Optional[str] = None,
     tenant: Optional[str] = None,
@@ -209,13 +219,22 @@ def build_effective_binding(
     PURE: config + ``ipaddress`` classification only, no network. ``execution``,
     ``endpoint_class`` and ``provider_cost_policy`` are derived from provider +
     endpoint exactly as the runtime attestation derives them; ``endpoint_fingerprint``
-    is the non-secret normalized-authority hash. For a verified-local Ollama model
-    ``digest_status`` is ``"not_probed"`` (the probe is deferred to preflight);
-    otherwise ``"not_applicable"``; ``model_digest`` is always ``None`` here. A falsy
-    ``model`` yields an unresolved status (never a placeholder presented as the
-    effective model). ``run_id``/``tenant``/``workspace`` scope the binding to its
-    run. ``binding_hash`` is computed LAST over the identity fields. ``extra`` may
-    attach non-identity link fields without affecting the hash.
+    is the non-secret normalized-authority hash. A falsy ``model`` yields an
+    unresolved status (never a placeholder presented as the effective model).
+    ``run_id``/``tenant``/``workspace`` scope the binding to its run.
+
+    Model-manifest digest (WAVE-30H #7): when ``model_digest`` is supplied (an
+    already-attested digest from an authenticated preflight — this stays PURE, no
+    probe here) the binding pins it and marks ``digest_status="attested"``; the
+    worker re-probes and constant-time compares before executing, closing the
+    tag->manifest TOCTOU. When absent, ``digest_status`` is the caller-provided
+    value or defaults to ``"not_probed"`` for a verified-local Ollama model else
+    ``"not_applicable"``, and ``model_digest`` is ``None``. Both fields are covered
+    by ``binding_hash`` (tamper-evident at rest) but NOT by ``binding_digest`` (so
+    the substrate digest stays probe-independent).
+
+    ``binding_hash`` is computed LAST over the identity fields. ``extra`` may attach
+    non-identity link fields without affecting the hash.
     """
     from agent import usage_pricing as _up
     from youtab_agent_cli import engine_connection as _ec
@@ -238,7 +257,16 @@ def build_effective_binding(
     else:
         status = model_identifier_status or "OWNER_SELECTION_REQUIRED"
         ref = None
-    digest_status = "not_probed" if (prov == "ollama" and local_zero and mdl) else "not_applicable"
+    mdigest = (model_digest or "").strip().lower() or None
+    if mdigest:
+        # An authenticated preflight attested a concrete manifest digest — pin it.
+        resolved_digest_status = "attested"
+    elif digest_status:
+        resolved_digest_status = digest_status
+    else:
+        resolved_digest_status = (
+            "not_probed" if (prov == "ollama" and local_zero and mdl) else "not_applicable"
+        )
     binding: Dict[str, Any] = {
         "binding_version": int(binding_version),
         "provider": prov,
@@ -249,8 +277,8 @@ def build_effective_binding(
         "endpoint_class": endpoint_class,
         "endpoint_fingerprint": compute_endpoint_fingerprint(endpoint),
         "provider_cost_policy": cost_policy,
-        "digest_status": digest_status,
-        "model_digest": None,
+        "digest_status": resolved_digest_status,
+        "model_digest": mdigest,
         "run_id": (run_id or None),
         "root_run_id": (root_run_id or run_id or None),
         "tenant": (tenant or None),
@@ -287,11 +315,22 @@ def rescope_binding(
     binding_digest(parent)`` PROVES the child runs on the parent's exact substrate,
     while ``child["run_id"]`` equals the child's own run so the worker run-scope
     gate is satisfied. ``root_run_id`` defaults to the parent's (lineage
-    preserved); ``binding_version`` and the deferred digest fields carry over
-    unchanged. Never mutates the input.
+    preserved); ``binding_version`` and the digest fields carry over unchanged.
+    Never mutates the input.
+
+    Fail-closed integrity (WAVE-30H #4): the input's ORIGINAL stored hash MUST
+    self-verify first. Otherwise a tampered-at-rest parent (fields changed, stale
+    hash) would be laundered into a fresh VALID child hash over the tampered
+    substrate. A legitimate parent always self-verifies (it came from
+    :func:`build_effective_binding`), so the legitimate re-scope still succeeds.
     """
     if not isinstance(binding, Mapping):
         raise TypeError("rescope_binding requires a binding mapping")
+    if not verify_binding(binding):
+        raise ValueError(
+            "rescope_binding refuses a binding that does not self-verify "
+            "(tampered/malformed parent); refusing to launder it into a child"
+        )
     child: Dict[str, Any] = dict(binding)
     child.pop("binding_hash", None)
     child["run_id"] = run_id or None

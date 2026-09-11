@@ -24,11 +24,15 @@ def _binding(**over):
         "binding_version": 1, "provider": "ollama", "model": "qwen",
         "model_ref": "ollama/qwen", "model_identifier_status": "resolved",
         "execution": "local", "endpoint_class": "loopback",
+        "endpoint_fingerprint": eb.compute_endpoint_fingerprint("http://127.0.0.1:11434"),
         "provider_cost_policy": "local_zero_verified",
         "digest_status": "not_probed", "model_digest": None,
         "bound_at": "2026-09-11T00:00:00Z",
     }
     base.update(over)
+    # A real persisted binding always carries a valid self-hash; compute it after
+    # overrides so these legitimate-path fixtures pass the WAVE-30H #4 verify gate.
+    base["binding_hash"] = eb.compute_binding_hash(base)
     return base
 
 
@@ -109,6 +113,22 @@ def test_corrupt_binding_fails_closed():
     events = [_ev(eb.BINDING_EVENT, {"binding_version": "x", "provider": "ollama"})]
     with pytest.raises(HTTPException) as ei:
         R._retry_execution_binding(_task(), events)
+    assert ei.value.status_code == 422
+    assert ei.value.detail["error"] == "retry_binding_invalid"
+
+
+def test_tampered_parent_binding_fails_closed_not_laundered():
+    # WAVE-30H #4: a parent binding whose fields were changed after hashing (stale
+    # self-hash) must be REFUSED before it is pinned/rescoped — never laundered into a
+    # fresh valid child hash over the tampered substrate.
+    good = _binding(provider="openai", model="gpt-x", model_ref="openai/gpt-x",
+                    provider_cost_policy="campaign_budget_eur", execution="cloud",
+                    endpoint_class="cloud", digest_status="not_applicable")
+    tampered = dict(good)
+    tampered["model"] = "gpt-EVIL"          # substrate changed, stale hash kept
+    assert not eb.verify_binding(tampered)  # precondition: on-disk tamper
+    with pytest.raises(HTTPException) as ei:
+        R._retry_execution_binding(_task(), [_ev(eb.BINDING_EVENT, tampered)])
     assert ei.value.status_code == 422
     assert ei.value.detail["error"] == "retry_binding_invalid"
 
