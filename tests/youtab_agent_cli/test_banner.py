@@ -19,6 +19,15 @@ def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(cap
     assert capsys.readouterr().out == "fallback text\n"
 
 
+def test_default_banner_uses_youtab_runtime_ocean_blue_branding():
+    """The legacy Hermes wordmark and caduceus must not return."""
+    assert "YOUTAB RunTime" not in banner.YOUTAB_RUNTIME_LOGO
+    assert "#0096FF" in banner.YOUTAB_RUNTIME_LOGO
+    assert "╭──────────────╮" in banner.YOUTAB_LOGO_HERO
+    assert "██╗  ██╗███████╗██████╗ ███╗   ███╗" not in banner.YOUTAB_RUNTIME_LOGO
+    assert banner.format_banner_version_label().startswith("Youtab RunTime v")
+
+
 
 
 
@@ -51,7 +60,7 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
         )
 
     raw = buf.getvalue()
-    assert "Youtab Agent Runtime v" in raw, "Version label missing from title"
+    assert "Youtab RunTime v" in raw, "Version label missing from title"
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
 
 
