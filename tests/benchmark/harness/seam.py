@@ -222,7 +222,15 @@ class HttpRuntimeSeam:
             self_reported_success=bool(detail.get("result")),
             reported_usage=detail.get("usage"),
             timings={}, engine_pinned=engine,
-            provenance={"seam": self.name},
+            # Capture the provider/model the worker ACTUALLY dispatched on (from the
+            # run detail — what executed, not what was requested), so a Track-B run's
+            # evidence records the real substrate and the recorder can fail closed if
+            # it ever diverges from the attested identity. Non-secret names only.
+            provenance={
+                "seam": self.name,
+                "dispatched_provider": detail.get("provider"),
+                "dispatched_model": detail.get("model"),
+            },
         )
 
     def _artifacts(self, run_id: str) -> List[Dict[str, Any]]:

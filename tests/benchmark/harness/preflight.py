@@ -377,3 +377,94 @@ def assert_engine_attestation(
             raise PreflightError(
                 f"model manifest digest {got or '<none>'!r} != expected {exp!r} — refusing"
             )
+
+
+def assert_cloud_attestation(
+    preflight: Mapping[str, Any],
+    track: Mapping[str, Any],
+    *,
+    expected_provider: Optional[str],
+    expected_model: Optional[str],
+    expected_endpoint_class: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Refuse a live Track B (real_provider) run unless the runtime's EFFECTIVE
+    provider/model matches the Owner-supplied expected identity (WAVE-30H Track-B).
+
+    The Track-A analogue is :func:`assert_engine_attestation`; this is the cloud
+    sibling. Before the first task it verifies, fail-closed, that the runtime's
+    effective provider and model equal the Owner-selected ones, that the effective
+    identity is genuinely resolved (never the ``OWNER_SELECTION_REQUIRED``
+    placeholder), that the provider credential is file-based, and that budget
+    enforcement is armed (a metered cloud run can never attest as free/unbudgeted).
+    No provider or model is hardcoded — ``expected_provider``/``expected_model`` are
+    Owner-supplied. On success it RETURNS the effective identity (NON-SECRET fields
+    only) so the caller can persist it into the immutable evidence; on any mismatch
+    it raises :class:`PreflightError`, which the CLI maps to its refusal exit code.
+    A credential value or raw endpoint is never read, returned, or logged.
+    """
+    p = preflight or {}
+    want_provider = (expected_provider or "").strip()
+    want_model = (expected_model or "").strip()
+    if not want_provider or not want_model:
+        raise PreflightError(
+            "real_provider requires --expected-provider and --expected-model "
+            "(the Owner-selected identity) — refusing"
+        )
+    eff_provider = (p.get("provider") or "").strip()
+    eff_model = (p.get("model") or "").strip()
+    # An unresolved/placeholder effective identity is never accepted as attested.
+    if not eff_provider or eff_provider == "OWNER_SELECTION_REQUIRED":
+        raise PreflightError(
+            "runtime reports no effective provider — refusing live cloud run"
+        )
+    if not eff_model or eff_model == "OWNER_SELECTION_REQUIRED":
+        raise PreflightError(
+            "runtime reports no effective model — refusing live cloud run"
+        )
+    if eff_provider.lower() != want_provider.lower():
+        raise PreflightError(
+            f"provider mismatch: runtime {eff_provider!r} != expected "
+            f"{want_provider!r} — refusing"
+        )
+    if eff_model != want_model:
+        raise PreflightError(
+            f"model mismatch: runtime {eff_model!r} != expected {want_model!r} — refusing"
+        )
+    # Track contract invariant: a declared provider-exclusion list is enforced
+    # (e.g. the comparability contract forbids the first-party provider).
+    per = (track or {}).get("per_track", {}) or {}
+    excluded = [
+        str(x).strip().lower()
+        for x in ((per.get("provider_constraints") or {}).get("exclude") or [])
+    ]
+    if eff_provider.lower() in excluded:
+        raise PreflightError(
+            f"provider {eff_provider!r} is excluded by the track contract — refusing"
+        )
+    # A live cloud run must carry a file-based provider credential and an armed
+    # metered budget — never a plaintext key and never an unbudgeted cloud spend.
+    if p.get("provider_credential_source") != "file":
+        raise PreflightError(
+            "Track B requires a file-based provider credential "
+            f"(source={p.get('provider_credential_source')!r}) — refusing"
+        )
+    if p.get("budget_enforcement_enabled") is not True:
+        raise PreflightError(
+            "Track B requires budget enforcement to be armed — refusing"
+        )
+    # Endpoint class is a classification (never the raw endpoint); cost policy for a
+    # verified cloud provider with an armed budget is the metered campaign policy.
+    endpoint_class = "cloud"
+    cost_policy = "campaign_budget_eur"
+    if expected_endpoint_class and endpoint_class != expected_endpoint_class.strip().lower():
+        raise PreflightError(
+            f"endpoint class {endpoint_class!r} != expected "
+            f"{expected_endpoint_class!r} — refusing"
+        )
+    return {
+        "effective_provider": eff_provider,
+        "effective_model": eff_model,
+        "effective_endpoint_class": endpoint_class,
+        "effective_cost_policy": cost_policy,
+        "effective_credential_source": "file",
+    }

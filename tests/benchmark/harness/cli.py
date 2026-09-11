@@ -37,6 +37,7 @@ from typing import List, Optional
 from .preflight import (
     STAGE_PROFILES,
     PreflightError,
+    assert_cloud_attestation,
     assert_engine_attestation,
     assert_live_safety,
     mint_run_evidence_dir,
@@ -203,6 +204,18 @@ def _run(args) -> int:
         print("FATAL: an engine-bound track (--track A) cannot run "
               "--mode real_provider; use --mode local_runtime", file=sys.stderr)
         return 6
+    # A live cloud run MUST declare the Owner-selected provider/model so the runtime's
+    # effective identity can be attested before dispatch and pinned into the evidence
+    # (WAVE-30H Track-B). Fail fast, before any evidence dir is minted or seam opened.
+    if args.mode == MODE_REAL_PROVIDER:
+        if track is None or track.get("track") != "B":
+            print("FATAL: --mode real_provider requires --track B",
+                  file=sys.stderr)
+            return 6
+        if not args.expected_provider or not args.expected_model:
+            print("FATAL: --mode real_provider requires --expected-provider and "
+                  "--expected-model (the Owner-selected identity)", file=sys.stderr)
+            return 6
 
     # Live-run safety gate (WAVE-30B §12/§13): validate the output dir and verify
     # the runtime is the authorized build with a sound safety posture BEFORE any
@@ -247,6 +260,18 @@ def _run(args) -> int:
                     posture, track,
                     expected_model_digest=args.expected_model_digest,
                 )
+            # Track B (cloud): verify the runtime's EFFECTIVE provider/model equals
+            # the Owner-selected identity and persist that identity into every record
+            # so the evidence is self-describing and the recorder can fail closed on
+            # any attested↔dispatched drift (WAVE-30H Track-B).
+            elif args.mode == MODE_REAL_PROVIDER and track is not None:
+                effective = assert_cloud_attestation(
+                    posture, track,
+                    expected_provider=args.expected_provider,
+                    expected_model=args.expected_model,
+                    expected_endpoint_class=args.expected_endpoint_class,
+                )
+                track_prov = {**(track_prov or {}), **effective}
         except PreflightError as exc:
             seam.close()
             print(f"FATAL: preflight refused the live run: {exc}", file=sys.stderr)
@@ -319,12 +344,34 @@ def _run(args) -> int:
         if mismatches:
             exit_code = 5
 
+    # WAVE-30H Track-B: a run whose worker dispatched a provider/model different
+    # from the attested identity must NEVER certify green — even if every verdict
+    # passed. The evidence is kept (it documents the drift); the run fails closed.
+    if identity_gate_exit_code(summary):
+        for d in (summary.get("identity_divergences") or []):
+            print(f"IDENTITY-DIVERGENCE {d['scenario_id']}: attested "
+                  f"{d['attested']!r} != dispatched {d['dispatched']!r}",
+                  file=sys.stderr)
+        print("FATAL: runtime dispatched a provider/model different from the "
+              "attested identity — refusing to certify this run", file=sys.stderr)
+        exit_code = 6
+
     if seam is not None:
         seam.close()
 
     print(f"\nresults: {recorder.results_path}")
     print(f"summary: {recorder.summary_path}")
     return exit_code
+
+
+def identity_gate_exit_code(summary: dict) -> int:
+    """WAVE-30H Track-B: the exit code for the attested↔dispatched identity gate.
+
+    Returns 6 (the refusal family) when the finalized summary reports any identity
+    divergence — a run that dispatched a provider/model different from the attested
+    identity must fail closed even if every verdict passed — else 0.
+    """
+    return 6 if (summary.get("identity_divergences") or []) else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -382,6 +429,17 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Owner-supplied full 64-hex Ollama model manifest digest; "
                           "when set, a live Track A run verifies the runtime-attested "
                           "digest matches EXACTLY (no-prefix) before dispatch")
+    run.add_argument("--expected-provider", default=None,
+                     help="Owner-selected Track B provider NAME the runtime must "
+                          "effectively resolve (required for --mode real_provider); "
+                          "matched case-insensitively and fail-closed before dispatch")
+    run.add_argument("--expected-model", default=None,
+                     help="Owner-selected Track B model identifier the runtime must "
+                          "effectively resolve (required for --mode real_provider); "
+                          "matched exactly and fail-closed before dispatch")
+    run.add_argument("--expected-endpoint-class", default=None,
+                     help="optional: require the runtime-reported endpoint class for "
+                          "the Track B cloud binding (e.g. 'cloud')")
     run.add_argument("--require-clean-worktree", dest="require_clean_worktree",
                      action="store_true", default=True)
     run.add_argument("--no-require-clean-worktree", dest="require_clean_worktree",

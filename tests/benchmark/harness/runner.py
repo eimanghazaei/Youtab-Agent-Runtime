@@ -105,10 +105,20 @@ class Runner:
             oracle_params = obs.provenance.get("_oracle_params", scenario.params)
             verdict = oracle(obs, oracle_params)
             per_rec = _metrics.per_record_metrics(obs, verdict, wall_ms=wall_ms)
+            # Carry the ACTUALLY-dispatched provider/model (the seam reads it from the
+            # run detail) alongside the run-level attested identity in base_provenance.
+            # Additive: absent for deterministic / non-cloud seams, so those records
+            # are unchanged; present only for a real runtime run, where the recorder
+            # fails closed if dispatched != attested (WAVE-30H Track-B).
+            dispatched = {
+                k: obs.provenance[k]
+                for k in ("dispatched_provider", "dispatched_model")
+                if obs.provenance.get(k)
+            }
             return self._emit_record(
                 scenario, repetition, obs.run_id, principal, verdict,
                 observation=obs, wall_ms=wall_ms,
-                provenance={**base_provenance, "platform": obs.platform},
+                provenance={**base_provenance, "platform": obs.platform, **dispatched},
                 per_record_metrics=per_rec,
             )
         except CapabilityUnavailable as exc:

@@ -183,6 +183,40 @@ class Recorder:
         for r in records:
             verdict_counts[r["verdict"]] = verdict_counts.get(r["verdict"], 0) + 1
 
+        # WAVE-30H Track-B: surface the run's effective (attested) identity and the
+        # actually-dispatched identity, and FAIL CLOSED on any divergence. A record
+        # carries the attested ``effective_*`` (threaded from the pre-run cloud
+        # attestation) and the ``dispatched_*`` the worker really ran on (from the
+        # run detail). If the two ever disagree, the run executed on a substrate
+        # other than the one attested — the evidence is written for forensics but the
+        # run must never certify green (the CLI turns a non-empty list into a
+        # non-zero exit). Absent for Track A / deterministic records (no key → skip).
+        _EFF = ("effective_provider", "effective_model", "effective_endpoint_class",
+                "effective_cost_policy", "effective_credential_source")
+        _DISP = ("dispatched_provider", "dispatched_model")
+        effective_identity: Dict[str, Any] = {}
+        for r in records:
+            prov = r.get("provenance") or {}
+            for k in (*_EFF, *_DISP):
+                if prov.get(k) and k not in effective_identity:
+                    effective_identity[k] = prov[k]
+        identity_divergences: List[Dict[str, Any]] = []
+        for r in records:
+            prov = r.get("provenance") or {}
+            ep = (prov.get("effective_provider") or "").strip()
+            em = (prov.get("effective_model") or "").strip()
+            dp = (prov.get("dispatched_provider") or "").strip()
+            dm = (prov.get("dispatched_model") or "").strip()
+            provider_drift = bool(ep and dp and ep.lower() != dp.lower())
+            model_drift = bool(em and dm and em != dm)
+            if provider_drift or model_drift:
+                identity_divergences.append({
+                    "scenario_id": r["scenario_id"],
+                    "run_id": r["run_id"],
+                    "attested": {"provider": ep or None, "model": em or None},
+                    "dispatched": {"provider": dp or None, "model": dm or None},
+                })
+
         summary = {
             "schema_version": SCHEMA_VERSION,
             "generated_label": GENERATED_LABEL,
@@ -199,6 +233,11 @@ class Recorder:
             # THE headline: claim != observable reality.
             "honesty_divergences": divergences,
             "honesty_divergence_count": len(divergences),
+            # WAVE-30H Track-B: the attested effective identity + any attested↔
+            # dispatched divergence (a non-empty list is a fail-closed condition).
+            "effective_identity": effective_identity,
+            "identity_divergences": identity_divergences,
+            "identity_divergence_count": len(identity_divergences),
         }
         self.summary_path.write_text(
             json.dumps(summary, indent=2, ensure_ascii=False, sort_keys=True),
@@ -226,6 +265,12 @@ class Recorder:
             "platform_tags": summary.get("platform_tags", []),
             "total_records": summary.get("total_records", 0),
             "evidence_policy": "append-only; artifacts are immutable once written",
+            # WAVE-30H Track-B: bind the effective provider/model/endpoint-class/
+            # cost-policy into the immutable provenance (non-secret identifiers only;
+            # never a key or raw endpoint), so the evidence is self-describing about
+            # which substrate produced it. Checksummed into MANIFEST.sha256 below.
+            "effective_identity": summary.get("effective_identity", {}),
+            "identity_divergence_count": summary.get("identity_divergence_count", 0),
         }
         provenance_path = self.out_dir / PROVENANCE_FILE
         provenance_path.write_text(
