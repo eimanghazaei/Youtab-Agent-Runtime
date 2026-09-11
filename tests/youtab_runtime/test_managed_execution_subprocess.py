@@ -240,6 +240,9 @@ def _run_worker(tmp_path: Path, db_path: Path, task_id: str) -> tuple[int, dict]
     script.write_text(_WORKER_SCRIPT, encoding="utf-8")
     result_file = tmp_path / f"worker_result_{task_id}.json"
     env = dict(os.environ)
+    # Deterministic fail-closed: never let a stray legacy-binding migration flag from
+    # the developer's shell quarantine (i.e. excuse) a missing binding in these tests.
+    env.pop("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", None)
     env["YOUTAB_RUNTIME_TRUST_MODE"] = "managed"
     env["YOUTAB_BRAIN_PUBLIC_KEYS"] = _KEYS_JSON
     env["YOUTAB_AGENT_KANBAN_DB"] = str(db_path)
@@ -372,29 +375,57 @@ def test_worker_refuses_tampered_manifest(tmp_path):
     assert "admission_error" in res
 
 
+def _assert_refused_before_any_execution(tmp_path, rc, res, expected_error):
+    """A pre-dispatch refusal that PROVES nothing executed.
+
+    Asserts rc 3 and the EXACT structured admission error by EQUALITY (never a
+    substring that could accidentally match the task id), then proves the worker
+    exited AT admission — before any provider client, tool call, or budget: none of
+    the execution-phase result keys are present, and the execution-tree budget DB was
+    never even created (``open_tree``/``consume`` run only AFTER admission succeeds),
+    so budget consumption == 0 and provider-call count == 0.
+    """
+    assert rc == 3, res.get("_stderr")
+    assert res.get("admission_error") == expected_error, res.get("admission_error")
+    for k in ("established", "has_admitted", "tree_root", "tree_snap",
+              "read_block", "write_block", "late_block"):
+        assert k not in res, f"worker executed past admission (key {k!r} present)"
+    budget_db = tmp_path / "home" / "runtime" / "execution_tree_budget.db"
+    assert not budget_db.exists(), "execution-tree budget was opened on a refusal"
+
+
 def test_worker_refuses_when_binding_missing(tmp_path):
     # WAVE-30H: a managed run with a valid grant + manifest but NO effective binding
-    # fails closed at the pre-dispatch gate — rc 3, BEFORE any tool/budget/provider.
+    # fails closed at the pre-dispatch gate. Anchor the grant window to the real clock
+    # (like the positive control) so re-admission SUCCEEDS and execution genuinely
+    # reaches the missing-binding gate — then assert the EXACT structured error and
+    # prove rc 3 with zero provider calls, zero budget, no execution-tree snapshot.
     task_id = "task-nobinding"
     db_path = tmp_path / "kanban.db"
-    envelope, header = _grant_header(nonce="grant-subproc-nobinding-0123456789ab")
+    now = datetime.now(UTC).replace(microsecond=0)
+    envelope, header = _grant_header(nonce="grant-subproc-nobinding-0123456789ab", now=now)
     persisted = cm.binding_to_persisted(_ingress_manifest(envelope))
     _persist_run(db_path, task_id, grant_header=header, manifest_payload=persisted,
                  seed_binding=False)
     rc, res = _run_worker(tmp_path, db_path, task_id)
-    assert rc == 3, res.get("_stderr")
-    assert "admission_error" in res
-    assert "binding" in res["admission_error"]
+    _assert_refused_before_any_execution(
+        tmp_path, rc, res,
+        f"managed run {task_id} has no effective binding; refusing "
+        "(no fallback, no standalone downgrade)",
+    )
 
 
 def test_worker_refuses_tampered_binding(tmp_path):
     # A persisted binding whose identity was mutated after it was hashed fails the
-    # worker's self-hash verification — rc 3, fail closed.
+    # worker's self-hash verification. Non-expired grant so re-admission succeeds and
+    # execution reaches the integrity gate; assert the EXACT hash-mismatch error and
+    # prove rc 3 with zero provider calls, zero budget, no execution-tree snapshot.
     from youtab_agent_cli import effective_binding as eb
 
     task_id = "task-tamperedbinding"
     db_path = tmp_path / "kanban.db"
-    envelope, header = _grant_header(nonce="grant-subproc-tamperbind-0123456789ab")
+    now = datetime.now(UTC).replace(microsecond=0)
+    envelope, header = _grant_header(nonce="grant-subproc-tamperbind-0123456789ab", now=now)
     persisted = cm.binding_to_persisted(_ingress_manifest(envelope))
     _persist_run(db_path, task_id, grant_header=header, manifest_payload=persisted,
                  seed_binding=False)
@@ -402,6 +433,7 @@ def test_worker_refuses_tampered_binding(tmp_path):
         provider="ollama", model="qwen:test", endpoint="http://127.0.0.1:11434",
         run_id=task_id, root_run_id=getattr(envelope, "root_run_id", task_id),
         tenant=getattr(envelope, "tenant_id", None),
+        workspace=getattr(envelope, "workspace_id", None),
     )
     binding["model"] = "evil-swap"  # mutate after hashing -> hash no longer matches
     conn = kb.connect(db_path=db_path)
@@ -411,8 +443,11 @@ def test_worker_refuses_tampered_binding(tmp_path):
     finally:
         conn.close()
     rc, res = _run_worker(tmp_path, db_path, task_id)
-    assert rc == 3, res.get("_stderr")
-    assert "admission_error" in res
+    _assert_refused_before_any_execution(
+        tmp_path, rc, res,
+        f"managed run {task_id} effective binding hash mismatch "
+        "(tampered/malformed); refusing",
+    )
 
 
 def test_worker_refuses_cross_run_substituted_binding(tmp_path):
@@ -434,10 +469,11 @@ def test_worker_refuses_cross_run_substituted_binding(tmp_path):
     _persist_run(db_path, task_id, grant_header=header, manifest_payload=persisted,
                  binding_run_id="task-SOME-OTHER-RUN")
     rc, res = _run_worker(tmp_path, db_path, task_id)
-    assert rc == 3, res.get("_stderr")
-    assert "admission_error" in res
-    assert "cross-run" in res["admission_error"]
-    assert "tree_snap" not in res  # zero budget: the tree was never opened/consumed
+    _assert_refused_before_any_execution(
+        tmp_path, rc, res,
+        f"managed run {task_id} binding run_id does not match the executing run "
+        "(cross-run/stale binding substitution); refusing",
+    )
 
 
 def test_worker_refuses_cross_workspace_substituted_binding(tmp_path):
@@ -455,10 +491,11 @@ def test_worker_refuses_cross_workspace_substituted_binding(tmp_path):
     _persist_run(db_path, task_id, grant_header=header, manifest_payload=persisted,
                  binding_workspace="workspace-beta")
     rc, res = _run_worker(tmp_path, db_path, task_id)
-    assert rc == 3, res.get("_stderr")
-    assert "admission_error" in res
-    assert "cross-workspace" in res["admission_error"]
-    assert "tree_snap" not in res  # zero budget: the tree was never opened/consumed
+    _assert_refused_before_any_execution(
+        tmp_path, rc, res,
+        f"managed run {task_id} binding workspace does not match the admitted "
+        "workspace (cross-workspace binding substitution); refusing",
+    )
 
 
 # ── ingress negative controls (the admission the endpoint runs) ──────────────
