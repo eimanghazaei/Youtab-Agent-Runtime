@@ -139,6 +139,40 @@ def _enforce_effective_binding(
             f"managed run {task_id} effective binding hash mismatch "
             "(tampered/malformed); refusing"
         )
+    # 3b. Version policy (WAVE-30H #F7). The binding_hash algorithm is versioned;
+    # verify_binding already fails closed on an UNKNOWN version, but be explicit and
+    # apply the legacy-version migration policy. A pre-contract (v1) binding predates
+    # model-digest hash coverage, so it can NEVER cryptographically possess attested
+    # model-digest protection, and it is accepted ONLY inside the same bounded/audited
+    # migration window as a missing binding (default = drain/fail-closed: runs must
+    # upgrade to the current binding contract).
+    _bver = binding.get("binding_version")
+    if _bver not in _eb.SUPPORTED_BINDING_VERSIONS:
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} unsupported binding_version {_bver!r}; refusing"
+        )
+    if _bver < _eb.CURRENT_BINDING_VERSION:
+        if binding.get("digest_status") == "attested":
+            raise ManagedWorkerAdmissionError(
+                f"managed run {task_id} legacy v{_bver} binding claims attested model "
+                "digest it cannot cryptographically possess; refusing"
+            )
+        _cutoff = _legacy_contract_cutoff_epoch()
+        _legacy_ok = (
+            _legacy_binding_quarantine_active()
+            and _cutoff is not None
+            and created_at is not None
+            and int(created_at) < _cutoff
+        )
+        if not _legacy_ok:
+            raise ManagedWorkerAdmissionError(
+                f"managed run {task_id} legacy binding_version v{_bver} refused "
+                "(drain: runs must upgrade to the current binding contract); refusing"
+            )
+        if not _audit_binding_quarantine(task_id, f"legacy_binding_v{_bver}"):
+            raise ManagedWorkerAdmissionError(
+                f"managed run {task_id} legacy-binding audit write failed; refusing"
+            )
     # 5. Cross-tenant (defense in depth; ingress already binds tenant).
     env_tenant = getattr(envelope, "tenant_id", None)
     if binding.get("tenant") and env_tenant and binding.get("tenant") != env_tenant:

@@ -2357,21 +2357,36 @@ async def runtime_create_run(
             # Persist binding/grant/mode atomically with the row (see hook).
             on_created=_persist_run_metadata,
         )
-        # WAVE-30H #8: on an idempotent hit the run already exists with its persisted
-        # binding; a caller pinning an expected digest must have that digest match the
-        # EXISTING run's substrate — else a replayed Idempotency-Key could attach the
-        # attestation to a run bound to a DIFFERENT substrate (the replay-path TOCTOU
-        # the create-time digest check would otherwise miss). binding_digest is
-        # substrate-only, so it compares identically to the create-time check.
-        if not created and _expected_digest:
+        # WAVE-30H #8 + Batch2 #F4: on an idempotent hit the run already exists with
+        # its persisted binding; a caller pinning an expected digest must have it match
+        # the EXISTING run's binding — else a replayed Idempotency-Key could attach the
+        # attestation to a run bound to a DIFFERENT substrate OR a DIFFERENT pinned
+        # model artifact. The substrate digest (binding_digest) EXCLUDES model_digest,
+        # so the model-artifact pin is compared SEPARATELY (constant-time). Any
+        # mismatch fails closed (412); no new task/event/grant/binding is created, and
+        # a run pinned to a different model artifact is never returned as if it matched.
+        if not created and (_expected_digest or _expected_model_digest):
             _existing = eb.effective_binding_from_events(kb.list_events(conn, run_id))
-            if not isinstance(_existing, dict) or _existing.get("__corrupt__"):
+            if (
+                not isinstance(_existing, dict)
+                or _existing.get("__corrupt__")
+                or not eb.verify_binding(_existing)
+            ):
                 raise HTTPException(
                     status_code=412,
                     detail={"error": "binding_unverifiable_for_idempotent_run"},
                 )
-            if eb.binding_digest(_existing) != _expected_digest:
+            if _expected_digest and eb.binding_digest(_existing) != _expected_digest:
                 raise HTTPException(status_code=412, detail={"error": "binding_digest_mismatch"})
+            if _expected_model_digest:
+                import hmac as _hmac
+                _existing_md = str(_existing.get("model_digest") or "").strip().lower()
+                if not _existing_md or not _hmac.compare_digest(
+                    _existing_md, _expected_model_digest
+                ):
+                    raise HTTPException(
+                        status_code=412, detail={"error": "model_digest_mismatch"}
+                    )
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run

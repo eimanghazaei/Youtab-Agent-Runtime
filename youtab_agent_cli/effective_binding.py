@@ -55,21 +55,46 @@ BINDING_FIELDS = (
     "binding_hash", "bound_at",
 )
 
-# Fields covered by binding_hash (per-run identity; EXCLUDES only the volatile
-# bound_at). digest_status/model_digest ARE hashed: the model-manifest digest is
-# attested ONCE at create from an authenticated preflight (never re-filled on a
-# persisted binding), so covering it makes a tag->manifest re-point tamper-evident
-# at rest (WAVE-30H #7). Note the SUBSTRATE digest (_DIGEST_FIELDS) still excludes
-# it, so preflight (which may probe) and the pure create binding of the SAME
-# substrate still yield an identical binding_digest (the atomic preflight->create
+# VERSIONED canonical hash field sets (WAVE-30H #F7). The binding_hash algorithm is
+# pinned PER binding_version so a binding is NEVER verified with a different version's
+# field set (which would either reject an unchanged legacy binding or let one claim
+# protection it never possessed). Both sets EXCLUDE only the volatile bound_at.
+#
+# v1 = the original pre-contract set (no model-digest coverage). v2 ADDS
+# digest_status/model_digest: the model-manifest digest is attested ONCE at create
+# from an authenticated preflight (never re-filled on a persisted binding), so
+# covering it makes a tag->manifest re-point tamper-evident at rest. A v1 binding
+# therefore CANNOT cryptographically possess attested model-digest protection — the
+# worker refuses a v1 binding that claims ``digest_status=="attested"``.
+#
+# The SUBSTRATE digest (_DIGEST_FIELDS) excludes model_digest AND binding_version, so
+# preflight (which may probe) and the pure create binding of the SAME substrate still
+# yield an identical binding_digest across versions (the atomic preflight->create
 # match, WAVE-30H #1).
-_HASH_FIELDS = (
+_HASH_FIELDS_V1 = (
     "binding_version", "provider", "model", "model_ref",
     "model_identifier_status", "execution", "endpoint_class",
     "endpoint_fingerprint", "provider_cost_policy",
-    "digest_status", "model_digest",
     "run_id", "root_run_id", "tenant", "workspace",
 )
+_HASH_FIELDS_V2 = _HASH_FIELDS_V1 + ("digest_status", "model_digest")
+_HASH_FIELDS_BY_VERSION = {1: _HASH_FIELDS_V1, 2: _HASH_FIELDS_V2}
+
+# The version new bindings are created at, and the full set the contract supports.
+CURRENT_BINDING_VERSION = 2
+SUPPORTED_BINDING_VERSIONS = frozenset(_HASH_FIELDS_BY_VERSION)
+
+
+class UnknownBindingVersion(ValueError):
+    """A binding carries a binding_version with no defined canonical hash set."""
+
+
+def _hash_fields_for(binding: Mapping[str, Any]) -> Sequence[str]:
+    version = binding.get("binding_version") if isinstance(binding, Mapping) else None
+    fields = _HASH_FIELDS_BY_VERSION.get(version) if isinstance(version, int) else None
+    if fields is None:
+        raise UnknownBindingVersion(f"unsupported binding_version {version!r}")
+    return fields
 
 # Substrate-only identity (NO run_id/tenant/workspace/binding_version) used for the
 # benchmark expected-binding-digest, so preflight (which does not know run_id) and
@@ -127,28 +152,57 @@ def classify_endpoint(url: Optional[str]) -> str:
     return "public"
 
 
-def normalize_endpoint(url: Optional[str]) -> str:
-    """Normalize an endpoint to ``scheme://host[:port]`` (no path/query/credentials).
+class EndpointCredentialError(ValueError):
+    """The endpoint embedded credentials (userinfo) — refused fail-closed."""
 
-    Pure; lower-cases scheme+host, preserves an explicit port, and strips any
-    embedded userinfo, path, query, or fragment so the fingerprint carries NO
-    secret. Returns ``""`` when no endpoint is configured.
+
+def normalize_endpoint(url: Optional[str]) -> str:
+    """Canonicalize an endpoint to ``scheme://host[:port][/path]`` (WAVE-30H #F3).
+
+    ONE canonical identity used by preflight, create, the binding digest, and worker
+    comparison, so the fingerprint agrees across all of them. Pure; no secret is ever
+    retained. Rules (documented, deterministic):
+
+    * scheme detection + normalization is CASE-INSENSITIVE (``HTTPS://h/p`` and
+      ``https://h/p`` canonicalize identically); a schemeless input defaults to http;
+    * host is lower-cased, a trailing ``.`` stripped;
+    * the DEFAULT port for the scheme (80/http, 443/https) is dropped; any other
+      explicit port is preserved;
+    * the PATH is retained credential-free and normalized (a single trailing ``/`` is
+      collapsed, ``/`` alone becomes empty) so a path that selects a tenant/deployment
+      (``/tenant-a`` vs ``/tenant-b``) yields DIFFERENT fingerprints;
+    * query and fragment are DROPPED (they cannot smuggle a credential or silently
+      alter identity);
+    * embedded userinfo is REFUSED (raises :class:`EndpointCredentialError`) — never
+      silently stripped, so a credential-bearing endpoint fails closed rather than
+      collapsing to the credential-free form.
+
+    Returns ``""`` when no endpoint is configured (distinct from any real endpoint).
     """
     raw = (url or "").strip()
     if not raw:
         return ""
-    if not raw.startswith("http"):
+    # Case-insensitive scheme detection: only prepend when there is no scheme at all.
+    if "://" not in raw:
         raw = "http://" + raw
     try:
         p = urlparse(raw)
-        scheme = (p.scheme or "http").lower()
-        host = (p.hostname or "").lower().rstrip(".")
-        if not host:
-            return ""
-        port = f":{p.port}" if p.port else ""
-        return f"{scheme}://{host}{port}"
     except Exception:  # noqa: BLE001
         return ""
+    # Fail closed on credentials — NEVER silently strip them.
+    if p.username or p.password:
+        raise EndpointCredentialError(
+            "endpoint must not embed credentials (userinfo); refusing"
+        )
+    scheme = (p.scheme or "http").lower()
+    host = (p.hostname or "").lower().rstrip(".")
+    if not host:
+        return ""
+    default_port = {"http": 80, "https": 443, "ws": 80, "wss": 443}.get(scheme)
+    port_str = f":{p.port}" if (p.port and p.port != default_port) else ""
+    path = p.path or ""
+    path = "" if path == "/" else path.rstrip("/")
+    return f"{scheme}://{host}{port_str}{path}"
 
 
 def compute_endpoint_fingerprint(url: Optional[str]) -> str:
@@ -167,8 +221,13 @@ def _canonical(binding: Mapping[str, Any], fields: Sequence[str]) -> str:
 
 
 def compute_binding_hash(binding: Mapping[str, Any]) -> str:
-    """sha256 over the per-run canonical identity fields (``_HASH_FIELDS``)."""
-    return hashlib.sha256(_canonical(binding, _HASH_FIELDS).encode("utf-8")).hexdigest()
+    """sha256 over the canonical identity fields for the binding's OWN version.
+
+    Raises :class:`UnknownBindingVersion` for a version with no defined field set, so
+    a binding is never hashed with the wrong algorithm (callers fail closed)."""
+    return hashlib.sha256(
+        _canonical(binding, _hash_fields_for(binding)).encode("utf-8")
+    ).hexdigest()
 
 
 def binding_digest(binding: Mapping[str, Any]) -> str:
@@ -184,12 +243,18 @@ def verify_binding(binding: Mapping[str, Any]) -> bool:
     """True iff ``binding`` carries a ``binding_hash`` that matches its identity.
 
     Constant-time compare; False on a missing/empty/mismatched hash so a caller can
-    fail closed on a tampered or malformed binding.
+    fail closed on a tampered or malformed binding. An UNKNOWN binding_version (no
+    defined hash field set) also returns False — fail closed, never guess an
+    algorithm (WAVE-30H #F7).
     """
     stored = binding.get("binding_hash") if isinstance(binding, Mapping) else None
     if not isinstance(stored, str) or not stored:
         return False
-    return hmac.compare_digest(stored, compute_binding_hash(binding))
+    try:
+        expected = compute_binding_hash(binding)
+    except UnknownBindingVersion:
+        return False
+    return hmac.compare_digest(stored, expected)
 
 
 def utc_iso_now() -> str:
@@ -203,7 +268,7 @@ def build_effective_binding(
     model: Optional[str],
     model_ref: Optional[str] = None,
     endpoint: Optional[str] = None,
-    binding_version: int = 1,
+    binding_version: int = CURRENT_BINDING_VERSION,
     bound_at: Optional[str] = None,
     model_identifier_status: Optional[str] = None,
     model_digest: Optional[str] = None,
@@ -348,10 +413,15 @@ def effective_binding_from_events(events: Sequence[Any]) -> Optional[Dict[str, A
     """Return the CURRENT effective binding for a run, or ``None``.
 
     The current binding is the highest-``binding_version`` :data:`BINDING_EVENT`
-    payload (append-only: a rebind appends version+1, so selecting by max version is
-    robust to event ordering). Returns ``None`` for a legacy/standalone run with no
-    binding event, and ``{"__corrupt__": True}`` when a binding event lacks a valid
-    integer ``binding_version`` (so the caller can fail closed rather than guess).
+    payload (append-only: a rebind appends version+1). At a version TIE the LAST
+    such event wins (``>=``), so the MOST RECENTLY appended binding is authoritative:
+    an injected binding at the same version is EVALUATED (and then refused by the
+    integrity / scope / version gates) rather than silently shadowed by the original
+    — strictly more fail-closed than first-wins. In normal operation each version is
+    appended exactly once, so ties only arise under injection/tests. Returns ``None``
+    for a legacy/standalone run with no binding event, and ``{"__corrupt__": True}``
+    when a binding event lacks a valid integer ``binding_version`` (so the caller can
+    fail closed rather than guess).
     """
     current: Optional[Dict[str, Any]] = None
     best = -1
@@ -365,6 +435,6 @@ def effective_binding_from_events(events: Sequence[Any]) -> Optional[Dict[str, A
             version = int(payload.get("binding_version"))
         except (TypeError, ValueError):
             return {"__corrupt__": True}
-        if version > best:
+        if version >= best:
             best, current = version, dict(payload)
     return current

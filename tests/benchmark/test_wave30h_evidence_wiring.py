@@ -381,3 +381,60 @@ def test_auth_client_accepts_clean_base_url():
         assert client.principal is principal
     finally:
         client.close()
+
+
+# --------------------------------------------------------------------------- #
+# 7. three-way identity requires COMPLETE provider+model tuples (Batch2 #F5)    #
+# --------------------------------------------------------------------------- #
+def _detail_parts(*, bp=None, bm=None, dp=None, dm=None) -> Dict[str, Any]:
+    """A run-detail with independently-controllable bound/dispatched provider/model,
+    so a PARTIAL (provider XOR model) side can be exercised."""
+    d: Dict[str, Any] = {}
+    if bp is not None or bm is not None:
+        d["runtime_effective_binding"] = {"provider": bp, "model": bm, "binding_version": 2}
+    if dp is not None:
+        d["provider"] = dp
+    if dm is not None:
+        d["model"] = dm
+    return d
+
+
+def _kinds(summary):
+    return {d.get("kind") for d in (summary.get("identity_divergences") or [])}
+
+
+def test_partial_dispatched_provider_only_fails_closed(tmp_path):
+    _, summary = _drive(mode=MODE_LOCAL_RUNTIME, out=tmp_path / "e",
+                        detail=_detail_parts(bp=_PROVIDER, bm=_MODEL, dp=_PROVIDER))
+    assert "dispatched_incomplete" in _kinds(summary)
+    assert _cli.identity_gate_exit_code(summary) == 6
+
+
+def test_partial_dispatched_model_only_fails_closed(tmp_path):
+    _, summary = _drive(mode=MODE_LOCAL_RUNTIME, out=tmp_path / "e",
+                        detail=_detail_parts(bp=_PROVIDER, bm=_MODEL, dm=_MODEL))
+    assert "dispatched_incomplete" in _kinds(summary)
+    assert _cli.identity_gate_exit_code(summary) == 6
+
+
+def test_partial_bound_identity_fails_closed(tmp_path):
+    _, summary = _drive(mode=MODE_REAL_PROVIDER, out=tmp_path / "e",
+                        detail=_detail_parts(bp=_PROVIDER, dp=_PROVIDER, dm=_MODEL))
+    assert "bound_incomplete" in _kinds(summary)
+    assert _cli.identity_gate_exit_code(summary) == 6
+
+
+def test_all_three_complete_and_equal_is_clean(tmp_path):
+    # bound + dispatched complete & equal (attested absent here) -> no divergence.
+    _, summary = _drive(mode=MODE_LOCAL_RUNTIME, out=tmp_path / "e",
+                        detail=_detail_parts(bp=_PROVIDER, bm=_MODEL,
+                                             dp=_PROVIDER, dm=_MODEL))
+    assert _cli.identity_gate_exit_code(summary) == 0
+
+
+def test_complete_bound_vs_dispatched_mismatch_fails_closed(tmp_path):
+    _, summary = _drive(mode=MODE_REAL_PROVIDER, out=tmp_path / "e",
+                        detail=_detail_parts(bp=_PROVIDER, bm=_MODEL,
+                                             dp="other-provider", dm=_MODEL))
+    assert "bound_vs_dispatched" in _kinds(summary)
+    assert _cli.identity_gate_exit_code(summary) == 6

@@ -1705,29 +1705,50 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
-    # WAVE-30H #3: a managed run is bound to a sealed substrate (the effective
-    # binding validated at admission). Provider/model/base_url/client fallback would
-    # silently drift OFF that substrate with no signed rebind authorization — the
-    # signed rebind ACCEPT path is intentionally deferred, so ANY managed fallback
-    # must FAIL CLOSED here (never escape the sealed substrate). Gated on BOTH the
-    # MANAGED trust mode AND the per-agent admitted context (set at admission,
-    # inherited by delegated children): a real managed worker satisfies both, while a
-    # standalone run / MagicMock test double (which auto-creates _admitted_command but
-    # runs in standalone trust mode) does not — so non-managed fallback resilience is
-    # preserved. The run then surfaces the original provider error and terminates.
-    if getattr(agent, "_admitted_command", None) is not None:
-        try:
-            from youtab_runtime import managed_execution as _mx
+    # WAVE-30H #3 / Batch2 #6: a managed run is bound to a sealed substrate (the
+    # effective binding validated at admission). Provider/model/base_url/client
+    # fallback would silently drift OFF that substrate with no signed rebind
+    # authorization — the signed rebind ACCEPT path is intentionally deferred, so ANY
+    # managed fallback must FAIL CLOSED here. Determine managed status at this
+    # AUTHORITY BOUNDARY fail-closed:
+    #   * a genuine sealed admitted context (a real AdmittedCommand — isinstance, so a
+    #     MagicMock test double's auto-created attribute is NOT a false positive), OR
+    #   * MANAGED trust mode (covers a pre-admitted worker whose fallback fires during
+    #     _init_agent, BEFORE _admitted_command is attached — finding #1's ordering).
+    # If trust-mode inspection RAISES, we cannot confirm the run is standalone: read
+    # the raw managed markers and, for any admitted/managed indication, fail closed
+    # (never assume standalone at this boundary). A genuine standalone run resolves
+    # trust mode without error and is unaffected.
+    _managed_authority = False
+    try:
+        from youtab_runtime import managed_execution as _mx
 
-            _is_managed = _mx.current_trust_mode() is _mx.TrustMode.MANAGED
-        except Exception:  # noqa: BLE001 — if trust mode is unavailable, do not block
-            _is_managed = False
-        if _is_managed:
-            logger.error(
-                "managed run: provider fallback disabled (sealed substrate); refusing "
-                "to drift from the bound identity without a signed rebind authorization"
+        _real_admitted = isinstance(
+            getattr(agent, "_admitted_command", None), _mx.AdmittedCommand
+        )
+        try:
+            _managed_mode = _mx.current_trust_mode() is _mx.TrustMode.MANAGED
+        except Exception:  # noqa: BLE001 — trust mode indeterminate at this boundary
+            _raw = (os.environ.get("YOUTAB_RUNTIME_TRUST_MODE") or "").strip().lower()
+            _managed_mode = (
+                _real_admitted
+                or _raw == "managed"
+                or bool(os.environ.get("YOUTAB_AGENT_KANBAN_TASK"))
             )
-            return False
+        _managed_authority = _real_admitted or _managed_mode
+    except Exception:  # noqa: BLE001 — cannot import the authority module: fail closed
+        # Only block if there is ANY sign this is a managed run; a pure standalone
+        # process without managed markers keeps its fallback resilience.
+        _managed_authority = bool(os.environ.get("YOUTAB_AGENT_KANBAN_TASK")) or (
+            (os.environ.get("YOUTAB_RUNTIME_TRUST_MODE") or "").strip().lower()
+            == "managed"
+        )
+    if _managed_authority:
+        logger.error(
+            "managed run: provider fallback disabled (sealed substrate); refusing "
+            "to drift from the bound identity without a signed rebind authorization"
+        )
+        return False
     if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the

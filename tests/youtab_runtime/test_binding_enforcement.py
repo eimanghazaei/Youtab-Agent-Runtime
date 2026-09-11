@@ -317,6 +317,51 @@ def test_quarantine_nondate_fails_closed(monkeypatch, val):
     assert _legacy_binding_quarantine_active() is False
 
 
+# ── binding-version policy at the worker (WAVE-30H #F7) ───────────────────────
+
+def _v1_binding(**over):
+    return eb.build_effective_binding(
+        provider="ollama", model="qwen:tag", endpoint="http://127.0.0.1:11434",
+        run_id=_RUN, root_run_id=_RUN, tenant="t1", workspace=_WS,
+        binding_version=1, **over,
+    )
+
+
+def test_unknown_binding_version_refused_at_worker():
+    b = _binding()
+    b["binding_version"] = 99  # unknown -> verify_binding fails -> refusal
+    with pytest.raises(ManagedWorkerAdmissionError):
+        _enforce(_agent(), _env(), b)
+
+
+def test_legacy_v1_refused_outside_migration_window(monkeypatch):
+    monkeypatch.delenv("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", raising=False)
+    monkeypatch.delenv("YOUTAB_MANAGED_BINDING_LEGACY_CREATED_BEFORE", raising=False)
+    with pytest.raises(ManagedWorkerAdmissionError, match="legacy binding_version"):
+        _enforce(_agent(), _env(), _v1_binding(), created_at=999_999_000)
+
+
+def test_legacy_v1_accepted_in_migration_window(monkeypatch):
+    monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", "2099-01-01")
+    monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_CREATED_BEFORE", "1000000000")
+    import youtab_agent_cli.worker_admission as wa
+    monkeypatch.setattr(wa, "_audit_binding_quarantine", lambda t, r: True)
+    # A genuine pre-contract v1 run inside the audited window is admitted (stub worker).
+    _enforce(_agent(), _env(), _v1_binding(), created_at=999_999_000)
+
+
+def test_legacy_v1_attested_claim_refused(monkeypatch):
+    # A v1 binding CANNOT cryptographically possess attested model-digest protection.
+    monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", "2099-01-01")
+    monkeypatch.setenv("YOUTAB_MANAGED_BINDING_LEGACY_CREATED_BEFORE", "1000000000")
+    b = _v1_binding()
+    b["digest_status"] = "attested"                 # forged claim (outside v1 hash)
+    b["model_digest"] = "a" * 64
+    b["binding_hash"] = eb.compute_binding_hash(b)   # still verifies under v1
+    with pytest.raises(ManagedWorkerAdmissionError, match="cannot cryptographically possess"):
+        _enforce(_agent(), _env(), b, created_at=999_999_000)
+
+
 # ── explicit zero-provider / zero-spend proof on every rejection ─────────────
 
 def test_every_rejection_is_zero_spend_zero_provider(monkeypatch):

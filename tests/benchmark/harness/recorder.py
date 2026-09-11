@@ -240,23 +240,32 @@ class Recorder:
                         left: {"provider": lp or None, "model": lm or None},
                         right: {"provider": rp or None, "model": rm or None},
                     })
-            # WAVE-30H #5b: a real managed run that carries an attested/bound identity
-            # MUST also expose a DISPATCHED identity (what the worker actually ran on).
-            # Previously a missing dispatched identity produced zero pair-divergences
-            # and passed as clean — a real run could certify green with no proof of
-            # what executed. Fail closed. Mode-gated to the real-runtime tracks so
-            # deterministic / Track-A records (which never populate attested/bound)
-            # stay clean and this cannot false-positive the deterministic gate.
-            attested_or_bound = bool(
-                sides["attested"][0] or sides["attested"][1]
-                or sides["bound"][0] or sides["bound"][1]
+            # WAVE-30H #5 + Batch2 #F5: the three-way identity proof requires COMPLETE
+            # provider+model tuples — a PARTIAL side (provider XOR model) is never valid
+            # evidence and always fails closed (previously the gate accepted provider-
+            # only or model-only dispatched evidence, and the pairwise checks silently
+            # skipped a half-populated side).
+            _is_real_runtime = r.get("mode") in (MODE_LOCAL_RUNTIME, MODE_REAL_PROVIDER)
+            for _side in ("attested", "bound", "dispatched"):
+                _sp, _sm = sides[_side]
+                if bool(_sp) != bool(_sm):  # exactly one present -> partial -> fail closed
+                    identity_divergences.append({
+                        "scenario_id": r["scenario_id"],
+                        "run_id": r["run_id"],
+                        "kind": f"{_side}_incomplete",
+                        _side: {"provider": _sp or None, "model": _sm or None},
+                    })
+            # A real-runtime run that carries a COMPLETE attested/bound identity MUST
+            # also expose a COMPLETE dispatched identity (what actually executed). A
+            # fully-missing dispatched identity is caught here; a partial one is caught
+            # by the completeness loop above. Mode-gated so deterministic / Track-A
+            # records (no attested/bound) stay clean.
+            attested_or_bound_complete = (
+                (sides["attested"][0] and sides["attested"][1])
+                or (sides["bound"][0] and sides["bound"][1])
             )
             dp, dm = sides["dispatched"]
-            if (
-                r.get("mode") in (MODE_LOCAL_RUNTIME, MODE_REAL_PROVIDER)
-                and attested_or_bound
-                and not (dp or dm)
-            ):
+            if _is_real_runtime and attested_or_bound_complete and not (dp or dm):
                 identity_divergences.append({
                     "scenario_id": r["scenario_id"],
                     "run_id": r["run_id"],

@@ -13357,6 +13357,27 @@ class YoutabCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 
+        # WAVE-30H Batch2 #F1: run the CLIENT-INDEPENDENT pre-admission gate BEFORE
+        # constructing the agent. _init_agent resolves a provider client and performs
+        # Ollama/OpenRouter/LM-Studio HTTP; a managed run with a missing / forged /
+        # expired / tampered / cross-tenant / cross-run / cross-workspace grant or
+        # binding must be refused with NO client and NO network. preadmit is a no-op
+        # (returns False) in standalone / non-kanban runs; it re-verifies the persisted
+        # signed grant (no nonce re-burn, no authority broadening) and the binding's
+        # presence/integrity/version/tenant/run/workspace scope. The FULL admission
+        # (provider/model/endpoint drift + attested model-digest re-probe) still runs
+        # post-construction below. The error is NOT swallowed — it fails closed exit 3.
+        try:
+            from youtab_agent_cli.worker_admission import (
+                ManagedWorkerAdmissionError,
+                preadmit_managed_run,
+            )
+
+            preadmit_managed_run()
+        except ManagedWorkerAdmissionError as _adm_exc:
+            print(f"managed_admission_failed: {_adm_exc}", file=sys.stderr)
+            sys.exit(3)
+
         # Initialize agent if needed
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
@@ -17878,6 +17899,23 @@ def main(
                     turn_route = cli._resolve_turn_agent_config(effective_query)
                     if turn_route["signature"] != cli._active_agent_route_signature:
                         cli.agent = None
+                    # WAVE-30H Batch2 #F1: client-independent pre-admission gate BEFORE
+                    # _init_agent — a managed run with an invalid grant/binding is
+                    # refused (exit 3) with NO provider client and NO network. No-op in
+                    # standalone; full admission (drift + digest re-probe) still runs
+                    # post-construction below. Error is NOT swallowed.
+                    try:
+                        from youtab_agent_cli.worker_admission import (
+                            ManagedWorkerAdmissionError,
+                            preadmit_managed_run,
+                        )
+
+                        preadmit_managed_run()
+                    except ManagedWorkerAdmissionError as _adm_exc:
+                        print(
+                            f"managed_admission_failed: {_adm_exc}", file=sys.stderr
+                        )
+                        sys.exit(3)
                     if cli._init_agent(
                         model_override=turn_route["model"],
                         runtime_override=turn_route["runtime"],

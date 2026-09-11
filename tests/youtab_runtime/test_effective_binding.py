@@ -159,3 +159,54 @@ def test_attested_digest_excluded_from_substrate_digest():
     assert eb.binding_digest(attested) == eb.binding_digest(not_probed)
     # ...but the per-run hashes DIFFER (the digest is a hashed identity field).
     assert attested["binding_hash"] != not_probed["binding_hash"]
+
+
+# ── versioned binding-hash contract (WAVE-30H #F7) ───────────────────────────
+
+def test_new_bindings_use_current_version_and_cover_digest():
+    b = eb.build_effective_binding(provider="ollama", model="m", run_id="r1",
+                                   model_digest="a" * 64)
+    assert b["binding_version"] == eb.CURRENT_BINDING_VERSION == 2
+    assert eb.verify_binding(b)
+    b["model_digest"] = "b" * 64  # covered by the v2 hash -> tamper-evident
+    assert not eb.verify_binding(b)
+
+
+def test_v1_binding_verifies_with_v1_field_set():
+    # A legacy v1 binding is hashed WITHOUT digest_status/model_digest and verifies
+    # under the v1 field set (never the v2 algorithm).
+    v1 = eb.build_effective_binding(provider="ollama", model="m", run_id="r1",
+                                    tenant="t1", workspace="w1", binding_version=1)
+    assert v1["binding_version"] == 1
+    assert eb.verify_binding(v1)
+    # A v2-hash of the same identity is DIFFERENT (proves per-version algorithm).
+    v2 = eb.build_effective_binding(provider="ollama", model="m", run_id="r1",
+                                    tenant="t1", workspace="w1", binding_version=2)
+    assert v1["binding_hash"] != v2["binding_hash"]
+
+
+def test_v1_cannot_forge_attested_digest_into_its_hash():
+    # digest_status/model_digest are OUTSIDE the v1 hash set, so a v1 binding cannot
+    # cryptographically bind an attested digest — setting them does not change the v1
+    # hash (the worker separately refuses a v1 "attested" claim).
+    v1 = eb.build_effective_binding(provider="ollama", model="m", run_id="r1",
+                                    binding_version=1)
+    h = v1["binding_hash"]
+    v1["digest_status"] = "attested"
+    v1["model_digest"] = "a" * 64
+    assert eb.compute_binding_hash(v1) == h  # unchanged -> not protected by v1 hash
+
+
+def test_unknown_binding_version_fails_closed():
+    b = eb.build_effective_binding(provider="ollama", model="m", run_id="r1")
+    b["binding_version"] = 99  # unknown -> no defined field set
+    assert eb.verify_binding(b) is False  # fail closed, never guess an algorithm
+
+
+def test_rescope_preserves_binding_version():
+    for ver in (1, 2):
+        parent = eb.build_effective_binding(provider="ollama", model="m", run_id="rA",
+                                            binding_version=ver)
+        child = eb.rescope_binding(parent, run_id="rB")
+        assert child["binding_version"] == ver
+        assert eb.verify_binding(child)  # re-hashed under the SAME version's set

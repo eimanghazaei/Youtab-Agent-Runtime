@@ -1035,19 +1035,66 @@ def test_idempotent_replay_binding_digest_mismatch_fails_closed(client, monkeypa
     assert r3.json()["detail"]["error"] == "binding_digest_mismatch"
 
 
+def test_idempotent_replay_model_digest_mismatch_fails_closed(client, monkeypatch):
+    # Batch2 #F4: a replayed Idempotency-Key with the SAME substrate but a DIFFERENT
+    # expected_model_digest must fail closed (412) — binding_digest excludes
+    # model_digest, so the model artifact is compared separately (constant-time). A
+    # run pinned to a different model artifact is never returned as if it matched.
+    import json
+
+    from youtab_agent_cli.web_routers import runtime as R
+
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("ollama", "qwen:test", "http://127.0.0.1:11434"),
+    )
+
+    def _create(model_digest, nonce):
+        body = json.dumps({"agent": "default", "task": "t",
+                           "expected_model_digest": model_digest}).encode()
+        path = "/api/runtime/v1/runs"
+        headers = _identity_headers()
+        headers.update(_sign("POST", path, "tenantA", "userA", body, nonce=nonce))
+        headers["Content-Type"] = "application/json"
+        headers["Idempotency-Key"] = "idem-mdigest-4"
+        return client.post(path, content=body, headers=headers)
+
+    r1 = _create("a" * 64, "md4-a")
+    assert r1.status_code in (200, 201), r1.text
+    rid = r1.json()["run_id"]
+    # Matching replay -> same run.
+    r2 = _create("a" * 64, "md4-b")
+    assert r2.status_code == 200 and r2.json()["run_id"] == rid, r2.text
+    # Different model digest, same key/substrate -> fail closed (never return rid).
+    r3 = _create("b" * 64, "md4-c")
+    assert r3.status_code == 412, r3.text
+    assert r3.json()["detail"]["error"] == "model_digest_mismatch"
+
+
 def test_retry_refuses_tampered_parent_binding(client):
     # WAVE-30H #4: a tampered-at-rest parent binding must NOT be laundered into a
-    # fresh valid child binding on retry — fail closed, create no child.
-    oid = _seed_bound_original()
+    # fresh valid child binding on retry — fail closed, create no child. Seed the run
+    # with a SINGLE tampered binding event (its stale hash no longer self-verifies) so
+    # it is the current binding effective_binding_from_events selects.
     with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
-        events = kb.list_events(conn, oid)
-        parent = next(e.payload for e in events if e.kind == runtime.eb.BINDING_EVENT)
-        parent = dict(parent)
-        parent["model"] = "ollama/EVIL"  # tamper substrate, keep the stale hash
-        parent["binding_version"] = 2    # higher version -> this is now the CURRENT binding
-        assert not runtime.eb.verify_binding(parent)
+        oid = kb.create_task(
+            conn, title="tampered", body="x", assignee="default",
+            created_by="userA", tenant="tenantA",
+            model_override="ollama/qwen-test", provider_override="ollama",
+            board=runtime.RUNTIME_BOARD, correlation_id="cid-test",
+        )
+        tampered = dict(runtime.eb.build_effective_binding(
+            provider="ollama", model="ollama/qwen-test",
+            endpoint="http://127.0.0.1:11434", run_id=oid, root_run_id=oid,
+            tenant="tenantA"))
+        tampered["model"] = "ollama/EVIL"  # tamper substrate AFTER hashing (stale hash)
+        assert not runtime.eb.verify_binding(tampered)
         with kb.write_txn(conn):
-            kb._append_event(conn, oid, runtime.eb.BINDING_EVENT, parent)
+            kb._append_event(conn, oid, runtime._MODE_EVENT,
+                             {"mode": "model", "correlation_id": "cid-test"})
+            kb._append_event(conn, oid, runtime._ENGINE_EVENT,
+                             {"profile_id": "eco.v01", "public_label": "ECO"})
+            kb._append_event(conn, oid, runtime.eb.BINDING_EVENT, tampered)
     before = _count_retry_children()
     r = _post_retry(client, oid)
     assert r.status_code == 422, r.text
