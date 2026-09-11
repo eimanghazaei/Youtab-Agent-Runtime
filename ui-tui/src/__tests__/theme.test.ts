@@ -43,27 +43,39 @@ describe('DEFAULT_THEME', () => {
   it('has brand defaults', async () => {
     const { DEFAULT_THEME } = await importThemeWithCleanEnv()
 
-    expect(DEFAULT_THEME.brand.name).toBe('Youtab Agent Runtime')
+    expect(DEFAULT_THEME.brand.name).toBe('Youtab RunTime')
     expect(DEFAULT_THEME.brand.prompt).toBe('❯')
     expect(DEFAULT_THEME.brand.tool).toBe('┊')
+  })
+
+
+
+  it('uses the Youtab RunTime wordmark and logo art', async () => {
+    const { DARK_THEME } = await importThemeWithCleanEnv()
+    const { caduceus, logo } = await import('../banner.js')
+    const logoText = logo(DARK_THEME.color).map(([, text]) => text).join('\n')
+    const heroText = caduceus(DARK_THEME.color).map(([, text]) => text).join('\n')
+
+    expect(logoText).toContain('█   █  ███  █   █ █████')
+    expect(logoText).not.toContain('██╗  ██╗███████╗██████╗ ███╗   ███╗')
+    expect(heroText).toContain('╭──────────────╮')
   })
 
   it('has color palette', async () => {
     const { DEFAULT_THEME } = await importThemeWithCleanEnv()
 
-    expect(DEFAULT_THEME.color.primary).toBe('#FFD700')
+    expect(DEFAULT_THEME.color.primary).toBe('#0096FF')
     expect(DEFAULT_THEME.color.error).toBe('#ef5350')
   })
 })
 
 describe('LIGHT_THEME', () => {
-  it('avoids bright-yellow accents unreadable on white backgrounds (#11300)', async () => {
+  it('uses readable Ocean Blue accents on light backgrounds', async () => {
     const { LIGHT_THEME } = await importThemeWithCleanEnv()
 
-    expect(LIGHT_THEME.color.primary).not.toBe('#FFD700')
-    expect(LIGHT_THEME.color.accent).not.toBe('#FFBF00')
-    expect(LIGHT_THEME.color.muted).not.toBe('#B8860B')
-    expect(LIGHT_THEME.color.statusWarn).not.toBe('#FFD700')
+    expect(LIGHT_THEME.color.primary).toBe('#0067C5')
+    expect(LIGHT_THEME.color.accent).toBe('#0077D8')
+    expect(LIGHT_THEME.color.statusWarn).toBe('#0067C5')
   })
 
   it('keeps the same shape as DARK_THEME', async () => {
