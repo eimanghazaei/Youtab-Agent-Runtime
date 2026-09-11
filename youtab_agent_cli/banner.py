@@ -89,8 +89,12 @@ def _render_youtab_logo(columns: int):
     if content_box:
         image = image.crop(content_box)
 
-    target_width = max(24, min(int(columns), 72))
-    target_height = max(2, round(image.height * target_width / max(image.width, 1)))
+    # Fit within 72 columns and 14 terminal rows. The source asset is square,
+    # so a width-only resize would push the useful banner content off-screen.
+    max_width = max(24, min(int(columns), 72))
+    scale = min(max_width / max(image.width, 1), 28 / max(image.height, 1))
+    target_width = max(12, round(image.width * scale))
+    target_height = max(2, round(image.height * scale))
     if target_height % 2:
         target_height += 1
     image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
