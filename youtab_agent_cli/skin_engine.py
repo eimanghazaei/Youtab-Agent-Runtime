@@ -32,7 +32,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       banner_dim: "#5F91B8"               # Dim/muted text (separators, labels)
       banner_text: "#D8F3FF"              # Body text (tool names, skill names)
       ui_accent: "#0096FF"               # General UI accent
-      ui_label: "#72D4FF"                # UI labels (warm gold; teal clashed w/ default banner gold)
+      ui_label: "#72D4FF"                # UI labels (light Ocean Blue)
       ui_ok: "#4caf50"                   # Success indicators
       ui_error: "#ef5350"                # Error indicators
       ui_warn: "#ffa726"                 # Warning indicators
@@ -173,8 +173,8 @@ class SkinConfig:
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
-    banner_logo: str = ""    # Rich-markup Youtab RunTime wordmark
-    banner_hero: str = ""    # Rich-markup terminal rendition of the Youtab logo
+    banner_logo: str = ""    # Optional Rich-markup wordmark for custom skins
+    banner_hero: str = ""    # Optional Rich-markup hero for custom skins
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -274,22 +274,6 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "help_header": "(^_^)? Available Commands",
         },
         "tool_prefix": "┊",
-        "banner_logo": """[bold #A6E9FF]█   █  ███  █   █ █████  ███  ████      ████  █   █ █   █ █████ █████ █   █ █████[/]
-[bold #72D4FF] █ █  █   █ █   █   █   █   █ █   █     █   █ █   █ ██  █   █     █   ██ ██ █    [/]
-[#33B8FF]  █   █   █ █   █   █   █████ ████      ████  █   █ █ █ █   █     █   █ █ █ ████ [/]
-[#0096FF]  █   █   █ █   █   █   █   █ █   █     █  █  █   █ █  ██   █     █   █   █ █    [/]
-[#0067C5]  █    ███   ███    █   █   █ ████      █   █  ███  █   █   █   █████ █   █ █████[/]""",
-        "banner_hero": """[#A6E9FF]        ╭──────────────╮[/]
-[#72D4FF]      ╭─╯              ╰─╮[/]
-[#5ACBFF]     │    ██      ██     │[/]
-[#42BEFF]     │     ██    ██      │[/]
-[#33B8FF]     │      ██  ██       │[/]
-[#1AA8FF]     │       ████        │[/]
-[#0096FF]     │        ██         │[/]
-[#007FD9]     │        ██         │[/]
-[#006FC9]     │        ██         │[/]
-[#0067C5]      ╰─╮              ╭─╯[/]
-[#0059AD]        ╰──────────────╯[/]""",
     },
     "ares": {
         "name": "ares",

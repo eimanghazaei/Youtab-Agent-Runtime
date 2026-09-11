@@ -1,5 +1,6 @@
 """Tests for banner toolset name normalization and skin color usage."""
 
+import hashlib
 from unittest.mock import patch
 
 from rich.console import Console
@@ -34,12 +35,19 @@ def test_banner_hides_internal_skill_categories_without_disabling_them():
     assert catalog["autonomous-ai-agents"] == ["claude-code", "codex"]
 
 
-def test_default_banner_uses_youtab_runtime_ocean_blue_branding():
-    """The legacy Hermes wordmark and caduceus must not return."""
-    assert "YOUTAB RunTime" not in banner.YOUTAB_RUNTIME_LOGO
-    assert "#0096FF" in banner.YOUTAB_RUNTIME_LOGO
-    assert "╭──────────────╮" in banner.YOUTAB_LOGO_HERO
-    assert "██╗  ██╗███████╗██████╗ ███╗   ███╗" not in banner.YOUTAB_RUNTIME_LOGO
+def test_default_banner_uses_exact_youtab_logo_asset_and_ocean_blue_branding():
+    """The official PNG is bundled byte-for-byte; guessed logo art must not return."""
+    logo_bytes = banner.YOUTAB_LOGO_ASSET.read_bytes()
+    git_blob = hashlib.sha1(
+        f"blob {len(logo_bytes)}\\0".encode() + logo_bytes,
+        usedforsecurity=False,
+    ).hexdigest()
+
+    assert banner.YOUTAB_LOGO_ASSET.name == "Youtab_AI_COS.PNG"
+    assert git_blob == "a4d0e65fbc7fe8789eaee2d9f1eca35feb4ed9c2"
+    assert banner.YOUTAB_RUNTIME_LOGO == "[bold #0096FF]Youtab RunTime[/]"
+    assert banner.YOUTAB_LOGO_HERO == ""
+    assert banner._render_youtab_logo(48).plain.strip()
     assert banner.format_banner_version_label().startswith("Youtab RunTime v")
 
 

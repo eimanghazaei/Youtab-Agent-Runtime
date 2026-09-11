@@ -417,7 +417,7 @@ py-modules = [
 include = ["agent", "agent.*", "tools", "tools.*", "youtab_agent_cli", "youtab_agent_cli.*", "youtab_runtime", "youtab_runtime.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.setuptools.package-data]
-youtab_agent_cli = ["observability/schemas/*.json", "data/*.json"]
+youtab_agent_cli = ["observability/schemas/*.json", "data/*.json", "assets/*.PNG"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram
