@@ -222,16 +222,28 @@ class HttpRuntimeSeam:
             self_reported_success=bool(detail.get("result")),
             reported_usage=detail.get("usage"),
             timings={}, engine_pinned=engine,
-            # Capture the provider/model the worker ACTUALLY dispatched on (from the
-            # run detail — what executed, not what was requested), so a Track-B run's
-            # evidence records the real substrate and the recorder can fail closed if
-            # it ever diverges from the attested identity. Non-secret names only.
-            provenance={
-                "seam": self.name,
-                "dispatched_provider": detail.get("provider"),
-                "dispatched_model": detail.get("model"),
-            },
+            # Capture, from the run detail (non-secret names only):
+            #  * bound_*      — the runtime's canonical effective binding (the
+            #    identity the run was BOUND to, from runtime_effective_binding);
+            #  * dispatched_* — what the worker ACTUALLY executed on (closing-run
+            #    metadata). The recorder reconciles attested == bound == dispatched
+            #    and fails closed on any drift (WAVE-30H 3-way check).
+            provenance=self._identity_provenance(detail),
         )
+
+    @staticmethod
+    def _identity_provenance(detail: Dict[str, Any]) -> Dict[str, Any]:
+        binding = detail.get("runtime_effective_binding")
+        if not isinstance(binding, dict):
+            binding = {}
+        return {
+            "seam": HttpRuntimeSeam.name,
+            "bound_provider": binding.get("provider"),
+            "bound_model": binding.get("model"),
+            "bound_binding_version": binding.get("binding_version"),
+            "dispatched_provider": detail.get("provider"),
+            "dispatched_model": detail.get("model"),
+        }
 
     def _artifacts(self, run_id: str) -> List[Dict[str, Any]]:
         try:

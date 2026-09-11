@@ -54,6 +54,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 
 from youtab_agent_cli import agent_identity
+from youtab_agent_cli import effective_binding as eb
 from youtab_agent_cli import engine_connection
 from youtab_agent_cli import kanban_db as kb
 from youtab_agent_cli import runtime_command_auth as rca
@@ -784,11 +785,46 @@ def _retry_execution_binding(
                             "reason": "engine selection event has empty profile_id"},
                 )
             break
+    # WAVE-30H: inherit the parent's immutable effective binding UNCHANGED and pin
+    # the child row from it, so a config change AFTER the original run can never
+    # silently re-resolve a different provider/model on retry. Fail closed when an
+    # attested run lacks a binding, when a binding is corrupt, or when it carries no
+    # resolved model to pin.
+    binding = eb.effective_binding_from_events(events)
+    attested = any(
+        e.kind in (_ENGINE_EVENT, _GRANT_EVENT)
+        for e in events
+        if isinstance(getattr(e, "payload", None), dict)
+    )
+    if binding is not None and binding.get("__corrupt__"):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "retry_binding_invalid",
+                    "reason": "effective binding has no binding_version"},
+        )
+    if binding is None and attested:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "retry_binding_missing",
+                    "reason": "attested run has no persisted effective binding"},
+        )
+    if binding is not None and not model_override:
+        # Pin the child row from the binding ONLY when it carries a RESOLVED
+        # concrete model — that is the drift that must be frozen (a cloud/branded
+        # identity re-resolving from changed config). An unresolved/config-default
+        # binding has no concrete identity to pin, so the child re-resolves exactly
+        # as the original did (legacy-safe); the binding is still re-recorded.
+        if binding.get("model_identifier_status") == "resolved" and binding.get("model"):
+            model_override = binding.get("model_ref") or binding.get("model")
+            provider_override = binding.get("provider")
     return {
         "model_override": model_override,
         "provider_override": provider_override,
         "engine_selection": engine_selection,
         "limits": limits,
+        # Re-recorded UNCHANGED onto the child (same binding_version) so the
+        # lineage is immutable; None for a legacy run with no binding.
+        "effective_binding": binding,
     }
 
 
@@ -914,6 +950,11 @@ def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, A
         # The branded engine the caller selected at create, if any (consumer-safe
         # {profile_id, public_label} only; never the provider/model it resolved to).
         "engine_selection": _engine_selection_from_events(events),
+        # WAVE-30H: the canonical immutable per-run effective binding (the BOUND
+        # identity). ``model``/``provider`` above are the DISPATCHED identity (worker
+        # metadata); the harness reconciles bound vs dispatched and fails closed on
+        # any drift. Non-secret classification only; None for a legacy run.
+        "runtime_effective_binding": eb.effective_binding_from_events(events),
         "runs": [
             {
                 "id": r.id,
@@ -1601,6 +1642,39 @@ async def runtime_preflight(
     local_zero_armed = cost_policy == "local_zero_verified" and model_status == "resolved"
     budget_enforced = campaign_armed or local_zero_armed
 
+    # WAVE-30H: the canonical effective binding the runtime WOULD bind for this
+    # dispatch — ONE contract. When an engine is named it is the per-engine
+    # attestation (which MAY have probed the digest) projected into the binding
+    # shape; otherwise it is the config-default identity built purely. The harness
+    # verifies its Owner --expected-* AGAINST this (never a parallel identity).
+    if attestation is not None:
+        _att_digest = attestation.get("ollama_model_digest")
+        if _att_digest:
+            _digest_status = "attested"
+        elif attestation.get("ollama_digest_status") == "not_applicable":
+            _digest_status = "not_applicable"
+        else:
+            _digest_status = "not_probed"
+        effective_binding = {
+            "binding_version": 1,
+            "provider": attestation.get("provider"),
+            "model": attestation.get("model"),
+            "model_ref": attestation.get("model_ref"),
+            "model_identifier_status": attestation.get("model_identifier_status"),
+            "execution": attestation.get("execution"),
+            "endpoint_class": attestation.get("endpoint_class"),
+            "provider_cost_policy": attestation.get("provider_cost_policy"),
+            "digest_status": _digest_status,
+            "model_digest": _att_digest,
+            "bound_at": eb.utc_iso_now(),
+        }
+    else:
+        effective_binding = eb.build_effective_binding(
+            provider=names.get("provider"),
+            model=names.get("model"),
+            endpoint=_configured_inference_base_url(),
+        )
+
     return {
         "ok": True,
         "service_ready": True,
@@ -1628,6 +1702,9 @@ async def runtime_preflight(
         # Per-engine effective-binding attestation (None unless ?engine= given).
         "engine_attestation": attestation,
         "engine_attestation_error": engine_error,
+        # WAVE-30H canonical effective binding the harness verifies --expected-*
+        # against (one contract; present for both tracks).
+        "effective_binding": effective_binding,
     }
 
 
@@ -1949,6 +2026,18 @@ async def runtime_create_run(
             raise HTTPException(
                 status_code=422, detail={"error": "engine_unbound"}
             )
+        # Managed direct-API fail-closed (WAVE-30H): a MANAGED run that selected a
+        # branded engine MUST resolve to a concrete (provider, model) pin — never
+        # silently dispatch the worker default on an unbound (e.g. cloud) engine,
+        # which would falsely attribute the run and bypass the binding contract.
+        # Standalone is exempt (an unbound engine is honoured + recorded below).
+        from youtab_runtime import managed_execution as _mx_gate
+        if _mx_gate.current_trust_mode() is _mx_gate.TrustMode.MANAGED and (
+            _pin is None or not model_override
+        ):
+            raise HTTPException(
+                status_code=422, detail={"error": "engine_unbound"}
+            )
 
         # Split-brain guard (fail CLOSED): a local-server engine (e.g. ECO on an
         # on-prem Ollama) must execute against the SAME server its availability
@@ -2049,6 +2138,25 @@ async def runtime_create_run(
     want_det = bool(payload.get("deterministic", False))
     mode = "deterministic" if (want_det and _deterministic_worker_enabled()) else "model"
 
+    # WAVE-30H canonical binding: resolve the effective execution identity PURELY
+    # (config/classification only — NO network/Ollama probe on this hot path) and
+    # persist it as a durable immutable event (below) so retries/respawns/children
+    # inherit the SAME provider/model and the harness can reconcile attested ==
+    # bound == dispatched. The model-manifest digest stays deferred to preflight.
+    _conn_for_binding = engine_connection.resolve_connection(engine) if engine else None
+    if _conn_for_binding is not None:
+        _bind_provider = _conn_for_binding.provider
+        _bind_model = _conn_for_binding.model
+        _bind_endpoint = _conn_for_binding.endpoint
+    else:
+        _bind_names = _configured_model_provider_names()
+        _bind_provider = _bind_names.get("provider")
+        _bind_model = _bind_names.get("model")
+        _bind_endpoint = _configured_inference_base_url()
+    effective_binding_payload = eb.build_effective_binding(
+        provider=_bind_provider, model=_bind_model, endpoint=_bind_endpoint,
+    )
+
     _enqueue_epoch_ns = _st_ing.mark_epoch() if _st_ing is not None else None
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         run_id, created = kb.create_task_ex(
@@ -2094,6 +2202,13 @@ async def runtime_create_run(
                         # R8: ns wall-clock enqueue mark for cross-process QUEUE_WAIT.
                         "enqueue_epoch_ns": _enqueue_epoch_ns,
                     },
+                )
+                # WAVE-30H: persist the canonical immutable effective binding
+                # (exactly-once per created run, like the mode/engine events) so
+                # retries/respawns/children inherit it and evidence can reconcile
+                # attested == bound == dispatched. Append-only; never mutated.
+                kb._append_event(
+                    conn, run_id, eb.BINDING_EVENT, effective_binding_payload
                 )
                 # Record the branded engine selection (consumer-safe: profile_id
                 # + public label only; never the provider/model it resolved to).
@@ -2544,6 +2659,16 @@ async def runtime_retry_run(
                     if _binding["limits"]:
                         kb._append_event(
                             conn, new_id, _LIMITS_EVENT, _binding["limits"]
+                        )
+                    # WAVE-30H: re-record the parent's immutable effective binding
+                    # UNCHANGED (same binding_version) so the child executes on — and
+                    # attests — the identical provider/model substrate. Inside this
+                    # fail-closed write_txn: if it cannot be persisted the child is
+                    # archived below (never dispatched on an unrecorded binding).
+                    if _binding.get("effective_binding") is not None:
+                        kb._append_event(
+                            conn, new_id, eb.BINDING_EVENT,
+                            _binding["effective_binding"],
                         )
                     # Persist the freshly-admitted Simorgh grant + frozen capability
                     # manifest onto the CHILD (managed mode only) so the dispatched

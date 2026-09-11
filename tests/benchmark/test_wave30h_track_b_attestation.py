@@ -56,18 +56,45 @@ _EFFECTIVE_KEYS = {
     "effective_endpoint_class",
     "effective_cost_policy",
     "effective_credential_source",
+    "effective_binding_version",
+    "effective_model_ref",
+}
+
+# Overrides routed into the nested effective_binding (vs top-level posture).
+_BINDING_OVERRIDES = {
+    "provider", "model", "model_ref", "model_identifier_status",
+    "execution", "endpoint_class", "provider_cost_policy",
+    "binding_version", "digest_status",
 }
 
 
 def _posture(**over):
-    """A runtime preflight posture that attests the Owner-selected cloud identity."""
-    p = {
+    """A runtime preflight posture whose canonical ``effective_binding`` attests the
+    Owner-selected cloud identity. Overrides for binding fields are routed into the
+    nested binding; others (credential source, budget) stay top-level."""
+    binding = {
+        "binding_version": 1,
         "provider": _EXP_PROVIDER,
         "model": _EXP_MODEL,
+        "model_ref": f"{_EXP_PROVIDER}/{_EXP_MODEL}",
+        "model_identifier_status": "resolved",
+        "execution": "cloud",
+        "endpoint_class": "cloud",
+        "provider_cost_policy": "campaign_budget_eur",
+        "digest_status": "not_applicable",
+        "model_digest": None,
+        "bound_at": "2026-09-11T00:00:00Z",
+    }
+    p = {
+        "effective_binding": binding,
         "provider_credential_source": "file",
         "budget_enforcement_enabled": True,
     }
-    p.update(over)
+    for key, value in over.items():
+        if key in _BINDING_OVERRIDES:
+            binding[key] = value
+        else:
+            p[key] = value
     return p
 
 
@@ -88,6 +115,9 @@ def test_accepts_correct_identity(track_b):
     assert eff["effective_endpoint_class"] == "cloud"
     assert eff["effective_cost_policy"] == "campaign_budget_eur"
     assert eff["effective_credential_source"] == "file"
+    # The binding spine the recorder reconciles against is carried through.
+    assert eff["effective_binding_version"] == 1
+    assert eff["effective_model_ref"] == f"{_EXP_PROVIDER}/{_EXP_MODEL}"
     # ONLY non-secret identity fields are returned — never a key/credential value.
     assert set(eff) == _EFFECTIVE_KEYS
 
@@ -167,6 +197,27 @@ def test_unarmed_budget_refused(track_b):
     with pytest.raises(PreflightError, match="budget enforcement"):
         assert_cloud_attestation(
             _posture(budget_enforcement_enabled=False), track_b,
+            expected_provider=_EXP_PROVIDER, expected_model=_EXP_MODEL,
+        )
+
+
+def test_missing_effective_binding_refused(track_b):
+    # One contract: without a runtime binding, --expected-* can only be checked
+    # against nothing — fail closed, never fall back to loose config names.
+    posture = _posture()
+    posture.pop("effective_binding")
+    with pytest.raises(PreflightError, match="no effective binding"):
+        assert_cloud_attestation(
+            posture, track_b,
+            expected_provider=_EXP_PROVIDER, expected_model=_EXP_MODEL,
+        )
+
+
+def test_non_metered_cost_policy_on_cloud_refused(track_b):
+    # A billed cloud run can never attest a local/free cost policy.
+    with pytest.raises(PreflightError, match="metered"):
+        assert_cloud_attestation(
+            _posture(provider_cost_policy="local_zero_verified"), track_b,
             expected_provider=_EXP_PROVIDER, expected_model=_EXP_MODEL,
         )
 
@@ -298,6 +349,49 @@ def test_dispatched_model_divergence_is_flagged(tmp_path):
     summary = runner.recorder.finalize()
     assert summary["identity_divergence_count"] == 1
     assert summary["identity_divergences"][0]["dispatched"]["model"] == "provider-x-model-v2"
+
+
+def test_attested_vs_bound_divergence_is_flagged(tmp_path):
+    # The runtime BOUND a different provider than the preflight ATTESTED.
+    out = tmp_path / "out"
+    runner = _runner(out)
+    _emit(runner, provenance={**_ATTESTED,
+                              "bound_provider": "other-cloud",
+                              "bound_model": _EXP_MODEL,
+                              "dispatched_provider": "other-cloud",
+                              "dispatched_model": _EXP_MODEL})
+    summary = runner.recorder.finalize()
+    kinds = {d["kind"] for d in summary["identity_divergences"]}
+    assert "attested_vs_bound" in kinds
+    assert summary["identity_divergence_count"] >= 1
+
+
+def test_bound_vs_dispatched_divergence_is_flagged(tmp_path):
+    # The worker DISPATCHED a different model than the run was BOUND to.
+    out = tmp_path / "out"
+    runner = _runner(out)
+    _emit(runner, provenance={**_ATTESTED,
+                              "bound_provider": _EXP_PROVIDER,
+                              "bound_model": _EXP_MODEL,
+                              "dispatched_provider": _EXP_PROVIDER,
+                              "dispatched_model": "provider-x-model-v2"})
+    summary = runner.recorder.finalize()
+    kinds = {d["kind"] for d in summary["identity_divergences"]}
+    assert "bound_vs_dispatched" in kinds
+
+
+def test_three_way_agreement_is_clean(tmp_path):
+    # attested == bound == dispatched → no divergence certifies cleanly.
+    out = tmp_path / "out"
+    runner = _runner(out)
+    _emit(runner, provenance={**_ATTESTED,
+                              "bound_provider": _EXP_PROVIDER,
+                              "bound_model": _EXP_MODEL,
+                              "dispatched_provider": _EXP_PROVIDER,
+                              "dispatched_model": _EXP_MODEL})
+    summary = runner.recorder.finalize()
+    assert summary["identity_divergences"] == []
+    assert summary["effective_identity"]["bound_provider"] == _EXP_PROVIDER
 
 
 def test_cli_fails_closed_on_identity_divergence(tmp_path):

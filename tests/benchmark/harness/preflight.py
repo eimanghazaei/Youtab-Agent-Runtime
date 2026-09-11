@@ -22,7 +22,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional
 
 # Consumer cloud-sync markers (matched case-insensitively against path parts).
 _CLOUD_MARKERS = (
@@ -410,16 +410,24 @@ def assert_cloud_attestation(
             "real_provider requires --expected-provider and --expected-model "
             "(the Owner-selected identity) — refusing"
         )
-    eff_provider = (p.get("provider") or "").strip()
-    eff_model = (p.get("model") or "").strip()
+    # ONE contract: verify the Owner's --expected-* AGAINST the runtime's canonical
+    # effective binding (never a parallel identity source). Absent binding => refuse.
+    binding = p.get("effective_binding")
+    if not isinstance(binding, dict) or not binding:
+        raise PreflightError(
+            "runtime reported no effective binding — refusing live cloud run"
+        )
+    eff_provider = (binding.get("provider") or "").strip()
+    eff_model = (binding.get("model") or "").strip()
+    status = binding.get("model_identifier_status")
     # An unresolved/placeholder effective identity is never accepted as attested.
     if not eff_provider or eff_provider == "OWNER_SELECTION_REQUIRED":
         raise PreflightError(
             "runtime reports no effective provider — refusing live cloud run"
         )
-    if not eff_model or eff_model == "OWNER_SELECTION_REQUIRED":
+    if not eff_model or eff_model == "OWNER_SELECTION_REQUIRED" or status != "resolved":
         raise PreflightError(
-            "runtime reports no effective model — refusing live cloud run"
+            "runtime reports no resolved effective model — refusing live cloud run"
         )
     if eff_provider.lower() != want_provider.lower():
         raise PreflightError(
@@ -441,6 +449,16 @@ def assert_cloud_attestation(
         raise PreflightError(
             f"provider {eff_provider!r} is excluded by the track contract — refusing"
         )
+    # Endpoint class + cost policy come from the runtime-attested binding (never
+    # hardcoded). A live Track B cloud run must be metered — a binding that attests
+    # a local/free cost policy is refused (a billed run cannot masquerade as free).
+    endpoint_class = (binding.get("endpoint_class") or "").strip() or "cloud"
+    cost_policy = (binding.get("provider_cost_policy") or "").strip()
+    if cost_policy != "campaign_budget_eur":
+        raise PreflightError(
+            f"Track B binding must be metered (campaign_budget_eur), got "
+            f"{cost_policy!r} — refusing"
+        )
     # A live cloud run must carry a file-based provider credential and an armed
     # metered budget — never a plaintext key and never an unbudgeted cloud spend.
     if p.get("provider_credential_source") != "file":
@@ -452,10 +470,6 @@ def assert_cloud_attestation(
         raise PreflightError(
             "Track B requires budget enforcement to be armed — refusing"
         )
-    # Endpoint class is a classification (never the raw endpoint); cost policy for a
-    # verified cloud provider with an armed budget is the metered campaign policy.
-    endpoint_class = "cloud"
-    cost_policy = "campaign_budget_eur"
     if expected_endpoint_class and endpoint_class != expected_endpoint_class.strip().lower():
         raise PreflightError(
             f"endpoint class {endpoint_class!r} != expected "
@@ -467,4 +481,7 @@ def assert_cloud_attestation(
         "effective_endpoint_class": endpoint_class,
         "effective_cost_policy": cost_policy,
         "effective_credential_source": "file",
+        # The binding spine the recorder reconciles attested == bound against.
+        "effective_binding_version": binding.get("binding_version"),
+        "effective_model_ref": binding.get("model_ref"),
     }

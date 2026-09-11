@@ -183,39 +183,61 @@ class Recorder:
         for r in records:
             verdict_counts[r["verdict"]] = verdict_counts.get(r["verdict"], 0) + 1
 
-        # WAVE-30H Track-B: surface the run's effective (attested) identity and the
-        # actually-dispatched identity, and FAIL CLOSED on any divergence. A record
-        # carries the attested ``effective_*`` (threaded from the pre-run cloud
-        # attestation) and the ``dispatched_*`` the worker really ran on (from the
-        # run detail). If the two ever disagree, the run executed on a substrate
-        # other than the one attested — the evidence is written for forensics but the
-        # run must never certify green (the CLI turns a non-empty list into a
-        # non-zero exit). Absent for Track A / deterministic records (no key → skip).
-        _EFF = ("effective_provider", "effective_model", "effective_endpoint_class",
-                "effective_cost_policy", "effective_credential_source")
-        _DISP = ("dispatched_provider", "dispatched_model")
+        # WAVE-30H: reconcile the run's THREE identities and FAIL CLOSED on any
+        # divergence. Each record may carry the ATTESTED identity (``effective_*``,
+        # from the pre-run cloud attestation against the runtime binding), the BOUND
+        # identity (``bound_*``, the runtime's canonical ``runtime_effective_binding``),
+        # and the DISPATCHED identity (``dispatched_*``, what the worker actually ran
+        # on). They must all agree; any populated pair that disagrees means the run
+        # executed on a substrate other than the one attested/bound — evidence is kept
+        # for forensics but the run must never certify green (the CLI turns a
+        # non-empty list into a non-zero exit). Absent for Track A / deterministic.
+        _IDENTITY_KEYS = (
+            "effective_provider", "effective_model", "effective_endpoint_class",
+            "effective_cost_policy", "effective_credential_source",
+            "effective_binding_version", "effective_model_ref",
+            "bound_provider", "bound_model", "bound_binding_version",
+            "dispatched_provider", "dispatched_model",
+        )
         effective_identity: Dict[str, Any] = {}
         for r in records:
             prov = r.get("provenance") or {}
-            for k in (*_EFF, *_DISP):
-                if prov.get(k) and k not in effective_identity:
+            for k in _IDENTITY_KEYS:
+                if prov.get(k) is not None and k not in effective_identity:
                     effective_identity[k] = prov[k]
         identity_divergences: List[Dict[str, Any]] = []
         for r in records:
             prov = r.get("provenance") or {}
-            ep = (prov.get("effective_provider") or "").strip()
-            em = (prov.get("effective_model") or "").strip()
-            dp = (prov.get("dispatched_provider") or "").strip()
-            dm = (prov.get("dispatched_model") or "").strip()
-            provider_drift = bool(ep and dp and ep.lower() != dp.lower())
-            model_drift = bool(em and dm and em != dm)
-            if provider_drift or model_drift:
-                identity_divergences.append({
-                    "scenario_id": r["scenario_id"],
-                    "run_id": r["run_id"],
-                    "attested": {"provider": ep or None, "model": em or None},
-                    "dispatched": {"provider": dp or None, "model": dm or None},
-                })
+            sides = {
+                "attested": (
+                    (prov.get("effective_provider") or "").strip(),
+                    (prov.get("effective_model") or "").strip(),
+                ),
+                "bound": (
+                    (prov.get("bound_provider") or "").strip(),
+                    (prov.get("bound_model") or "").strip(),
+                ),
+                "dispatched": (
+                    (prov.get("dispatched_provider") or "").strip(),
+                    (prov.get("dispatched_model") or "").strip(),
+                ),
+            }
+            for left, right in (
+                ("attested", "bound"), ("bound", "dispatched"),
+                ("attested", "dispatched"),
+            ):
+                lp, lm = sides[left]
+                rp, rm = sides[right]
+                provider_drift = bool(lp and rp and lp.lower() != rp.lower())
+                model_drift = bool(lm and rm and lm != rm)
+                if provider_drift or model_drift:
+                    identity_divergences.append({
+                        "scenario_id": r["scenario_id"],
+                        "run_id": r["run_id"],
+                        "kind": f"{left}_vs_{right}",
+                        left: {"provider": lp or None, "model": lm or None},
+                        right: {"provider": rp or None, "model": rm or None},
+                    })
 
         summary = {
             "schema_version": SCHEMA_VERSION,

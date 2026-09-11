@@ -51,15 +51,22 @@ def establish_managed_admission(agent) -> bool:
 
     grant_header = None
     manifest_payload = None
+    binding_payload = None
     conn = kb.connect()
     try:
-        for event in kb.list_events(conn, task_id):
+        events = list(kb.list_events(conn, task_id))
+        for event in events:
             kind = getattr(event, "kind", None)
             payload = getattr(event, "payload", None) or {}
             if kind == "runtime_execution_grant":
                 grant_header = payload.get("grant") or grant_header
             elif kind == "runtime_capability_manifest":
                 manifest_payload = payload or manifest_payload
+        # WAVE-30H: the canonical immutable effective binding this run was bound to
+        # (None for a legacy run with no binding event).
+        from youtab_agent_cli import effective_binding as _eb
+
+        binding_payload = _eb.effective_binding_from_events(events)
     finally:
         try:
             conn.close()
@@ -99,6 +106,14 @@ def establish_managed_admission(agent) -> bool:
         ) from exc
 
     agent._admitted_command = admitted
+    # WAVE-30H: attach the canonical effective binding so a delegated child can
+    # INHERIT the parent's provider/model (or fail closed on an unattested drift;
+    # see tools/delegate_tool._build_child_agent). A corrupt/absent binding attaches
+    # None — delegation then treats the parent as carrying no inheritable identity.
+    if isinstance(binding_payload, dict) and not binding_payload.get("__corrupt__"):
+        agent._runtime_effective_binding = binding_payload
+    else:
+        agent._runtime_effective_binding = None
     # R5: open the ONE durable shared execution-tree budget from the grant's
     # reasoning, keyed on root_run_id, UNCONDITIONALLY for this managed run (never
     # gated on a benchmark campaign env var). The root run seeds it; delegated
