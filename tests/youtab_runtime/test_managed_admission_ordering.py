@@ -121,61 +121,119 @@ def test_route_missing_binding_endpoint_fingerprint_fails_closed():
 
 
 # --------------------------------------------------------------------------- #
-# plan_runtime_route — PURE proposed route (no pool/mint/refresh/HTTP/client)    #
+# authoritative_provider — local alias canonicalization (Batch5 #3)             #
 # --------------------------------------------------------------------------- #
-def test_plan_runtime_route_is_pure_and_matches_local_binding(monkeypatch, tmp_path):
-    """The planner derives provider/model/base_url from config alone, and its output
-    fingerprints to the SAME endpoint a local-server binding was built from — so a
-    correctly-configured managed run passes the strict gate with ZERO side effects."""
+def test_authoritative_provider_canonicalizes_local_alias():
+    # ollama is dispatched via the custom transport, but its authoritative provider
+    # (and its binding) stays ollama.
+    assert wa.authoritative_provider("custom", "ollama") == "ollama"
+    assert wa.authoritative_provider("custom", "vllm") == "vllm"
+
+
+def test_authoritative_provider_passes_through_builtins_and_bare_custom():
+    assert wa.authoritative_provider("anthropic", "anthropic") == "anthropic"
+    assert wa.authoritative_provider("youtab", "youtab") == "youtab"
+    assert wa.authoritative_provider("custom", "custom") == "custom"
+    assert wa.authoritative_provider("openrouter", "auto") == "openrouter"
+
+
+# --------------------------------------------------------------------------- #
+# assert_bound_provider_admissible — PRE-CREDENTIAL provider gate (Batch5 #2)    #
+# --------------------------------------------------------------------------- #
+def test_bound_provider_admissible_accepts_concrete_match():
+    wa.assert_bound_provider_admissible(_IDENTITY, requested_provider="ollama")
+
+
+def test_bound_provider_admissible_noop_for_standalone():
+    wa.assert_bound_provider_admissible(None, requested_provider="anything")
+
+
+def test_bound_provider_admissible_refuses_auto_binding():
+    with pytest.raises(ManagedWorkerAdmissionError, match="binding provider is not concrete"):
+        wa.assert_bound_provider_admissible(
+            {"task_id": "t", "provider": "auto", "model": "m", "endpoint_fingerprint": _FP},
+            requested_provider="auto",
+        )
+
+
+def test_bound_provider_admissible_refuses_auto_requested():
+    with pytest.raises(ManagedWorkerAdmissionError, match="requested provider is unresolved"):
+        wa.assert_bound_provider_admissible(_IDENTITY, requested_provider="auto")
+
+
+def test_bound_provider_admissible_refuses_provider_drift():
+    # ollama-bound run whose requested provider is a drifting cloud primary -> refused
+    # BEFORE any credential resolution (this is what stops the vertex/youtab mint).
+    with pytest.raises(ManagedWorkerAdmissionError, match="drifted from the bound identity"):
+        wa.assert_bound_provider_admissible(_IDENTITY, requested_provider="vertex")
+
+
+# --------------------------------------------------------------------------- #
+# Batch5 #4: a built-in endpoint override (Anthropic on Azure) resolves to the  #
+# configured URL and matches its binding — NOT substituted with a registry      #
+# default. Uses the REAL resolver (explicit base_url+key => no pool/mint/net).   #
+# --------------------------------------------------------------------------- #
+def test_builtin_anthropic_azure_override_resolves_and_matches_binding(monkeypatch):
     from youtab_agent_cli import runtime_provider as rp
 
-    # A local ollama deployment endpoint (the protected env the resolver reads).
-    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-    # plan_runtime_route imports load_config lazily from youtab_agent_cli.config.
-    monkeypatch.setattr(
-        "youtab_agent_cli.config.load_config",
-        lambda: {"model": {"provider": "ollama", "default": "qwen:test"}},
+    azure = "https://my-azure.openai.azure.com"
+    monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "azure-not-a-real-key")
+    resolved = rp.resolve_runtime_provider(
+        requested="anthropic", explicit_base_url=azure, explicit_api_key="azure-not-a-real-key",
     )
-    # Any network call from inside the planner would be a contract violation.
-    import socket as _socket
-
-    def _boom(*a, **k):  # noqa: ANN001
-        raise AssertionError("plan_runtime_route performed network I/O")
-
-    monkeypatch.setattr(_socket.socket, "connect", _boom)
-
-    planned = rp.plan_runtime_route(requested="ollama", configured_model="qwen:test")
-    assert planned["provider"] == "ollama"
-    assert planned["model"] == "qwen:test"
-    # The inference base_url gains /v1; it must fingerprint identically to the bound
-    # endpoint root (normalize drops the authority-equal path difference for loopback).
+    assert resolved["provider"] == "anthropic"
+    assert resolved["base_url"] == azure  # configured URL, NOT a registry default
+    # A binding produced by create for this built-in engine identity matches.
+    binding = eb.build_effective_binding(provider="anthropic", model="claude-x", endpoint=azure)
     identity = {
-        "task_id": "t", "provider": "ollama", "model": "qwen:test",
-        "endpoint_fingerprint": eb.compute_endpoint_fingerprint(planned["base_url"]),
+        "task_id": "t", "provider": "anthropic", "model": "claude-x",
+        "endpoint_fingerprint": binding["endpoint_fingerprint"],
     }
     assert_route_matches_binding(
-        identity, provider=planned["provider"], model=planned["model"],
-        base_url=planned["base_url"],
+        identity,
+        provider=wa.authoritative_provider(resolved["provider"], "anthropic"),
+        model="claude-x", base_url=resolved["base_url"],
     )
 
 
-def test_plan_runtime_route_reports_drifting_vertex_provider_without_mint(monkeypatch):
-    """An ollama-bound run misconfigured with a Vertex primary: the planner reports
-    provider 'vertex' (so the strict gate refuses on the provider mismatch) WITHOUT
-    importing or calling the Vertex OAuth mint."""
-    from youtab_agent_cli import runtime_provider as rp
+# --------------------------------------------------------------------------- #
+# Batch5 #1: grant expiry re-validated at final admission (before authority)    #
+# --------------------------------------------------------------------------- #
+def test_establish_refuses_grant_expired_during_startup():
+    """A snapshot whose grant expired after pre-admission must be refused by
+    establish_managed_admission BEFORE the AdmittedCommand is attached as authority."""
+    from datetime import datetime, timedelta, timezone
 
-    monkeypatch.setattr(
-        "youtab_agent_cli.config.load_config",
-        lambda: {"model": {"provider": "vertex"}},
-    )
-    planned = rp.plan_runtime_route(requested="vertex", configured_model="gemini-x")
-    assert planned["provider"] == "vertex"
-    with pytest.raises(ManagedWorkerAdmissionError, match="provider .*drifted"):
-        assert_route_matches_binding(
-            _IDENTITY, provider=planned["provider"], model=planned["model"],
-            base_url=planned["base_url"],
-        )
+    past = datetime.now(timezone.utc) - timedelta(minutes=5)
+
+    class _Env:
+        tenant_id = None
+        workspace_id = None
+        expires_at = past  # already elapsed
+        reasoning = None
+
+    class _Admitted:
+        envelope = _Env()
+
+    class _Ctx:
+        task_id = "t"
+        admitted = _Admitted()
+        capability_binding = None
+        created_at = None
+        binding = {"provider": "ollama", "model": "m", "endpoint_fingerprint": "fp"}
+
+    class _Agent:
+        provider = None
+        model = None
+        base_url = None
+        _admitted_command = None
+
+    agent = _Agent()
+    snap = wa.ManagedPreadmission(context=_Ctx())
+    with pytest.raises(ManagedWorkerAdmissionError, match="expired during startup"):
+        wa.establish_managed_admission(agent, snapshot=snap)
+    # Authority was NOT attached before the expiry refusal.
+    assert agent._admitted_command is None
 
 
 # --------------------------------------------------------------------------- #

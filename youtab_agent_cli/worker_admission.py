@@ -215,17 +215,28 @@ def _enforce_effective_binding(
     if not require_client_match:
         return  # deterministic/stub worker: no provider client, no substrate to match
     # 4. Fully resolved — a real-model worker must have a concrete bound substrate.
+    # WAVE-30H Batch5 #2: the non-concrete literal ``auto`` is NOT a resolved provider
+    # — accepting it would let credential resolution pick/mint an unbound provider — so
+    # it fails closed here alongside a missing provider/model.
     if (
         binding.get("model_identifier_status") != "resolved"
         or not binding.get("model")
         or not binding.get("provider")
+        or str(binding.get("provider") or "").strip().lower() == "auto"
     ):
         raise ManagedWorkerAdmissionError(
             f"managed run {task_id} effective binding is not fully resolved; refusing"
         )
     # 9. Dispatch-from-it — the worker's resolved substrate must EQUAL the binding
     # (no config drift). Fingerprint compares the normalized endpoint authority.
-    a_provider = (getattr(agent, "provider", None) or "").strip().lower()
+    # WAVE-30H Batch5 #3: compare the AUTHORITATIVE provider, not the transport label
+    # — a local alias (ollama) is dispatched through the ``custom`` OpenAI-compatible
+    # transport, so ``agent.provider`` is ``custom`` while the bound provider stays
+    # ``ollama``; canonicalizing keeps the authoritative identity aligned instead of
+    # spuriously failing a legitimate engine-bound local run.
+    a_provider = authoritative_provider(
+        getattr(agent, "provider", None), getattr(agent, "requested_provider", None)
+    )
     a_model = (getattr(agent, "model", None) or "").strip()
     if a_provider and a_provider != str(binding.get("provider") or "").lower():
         raise ManagedWorkerAdmissionError(
@@ -533,24 +544,84 @@ def managed_bound_identity():
     }
 
 
+def authoritative_provider(provider, requested_provider) -> str:
+    """The AUTHORITATIVE bound provider for a resolved runtime — never the transport.
+
+    WAVE-30H Batch5 #3: a local-server alias (``ollama``/``vllm``/``llamacpp``) is
+    dispatched through the OpenAI-compatible ``custom`` transport, so
+    ``resolve_runtime_provider`` returns ``provider="custom"`` while the caller
+    ``requested`` (and the canonical create/preflight binding) keep the alias
+    (``ollama``). Comparing the transport label to the binding would spuriously fail;
+    comparing the ALIAS is correct. When the resolved provider is the ``custom``
+    transport we canonicalize back to the requested alias/name; otherwise the
+    resolved provider IS authoritative (openrouter/anthropic/youtab/vertex/…)."""
+    p = (provider or "").strip().lower()
+    rp = (requested_provider or "").strip().lower()
+    if p == "custom" and rp and rp != "custom":
+        return rp
+    return p
+
+
+def assert_bound_provider_admissible(identity, *, requested_provider) -> None:
+    """PRE-CREDENTIAL gate — refuse a managed run whose authoritative provider is not
+    a concrete match for its binding, BEFORE any credential lookup/mint/refresh.
+
+    ``identity`` is a bound-identity dict (``None`` => standalone no-op). Raises
+    :class:`ManagedWorkerAdmissionError` when:
+      * the BOUND provider is missing or the non-concrete literal ``auto`` (WAVE-30H
+        Batch5 #2 — a managed binding must pin a concrete provider; ``auto`` would let
+        credential resolution pick/mint an unbound provider), or
+      * the REQUESTED (authoritative) provider is missing or ``auto`` (the run is not
+        pinned), or
+      * the requested authoritative provider != the bound provider.
+
+    Because this runs before ``_ensure_runtime_credentials``, an Ollama-bound run
+    misconfigured with a drifting Vertex/Youtab primary is refused here with ZERO
+    mint/refresh/client/socket. Endpoint/model equality is enforced against the
+    ACTUAL resolved route in :func:`assert_route_matches_binding` after the single
+    credential resolution and before client construction.
+    """
+    if not identity:
+        return
+    task_id = identity.get("task_id") or "?"
+    b_provider = str(identity.get("provider") or "").strip().lower()
+    if not b_provider or b_provider == "auto":
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} binding provider is not concrete "
+            f"({b_provider or '<missing>'!r}); refusing before credential resolution"
+        )
+    r_provider = (requested_provider or "").strip().lower()
+    if not r_provider or r_provider == "auto":
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} requested provider is unresolved "
+            f"({r_provider or '<missing>'!r}); a managed run must be pinned to the "
+            "bound provider; refusing before credential resolution"
+        )
+    if r_provider != b_provider:
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} requested provider {r_provider!r} drifted from the "
+            f"bound identity {b_provider!r}; refusing before credential resolution"
+        )
+
+
 def assert_route_matches_binding(identity, *, provider, model, base_url) -> None:
-    """STRICT pure route-vs-binding gate — NO provider client, NO network, NO budget.
+    """STRICT route-vs-binding gate on the ACTUAL RESOLVED route — NO client here.
 
     ``identity`` is a bound-identity dict (from
     :meth:`ManagedPreadmission.bound_identity` / :func:`managed_bound_identity`;
-    ``None`` for a standalone run => no-op). For a managed run the PROPOSED provider,
-    model, AND endpoint fingerprint must ALL be present AND equal to the bound
-    substrate; a missing/unresolved field OR any drift raises
-    :class:`ManagedWorkerAdmissionError`.
+    ``None`` for a standalone run => no-op). The provider (already canonicalized to the
+    AUTHORITATIVE label via :func:`authoritative_provider`), model, AND endpoint
+    fingerprint must ALL be present AND equal to the bound substrate; a missing/
+    unresolved field OR any drift raises :class:`ManagedWorkerAdmissionError`.
 
-    WAVE-30H Batch4 #1: this now runs against the PURELY-PLANNED route (see
-    :func:`runtime_provider.plan_runtime_route`) BEFORE credential resolution, so a
-    managed run whose configured route drifts from — or underspecifies — its binding
-    is refused before any OAuth mint / key refresh / credential-pool I/O / provider
-    client / socket. The previous "compare each field only when BOTH sides are
-    present" was the defect: an absent side slipped through. An absent side now FAILS
-    CLOSED. The full post-construction drift + attested model-digest re-probe in
-    :func:`establish_managed_admission` remains the last line of defense.
+    WAVE-30H Batch5 #3: this is fed the CLI's ACTUAL resolved provider/model/base_url
+    (not a hand-built plan — the duplicate planner was removed) and runs AFTER the
+    single credential resolution but BEFORE ``_init_agent`` constructs any provider
+    client. So the route that was verified is byte-for-byte the route used to build
+    the client (no planner/resolver divergence, no second resolution). A drifting
+    PROVIDER was already refused pre-credential (:func:`assert_bound_provider_
+    admissible`) so no unauthorized mint/refresh occurred; this catches any residual
+    model/endpoint drift before the client is built. An absent side FAILS CLOSED.
     """
     if not identity:
         return
@@ -605,8 +676,27 @@ def establish_managed_admission(agent, *, snapshot: "Optional[ManagedPreadmissio
     task_id = ctx.task_id
     admitted = ctx.admitted
     binding_payload = ctx.binding
-    agent._admitted_command = admitted
     env = admitted.envelope
+    # WAVE-30H Batch5 #1: re-validate grant EXPIRY at final admission. The snapshot's
+    # admitted object was time-verified when the grant was re-admitted in
+    # load_verified_preadmission(); wall-clock advances during credential/client
+    # startup, and verify_proof() checks only the HMAC proof, so a grant that expired
+    # (or whose reasoning deadline passed) DURING startup must be refused HERE, before
+    # the AdmittedCommand is attached as execution authority. This rechecks expiry
+    # only — it does NOT reload/replace the persisted binding and does NOT re-burn the
+    # single-use nonce (both already consumed at ingress). Fail closed.
+    from datetime import datetime as _dt, timezone as _tz
+
+    _now = _dt.now(_tz.utc)
+    _exp = getattr(env, "expires_at", None)
+    _dl = getattr(getattr(env, "reasoning", None), "deadline_at", None)
+    if (_exp is not None and _now >= _exp) or (_dl is not None and _now >= _dl):
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} grant expired during startup "
+            "(expires_at/deadline_at elapsed); refusing before execution authority "
+            "is attached"
+        )
+    agent._admitted_command = admitted
     # WAVE-30H: PRE-DISPATCH binding enforcement. The worker validates the canonical
     # effective binding and dispatches EXCLUSIVELY from it — inside this function,
     # which returns BEFORE run_conversation constructs any provider client or debits

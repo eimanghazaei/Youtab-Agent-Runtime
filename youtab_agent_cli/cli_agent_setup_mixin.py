@@ -235,11 +235,19 @@ class CLIAgentSetupMixin:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None, credentials_already_resolved: bool = False) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
-        
+
+        ``credentials_already_resolved``: WAVE-30H Batch5 #3 — the managed CLI paths
+        resolve runtime credentials EXACTLY ONCE (via ``_ensure_runtime_credentials``)
+        and compare the resolved route to the binding BEFORE calling this method, then
+        pass the resolved runtime as ``runtime_override``. Set this True so we do NOT
+        resolve a second time here: a re-resolution is both wasted work and a TOCTOU
+        (the route could differ from the one just verified, and it could mint/refresh
+        again). Non-managed callers leave it False and resolve here as before.
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -251,7 +259,7 @@ class CLIAgentSetupMixin:
         self._install_tool_callbacks()
         self._ensure_tirith_security()
 
-        if not self._ensure_runtime_credentials():
+        if not credentials_already_resolved and not self._ensure_runtime_credentials():
             return False
 
         from youtab_agent_cli.mcp_startup import wait_for_mcp_discovery

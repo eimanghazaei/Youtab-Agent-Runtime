@@ -95,15 +95,16 @@ try:
 except Exception:
     pass
 
-# Pure route-planning sentinel (Batch4 #1) — proves the planner ran BEFORE creds.
+# Pre-credential provider-gate sentinel (Batch5 #2) — proves the concrete-provider /
+# no-drift gate ran BEFORE credential resolution.
 _RP = os.environ.get("E2E_ROUTEPLAN_SENTINEL")
 try:
-    import youtab_agent_cli.runtime_provider as _rp2
-    _real_prr = _rp2.plan_runtime_route
-    def _spy_prr(*a, **k):
+    import youtab_agent_cli.worker_admission as _wa2
+    _real_abpa = _wa2.assert_bound_provider_admissible
+    def _spy_abpa(*a, **k):
         _touch(_RP)
-        return _real_prr(*a, **k)
-    _rp2.plan_runtime_route = _spy_prr
+        return _real_abpa(*a, **k)
+    _wa2.assert_bound_provider_admissible = _spy_abpa
 except Exception:
     pass
 
@@ -120,16 +121,24 @@ try:
 except Exception:
     pass
 
-# Credential-resolution sentinel (Batch3 #1) — the UMBRELLA over all credential I/O:
+# Credential-resolution COUNTER (Batch5 #3) — the UMBRELLA over all credential I/O:
 # Vertex OAuth token mint AND Youtab key refresh both happen INSIDE
-# resolve_runtime_provider, so if it never runs neither can. _ensure_runtime_credentials
-# imports this name at call time, so patching the module attribute is picked up.
+# resolve_runtime_provider, so if it never runs neither can. It is a COUNTER (one
+# line appended per call) so a test can assert EXACTLY ONE resolution on a successful
+# managed turn (no second _init_agent resolution) and ZERO on a pre-credential refusal.
+# _ensure_runtime_credentials imports this name at call time, so patching the module
+# attribute is picked up.
 _R = os.environ.get("E2E_CREDRESOLVE_SENTINEL")
 try:
     import youtab_agent_cli.runtime_provider as _rp
     _real_rrp = _rp.resolve_runtime_provider
     def _spy_rrp(*a, **k):
-        _touch(_R)
+        try:
+            if _R:
+                with open(_R, "a") as _f:
+                    _f.write("1\n")
+        except Exception:
+            pass
         return _real_rrp(*a, **k)
     _rp.resolve_runtime_provider = _spy_rrp
 except Exception:
@@ -254,6 +263,10 @@ def _run_cli(tmp_path: Path, db_path: Path, task_id: str, *, quiet_Q: bool = Fal
     )
     budget_db = home / "runtime" / "execution_tree_budget.db"
     dests = net_dest.read_text().splitlines() if net_dest.exists() else []
+    credresolve_count = (
+        len([ln for ln in credresolve_sentinel.read_text().splitlines() if ln.strip()])
+        if credresolve_sentinel.exists() else 0
+    )
     return {
         "rc": proc.returncode,
         "stderr": proc.stderr or "",
@@ -262,7 +275,8 @@ def _run_cli(tmp_path: Path, db_path: Path, task_id: str, *, quiet_Q: bool = Fal
         "network_attempted": net_sentinel.exists(),
         "net_destinations": dests,
         "budget_opened": budget_db.exists(),
-        "credential_resolved": credresolve_sentinel.exists(),
+        "credential_resolved": credresolve_count > 0,
+        "credresolve_count": credresolve_count,
         "vertex_minted": vertex_sentinel.exists(),
         "youtab_refreshed": youtab_sentinel.exists(),
         "preadmitted": preadmit_sentinel.exists(),
@@ -275,10 +289,10 @@ def _diag(res) -> str:
     """Render BOTH streams + the sentinel/rc state, so a failure can never be an
     opaque rc=1 again (Batch2 #F2)."""
     return (
-        f"\nrc={res['rc']} preadmitted={res['preadmitted']} route_planned={res['route_planned']} "
+        f"\nrc={res['rc']} preadmitted={res['preadmitted']} provider_gate={res['route_planned']} "
         f"client_constructed={res['client_constructed']} admitted={res['admitted']} "
         f"network_attempted={res['network_attempted']} budget_opened={res['budget_opened']} "
-        f"credential_resolved={res['credential_resolved']} "
+        f"credential_resolved={res['credential_resolved']} credresolve_count={res['credresolve_count']} "
         f"vertex_minted={res['vertex_minted']} youtab_refreshed={res['youtab_refreshed']} "
         f"net_destinations={res['net_destinations']}"
         f"\n--- STDERR (last 1500) ---\n{res['stderr'][-1500:]}"
@@ -427,46 +441,41 @@ def test_cli_Q_quiet_path_missing_binding_refused_before_init_agent(tmp_path):
         error_substr="has no effective binding")
 
 
-# ── valid binding, drifting route: no UNBOUND client is constructed (Batch3 #1) ──
+# ── unpinned auto + drifting route: refused BEFORE credential resolution ──────
 
-def test_cli_valid_binding_but_route_drift_refused_BEFORE_credential_resolution(tmp_path):
-    # Batch4 #1 (corrects Batch3): a VALID, self-consistent managed binding (bound to
-    # ollama) whose CONFIGURED route is a DIFFERENT provider (the default openrouter/
-    # auto route) must be refused by the PURE route-vs-binding gate BEFORE credential
-    # resolution. The binding passes preadmit (grant + integrity + scope valid); the
-    # route is PLANNED purely (no mint/refresh/pool/client/socket) and the provider
-    # mismatch is refused — so NO credential is resolved for the unbound provider.
-    #
-    # This is the exact defect Codex flagged: the previous build resolved credentials
-    # (credresolve sentinel fired) BEFORE the drift refusal. That behavior is now
-    # FALSE — credential_resolved MUST be absent.
-    task_id = "task-cli-valid-routedrift"
+def test_cli_unpinned_auto_refused_before_credential_resolution(tmp_path):
+    # Batch5 #2: a VALID, self-consistent managed binding (bound to ollama) whose
+    # CONFIGURED route is unpinned (the default ``provider: auto``) must be refused by
+    # the PRE-CREDENTIAL provider gate — a managed run must be pinned to a concrete
+    # provider so credential resolution can never select/mint an unbound provider.
+    # NO credential is resolved (credresolve_count == 0).
+    task_id = "task-cli-auto-unpinned"
     db = tmp_path / "kanban.db"
-    env, header = _mint("grant-cli-valid-012345678901")
+    env, header = _mint("grant-cli-autounpin-01234")
     persisted = cm.binding_to_persisted(_ingress_manifest(env))
     _persist_run(db, task_id, grant_header=header, manifest_payload=persisted,
                  seed_binding=True)  # valid, self-consistent ollama binding for this run
-    res = _run_cli(tmp_path, db, task_id)
+    res = _run_cli(tmp_path, db, task_id)  # no --provider -> resolves to "auto"
     assert res["rc"] == 3, _diag(res)
     assert "managed_admission_failed" in res["stderr"], _diag(res)
-    # The refusal is the PRE-credential route drift, NOT a preadmit grant/binding
-    # refusal — the binding itself is valid.
-    assert "before client construction" in res["stderr"], _diag(res)
-    assert "drifted from the bound identity" in res["stderr"], _diag(res)
+    assert "before credential resolution" in res["stderr"], _diag(res)
+    # Either the unresolved-requested or the drift branch (both are pre-credential).
+    assert ("requested provider is unresolved" in res["stderr"]
+            or "drifted from the bound identity" in res["stderr"]), _diag(res)
     assert "has no effective binding" not in res["stderr"], _diag(res)
     assert "grant re-admission failed" not in res["stderr"], _diag(res)
-    # Ordering proof: the single verified pre-admission ran and the PURE planner ran,
-    # but the route gate refused BEFORE any credential resolution.
+    # Ordering proof: pre-admission + the pre-credential provider gate ran, but ZERO
+    # credential resolution / client / network / budget / final admission.
     assert res["preadmitted"], "pre-admission did not run" + _diag(res)
-    assert res["route_planned"], "pure route planning did not run" + _diag(res)
-    assert not res["credential_resolved"], (
-        "DEFECT: credentials were resolved before the route-drift refusal" + _diag(res)
+    assert res["route_planned"], "pre-credential provider gate did not run" + _diag(res)
+    assert res["credresolve_count"] == 0, (
+        "DEFECT: credentials were resolved before the pre-credential refusal" + _diag(res)
     )
     assert not res["vertex_minted"] and not res["youtab_refreshed"], _diag(res)
-    assert not res["client_constructed"], "an unbound provider client was constructed" + _diag(res)
+    assert not res["client_constructed"], "a client was constructed" + _diag(res)
     assert not res["network_attempted"], "a socket was opened before refusal" + _diag(res)
     assert not res["budget_opened"], "execution-tree budget was opened before refusal" + _diag(res)
-    assert not res["admitted"], "final admission ran on a drift refusal" + _diag(res)
+    assert not res["admitted"], "final admission ran on a pre-credential refusal" + _diag(res)
 
 
 # ── adversarial: drifting CLOUD primary must not mint/refresh before refusal ──
@@ -550,59 +559,60 @@ class _FakeInferenceHandler(BaseHTTPRequestHandler):
         })
 
 
-def test_cli_valid_matching_route_proceeds_through_managed_path(tmp_path):
-    # Codex B: a TRUE successful shipped-CLI E2E. A valid managed run whose configured
-    # route EXACTLY matches its persisted binding must, in order: load the real grant+
-    # binding once (preadmit), plan the route purely, match provider/model/endpoint,
-    # resolve credentials ONLY for the bound provider, construct the bound client,
-    # establish final managed admission (same snapshot), and proceed — contacting ONLY
-    # the hermetic loopback server (no cloud).
+def test_cli_canonical_ollama_engine_bound_run_proceeds_through_managed_path(tmp_path):
+    # Codex B (Batch5): a TRUE successful shipped-CLI E2E using the CANONICAL
+    # engine-bound Ollama identity emitted by runtime create — provider ``ollama``
+    # (NOT a hand-invented ``custom`` binding), built with the SAME
+    # ``eb.build_effective_binding(provider="ollama", ...)`` create uses. The worker
+    # dispatches ollama through the ``custom`` transport, so this also proves local-
+    # alias canonicalization: authoritative(custom, ollama) == ollama == bound.
+    # Ordered path: preadmit (single load) -> pre-credential provider gate -> resolve
+    # credentials EXACTLY ONCE -> compare ACTUAL resolved identity -> construct the
+    # bound client -> final admission (same snapshot) -> proceed, contacting ONLY the
+    # hermetic loopback server.
     server = HTTPServer(("127.0.0.1", 0), _FakeInferenceHandler)
     port = server.server_address[1]
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     try:
-        task_id = "task-cli-valid-match"
+        task_id = "task-cli-ollama-canonical"
         db = tmp_path / "kanban.db"
-        env, header = _mint("grant-cli-validmatch-012")
+        env, header = _mint("grant-cli-ollamacanon-01")
         persisted = cm.binding_to_persisted(_ingress_manifest(env))
-        # Seed the grant + manifest WITHOUT the default ollama:11434 binding, then
-        # persist a binding whose endpoint is the loopback server (so route == binding).
         _persist_run(db, task_id, grant_header=header, manifest_payload=persisted,
                      seed_binding=False)
-        # Use the canonical ``custom`` provider (the label the resolver assigns to an
-        # OpenAI-compatible endpoint) so the PURELY-PLANNED provider, the RESOLVED
-        # provider, and the BOUND provider are all ``custom`` — an exact match across
-        # every stage. The endpoint is the loopback server.
+        # The worker's ollama inference endpoint is OLLAMA_BASE_URL (kept as-is when it
+        # already ends /v1). Build the CANONICAL binding for this engine identity with
+        # the SAME endpoint so the ACTUAL resolved route matches the binding exactly.
         endpoint = f"http://127.0.0.1:{port}/v1"
         binding = eb.build_effective_binding(
-            provider="custom", model="qwen:test", endpoint=endpoint,
+            provider="ollama", model="qwen:test", endpoint=endpoint,
             run_id=task_id, root_run_id=task_id, tenant=env.tenant_id,
             workspace=env.workspace_id)
         _persist_binding(db, task_id, binding)
         res = _run_cli(
             tmp_path, db, task_id,
-            # provider via env (planner + CLI both honor it); model via -m; the
-            # custom endpoint via CUSTOM_BASE_URL (re-added after the blanket strip).
-            extra_env={
-                "YOUTAB_AGENT_INFERENCE_PROVIDER": "custom",
-                "CUSTOM_BASE_URL": endpoint,
-            },
-            # Pin the provider explicitly (the config default ``provider: auto`` would
-            # otherwise short-circuit the env var) and the model; the planner reads the
-            # resulting ``requested_provider``.
-            extra_argv=["--provider", "custom", "-m", "qwen:test"],
+            # The protected ollama deployment endpoint (re-added after the blanket
+            # strip); the shipped worker resolves inference from it.
+            extra_env={"OLLAMA_BASE_URL": endpoint},
+            # Pin the provider explicitly (config default ``provider: auto`` would be
+            # refused as unpinned) and the model.
+            extra_argv=["--provider", "ollama", "-m", "qwen:test"],
         )
         # Ordered proof of the valid managed path.
         assert res["preadmitted"], "grant/binding pre-admission did not run" + _diag(res)
-        assert res["route_planned"], "pure route planning did not run" + _diag(res)
-        assert res["credential_resolved"], "credentials were not resolved for the bound provider" + _diag(res)
+        assert res["route_planned"], "pre-credential provider gate did not run" + _diag(res)
         assert res["client_constructed"], "the bound provider client was not constructed" + _diag(res)
         assert res["admitted"], "final managed admission did not run" + _diag(res)
         assert res["rc"] == 0, _diag(res)
         assert "managed_admission_failed" not in res["stderr"], _diag(res)
-        # A credential was resolved only for the BOUND provider — no drift to an
-        # unauthorized cloud provider.
+        # Blocker 3: credentials were resolved EXACTLY ONCE (no second _init_agent
+        # resolution / TOCTOU).
+        assert res["credresolve_count"] == 1, (
+            f"expected exactly one credential resolution, got {res['credresolve_count']}"
+            + _diag(res)
+        )
+        # No drift to an unauthorized cloud provider.
         assert not res["vertex_minted"], "a Vertex token was minted on the valid path" + _diag(res)
         assert not res["youtab_refreshed"], "a Youtab key was refreshed on the valid path" + _diag(res)
         # No cloud: every socket destination dialed was loopback.

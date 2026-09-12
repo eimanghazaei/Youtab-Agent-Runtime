@@ -13366,10 +13366,10 @@ class YoutabCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             from youtab_agent_cli.worker_admission import (
                 ManagedWorkerAdmissionError,
-                assert_route_matches_binding,
+                assert_bound_provider_admissible,
                 load_verified_preadmission,
             )
-            from youtab_agent_cli.runtime_provider import plan_runtime_route
+            from youtab_agent_cli.runtime_provider import resolve_requested_provider
 
             # Load + verify the grant/binding EXACTLY ONCE; thread this immutable
             # snapshot through the route gate and final admission (no reload, no
@@ -13381,40 +13381,56 @@ class YoutabCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 _preadmit.bound_identity() if _preadmit is not None else None
             )
 
-            # WAVE-30H Batch4 #1: compare the PURELY-PLANNED route to the binding
-            # BEFORE credential resolution. ``plan_runtime_route`` is side-effect-free
-            # (no OAuth mint, no key refresh, no credential-pool I/O, no client, no
-            # socket), so an Ollama-bound run misconfigured with a drifting
-            # Vertex/Youtab primary is refused here on the provider/model/endpoint
-            # mismatch WITHOUT minting or refreshing a single unauthorized credential.
-            # All three fields must be present AND equal; a missing side fails closed.
+            # WAVE-30H Batch5 #2/#3: PRE-CREDENTIAL provider gate. The bound provider
+            # must be concrete (never ``auto``) and the run's authoritative requested
+            # provider must equal it — checked BEFORE ``_ensure_runtime_credentials``,
+            # so an Ollama-bound run misconfigured with a drifting Vertex/Youtab
+            # primary (or an unpinned ``auto``) is refused with ZERO mint/refresh/pool
+            # I/O/client/socket. ``resolve_requested_provider`` is the SAME resolver
+            # the real resolution uses (no duplicate planner). Model/endpoint equality
+            # is enforced against the ACTUAL resolved route below, before construction.
             if self._managed_bound_identity is not None:
-                _planned = plan_runtime_route(
-                    requested=self.requested_provider,
-                    explicit_api_key=self._explicit_api_key,
-                    explicit_base_url=self._explicit_base_url,
-                    configured_model=self.model,
-                )
-                assert_route_matches_binding(
+                assert_bound_provider_admissible(
                     self._managed_bound_identity,
-                    provider=_planned["provider"],
-                    model=_planned["model"],
-                    base_url=_planned["base_url"],
+                    requested_provider=resolve_requested_provider(self.requested_provider),
                 )
         except ManagedWorkerAdmissionError as _adm_exc:
             print(f"managed_admission_failed: {_adm_exc}", file=sys.stderr)
             sys.exit(3)
 
         # Refresh provider credentials if needed (handles key rotation transparently).
-        # Only reached once the planned route matched the binding (or standalone). For
-        # a managed run this resolves the bound provider and NEVER falls back to an
-        # unbound provider (the fallback path is gated on ``_managed_bound_identity``).
+        # Resolved EXACTLY ONCE per turn; the provider was already confirmed to match
+        # the binding above. For a managed run this resolves the bound provider and
+        # NEVER falls back to an unbound provider (gated on ``_managed_bound_identity``).
         if not self._ensure_runtime_credentials():
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
+
+        # WAVE-30H Batch5 #3: compare the ACTUAL RESOLVED route (authoritative
+        # provider canonicalized for local aliases, model, endpoint fingerprint)
+        # against the binding BEFORE ``_init_agent`` constructs any provider client —
+        # so the route verified is byte-for-byte the route used to build the client
+        # (no planner/resolver divergence, no second resolution). No-op in standalone.
+        if self._managed_bound_identity is not None:
+            try:
+                from youtab_agent_cli.worker_admission import (
+                    ManagedWorkerAdmissionError as _RouteErr,
+                    assert_route_matches_binding,
+                    authoritative_provider,
+                )
+
+                assert_route_matches_binding(
+                    self._managed_bound_identity,
+                    provider=authoritative_provider(self.provider, self.requested_provider),
+                    model=turn_route["model"],
+                    base_url=self.base_url,
+                )
+            except _RouteErr as _adm_exc:
+                print(f"managed_admission_failed: {_adm_exc}", file=sys.stderr)
+                sys.exit(3)
 
         # Initialize agent if needed
         if self.agent is None:
@@ -13423,6 +13439,7 @@ class YoutabCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             model_override=turn_route["model"],
             runtime_override=turn_route["runtime"],
             request_overrides=turn_route.get("request_overrides"),
+            credentials_already_resolved=True,
         ):
             return None
         agent = self.agent
@@ -17879,22 +17896,26 @@ def main(
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
                 cli.tool_progress_mode = "off"
-                # WAVE-30H Batch4 #1: managed pre-admission AND the PURE
-                # route-vs-binding gate run BEFORE credential resolution — a
-                # missing/forged/expired grant, an invalid binding, OR a configured
-                # route that drifts from / underspecifies the binding is refused with
-                # ZERO credential resolution (no Vertex mint / Youtab refresh / pool
-                # I/O / fallback), ZERO client, ZERO network, ZERO budget. The
-                # grant/binding are loaded EXACTLY ONCE and threaded (as a frozen
-                # snapshot) through the route gate and final admission. No-op in
+                # WAVE-30H Batch5 #2/#3: managed pre-admission AND the PRE-CREDENTIAL
+                # provider gate run BEFORE credential resolution — a missing/forged/
+                # expired grant, an invalid binding, a non-concrete (``auto``) bound
+                # provider, OR a requested provider that drifts from the bound provider
+                # is refused with ZERO credential resolution (no Vertex mint / Youtab
+                # refresh / pool I/O / fallback), ZERO client, ZERO network, ZERO
+                # budget. The grant/binding are loaded EXACTLY ONCE (frozen snapshot)
+                # and threaded through the route gate and final admission. Model/
+                # endpoint equality is enforced against the ACTUAL resolved route after
+                # the single credential resolution, before construction. No-op in
                 # standalone. Mirrors the interactive ``chat -q`` path exactly.
                 try:
                     from youtab_agent_cli.worker_admission import (
                         ManagedWorkerAdmissionError,
-                        assert_route_matches_binding,
+                        assert_bound_provider_admissible,
                         load_verified_preadmission,
                     )
-                    from youtab_agent_cli.runtime_provider import plan_runtime_route
+                    from youtab_agent_cli.runtime_provider import (
+                        resolve_requested_provider,
+                    )
 
                     _preadmit = load_verified_preadmission()
                     cli._managed_preadmission = _preadmit
@@ -17902,17 +17923,11 @@ def main(
                         _preadmit.bound_identity() if _preadmit is not None else None
                     )
                     if cli._managed_bound_identity is not None:
-                        _planned = plan_runtime_route(
-                            requested=cli.requested_provider,
-                            explicit_api_key=cli._explicit_api_key,
-                            explicit_base_url=cli._explicit_base_url,
-                            configured_model=cli.model,
-                        )
-                        assert_route_matches_binding(
+                        assert_bound_provider_admissible(
                             cli._managed_bound_identity,
-                            provider=_planned["provider"],
-                            model=_planned["model"],
-                            base_url=_planned["base_url"],
+                            requested_provider=resolve_requested_provider(
+                                cli.requested_provider
+                            ),
                         )
                 except ManagedWorkerAdmissionError as _adm_exc:
                     print(f"managed_admission_failed: {_adm_exc}", file=sys.stderr)
@@ -17979,14 +17994,39 @@ def main(
                     turn_route = cli._resolve_turn_agent_config(effective_query)
                     if turn_route["signature"] != cli._active_agent_route_signature:
                         cli.agent = None
-                    # The pure route-vs-binding gate already ran BEFORE credential
-                    # resolution above (WAVE-30H Batch4 #1); the full post-construction
-                    # drift + attested model-digest re-probe runs in
-                    # ``establish_managed_admission`` below.
+                    # WAVE-30H Batch5 #3: compare the ACTUAL RESOLVED route
+                    # (authoritative provider canonicalized for local aliases, model,
+                    # endpoint fingerprint) against the binding BEFORE _init_agent
+                    # constructs any client — the route verified is the route used to
+                    # build the client. The pre-credential provider gate already ran
+                    # above; the full post-construction re-probe runs in
+                    # establish_managed_admission below. No-op in standalone.
+                    if cli._managed_bound_identity is not None:
+                        try:
+                            from youtab_agent_cli.worker_admission import (
+                                ManagedWorkerAdmissionError as _RouteErr,
+                                assert_route_matches_binding,
+                                authoritative_provider,
+                            )
+
+                            assert_route_matches_binding(
+                                cli._managed_bound_identity,
+                                provider=authoritative_provider(
+                                    cli.provider, cli.requested_provider
+                                ),
+                                model=turn_route["model"],
+                                base_url=cli.base_url,
+                            )
+                        except _RouteErr as _adm_exc:
+                            print(
+                                f"managed_admission_failed: {_adm_exc}", file=sys.stderr
+                            )
+                            sys.exit(3)
                     if cli._init_agent(
                         model_override=turn_route["model"],
                         runtime_override=turn_route["runtime"],
                         request_overrides=turn_route.get("request_overrides"),
+                        credentials_already_resolved=True,
                     ):
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True
