@@ -53,7 +53,12 @@ def _clean_state():
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
     saved = {}
-    for k in ("YOUTAB_AGENT_INTERACTIVE", "YOUTAB_AGENT_GATEWAY_SESSION", "YOUTAB_AGENT_EXEC_ASK", "YOUTAB_AGENT_YOLO_MODE"):
+    env_keys = (
+        "YOUTAB_AGENT_INTERACTIVE", "YOUTAB_AGENT_GATEWAY_SESSION",
+        "YOUTAB_AGENT_EXEC_ASK", "YOUTAB_AGENT_YOLO_MODE",
+        "YOUTAB_AGENT_CRON_SESSION", "YOUTAB_AGENT_MANAGED",
+    )
+    for k in env_keys:
         if k in os.environ:
             saved[k] = os.environ.pop(k)
     yield
@@ -62,7 +67,7 @@ def _clean_state():
     approval_module._permanent_approved.clear()
     for k, v in saved.items():
         os.environ[k] = v
-    for k in ("YOUTAB_AGENT_INTERACTIVE", "YOUTAB_AGENT_GATEWAY_SESSION", "YOUTAB_AGENT_EXEC_ASK", "YOUTAB_AGENT_YOLO_MODE"):
+    for k in env_keys:
         os.environ.pop(k, None)
 
 
@@ -97,10 +102,10 @@ class TestTirithAllowSafeCommand:
         assert result["approved"] is True
 
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
-    def test_noninteractive_skips_external_scan(self, mock_tirith):
+    def test_noninteractive_scans_and_allows_clean_result(self, mock_tirith):
         result = check_all_command_guards("echo hello", "local")
         assert result["approved"] is True
-        mock_tirith.assert_not_called()
+        mock_tirith.assert_called_once_with("echo hello")
 
 
 # ---------------------------------------------------------------------------
@@ -188,10 +193,12 @@ class TestTirithWarnSafe:
            return_value=_tirith_result("warn",
                                        [{"rule_id": "shortened_url"}],
                                        "shortened URL detected"))
-    def test_warn_non_interactive_auto_allow(self, mock_tirith):
+    def test_warn_non_interactive_denies_without_human_override(self, mock_tirith):
         # No YOUTAB_AGENT_INTERACTIVE or YOUTAB_AGENT_GATEWAY_SESSION set
         result = check_all_command_guards("curl https://bit.ly/abc", "local")
-        assert result["approved"] is True
+        assert result["approved"] is False
+        assert "unattended" in result["message"].lower()
+        mock_tirith.assert_called_once_with("curl https://bit.ly/abc")
 
 
 # ---------------------------------------------------------------------------
@@ -308,19 +315,41 @@ class TestCommandAllowlistGlobs:
 
 
 # ---------------------------------------------------------------------------
-# tirith ImportError → treated as allow
+# tirith ImportError → local approval or unattended denial
 # ---------------------------------------------------------------------------
 
 class TestTirithImportError:
-    def test_import_error_allows(self):
-        """When tools.tirith_security can't be imported, treated as allow."""
+    def test_import_error_denies_unattended(self):
+        """A missing fail-closed scanner cannot silently allow batch work."""
         import sys
         # Temporarily remove the module and replace with something that raises
         original = sys.modules.get("tools.tirith_security")
         sys.modules["tools.tirith_security"] = None  # causes ImportError on from-import
         try:
             result = check_all_command_guards("echo hello", "local")
+            assert result["approved"] is False
+            assert result["operational_failure"] is True
+            assert "unattended" in result["message"].lower()
+        finally:
+            if original is not None:
+                sys.modules["tools.tirith_security"] = original
+            else:
+                sys.modules.pop("tools.tirith_security", None)
+
+    def test_import_error_local_interactive_requires_human_approval(self):
+        import sys
+
+        original = sys.modules.get("tools.tirith_security")
+        sys.modules["tools.tirith_security"] = None
+        os.environ["YOUTAB_AGENT_INTERACTIVE"] = "1"
+        callback = MagicMock(return_value="once")
+        try:
+            result = check_all_command_guards(
+                "echo hello", "local", approval_callback=callback,
+            )
             assert result["approved"] is True
+            assert result["user_approved"] is True
+            callback.assert_called_once()
         finally:
             if original is not None:
                 sys.modules["tools.tirith_security"] = original

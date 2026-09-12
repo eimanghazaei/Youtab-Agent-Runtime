@@ -1018,6 +1018,20 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
             gr.GatewayRunner._launch_detached_restart_command(cls._fake_self())
         )
 
+    @staticmethod
+    def _isolate_restart_environment(monkeypatch):
+        """Keep environment construction from spawning unrelated git probes.
+
+        These tests mock process creation to inspect the restart watcher. The
+        normal environment builder may query the live source revision via
+        ``git rev-parse``; those children are outside this test's contract and
+        must not consume the simulated primary/fallback watcher attempts.
+        """
+        monkeypatch.setattr(
+            "tools.environments.local.build_subprocess_env",
+            lambda **_kwargs: dict(os.environ),
+        )
+
     def test_outer_watcher_retries_without_breakaway_on_oserror(self, monkeypatch):
         import gateway.run as gr
         from youtab_agent_cli._subprocess_compat import (
@@ -1028,6 +1042,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
         monkeypatch.setattr(gr.sys, "platform", "win32")
         monkeypatch.setattr(gr, "_resolve_youtab_bin", lambda: ["youtab"])
+        self._isolate_restart_environment(monkeypatch)
 
         calls = []
 
@@ -1089,6 +1104,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
         monkeypatch.setattr(gr.sys, "platform", "win32")
         monkeypatch.setattr(gr, "_resolve_youtab_bin", lambda: ["youtab"])
+        self._isolate_restart_environment(monkeypatch)
 
         calls = []
         monkeypatch.setattr(
@@ -1110,6 +1126,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
         monkeypatch.setattr(gr.sys, "platform", "win32")
         monkeypatch.setattr(gr, "_resolve_youtab_bin", lambda: ["youtab"])
+        self._isolate_restart_environment(monkeypatch)
 
         calls = []
 
