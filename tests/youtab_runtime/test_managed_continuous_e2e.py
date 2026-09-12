@@ -10,7 +10,12 @@ uninterrupted flow — NOTHING is manually seeded on the positive path:
          provider_override/model_override)
         -> PRODUCTION worker-invocation construction: the dispatcher spawn hook
            calls the REAL ``youtab_agent_cli.kanban_db.build_worker_invocation``
-           and executes the returned (env, cmd) UNCHANGED
+           and executes the returned (env, cmd) UNCHANGED — the loopback/
+           observability instrumentation is installed into the process env BEFORE
+           the builder (so the builder copies it), and the builder-owned run
+           identity (KANBAN_DB / KANBAN_TASK / KANBAN_BOARD / KANBAN_RUN_ID /
+           KANBAN_CLAIM_LOCK) is ASSERTED to equal the ingress-created values,
+           never rewritten
           -> the shipped worker CLI (``youtab -p default --cli --accept-hooks
              -m qwen:test --provider ollama chat -q "work kanban task <id>"`` and,
              for goal_mode, the ``-Q`` variant)
@@ -244,45 +249,85 @@ def _create_run(client, *, grant_header, expected_digest, goal_mode, task_text):
     return client.post(path, content=body, headers=h)
 
 
-def _worker_env(built_env, *, task_id, sentinel_dir, endpoint, pki, fixture_db):
-    """Augment the env build_worker_invocation returned: install the loopback
-    inference endpoint, the sitecustomize sentinels, and a hermetic provider
-    surface — WITHOUT touching the constructed argv. Strips inherited ambient
-    provider config so the run behaves identically on any host (mirrors the
-    focused CLI-E2E harness)."""
-    env = dict(built_env)
-    for leak in list(env):
+# The ONLY environment names the harness installs — all are explicit loopback or
+# observability instrumentation. They are set into os.environ BEFORE
+# build_worker_invocation runs, so the builder copies them into its returned env
+# and that env is executed UNCHANGED. None of these are builder-owned run-identity
+# fields (KANBAN_DB / KANBAN_TASK / KANBAN_BOARD / KANBAN_RUN_ID / KANBAN_CLAIM_LOCK),
+# which the builder alone sets and the test never overwrites — it asserts them.
+_LOOPBACK_ENV_NAMES = ("OLLAMA_BASE_URL", "OPENAI_BASE_URL", "OPENAI_API_KEY")
+_SENTINEL_ENV = {
+    "E2E_CLIENT_SENTINEL": "client_constructed.sentinel",
+    "E2E_NET_SENTINEL": "network_attempted.sentinel",
+    "E2E_NET_DEST": "net_destinations.log",
+    "E2E_CREDRESOLVE_SENTINEL": "credresolve.sentinel",
+    "E2E_VERTEX_SENTINEL": "vertex_minted.sentinel",
+    "E2E_YOUTAB_SENTINEL": "youtab_refreshed.sentinel",
+    "E2E_PREADMIT_SENTINEL": "preadmit.sentinel",
+    "E2E_ROUTEPLAN_SENTINEL": "routeplan.sentinel",
+    "E2E_ADMIT_SENTINEL": "admit.sentinel",
+}
+
+
+def _install_harness_process_env(monkeypatch, *, endpoint, pki, sentinel_dir):
+    """Install loopback + observability instrumentation into THIS process's env
+    BEFORE build_worker_invocation is called, so the builder copies them and its
+    returned env is executed unchanged. Also strips inherited ambient provider
+    config so the run is host-independent. Touches NO builder-owned run-identity
+    field (KANBAN_DB/TASK/BOARD/RUN_ID/CLAIM_LOCK)."""
+    for leak in list(os.environ):
         if (
             leak.endswith(("_API_KEY", "_TOKEN", "_BASE_URL", "_API_BASE"))
             or leak in {"OPENAI_ORG_ID", "OPENAI_ORGANIZATION", "YOUTAB_PORTAL_TOKEN"}
         ):
-            env.pop(leak, None)
+            monkeypatch.delenv(leak, raising=False)
     # The shipped worker resolves ollama inference from OLLAMA_BASE_URL; the
-    # loopback OPENAI_BASE_URL also satisfies main()'s first-run guard on a
-    # clean host. A non-``sk-`` dummy key avoids any secret-scanner false hit.
-    env["OLLAMA_BASE_URL"] = endpoint
-    env["OPENAI_BASE_URL"] = endpoint
-    env["OPENAI_API_KEY"] = "e2e-local-not-a-real-key"
-    # Belt-and-braces: pin the worker's kanban store to the exact ingress DB so
-    # load_verified_preadmission re-verifies the REALLY-persisted grant/binding.
-    env["YOUTAB_AGENT_KANBAN_DB"] = str(fixture_db)
-    env["YOUTAB_AGENT_KANBAN_TASK"] = task_id
+    # loopback OPENAI_BASE_URL also satisfies main()'s first-run guard on a clean
+    # host. A non-``sk-`` dummy key avoids any secret-scanner false hit.
+    monkeypatch.setenv("OLLAMA_BASE_URL", endpoint)
+    monkeypatch.setenv("OPENAI_BASE_URL", endpoint)
+    monkeypatch.setenv("OPENAI_API_KEY", "e2e-local-not-a-real-key")
     sentinel_dir.mkdir(parents=True, exist_ok=True)
-    env["E2E_CLIENT_SENTINEL"] = str(sentinel_dir / "client_constructed.sentinel")
-    env["E2E_NET_SENTINEL"] = str(sentinel_dir / "network_attempted.sentinel")
-    env["E2E_NET_DEST"] = str(sentinel_dir / "net_destinations.log")
-    env["E2E_CREDRESOLVE_SENTINEL"] = str(sentinel_dir / "credresolve.sentinel")
-    env["E2E_VERTEX_SENTINEL"] = str(sentinel_dir / "vertex_minted.sentinel")
-    env["E2E_YOUTAB_SENTINEL"] = str(sentinel_dir / "youtab_refreshed.sentinel")
-    env["E2E_PREADMIT_SENTINEL"] = str(sentinel_dir / "preadmit.sentinel")
-    env["E2E_ROUTEPLAN_SENTINEL"] = str(sentinel_dir / "routeplan.sentinel")
-    env["E2E_ADMIT_SENTINEL"] = str(sentinel_dir / "admit.sentinel")
+    for var, fname in _SENTINEL_ENV.items():
+        monkeypatch.setenv(var, str(sentinel_dir / fname))
     # sitecustomize dir FIRST (imported at interpreter startup), then the repo so
     # the working-tree code wins over any installed package.
-    env["PYTHONPATH"] = (
-        str(pki) + os.pathsep + str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        str(pki) + os.pathsep + str(REPO_ROOT) + os.pathsep + os.environ.get("PYTHONPATH", ""),
     )
-    return env
+
+
+def _assert_builder_identity(built_env, *, task_id, run_int, fixture_db, board_arg):
+    """The builder's returned env must ALREADY carry the exact ingress-created
+    task/run/DB/board identity — the test never rewrites these. A build_worker_
+    invocation regression that emits a missing/incorrect binding fails HERE.
+    Returns a dict of the checked identity for the evidence diagnostic."""
+    assert built_env.get("YOUTAB_AGENT_KANBAN_TASK") == task_id, (
+        f"builder KANBAN_TASK {built_env.get('YOUTAB_AGENT_KANBAN_TASK')!r} != "
+        f"ingress task {task_id!r}"
+    )
+    got_db = built_env.get("YOUTAB_AGENT_KANBAN_DB")
+    assert got_db and Path(got_db).resolve() == Path(fixture_db).resolve(), (
+        f"builder KANBAN_DB {got_db!r} != ingress DB {fixture_db!r}"
+    )
+    assert built_env.get("YOUTAB_AGENT_KANBAN_RUN_ID") == str(run_int), (
+        f"builder KANBAN_RUN_ID {built_env.get('YOUTAB_AGENT_KANBAN_RUN_ID')!r} != "
+        f"ingress run {run_int!r}"
+    )
+    expected_board = kb._normalize_board_slug(board_arg) or kb.get_current_board()
+    got_board = built_env.get("YOUTAB_AGENT_KANBAN_BOARD")
+    assert got_board == expected_board, (
+        f"builder KANBAN_BOARD {got_board!r} != ingress board {expected_board!r}"
+    )
+    assert built_env.get("YOUTAB_AGENT_KANBAN_CLAIM_LOCK"), (
+        "builder did not carry a claim lock into the worker env"
+    )
+    return {
+        "task": built_env.get("YOUTAB_AGENT_KANBAN_TASK"),
+        "db": got_db, "run_id": built_env.get("YOUTAB_AGENT_KANBAN_RUN_ID"),
+        "board": got_board, "claim": built_env.get("YOUTAB_AGENT_KANBAN_CLAIM_LOCK"),
+    }
 
 
 def _read_sentinels(sentinel_dir):
@@ -359,8 +404,18 @@ def _run_continuous(tmp_path, monkeypatch, *, goal_mode):
 
     pki = _pki_dir(tmp_path)
     worker_root = tmp_path / "worker"
+    sentinel_dir = worker_root / "sentinels"
+    # Install the loopback + observability instrumentation into THIS process's env
+    # BEFORE the builder runs, so build_worker_invocation copies them and its
+    # returned env is executed UNCHANGED (command AND environment). This is exactly
+    # ONE worker per run on the happy path, so a single sentinel dir suffices.
+    _install_harness_process_env(
+        monkeypatch, endpoint=endpoint, pki=pki, sentinel_dir=sentinel_dir
+    )
+
     procs: "dict[str, subprocess.Popen]" = {}
     logs: "dict[str, Path]" = {}
+    identity: "dict[str, dict]" = {}
 
     def _spawn(task, workspace, *, board=None):
         # Idempotent per task: if a live worker already exists, report its pid so
@@ -368,25 +423,28 @@ def _run_continuous(tmp_path, monkeypatch, *, goal_mode):
         existing = procs.get(task.id)
         if existing is not None and existing.poll() is None:
             return existing.pid
-        # PRODUCTION worker-invocation construction — the real builder, executed
-        # UNCHANGED (only the env is augmented for observability + loopback).
+        # PRODUCTION worker-invocation construction — the real builder. Its returned
+        # (env, cmd) are executed UNCHANGED: the harness vars were installed into the
+        # process env above, so the builder already copied them; the builder-owned
+        # run-identity fields are asserted (never rewritten) below.
         built_env, cmd = kb.build_worker_invocation(task, workspace, board=board)
-        sentinel_dir = worker_root / task.id
-        env = _worker_env(
-            built_env, task_id=task.id, sentinel_dir=sentinel_dir,
-            endpoint=endpoint, pki=pki, fixture_db=fixture_db,
+        identity[task.id] = _assert_builder_identity(
+            built_env, task_id=task.id, run_int=task.current_run_id,
+            fixture_db=fixture_db, board_arg=board,
         )
-        log_path = sentinel_dir / "worker.log"
+        worker_root.mkdir(parents=True, exist_ok=True)
+        log_path = worker_root / f"{task.id}.log"
         logs[task.id] = log_path
         log_f = open(log_path, "wb")
         proc = subprocess.Popen(
-            cmd, env=env,
+            cmd, env=built_env,
             cwd=workspace if os.path.isdir(workspace) else None,
             stdin=subprocess.DEVNULL, stdout=log_f, stderr=subprocess.STDOUT,
         )
         procs[task.id] = proc
         return proc.pid
 
+    worker_rc = None
     try:
         with _build_client(_spawn) as client:
             pf = _preflight(client)
@@ -417,7 +475,18 @@ def _run_continuous(tmp_path, monkeypatch, *, goal_mode):
                 terminal_status = data["status"]
             except AssertionError:
                 terminal_status = "NOT_TERMINAL"
-            # Event trail for a durable failure diagnostic (never an opaque timeout).
+
+            # Correction (Codex 5188171266 #4): after terminal completion, require
+            # the shipped CLI worker to EXIT ON ITS OWN and prove a clean exit — do
+            # not terminate it out from under the assertion.
+            proc = procs.get(run_id)
+            if proc is not None:
+                try:
+                    worker_rc = proc.wait(timeout=90)
+                except subprocess.TimeoutExpired:
+                    worker_rc = None
+            # Event trail captured AFTER the worker exits, so a post-completion
+            # crash/gave-up/protocol-violation would already be recorded.
             event_kinds = [e["kind"] for e in _all_events(client, run_id)]
     finally:
         server.shutdown()
@@ -437,54 +506,72 @@ def _run_continuous(tmp_path, monkeypatch, *, goal_mode):
         runtime._nonce_store = None
         runtime._grant_boundary = None
 
-    sentinels = _read_sentinels(worker_root / run_id)
+    sentinels = _read_sentinels(sentinel_dir)
     log_text = ""
     lp = logs.get(run_id)
     if lp is not None and lp.exists():
         log_text = lp.read_text(encoding="utf-8", errors="replace")
-    return run_id, sentinels, log_text, terminal_status, event_kinds
+    return {
+        "run_id": run_id,
+        "sentinels": sentinels,
+        "log_text": log_text,
+        "terminal_status": terminal_status,
+        "event_kinds": event_kinds,
+        "worker_rc": worker_rc,
+        "identity": identity.get(run_id),
+    }
 
 
-def _assert_full_chain(run_id, sentinels, log_text, terminal_status, event_kinds):
+# Dispatcher events that mean the worker did NOT cleanly own its own completion.
+_BAD_TERMINAL_EVENTS = ("crashed", "gave_up", "protocol_violation")
+
+
+def _assert_full_chain(res):
     diag = (
-        f"\nrun_id={run_id} terminal_status={terminal_status!r}"
-        f"\nevent_kinds={event_kinds}"
-        f"\nsentinels={json.dumps(sentinels, indent=2)}"
-        f"\n--- worker.log (last 3000) ---\n{log_text[-3000:]}"
+        f"\nrun_id={res['run_id']} terminal_status={res['terminal_status']!r}"
+        f" worker_rc={res['worker_rc']!r}"
+        f"\nbuilder_identity={json.dumps(res['identity'], indent=2)}"
+        f"\nevent_kinds={res['event_kinds']}"
+        f"\nsentinels={json.dumps(res['sentinels'], indent=2)}"
+        f"\n--- worker.log (last 3000) ---\n{res['log_text'][-3000:]}"
     )
+    s = res["sentinels"]
     # Ordered managed-path landmarks.
-    assert sentinels["preadmitted"], "single verified pre-admission load did not run" + diag
-    assert sentinels["provider_gate"], "pre-credential provider gate did not run" + diag
+    assert s["preadmitted"], "single verified pre-admission load did not run" + diag
+    assert s["provider_gate"], "pre-credential provider gate did not run" + diag
     # Blocker 3: credentials resolved EXACTLY ONCE (no _init_agent re-resolution).
-    assert sentinels["credresolve_count"] == 1, (
-        f"expected exactly one credential resolution, got "
-        f"{sentinels['credresolve_count']}" + diag
+    assert s["credresolve_count"] == 1, (
+        f"expected exactly one credential resolution, got {s['credresolve_count']}" + diag
     )
     # A real shipped provider client was constructed.
-    assert sentinels["client_constructed"], "the bound provider client was not constructed" + diag
+    assert s["client_constructed"], "the bound provider client was not constructed" + diag
     # FINAL managed admission ran (and, since the run completed, succeeded).
-    assert sentinels["admitted"], "final managed admission did not run" + diag
+    assert s["admitted"], "final managed admission did not run" + diag
     # No drift to an unauthorized cloud provider.
-    assert not sentinels["vertex_minted"], "a Vertex token was minted on the valid path" + diag
-    assert not sentinels["youtab_refreshed"], "a Youtab key was refreshed on the valid path" + diag
+    assert not s["vertex_minted"], "a Vertex token was minted on the valid path" + diag
+    assert not s["youtab_refreshed"], "a Youtab key was refreshed on the valid path" + diag
     # Loopback-only: at least the inference dial, and NOTHING off-box.
-    assert sentinels["net_destinations"], "expected at least the loopback inference dial" + diag
-    for dest in sentinels["net_destinations"]:
+    assert s["net_destinations"], "expected at least the loopback inference dial" + diag
+    for dest in s["net_destinations"]:
         assert ("127.0.0.1" in dest or "localhost" in dest or "::1" in dest), (
             f"a non-loopback endpoint was contacted: {dest}" + diag
         )
     # Terminal run/task state: the card was completed by a REAL kanban_complete
     # tool call admitted through the active tool-authority gate.
-    assert terminal_status == "completed", "run did not reach the completed terminal state" + diag
+    assert res["terminal_status"] == "completed", (
+        "run did not reach the completed terminal state" + diag
+    )
+    # Codex 5188171266 #4: the shipped CLI worker exited ON ITS OWN with rc 0 and
+    # the dispatcher recorded no post-completion crash / gave-up / protocol violation.
+    assert res["worker_rc"] == 0, f"worker did not exit cleanly (rc={res['worker_rc']!r})" + diag
+    for bad in _BAD_TERMINAL_EVENTS:
+        assert bad not in res["event_kinds"], f"dispatcher recorded a {bad!r} event" + diag
 
 
 @pytest.mark.timeout(300)
 def test_continuous_managed_e2e_chat_q(tmp_path, monkeypatch):
     """Non-goal worker: shipped ``chat -q "work kanban task <id>"`` dispatch."""
-    run_id, sentinels, log_text, terminal_status, event_kinds = _run_continuous(
-        tmp_path, monkeypatch, goal_mode=False
-    )
-    _assert_full_chain(run_id, sentinels, log_text, terminal_status, event_kinds)
+    _assert_full_chain(_run_continuous(tmp_path, monkeypatch, goal_mode=False))
 
 
 @pytest.mark.timeout(300)
@@ -492,7 +579,4 @@ def test_continuous_managed_e2e_chat_Q(tmp_path, monkeypatch):
     """Goal-mode worker: shipped ``chat -q "work kanban task <id>" -Q`` dispatch
     (build_worker_invocation appends ``-Q`` for a goal_mode card). Same full
     chain; the goal loop exits as soon as the worker completes the card."""
-    run_id, sentinels, log_text, terminal_status, event_kinds = _run_continuous(
-        tmp_path, monkeypatch, goal_mode=True
-    )
-    _assert_full_chain(run_id, sentinels, log_text, terminal_status, event_kinds)
+    _assert_full_chain(_run_continuous(tmp_path, monkeypatch, goal_mode=True))

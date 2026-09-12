@@ -5,8 +5,9 @@ Codex exact-SHA review
 [5187358362](https://github.com/eimanghazaei/Youtab-Agent-Runtime/pull/44#pullrequestreview-5187358362).
 Markdown is the authoritative evidence (no PDF).
 
-- **Candidate SHA (Batch5 blockers):** commit `ac3fce0ec84cb11e5a33e88a63b1b92b529360fe` (parent `812750e388496c9fbf17b9c1fc0cd9d1c57c5801`) — pushed and CI-green on PR #44.
-- **Follow-up (continuous E2E proof):** a subsequent test-and-evidence-only commit (parent `ac3fce0ec…`) adds `tests/youtab_runtime/test_managed_continuous_e2e.py` and the "Continuous managed-runtime E2E" section below. No production code changed; reported to the Owner for exact-SHA push authorization.
+- **Batch5 blockers:** commit `ac3fce0ec84cb11e5a33e88a63b1b92b529360fe` (parent `812750e388496c9fbf17b9c1fc0cd9d1c57c5801`) — pushed, CI 11/11 green on PR #44.
+- **Continuous E2E proof:** commit `0dc3ae36908b99580d628ef2e4024d1e27e91751` (parent `ac3fce0ec…`) — pushed, CI 11/11 green on PR #44. Adds `tests/youtab_runtime/test_managed_continuous_e2e.py` and the "Continuous managed-runtime E2E" section below.
+- **E2E-integrity correction (Codex review 5188171266, P1):** a follow-up test-and-evidence-only commit (parent `0dc3ae369…`) makes the continuous E2E execute the builder's returned (env, cmd) truly unchanged — harness loopback/observability variables are installed into the process env BEFORE `build_worker_invocation`, the builder-owned run identity (KANBAN_DB/TASK/BOARD/RUN_ID/CLAIM_LOCK) is asserted to equal the ingress-created values (never rewritten), and the shipped worker is required to exit rc 0 with no `crashed`/`gave_up`/`protocol_violation` event. No production code changed.
 - **Branch:** `feat/wave30h-codex-5186275558-remediation` (PR #44)
 - **Base:** `fix/wave12-authz-gate-token-provider-binding`
 - **PR #41:** untouched, frozen at `3ec256787`.
@@ -80,7 +81,9 @@ admission + tool-authority gates ACTIVE, never inert):
       → create_run persistence (real Ed25519 grant + HMAC + create_task_ex atomic
         binding/grant/manifest/mode + row-pinned provider_override/model_override)
         → PRODUCTION worker-invocation construction via the REAL
-          `youtab_agent_cli.kanban_db.build_worker_invocation`, executed UNCHANGED
+          `youtab_agent_cli.kanban_db.build_worker_invocation`; its returned (env,
+          cmd) are executed UNCHANGED (harness vars installed pre-builder; builder-
+          owned KANBAN_DB/TASK/BOARD/RUN_ID/CLAIM_LOCK asserted == ingress values)
           → the shipped worker CLI (`chat -q "work kanban task <id>"`, and the `-Q`
             goal-mode variant build_worker_invocation appends)
             → single verified pre-admission load → pre-credential provider gate →
@@ -104,7 +107,10 @@ produced by the real preflight/create (nothing manually seeded on the positive p
 | **final managed admission ran and succeeded** | ✓ |
 | no Vertex mint / Youtab refresh (no cloud drift) | ✓ |
 | **every socket destination dialed was loopback** (`127.0.0.1`) | ✓ |
+| the builder's returned env carried the exact ingress task/run/DB/board/claim identity | ✓ |
 | run and task reached the **terminal `completed`** state | ✓ |
+| the shipped CLI worker **exited on its own with rc 0** | ✓ |
+| dispatcher recorded **no `crashed` / `gave_up` / `protocol_violation`** event | ✓ |
 
 Honest boundary — REAL vs substituted:
 - **REAL:** the FastAPI ingress + token_auth + RuntimeServiceProvider; the create/
@@ -133,8 +139,15 @@ No paid provider, metered model, or cloud benchmark was executed. The positive E
 uses an in-process **loopback** OpenAI/Ollama-compatible responder on `127.0.0.1`; the
 test asserts every socket destination dialed was loopback.
 
-## Remaining operational steps before benchmark
+## Status / remaining operational steps
 
-1. Owner exact-SHA push authorization for the candidate SHA.
-2. Independent Codex exact-SHA review of the pushed SHA.
+- The Batch5 blockers commit `ac3fce0ec…` and the continuous-E2E commit `0dc3ae369…`
+  are **pushed to PR #44 and CI 11/11 green** (Owner push authorization is NOT
+  pending for these — they are already on the branch).
+- The E2E-integrity correction (Codex 5188171266 P1) is a local test-and-evidence
+  commit awaiting the Owner's exact-SHA push authorization.
+
+Remaining before the paid Cloud Benchmark (each Owner-gated):
+1. Push authorization for the E2E-integrity correction SHA, then CI on that exact SHA.
+2. Independent Codex exact-SHA review + security review green on the pushed SHA.
 3. Owner-gated benchmark preflight/create against a reachable engine (not part of this change).
