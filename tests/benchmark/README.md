@@ -78,8 +78,30 @@ python -m tests.benchmark.harness.cli run --mode real_provider \
   --base-url https://runtime.example --secret-file /path/to/secret --out .bench
 ```
 
-Outputs: `results.jsonl` (one record per scenario×repetition, contract 7) and
-`summary.json` (contract-9 metrics + `honesty_divergences[]` + parity + coverage).
+Outputs (per run): `results.jsonl` (one record per scenario×repetition, contract 7),
+`summary.json` (contract-9 metrics + `honesty_divergences[]` + parity + coverage),
+`provenance.json` (runtime Git SHA, schema version, mode(s), UTC timestamp), and
+`MANIFEST.sha256` (SHA-256 of every artifact — verify with
+`recorder.verify_manifest(dir)`).
+
+### Evidence integrity (WAVE-30H A5 — append-only, immutable)
+
+Benchmark evidence is **append-only**. The harness never truncates, overwrites,
+replaces, or deletes a prior run's artifacts:
+
+* `Recorder` **refuses** (`EvidenceExistsError`) to write into a directory that
+  already holds any evidence file — it no longer truncates `results.jsonl`.
+* A **live** run writes into a **unique** minted directory
+  `run-<UTC-timestamp>-<sha12>[-<run-id>]` under the `--out` base
+  (`preflight.mint_run_evidence_dir`); an existing target fails closed.
+* `preflight.validate_output_dir` refuses a non-empty evidence target, and
+  **`--force` can never overwrite historical evidence**.
+* `provenance.json` + `MANIFEST.sha256` make any post-finalize edit/deletion
+  detectable (`verify_manifest`).
+
+To re-run, always target a fresh directory — never reuse or `--force` over an
+existing evidence directory. Historical evidence under `docs/evidence/benchmarks/`
+is preserved and must never be replaced.
 
 ## Layout
 

@@ -63,6 +63,75 @@ def test_unknown_keys_ignored():
     assert "nonsense" not in lim.to_dict()
 
 
+# --- max_retries=0 semantics (WAVE-30D canary retry-contract fix) ------------
+
+
+def test_max_retries_zero_accepted_and_preserved():
+    lim = RunLimits.validate_and_clamp({"max_retries": 0})
+    assert lim.max_retries == 0
+    # 0 is not None, so it round-trips through to_dict() (the set sent on create-run).
+    assert lim.to_dict().get("max_retries") == 0
+
+
+def test_max_retries_one_still_accepted():
+    assert RunLimits.validate_and_clamp({"max_retries": 1}).max_retries == 1
+
+
+def test_max_retries_clamped_to_ceiling():
+    assert (
+        RunLimits.validate_and_clamp({"max_retries": 999}).max_retries
+        == RUN_CEILINGS["max_retries"]
+    )
+
+
+def test_max_retries_negative_rejected():
+    with pytest.raises(RunLimitError, match="max_retries must be >= 0"):
+        RunLimits.validate_and_clamp({"max_retries": -1})
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_iterations",
+        "max_requests",
+        "max_input_tokens",
+        "max_output_tokens",
+        "max_total_tokens",
+        "max_runtime_seconds",
+        "max_concurrency",
+        "failure_threshold",
+    ],
+)
+def test_zero_still_rejected_for_positive_only_fields(field):
+    # Only max_retries gained a zero exemption; every other limit must still
+    # reject zero (a run with zero iterations/requests/tokens is meaningless).
+    with pytest.raises(RunLimitError, match="must be positive"):
+        RunLimits.validate_and_clamp({field: 0})
+
+
+@pytest.mark.parametrize("field", ["max_retries", "max_iterations", "max_requests"])
+def test_boolean_rejected_as_non_integer(field):
+    # bool is an int subclass; True/False must not be silently coerced to 1/0.
+    with pytest.raises(RunLimitError, match="must be an integer"):
+        RunLimits.validate_and_clamp({field: True})
+    with pytest.raises(RunLimitError, match="must be an integer"):
+        RunLimits.validate_and_clamp({field: False})
+
+
+def test_official_canary_payload_accepted_by_create_run_validation():
+    # The EXACT limit set the Stage-1 canary profile sends on POST /runs.
+    # Before this fix it raised: 422 invalid_limits: max_retries must be positive.
+    from tests.benchmark.harness.preflight import STAGE_PROFILES
+
+    canary = dict(STAGE_PROFILES["canary"]["limits"])
+    assert canary["max_retries"] == 0  # the profile's deliberate no-retry contract
+    lim = RunLimits.validate_and_clamp(canary)  # the create-run validation path
+    assert lim.max_retries == 0
+    assert lim.max_requests == 1
+    assert lim.max_iterations == 1
+    assert Decimal(lim.max_cost_eur) == Decimal("0.10")
+
+
 # --- enforcer with the real durable ledger ----------------------------------
 
 
@@ -275,6 +344,39 @@ def test_attach_from_environment_end_to_end_stops_at_budget_ceiling(ledger, monk
     assert enf.pre_iteration(1) is None       # reserve 4.00
     assert enf.pre_iteration(2) is None       # reserve 8.00 (total 8.00)
     assert enf.pre_iteration(3) == "budget_ceiling"  # 12.00 > €10 -> fail closed
+
+
+def test_max_retries_zero_means_no_retry_budget(ledger, monkeypatch):
+    """max_retries=0 -> retry_multiplier 1: a single attempt with NO retry. The
+    iteration reserves exactly ONE worst-case call, never a retry-doubled amount,
+    so a canary genuinely cannot retry."""
+    from youtab_runtime import run_limits as rl
+
+    class _Agent:
+        model = "m"
+        provider = "p"
+        max_iterations = 8
+
+    monkeypatch.setattr(cb, "price_worst_case_eur", lambda *a, **k: Decimal("1.00"))
+    monkeypatch.setattr(cb, "price_actual_eur", lambda *a, **k: Decimal("0.10"))
+
+    agent = _Agent()
+    enf = rl.attach_run_limit_enforcer(
+        agent,
+        limits=RunLimits(max_requests=5, max_retries=0),
+        run_id="runR0",
+        campaign_id="campR0",
+        fx_usd_to_eur="1.0",
+        fx_source="t",
+        fx_asof="d",
+        model="m",
+        provider="p",
+        db_path=ledger,
+    )
+    assert enf.retry_multiplier == 1  # 1 + max_retries(0) -> one attempt, no retry
+    assert enf.pre_iteration(1) is None
+    # Exactly one worst-case (1.00) reserved — not a retry-doubled reservation.
+    assert cb.remaining_eur("campR0", db_path=ledger) == Decimal("9.00")
 
 
 def test_attach_from_environment_fails_closed_without_fx(monkeypatch):

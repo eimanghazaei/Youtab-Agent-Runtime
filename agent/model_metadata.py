@@ -1708,6 +1708,53 @@ def query_ollama_supports_vision(model: str, base_url: str, api_key: str = "") -
     return None
 
 
+def query_ollama_model_digest(model: str, base_url: str, api_key: str = "") -> Optional[str]:
+    """Return the 64-hex sha256 manifest digest for ``model`` from ``/api/tags``.
+
+    The digest identifies the exact local model build so a benchmark can pin it
+    (a run cannot then silently attest a different model). Returns None when the
+    server is unreachable/not-Ollama, the tag is unknown, or the digest is
+    malformed. Fail-closed: any error yields None (never raises). Sits with the
+    sibling Ollama probes so all local model-catalog egress stays in this audited
+    module (see security/egress_allowlist.json)."""
+    import httpx
+
+    bare_model = _strip_provider_prefix(model)
+    if not bare_model or not base_url:
+        return None
+
+    server_url = _localhost_to_ipv4(base_url.rstrip("/"))
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    headers = _auth_headers(api_key)
+
+    try:
+        with httpx.Client(timeout=3.0, headers=headers) as client:
+            resp = client.get(f"{server_url}/api/tags")
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+    except Exception:
+        return None
+
+    models = data.get("models") if isinstance(data, dict) else None
+    if not isinstance(models, list):
+        return None
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or entry.get("model") or "")
+        if name == bare_model:
+            digest = str(entry.get("digest") or "").strip().lower()
+            if digest.startswith("sha256:"):
+                digest = digest[len("sha256:"):]
+            if len(digest) == 64 and all(c in "0123456789abcdef" for c in digest):
+                return digest
+            return None
+    return None
+
+
 def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query an Ollama server's native ``/api/show`` for context length.
 

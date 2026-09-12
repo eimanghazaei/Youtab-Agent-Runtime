@@ -25,6 +25,15 @@ import ssl
 import time
 from typing import Any, Dict, List, Optional
 
+# WAVE-30H R8: per-stage latency spans (self-noops when tracing is off/unavailable).
+try:  # pragma: no cover - observability import guard
+    from youtab_runtime.stage_trace import stage_span as _stage_span
+except Exception:  # pragma: no cover - defensive
+    from contextlib import nullcontext
+
+    def _stage_span(_stage_attr, **_attrs):
+        return nullcontext({})
+
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import (
     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE,
@@ -511,7 +520,12 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     # First turn of a new session (or recovering from a broken stored
     # prompt) — build from scratch.
-    agent._cached_system_prompt = agent._build_system_prompt(system_message)
+    with _stage_span("PROMPT_CONSTRUCT") as _box_sysprompt:
+        agent._cached_system_prompt = agent._build_system_prompt(system_message)
+        try:
+            _box_sysprompt["result"] = "built"
+        except Exception:  # pragma: no cover
+            pass
 
     # Plugin hook: on_session_start — fired once when a brand-new
     # session is created (not on continuation).  Plugins can use this
@@ -1141,6 +1155,119 @@ def _egress_run_context_from_env():
     return nullcontext()
 
 
+# ── WAVE-30H: managed cooperative pause / checkpoint / resume ─────────────────
+#
+# ADR-0004. A managed ``youtab chat`` worker (dispatched with
+# ``YOUTAB_AGENT_KANBAN_TASK`` = the durable run id) cooperatively observes a
+# ``run_pause`` signal at each TURN BOUNDARY (top of the tool-calling loop,
+# before the next model call). On pause it persists a ``run_checkpoint`` of the
+# conversation, blocks the task, and stops — it is NOT cancelled and NO tool is
+# re-run. A resumed run is dispatched to a FRESH worker that restores the
+# conversation from the checkpoint and continues from the exact saved state.
+#
+# Both helpers are FAIL-OPEN: any error (not a managed run, DB error, an
+# un-serializable/oversized conversation) leaves the run running normally — a
+# normal (non-kanban) run never touches this path.
+
+
+def _managed_pause_run_id() -> Optional[str]:
+    rid = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+    return rid or None
+
+
+def _maybe_checkpoint_and_pause(messages: List[Dict[str, Any]], iteration: int) -> bool:
+    """At a turn boundary: if an ACCEPTED pause is active for this managed run,
+    STOP — fail-closed. On a valid, integrity-checked checkpoint, persist a
+    ``run_checkpoint`` (resumable) and block. If the checkpoint cannot be built,
+    validated or persisted, emit a durable ``run_pause_failed`` and block anyway:
+    the worker MUST NOT continue executing model calls / tools / side effects
+    after an accepted pause. The run is left non-completed and non-cancelled, and
+    resume is refused until a valid checkpoint exists (explicit recovery).
+
+    Returns True when the loop must STOP (pause accepted — success OR failure).
+    Returns False ONLY when this is not a managed run or no pause is active.
+    """
+    run_id = _managed_pause_run_id()
+    if not run_id:
+        return False
+    from youtab_agent_cli import kanban_db as kb
+    from youtab_runtime import run_control as rc
+
+    # Read to detect a pause. A read error here yields NO confirmed pause, so we
+    # keep running (correct when there genuinely is none). Once a pause IS
+    # confirmed below, every subsequent failure is handled fail-CLOSED (stop).
+    try:
+        with kb.connect_closing() as conn:
+            events = kb.list_events(conn, run_id)
+    except Exception:  # noqa: BLE001
+        logger.debug("pause-check read failed; no confirmed pause, continuing", exc_info=True)
+        return False
+    if not rc.is_paused(events):
+        return False
+
+    # ── A pause is ACCEPTED. The worker STOPS from here no matter what. ──
+    state = rc.conversation_checkpoint_state(messages, iteration=iteration)
+    ok = state is not None
+    if ok:
+        # Integrity: the persisted state must round-trip back to a message list,
+        # or it is not a valid, restorable checkpoint.
+        class _Probe:
+            kind = rc.CHECKPOINT
+            payload = {"state": state}
+        try:
+            ok = rc.conversation_from_checkpoint([_Probe()]) is not None
+        except Exception:  # noqa: BLE001
+            ok = False
+
+    try:
+        with kb.connect_closing() as conn:
+            with kb.write_txn(conn):
+                if ok:
+                    kb._append_event(conn, run_id, rc.CHECKPOINT, {"state": state})
+                else:
+                    kb._append_event(
+                        conn, run_id, rc.PAUSE_FAILED_EVENT,
+                        {"reason": "checkpoint serialization/size/integrity failure"})
+    except Exception:  # noqa: BLE001 — could not record the outcome; still STOP.
+        logger.error("managed pause: failed to persist %s for run %s; halting fail-closed",
+                     "checkpoint" if ok else "pause_failed", run_id, exc_info=True)
+        ok = False
+
+    # Block in its own transaction so the run stops being claimed; non-terminal.
+    try:
+        with kb.connect_closing() as conn2:
+            kb.block_task(conn2, run_id, reason=("paused" if ok else "pause_failed"))
+    except Exception:  # noqa: BLE001 — worker still halts regardless.
+        logger.error("managed pause: block_task failed for run %s; worker halting anyway",
+                     run_id, exc_info=True)
+
+    if ok:
+        logger.info("managed run %s paused with valid checkpoint (iteration %s)", run_id, iteration)
+    else:
+        logger.error("managed run %s PAUSE FAILED (no valid checkpoint) — halted fail-closed; "
+                     "resume refused until an explicit recovery action", run_id)
+    return True  # STOP the loop in ALL accepted-pause cases (never continue)
+
+
+def _maybe_restore_conversation() -> Optional[List[Dict[str, Any]]]:
+    """On worker start: the checkpointed conversation to RESUME from, or None.
+    A fresh worker re-dispatched after ``/resume`` replays these messages (which
+    already contain every completed tool call + result) so the model continues
+    from the exact saved state without re-executing any tool."""
+    run_id = _managed_pause_run_id()
+    if not run_id:
+        return None
+    try:
+        from youtab_agent_cli import kanban_db as kb
+        from youtab_runtime import run_control as rc
+
+        with kb.connect_closing() as conn:
+            return rc.conversation_from_checkpoint(kb.list_events(conn, run_id))
+    except Exception:  # noqa: BLE001 - a restore failure must not break startup
+        logger.debug("checkpoint restore failed; starting fresh", exc_info=True)
+        return None
+
+
 def run_conversation(*args, **kwargs):
     """Run-execution chokepoint wrapper (WAVE-28 §6.4).
 
@@ -1226,6 +1353,72 @@ def _run_conversation_impl(
                         _run_id, Principal(_tenant, _user), correlation_id=_corr
                     )
                 )
+                # R8 (WAVE-30H): bind this worker's immutable per-run trace context
+                # and route first-class stage_trace spans (memory retrieval, child
+                # spawn/wait, and any future span) into the same principal-bound run
+                # journal. The observer-bridged model/tool spans do NOT depend on
+                # this; this is only for spans emitted directly in worker code.
+                try:
+                    from youtab_runtime import stage_trace as _st
+
+                    _root = (
+                        os.environ.get("YOUTAB_AGENT_KANBAN_RUN_ID") or ""
+                    ).strip() or _run_id
+                    _agent_id = (
+                        os.environ.get("YOUTAB_AGENT_PROFILE") or ""
+                    ).strip() or None
+                    _st.set_sink(_st.RunJournalSink())
+                    _st.bind_trace_context(
+                        tenant=_tenant, user=_user, run_id=_run_id,
+                        root_run_id=_root, correlation_id=_corr, agent_id=_agent_id,
+                    )
+                    # R8: emit the two cross-process startup gaps (clock="epoch") now
+                    # that the trace context is bound. The gateway stamped an enqueue
+                    # mark (runtime_execution_mode event) and the dispatcher a spawn
+                    # mark (spawned event); this worker's process-start wall epoch is
+                    # phase_timing._T0_WALL. Missing marks stay unrecorded (null, never
+                    # inferred); ordering is guarded so no negative duration is emitted.
+                    try:
+                        from youtab_agent_cli import kanban_db as _kb_r8
+                        from youtab_runtime import phase_timing as _pt_r8
+
+                        _enqueue_ns = None
+                        _spawned_ns = None
+                        with _kb_r8.connect_closing() as _c_r8:
+                            for _ev in _kb_r8.list_events(_c_r8, _run_id):
+                                _k = getattr(_ev, "kind", None)
+                                _p = getattr(_ev, "payload", None)
+                                if not isinstance(_p, dict):
+                                    continue
+                                if _k == "runtime_execution_mode" and _enqueue_ns is None:
+                                    _enqueue_ns = _p.get("enqueue_epoch_ns")
+                                elif _k == "spawned" and _spawned_ns is None:
+                                    _spawned_ns = _p.get("spawned_epoch_ns")
+                        _worker_t0_ns = int(getattr(_pt_r8, "_T0_WALL", 0) * 1_000_000_000) or None
+                        if (
+                            isinstance(_enqueue_ns, int)
+                            and isinstance(_spawned_ns, int)
+                            and _spawned_ns >= _enqueue_ns
+                        ):
+                            _st.record(
+                                _st.Stage.QUEUE_WAIT,
+                                duration_ns=_spawned_ns - _enqueue_ns,
+                                clock="epoch",
+                            )
+                        if (
+                            isinstance(_spawned_ns, int)
+                            and _worker_t0_ns
+                            and _worker_t0_ns >= _spawned_ns
+                        ):
+                            _st.record(
+                                _st.Stage.WORKER_STARTUP,
+                                duration_ns=_worker_t0_ns - _spawned_ns,
+                                clock="epoch",
+                            )
+                    except Exception:
+                        logger.debug("R8 cross-process startup spans failed", exc_info=True)
+                except Exception:
+                    logger.debug("R8 trace-context bind failed", exc_info=True)
         except Exception:
             logger.warning(
                 "WAVE-26 run-observer registration failed", exc_info=True
@@ -1326,6 +1519,20 @@ def _run_conversation_impl(
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages
     conversation_history = _ctx.conversation_history
+    # WAVE-30H (ADR-0004): resume from a persisted checkpoint. A managed worker
+    # re-dispatched by /resume restores the EXACT saved conversation (already
+    # containing every completed tool call + its result), so the model continues
+    # from that state and NO tool is re-executed. The redundant re-dispatch user
+    # turn just built into ``messages`` is intentionally discarded. No-op (None)
+    # for a fresh run or any non-managed run.
+    _resumed_messages = _maybe_restore_conversation()
+    if _resumed_messages:
+        messages = _resumed_messages
+        conversation_history = list(_resumed_messages)
+        logger.info(
+            "managed run resumed from checkpoint: %s messages restored (no tool re-execution)",
+            len(messages),
+        )
     active_system_prompt = _ctx.active_system_prompt
     effective_task_id = _ctx.effective_task_id
     turn_id = _ctx.turn_id
@@ -1419,6 +1626,26 @@ def _run_conversation_impl(
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
+        # WAVE-30H (ADR-0004): managed cooperative pause at the turn boundary.
+        # No-op unless this is a managed kanban worker with an UNRESUMED pause.
+        # The prior turn's tool calls + results are already in ``messages``, so
+        # checkpointing here and resuming later re-executes NO tool. Returns a
+        # non-completion result and stops cleanly (NOT a cancel); a fresh worker
+        # re-dispatched by /resume restores the checkpoint and continues.
+        if _maybe_checkpoint_and_pause(messages, api_call_count):
+            agent._persist_session(messages, conversation_history)
+            # Stopped for an accepted pause (either successfully checkpointed, or
+            # fail-closed on a checkpoint failure). NOT completed, NOT cancelled;
+            # the authoritative sub-state (paused / pause_failed) is the persisted
+            # run_checkpoint / run_pause_failed event, projected by run_control.
+            return {
+                "final_response": None,
+                "messages": messages,
+                "api_calls": api_call_count,
+                "completed": False,
+                "stopped_for_pause": True,
+            }
+
         # Check for interrupt request (e.g., user sent new message)
         if agent._interrupt_requested:
             interrupted = True
@@ -1457,6 +1684,19 @@ def _run_conversation_impl(
                 if not agent.quiet_mode:
                     agent._safe_print(f"\n⛔ Run limit reached ({_limit_stop}); stopping before further provider calls")
                 break
+
+        # WAVE-30H R5: the managed execution-tree shared budget (from the Simorgh
+        # grant reasoning, keyed on root_run_id). Unconditional for managed runs,
+        # independent of any benchmark campaign; a no-op for non-managed runs.
+        # Enforces the tree deadline + debits one shared iteration, fail-closed.
+        from agent import managed_budget_gate as _mbg
+
+        _tree_stop = _mbg.execution_tree_pre_iteration(agent)
+        if _tree_stop:
+            _turn_exit_reason = f"run_limit:{_tree_stop}"
+            if not agent.quiet_mode:
+                agent._safe_print(f"\n⛔ Execution-tree budget reached ({_tree_stop}); stopping before further provider calls")
+            break
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
@@ -1928,6 +2168,20 @@ def _run_conversation_impl(
         # separately (compression needs them: 50+ tools = 20-30K tokens).
         # total_chars is a rough (~) proxy — verbose log + hook metric only.
         approx_tokens = estimate_messages_tokens_rough(api_messages)
+        # WAVE-30H R8: the live OpenAI-compat path emits no native prompt_eval, so
+        # this client estimate is the only input-token count available there. Record
+        # it with duration_ns=None (occurred-but-not-timed) so it carries the count
+        # WITHOUT entering the native-prefill duration percentile (null != zero).
+        try:
+            from youtab_runtime import stage_trace as _st_tok
+            _st_tok.record(
+                _st_tok.Stage.PROMPT_TOKENIZE,
+                duration_ns=None,
+                reason_code="client_estimate",
+                input_tokens=int(approx_tokens),
+            )
+        except Exception:  # pragma: no cover - observability never breaks the turn
+            pass
         request_pressure_tokens = approx_tokens + (
             _estimate_tools_tokens_rough(agent.tools) if agent.tools else 0
         )
@@ -2158,6 +2412,19 @@ def _run_conversation_impl(
             logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
         
         api_start_time = time.time()
+        # WAVE-30F: record the "first model send" lifecycle milestone (fail-soft).
+        # The mark updates each call; the first call's value — captured in the first
+        # per-call timing event below — is the one that attributes the ~13.3s of
+        # per-run worker startup between agent-construction start and first send.
+        try:
+            from youtab_runtime.phase_timing import mark as _pt_mark
+            _pt_mark("first_model_send")
+        except Exception:
+            pass
+        # WAVE-30E: clear any prior call's streaming TTFT so this call's timing
+        # record only carries a TTFT actually measured for THIS call (the
+        # streaming path re-stamps it on its first chunk).
+        agent._last_ttft_s = None
         retry_count = 0
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
@@ -2725,6 +2992,7 @@ def _run_conversation_impl(
                     
                     # Sleep in small increments to stay responsive to interrupts
                     sleep_end = time.time() + wait_time
+                    _backoff_t0 = time.monotonic_ns()
                     _backoff_touch_counter = 0
                     while time.time() < sleep_end:
                         if agent._interrupt_requested:
@@ -2760,6 +3028,23 @@ def _run_conversation_impl(
                                 f"retry backoff ({retry_count}/{max_retries}), "
                                 f"{int(sleep_end - time.time())}s remaining"
                             )
+                    # WAVE-30H R8: attribute the actual backoff wait (attempt +
+                    # whether upstream throttling drove it). Deliberate wait, but a
+                    # real, causally-linked latency component of a retrying run.
+                    try:
+                        from youtab_runtime import stage_trace as _st_bk
+                        _bk_throttled = bool(
+                            _failure_hint
+                            and ("rate" in _failure_hint.lower() or "429" in _failure_hint)
+                        )
+                        _st_bk.record(
+                            _st_bk.Stage.RETRY_BACKOFF,
+                            duration_ns=time.monotonic_ns() - _backoff_t0,
+                            attempt=int(retry_count),
+                            provider_throttled=_bk_throttled,
+                        )
+                    except Exception:  # pragma: no cover - never break the retry
+                        pass
                     if _retry.restart_with_redirected_messages:
                         break  # rebuild this iteration from the correction
                     continue  # Retry the API call
@@ -3462,6 +3747,23 @@ def _run_conversation_impl(
                                 agent.session_id, total_tokens, e,
                             )
                     
+                    # WAVE-30H R5: debit actual tokens against the managed
+                    # execution-tree shared budget (no-op for non-managed runs).
+                    # Tokens are already spent; on overflow this saturates the
+                    # remaining budget and records a stop honoured at the loop top.
+                    try:
+                        from agent import managed_budget_gate as _mbg
+
+                        _tree_tok_stop = _mbg.execution_tree_debit_tokens(
+                            agent,
+                            input_tokens=canonical_usage.input_tokens,
+                            output_tokens=canonical_usage.output_tokens,
+                        )
+                        if _tree_tok_stop:
+                            agent._tree_token_stop = _tree_tok_stop
+                    except Exception:  # noqa: BLE001 - accounting must never crash the turn
+                        pass
+
                     if agent.verbose_logging:
                         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
                     
@@ -5670,6 +5972,79 @@ def _run_conversation_impl(
                     )
                     _assistant_text = assistant_message.content or ""
                     _api_ended_at = api_start_time + api_duration
+                    # WAVE-30E: assemble the all-numeric per-call timing record
+                    # (runtime wall-clock + streaming TTFT + native Ollama
+                    # load/prompt-eval/eval when the provider returns them). Fully
+                    # fail-soft so timing observability can never break the loop.
+                    _timings = None
+                    try:
+                        from youtab_runtime.model_timings import (
+                            build_call_timings,
+                            extract_native_ollama_timings,
+                        )
+                        _ttft_s = getattr(agent, "_last_ttft_s", None)
+                        _timings = build_call_timings(
+                            wall_s=api_duration,
+                            ttft_s=_ttft_s,
+                            native=extract_native_ollama_timings(response),
+                            cold_start=getattr(agent, "_model_cold_start", None),
+                        )
+                        # WAVE-30E/30F: per-category token accounting for the INITIAL
+                        # request (system / skills-index / tool-schemas / conversation),
+                        # merged under ``budget_*`` keys on the same redaction-clean
+                        # event. Gated to the FIRST call: system prompt + agent.tools
+                        # are assembled once per run, so re-serializing the ~16K-char
+                        # tool array every call would add pure overhead to the very
+                        # path being profiled (MEDIUM-2). The exact serialized count is
+                        # the provider prompt_eval_count in the native fields above.
+                        try:
+                            if api_call_count == 1:
+                                from youtab_runtime.context_budget import (
+                                    measure_prompt_categories,
+                                    numeric_category_summary,
+                                )
+                                _sys_prompt = ""
+                                if api_messages and str(api_messages[0].get("role")) == "system":
+                                    _sys_prompt = str(api_messages[0].get("content") or "")
+                                _cats = measure_prompt_categories(
+                                    system_prompt=_sys_prompt,
+                                    tool_defs=agent.tools,
+                                    messages=api_messages,
+                                )
+                                for _k, _v in numeric_category_summary(_cats).items():
+                                    _timings[f"budget_{_k}"] = _v
+                                # Effective requested context window (task-aware ctx
+                                # selection is observable; the full 64K capability is
+                                # unchanged — records what THIS call asked for).
+                                _nctx = getattr(agent, "_ollama_num_ctx", None)
+                                if isinstance(_nctx, int) and _nctx > 0:
+                                    _timings["ctx_num_ctx"] = _nctx
+                        except Exception:
+                            pass
+                        # WAVE-30F: on the FIRST model call, attach the all-numeric
+                        # lifecycle phase snapshot (agent_stack_imported /
+                        # agent_init_start / first_model_send, ms since the phase
+                        # clock's T0). Only once per run — later calls don't repeat
+                        # startup — so the breakdown rides the first usage event.
+                        try:
+                            if api_call_count == 1:
+                                from youtab_runtime.phase_timing import snapshot as _pt_snapshot
+                                for _pk, _pv in _pt_snapshot().items():
+                                    _timings[_pk] = _pv
+                        except Exception:
+                            pass
+                        # R8: a genuinely-KNOWN cold/warm fact — was this the first
+                        # model call in this fresh per-run subprocess? (Each run is a
+                        # new process; the first call pays process cold-start.) This
+                        # is process residency, deliberately NOT the model's own
+                        # cold_start (which stays native-derived or omitted, never
+                        # guessed). The observer routes it into its own split.
+                        try:
+                            _timings["process_cold"] = bool(api_call_count == 1)
+                        except Exception:
+                            pass
+                    except Exception:
+                        _timings = None
                     _invoke_hook(
                         "post_api_request",
                         task_id=effective_task_id,
@@ -5694,6 +6069,7 @@ def _run_conversation_impl(
                             finish_reason=finish_reason,
                         ),
                         usage=agent._usage_summary_for_api_request_hook(response),
+                        timings=_timings,
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
@@ -6530,7 +6906,13 @@ def _run_conversation_impl(
                 agent._mute_post_response = False
                 
                 # Check if response only has think block with no actual content after it
-                if not agent._has_content_after_think_block(final_response):
+                with _stage_span("OUTPUT_VALIDATE") as _box_val:
+                    _final_has_content = agent._has_content_after_think_block(final_response)
+                    try:
+                        _box_val["result"] = "ok" if _final_has_content else "empty"
+                    except Exception:  # pragma: no cover
+                        pass
+                if not _final_has_content:
                     # ── Partial stream recovery ─────────────────────
                     # If content was already streamed to the user before
                     # the connection died, use it as the final response
@@ -7224,9 +7606,10 @@ def _run_conversation_impl(
     # (god-file decomposition Phase 1 step 4). Behavior-neutral: the assembled
     # result dict is returned exactly as before.
     from agent.turn_finalizer import finalize_turn
-    return finalize_turn(
-        agent,
-        final_response=final_response,
+    with _stage_span("OUTPUT_PERSIST"):
+        _finalized_turn = finalize_turn(
+            agent,
+            final_response=final_response,
         api_call_count=api_call_count,
         interrupted=interrupted,
         failed=failed,
@@ -7240,7 +7623,8 @@ def _run_conversation_impl(
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
         _pending_verification_response_previewed=_pending_verification_response_previewed,
-    )
+        )
+    return _finalized_turn
 
 
 

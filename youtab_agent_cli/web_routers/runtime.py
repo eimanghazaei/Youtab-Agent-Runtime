@@ -39,17 +39,22 @@ existence).
 """
 from __future__ import annotations
 
+import ipaddress
+import json
 import logging
 import os
 import threading
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 
 from youtab_agent_cli import agent_identity
+from youtab_agent_cli import effective_binding as eb
 from youtab_agent_cli import engine_connection
 from youtab_agent_cli import kanban_db as kb
 from youtab_agent_cli import runtime_command_auth as rca
@@ -95,6 +100,11 @@ _TERMINAL_PRODUCT_STATUSES = {"completed", "cancelled"}
 # projected as ``cancelled`` and distinguished from an ordinary archive).
 _CANCEL_EVENT_KIND = "runtime_cancel_requested"
 
+# WAVE-30H Phase-A (ADR-0004): the managed interactive-lifecycle control contract
+# — clarification (question/answer), approval (request/decision) and REAL
+# pause/checkpoint/resume — is defined canonically in youtab_runtime.run_control.
+from youtab_runtime import run_control as _rc  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Dispatcher — drive real execution
@@ -114,6 +124,79 @@ _spawn_override = None
 _ticker_thread: "Optional[threading.Thread]" = None
 _ticker_stop = threading.Event()
 _ticker_lock = threading.Lock()
+
+# WAVE-30H task 2a — optional pre-warmed single-use worker pool (default OFF). When
+# YOUTAB_AGENT_RUNTIME_WORKER_POOL is set, the real-model spawn path hands each run
+# to a warm, pre-imported, single-use worker instead of cold-spawning a fresh
+# youtab process, eliminating the per-run import + engine.resolve startup cost.
+# Per-run tenant/grant/capability/memory/env binding is IDENTICAL (the worker uses
+# kanban_db.build_worker_invocation, same as a fresh spawn) and each worker serves
+# exactly one run then exits.
+_worker_pool = None
+_worker_pool_disabled = False  # sticky: a failed/invalid config disables the pool
+_worker_pool_lock = threading.Lock()
+
+_WORKER_POOL_MAX_SIZE = 16  # hard safety ceiling on pooled processes
+
+
+def _worker_pool_enabled() -> bool:
+    return (os.environ.get("YOUTAB_AGENT_RUNTIME_WORKER_POOL", "") or "").strip() not in ("", "0", "false")
+
+
+def _worker_pool_size() -> Optional[int]:
+    """Validated pool size, or None when the configured value is INVALID/UNSAFE.
+
+    Fail-closed: a non-integer, non-positive, or over-ceiling size returns None so
+    the caller disables the pool and uses the classic cold spawn — never a crash
+    and never an unbounded process fleet."""
+    raw = (os.environ.get("YOUTAB_AGENT_RUNTIME_WORKER_POOL_SIZE", "2") or "").strip()
+    try:
+        size = int(raw)
+    except (ValueError, TypeError):
+        _log.warning("worker pool: invalid size %r; disabling pool (fail-closed cold spawn)", raw)
+        return None
+    if size < 1 or size > _WORKER_POOL_MAX_SIZE:
+        _log.warning("worker pool: size %d out of [1,%d]; disabling pool (fail-closed)", size, _WORKER_POOL_MAX_SIZE)
+        return None
+    return size
+
+
+def _get_worker_pool():
+    """Return the live pool, or None to signal a fail-closed fallback to cold spawn.
+
+    Any invalid/unsafe config or a pool-creation failure disables the pool
+    stickily so the board keeps running on the classic spawn path."""
+    global _worker_pool, _worker_pool_disabled
+    with _worker_pool_lock:
+        if _worker_pool_disabled:
+            return None
+        if _worker_pool is None:
+            size = _worker_pool_size()
+            if size is None:
+                _worker_pool_disabled = True  # invalid config -> fail closed
+                return None
+            try:
+                from youtab_agent_cli.worker_pool import WorkerPool
+                _worker_pool = WorkerPool(size=size, runner="cli", warm_full=True)
+                _log.info("runtime worker pool started (size=%s)", size)
+            except Exception as exc:  # noqa: BLE001 — creation failure must not stall the board
+                _worker_pool_disabled = True
+                _log.warning("worker pool creation failed (%s); disabling pool (fail-closed cold spawn)", exc)
+                return None
+        return _worker_pool
+
+
+def _shutdown_worker_pool() -> None:
+    global _worker_pool, _worker_pool_disabled
+    with _worker_pool_lock:
+        if _worker_pool is not None:
+            try:
+                proof = _worker_pool.close()
+                _log.info("runtime worker pool shut down: %s", proof)
+            except Exception as exc:  # noqa: BLE001 — teardown must not raise
+                _log.warning("runtime worker pool shutdown error: %s", exc)
+            _worker_pool = None
+        _worker_pool_disabled = False  # allow a re-enable after a clean shutdown
 
 
 def _deterministic_worker_enabled() -> bool:
@@ -179,6 +262,27 @@ _LIMITS_EVENT = "runtime_limits"
 # the preserved correlation id — makes retry lineage explicit and queryable.
 _RETRIED_FROM_EVENT = "runtime_retried_from"
 
+# Event recorded at create-run (managed trust mode only) carrying the Simorgh
+# execution grant that authorised the run, so the worker can re-admit it in its
+# own process (WAVE-30H R3). The grant is a signed, tenant-scoped authorization
+# token — never a secret (the engine holds only the Brain PUBLIC key).
+_GRANT_EVENT = "runtime_execution_grant"
+# Companion event carrying the frozen per-run capability manifest (WAVE-30H
+# correction 2). Persisted with the grant so the worker rebuilds the SAME
+# CapabilityBinding it was admitted under — "*" cannot authorize a tool
+# registered after admission.
+_GRANT_MANIFEST_EVENT = "runtime_capability_manifest"
+
+# WAVE-30H Gate-2 Phase-B: toolsets whose availability is an EXECUTION-CONTEXT
+# gate the dispatched worker satisfies but the ingress process cannot. Every run
+# on this plane is dispatched as a kanban worker, so the kanban task-lifecycle
+# toolset (kanban_complete/block/heartbeat/show/...) is part of the run's context;
+# its _check_kanban_mode gate is keyed on the worker-only YOUTAB_AGENT_KANBAN_TASK
+# env. Including it in the frozen manifest is still fully gated by the grant's
+# allowed_toolsets + the agent ACL (never a global authorization), and the
+# invocation-time strict gate (available_strict) re-checks it in the worker.
+_WORKER_EXECUTION_CONTEXT_TOOLSETS = frozenset({"kanban"})
+
 
 def _resolve_task_mode(task_id: str) -> str:
     """Return the recorded execution mode for a task ("model" by default).
@@ -212,6 +316,14 @@ def _mode_aware_spawn(task, workspace, *, board=None):
     mode = _resolve_task_mode(task.id)
     if mode == "deterministic" and _deterministic_worker_enabled():
         return _deterministic_spawn(task, workspace, board=board)
+    # Real model path: a warm single-use pool worker when enabled (default OFF)
+    # AND the config is valid AND the pool started; else the classic cold spawn.
+    # Both return a real pid + bind per-run context identically; the pool only
+    # pre-pays interpreter import. A disabled/failed pool fails closed to cold spawn.
+    if _worker_pool_enabled():
+        pool = _get_worker_pool()
+        if pool is not None:
+            return pool.spawn(task, workspace, board=board)
     return kb._default_spawn(task, workspace, board=board)
 
 
@@ -244,8 +356,10 @@ def ensure_dispatcher_running() -> None:
 
 
 def stop_dispatcher() -> None:
-    """Stop the background ticker (test teardown / shutdown)."""
+    """Stop the background ticker (test teardown / shutdown) and tear down the
+    worker pool if one was started (zero-survivor)."""
     _ticker_stop.set()
+    _shutdown_worker_pool()
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +370,9 @@ def stop_dispatcher() -> None:
 class RuntimeIdentity:
     """Verified caller context: service identity + gateway-forwarded end user."""
 
-    __slots__ = ("tenant", "user", "roles", "correlation_id", "idempotency_key")
+    __slots__ = (
+        "tenant", "user", "roles", "correlation_id", "idempotency_key", "workspace",
+    )
 
     def __init__(
         self,
@@ -266,12 +382,18 @@ class RuntimeIdentity:
         roles: List[str],
         correlation_id: str,
         idempotency_key: Optional[str],
+        workspace: str,
     ) -> None:
         self.tenant = tenant
         self.user = user
         self.roles = roles
         self.correlation_id = correlation_id
         self.idempotency_key = idempotency_key
+        # Canonical v2 workspace binding (``-`` when unscoped). Authoritative for the
+        # run's effective-binding scope; identical to the value the signed command is
+        # verified against and the Simorgh grant is admitted under, so the worker's
+        # workspace-scope gate (binding.workspace == grant env.workspace_id) holds.
+        self.workspace = workspace
 
 
 def _runtime_secret() -> str:
@@ -311,12 +433,20 @@ def require_service_identity(request: Request) -> RuntimeIdentity:
     roles = [r.strip() for r in roles_raw.split(",") if r.strip()] if roles_raw else []
     correlation_id = _header(request, _H_CORRELATION) or f"cid-{uuid.uuid4().hex}"
     idem = _header(request, _H_IDEMPOTENCY) or None
+    # Canonical v2 workspace (``-`` when unscoped) — the SAME value the signed
+    # command is verified against (`_verify_signed_command`) and the grant is
+    # admitted under (`_admit_execution_grant`), captured once so the run binding is
+    # scoped to it and the worker's workspace-scope gate can match it.
+    workspace = (
+        request.headers.get(rca.WORKSPACE_HEADER) or rca.WORKSPACE_UNSCOPED
+    ).strip() or rca.WORKSPACE_UNSCOPED
     return RuntimeIdentity(
         tenant=tenant,
         user=user,
         roles=roles,
         correlation_id=correlation_id,
         idempotency_key=idem,
+        workspace=workspace,
     )
 
 
@@ -330,6 +460,19 @@ _nonce_store: "Optional[rca.NonceStore]" = None
 _nonce_store_lock = threading.Lock()
 
 
+def _nonce_memory_opt_in() -> bool:
+    """Whether the process-local in-memory nonce store is EXPLICITLY allowed.
+
+    Off by default. The in-memory store only protects a single process for its
+    lifetime; it cannot see nonces burned by sibling workers, and it forgets
+    everything on restart — both reopen replay. It is acceptable only for a
+    single-process/dev/test deployment that opts in deliberately.
+    """
+    return (os.environ.get("YOUTAB_RUNTIME_NONCE_ALLOW_MEMORY") or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 def _get_nonce_store() -> "rca.NonceStore":
     global _nonce_store
     with _nonce_store_lock:
@@ -337,26 +480,193 @@ def _get_nonce_store() -> "rca.NonceStore":
             try:
                 db_path = str(kb.kanban_db_path(board=RUNTIME_BOARD).parent / "runtime_command_nonces.db")  # noqa: E501
                 _nonce_store = rca.SqliteNonceStore(db_path)
-            except Exception as exc:  # noqa: BLE001 — fall back to in-memory
-                _log.warning("runtime nonce store falling back to memory: %s", exc)
-                _nonce_store = rca._MemoryNonceStore()
+            except Exception as exc:  # noqa: BLE001
+                # A durable, cross-process nonce store is a security precondition
+                # for accepting mutating commands. Silently degrading to a
+                # process-local memory store (the previous behaviour) reopened
+                # cross-process and post-restart replay. Fail closed by default;
+                # only fall back when memory is EXPLICITLY opted in. Do not cache
+                # the failure — a later request retries construction.
+                if _nonce_memory_opt_in():
+                    _log.warning(
+                        "runtime nonce store using EXPLICITLY opted-in in-memory "
+                        "store (process-local replay protection only): %s", exc,
+                    )
+                    _nonce_store = rca._MemoryNonceStore()
+                else:
+                    _log.error(
+                        "runtime nonce store unavailable; refusing signed "
+                        "commands (set YOUTAB_RUNTIME_NONCE_ALLOW_MEMORY=1 only "
+                        "for a single-process deployment): %s", exc,
+                    )
+                    raise rca.CommandAuthError(
+                        "nonce_store_unavailable",
+                        "runtime nonce store is unavailable",
+                        503,
+                    ) from exc
         return _nonce_store
+
+
+_grant_boundary: "Optional[Any]" = None
+_grant_boundary_lock = threading.Lock()
+
+
+def _get_grant_boundary():
+    """Lazy AuthorityBoundary with a DURABLE, cross-process grant-nonce store.
+
+    The grant's single-use nonce lives in its OWN table (separate from the HMAC
+    transport nonces) so the two namespaces never interfere. Fail-closed exactly
+    like ``_get_nonce_store``: a durable store is required for managed admission;
+    only an explicit opt-in permits the process-local in-memory claimer.
+    """
+    global _grant_boundary
+    with _grant_boundary_lock:
+        if _grant_boundary is None:
+            from youtab_runtime.policy import AuthorityBoundary
+            try:
+                db_path = str(
+                    kb.kanban_db_path(board=RUNTIME_BOARD).parent
+                    / "runtime_grant_nonces.db"
+                )
+                store = rca.SqliteNonceStore(db_path)
+            except Exception as exc:  # noqa: BLE001
+                if _nonce_memory_opt_in():
+                    _log.warning(
+                        "grant admission using EXPLICITLY opted-in in-memory nonce "
+                        "store (process-local replay protection only): %s", exc,
+                    )
+                    store = rca._MemoryNonceStore()
+                else:
+                    _log.error(
+                        "grant admission nonce store unavailable; refusing managed "
+                        "runs (set YOUTAB_RUNTIME_NONCE_ALLOW_MEMORY=1 only for a "
+                        "single-process deployment): %s", exc,
+                    )
+                    raise
+            _grant_boundary = AuthorityBoundary(nonce_store=store)
+        return _grant_boundary
+
+
+async def _admit_execution_grant(request: Request, identity: RuntimeIdentity):
+    """Enforce the trust-mode execution-authority gate for a mutating managed run.
+
+    Managed mode REQUIRES a valid Simorgh grant (fail-closed on missing/invalid/
+    expired/replayed/mismatched); local-standalone mode REFUSES a managed grant.
+    Returns ``(grant_header, manifest)`` where ``grant_header`` is the raw grant
+    header string when one was admitted (managed) else ``None``, and ``manifest``
+    is the frozen per-run capability manifest (correction 2) to persist alongside
+    the grant, else ``None``. The sealed :class:`AdmittedCommand` — including this
+    capability binding — is re-created in the worker via
+    ``managed_execution.re_admit_worker_grant`` from the persisted grant+manifest.
+    """
+    from youtab_runtime import managed_execution as mx
+    from youtab_runtime import stage_trace as _st
+
+    grant_header = request.headers.get(mx.GRANT_HEADER)
+    try:
+        mode = mx.current_trust_mode()
+        if mode is mx.TrustMode.MANAGED:
+            workspace = (
+                request.headers.get(rca.WORKSPACE_HEADER) or rca.WORKSPACE_UNSCOPED
+            ).strip() or rca.WORKSPACE_UNSCOPED
+            # Freeze the per-run capability manifest from the LIVE registry now, so
+            # "*" authorizes exactly what is registered/authorized/operational at
+            # admission — never a tool registered later. Built before admit() so it
+            # is sealed into (and proof-bound to) the AdmittedCommand.
+            capability_binding = None
+            with _st.trace_context_scope(
+                correlation_id=getattr(identity, "correlation_id", None),
+                tenant=identity.tenant, user=identity.user,
+            ):
+                if grant_header:
+                    from tools.registry import registry as _registry
+
+                    from youtab_agent_cli import capability_manifest as _cm
+
+                    envelope = mx.decode_grant_header(grant_header)
+                    # R8: freezing the per-run manifest = the tools discovery +
+                    # schema-hash work at ingress; measure it as its own stage.
+                    with _st.span(_st.Stage.TOOLS_DISCOVER) as _sp:
+                        capability_binding = _cm.build_ingress_binding(
+                            envelope,
+                            registry=_registry,
+                            # WAVE-30H Gate-2 Phase-B fix: every run on this runtime
+                            # plane is dispatched as a kanban worker (create_task →
+                            # dispatch_once → a ``youtab … chat -q "work kanban task
+                            # <id>"`` worker), so the kanban task-lifecycle toolset
+                            # (kanban_complete/block/heartbeat) is part of the run's
+                            # execution context. Its availability gate
+                            # (_check_kanban_mode) is keyed on the worker-only
+                            # YOUTAB_AGENT_KANBAN_TASK env, which is absent in THIS
+                            # ingress process — so without this the completion tool
+                            # is wrongly dropped from the frozen manifest and the
+                            # worker (which re-admits it) can never be authorized to
+                            # complete its own task. Deferring that execution-context
+                            # gate to the invocation-time strict gate (C9) is NOT an
+                            # availability bypass and stays fully grant/ACL gated
+                            # (a grant that does not authorize "kanban"/"*" still
+                            # excludes these tools).
+                            context_available_toolsets=_WORKER_EXECUTION_CONTEXT_TOOLSETS,
+                        )
+                        try:
+                            _sp["tool_count"] = len(
+                                getattr(capability_binding, "tool_hashes", None) or {}
+                            )
+                        except Exception:
+                            pass
+                with _st.span(_st.Stage.GRANT_VERIFY):
+                    mx.admit_managed_run(
+                        grant_header=grant_header,
+                        identity=mx.AdmissionIdentity(
+                            tenant=identity.tenant, user=identity.user,
+                            workspace=workspace,
+                        ),
+                        boundary=_get_grant_boundary(),
+                        public_keys=mx.load_brain_public_keys(),
+                        capability_binding=capability_binding,
+                    )
+            manifest = (
+                _cm.binding_to_persisted(capability_binding)
+                if capability_binding is not None
+                else None
+            )
+            return grant_header, manifest
+        # local-standalone: must not accept a managed grant implicitly.
+        mx.reject_grant_in_standalone(grant_header)
+        return None, None
+    except mx.ManagedAdmissionError as exc:
+        raise HTTPException(
+            status_code=exc.http_status, detail={"error": exc.code}
+        ) from exc
 
 
 async def _verify_signed_command(request: Request, identity: RuntimeIdentity) -> None:
     """Verify the signed-command envelope on a mutating request. Raise on failure."""
     body = await request.body()
+    # Canonical v2 binds the workspace (field 5). The gateway sends it on
+    # ``X-Youtab-Workspace-Id`` (``-`` when unscoped) and signs the SAME value;
+    # the engine MUST verify against that value, not the default, or a
+    # workspace-scoped request would fail (or, worse, be verified under the
+    # wrong workspace). For v1 requests the param is ignored by the v1 builder.
+    workspace = (request.headers.get(rca.WORKSPACE_HEADER) or rca.WORKSPACE_UNSCOPED).strip()
+    from youtab_runtime import stage_trace as _st
+
     try:
-        rca.verify_command(
-            method=request.method,
-            path=request.url.path,
-            tenant=identity.tenant,
-            user=identity.user,
-            body=body,
-            headers=request.headers,
-            secret=_runtime_secret(),
-            store=_get_nonce_store(),
-        )
+        with _st.trace_context_scope(
+            correlation_id=getattr(identity, "correlation_id", None),
+            tenant=identity.tenant, user=identity.user,
+        ), _st.span(_st.Stage.ADMISSION_VERIFY):
+            rca.verify_command(
+                method=request.method,
+                path=request.url.path,
+                tenant=identity.tenant,
+                user=identity.user,
+                body=body,
+                headers=request.headers,
+                secret=_runtime_secret(),
+                store=_get_nonce_store(),
+                workspace=workspace or rca.WORKSPACE_UNSCOPED,
+            )
     except rca.CommandAuthError as exc:
         raise HTTPException(status_code=exc.http_status, detail={"error": exc.code}) from exc  # noqa: E501
 
@@ -383,10 +693,25 @@ def _agent_projection(p: Any) -> Dict[str, Any]:
     }
 
 
-def _run_status(task: "kb.Task", *, cancelled: bool) -> str:
+def _run_status(task: "kb.Task", *, cancelled: bool,
+                interactive: "Optional[str]" = None) -> str:
     if cancelled and task.status in ("archived", "blocked", "done"):
         return "cancelled"
-    return _STATUS_MAP.get(task.status, task.status)
+    base = _STATUS_MAP.get(task.status, task.status)
+    # A non-terminal run that is waiting on the user (question/approval) or has
+    # been paused projects that interactive status over the coarse kanban status
+    # (ADR-0004). Terminal runs and cancels always win and never show these.
+    if (
+        interactive in _rc.INTERACTIVE_STATUSES
+        and base not in _TERMINAL_PRODUCT_STATUSES
+    ):
+        return interactive
+    return base
+
+
+def _interactive_status(events: "List[kb.Event]") -> "Optional[str]":
+    """Derive the interactive lifecycle status from the ordered event log."""
+    return _rc.interactive_status(events)
 
 
 def _mode_from_events(events: "List[kb.Event]") -> str:
@@ -414,14 +739,132 @@ def _engine_selection_from_events(events: "List[kb.Event]") -> Optional[Dict[str
     return None
 
 
+def _limits_from_events(events: "List[kb.Event]") -> Optional[Dict[str, Any]]:
+    """The authoritative clamped per-run limits (cost policy) recorded at create.
+
+    Numeric-only ``{...max_cost_eur, worker_attempt_limit}`` projection; never a
+    secret. ``None`` when the original run recorded no limits event.
+    """
+    for e in events:
+        if e.kind == _LIMITS_EVENT and isinstance(e.payload, dict):
+            return dict(e.payload)
+    return None
+
+
+def _retry_execution_binding(
+    task: "kb.Task", events: "List[kb.Event]"
+) -> Dict[str, Any]:
+    """Assemble the authoritative execution binding a retry child MUST inherit.
+
+    A retry re-executes the ORIGINAL run; it must run on the SAME substrate and
+    must never silently downgrade to the worker-default provider/model. The
+    binding has two durable layers, both reproduced on the child:
+
+    * the row-level resolved ``provider_override`` / ``model_override`` — the pin
+      the dispatcher hands the worker (the load-bearing guarantee against a
+      default-model run);
+    * the create-time provenance events — the branded engine/profile selection
+      (``runtime_engine_selection``) and the clamped cost-policy limits
+      (``runtime_limits``).
+
+    The per-run Simorgh grant is deliberately NOT part of this binding: a fresh
+    grant is re-minted per run by :func:`_admit_execution_grant` (a per-run
+    authority is never copied/replayed).
+
+    Fail closed (HTTP 422) when the recorded binding is invalid or internally
+    conflicting, so a broken original is refused rather than retried onto a
+    default model.
+    """
+    model_override = (task.model_override or "").strip() or None
+    provider_override = (task.provider_override or "").strip() or None
+    engine_selection = _engine_selection_from_events(events)
+    limits = _limits_from_events(events)
+
+    # invalid/conflicting: a provider pin with no model pin cannot resolve a
+    # concrete model — it would fall through to a default. Refuse.
+    if provider_override and not model_override:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "retry_binding_invalid",
+                    "reason": "provider_override without model_override"},
+        )
+    # invalid: a recorded engine-selection EVENT whose profile_id is empty is a
+    # corrupt binding. Checked on the RAW event (``_engine_selection_from_events``
+    # silently skips empty ids) so the retry is refused rather than quietly
+    # dropping the pin and re-running unbound.
+    for e in events:
+        if e.kind == _ENGINE_EVENT and isinstance(e.payload, dict):
+            if not str(e.payload.get("profile_id") or "").strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": "retry_binding_invalid",
+                            "reason": "engine selection event has empty profile_id"},
+                )
+            break
+    # WAVE-30H: inherit the parent's immutable effective binding UNCHANGED and pin
+    # the child row from it, so a config change AFTER the original run can never
+    # silently re-resolve a different provider/model on retry. Fail closed when an
+    # attested run lacks a binding, when a binding is corrupt, or when it carries no
+    # resolved model to pin.
+    binding = eb.effective_binding_from_events(events)
+    attested = any(
+        e.kind in (_ENGINE_EVENT, _GRANT_EVENT)
+        for e in events
+        if isinstance(getattr(e, "payload", None), dict)
+    )
+    if binding is not None and binding.get("__corrupt__"):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "retry_binding_invalid",
+                    "reason": "effective binding has no binding_version"},
+        )
+    if binding is None and attested:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "retry_binding_missing",
+                    "reason": "attested run has no persisted effective binding"},
+        )
+    # WAVE-30H #4: the parent's ORIGINAL stored hash MUST self-verify BEFORE we pin
+    # the child row from it or rescope it. A tampered-at-rest parent (fields changed,
+    # stale hash) would otherwise be (a) used to pin the child's provider/model row to
+    # the tampered substrate and (b) laundered by rescope_binding into a fresh VALID
+    # child hash over the tampered fields — bypassing the worker's tamper gate. Verify
+    # here, while the binding still carries the PARENT's run scope.
+    if binding is not None and not eb.verify_binding(binding):
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "retry_binding_invalid",
+                    "reason": "effective binding hash mismatch (tampered/malformed)"},
+        )
+    if binding is not None and not model_override:
+        # Pin the child row from the binding ONLY when it carries a RESOLVED
+        # concrete model — that is the drift that must be frozen (a cloud/branded
+        # identity re-resolving from changed config). An unresolved/config-default
+        # binding has no concrete identity to pin, so the child re-resolves exactly
+        # as the original did (legacy-safe); the binding is still re-recorded.
+        if binding.get("model_identifier_status") == "resolved" and binding.get("model"):
+            model_override = binding.get("model_ref") or binding.get("model")
+            provider_override = binding.get("provider")
+    return {
+        "model_override": model_override,
+        "provider_override": provider_override,
+        "engine_selection": engine_selection,
+        "limits": limits,
+        # Re-recorded UNCHANGED onto the child (same binding_version) so the
+        # lineage is immutable; None for a legacy run with no binding.
+        "effective_binding": binding,
+    }
+
+
 def _run_summary(
-    task: "kb.Task", *, cancelled: bool = False, execution_mode: str = "model"
+    task: "kb.Task", *, cancelled: bool = False, execution_mode: str = "model",
+    interactive: "Optional[str]" = None,
 ) -> Dict[str, Any]:
     return {
         "run_id": task.id,
         "agent_id": task.assignee,
         "agent_name": task.assignee,
-        "status": _run_status(task, cancelled=cancelled),
+        "status": _run_status(task, cancelled=cancelled, interactive=interactive),
         "execution_mode": execution_mode,
         "created_at": task.created_at,
         "started_at": task.started_at,
@@ -518,7 +961,10 @@ def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, A
             if r.summary:
                 result = r.summary
                 break
-    summary = _run_summary(task, cancelled=cancelled, execution_mode=mode)
+    summary = _run_summary(
+        task, cancelled=cancelled, execution_mode=mode,
+        interactive=_interactive_status(events),
+    )
     summary.update({
         "task": task.body,
         "title": task.title,
@@ -532,6 +978,11 @@ def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, A
         # The branded engine the caller selected at create, if any (consumer-safe
         # {profile_id, public_label} only; never the provider/model it resolved to).
         "engine_selection": _engine_selection_from_events(events),
+        # WAVE-30H: the canonical immutable per-run effective binding (the BOUND
+        # identity). ``model``/``provider`` above are the DISPATCHED identity (worker
+        # metadata); the harness reconciles bound vs dispatched and fails closed on
+        # any drift. Non-secret classification only; None for a legacy run.
+        "runtime_effective_binding": eb.effective_binding_from_events(events),
         "runs": [
             {
                 "id": r.id,
@@ -563,6 +1014,44 @@ def _artifact_ref(run_id: str, a: "kb.Attachment") -> Dict[str, Any]:
     }
 
 
+# Interactive control events carry user/agent FREE TEXT (a clarification answer,
+# a question prompt, an approval action) that reaches the user-visible event
+# stream. These are redacted at the projection boundary (A9) so a secret typed
+# into an answer never leaks — while the raw value stays in the durable log for
+# the worker to consume. NOT applied to grant/manifest events (their high-entropy
+# base64 must survive verbatim for worker re-admission).
+_CONTROL_REDACT_KINDS = frozenset({_rc.QUESTION, _rc.ANSWER, _rc.APPROVAL_REQUEST})
+
+
+def _redact_control_payload(kind: str, payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    # A run_checkpoint's ``state.messages_json`` is the FULL serialized
+    # conversation — tool-call arguments, tool results, and the user's answer
+    # text (which A9 scrubs at the run_answer projection). The worker restores
+    # from the DURABLE log, never from this consumer projection, so withhold the
+    # conversation blob here: otherwise a secret typed into an answer would leak
+    # back through GET /runs/{id}/events despite the A9 scrub. Non-sensitive state
+    # keys (schema version, iteration) survive for observability.
+    if kind == _rc.CHECKPOINT and isinstance(payload.get("state"), dict):
+        state = dict(payload["state"])
+        blob = state.get("messages_json")
+        if isinstance(blob, str):
+            state["messages_json"] = (
+                f"<redacted: conversation state withheld from event stream "
+                f"({len(blob.encode('utf-8', 'surrogatepass'))} bytes)>"
+            )
+        return {**payload, "state": state}
+    if kind not in _CONTROL_REDACT_KINDS:
+        return payload
+    from youtab_runtime import redaction as _R
+
+    scrubbed = {
+        k: (_R.scrub_text(v) if isinstance(v, str) else v) for k, v in payload.items()
+    }
+    return _R.redact_mapping(scrubbed)
+
+
 def _event_projection(run_id: str, e: "kb.Event") -> Dict[str, Any]:
     # Surface the correlation id carried on authoritative dispatch/lineage
     # events (contract C5), so a consumer can trace events by correlation.
@@ -573,7 +1062,7 @@ def _event_projection(run_id: str, e: "kb.Event") -> Dict[str, Any]:
         "id": e.id,          # monotonic cursor
         "run_id": run_id,
         "kind": e.kind,
-        "payload": e.payload,
+        "payload": _redact_control_payload(e.kind, e.payload),
         "created_at": e.created_at,
         "correlation_id": correlation_id,
     }
@@ -581,6 +1070,57 @@ def _event_projection(run_id: str, e: "kb.Event") -> Dict[str, Any]:
 
 def _is_cancelled(events: "List[kb.Event]") -> bool:
     return any(e.kind == _CANCEL_EVENT_KIND for e in events)
+
+
+def _summary_signals(conn: "Any", task_ids: "List[str]") -> "Dict[str, Tuple[bool, str]]":
+    """Batch-read the cancel + execution-mode signals for many runs in ONE query.
+
+    Returns ``{task_id: (cancelled, execution_mode)}``. This replaces the
+    per-task ``list_events`` fan-out in the run-list projection — that N+1 loaded
+    the FULL event history of every run only to detect a cancel event and the
+    mode. Here a single query selects just the two relevant event kinds for the
+    whole page and reproduces the exact semantics of ``_is_cancelled`` (any
+    cancel event) and ``_mode_from_events`` (first valid mode event in
+    created-order, default ``"model"``). Rows are ordered created-ascending, so
+    the FIRST mode row per task wins, matching ``_mode_from_events``.
+    """
+    if not task_ids:
+        return {}
+    cancelled: set[str] = set()
+    mode_seen: set[str] = set()
+    mode: Dict[str, str] = {}
+    # Chunk the IN(...) set to stay under SQLite's bound-variable limit (default
+    # 999; the two kind params leave headroom). Each task_id lands in exactly one
+    # chunk, so per-task created-order — and thus first-valid-mode-wins — is
+    # preserved without any cross-chunk merge concern.
+    chunk_size = 900
+    for start in range(0, len(task_ids), chunk_size):
+        chunk = task_ids[start:start + chunk_size]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            "SELECT task_id, kind, payload FROM task_events "
+            "WHERE kind IN (?, ?) "
+            f"AND task_id IN ({placeholders}) "
+            "ORDER BY created_at ASC, id ASC",
+            (_CANCEL_EVENT_KIND, _MODE_EVENT, *chunk),
+        ).fetchall()
+        for r in rows:
+            tid = r["task_id"]
+            if r["kind"] == _CANCEL_EVENT_KIND:
+                cancelled.add(tid)
+            elif r["kind"] == _MODE_EVENT and tid not in mode_seen:
+                try:
+                    payload = json.loads(r["payload"]) if r["payload"] else None
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    m = str(payload.get("mode") or "").strip().lower()
+                    if m in ("model", "deterministic"):
+                        mode[tid] = m
+                        mode_seen.add(tid)
+    return {
+        tid: (tid in cancelled, mode.get(tid, "model")) for tid in task_ids
+    }
 
 
 def _load_owned_task(conn: "Any", run_id: str, identity: RuntimeIdentity) -> "kb.Task":
@@ -741,6 +1281,43 @@ def _configured_inference_base_url() -> str:
     return ""
 
 
+def _profile_default_identity(agent: str) -> "tuple[Optional[str], Optional[str], Optional[str]]":
+    """Pure (no-network) resolution of the (provider, model, base_url) the dispatched
+    worker for ``agent`` would actually use.
+
+    Mirrors the worker's own precedence (``model.default`` then ``model.model``) and
+    reads the AGENT PROFILE's config home (the home the dispatcher injects), not the
+    server's — closing the two create-vs-dispatch divergences that left a managed
+    run's binding unresolved while the worker ran a real model. Falls back to the
+    server config if profile-home scoping is unavailable. Never probes the network
+    (the worker's local auto-detect branch is deliberately NOT mirrored here).
+    """
+    m: Any = {}
+    try:
+        from youtab_agent_cli import config as _cfg
+        from youtab_agent_cli import profiles as _profiles
+
+        home = _profiles.resolve_profile_env(agent)
+        token = _cfg.set_youtab_home_override(home)
+        try:
+            m = _cfg.load_config_readonly().get("model") or {}
+        finally:
+            _cfg.reset_youtab_home_override(token)
+    except Exception:  # noqa: BLE001 — fall back to server-scoped config
+        try:
+            from youtab_agent_cli.config import load_config_readonly as _lcr
+
+            m = _lcr().get("model") or {}
+        except Exception:  # noqa: BLE001
+            m = {}
+    if not isinstance(m, dict):
+        m = {}
+    model = (str(m.get("default") or m.get("model") or "").strip()) or None
+    provider = (str(m.get("provider") or "").strip()) or None
+    base_url = (str(m.get("base_url") or "").strip()) or None
+    return provider, model, base_url
+
+
 def _external_credential_present(provider: str) -> bool:
     """True iff a usable credential is installed for an external provider.
 
@@ -891,8 +1468,177 @@ def _provider_credential_source(provider: Optional[str]) -> str:
     return "absent"
 
 
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+_LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+# 6to4 (2002::/16) and Teredo (2001::/32) IPv6 literals embed a PUBLIC IPv4
+# destination yet report ``is_private`` in the stdlib — treat them as public so
+# they can never be classified as a verified-local target.
+_V6_PUBLIC_TUNNELS = (
+    ipaddress.ip_network("2002::/16"),
+    ipaddress.ip_network("2001::/32"),
+)
+
+
+def _endpoint_class(url: Optional[str]) -> str:
+    """Classify an endpoint host for attestation (no raw endpoint is exposed).
+
+    Returns one of loopback|private|link_local|cgnat|public|hostname|unavailable|
+    invalid. A bare hostname is reported as ``hostname`` (never trusted as local).
+    """
+    raw = (url or "").strip()
+    if not raw:
+        return "unavailable"
+    # Case-insensitive scheme detection (mirror of the canonical ``classify_endpoint``
+    # and ``normalize_endpoint``): only prepend when there is no scheme at all, so an
+    # uppercase ``HTTPS://…`` is not misclassified by a lower-case-only prefix test.
+    if "://" not in raw:
+        raw = "http://" + raw
+    try:
+        host = (urlparse(raw).hostname or "").lower().rstrip(".")
+    except Exception:  # noqa: BLE001
+        return "invalid"
+    if not host:
+        return "invalid"
+    if host in _LOOPBACK_NAMES:
+        return "loopback"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return "hostname"
+    if ip.is_loopback:
+        return "loopback"
+    if isinstance(ip, ipaddress.IPv6Address) and any(ip in n for n in _V6_PUBLIC_TUNNELS):
+        return "public"  # 6to4/Teredo embed a public IPv4 dest
+    if ip.is_link_local:
+        return "link_local"
+    if ip in _CGNAT_NET:
+        return "cgnat"
+    if ip.is_private:
+        return "private"
+    return "public"
+
+
+def _ollama_model_digest(endpoint: Optional[str], model: str) -> Tuple[Optional[str], str]:
+    """Fail-closed probe of a local Ollama server for ``model``'s manifest digest.
+
+    Delegates the raw outbound call to the audited ``agent.model_metadata`` probe
+    (its sanctioned egress site) so no raw HTTP client is constructed in the web
+    router. Returns the 64-hex sha256 digest with ``verified_present``; any
+    failure/unknown tag yields ``(None, "probe_failed")``. Only ever called for a
+    verified-local endpoint. Module-level so tests can monkeypatch it.
+    """
+    if not (endpoint or "").strip() or not (model or "").strip():
+        return (None, "probe_failed")
+    try:
+        from agent.model_metadata import query_ollama_model_digest
+
+        digest = query_ollama_model_digest(model, endpoint)
+    except Exception:  # noqa: BLE001 — a probe failure must never break preflight
+        return (None, "probe_failed")
+    if digest:
+        return (digest, "verified_present")
+    return (None, "probe_failed")
+
+
+def _engine_attestation(engine: str) -> Optional[Dict[str, Any]]:
+    """Resolve the effective engine binding for an authenticated pre-run check.
+
+    Returns the attestation the harness verifies BEFORE the first task: the
+    effective engine/provider/model, an endpoint CLASSIFICATION (never the raw
+    endpoint), local-vs-cloud, the resolved provider-cost policy, and — for a
+    verified-local Ollama engine — the model manifest digest. ``None`` for an
+    unknown/unbound engine (a fail-closed state the caller surfaces as such).
+
+    Note: ``model``/``model_ref`` carry the Owner-supplied concrete tag. This is
+    only returned on this authenticated SERVICE surface (``require_service_identity``)
+    to the operator who set it — the gateway must NOT forward these fields to an
+    end-user surface (see ``agent_identity``'s tag-confidentiality principle).
+    """
+    conn = engine_connection.resolve_connection(engine)
+    if conn is None:
+        return None
+    from agent import usage_pricing as _up
+
+    provider = conn.provider
+    endpoint = conn.endpoint  # internal — classified, never returned raw
+    is_local = conn.is_local_server()
+    authorized = engine_connection.endpoint_is_authorized(endpoint) if is_local else True
+    local_zero = _up.classify_local_zero(provider, endpoint)
+
+    model: Optional[str] = conn.model
+    model_status = "resolved"
+    model_ref: Optional[str] = conn.model_ref
+    # ECO must be pinned to the Owner-supplied concrete tag; when it is not
+    # configured the resolved value is only the committed placeholder — report it
+    # as required-but-absent and do not present the placeholder as the effective
+    # model (the harness then refuses to dispatch).
+    if engine == agent_identity.ECO_PROFILE_ID and not agent_identity.eco_model_configured():
+        model = None
+        model_ref = None
+        model_status = "OWNER_MODEL_IDENTIFIER_REQUIRED"
+
+    # Cost policy is decided from provider+endpoint (the same inputs the pricing
+    # layer's ``classify_local_zero`` uses). The €0 branch in ``estimate_usage_cost``
+    # only fires when the model has NO pricing entry; for a local Ollama tag that is
+    # always the case (Ollama's /v1/models advertises no prices), so the two agree.
+    # If a local model were ever given an explicit override/custom-contract entry,
+    # that entry would price the call and this policy label would be optimistic —
+    # not a concern for ECO, which carries no such entry.
+    if local_zero:
+        cost_policy = "local_zero_verified"
+    elif is_local:
+        cost_policy = "unpriced"  # local provider but endpoint not verified-local
+    else:
+        cost_policy = "campaign_budget_eur"
+
+    att: Dict[str, Any] = {
+        "engine_profile": engine,
+        "engine_bound": True,
+        "provider": provider,
+        "model": model,
+        "model_ref": model_ref,
+        "model_identifier_status": model_status,
+        "execution": "local" if is_local else "cloud",
+        "endpoint_class": _endpoint_class(endpoint) if is_local else "cloud",
+        # WAVE-30H #1: expose the non-secret normalized-authority fingerprint so the
+        # preflight binding carries the SAME endpoint_fingerprint create derives from
+        # this engine's resolved connection endpoint. Without it the engine-bound
+        # preflight binding had endpoint_fingerprint=None while create supplied a real
+        # hash -> binding_digest mismatch -> the run self-rejected (HTTP 412). This is
+        # a derived hash of the already-resolved endpoint; no raw endpoint/credential
+        # is exposed (mirrors effective_binding.compute_endpoint_fingerprint).
+        "endpoint_fingerprint": eb.compute_endpoint_fingerprint(endpoint),
+        "endpoint_authorized": bool(authorized),
+        "provider_cost_policy": cost_policy,
+    }
+    if provider == "ollama" and local_zero and model:
+        digest, dstatus = _ollama_model_digest(endpoint, model)
+        att["ollama_model_digest"] = digest
+        att["ollama_digest_status"] = dstatus
+    else:
+        att["ollama_model_digest"] = None
+        att["ollama_digest_status"] = "not_applicable"
+    return att
+
+
+def _no_production_dataset() -> bool:
+    """The benchmark plane never selects a production/customer dataset.
+
+    This is an invariant of the plane (only synthetic scenarios are dispatched),
+    but it is reported through a real gate rather than a bare literal: an explicit
+    opt-in env would have to be set to ever admit production data, and setting it
+    flips this to False so the harness's live-safety gate refuses the run.
+    """
+    return not _is_truthy_env("YOUTAB_AGENT_ALLOW_PRODUCTION_DATASET")
+
+
+def _is_truthy_env(name: str) -> bool:
+    return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @router.get("/api/runtime/v1/preflight")
 async def runtime_preflight(
+    request: Request,
     identity: RuntimeIdentity = Depends(require_service_identity),
 ):
     """Authenticated live-benchmark preflight (WAVE-30B §12).
@@ -944,6 +1690,71 @@ async def runtime_preflight(
     except Exception:  # noqa: BLE001
         audit_available = False
 
+    # Optional per-engine attestation (WAVE-30D §B3). When the harness asks for a
+    # specific engine (``?engine=eco.v01``) the runtime resolves the EFFECTIVE
+    # binding it would execute and reports it so the harness can verify the exact
+    # engine/provider/model/endpoint-class/cost-policy BEFORE the first task, and
+    # refuse on any mismatch. Absent the param, behaviour is unchanged.
+    engine_param = (request.query_params.get("engine") or "").strip()
+    attestation: Optional[Dict[str, Any]] = None
+    engine_error: Optional[str] = None
+    if engine_param:
+        attestation = _engine_attestation(engine_param)
+        if attestation is None:
+            engine_error = "unknown_or_unbound_engine"
+    cost_policy = (attestation or {}).get("provider_cost_policy")
+    model_status = (attestation or {}).get("model_identifier_status")
+
+    # Budget enforcement is honestly ARMED only when it can actually enforce:
+    #  * campaign arm — a campaign id is set AND that campaign is genuinely OPEN
+    #    (``remaining_eur`` resolved). A stale/never-opened id must not read armed
+    #    (M1): the worker would fail closed on reserve, and a false-green preflight
+    #    would erode the "budget armed before the first call" guarantee.
+    #  * local-zero arm — the engine resolves to a verified local-zero cost policy
+    #    AND its model is actually RESOLVED (an unset YOUTAB_ECO_MODEL cannot run,
+    #    so it must not report armed). Needs no campaign and no FX snapshot — a €0
+    #    conversion requires neither, so none is fabricated (WAVE-30D §B5).
+    campaign_armed = bool(campaign_id) and remaining_eur is not None
+    local_zero_armed = cost_policy == "local_zero_verified" and model_status == "resolved"
+    budget_enforced = campaign_armed or local_zero_armed
+
+    # WAVE-30H: the canonical effective binding the runtime WOULD bind for this
+    # dispatch — ONE contract. When an engine is named it is the per-engine
+    # attestation (which MAY have probed the digest) projected into the binding
+    # shape; otherwise it is the config-default identity built purely. The harness
+    # verifies its Owner --expected-* AGAINST this (never a parallel identity).
+    if attestation is not None:
+        _att_digest = attestation.get("ollama_model_digest")
+        if _att_digest:
+            _digest_status = "attested"
+        elif attestation.get("ollama_digest_status") == "not_applicable":
+            _digest_status = "not_applicable"
+        else:
+            _digest_status = "not_probed"
+        effective_binding = {
+            "binding_version": 1,
+            "provider": attestation.get("provider"),
+            "model": attestation.get("model"),
+            "model_ref": attestation.get("model_ref"),
+            "model_identifier_status": attestation.get("model_identifier_status"),
+            "execution": attestation.get("execution"),
+            "endpoint_class": attestation.get("endpoint_class"),
+            # WAVE-30H #1: carry the endpoint_fingerprint so this binding's
+            # binding_digest (which includes it) equals the digest create computes
+            # for the SAME engine — the atomic preflight->create match.
+            "endpoint_fingerprint": attestation.get("endpoint_fingerprint"),
+            "provider_cost_policy": attestation.get("provider_cost_policy"),
+            "digest_status": _digest_status,
+            "model_digest": _att_digest,
+            "bound_at": eb.utc_iso_now(),
+        }
+    else:
+        effective_binding = eb.build_effective_binding(
+            provider=names.get("provider"),
+            model=names.get("model"),
+            endpoint=_configured_inference_base_url(),
+        )
+
     return {
         "ok": True,
         "service_ready": True,
@@ -954,11 +1765,11 @@ async def runtime_preflight(
         "provider": names["provider"],
         "provider_credential_source": _provider_credential_source(names["provider"]),
         "redaction_enabled": _redaction_enabled(),
-        # Honest attestation: budget enforcement is ARMED only when a campaign is
-        # configured, in which case every worker fails closed unless it can build a
-        # RunLimitEnforcer against the durable ledger. No campaign => not enforced,
-        # and the harness's assert_live_safety refuses the live run.
-        "budget_enforcement_enabled": bool(campaign_id),
+        "budget_enforcement_enabled": budget_enforced,
+        "budget_enforcement_source": (
+            "campaign_ledger" if campaign_armed
+            else ("local_zero_verified" if local_zero_armed else "none")
+        ),
         "live_benchmark_mode": live_benchmark,
         "campaign_id": campaign_id,
         "campaign_ceiling_eur": campaign_ceiling_eur,
@@ -966,10 +1777,14 @@ async def runtime_preflight(
         "hard_campaign_ceiling_eur": str(CAMPAIGN_CEILING_EUR),
         "run_limit_ceilings": dict(RUN_CEILINGS),
         "audit_available": audit_available,
-        # The benchmark uses only synthetic scenarios; no production/customer
-        # dataset is ever selected on this plane.
-        "no_production_dataset": True,
+        "no_production_dataset": _no_production_dataset(),
         "auth_required": True,
+        # Per-engine effective-binding attestation (None unless ?engine= given).
+        "engine_attestation": attestation,
+        "engine_attestation_error": engine_error,
+        # WAVE-30H canonical effective binding the harness verifies --expected-*
+        # against (one contract; present for both tracks).
+        "effective_binding": effective_binding,
     }
 
 
@@ -1055,21 +1870,30 @@ async def runtime_list_runs(
 ):
     limit = max(1, min(int(limit), 100))
     offset = max(0, int(offset))
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        # Tenant is the DB-level filter; user ownership is enforced per row so a
-        # tenant admin still can't read another user's runs through this surface.
-        tasks = kb.list_tasks(
-            conn, tenant=identity.tenant, include_archived=True,
-            order_by="created-desc",
-        )
-        owned = [t for t in tasks if t.created_by == identity.user]
-        # Project status (with cancel detection) before optional status filter.
-        summaries = []
-        for t in owned:
-            events = kb.list_events(conn, t.id)
-            summaries.append(_run_summary(
-                t, cancelled=_is_cancelled(events), execution_mode=_mode_from_events(events)
-            ))
+
+    def _collect() -> "List[Dict[str, Any]]":
+        # Runs on a worker thread (see run_in_threadpool below): the kanban
+        # store is synchronous SQLite, and doing it inline on the event loop
+        # blocks every other request that uvicorn worker is serving. The
+        # connection is opened and closed entirely within this thread.
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            # Tenant is the DB-level filter; user ownership is enforced per row so
+            # a tenant admin still can't read another user's runs here.
+            tasks = kb.list_tasks(
+                conn, tenant=identity.tenant, include_archived=True,
+                order_by="created-desc",
+            )
+            owned = [t for t in tasks if t.created_by == identity.user]
+            # One batched query for cancel/mode signals instead of a per-task
+            # full-history list_events fan-out (the N+1).
+            signals = _summary_signals(conn, [t.id for t in owned])
+            out: List[Dict[str, Any]] = []
+            for t in owned:
+                cancelled, mode = signals.get(t.id, (False, "model"))
+                out.append(_run_summary(t, cancelled=cancelled, execution_mode=mode))
+            return out
+
+    summaries = await run_in_threadpool(_collect)
     if status is not None:
         summaries = [s for s in summaries if s["status"] == status]
     total = len(summaries)
@@ -1084,10 +1908,13 @@ async def runtime_list_runs(
 async def runtime_run_detail(
     run_id: str, identity: RuntimeIdentity = Depends(require_service_identity)
 ):
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        task = _load_owned_task(conn, run_id, identity)
-        events = kb.list_events(conn, task.id)
-        return _run_detail(conn, task, cancelled=_is_cancelled(events))
+    def _detail() -> "Dict[str, Any]":
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            return _run_detail(conn, task, cancelled=_is_cancelled(events))
+
+    return await run_in_threadpool(_detail)
 
 
 @router.get("/api/runtime/v1/runs/{run_id}/events")
@@ -1106,19 +1933,26 @@ async def runtime_run_events(
     """
     after = max(0, int(after))
     limit = max(1, min(int(limit), 2000))
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        task = _load_owned_task(conn, run_id, identity)
-        all_events = kb.list_events(conn, task.id)
-        cancelled = _is_cancelled(all_events)
-        fresh = [e for e in all_events if e.id > after][:limit]
-        cursor = fresh[-1].id if fresh else after
-        status = _run_status(task, cancelled=cancelled)
-    return {
-        "events": [_event_projection(run_id, e) for e in fresh],
-        "cursor": cursor,
-        "status": status,
-        "terminal": status in _TERMINAL_PRODUCT_STATUSES,
-    }
+
+    def _collect() -> "Dict[str, Any]":
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            task = _load_owned_task(conn, run_id, identity)
+            all_events = kb.list_events(conn, task.id)
+            cancelled = _is_cancelled(all_events)
+            fresh = [e for e in all_events if e.id > after][:limit]
+            cursor = fresh[-1].id if fresh else after
+            status = _run_status(
+                task, cancelled=cancelled,
+                interactive=_interactive_status(all_events),
+            )
+        return {
+            "events": [_event_projection(run_id, e) for e in fresh],
+            "cursor": cursor,
+            "status": status,
+            "terminal": status in _TERMINAL_PRODUCT_STATUSES,
+        }
+
+    return await run_in_threadpool(_collect)
 
 
 @router.get("/api/runtime/v1/runs/{run_id}/artifacts")
@@ -1212,7 +2046,21 @@ async def runtime_create_run(
     when that engine is bound to a provider/model, pins the run to it via
     ``model_override``/``provider_override`` without touching the profile.
     """
+    # WAVE-30H R8: ingress marks. REQUEST_RECEIVE = synchronous ingress latency
+    # (monotonic, recorded at ack with the now-known run_id). enqueue_epoch_ns is a
+    # wall-clock mark carried into the create event so the dispatcher can compute
+    # QUEUE_WAIT as a cross-process (clock="epoch") gap — the coarse seconds-grained
+    # task timestamps cannot resolve a sub-second local queue wait.
+    _req_recv_t0 = time.monotonic_ns()
+    try:
+        from youtab_runtime import stage_trace as _st_ing
+    except Exception:  # pragma: no cover - observability never blocks ingress
+        _st_ing = None
     await _verify_signed_command(request, identity)
+    # Execution-authority gate (WAVE-30H R3): AFTER transport auth, BEFORE any
+    # run is created. Managed mode requires a valid Simorgh grant; standalone
+    # refuses one. Fail-closed inside (raises HTTPException on any bad grant).
+    grant_header, grant_manifest = await _admit_execution_grant(request, identity)
     payload = await _json_body(request)
     agent = str(payload.get("agent") or "").strip()
     task_text = str(payload.get("task") or "").strip()
@@ -1239,6 +2087,37 @@ async def runtime_create_run(
         bound = agent_identity.engine_binding_for_profile(engine)
         if bound:
             provider_override, model_override = bound
+
+        # WAVE-30D B1 (fail CLOSED): the ECO local engine (Track A) must be
+        # pinned to the Owner-supplied concrete model tag. Its committed binding
+        # is only a provider-neutral placeholder, so without YOUTAB_ECO_MODEL a
+        # run would silently execute the placeholder. Refuse before dispatch —
+        # never a silent downgrade to the placeholder or the worker default. The
+        # tag itself is never echoed (only its presence is checked).
+        if engine == agent_identity.ECO_PROFILE_ID and not agent_identity.eco_model_configured():
+            raise HTTPException(
+                status_code=422, detail={"error": "eco_model_unconfigured"}
+            )
+        # A local-server engine must resolve to a concrete provider+model pin;
+        # it must never dispatch on the worker's profile-default model (that
+        # would falsely attribute the run to the branded engine).
+        _pin = engine_connection.resolve_connection(engine)
+        if _pin is not None and _pin.is_local_server() and not (bound and model_override):
+            raise HTTPException(
+                status_code=422, detail={"error": "engine_unbound"}
+            )
+        # Managed direct-API fail-closed (WAVE-30H): a MANAGED run that selected a
+        # branded engine MUST resolve to a concrete (provider, model) pin — never
+        # silently dispatch the worker default on an unbound (e.g. cloud) engine,
+        # which would falsely attribute the run and bypass the binding contract.
+        # Standalone is exempt (an unbound engine is honoured + recorded below).
+        from youtab_runtime import managed_execution as _mx_gate
+        if _mx_gate.current_trust_mode() is _mx_gate.TrustMode.MANAGED and (
+            _pin is None or not model_override
+        ):
+            raise HTTPException(
+                status_code=422, detail={"error": "engine_unbound"}
+            )
 
         # Split-brain guard (fail CLOSED): a local-server engine (e.g. ECO on an
         # on-prem Ollama) must execute against the SAME server its availability
@@ -1298,12 +2177,165 @@ async def runtime_create_run(
     if run_limits.max_runtime_seconds is not None:
         max_runtime = run_limits.max_runtime_seconds
 
+    # Authoritative worker-attempt bound (WAVE-30D dispatcher-attempt fix).
+    #
+    # The dispatcher's per-task circuit breaker owns worker (re)spawn and already
+    # enforces this run's ``max_runtime_seconds``. The run's authoritative retry
+    # budget must bound the number of worker ATTEMPTS the same way — otherwise a
+    # worker that times out or crashes is silently respawned by the dispatcher's
+    # default failure limit, and the fresh worker issues ANOTHER model request even
+    # though the run declared ``max_requests=1`` / no retries (the WAVE-30D canary
+    # ``t_f6ef707c`` defect: claimed→spawned→timed_out→claimed→spawned→timed_out→
+    # gave_up = two attempts, two potential model requests).
+    #
+    # ``tasks.max_retries`` is the consecutive-failure count at which the breaker
+    # trips, i.e. the TOTAL attempts allowed (``1`` trips on the first failure =
+    # one attempt / zero retries). The run-level ``RunLimits.max_retries`` counts
+    # RETRIES (``0`` = no retry — see run_limits.py), so worker attempts =
+    # ``1 + max_retries``:
+    #   * canary  max_retries=0 → 1 attempt  (no respawn — the fix)
+    #   * pilot   max_retries=1 → 2 attempts (unchanged: was DEFAULT_FAILURE_LIMIT=2)
+    #   * full    max_retries=1 → 2 attempts (unchanged: was DEFAULT_FAILURE_LIMIT=2)
+    # Left ``None`` for ordinary runs that send no retry budget, preserving the
+    # dispatcher default (``DEFAULT_FAILURE_LIMIT``; an ordinary run's breaker is
+    # never touched). When a retry budget IS declared it becomes authoritative:
+    # the attempt count is exactly ``1 + max_retries``, which for a run that asks
+    # for >=2 retries is DELIBERATELY higher than the dispatcher default of 2 —
+    # the run owns its own attempt budget. It is never unbounded: ``max_retries``
+    # is clamped to ``RUN_CEILINGS["max_retries"]`` (3), so attempts <= 4, and
+    # cost stays bounded by the durable campaign ledger. Only zero-retry runs (the
+    # canary) tighten below the default; the stage profiles use only 0/1.
+    _task_max_retries = (
+        int(run_limits.max_retries) + 1
+        if run_limits.max_retries is not None
+        else None
+    )
+
     # Execution mode: real provider-backed model by default. A caller may request
     # the non-production deterministic integration worker with ``deterministic``;
     # it is honoured ONLY when the deterministic worker is enabled (non-prod), so
     # a production run can never be silently downgraded to a deterministic stub.
     want_det = bool(payload.get("deterministic", False))
     mode = "deterministic" if (want_det and _deterministic_worker_enabled()) else "model"
+
+    # WAVE-30H canonical binding: resolve the EFFECTIVE execution identity PURELY
+    # (config/classification only — NO network probe on this hot path). A bound
+    # engine uses its resolved connection; otherwise we resolve the worker's PROFILE
+    # default (the identity the dispatched worker truly uses). The binding itself is
+    # built + persisted AFTER the run id is known (inside the create txn below).
+    _conn_for_binding = engine_connection.resolve_connection(engine) if engine else None
+    if _conn_for_binding is not None:
+        _bind_provider = _conn_for_binding.provider
+        _bind_model = _conn_for_binding.model
+        _bind_endpoint = _conn_for_binding.endpoint
+    else:
+        _bind_provider, _bind_model, _bind_endpoint = _profile_default_identity(agent)
+
+    from youtab_runtime import managed_execution as _mx_bind
+    _is_managed = _mx_bind.current_trust_mode() is _mx_bind.TrustMode.MANAGED
+
+    # Atomic preflight->create: when the caller pins an expected binding digest (the
+    # benchmark does, derived from its preflight attestation), the run is created
+    # ONLY if the substrate digest matches — closing the TOCTOU between what was
+    # attested and what is enqueued. Opt-in (absent = unvalidated); checked before
+    # any enqueue so a mismatch creates no task, no binding, no dispatch.
+    _substrate_binding = eb.build_effective_binding(
+        provider=_bind_provider, model=_bind_model, endpoint=_bind_endpoint,
+    )
+    _expected_digest = str(payload.get("expected_binding_digest") or "").strip().lower()
+    if _expected_digest:
+        if len(_expected_digest) != 64 or any(
+            c not in "0123456789abcdef" for c in _expected_digest
+        ):
+            raise HTTPException(status_code=422, detail={"error": "malformed_binding_digest"})
+        if _expected_digest != eb.binding_digest(_substrate_binding):
+            raise HTTPException(status_code=412, detail={"error": "binding_digest_mismatch"})
+
+    # WAVE-30H #7: an optional attested model-manifest digest pins the concrete model
+    # artifact into the persisted binding (digest_status="attested"); the worker
+    # re-probes + fails closed on a tag->manifest re-point. It is only meaningful for
+    # a probe-eligible ollama-local substrate (the same eligibility the builder uses
+    # for "not_probed") — reject it fail-closed otherwise so a caller cannot pin a
+    # digest that will never be verified.
+    _expected_model_digest = str(payload.get("expected_model_digest") or "").strip().lower()
+    if _expected_model_digest:
+        if len(_expected_model_digest) != 64 or any(
+            c not in "0123456789abcdef" for c in _expected_model_digest
+        ):
+            raise HTTPException(status_code=422, detail={"error": "malformed_model_digest"})
+        if _substrate_binding.get("digest_status") != "not_probed":
+            raise HTTPException(status_code=422, detail={"error": "model_digest_not_applicable"})
+
+    # A managed, real-model run MUST carry a fully-resolved identity before it is
+    # executable (never enqueue an unresolved managed model-run — the worker would
+    # otherwise resolve the substrate from mutable config at dispatch). WAVE-30H
+    # hardening: require present tenant/workspace and a RESOLVED endpoint too, so an
+    # unresolvable local endpoint fails fast at create (422) rather than as a deferred
+    # worker endpoint-drift refusal. The deterministic integration worker (mode !=
+    # "model") and standalone are exempt.
+    if _is_managed and mode == "model":
+        if not (_bind_model and str(_bind_model).strip()):
+            raise HTTPException(status_code=422, detail={"error": "managed_model_unresolved"})
+        if not (identity.tenant and identity.tenant.strip()):
+            raise HTTPException(status_code=422, detail={"error": "managed_tenant_required"})
+        if not (identity.workspace and identity.workspace.strip()):
+            raise HTTPException(status_code=422, detail={"error": "managed_workspace_required"})
+        if (
+            _substrate_binding["execution"] == "local"
+            and _substrate_binding["endpoint_class"] in ("unavailable", "invalid")
+        ):
+            raise HTTPException(status_code=422, detail={"error": "managed_endpoint_unresolved"})
+        # Pin the row from the resolved identity so the dispatcher + any respawn
+        # dispatch FROM the binding and never re-resolve mutable config (an explicit
+        # engine binding already set model_override above).
+        if not model_override:
+            model_override = _bind_model
+        if not provider_override and _bind_provider:
+            provider_override = _bind_provider
+
+    _enqueue_epoch_ns = _st_ing.mark_epoch() if _st_ing is not None else None
+
+    def _persist_run_metadata(conn, rid):
+        """Create-once metadata persisted INSIDE create_task_ex's own write_txn.
+
+        WAVE-30H (race): the resolved mode + the canonical immutable binding + engine
+        selection + clamped limits + the admitted Simorgh grant all commit ATOMICALLY
+        with the task row insert, so the run is never visible to the dispatcher before
+        its binding/grant exist (closing the two-transaction ready-task race). Runs
+        exactly once per created run (create_task_ex does not call this on an
+        idempotent hit). Uses _append_event directly (no nested write_txn); a raise
+        here rolls back the whole insert (no orphan task) — fail closed.
+        """
+        kb._append_event(conn, rid, _MODE_EVENT, {
+            "mode": mode,
+            "correlation_id": identity.correlation_id,
+            # R8: ns wall-clock enqueue mark for cross-process QUEUE_WAIT.
+            "enqueue_epoch_ns": _enqueue_epoch_ns,
+        })
+        # The canonical immutable binding — scoped to this run (run_id/tenant/
+        # workspace), SELF-HASHED, and (WAVE-30H #7) pinning the attested model digest
+        # when supplied so the worker fails closed on a tag->manifest re-point.
+        effective_binding_payload = eb.build_effective_binding(
+            provider=_bind_provider, model=_bind_model, endpoint=_bind_endpoint,
+            run_id=rid, root_run_id=rid,
+            tenant=identity.tenant, workspace=identity.workspace,
+            model_digest=(_expected_model_digest or None),
+        )
+        kb._append_event(conn, rid, eb.BINDING_EVENT, effective_binding_payload)
+        if engine_identity is not None:
+            kb._append_event(conn, rid, _ENGINE_EVENT, {
+                "profile_id": engine,
+                "public_label": engine_identity.public_label,
+            })
+        _limits_dict = run_limits.to_dict()
+        if _task_max_retries is not None:
+            _limits_dict["worker_attempt_limit"] = _task_max_retries
+        if _limits_dict:
+            kb._append_event(conn, rid, _LIMITS_EVENT, _limits_dict)
+        if grant_header:
+            kb._append_event(conn, rid, _GRANT_EVENT, {"grant": grant_header})
+            if grant_manifest is not None:
+                kb._append_event(conn, rid, _GRANT_MANIFEST_EVENT, grant_manifest)
 
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         run_id, created = kb.create_task_ex(
@@ -1317,6 +2349,7 @@ async def runtime_create_run(
             skills=skills,
             goal_mode=goal_mode,
             max_runtime_seconds=max_runtime,
+            max_retries=_task_max_retries,
             model_override=model_override,
             provider_override=provider_override,
             board=RUNTIME_BOARD,
@@ -1324,43 +2357,61 @@ async def runtime_create_run(
             # session_id write below stays UNCHANGED as the legacy overload.
             correlation_id=identity.correlation_id,
             session_id=identity.correlation_id,
+            # Persist binding/grant/mode atomically with the row (see hook).
+            on_created=_persist_run_metadata,
         )
-        # Record the resolved mode as a create-time event (survives restart,
-        # visible in the run's own event stream, read by the dispatcher spawn).
-        # The correlation id is stamped on this authoritative dispatch event
-        # (fail-closed inside the run txn) so the run's own stream is queryable
-        # by correlation independent of the tasks column (contract C4).
-        #
-        # Append ONLY when the run was NEWLY created. On an idempotent retry
-        # (same Idempotency-Key) create_task_ex returns the EXISTING run and
-        # ``created`` is False; re-appending would duplicate the mode/engine
-        # events on that run. The create-time events therefore stay exactly-once
-        # per run, matching the idempotent create semantics.
-        if created:
-            with kb.write_txn(conn):
-                kb._append_event(
-                    conn,
-                    run_id,
-                    _MODE_EVENT,
-                    {"mode": mode, "correlation_id": identity.correlation_id},
+        # WAVE-30H #8 + Batch2 #F4: on an idempotent hit the run already exists with
+        # its persisted binding; a caller pinning an expected digest must have it match
+        # the EXISTING run's binding — else a replayed Idempotency-Key could attach the
+        # attestation to a run bound to a DIFFERENT substrate OR a DIFFERENT pinned
+        # model artifact. The substrate digest (binding_digest) EXCLUDES model_digest,
+        # so the model-artifact pin is compared SEPARATELY (constant-time). Any
+        # mismatch fails closed (412); no new task/event/grant/binding is created, and
+        # a run pinned to a different model artifact is never returned as if it matched.
+        if not created and (_expected_digest or _expected_model_digest):
+            _existing = eb.effective_binding_from_events(kb.list_events(conn, run_id))
+            if (
+                not isinstance(_existing, dict)
+                or _existing.get("__corrupt__")
+                or not eb.verify_binding(_existing)
+            ):
+                raise HTTPException(
+                    status_code=412,
+                    detail={"error": "binding_unverifiable_for_idempotent_run"},
                 )
-                # Record the branded engine selection (consumer-safe: profile_id
-                # + public label only; never the provider/model it resolved to).
-                if engine_identity is not None:
-                    kb._append_event(conn, run_id, _ENGINE_EVENT, {
-                        "profile_id": engine,
-                        "public_label": engine_identity.public_label,
-                    })
-                # Persist the authoritative clamped per-run limits (numeric only).
-                _limits_dict = run_limits.to_dict()
-                if _limits_dict:
-                    kb._append_event(conn, run_id, _LIMITS_EVENT, _limits_dict)
+            if _expected_digest and eb.binding_digest(_existing) != _expected_digest:
+                raise HTTPException(status_code=412, detail={"error": "binding_digest_mismatch"})
+            if _expected_model_digest:
+                import hmac as _hmac
+                _existing_md = str(_existing.get("model_digest") or "").strip().lower()
+                if not _existing_md or not _hmac.compare_digest(
+                    _existing_md, _expected_model_digest
+                ):
+                    raise HTTPException(
+                        status_code=412, detail={"error": "model_digest_mismatch"}
+                    )
         task = kb.get_task(conn, run_id)
 
     # Kick a dispatch tick immediately and keep the ticker running so the run
     # actually executes and finalises.
     ensure_dispatcher_running()
     _dispatch_tick()
+    # R8: total synchronous ingress latency, now fully correlated (run_id known).
+    if _st_ing is not None:
+        try:
+            with _st_ing.trace_context_scope(
+                run_id=run_id,
+                tenant=identity.tenant,
+                user=identity.user,
+                correlation_id=identity.correlation_id,
+            ):
+                _st_ing.record(
+                    _st_ing.Stage.REQUEST_RECEIVE,
+                    duration_ns=time.monotonic_ns() - _req_recv_t0,
+                    result=("created" if created else "idempotent_hit"),
+                )
+        except Exception:  # pragma: no cover - observability never blocks ingress
+            pass
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         task = kb.get_task(conn, run_id)
         return (
@@ -1384,6 +2435,9 @@ async def runtime_cancel_run(
     product-cancel intent, kills any live worker, and blocks the task.
     """
     await _verify_signed_command(request, identity)
+    # Managed cancel is a governed mutation: it requires the same execution
+    # authority (a Simorgh grant) in managed mode; standalone refuses a grant.
+    await _admit_execution_grant(request, identity)
     worker_pid = None
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         # ATOMIC check-then-act. The ownership decision, the authoritative
@@ -1436,6 +2490,180 @@ async def runtime_cancel_run(
         return {"run_id": run_id, "status": _run_status(task, cancelled=True)}
 
 
+@router.post("/api/runtime/v1/runs/{run_id}/answer")
+async def runtime_answer_run(
+    run_id: str,
+    request: Request,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Answer a clarification question the agent raised (ADR-0004, A4).
+
+    Records the user's answer to an OPEN question so the SAME run resumes. Same
+    governed-mutation authority as cancel: signed + (managed) grant-gated +
+    (tenant,user)-owned. Idempotent: a duplicate answer for an already-answered
+    question is a no-op (exactly-once consumption by the worker). Fail-closed:
+    an answer for a question that was never asked / already answered is refused.
+    """
+    await _verify_signed_command(request, identity)
+    await _admit_execution_grant(request, identity)
+    body = await _json_body(request)
+    question_id = str(body.get("question_id") or "").strip()
+    if not question_id:
+        raise HTTPException(status_code=422, detail={"error": "question_id_required"})
+    if "answer" not in body:
+        raise HTTPException(status_code=422, detail={"error": "answer_required"})
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        with kb.write_txn(conn):
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            # Idempotent exactly-once replay is a NON-mutating read-back, so it is
+            # evaluated BEFORE the terminal guard: the worker may consume the
+            # answer and drive the run to a terminal state between the original
+            # answer and a retried duplicate, but a duplicate for an already-
+            # answered question must still succeed (200 already_answered), never
+            # 409 run_terminal. The terminal guard below only blocks NEW answers.
+            if _rc.answer_for(events, question_id) is not None:
+                return {"run_id": run_id, "question_id": question_id, "already_answered": True}
+            if _run_status(task, cancelled=_is_cancelled(events)) in _TERMINAL_PRODUCT_STATUSES:
+                raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+            open_q = any(
+                e.kind == _rc.QUESTION and (e.payload or {}).get("question_id") == question_id
+                for e in events
+            )
+            if not open_q:
+                raise HTTPException(status_code=409, detail={"error": "no_such_open_question"})
+            kb._append_event(conn, task.id, _rc.ANSWER,
+                             {"question_id": question_id, "answer": body["answer"],
+                              "by": identity.user})
+    return {"run_id": run_id, "question_id": question_id, "accepted": True}
+
+
+@router.post("/api/runtime/v1/runs/{run_id}/approve")
+async def runtime_approve_run(
+    run_id: str,
+    request: Request,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Approve or deny an approval the agent requested (ADR-0004, A5).
+
+    ``{"approval_id": "...", "decision": "approve"|"deny"}``. Approve continues
+    the effect; deny fails that effect CLOSED (the worker never performs it).
+    Idempotent by approval_id; fail-closed on an unknown/closed approval.
+    """
+    await _verify_signed_command(request, identity)
+    await _admit_execution_grant(request, identity)
+    body = await _json_body(request)
+    approval_id = str(body.get("approval_id") or "").strip()
+    decision = str(body.get("decision") or "").strip().lower()
+    if not approval_id:
+        raise HTTPException(status_code=422, detail={"error": "approval_id_required"})
+    if decision not in (_rc.APPROVE, _rc.DENY):
+        raise HTTPException(status_code=422, detail={"error": "decision_must_be_approve_or_deny"})
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        with kb.write_txn(conn):
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            # Idempotent replay BEFORE the terminal guard (same rationale as
+            # /answer): the worker may consume the decision and drive the run
+            # terminal between the original decision and a retried duplicate; a
+            # duplicate for an already-decided approval must still return 200
+            # (already_decided, ORIGINAL decision stands), never 409 run_terminal.
+            prior = _rc.decision_for(events, approval_id)
+            if prior is not None:
+                return {"run_id": run_id, "approval_id": approval_id,
+                        "already_decided": True, "decision": prior}
+            if _run_status(task, cancelled=_is_cancelled(events)) in _TERMINAL_PRODUCT_STATUSES:
+                raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+            open_a = any(
+                e.kind == _rc.APPROVAL_REQUEST and (e.payload or {}).get("approval_id") == approval_id
+                for e in events
+            )
+            if not open_a:
+                raise HTTPException(status_code=409, detail={"error": "no_such_open_approval"})
+            kb._append_event(conn, task.id, _rc.APPROVAL_DECISION,
+                             {"approval_id": approval_id, "decision": decision,
+                              "by": identity.user})
+    return {"run_id": run_id, "approval_id": approval_id, "decision": decision}
+
+
+@router.post("/api/runtime/v1/runs/{run_id}/pause")
+async def runtime_pause_run(
+    run_id: str,
+    request: Request,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Request a pause (ADR-0004, A6). Records a ``run_pause`` and reports
+    ``pause_requested``. The production ``youtab chat`` worker acknowledges it at
+    its next turn boundary and either persists a valid ``run_checkpoint`` (→
+    ``paused``, resumable, NOT a cancel/restart, no step re-executed) or, if it
+    cannot persist a valid checkpoint, records ``run_pause_failed`` and stops
+    FAIL-CLOSED (→ ``pause_failed``, non-completed, non-cancelled, NOT resumable
+    until an explicit recovery action). Idempotent over an active pause epoch; a
+    pause of a terminal run is a no-op that preserves the terminal status.
+    """
+    await _verify_signed_command(request, identity)
+    await _admit_execution_grant(request, identity)
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        with kb.write_txn(conn):
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            cancelled = _is_cancelled(events)
+            status = _run_status(task, cancelled=cancelled,
+                                 interactive=_interactive_status(events))
+            if status in _TERMINAL_PRODUCT_STATUSES:
+                return {"run_id": run_id, "status": status}
+            if _rc.is_paused(events):
+                # A pause epoch is already active — idempotent; report its sub-state
+                # (pause_requested / paused / pause_failed) rather than stacking.
+                return {"run_id": run_id, "status": _rc.interactive_status(events)}
+            kb._append_event(conn, task.id, _rc.PAUSE, {"by": identity.user})
+    return {"run_id": run_id, "status": _rc.PAUSE_REQUESTED}
+
+
+@router.post("/api/runtime/v1/runs/{run_id}/resume")
+async def runtime_resume_run(
+    run_id: str,
+    request: Request,
+    identity: RuntimeIdentity = Depends(require_service_identity),
+):
+    """Authorize a resume from a VALID persisted checkpoint (ADR-0004, A6).
+
+    Fail-closed: a terminal (completed/cancelled) run cannot be resumed (409); a
+    run that is not ``paused`` with a valid checkpoint cannot be resumed (409). A
+    ``pause_failed`` run (accepted pause, no restorable checkpoint) is refused
+    with a distinct error and requires an explicit recovery action — it is never
+    silently resumed or restarted. On success the run is re-queued so the
+    dispatcher spawns a fresh worker that loads the checkpoint and continues from
+    the SAME state — no step is re-executed.
+    """
+    await _verify_signed_command(request, identity)
+    await _admit_execution_grant(request, identity)
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        with kb.write_txn(conn):
+            task = _load_owned_task(conn, run_id, identity)
+            events = kb.list_events(conn, task.id)
+            cancelled = _is_cancelled(events)
+            if _run_status(task, cancelled=cancelled) in _TERMINAL_PRODUCT_STATUSES:
+                raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+            if _interactive_status(events) == _rc.PAUSE_FAILED:
+                raise HTTPException(status_code=409,
+                                    detail={"error": "pause_failed_requires_recovery"})
+            if not _rc.has_valid_checkpoint_for_resume(events):
+                raise HTTPException(status_code=409, detail={"error": "run_not_paused"})
+            kb._append_event(conn, task.id, _rc.RESUME, {"by": identity.user})
+    # Re-queue OUTSIDE the append txn (unblock_task opens its own write txn), then
+    # ensure the dispatcher is ticking so a fresh worker re-claims and resumes
+    # from the checkpoint. The worker paused itself by blocking the task; flipping
+    # blocked->ready makes it claimable again for a brand-new worker process.
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        try:
+            kb.unblock_task(conn, run_id)
+        except Exception as exc:  # noqa: BLE001 — resume event is the source of truth
+            _log.warning("runtime resume: unblock failed for %s: %s", run_id, exc)
+    ensure_dispatcher_running()
+    return {"run_id": run_id, "status": "running"}
+
+
 @router.post("/api/runtime/v1/runs/{run_id}/retry")
 async def runtime_retry_run(
     run_id: str,
@@ -1444,6 +2672,17 @@ async def runtime_retry_run(
 ):
     """Retry a finished/blocked run by creating a fresh run from the same spec."""
     await _verify_signed_command(request, identity)
+    # Managed retry is a governed mutation: it requires execution authority (a
+    # Simorgh grant) in managed mode; standalone refuses a grant. Capture the
+    # freshly-admitted grant + frozen capability manifest so they can be PERSISTED
+    # onto the child run below (WAVE-30H): a managed retry re-mints its own grant
+    # here, and the dispatched child worker re-admits it from its OWN persisted
+    # events (worker_admission.establish_managed_admission). Without persisting it,
+    # a managed retry child has no grant to re-admit and fails closed at worker
+    # admission — created but never able to execute. Mirrors create_run.
+    _retry_grant_header, _retry_grant_manifest = await _admit_execution_grant(
+        request, identity
+    )
     # Authorize ownership FIRST — a caller that does not own run_id gets 404 and
     # no effect-ledger row is ever created in their namespace (reviewer A INFO-2).
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
@@ -1495,48 +2734,100 @@ async def runtime_retry_run(
     try:
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
             task = _load_owned_task(conn, run_id, identity)
+            _orig_events = kb.list_events(conn, task.id)
             # Carry the original run's execution mode forward so a retry of a
             # deterministic integration run stays deterministic and a retry of a
             # real run stays real.
-            prior_mode = _mode_from_events(kb.list_events(conn, task.id))
+            prior_mode = _mode_from_events(_orig_events)
             retry_mode = "deterministic" if (prior_mode == "deterministic" and _deterministic_worker_enabled()) else "model"
+            # WAVE-30H: inherit the ORIGINAL run's COMPLETE authoritative execution
+            # binding — resolved provider/model pin (row) + branded engine selection
+            # + clamped cost policy — so the retry re-executes on the SAME substrate
+            # and can NEVER silently downgrade to the worker-default model. Fails
+            # closed (HTTP 422) if that recorded binding is invalid or conflicting.
+            _binding = _retry_execution_binding(task, _orig_events)
             # Preserve correlation lineage engine-side: the retry inherits the
             # ORIGINAL task's correlation id (independent of the inbound header)
             # so the whole retry chain is queryable by one correlation (C6).
             # Fall back to the inbound signed correlation only if the original
             # row predates the dedicated column (legacy).
             lineage_correlation = task.correlation_id or identity.correlation_id
-            new_id = kb.create_task(
-                conn,
-                title=f"{task.title} (retry)",
-                body=task.body,
-                assignee=task.assignee,
-                created_by=identity.user,
-                tenant=identity.tenant,
-                skills=task.skills,
-                goal_mode=task.goal_mode,
-                max_runtime_seconds=task.max_runtime_seconds,
-                board=RUNTIME_BOARD,
-                correlation_id=lineage_correlation,
-                session_id=identity.correlation_id,
-            )
-            with kb.write_txn(conn):
+            def _persist_child(conn, rid):
+                # WAVE-30H (race): persist the child's mode / lineage / engine /
+                # limits / RE-SCOPED binding / re-minted grant INSIDE create_task_ex's
+                # own write_txn — atomic with the child row insert — so the child is
+                # never visible to the dispatcher before its binding/grant exist
+                # (closing the same two-transaction race as create_run). A raise here
+                # rolls the child insert back entirely (no orphan, no archive needed)
+                # and is remapped to a fail-closed 500 below.
                 kb._append_event(
-                    conn,
-                    new_id,
-                    _MODE_EVENT,
+                    conn, rid, _MODE_EVENT,
                     {"mode": retry_mode, "correlation_id": lineage_correlation},
                 )
-                # Authoritative lineage marker: this run is a retry of ``run_id``,
-                # carrying the preserved correlation (fail-closed run-txn write).
+                # Authoritative lineage marker: this run is a retry of ``run_id``.
                 kb._append_event(
+                    conn, rid, _RETRIED_FROM_EVENT,
+                    {"original_run_id": run_id, "correlation_id": lineage_correlation},
+                )
+                # Re-record the branded engine selection (same profile as the original).
+                if _binding["engine_selection"] is not None:
+                    kb._append_event(conn, rid, _ENGINE_EVENT, {
+                        "profile_id": _binding["engine_selection"]["profile_id"],
+                        "public_label": _binding["engine_selection"].get("public_label"),
+                    })
+                # Re-record the authoritative clamped cost policy / limits.
+                if _binding["limits"]:
+                    kb._append_event(conn, rid, _LIMITS_EVENT, _binding["limits"])
+                # Re-issue the parent's effective binding on the CHILD, RE-SCOPED to
+                # the child's own run (same provider/model substrate — binding_digest
+                # invariant, proving no drift — but run_id=rid, root=parent lineage).
+                # The parent binding was already verify_binding'd in
+                # _retry_execution_binding (#4), so rescope never launders a tampered
+                # parent into a fresh valid child hash.
+                if _binding.get("effective_binding") is not None:
+                    _child_binding = eb.rescope_binding(
+                        _binding["effective_binding"],
+                        run_id=rid, tenant=identity.tenant, workspace=identity.workspace,
+                    )
+                    kb._append_event(conn, rid, eb.BINDING_EVENT, _child_binding)
+                # Re-minted per-retry Simorgh grant + frozen manifest (managed only;
+                # this retry's own authority, never copied from the original run).
+                if _retry_grant_header:
+                    kb._append_event(conn, rid, _GRANT_EVENT, {"grant": _retry_grant_header})
+                    if _retry_grant_manifest is not None:
+                        kb._append_event(
+                            conn, rid, _GRANT_MANIFEST_EVENT, _retry_grant_manifest
+                        )
+
+            try:
+                new_id = kb.create_task(
                     conn,
-                    new_id,
-                    _RETRIED_FROM_EVENT,
-                    {
-                        "original_run_id": run_id,
-                        "correlation_id": lineage_correlation,
-                    },
+                    title=f"{task.title} (retry)",
+                    body=task.body,
+                    assignee=task.assignee,
+                    created_by=identity.user,
+                    tenant=identity.tenant,
+                    skills=task.skills,
+                    goal_mode=task.goal_mode,
+                    max_runtime_seconds=task.max_runtime_seconds,
+                    # Row-level provider/model pin — inherited ATOMICALLY with the
+                    # child's binding/grant in create_task_ex's own transaction.
+                    model_override=_binding["model_override"],
+                    provider_override=_binding["provider_override"],
+                    board=RUNTIME_BOARD,
+                    correlation_id=lineage_correlation,
+                    session_id=identity.correlation_id,
+                    on_created=_persist_child,
+                )
+            except HTTPException:
+                raise
+            except BaseException:
+                # The child insert was rolled back atomically (no partial child to
+                # archive). Fail closed: never dispatch on an incomplete binding.
+                raise HTTPException(
+                    status_code=500,
+                    detail={"error": "retry_binding_not_persisted",
+                            "run_id": run_id},
                 )
         ensure_dispatcher_running()
         _dispatch_tick()

@@ -55,12 +55,20 @@ _PROVENANCE_KEYS = (
     "track",
     "execution",
     "mode",
+    "engine_profile",
+    "inference_runtime",
+    "endpoint_env",
     "provider_name",
     "model_name",
     "model_source",
     "credential_source",
     "cost_model",
 )
+
+#: Track A's fixed engine profile. Held as a literal here so this pure-stdlib
+#: contract module stays importable in the deterministic CI gate without the app
+#: install; it mirrors ``agent_identity.ECO_PROFILE_ID``.
+_ECO_ENGINE_PROFILE = "eco.v01"
 
 
 #: A bare environment-variable placeholder, e.g. ``${YOUTAB_ECO_MODEL}``. A
@@ -218,6 +226,12 @@ def validate_comparability(*, manifest_path: Optional[Path] = None) -> Dict[str,
     pa = a["per_track"]
     if pa.get("execution") != "local_inference" or pa.get("mode") != "local_runtime":
         raise ComparabilityError("Track A must be local_inference / local_runtime")
+    # The engine profile must be pinned to eco.v01 so the live run binds the ECO
+    # substrate rather than resolving the worker's default model (WAVE-30D §B1).
+    if pa.get("engine_profile") != _ECO_ENGINE_PROFILE:
+        raise ComparabilityError(
+            f"Track A engine_profile {pa.get('engine_profile')!r} must be "
+            f"{_ECO_ENGINE_PROFILE!r}")
     if pa.get("cost_model") != "local_zero_api_cost":
         raise ComparabilityError("Track A must be local_zero_api_cost")
     if pa.get("campaign_budget") != "excluded":

@@ -351,6 +351,75 @@ def _managed_values(
     )
 
 
+def enforce_managed_tool_authority(
+    agent, function_name: str, final_args: Any
+) -> Optional[str]:
+    """Execution-time Simorgh authority gate (WAVE-30H R3).
+
+    Called immediately before every real tool invocation. Returns a reason
+    string when the invocation must be BLOCKED, or ``None`` when it may proceed.
+
+    * In ``local-standalone`` trust mode the gate is inert (returns None).
+    * In ``managed`` mode a sealed :class:`AdmittedCommand` MUST be present on
+      the agent (established by the worker from the persisted Simorgh grant). If
+      it is absent, the gate FAILS CLOSED — a managed run can never reach a tool
+      without admission (no bypass, no standalone fallback).
+    * When present, the tool's toolset + declared side-effect class are resolved
+      from the registry and routed through ``AuthorityBoundary.decide_tool``,
+      which authorizes effect-free/read tools within the grant envelope and
+      refuses effect-bearing tools (they require Brain Effect-Gate authorization)
+      and authority-bearing toolsets. Capability-preserving: nothing is hidden;
+      an effectful tool is refused execution, not removed from the catalogue.
+    """
+    try:
+        from youtab_runtime import managed_execution as mx
+    except Exception:  # noqa: BLE001 — if the authority core is unavailable, do not gate standalone
+        return None
+    if mx.current_trust_mode() is not mx.TrustMode.MANAGED:
+        return None
+    admitted = getattr(agent, "_admitted_command", None)
+    if admitted is None:
+        return (
+            "managed execution reached a tool invocation without a Simorgh "
+            "execution grant (admission is mandatory; no standalone fallback)"
+        )
+    from tools.registry import registry
+    from youtab_runtime.policy import AuthorityBoundary, EffectClass, ToolIntent
+
+    # Invocation-time OPERATIONAL availability gate (WAVE-30H Phase-C / C9). The
+    # per-run capability manifest was frozen at admission from tools that were
+    # available THEN; the discovery path additionally keeps a tool listed for a
+    # 60s anti-flap grace after a transient check_fn failure. Neither may let a
+    # tool whose dependency is ACTUALLY gone be executed: re-probe strictly (no
+    # cache, no grace) right before the call and FAIL CLOSED if unavailable.
+    # Capability-preserving — blocks only a genuinely-unavailable tool.
+    if registry.get_entry(function_name) is not None and not registry.available_strict(function_name):
+        return (
+            f"tool '{function_name}' is not operational at invocation time "
+            "(dependency unavailable; the discovery anti-flap grace does not "
+            "authorize execution) — failing closed"
+        )
+
+    toolset = registry.get_toolset_for_tool(function_name) or function_name
+    entry = registry.get_entry(function_name)
+    sec = getattr(entry, "side_effect_class", "none") if entry else "none"
+    try:
+        effect = EffectClass(sec)
+    except ValueError:
+        # Unknown/unmapped effect class -> treat as effect-bearing (fail safe).
+        effect = EffectClass.WRITE
+    intent = ToolIntent(
+        tool_name=function_name,
+        toolset=toolset,
+        effect_class=effect,
+        arguments=final_args if isinstance(final_args, dict) else {},
+    )
+    decision = AuthorityBoundary().decide_tool(admitted, intent)
+    if not decision.execute_in_runtime:
+        return decision.reason
+    return None
+
+
 def _run_agent_tool_execution_middleware(
     agent,
     *,
@@ -469,6 +538,29 @@ def _run_agent_tool_execution_middleware(
                 status="blocked",
                 error_type=error_type,
                 error_message=error_message,
+                middleware_trace=list(state["middleware_trace"]),
+            )
+            return result
+
+        # Simorgh execution-authority gate — the LAST check before a real tool
+        # runs. Fail-closed in managed mode (see enforce_managed_tool_authority);
+        # inert in local-standalone. Runs after plugin/guardrail blocks so an
+        # unauthorized managed invocation is refused even if nothing else blocked.
+        _authority_block = enforce_managed_tool_authority(agent, function_name, final_args)
+        if _authority_block is not None:
+            _advance_start_order()
+            state["blocked"] = True
+            result = json.dumps({"error": _authority_block}, ensure_ascii=False)
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=final_args,
+                result=result,
+                effective_task_id=effective_task_id,
+                tool_call_id=tool_call_id,
+                status="blocked",
+                error_type="authority_block",
+                error_message=_authority_block,
                 middleware_trace=list(state["middleware_trace"]),
             )
             return result

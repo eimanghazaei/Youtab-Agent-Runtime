@@ -39,6 +39,15 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+# WAVE-30H R8: per-stage latency spans (self-noops when tracing is off/unavailable).
+try:  # pragma: no cover - observability import guard
+    from youtab_runtime.stage_trace import stage_span as _stage_span
+except Exception:  # pragma: no cover - defensive
+    from contextlib import nullcontext
+
+    def _stage_span(_stage_attr, **_attrs):
+        return nullcontext({})
+
 # How long shutdown_all() waits for in-flight background sync/prefetch work
 # to drain before abandoning it. A wedged provider must never block process
 # teardown indefinitely — the worker threads are daemon, so anything still
@@ -534,7 +543,22 @@ class MemoryManager:
         parts = []
         for provider in self._providers:
             try:
-                result = self._prefetch_provider(provider, clean_query, session_id=session_id)
+                # Separate percentiles: file-backed memory (builtin) vs external
+                # provider retrieval (the vector-store integration point in this
+                # tree). Graph retrieval has no per-run boundary here → not emitted
+                # (stays null, never inferred).
+                _is_builtin = getattr(provider, "name", "") == "builtin"
+                _stage_attr = "MEMORY_RETRIEVE" if _is_builtin else "VECTOR_RETRIEVE"
+                with _stage_span(
+                    _stage_attr, kind=("memory" if _is_builtin else "vector")
+                ) as _box_mem:
+                    result = self._prefetch_provider(
+                        provider, clean_query, session_id=session_id
+                    )
+                    try:
+                        _box_mem["result"] = "hit" if (result and result.strip()) else "miss"
+                    except Exception:  # pragma: no cover
+                        pass
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:

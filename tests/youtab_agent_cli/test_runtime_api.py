@@ -237,6 +237,110 @@ def test_create_run_rejects_invalid_limits(client):
     assert r.json()["detail"]["error"] == "invalid_limits"
 
 
+def _task_after_create(run_id):
+    """Read the persisted runtime task row for a created run."""
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        return kb.get_task(conn, run_id)
+
+
+def _limits_event_payload(client, run_id):
+    ev = client.get(
+        f"/api/runtime/v1/runs/{run_id}/events?after=0", headers=_identity_headers()
+    ).json()["events"]
+    evs = [e for e in ev if e["kind"] == "runtime_limits"]
+    assert len(evs) == 1, ev
+    return evs[0]["payload"]
+
+
+def test_create_run_canary_retries_bound_worker_attempts_to_one(client):
+    """WAVE-30D dispatcher-attempt fix: the canary's ``max_retries=0`` (no retry)
+    must persist ``tasks.max_retries=1`` so the dispatcher circuit breaker trips
+    on the FIRST worker failure — one attempt, no silent respawn (which would let
+    a second worker issue a second model request even under ``max_requests=1``)."""
+    r = _create_run_body(
+        client,
+        {
+            "agent": "default",
+            "task": "canary",
+            "limits": {
+                "max_iterations": 1,
+                "max_requests": 1,
+                "max_retries": 0,
+                "max_total_tokens": 4608,
+                "max_runtime_seconds": 60,
+                "failure_threshold": 1,
+            },
+        },
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+
+    task = _task_after_create(run_id)
+    # 1 + max_retries(0) = 1 total worker attempt (breaker trips on first failure).
+    assert task.max_retries == 1
+
+    payload = _limits_event_payload(client, run_id)
+    # The run limit is recorded honestly as zero retries...
+    assert payload["max_retries"] == 0
+    # ...and the derived dispatcher respawn ceiling is exposed explicitly rather
+    # than left implicit while the dispatcher silently respawns.
+    assert payload["worker_attempt_limit"] == 1
+
+
+def test_create_run_pilot_retries_allow_one_respawn(client):
+    """A run that declares one retry (``max_retries=1``, pilot/full) maps to two
+    worker attempts — identical to the prior dispatcher default, so only the
+    zero-retry canary changes behaviour."""
+    r = _create_run_body(
+        client,
+        {
+            "agent": "default",
+            "task": "pilot",
+            "limits": {"max_iterations": 4, "max_requests": 40, "max_retries": 1},
+        },
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    task = _task_after_create(run_id)
+    assert task.max_retries == 2  # 1 + 1
+    assert _limits_event_payload(client, run_id)["worker_attempt_limit"] == 2
+
+
+def test_create_run_retry_budget_is_authoritative_and_ceiling_bounded(client):
+    """A run that explicitly requests >=2 retries authoritatively raises its own
+    worker-attempt budget ABOVE the dispatcher default (2) — that is intended
+    (the run owns its budget) — but never unbounded: max_retries is clamped to
+    RUN_CEILINGS (3), so worker attempts are capped at 4."""
+    from youtab_runtime.run_limits import RUN_CEILINGS
+
+    r = _create_run_body(
+        client,
+        {"agent": "default", "task": "explicit-budget",
+         "limits": {"max_requests": 40, "max_retries": 99}},  # clamped to 3
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    task = _task_after_create(run_id)
+    assert task.max_retries == RUN_CEILINGS["max_retries"] + 1 == 4
+    assert _limits_event_payload(client, run_id)["worker_attempt_limit"] == 4
+
+
+def test_create_run_without_retry_budget_leaves_dispatcher_default(client):
+    """Ordinary runs (no retry budget in the request) must NOT pin the per-task
+    breaker — ``tasks.max_retries`` stays NULL so the dispatcher's own default /
+    config failure limit is preserved (Track B + normal runtime recovery)."""
+    r = _create_run_body(
+        client,
+        {"agent": "default", "task": "ordinary", "limits": {"max_requests": 40}},
+    )
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    task = _task_after_create(run_id)
+    assert task.max_retries is None
+    payload = _limits_event_payload(client, run_id)
+    assert "worker_attempt_limit" not in payload
+
+
 def test_preflight_reports_safe_posture_and_leaks_no_secret(client):
     """WAVE-30B §12: authenticated preflight exposes the safety posture (SHA,
     version, redaction, budget, ceilings) and never a secret."""
@@ -263,13 +367,34 @@ def test_preflight_requires_auth(client):
     assert client.get("/api/runtime/v1/preflight").status_code == 401
 
 
-def test_preflight_budget_armed_when_campaign_configured(client, monkeypatch):
-    """H1: budget_enforcement_enabled reflects real state — True only when a
-    campaign is configured, so the attestation cannot read green while off."""
+def test_preflight_budget_armed_when_campaign_configured(client, tmp_path, monkeypatch):
+    """budget_enforcement_enabled reflects REAL state (WAVE-30D M1): armed only
+    when the campaign is actually OPEN in the durable ledger — not merely when a
+    campaign id is configured (a stale/never-opened id would fail closed at
+    reserve, so it must not read green here)."""
+    from youtab_runtime import campaign_budget as cb
+
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
     monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "campaign-xyz")
+    cb.open_campaign(
+        "campaign-xyz", ceiling_eur="10.00", fx_usd_to_eur="0.92",
+        fx_source="test-fixture", fx_asof="2026-09-06",
+    )
     body = client.get("/api/runtime/v1/preflight", headers=_identity_headers()).json()
     assert body["budget_enforcement_enabled"] is True
+    assert body["budget_enforcement_source"] == "campaign_ledger"
     assert body["campaign_id"] == "campaign-xyz"
+    assert body["remaining_eur"] is not None
+
+
+def test_preflight_configured_but_unopened_campaign_is_not_armed(client, tmp_path, monkeypatch):
+    """A configured-but-never-opened campaign must NOT read armed (WAVE-30D M1)."""
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+    monkeypatch.setenv("YOUTAB_AGENT_BENCHMARK_CAMPAIGN_ID", "never-opened")
+    body = client.get("/api/runtime/v1/preflight", headers=_identity_headers()).json()
+    assert body["remaining_eur"] is None
+    assert body["budget_enforcement_enabled"] is False
+    assert body["budget_enforcement_source"] == "none"
 
 
 def _wait_terminal(client, run_id, headers, timeout=25):
@@ -706,3 +831,420 @@ def test_unsigned_mutation_is_401(client):
     headers["Content-Type"] = "application/json"
     r = client.post("/api/runtime/v1/runs", content=body, headers=headers)
     assert r.status_code == 401
+
+
+# --------------------------------------------------------------------------
+# R8 (WAVE-30H): the admission HMAC-verify stage emits a causally-valid span
+# --------------------------------------------------------------------------
+def test_admission_verify_emits_stage_span(client):
+    """The signed-command verification on a real create-run is measured as an
+    ``admission.verify_signature`` span, carrying the request correlation id and
+    NO secret/body content."""
+    from youtab_runtime import stage_trace as st
+
+    sink = st.MemorySink()
+    st.set_sink(sink)
+    try:
+        r = _create_run(client)
+        assert r.status_code in (200, 201, 202)
+    finally:
+        st.set_sink(None)
+
+    spans = [s for s in sink.records if s["stage"] == st.Stage.ADMISSION_VERIFY]
+    assert spans, "expected an admission.verify_signature span"
+    sp = spans[0]
+    assert sp["ok"] is True
+    assert sp["clock"] == "monotonic"
+    assert sp["duration_ns"] is not None and sp["duration_ns"] >= 0
+    assert sp["ctx"].get("correlation_id") == "cid-test"
+    # no body/secret ever rides in a span (attrs is empty or safe-only)
+    assert all(k in st.SAFE_STR_KEYS or not isinstance(v, str)
+               for k, v in (sp.get("attrs") or {}).items())
+
+
+def test_admission_verify_span_records_failure_on_tampered_body(client):
+    """A tampered (401) request still emits a span, marked ok=False — a failed
+    stage is data, not hidden."""
+    import json
+
+    from youtab_runtime import stage_trace as st
+
+    sink = st.MemorySink()
+    st.set_sink(sink)
+    try:
+        signed_body = json.dumps({"agent": "default", "task": "original"}).encode()
+        tampered_body = json.dumps({"agent": "default", "task": "TAMPERED"}).encode()
+        path = "/api/runtime/v1/runs"
+        headers = _identity_headers()
+        headers.update(_sign("POST", path, "tenantA", "userA", signed_body))
+        headers["Content-Type"] = "application/json"
+        r = client.post(path, content=tampered_body, headers=headers)
+        assert r.status_code == 401
+    finally:
+        st.set_sink(None)
+
+    spans = [s for s in sink.records if s["stage"] == st.Stage.ADMISSION_VERIFY]
+    assert spans and spans[0]["ok"] is False
+    assert "reason_code" in (spans[0].get("attrs") or {})
+
+
+# --------------------------------------------------------------------------
+# WAVE-30H — a retry inherits the ORIGINAL run's COMPLETE execution binding
+# (Greptile blocker #2). Row-level provider/model pin + engine selection +
+# cost policy are reproduced; a corrupt binding or a non-atomic persist fails
+# closed — a retry is NEVER silently downgraded to a default model.
+# --------------------------------------------------------------------------
+
+
+def test_create_run_validates_expected_binding_digest(client, monkeypatch):
+    # WAVE-30H: atomic preflight->create. A matching substrate digest creates the
+    # run; a mismatch fails closed (412, no enqueue); a malformed digest is 422.
+    from youtab_agent_cli import effective_binding as eb
+    from youtab_agent_cli.web_routers import runtime as R
+
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("openai", "gpt-x", "https://api.openai.com"),
+    )
+    good = eb.binding_digest(eb.build_effective_binding(
+        provider="openai", model="gpt-x", endpoint="https://api.openai.com"))
+
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_binding_digest": good},
+        nonce="digest-ok-00000000")
+    assert r.status_code in (200, 201), r.text
+
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_binding_digest": "a" * 64},
+        nonce="digest-mismatch-000")
+    assert r.status_code == 412, r.text
+    assert r.json()["detail"]["error"] == "binding_digest_mismatch"
+
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_binding_digest": "not-hex"},
+        nonce="digest-malformed-0")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "malformed_binding_digest"
+
+
+def test_engine_bound_preflight_binding_carries_endpoint_fingerprint(client, monkeypatch):
+    # WAVE-30H #1: the engine-bound preflight binding must carry endpoint_fingerprint
+    # so its binding_digest equals what create derives for the SAME engine (else the
+    # run self-rejects 412). resolve_connection is the shared source for BOTH preflight
+    # (_engine_attestation) and create, so a matching endpoint => matching digest.
+    import types
+
+    from youtab_agent_cli import effective_binding as eb
+    from youtab_agent_cli.web_routers import runtime as R
+
+    conn = types.SimpleNamespace(
+        provider="ollama", model="qwen:test", model_ref="ollama/qwen:test",
+        endpoint="http://127.0.0.1:11434", is_local_server=lambda: True,
+    )
+    monkeypatch.setattr(R.engine_connection, "resolve_connection", lambda e: conn)
+    monkeypatch.setattr(R.engine_connection, "endpoint_is_authorized", lambda ep: True)
+    monkeypatch.setattr(R, "_ollama_model_digest", lambda ep, m: (None, "not_applicable"))
+
+    # A non-ECO resolvable engine so the ECO placeholder-model branch does not fire.
+    resp = client.get("/api/runtime/v1/preflight?engine=alpha.v06", headers=_identity_headers())
+    assert resp.status_code == 200, resp.text
+    pf = resp.json()["effective_binding"]
+    assert pf.get("endpoint_fingerprint"), "preflight binding must carry endpoint_fingerprint"
+    # create computes the substrate binding from the SAME resolved connection.
+    create_binding = eb.build_effective_binding(
+        provider="ollama", model="qwen:test", endpoint="http://127.0.0.1:11434")
+    assert eb.binding_digest(pf) == eb.binding_digest(create_binding)
+
+
+def test_create_run_validates_expected_model_digest(client, monkeypatch):
+    # WAVE-30H #7: a valid attested digest on a probe-eligible ollama-local substrate
+    # is pinned (digest_status="attested"); malformed is 422; a cloud substrate is
+    # 422 model_digest_not_applicable.
+    from youtab_agent_cli.web_routers import runtime as R
+
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("ollama", "qwen:test", "http://127.0.0.1:11434"),
+    )
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_model_digest": "a" * 64},
+        nonce="mdigest-ok-000000")
+    assert r.status_code in (200, 201), r.text
+    rid = r.json()["run_id"]
+    events = client.get(
+        f"/api/runtime/v1/runs/{rid}/events", headers=_identity_headers()
+    ).json()["events"]
+    binding = next(e["payload"] for e in events if e["kind"] == runtime.eb.BINDING_EVENT)
+    assert binding["digest_status"] == "attested"
+    assert binding["model_digest"] == "a" * 64
+    assert runtime.eb.verify_binding(binding)
+
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_model_digest": "nothex"},
+        nonce="mdigest-bad-00000")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "malformed_model_digest"
+
+    # Cloud substrate -> not probe-eligible -> pinning a digest is refused.
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("openai", "gpt-x", "https://api.openai.com"),
+    )
+    r = _create_run_body(
+        client, {"agent": "default", "task": "t", "expected_model_digest": "a" * 64},
+        nonce="mdigest-cloud-000")
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "model_digest_not_applicable"
+
+
+def test_idempotent_replay_binding_digest_mismatch_fails_closed(client, monkeypatch):
+    # WAVE-30H #8: a replayed Idempotency-Key that pins a DIFFERENT expected digest
+    # than the existing run's persisted binding must 412 — never silently return a run
+    # bound to a different substrate. A matching replay returns the same run (200).
+    import json
+
+    from youtab_agent_cli import effective_binding as eb
+    from youtab_agent_cli.web_routers import runtime as R
+
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("openai", "gpt-x", "https://api.openai.com"),
+    )
+    d_match = eb.binding_digest(eb.build_effective_binding(
+        provider="openai", model="gpt-x", endpoint="https://api.openai.com"))
+
+    def _create(digest, nonce):
+        body = json.dumps({"agent": "default", "task": "t",
+                           "expected_binding_digest": digest}).encode()
+        path = "/api/runtime/v1/runs"
+        headers = _identity_headers()
+        headers.update(_sign("POST", path, "tenantA", "userA", body, nonce=nonce))
+        headers["Content-Type"] = "application/json"
+        headers["Idempotency-Key"] = "idem-digest-8"
+        return client.post(path, content=body, headers=headers)
+
+    r1 = _create(d_match, "idem8-a")
+    assert r1.status_code in (200, 201), r1.text
+    rid = r1.json()["run_id"]
+    # Matching replay -> same run.
+    r2 = _create(d_match, "idem8-b")
+    assert r2.status_code == 200 and r2.json()["run_id"] == rid, r2.text
+    # Mismatching replay -> fail closed (the run is NOT re-bound / re-returned clean).
+    r3 = _create("a" * 64, "idem8-c")
+    assert r3.status_code == 412, r3.text
+    assert r3.json()["detail"]["error"] == "binding_digest_mismatch"
+
+
+def test_idempotent_replay_model_digest_mismatch_fails_closed(client, monkeypatch):
+    # Batch2 #F4: a replayed Idempotency-Key with the SAME substrate but a DIFFERENT
+    # expected_model_digest must fail closed (412) — binding_digest excludes
+    # model_digest, so the model artifact is compared separately (constant-time). A
+    # run pinned to a different model artifact is never returned as if it matched.
+    import json
+
+    from youtab_agent_cli.web_routers import runtime as R
+
+    monkeypatch.setattr(
+        R, "_profile_default_identity",
+        lambda agent: ("ollama", "qwen:test", "http://127.0.0.1:11434"),
+    )
+
+    def _create(model_digest, nonce):
+        body = json.dumps({"agent": "default", "task": "t",
+                           "expected_model_digest": model_digest}).encode()
+        path = "/api/runtime/v1/runs"
+        headers = _identity_headers()
+        headers.update(_sign("POST", path, "tenantA", "userA", body, nonce=nonce))
+        headers["Content-Type"] = "application/json"
+        headers["Idempotency-Key"] = "idem-mdigest-4"
+        return client.post(path, content=body, headers=headers)
+
+    r1 = _create("a" * 64, "md4-a")
+    assert r1.status_code in (200, 201), r1.text
+    rid = r1.json()["run_id"]
+    # Matching replay -> same run.
+    r2 = _create("a" * 64, "md4-b")
+    assert r2.status_code == 200 and r2.json()["run_id"] == rid, r2.text
+    # Different model digest, same key/substrate -> fail closed (never return rid).
+    r3 = _create("b" * 64, "md4-c")
+    assert r3.status_code == 412, r3.text
+    assert r3.json()["detail"]["error"] == "model_digest_mismatch"
+
+
+def test_retry_refuses_tampered_parent_binding(client):
+    # WAVE-30H #4: a tampered-at-rest parent binding must NOT be laundered into a
+    # fresh valid child binding on retry — fail closed, create no child. Seed the run
+    # with a SINGLE tampered binding event (its stale hash no longer self-verifies) so
+    # it is the current binding effective_binding_from_events selects.
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        oid = kb.create_task(
+            conn, title="tampered", body="x", assignee="default",
+            created_by="userA", tenant="tenantA",
+            model_override="ollama/qwen-test", provider_override="ollama",
+            board=runtime.RUNTIME_BOARD, correlation_id="cid-test",
+        )
+        tampered = dict(runtime.eb.build_effective_binding(
+            provider="ollama", model="ollama/qwen-test",
+            endpoint="http://127.0.0.1:11434", run_id=oid, root_run_id=oid,
+            tenant="tenantA"))
+        tampered["model"] = "ollama/EVIL"  # tamper substrate AFTER hashing (stale hash)
+        assert not runtime.eb.verify_binding(tampered)
+        with kb.write_txn(conn):
+            kb._append_event(conn, oid, runtime._MODE_EVENT,
+                             {"mode": "model", "correlation_id": "cid-test"})
+            kb._append_event(conn, oid, runtime._ENGINE_EVENT,
+                             {"profile_id": "eco.v01", "public_label": "ECO"})
+            kb._append_event(conn, oid, runtime.eb.BINDING_EVENT, tampered)
+    before = _count_retry_children()
+    r = _post_retry(client, oid)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "retry_binding_invalid"
+    assert _count_retry_children() == before  # no laundered child created
+
+
+def _seed_bound_original(*, model="ollama/qwen-test", provider="ollama",
+                         profile_id="eco.v01", limits=None, engine_payload=None):
+    """Create an original run owned by (tenantA, userA) carrying a full binding.
+
+    Seeded directly through kanban so the test does not depend on a live
+    engine-model configuration; the retry endpoint reads the same durable row +
+    events regardless of how they were recorded.
+    """
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        oid = kb.create_task(
+            conn, title="bound original", body="do work",
+            assignee="default", created_by="userA", tenant="tenantA",
+            model_override=model, provider_override=provider,
+            board=runtime.RUNTIME_BOARD, correlation_id="cid-test",
+        )
+        with kb.write_txn(conn):
+            kb._append_event(conn, oid, runtime._MODE_EVENT,
+                             {"mode": "model", "correlation_id": "cid-test"})
+            if engine_payload is not None:
+                kb._append_event(conn, oid, runtime._ENGINE_EVENT, engine_payload)
+            elif profile_id is not None:
+                kb._append_event(conn, oid, runtime._ENGINE_EVENT,
+                                 {"profile_id": profile_id, "public_label": "ECO"})
+            if limits is not None:
+                kb._append_event(conn, oid, runtime._LIMITS_EVENT, limits)
+            # WAVE-30H: an attested run carries a canonical effective binding (real
+            # create_run always persists one); seed it so retry inherits it.
+            kb._append_event(
+                conn, oid, runtime.eb.BINDING_EVENT,
+                runtime.eb.build_effective_binding(
+                    provider=provider, model=model,
+                    endpoint="http://127.0.0.1:11434",
+                    run_id=oid, root_run_id=oid, tenant="tenantA",
+                ),
+            )
+    return oid
+
+
+def _post_retry(client, run_id, correlation="cid-retry-x"):
+    path = f"/api/runtime/v1/runs/{run_id}/retry"
+    headers = _identity_headers_corr(correlation)
+    headers.update(_sign("POST", path, "tenantA", "userA", b"", correlation=correlation))
+    return client.post(path, headers=headers)
+
+
+def test_retry_inherits_full_execution_binding(client):
+    oid = _seed_bound_original(
+        limits={"max_cost_eur": 3, "worker_attempt_limit": 1})
+    r = _post_retry(client, oid)
+    assert r.status_code == 200, r.text
+    new_id = r.json()["run_id"]
+    assert new_id != oid
+
+    # Row-level provider/model pin inherited (the anti-default guarantee).
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        child = kb.get_task(conn, new_id)
+        assert child.model_override == "ollama/qwen-test"
+        assert child.provider_override == "ollama"
+
+    # Engine selection + cost policy re-recorded on the child's own stream.
+    events = client.get(
+        f"/api/runtime/v1/runs/{new_id}/events", headers=_identity_headers()
+    ).json()["events"]
+    eng = next(e for e in events if e["kind"] == "runtime_engine_selection")
+    assert eng["payload"]["profile_id"] == "eco.v01"
+    lim = next(e for e in events if e["kind"] == "runtime_limits")
+    assert lim["payload"]["max_cost_eur"] == 3
+
+    # WAVE-30H run-scope: the child binding is RE-SCOPED to the child's own run —
+    # same SUBSTRATE (binding_digest invariant, proving no drift) but run_id ==
+    # new_id (so the worker run-scope gate admits it, not rejects it as cross-run),
+    # root_run_id == the original (lineage preserved), and it self-verifies.
+    child_binding = next(
+        e["payload"] for e in events if e["kind"] == runtime.eb.BINDING_EVENT
+    )
+    parent_binding = runtime.eb.build_effective_binding(
+        provider="ollama", model="ollama/qwen-test",
+        endpoint="http://127.0.0.1:11434", run_id=oid, root_run_id=oid,
+        tenant="tenantA",
+    )
+    assert child_binding["run_id"] == new_id
+    assert child_binding["run_id"] != oid
+    assert child_binding["root_run_id"] == oid
+    assert runtime.eb.verify_binding(child_binding)
+    assert runtime.eb.binding_digest(child_binding) == runtime.eb.binding_digest(
+        parent_binding
+    )
+
+
+def test_retry_of_unbound_original_inherits_no_pin(client):
+    # A legitimately unbound original (no engine, no override) is reproduced
+    # faithfully — the child carries no override, which is the ORIGINAL binding,
+    # not a new default substitution.
+    oid = _seed_bound_original(model=None, provider=None, profile_id=None)
+    r = _post_retry(client, oid)
+    assert r.status_code == 200, r.text
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        child = kb.get_task(conn, r.json()["run_id"])
+        assert child.model_override is None
+        assert child.provider_override is None
+
+
+def test_retry_fails_closed_on_corrupt_engine_binding(client):
+    # A recorded engine selection whose profile_id is empty is a corrupt binding:
+    # refuse (422), and create NO child.
+    oid = _seed_bound_original(engine_payload={"profile_id": "", "public_label": "ECO"})
+    before = _count_retry_children()
+    r = _post_retry(client, oid)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "retry_binding_invalid"
+    assert _count_retry_children() == before  # no child leaked
+
+
+def _count_retry_children():
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        rows = conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks "
+            "WHERE title LIKE '%(retry)' AND status != 'archived'"
+        ).fetchone()
+        return rows["n"]
+
+
+def test_retry_fails_closed_when_binding_cannot_be_persisted(client, monkeypatch):
+    # If persisting the engine-selection event fails, the child must be ARCHIVED
+    # (never dispatched on a partial binding) and the caller gets a 500 — never a
+    # child that would run on a default model.
+    oid = _seed_bound_original()
+    real_append = kb._append_event
+
+    def boom(conn, task_id, kind, payload, **kw):
+        if kind == runtime._ENGINE_EVENT:
+            raise RuntimeError("simulated binding-persist failure")
+        return real_append(conn, task_id, kind, payload, **kw)
+
+    monkeypatch.setattr(kb, "_append_event", boom)
+    r = _post_retry(client, oid)
+    assert r.status_code == 500, r.text
+    assert r.json()["detail"]["error"] == "retry_binding_not_persisted"
+
+    # No dispatchable retry child survives; any created child is archived.
+    with kb.connect_closing(board=runtime.RUNTIME_BOARD) as conn:
+        leaked = conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks "
+            "WHERE title LIKE '%(retry)' AND status != 'archived'"
+        ).fetchone()["n"]
+    assert leaked == 0

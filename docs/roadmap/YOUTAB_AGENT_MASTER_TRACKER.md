@@ -4,6 +4,20 @@ The single authoritative record of what is done, what is running, and what is
 waiting. A row is only ever marked VERIFIED with evidence that can be re-run;
 "it looked right" is not a status.
 
+## Governance checkpoint — Review gate (2026-09-10)
+
+**Greptile retired; `Independent Agent Review` is the required review gate.** Owner
+permanent decision. Greptile is no longer used, polled, re-triggered, or required, and
+is not cited as approval evidence. Historical Greptile check-runs/comments are preserved
+as inactive/superseded history (no merge/release/deploy authority). Every PR must pass an
+independent, read-only, SHA-bound agent review (verdicts `PROVEN | FAILED | NOT PROVEN |
+BLOCKED`; fail-closed on any unresolved Critical/High/Medium) before leaving Draft,
+merging, or deploying — and a green gate still requires a separate exact-SHA Owner
+authorization. Policy: [`../governance/INDEPENDENT_AGENT_REVIEW.md`](../governance/INDEPENDENT_AGENT_REVIEW.md);
+evidence ledger: [`../governance/reviews/`](../governance/reviews/). Greptile was never in
+the `main-required-gates` ruleset; adding the `Independent Agent Review` required context
+is a pending Owner/admin ruleset action (see policy §9).
+
 Queued work is never deleted to tidy this file. An item that stops being
 relevant is closed with a reason, not removed — a tracker that forgets is worse
 than no tracker, because it reads as complete.

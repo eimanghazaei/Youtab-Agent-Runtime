@@ -141,7 +141,8 @@ class HttpRuntimeSeam:
 
     def __init__(self, base_url: str, service_secret: str, *, tenant: str,
                  user: str, roles=("member",), timeout: float = 60.0,
-                 limits: dict | None = None) -> None:
+                 limits: dict | None = None, engine: str | None = None,
+                 require_engine: bool = False) -> None:
         from youtab_runtime.run_journal import Principal
         from .auth_client import AuthClient
 
@@ -152,10 +153,44 @@ class HttpRuntimeSeam:
         self.user = user
         # Authoritative per-run limits sent on every create_run (WAVE-30B §8).
         self._limits = dict(limits) if limits else None
+        # Track-level engine binding (WAVE-30D §B1). When set, every create_run
+        # pins this engine (e.g. Track A ``eco.v01``) unless the scenario carries
+        # its own; ``require_engine`` makes a missing binding fail closed rather
+        # than dispatch on the worker's default model.
+        self._engine = (engine or "").strip() or None
+        self._require_engine = bool(require_engine)
+        # WAVE-30H: the substrate digest attested at the last preflight; sent on
+        # create so the run is created ONLY if the runtime binds the same substrate.
+        self._expected_binding_digest: str | None = None
+        # WAVE-30H #7: the model-manifest digest attested at preflight; sent on create
+        # so the worker can re-probe + fail closed on a tag->manifest re-point.
+        self._expected_model_digest: str | None = None
 
     def preflight(self) -> dict:
-        """The runtime's authenticated safety posture (for the live-run gate)."""
-        return self._client.preflight()
+        """The runtime's authenticated safety posture (for the live-run gate).
+
+        Passes the bound engine so the posture carries the effective per-engine
+        attestation the live gate verifies, and captures the attested substrate
+        digest to pin the subsequent create (atomic preflight->create)."""
+        posture = self._client.preflight(engine=self._engine)
+        from youtab_agent_cli import effective_binding as _eb
+
+        # Fail closed (WAVE-30H hardening): a PRESENT binding MUST yield a digest.
+        # Never swallow a derivation error into None — that would silently disable the
+        # atomic preflight->create pin and let an unpinned run proceed. None is used
+        # ONLY for the legitimate "no binding present" case; a derivation error
+        # propagates and cli.py maps it to a fatal (exit 6) refusal.
+        binding = posture.get("effective_binding")
+        self._expected_binding_digest = (
+            _eb.binding_digest(binding) if isinstance(binding, dict) and binding else None
+        )
+        # The attested model-manifest digest (WAVE-30H #7), forwarded on create so the
+        # worker re-probes and fails closed on a tag->manifest re-point. Absent when
+        # the runtime did not attest one (ordinary not_probed run) -> not pinned.
+        self._expected_model_digest = (
+            (posture.get("engine_attestation") or {}).get("ollama_model_digest") or None
+        )
+        return posture
 
     def close(self) -> None:
         self._client.close()
@@ -167,13 +202,33 @@ class HttpRuntimeSeam:
         _max_runtime = None
         if self._limits and self._limits.get("max_runtime_seconds") is not None:
             _max_runtime = int(self._limits["max_runtime_seconds"])
+        # Engine binding. Fail CLOSED when an engine is required but none resolves
+        # (never run the worker default) AND when a scenario tries to override the
+        # attested track engine (the live gate verified only the bound engine, so
+        # a per-scenario engine must not silently dispatch an unattested one).
+        engine = scenario.engine or self._engine
+        if self._require_engine:
+            if not engine:
+                raise RuntimeError(
+                    "local_runtime requires a bound engine (Track A eco.v01); none "
+                    "resolved — refusing to dispatch on the worker's default model"
+                )
+            if self._engine and scenario.engine and scenario.engine != self._engine:
+                raise RuntimeError(
+                    f"scenario engine {scenario.engine!r} conflicts with the bound "
+                    f"track engine {self._engine!r} — refusing to dispatch an "
+                    "unattested engine"
+                )
+            engine = self._engine  # the attested engine is authoritative
         resp = self._client.create_run(
             agent=scenario.params.get("agent", "default"),
             task=scenario.params.get("task", scenario.title),
-            engine=scenario.engine,
+            engine=engine,
             max_runtime_seconds=_max_runtime,
             limits=self._limits,
             idempotency_key=scenario.params.get("idempotency_key"),
+            expected_binding_digest=self._expected_binding_digest,
+            expected_model_digest=self._expected_model_digest,
         )
         resp.raise_for_status()
         created = resp.json()
@@ -193,9 +248,29 @@ class HttpRuntimeSeam:
             workspace=workspace, pre_hash=hash_tree(workspace),
             self_reported_success=bool(detail.get("result")),
             reported_usage=detail.get("usage"),
-            timings={}, engine_pinned=scenario.engine,
-            provenance={"seam": self.name},
+            timings={}, engine_pinned=engine,
+            # Capture, from the run detail (non-secret names only):
+            #  * bound_*      — the runtime's canonical effective binding (the
+            #    identity the run was BOUND to, from runtime_effective_binding);
+            #  * dispatched_* — what the worker ACTUALLY executed on (closing-run
+            #    metadata). The recorder reconciles attested == bound == dispatched
+            #    and fails closed on any drift (WAVE-30H 3-way check).
+            provenance=self._identity_provenance(detail),
         )
+
+    @staticmethod
+    def _identity_provenance(detail: Dict[str, Any]) -> Dict[str, Any]:
+        binding = detail.get("runtime_effective_binding")
+        if not isinstance(binding, dict):
+            binding = {}
+        return {
+            "seam": HttpRuntimeSeam.name,
+            "bound_provider": binding.get("provider"),
+            "bound_model": binding.get("model"),
+            "bound_binding_version": binding.get("binding_version"),
+            "dispatched_provider": detail.get("provider"),
+            "dispatched_model": detail.get("model"),
+        }
 
     def _artifacts(self, run_id: str) -> List[Dict[str, Any]]:
         try:

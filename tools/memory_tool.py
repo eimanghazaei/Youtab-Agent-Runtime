@@ -23,15 +23,121 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import contextvars
 import json
 import logging
+import os
+import re
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from youtab_constants import get_youtab_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text
+
+# WAVE-30H R4: managed runs physically namespace the memory store by the grant's
+# tenant/workspace so one managed run can never read or write another tenant's
+# memory.
+#
+# WAVE-30H (post-review correction 4): the namespace is an IMMUTABLE PER-RUN
+# context carried in a ``contextvars.ContextVar`` — NOT a mutable process-global
+# environment variable. A ContextVar is isolated per-thread and per-asyncio-task
+# (each thread starts with a fresh context; each task copies its context at
+# creation), so a process that serves concurrent runs gives every run its own
+# namespace with no cross-talk. An env var, by contrast, is one shared slot for
+# the whole process and would leak one tenant's memory into a concurrent run.
+# The worker installs it from the admitted grant envelope (see worker_admission);
+# standalone leaves it unset and the flat profile-scoped path is unchanged.
+#
+# ``MEMORY_NAMESPACE_ENV`` is retained ONLY as a one-time subprocess-boot
+# transport (a legacy dispatcher that set env before this change). It is read
+# at most once, to seed the contextvar, and is NEVER consulted per storage
+# operation — the enforcement point (get_memory_dir) reads the contextvar only.
+MEMORY_NAMESPACE_ENV = "YOUTAB_AGENT_MEMORY_NAMESPACE"
+_NAMESPACE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+@dataclass(frozen=True)
+class MemoryNamespace:
+    """Immutable per-run memory scope (a managed run's tenant/workspace).
+
+    Frozen so a run's namespace cannot be mutated in place while the run holds a
+    reference to it; distinct runs hold distinct instances.
+    """
+
+    tenant: str
+    workspace: str
+
+    def safe_parts(self) -> list:
+        """Traversal-safe path components, or [] if this scope is empty."""
+        parts = []
+        for component in (self.tenant, self.workspace):
+            component = (component or "").strip()
+            if not component:
+                continue
+            safe = _NAMESPACE_COMPONENT_RE.sub("_", component)
+            safe = safe.strip(".") or "_"  # guard ".."-style traversal
+            parts.append(safe)
+        return parts
+
+
+# The authoritative per-run namespace. Default None == standalone / unscoped.
+_MEMORY_NAMESPACE: "contextvars.ContextVar[MemoryNamespace | None]" = (
+    contextvars.ContextVar("youtab_memory_namespace", default=None)
+)
+
+
+def set_memory_namespace(tenant: str, workspace: str) -> "contextvars.Token":
+    """Install the per-run memory namespace into the current context.
+
+    Returns the token so a caller that scopes a single run (e.g. a concurrent
+    server task) can ``reset_memory_namespace`` afterwards. The worker, which is
+    a single-run subprocess, sets it once at admission and never resets it.
+    """
+    return _MEMORY_NAMESPACE.set(MemoryNamespace(tenant=tenant, workspace=workspace))
+
+
+def reset_memory_namespace(token: "contextvars.Token") -> None:
+    _MEMORY_NAMESPACE.reset(token)
+
+
+@contextmanager
+def memory_namespace_scope(tenant: str, workspace: str):
+    """Scope the per-run namespace to a block (for a process serving concurrent
+    runs, one scope per run/task). Isolation is provided by contextvars."""
+    token = set_memory_namespace(tenant, workspace)
+    try:
+        yield
+    finally:
+        reset_memory_namespace(token)
+
+
+def current_memory_namespace() -> "MemoryNamespace | None":
+    """The active per-run namespace, or None (standalone / unscoped).
+
+    Reads the contextvar (per-run, concurrency-safe). Only if it is unset does it
+    consult ``MEMORY_NAMESPACE_ENV`` ONCE, as a legacy subprocess-boot transport,
+    seeding the contextvar so subsequent reads are contextvar-only. This keeps the
+    per-operation enforcement path free of any mutable process-global.
+    """
+    ns = _MEMORY_NAMESPACE.get()
+    if ns is not None:
+        return ns
+    raw = (os.environ.get(MEMORY_NAMESPACE_ENV) or "").strip()
+    if not raw:
+        return None
+    tenant, _, workspace = raw.partition("/")
+    ns = MemoryNamespace(tenant=tenant, workspace=workspace)
+    _MEMORY_NAMESPACE.set(ns)  # seed once; env is not read again per operation
+    return ns
+
+
+def _sanitized_namespace_parts() -> list:
+    """Sanitized ``[tenant, workspace]`` path parts, or [] when unscoped."""
+    ns = current_memory_namespace()
+    return ns.safe_parts() if ns is not None else []
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -51,8 +157,16 @@ logger = logging.getLogger(__name__)
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_youtab_home() / "memories"
+    """Return the memories directory, tenant/workspace-namespaced in managed mode.
+
+    Standalone (namespace env unset): the flat ``<home>/memories`` path, unchanged.
+    Managed (env set by the worker at admission): ``<home>/memories/<tenant>/<workspace>``
+    so a managed run's memory is physically isolated from other tenants (R4).
+    """
+    base = get_youtab_home() / "memories"
+    for part in _sanitized_namespace_parts():
+        base = base / part
+    return base
 
 # Stable header prefixes for the system-prompt memory blocks rendered by
 # MemoryStore._render_block. Exported so compression's prompt-retention check
@@ -1252,6 +1366,12 @@ registry.register(
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
+    # WAVE-30H R4: memory operations are memory-writes, so the managed authority
+    # gate routes them through the grant's allowed_memory_scopes (a run may only
+    # touch memory its Simorgh grant authorizes). Effect class is advisory
+    # metadata; it never gates the standalone path.
+    side_effect_class="memory_write",
+    capabilities=("memory",),
 )
 
 

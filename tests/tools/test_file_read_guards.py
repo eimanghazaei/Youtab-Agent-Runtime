@@ -7,11 +7,14 @@ context compression.
 Run with:  python -m pytest tests/tools/test_file_read_guards.py -v
 """
 
+import atexit
 import json
 import os
+import shutil
 import tempfile
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from tests import _wincompat
@@ -56,9 +59,47 @@ def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
     return fake
 
 
+# tests/tools/test_file_read_guards.py -> parents[2] is the repo root.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_EPHEMERAL_BASE: str | None = None
+
+
+def _ephemeral_base() -> str:
+    """Return a per-process temp base created OUTSIDE the repo root.
+
+    It lives as a sibling of the repo (``_REPO_ROOT.parent``) rather than in the
+    working directory, and both properties must hold together:
+
+    * Outside the repo root, so a peer pytest worker scandir'ing the repo root
+      during collection can never enumerate -- and then ``os.stat`` after the
+      owning test's ``tearDown`` removed it -- one of these ephemeral dirs. That
+      scandir/stat TOCTOU is the Windows ``-j3`` collection failure
+      (``FileNotFoundError: [WinError 2]``) this helper exists to eliminate.
+    * Not under ``/private/var`` or ``/private/etc``, so
+      ``tools.file_tools._check_sensitive_path`` still accepts writes beneath it
+      -- the macOS contract the old ``dir=os.getcwd()`` was protecting (the
+      system tempdir resolves under ``/private/var/folders`` on macOS, which the
+      write guard refuses).
+
+    The base is swept at interpreter exit; each test still removes its own dir
+    in ``tearDown``.
+    """
+    global _EPHEMERAL_BASE
+    if _EPHEMERAL_BASE is None:
+        base = tempfile.mkdtemp(
+            prefix="youtab-agent-file-guard-tests-",
+            dir=str(_REPO_ROOT.parent),
+        )
+        atexit.register(shutil.rmtree, base, ignore_errors=True)
+        _EPHEMERAL_BASE = base
+    return _EPHEMERAL_BASE
+
+
 def _make_safe_tempdir(prefix: str) -> str:
-    """Create a temp dir outside macOS system-sensitive /private/var paths."""
-    return tempfile.mkdtemp(prefix=prefix, dir=os.getcwd())
+    """Temp dir for file-guard tests: outside the repo root (no collection race
+    with parallel pytest workers) AND outside macOS-sensitive prefixes (so the
+    write guard still accepts it)."""
+    return tempfile.mkdtemp(prefix=prefix, dir=_ephemeral_base())
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +812,116 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         }
         _invalidate_dedup_for_path("/some/path", "t")
         self.assertEqual(_read_tracker["t"]["dedup"], {})
+
+
+# ---------------------------------------------------------------------------
+# Test-isolation regression guards (windows-tools -j3 collection race)
+# ---------------------------------------------------------------------------
+
+class TestMakeSafeTempdirIsolation(unittest.TestCase):
+    """Pin the invariants that make the collection race impossible.
+
+    The file-guard temp dirs were once minted with ``dir=os.getcwd()`` (the
+    repo root). Under the parallel harness a peer worker collecting a different
+    file would scandir the repo root, enumerate one of these ephemeral dirs,
+    then ``os.stat`` it after the owning test's ``tearDown`` removed it ->
+    ``FileNotFoundError: [WinError 2]`` during collection, failing the whole
+    windows-tools job even though every test passed. These assertions are
+    deterministic -- no sleeps, no retries, no serialization, no xfail.
+    """
+
+    def test_tempdir_is_outside_the_repo_root(self):
+        """Property 1: no guard temp dir is ever created inside the repo root."""
+        for prefix in ("youtab-dedup-", "youtab-write-dedup-"):
+            d = Path(_make_safe_tempdir(prefix)).resolve()
+            try:
+                self.assertTrue(d.name.startswith(prefix))
+                # The repo root must be neither the temp dir nor an ancestor of
+                # it; either would place it back in pytest's collection scan.
+                self.assertNotEqual(d, _REPO_ROOT)
+                self.assertNotIn(_REPO_ROOT, d.parents)
+            finally:
+                os.rmdir(d)
+
+    def test_repo_root_scandir_never_enumerates_a_guard_tempdir(self):
+        """Properties 2 & 3: a peer's repo-root collection scandir cannot see
+        these dirs, so one worker's removal can never break another worker's
+        collection (the exact stat-after-remove window that was failing)."""
+        d = Path(_make_safe_tempdir("youtab-dedup-")).resolve()
+        try:
+            names = {entry.name for entry in os.scandir(_REPO_ROOT)}
+            self.assertNotIn(d.name, names)
+            leaked = sorted(
+                n for n in names
+                if n.startswith("youtab-dedup-")
+                or n.startswith("youtab-write-dedup-")
+            )
+            self.assertEqual(
+                leaked, [], f"guard temp dirs leaked into repo root: {leaked}"
+            )
+        finally:
+            os.rmdir(d)
+
+    def test_tempdir_is_accepted_by_the_sensitive_path_guard(self):
+        """Property 4: the macOS contract is preserved -- writes under the temp
+        dir are not refused, while the sensitive prefixes stay blocked."""
+        from tools.file_tools import _check_sensitive_path
+        d = _make_safe_tempdir("youtab-dedup-")
+        try:
+            self.assertIsNone(_check_sensitive_path(os.path.join(d, "f.txt")))
+            # The protection the old cwd trick was shielding is still in force.
+            self.assertIsNotNone(_check_sensitive_path("/private/var/db/x"))
+            self.assertIsNotNone(_check_sensitive_path("/private/etc/hosts"))
+        finally:
+            os.rmdir(d)
+
+    def test_tempdir_removed_even_when_test_body_raises(self):
+        """Property 5a: cleanup happens on the exception path, not only on
+        success -- tearDown still removes the per-test dir after a failure."""
+        holder = {}
+
+        class _Raising(unittest.TestCase):
+            def setUp(self):
+                self._d = _make_safe_tempdir("youtab-dedup-")
+                holder["dir"] = self._d
+
+            def tearDown(self):
+                try:
+                    os.rmdir(self._d)
+                except OSError:
+                    pass
+
+            def runTest(self):
+                raise RuntimeError("boom")
+
+        outcome = _Raising().run()
+        self.assertFalse(outcome.wasSuccessful())  # the body really did raise
+        self.assertFalse(os.path.exists(holder["dir"]))  # yet it was cleaned up
+
+    def test_process_exit_sweeps_the_ephemeral_base(self):
+        """Property 5b: the per-process base is swept at interpreter exit, so a
+        finished/killed worker leaves nothing behind beside the repo."""
+        import subprocess
+        import sys
+
+        code = (
+            "import tests.tools.test_file_read_guards as m;"
+            "m._make_safe_tempdir('youtab-dedup-');"
+            "import sys as s; s.stdout.write(m._EPHEMERAL_BASE)"
+        )
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(_REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        base = proc.stdout.strip()
+        self.assertTrue(base, "child did not report an ephemeral base")
+        self.assertFalse(
+            os.path.exists(base),
+            "ephemeral base should be swept by atexit on interpreter exit",
+        )
 
 
 if __name__ == "__main__":

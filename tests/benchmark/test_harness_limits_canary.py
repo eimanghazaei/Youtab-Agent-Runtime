@@ -133,11 +133,13 @@ def test_output_dir_collision_refused(tmp_path):
     out = tmp_path / "out"
     out.mkdir()
     (out / "results.jsonl").write_text("prior\n", encoding="utf-8")
-    with pytest.raises(pf.PreflightError, match="prior artifacts"):
+    with pytest.raises(pf.PreflightError, match="already holds benchmark evidence"):
         pf.validate_output_dir(out, repo_root=_REPO_ROOT)
-    # force overrides
-    ok = pf.validate_output_dir(out, repo_root=_REPO_ROOT, force=True)
-    assert (ok / "retention.json").exists()
+    # WAVE-30H A5: --force can NEVER overwrite/replace historical evidence.
+    with pytest.raises(pf.PreflightError, match="force cannot"):
+        pf.validate_output_dir(out, repo_root=_REPO_ROOT, force=True)
+    # the prior evidence is untouched (append-only: not truncated/replaced).
+    assert (out / "results.jsonl").read_text(encoding="utf-8") == "prior\n"
 
 
 def test_output_dir_ok_writes_retention(tmp_path):

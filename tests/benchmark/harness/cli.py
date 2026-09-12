@@ -37,11 +37,14 @@ from typing import List, Optional
 from .preflight import (
     STAGE_PROFILES,
     PreflightError,
+    assert_cloud_attestation,
+    assert_engine_attestation,
     assert_live_safety,
+    mint_run_evidence_dir,
     validate_output_dir,
     verify_runtime_sha,
 )
-from .recorder import Recorder
+from .recorder import EvidenceExistsError, Recorder
 from .runner import Runner
 from .schema import (
     MODE_DETERMINISTIC,
@@ -127,7 +130,8 @@ def _select_scenarios(scenarios: List[Scenario], args) -> List[Scenario]:
     return selected
 
 
-def _build_seam(args, repo_root: Path, limits: Optional[dict]):
+def _build_seam(args, repo_root: Path, limits: Optional[dict], *,
+                engine: Optional[str] = None, require_engine: bool = False):
     if args.mode == MODE_DETERMINISTIC:
         return None  # runner builds the deterministic substrate seam
     if not args.base_url or not args.secret_file:
@@ -137,7 +141,8 @@ def _build_seam(args, repo_root: Path, limits: Optional[dict]):
 
     secret = _read_secret_file(Path(args.secret_file))
     return HttpRuntimeSeam(
-        args.base_url, secret, tenant=args.tenant, user=args.user, limits=limits)
+        args.base_url, secret, tenant=args.tenant, user=args.user, limits=limits,
+        engine=engine, require_engine=require_engine)
 
 
 def _run(args) -> int:
@@ -169,24 +174,79 @@ def _run(args) -> int:
     if args.canary:
         args.max_workers = 1
 
+    # Load the dual-track contract EARLY (before the seam) so a live Track A run
+    # can bind the track's engine profile (WAVE-30D §B1). ``track_prov`` is the
+    # per-record provenance stamp (WAVE-30C §2); ``track_engine`` is the engine
+    # the live seam pins.
+    track = None
+    track_prov = None
+    track_engine = None
+    if args.track:
+        from .tracks import ComparabilityError, load_track, track_provenance
+        try:
+            track = load_track(args.track)
+        except ComparabilityError as exc:
+            print(f"FATAL: --track rejected: {exc}", file=sys.stderr)
+            return 6
+        track_prov = track_provenance(track)
+        track_engine = (track.get("per_track", {}) or {}).get("engine_profile")
+
+    # A live local_runtime run MUST bind an engine (Track A eco.v01) — never
+    # dispatch on the worker's default model (WAVE-30D §B1).
+    if args.mode == MODE_LOCAL_RUNTIME and not track_engine:
+        print("FATAL: --mode local_runtime requires an engine-bound track "
+              "(--track A); refusing to run on the worker's default model",
+              file=sys.stderr)
+        return 6
+    # An engine-bound (local) track cannot run as a cloud real_provider — a
+    # nonsensical mode/track mix that must be rejected, not silently accepted.
+    if track_engine and args.mode == MODE_REAL_PROVIDER:
+        print("FATAL: an engine-bound track (--track A) cannot run "
+              "--mode real_provider; use --mode local_runtime", file=sys.stderr)
+        return 6
+    # A live cloud run MUST declare the Owner-selected provider/model so the runtime's
+    # effective identity can be attested before dispatch and pinned into the evidence
+    # (WAVE-30H Track-B). Fail fast, before any evidence dir is minted or seam opened.
+    if args.mode == MODE_REAL_PROVIDER:
+        if track is None or track.get("track") != "B":
+            print("FATAL: --mode real_provider requires --track B",
+                  file=sys.stderr)
+            return 6
+        if not args.expected_provider or not args.expected_model:
+            print("FATAL: --mode real_provider requires --expected-provider and "
+                  "--expected-model (the Owner-selected identity)", file=sys.stderr)
+            return 6
+
     # Live-run safety gate (WAVE-30B §12/§13): validate the output dir and verify
     # the runtime is the authorized build with a sound safety posture BEFORE any
     # provider call.
     if is_live:
-        try:
-            out_dir = validate_output_dir(Path(args.out), repo_root=repo_root,
-                                          force=args.force)
-        except PreflightError as exc:
-            print(f"FATAL: output dir rejected: {exc}", file=sys.stderr)
-            return 6
-        args.out = str(out_dir)
         if not args.expected_sha:
             print("FATAL: a live run requires --expected-sha (the authorized SHA)",
                   file=sys.stderr)
             return 6
+        try:
+            base_dir = validate_output_dir(Path(args.out), repo_root=repo_root,
+                                           force=args.force)
+            # WAVE-30H A5: never write a live run into the base dir directly — mint a
+            # UNIQUE timestamped/SHA/run-bound evidence subdir so this run can never
+            # truncate, overwrite, or replace another run's evidence (append-only).
+            run_dir = mint_run_evidence_dir(
+                base_dir, runtime_head=args.expected_sha, run_id=args.campaign_id,
+            )
+        except PreflightError as exc:
+            print(f"FATAL: output dir rejected: {exc}", file=sys.stderr)
+            return 6
+        args.out = str(run_dir)
 
-    seam = _build_seam(args, repo_root, limits)
+    seam = _build_seam(args, repo_root, limits, engine=track_engine,
+                       require_engine=(args.mode == MODE_LOCAL_RUNTIME))
 
+    # WAVE-30H #6: the authoritative evidence SHA is the runtime's verified build_sha
+    # (set only after verify_runtime_sha proves it == --expected-sha), threaded into
+    # the Runner so every record/summary stamps the runtime build, not the harness
+    # checkout HEAD. None for a deterministic (non-live) run → Runner keeps local HEAD.
+    runtime_build_sha = None
     if is_live and seam is not None:
         try:
             posture = seam.preflight()
@@ -197,6 +257,31 @@ def _run(args) -> int:
                 repo_root=repo_root,
                 require_clean_worktree=args.require_clean_worktree,
             )
+            runtime_build_sha = (posture.get("build_sha") or "").strip() or None
+            # Verify the runtime's EFFECTIVE engine binding matches the Track A
+            # contract before the first task (engine/provider/model/endpoint-class/
+            # cost-policy + optional model digest) — fail closed on any mismatch.
+            if args.mode == MODE_LOCAL_RUNTIME and track is not None:
+                effective = assert_engine_attestation(
+                    posture, track,
+                    expected_model_digest=args.expected_model_digest,
+                )
+                # WAVE-30H Batch3 #3: persist the Track A ATTESTED identity into every
+                # record (as Track B already does) so the recorder proves attested ==
+                # bound == dispatched — not merely bound == dispatched.
+                track_prov = {**(track_prov or {}), **effective}
+            # Track B (cloud): verify the runtime's EFFECTIVE provider/model equals
+            # the Owner-selected identity and persist that identity into every record
+            # so the evidence is self-describing and the recorder can fail closed on
+            # any attested↔dispatched drift (WAVE-30H Track-B).
+            elif args.mode == MODE_REAL_PROVIDER and track is not None:
+                effective = assert_cloud_attestation(
+                    posture, track,
+                    expected_provider=args.expected_provider,
+                    expected_model=args.expected_model,
+                    expected_endpoint_class=args.expected_endpoint_class,
+                )
+                track_prov = {**(track_prov or {}), **effective}
         except PreflightError as exc:
             seam.close()
             print(f"FATAL: preflight refused the live run: {exc}", file=sys.stderr)
@@ -206,23 +291,20 @@ def _run(args) -> int:
             print(f"FATAL: preflight could not be verified: {exc}", file=sys.stderr)
             return 6
 
-    # Per-track provenance stamp (WAVE-30C §2). When --track is given, every
-    # record is tagged with the track/provider/model identity; the comparability
-    # contract guarantees the two tracks share the identical bank/limits/scoring.
-    track_prov = None
-    if args.track:
-        from .tracks import ComparabilityError, load_track, track_provenance
-        try:
-            track_prov = track_provenance(load_track(args.track))
-        except ComparabilityError as exc:
-            print(f"FATAL: --track rejected: {exc}", file=sys.stderr)
-            if seam is not None:
-                seam.close()
-            return 6
-
-    recorder = Recorder(Path(args.out))
+    try:
+        recorder = Recorder(Path(args.out))
+    except EvidenceExistsError as exc:
+        # WAVE-30H A5: the target already holds benchmark evidence — fail closed
+        # with a clean message rather than truncating/overwriting it. A live run
+        # writes into a freshly minted unique dir, so this only guards accidental
+        # re-use of an evidence directory.
+        if seam is not None:
+            seam.close()
+        print(f"FATAL: {exc}", file=sys.stderr)
+        return 6
     runner = Runner(recorder, mode=args.mode, seam=seam, repo_root=repo_root,
-                    tenant=args.tenant, user=args.user, track_provenance=track_prov)
+                    tenant=args.tenant, user=args.user, track_provenance=track_prov,
+                    runtime_build_sha=runtime_build_sha)
 
     rows = runner.run_all(scenarios, repetitions=args.repetitions,
                           max_workers=args.max_workers)
@@ -273,12 +355,55 @@ def _run(args) -> int:
         if mismatches:
             exit_code = 5
 
+    # WAVE-30H Track-B: a run whose worker dispatched a provider/model different
+    # from the attested identity must NEVER certify green — even if every verdict
+    # passed. The evidence is kept (it documents the drift); the run fails closed.
+    if identity_gate_exit_code(summary):
+        _print_identity_divergences(summary)
+        print("FATAL: runtime dispatched a provider/model different from the "
+              "attested identity — refusing to certify this run", file=sys.stderr)
+        exit_code = 6
+
     if seam is not None:
         seam.close()
 
     print(f"\nresults: {recorder.results_path}")
     print(f"summary: {recorder.summary_path}")
     return exit_code
+
+
+def _print_identity_divergences(summary: dict) -> None:
+    """Print every identity divergence to stderr, for EVERY kind.
+
+    WAVE-30H #5: the divergence dict names its two populated sides dynamically by the
+    ``kind`` (``attested_vs_bound`` carries ``attested``+``bound``, not ``dispatched``;
+    ``bound_vs_dispatched`` carries no ``attested``; ``dispatched_missing`` is a
+    non-pair). The old printer hard-coded ``d['attested']``/``d['dispatched']`` and
+    raised KeyError inside this fail-closed reporting path for two of three pair
+    kinds. Derive the sides from the kind so every divergence prints cleanly.
+    """
+    for d in (summary.get("identity_divergences") or []):
+        kind = d.get("kind", "identity")
+        left, _, right = kind.partition("_vs_")
+        sid = d.get("scenario_id", "?")
+        if right:  # a pair: attested_vs_bound / bound_vs_dispatched / attested_vs_dispatched
+            print(f"IDENTITY-DIVERGENCE {sid} [{kind}]: "
+                  f"{left} {d.get(left)!r} != {right} {d.get(right)!r}",
+                  file=sys.stderr)
+        else:  # dispatched_missing (or any future non-pair kind)
+            print(f"IDENTITY-DIVERGENCE {sid} [{kind}]: "
+                  f"attested {d.get('attested')!r} bound {d.get('bound')!r} "
+                  f"dispatched {d.get('dispatched')!r}", file=sys.stderr)
+
+
+def identity_gate_exit_code(summary: dict) -> int:
+    """WAVE-30H Track-B: the exit code for the attested↔dispatched identity gate.
+
+    Returns 6 (the refusal family) when the finalized summary reports any identity
+    divergence — a run that dispatched a provider/model different from the attested
+    identity must fail closed even if every verdict passed — else 0.
+    """
+    return 6 if (summary.get("identity_divergences") or []) else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -332,6 +457,21 @@ def build_parser() -> argparse.ArgumentParser:
                      help="durable campaign id for the shared €10 budget ledger")
     run.add_argument("--expected-sha", default=None,
                      help="authorized runtime build SHA (required for a live run)")
+    run.add_argument("--expected-model-digest", default=None,
+                     help="Owner-supplied full 64-hex Ollama model manifest digest; "
+                          "when set, a live Track A run verifies the runtime-attested "
+                          "digest matches EXACTLY (no-prefix) before dispatch")
+    run.add_argument("--expected-provider", default=None,
+                     help="Owner-selected Track B provider NAME the runtime must "
+                          "effectively resolve (required for --mode real_provider); "
+                          "matched case-insensitively and fail-closed before dispatch")
+    run.add_argument("--expected-model", default=None,
+                     help="Owner-selected Track B model identifier the runtime must "
+                          "effectively resolve (required for --mode real_provider); "
+                          "matched exactly and fail-closed before dispatch")
+    run.add_argument("--expected-endpoint-class", default=None,
+                     help="optional: require the runtime-reported endpoint class for "
+                          "the Track B cloud binding (e.g. 'cloud')")
     run.add_argument("--require-clean-worktree", dest="require_clean_worktree",
                      action="store_true", default=True)
     run.add_argument("--no-require-clean-worktree", dest="require_clean_worktree",

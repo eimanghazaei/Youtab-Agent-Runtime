@@ -40,6 +40,7 @@ import re
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
@@ -56,6 +57,20 @@ SIGNATURE_HEADER = "x-youtab-runtime-signature"
 # shared format regex matches the gateway's app/agents/correlation.py.
 CORRELATION_HEADER = "x-youtab-correlation-id"
 _CORRELATION_RE = re.compile(r"^[A-Za-z0-9_.:-]{8,128}$")
+# Canonical v2 (WAVE-30H R1): the shared cross-repo signature spec
+# (docs/architecture/CANONICAL-SIGNATURE-GRANT.md). v2 additionally binds the
+# protocol version, workspace, and key id. The request declares its version on
+# PROTO_HEADER; the key id (which shared secret) on KEYID_HEADER; the workspace
+# identity on WORKSPACE_HEADER ("-" when the request is not workspace-scoped).
+PROTO_HEADER = "x-youtab-runtime-proto"
+KEYID_HEADER = "x-youtab-runtime-keyid"
+WORKSPACE_HEADER = "x-youtab-workspace-id"
+CANONICAL_V1 = "youtab.runtime-sig.v1"
+CANONICAL_V2 = "youtab.runtime-sig.v2"
+_SUPPORTED_PROTOS = frozenset({CANONICAL_V1, CANONICAL_V2})
+_KEYID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+# Placeholder used in the canonical string when a request is not workspace-scoped.
+WORKSPACE_UNSCOPED = "-"
 
 
 class CommandAuthError(Exception):
@@ -76,12 +91,32 @@ class CommandAuthError(Exception):
 class NonceStore(Protocol):
     """Persistence seam for single-use nonces."""
 
+    def claim(self, nonce: str, ts: int) -> bool:
+        """Atomically record ``nonce`` as used iff it was not already present.
+
+        Returns ``True`` when this call is the first to claim ``nonce`` (accept
+        the command) and ``False`` when it was already present (a replay). This
+        is the single-operation check-and-record that ``verify_command`` uses:
+        the separate ``seen`` + ``record`` pair below has a check-then-act
+        (TOCTOU) window under concurrent or multi-process access, so it must not
+        be used for admission decisions.
+        """
+        ...
+
     def seen(self, nonce: str) -> bool:
-        """True if ``nonce`` was already recorded (i.e. this is a replay)."""
+        """True if ``nonce`` was already recorded (i.e. this is a replay).
+
+        Retained for diagnostics/back-compat only. Do NOT gate admission on
+        ``seen`` then ``record`` — use :meth:`claim`, which is atomic.
+        """
         ...
 
     def record(self, nonce: str, ts: int) -> None:
-        """Record ``nonce`` as used at signing time ``ts`` and prune old rows."""
+        """Record ``nonce`` as used at signing time ``ts`` and prune old rows.
+
+        Retained for diagnostics/back-compat only; :meth:`claim` supersedes the
+        ``seen``+``record`` pair for admission.
+        """
         ...
 
 
@@ -95,6 +130,22 @@ class _MemoryNonceStore:
         self._seen: dict[str, int] = {}
         self._lock = threading.Lock()
 
+    def _prune_locked(self, cutoff: int) -> None:
+        # Caller holds ``self._lock``. Anything older than the freshness window
+        # can never be accepted again (it fails the ``expired`` check first).
+        stale = [n for n, t in self._seen.items() if t < cutoff]
+        for n in stale:
+            self._seen.pop(n, None)
+
+    def claim(self, nonce: str, ts: int) -> bool:
+        cutoff = int(time.time()) - self.window_seconds
+        with self._lock:
+            if nonce in self._seen:
+                return False
+            self._seen[nonce] = ts
+            self._prune_locked(cutoff)
+            return True
+
     def seen(self, nonce: str) -> bool:
         with self._lock:
             return nonce in self._seen
@@ -103,11 +154,7 @@ class _MemoryNonceStore:
         cutoff = int(time.time()) - self.window_seconds
         with self._lock:
             self._seen[nonce] = ts
-            # Prune anything older than the freshness window — it can never be
-            # accepted again anyway (it would fail the ``expired`` check first).
-            stale = [n for n, t in self._seen.items() if t < cutoff]
-            for n in stale:
-                self._seen.pop(n, None)
+            self._prune_locked(cutoff)
 
 
 class SqliteNonceStore:
@@ -117,7 +164,10 @@ class SqliteNonceStore:
         self._db_path = db_path
         self._window_seconds = window_seconds
         self._lock = threading.Lock()
-        with self._connect() as conn:
+        # ``closing`` guarantees the fd is released: sqlite3's own ``with conn``
+        # only commits/rolls back the transaction, it does NOT close the
+        # connection (that would otherwise leak an fd per operation until GC).
+        with closing(self._connect()) as conn:
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS runtime_command_nonces ("
                 "  nonce   TEXT PRIMARY KEY,"
@@ -131,8 +181,44 @@ class SqliteNonceStore:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def claim(self, nonce: str, ts: int) -> bool:
+        """Atomically insert ``nonce`` iff absent; return True on first claim.
+
+        ``INSERT OR IGNORE`` + ``changes()`` is a single-statement decision:
+        ``changes()`` reports 1 when the row was inserted (first use) and 0 when
+        the UNIQUE ``nonce`` PRIMARY KEY caused the insert to be ignored (replay).
+        The per-process lock serialises this process's callers; the atomic
+        INSERT protects across processes sharing the same DB file, so no
+        check-then-act window exists in either dimension.
+        """
+        cutoff = int(time.time()) - self._window_seconds
+        try:
+            with self._lock, closing(self._connect()) as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO runtime_command_nonces (nonce, seen_at) "
+                    "VALUES (?, ?)",
+                    (nonce, ts),
+                )
+                inserted = conn.execute("SELECT changes()").fetchone()[0]
+                conn.execute(
+                    "DELETE FROM runtime_command_nonces WHERE seen_at < ?", (cutoff,)
+                )
+                conn.commit()
+                return bool(inserted)
+        except sqlite3.Error as exc:
+            # A nonce store that cannot complete its atomic claim (e.g. a
+            # transient ``database is locked`` under heavy cross-process
+            # contention, despite the busy timeout) must NOT admit the command.
+            # Fail closed with a clean 503 rather than letting an unhandled
+            # sqlite error surface as a 500.
+            raise CommandAuthError(
+                "nonce_store_unavailable",
+                "runtime nonce store is unavailable",
+                503,
+            ) from exc
+
     def seen(self, nonce: str) -> bool:
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn:
             row = conn.execute(
                 "SELECT 1 FROM runtime_command_nonces WHERE nonce = ?", (nonce,)
             ).fetchone()
@@ -140,7 +226,7 @@ class SqliteNonceStore:
 
     def record(self, nonce: str, ts: int) -> None:
         cutoff = int(time.time()) - self._window_seconds
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn:
             conn.execute(
                 "INSERT OR IGNORE INTO runtime_command_nonces (nonce, seen_at) "
                 "VALUES (?, ?)",
@@ -183,6 +269,44 @@ def canonical_string(
     ])
 
 
+def canonical_string_v2(
+    *,
+    method: str,
+    path: str,
+    tenant: str,
+    workspace: str,
+    user: str,
+    timestamp: str,
+    nonce: str,
+    body: bytes,
+    correlation: str,
+    key_id: str,
+) -> str:
+    """Canonical v2 (11 fields) — the shared cross-repo contract.
+
+    Order MUST match ``docs/architecture/CANONICAL-SIGNATURE-GRANT.md`` §2.1
+    and the gateway connector exactly; the golden vectors in
+    ``tests/.../test_runtime_command_auth.py`` are the conformance oracle. v2 adds
+    the protocol version (field 1), workspace (field 5) and key id (field 11) to
+    the v1 set, closing the 7-vs-8 gateway/engine mismatch by making BOTH sides
+    build the identical string.
+    """
+    body_hash = hashlib.sha256(body or b"").hexdigest()
+    return "\n".join([
+        CANONICAL_V2,
+        method.upper(),
+        path,
+        tenant,
+        workspace,
+        user,
+        str(timestamp),
+        nonce,
+        body_hash,
+        correlation,
+        key_id,
+    ])
+
+
 def compute_signature(secret: str, canonical: str) -> str:
     """Lowercase hex HMAC-SHA256 of ``canonical`` under ``secret``."""
     return hmac.new(
@@ -200,6 +324,7 @@ def verify_command(
     headers: "dict[str, str]",
     secret: str,
     store: NonceStore,
+    workspace: str = WORKSPACE_UNSCOPED,
     now: Optional[int] = None,
     window_seconds: int = DEFAULT_WINDOW_SECONDS,
 ) -> None:
@@ -257,9 +382,37 @@ def verify_command(
             401,
         )
 
-    expected = compute_signature(
-        secret,
-        canonical_string(
+    # Select the canonical builder by the declared protocol version. Absent proto
+    # header defaults to v1 for back-compat during the rotation window; the
+    # gateway emits v2 only (see the canonical spec §6). An unknown version fails
+    # closed rather than silently falling back.
+    proto = _get_header(headers, PROTO_HEADER) or CANONICAL_V1
+    if proto not in _SUPPORTED_PROTOS:
+        raise CommandAuthError(
+            "unsupported_proto", "unsupported signature protocol version", 400
+        )
+    if proto == CANONICAL_V2:
+        key_id = _get_header(headers, KEYID_HEADER)
+        if not key_id:
+            raise CommandAuthError(
+                "missing_signature", "v2 command requires a key id header", 401
+            )
+        if not _KEYID_RE.match(key_id):
+            raise CommandAuthError("invalid_key_id", "key id is malformed", 400)
+        canonical = canonical_string_v2(
+            method=method,
+            path=path,
+            tenant=tenant,
+            workspace=workspace or WORKSPACE_UNSCOPED,
+            user=user,
+            timestamp=ts_raw,
+            nonce=nonce,
+            body=body,
+            correlation=correlation,
+            key_id=key_id,
+        )
+    else:
+        canonical = canonical_string(
             method=method,
             path=path,
             tenant=tenant,
@@ -268,17 +421,23 @@ def verify_command(
             nonce=nonce,
             body=body,
             correlation=correlation,
-        ),
-    )
+        )
+
+    expected = compute_signature(secret, canonical)
     if not hmac.compare_digest(expected, signature.strip().lower()):
         raise CommandAuthError("bad_signature", "command signature mismatch", 401)
 
     # Freshness + signature pass BEFORE we consult/burn the nonce, so a probe
     # with a bad signature can never consume a legitimate nonce (or grow the
     # store). Only a fully-valid command records its nonce.
-    if store.seen(nonce):
+    #
+    # The check-and-record is a SINGLE atomic operation (``claim``): a separate
+    # ``seen`` then ``record`` leaves a check-then-act window in which two
+    # concurrent — or two cross-process — commands presenting the same nonce
+    # both observe "unseen" and are both admitted, defeating single-use replay
+    # protection. ``claim`` returns False for the loser, which we reject 409.
+    if not store.claim(nonce, ts):
         raise CommandAuthError("replayed", "command nonce already used", 409)
-    store.record(nonce, ts)
 
 
 def _get_header(headers: "dict[str, str]", name: str) -> str:

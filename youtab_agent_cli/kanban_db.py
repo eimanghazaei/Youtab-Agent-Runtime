@@ -928,6 +928,8 @@ class Task:
     # (Pre-rename column: ``spawn_failures``.)
     consecutive_failures: int = 0
     worker_pid: Optional[int] = None
+    # R7: the worker's (pid+start-time) incarnation token recorded at spawn.
+    worker_incarnation: Optional[str] = None
     # Short excerpt of the last failure's error text (any outcome, not
     # just spawn). Pre-rename column: ``last_spawn_error``.
     last_failure_error: Optional[str] = None
@@ -1028,6 +1030,9 @@ class Task:
                 else (row["spawn_failures"] if "spawn_failures" in keys else 0)
             ),
             worker_pid=row["worker_pid"] if "worker_pid" in keys else None,
+            worker_incarnation=(
+                row["worker_incarnation"] if "worker_incarnation" in keys else None
+            ),
             last_failure_error=(
                 row["last_failure_error"] if "last_failure_error" in keys
                 # Same belt-and-suspenders fallback as consecutive_failures above.
@@ -2368,6 +2373,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             )
     if "worker_pid" not in cols:
         _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
+    if "worker_incarnation" not in cols:
+        # WAVE-30H R7: the spawned worker's (pid+start-time) incarnation token, so
+        # a recycled PID is never mistaken for the live worker nor killed as it.
+        _add_column_if_missing(
+            conn, "tasks", "worker_incarnation", "worker_incarnation TEXT"
+        )
     if "last_failure_error" not in cols:
         added = _add_column_if_missing(
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
@@ -2914,6 +2925,7 @@ def create_task_ex(
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
+    on_created=None,
 ) -> tuple[str, bool]:
     """Create a new task and optionally link it under parent tasks.
 
@@ -3293,6 +3305,17 @@ def create_task_ex(
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+                # WAVE-30H #race: run create-once side effects (e.g. persisting the
+                # effective binding + grant + mode events) INSIDE this same
+                # BEGIN IMMEDIATE transaction, so the row and its binding commit
+                # atomically. Under SQLite snapshot isolation the dispatcher's
+                # connection cannot see the row until commit — closing the window
+                # where a worker could be spawned for a task with no binding yet. The
+                # hook MUST use _append_event directly (no nested write_txn). A hook
+                # exception rolls back the whole insert (no orphan task), which is the
+                # correct fail-closed outcome.
+                if on_created is not None:
+                    on_created(conn, task_id)
             return task_id, True
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -4452,7 +4475,8 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, worker_pid, worker_incarnation, claim_expires, "
+        "       last_heartbeat_at "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -4473,7 +4497,9 @@ def release_stale_claims(
         if (
             host_local
             and row["worker_pid"]
-            and _pid_alive(row["worker_pid"])
+            and _worker_incarnation_alive(
+                row["worker_pid"], row["worker_incarnation"]
+            )
             and not heartbeat_stale
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
@@ -4514,6 +4540,7 @@ def release_stale_claims(
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            incarnation=row["worker_incarnation"],
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -4583,7 +4610,7 @@ def reclaim_task(
     reclaimable state (not running, or doesn't exist).
     """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        "SELECT status, claim_lock, worker_pid, worker_incarnation FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row:
@@ -4594,6 +4621,7 @@ def reclaim_task(
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
+        incarnation=row["worker_incarnation"],
     )
     with write_txn(conn):
         cur = conn.execute(
@@ -6981,13 +7009,42 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _worker_incarnation_alive(
+    pid: Optional[int], incarnation: Optional[str]
+) -> bool:
+    """R7: True only when the recorded worker incarnation is the LIVE process.
+
+    A bare PID can be recycled, so ``_pid_alive`` alone can mistake an unrelated
+    new process for the worker. When an incarnation token was recorded at spawn,
+    require the live process to be that exact incarnation. Falls back to pid-only
+    liveness for legacy rows with no recorded incarnation.
+    """
+    if not pid or int(pid) <= 0:
+        return False
+    if incarnation:
+        from youtab_runtime.process_incarnation import same_incarnation
+
+        return same_incarnation(int(pid), incarnation)
+    return _pid_alive(pid)
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
     signal_fn=None,
+    incarnation: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    WAVE-30H R7: when the worker's ``incarnation`` token (pid+start-time, recorded
+    at spawn) is supplied, it is VERIFIED against the live process before any
+    signal is sent. The OS recycles PID numbers, so signalling a bare PID can kill
+    an innocent process that inherited the number after the worker exited. If the
+    live process is a DIFFERENT incarnation (or the PID is gone), the original
+    worker is already dead: we report ``terminated`` and NEVER signal. A row with
+    no recorded incarnation (legacy) falls back to the pre-R7 pid-only path.
+    """
     import signal
 
     info: dict[str, Any] = {
@@ -6996,6 +7053,8 @@ def _terminate_reclaimed_worker(
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "incarnation_verified": None,
+        "incarnation_mismatch": False,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -7004,6 +7063,20 @@ def _terminate_reclaimed_worker(
     if not str(claim_lock).startswith(host_prefix):
         return info
     info["host_local"] = True
+
+    # R7 incarnation gate: never signal a PID that is not our exact worker
+    # incarnation. A recycled/absent PID means the worker is already gone.
+    if incarnation:
+        from youtab_runtime.process_incarnation import pid_exists, same_incarnation
+
+        if not pid_exists(int(pid)):
+            info["terminated"] = True  # already gone — nothing (and no one) to kill
+            return info
+        if not same_incarnation(int(pid), incarnation):
+            info["terminated"] = True  # original worker gone; PID now belongs to another process
+            info["incarnation_mismatch"] = True
+            return info
+        info["incarnation_verified"] = True
 
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
@@ -7308,7 +7381,8 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.worker_incarnation, t.last_heartbeat_at, "
+        "       t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -7333,9 +7407,11 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
-        # Terminate the worker if it's still host-local.
+        # Terminate the worker if it's still host-local (R7: incarnation-verified
+        # so a recycled PID is never signalled).
         termination = _terminate_reclaimed_worker(
             pid, lock, signal_fn=signal_fn,
+            incarnation=row["worker_incarnation"],
         )
 
         # Never release a claim while our own worker is still alive: that would
@@ -7522,7 +7598,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, worker_incarnation, claim_lock, started_at FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -7539,7 +7615,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 grace = _resolve_crash_grace_seconds()
                 if time.time() - started_at < grace:
                     continue
-            if _pid_alive(row["worker_pid"]):
+            # R7: a recycled PID (same number, different incarnation) means our
+            # worker is gone -> treat as crashed, and never attribute a stranger's
+            # liveness to it.
+            if _worker_incarnation_alive(
+                row["worker_pid"], row["worker_incarnation"]
+            ):
                 continue
 
             pid = int(row["worker_pid"])
@@ -7940,10 +8021,18 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     tail`` can correlate log lines with OS-level traces without opening
     the drawer.
     """
+    # R7: capture the (pid+start-time) incarnation token now, so later liveness
+    # and termination bind to THIS exact process instance, not just its number.
+    try:
+        from youtab_runtime.process_incarnation import incarnation_token
+
+        incarnation = incarnation_token(int(pid))
+    except Exception:  # noqa: BLE001 - incarnation is best-effort; pid path still works
+        incarnation = None
     with write_txn(conn):
         conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
+            "UPDATE tasks SET worker_pid = ?, worker_incarnation = ? WHERE id = ?",
+            (int(pid), incarnation, task_id),
         )
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
@@ -7951,7 +8040,24 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
             )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        # R8 (WAVE-30H): stamp a wall-clock ns mark at spawn so the worker can
+        # compute QUEUE_WAIT (spawn − enqueue) and WORKER_STARTUP (worker T0 − spawn)
+        # as cross-process (clock="epoch") gaps — the coarse seconds-grained task
+        # timestamps cannot resolve these sub-second-to-second boundaries.
+        try:
+            import time as _t
+            _spawned_epoch_ns = _t.time_ns()
+        except Exception:  # pragma: no cover - observability never breaks spawn
+            _spawned_epoch_ns = None
+        _append_event(
+            conn, task_id, "spawned",
+            {
+                "pid": int(pid),
+                "incarnation": incarnation,
+                "spawned_epoch_ns": _spawned_epoch_ns,
+            },
+            run_id=run_id,
+        )
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -8498,6 +8604,7 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        _dispatch_t0 = time.monotonic_ns()  # R8: DISPATCH_SCHEDULE (claim -> spawn)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -8517,6 +8624,21 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        # R8: attribute the dispatcher's per-task scheduling work (claim -> workspace
+        # resolution -> ready to spawn), correlated by run_id. Intra-process monotonic.
+        try:
+            from youtab_runtime import stage_trace as _st_disp
+            with _st_disp.trace_context_scope(
+                run_id=getattr(claimed, "id", None),
+                tenant=getattr(claimed, "tenant", None),
+                user=getattr(claimed, "created_by", None),
+            ):
+                _st_disp.record(
+                    _st_disp.Stage.DISPATCH_SCHEDULE,
+                    duration_ns=time.monotonic_ns() - _dispatch_t0,
+                )
+        except Exception:  # pragma: no cover - observability never breaks dispatch
+            pass
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -8915,25 +9037,22 @@ def _apply_correlation_env(env: "dict[str, str]", task: Task) -> "dict[str, str]
     return env
 
 
-def _default_spawn(
-    task: Task,
+def build_worker_invocation(
+    task: "Task",
     workspace: str,
     *,
     board: Optional[str] = None,
-) -> Optional[int]:
-    """Fire-and-forget ``youtab -p <profile> chat -q ...`` subprocess.
+) -> "tuple[dict, list]":
+    """Build the (env, cmd) for a kanban worker WITHOUT spawning it.
 
-    Returns the spawned child's PID so the dispatcher can detect crashes
-    before the claim TTL expires. The child's completion is still observed
-    via the ``complete`` / ``block`` transitions the worker writes itself;
-    the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
-
-    ``board`` pins the child's kanban context to that board: the child's
-    ``YOUTAB_AGENT_KANBAN_DB`` / ``YOUTAB_AGENT_KANBAN_BOARD`` / workspaces_root env
-    vars all resolve to the same board the dispatcher claimed the task
-    from. Workers cannot accidentally see other boards.
+    Extracted from :func:`_default_spawn` so a pre-warmed single-use worker
+    pool (see ``youtab_agent_cli.worker_pool``) reproduces the EXACT same
+    per-run binding a fresh dispatcher subprocess would get: profile, tenant,
+    created_by, correlation, task id, workspace, board, kanban DB/workspaces
+    root, model/provider override, toolsets, goal-mode, timeouts. The pool
+    hands the returned env+cmd to a warm worker; :func:`_default_spawn` calls
+    this then Popens. Behaviour-preserving.
     """
-    import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
@@ -9087,6 +9206,29 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+    return env, cmd
+
+
+def _default_spawn(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
+    """Fire-and-forget ``youtab -p <profile> chat -q ...`` subprocess.
+
+    Returns the spawned child's PID so the dispatcher can detect crashes
+    before the claim TTL expires. The child's completion is still observed
+    via the ``complete`` / ``block`` transitions the worker writes itself;
+    the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
+
+    ``board`` pins the child's kanban context to that board: the child's
+    ``YOUTAB_AGENT_KANBAN_DB`` / ``YOUTAB_AGENT_KANBAN_BOARD`` / workspaces_root env
+    vars all resolve to the same board the dispatcher claimed the task
+    from. Workers cannot accidentally see other boards.
+    """
+    import subprocess
+    env, cmd = build_worker_invocation(task, workspace, board=board)
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `youtab kanban log` on a specific board reads its own file and

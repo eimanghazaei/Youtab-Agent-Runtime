@@ -47,7 +47,15 @@ class CLIAgentSetupMixin:
             _primary_exc = exc
 
         # Primary provider auth failed — try fallback providers before giving up.
-        if runtime is None and _primary_exc is not None:
+        # WAVE-30H Batch3 #1: a MANAGED run must NEVER switch to an UNBOUND fallback
+        # provider/model on primary-auth failure — that would resolve credentials for,
+        # and construct a client on, a substrate the Simorgh binding never authorized
+        # (the pre-construction route-vs-binding gate would then reject it, but we must
+        # not perform the fallback provider I/O at all). Credential fallback for a
+        # managed run is permitted only via an authorized signed rebind; absent that we
+        # fail closed here (no provider switch) and let the caller refuse.
+        _managed_run = getattr(self, "_managed_bound_identity", None)
+        if runtime is None and _primary_exc is not None and not _managed_run:
             from youtab_agent_cli.auth import AuthError
             if isinstance(_primary_exc, AuthError):
                 _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []
@@ -227,11 +235,19 @@ class CLIAgentSetupMixin:
         route["request_overrides"] = overrides
         return route
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None, credentials_already_resolved: bool = False) -> bool:
         """
         Initialize the agent on first use.
         When resuming a session, restores conversation history from SQLite.
-        
+
+        ``credentials_already_resolved``: WAVE-30H Batch5 #3 — the managed CLI paths
+        resolve runtime credentials EXACTLY ONCE (via ``_ensure_runtime_credentials``)
+        and compare the resolved route to the binding BEFORE calling this method, then
+        pass the resolved runtime as ``runtime_override``. Set this True so we do NOT
+        resolve a second time here: a re-resolution is both wasted work and a TOCTOU
+        (the route could differ from the one just verified, and it could mint/refresh
+        again). Non-managed callers leave it False and resolve here as before.
+
         Returns:
             bool: True if successful, False otherwise
         """
@@ -243,7 +259,7 @@ class CLIAgentSetupMixin:
         self._install_tool_callbacks()
         self._ensure_tirith_security()
 
-        if not self._ensure_runtime_credentials():
+        if not credentials_already_resolved and not self._ensure_runtime_credentials():
             return False
 
         from youtab_agent_cli.mcp_startup import wait_for_mcp_discovery

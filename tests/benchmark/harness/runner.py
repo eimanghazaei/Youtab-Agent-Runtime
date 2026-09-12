@@ -51,6 +51,7 @@ class Runner:
         user: str = "bench-user",
         work_root: Optional[Path] = None,
         track_provenance: Optional[Dict[str, Any]] = None,
+        runtime_build_sha: Optional[str] = None,
     ) -> None:
         self.recorder = recorder
         self.mode = mode
@@ -59,7 +60,13 @@ class Runner:
         self.tenant = tenant
         self.user = user
         self.work_root = Path(work_root) if work_root else None
-        self._head = runtime_head(self.repo_root)
+        # WAVE-30H #6: the AUTHORITATIVE evidence SHA is the runtime's own verified
+        # build_sha (from the preflight posture, already checked == --expected-sha by
+        # verify_runtime_sha), NOT the harness checkout's git HEAD — for a container/
+        # remote runtime those differ, and stamping the harness HEAD misattributes
+        # the build. Fall back to the local HEAD only when no build_sha is supplied
+        # (a source runtime, where verify_runtime_sha proved HEAD == expected).
+        self._head = (runtime_build_sha or "").strip() or runtime_head(self.repo_root)
         # Per-track provenance stamp (WAVE-30C §2): track/provider/model identity
         # carried into every record so a result set is self-describing. None in
         # the default (untracked) deterministic gate — nothing is added.
@@ -105,10 +112,24 @@ class Runner:
             oracle_params = obs.provenance.get("_oracle_params", scenario.params)
             verdict = oracle(obs, oracle_params)
             per_rec = _metrics.per_record_metrics(obs, verdict, wall_ms=wall_ms)
+            # Carry the full 3-way identity the seam observed: the runtime's canonical
+            # BOUND identity (from runtime_effective_binding) AND the ACTUALLY-
+            # dispatched provider/model (from the closing run detail). WAVE-30H #5:
+            # bound_* was previously dropped here, so the recorder's attested<->bound
+            # and bound<->dispatched reconciliation was dead on the real path. Both
+            # groups are additive: absent for deterministic / non-cloud seams (those
+            # records unchanged); present for a real runtime run, where the recorder
+            # fails closed on any drift AND on a missing dispatched identity.
+            identity = {
+                k: obs.provenance[k]
+                for k in ("bound_provider", "bound_model", "bound_binding_version",
+                          "dispatched_provider", "dispatched_model")
+                if obs.provenance.get(k)
+            }
             return self._emit_record(
                 scenario, repetition, obs.run_id, principal, verdict,
                 observation=obs, wall_ms=wall_ms,
-                provenance={**base_provenance, "platform": obs.platform},
+                provenance={**base_provenance, "platform": obs.platform, **identity},
                 per_record_metrics=per_rec,
             )
         except CapabilityUnavailable as exc:
@@ -145,6 +166,24 @@ class Runner:
         finally:
             home_ctx.close()
 
+    def _resolve_engine_pinned(
+        self, scenario: Scenario, observation: Optional[Observation]
+    ) -> Optional[str]:
+        """Persist the EFFECTIVE attested engine from the actual Observation.
+
+        Provenance must reflect what really executed, not only what the scenario
+        requested. The authoritative source is ``observation.engine_pinned`` — the
+        seam attests the bound engine (fail-closed for a Track A engine-bound run,
+        see ``seam.py``), so a *successful engine-bound execution never persists
+        ``engine_pinned=null``*. ``scenario.engine`` is only the request; it is the
+        fallback when there is no observation at all (an ``unknown``/harness
+        record). The deterministic-worker default applies only when neither an
+        attested nor a requested engine exists, in deterministic mode.
+        """
+        attested = observation.engine_pinned if observation is not None else None
+        return attested or scenario.engine or (
+            "deterministic-worker" if self.mode == MODE_DETERMINISTIC else None)
+
     def _emit_record(
         self,
         scenario: Scenario,
@@ -170,8 +209,7 @@ class Runner:
             mode=self.mode,
             runtime_head=self._head,
             platform_tag=platform_tag(),
-            engine_pinned=scenario.engine or (
-                "deterministic-worker" if self.mode == MODE_DETERMINISTIC else None),
+            engine_pinned=self._resolve_engine_pinned(scenario, observation),
             principal=principal,
             run_id=run_id,
             verdict=verdict_str,

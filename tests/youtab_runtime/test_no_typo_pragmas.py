@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from tests.youtab_runtime._source_walk import iter_source_py_files
+
 # Matches an executable PRAGMA whose keyword contains the rebrand token
 # "youtab" (real pragma keywords never do; its presence is always the
 # corruption). Kept ASCII so a cp1252 CI console cannot mangle it.
@@ -27,16 +29,15 @@ _TYPO_PRAGMA = re.compile(r"""execute\(\s*["']\s*PRAGMA\s+\w*youtab\w*""", re.IG
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _THIS_FILE = Path(__file__).resolve()
-# Skip vendored/gitignored working copies and virtualenvs.
-_SKIP_DIRS = {".claude", ".git", "node_modules", ".venv", "venv", "__pycache__"}
 
 
 def _iter_py_files():
-    for path in _REPO_ROOT.rglob("*.py"):
+    # Prune vendored/gitignored copies, virtualenvs and agent worktrees DURING
+    # traversal (never descend them) — an rglob-then-filter scan enumerated ~140k
+    # files under .claude/.venv-qual/node_modules and effectively hung on Windows.
+    for path in iter_source_py_files(_REPO_ROOT):
         # Skip this guard itself — it documents the forbidden pattern by example.
         if path.resolve() == _THIS_FILE:
-            continue
-        if any(part in _SKIP_DIRS for part in path.relative_to(_REPO_ROOT).parts):
             continue
         yield path
 

@@ -155,6 +155,29 @@ def engine_binding_for_profile(profile_id: str | None) -> tuple[str, str] | None
     return (provider, model)
 
 
+# Public alias for callers that must special-case the ECO local engine (e.g. the
+# runtime's fail-closed pin check and the engine attestation surface). The
+# concrete model tag stays deployment-supplied via ``YOUTAB_ECO_MODEL`` and is
+# never committed here.
+ECO_PROFILE_ID = _ECO_PROFILE_ID
+
+
+def eco_model_configured() -> bool:
+    """Whether the deployment supplied a concrete ECO model tag via env.
+
+    The committed roster carries only a provider-neutral placeholder, so a live
+    ECO (Track A) run requires ``YOUTAB_ECO_MODEL`` to be set to the real tag.
+    When it is unset the caller must fail closed rather than run the placeholder.
+    """
+    return bool((os.getenv(_ECO_MODEL_ENV) or "").strip())
+
+
+def eco_model_override() -> str | None:
+    """The Owner-supplied concrete ECO model tag, or ``None`` when unset."""
+    value = (os.getenv(_ECO_MODEL_ENV) or "").strip()
+    return value or None
+
+
 def identity_for_engine(provider: str | None, model: str | None) -> PublicAgentIdentity | None:
     """Resolve a configured provider/model pair to its Agent, or ``None``.
 

@@ -1,0 +1,155 @@
+{
+  "config": "pool",
+  "reps": 1,
+  "runs": [
+    {
+      "tag": "pool-1",
+      "t_wall_start": 1788966403.8919265,
+      "grant_root_run_id": "run-3d3f30998c69",
+      "grant_nonce": "grant-ba31779a23d94368a2179d13eb9bd25c3a07d930",
+      "create_status": 200,
+      "create_ms": 3860.0,
+      "run_id": "t_70474591",
+      "terminal": false,
+      "status": "timeout",
+      "e2e_ms": 704078.0,
+      "event_first_offset_s": {
+        "created": 3.875,
+        "runtime_execution_mode": 3.875,
+        "runtime_engine_selection": 3.875,
+        "runtime_limits": 3.875,
+        "runtime_execution_grant": 3.875,
+        "runtime_capability_manifest": 3.875,
+        "claimed": 3.875,
+        "spawned": 3.875,
+        "heartbeat": 9.563
+      },
+      "kind_counts": {
+        "claimed": 1,
+        "created": 1,
+        "heartbeat": 11,
+        "runtime_capability_manifest": 1,
+        "runtime_engine_selection": 1,
+        "runtime_execution_grant": 1,
+        "runtime_execution_mode": 1,
+        "runtime_limits": 1,
+        "spawned": 1
+      },
+      "pids": [
+        57812
+      ],
+      "t_wall_end": 1788967107.9830132,
+      "stages": {
+        "queue_wait_ms": 2638.1,
+        "worker_startup_ms": 880.2,
+        "prompt_construct_ms": 1265.0,
+        "model_call_ms": [
+          179609.2,
+          367740.5
+        ],
+        "model_call_cold": [
+          true,
+          false
+        ],
+        "model_ttft_ms": [
+          172279.7,
+          367646.0
+        ],
+        "tool_call_ms": [
+          14.0,
+          0.0
+        ],
+        "tool_names": [
+          "kanban_show",
+          "kanban_complete"
+        ],
+        "n_model_calls": 2,
+        "generation_ms": [
+          7329.5,
+          94.5
+        ]
+      }
+    }
+  ],
+  "pool_proof": {
+    "stats_before_teardown": {
+      "size": 1,
+      "total": 2,
+      "ready": 1,
+      "assigned": 1
+    },
+    "close": {
+      "terminated": [
+        57812,
+        53296
+      ],
+      "survivors": [],
+      "zero_survivors": true
+    }
+  },
+  "aggregate": {
+    "reps": 1,
+    "completed": 0,
+    "failed_or_timeout": 1,
+    "e2e_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    },
+    "worker_startup_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    },
+    "queue_wait_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    },
+    "prompt_construct_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    },
+    "model_ttft_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    },
+    "model_call_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    },
+    "model_call_cold_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    },
+    "model_call_warm_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    },
+    "generation_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    },
+    "tool_call_ms": {
+      "n": 0,
+      "raw": [],
+      "p50": null,
+      "p95": null
+    }
+  }
+}

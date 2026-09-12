@@ -2946,6 +2946,37 @@ def _replace_resilient(src, dst) -> None:
             backoff = min(backoff * 2, 0.2)
 
 
+def _sha256_resilient(path: Path) -> str:
+    """``freeze_manifest.sha256_file(path)`` with a bounded retry for the transient
+    Windows sharing violation a concurrent ``os.replace`` onto the same target
+    provokes — the READ-side sibling of :func:`_replace_resilient`.
+
+    Two concurrent imports of one speaker also READ the shared ``originals`` target
+    (the resume fast-path and the re-verify). While the winner's ``os.replace``
+    (MoveFileEx) briefly holds the target, the loser's hashing ``open(path, "rb")``
+    sees ``ERROR_SHARING_VIOLATION``, which the CRT reports as
+    ``PermissionError(errno=13, winerror=None)``. So this keys on ``PermissionError``
+    on ``nt`` — NOT on winerror, which ``open`` leaves ``None`` (a winerror check,
+    like _replace_resilient's, would miss it entirely). Bounded retry with capped
+    backoff, then RE-RAISE — a genuinely stuck handle still surfaces, and the loser
+    goes on to be refused at the serialised publish window rather than crashing with
+    a bare PermissionError. POSIX reads never contend: single unretried path.
+    """
+    if os.name != "nt":
+        return freeze_manifest.sha256_file(path)
+    backoff = 0.001
+    last = 19
+    for attempt in range(20):
+        try:
+            return freeze_manifest.sha256_file(path)
+        except PermissionError:
+            if attempt == last:
+                raise
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 0.2)
+    raise AssertionError("unreachable")  # loop always returns or re-raises
+
+
 def _write_atomic(path: Path, payload: bytes) -> None:
     """Write ``payload`` to ``path`` so no reader ever sees half of it."""
     # Unique per writer, not per path: two writers sharing one temporary name
@@ -3106,7 +3137,10 @@ def _copy_originals(state: Plan, staging: Path, destination: Path) -> dict:
     copied = resumed = 0
     for row in state.originals:
         target = destination / row.path
-        if target.is_file() and freeze_manifest.sha256_file(target) == row.sha256:
+        # Shared-target read: a peer import may be os.replace'ing this same target
+        # right now — ride out the transient Windows sharing violation (see
+        # _sha256_resilient) instead of leaking a bare PermissionError to the loser.
+        if target.is_file() and _sha256_resilient(target) == row.sha256:
             resumed += 1
             continue
         temporary = staging / row.path
@@ -3138,9 +3172,13 @@ def _reverify(state: Plan, destination: Path) -> dict:
     source_changed: list[str] = []
     copy_changed: list[str] = []
     for row in state.originals:
+        # Source is the read-only submission — never a peer's write target, so it
+        # cannot contend and takes the plain read.
         if freeze_manifest.sha256_file(state.originals_root / row.path) != row.sha256:
             source_changed.append(row.path)
-        if freeze_manifest.sha256_file(destination / row.path) != row.sha256:
+        # Destination is the shared published target a lagging peer may still be
+        # replacing — guard the read against the transient Windows sharing violation.
+        if _sha256_resilient(destination / row.path) != row.sha256:
             copy_changed.append(row.path)
     if source_changed or copy_changed:
         raise Refused(
