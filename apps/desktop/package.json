@@ -170,7 +170,7 @@
     "wait-on": "^9.0.5"
   },
   "build": {
-    "electronVersion": "40.10.2",
+    "electronVersion": "44.3.0",
     "appId": "com.youtab.youtab-agent-runtime",
     "productName": "Youtab",
     "executableName": "Youtab",
