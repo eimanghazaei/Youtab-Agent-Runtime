@@ -5,7 +5,8 @@ Codex exact-SHA review
 [5187358362](https://github.com/eimanghazaei/Youtab-Agent-Runtime/pull/44#pullrequestreview-5187358362).
 Markdown is the authoritative evidence (no PDF).
 
-- **Candidate SHA:** the single commit that adds this file (parent `812750e388496c9fbf17b9c1fc0cd9d1c57c5801`); reported to the Owner for exact-SHA push authorization.
+- **Candidate SHA (Batch5 blockers):** commit `ac3fce0ec84cb11e5a33e88a63b1b92b529360fe` (parent `812750e388496c9fbf17b9c1fc0cd9d1c57c5801`) — pushed and CI-green on PR #44.
+- **Follow-up (continuous E2E proof):** a subsequent test-and-evidence-only commit (parent `ac3fce0ec…`) adds `tests/youtab_runtime/test_managed_continuous_e2e.py` and the "Continuous managed-runtime E2E" section below. No production code changed; reported to the Owner for exact-SHA push authorization.
 - **Branch:** `feat/wave30h-codex-5186275558-remediation` (PR #44)
 - **Base:** `fix/wave12-authz-gate-token-provider-binding`
 - **PR #41:** untouched, frozen at `3ec256787`.
@@ -39,12 +40,24 @@ Markdown is the authoritative evidence (no PDF).
 | `pytest tests/cli` | **735 passed, 6 skipped** |
 | `pytest tests/youtab_runtime/test_managed_admission_ordering.py` | **23 passed** |
 | `pytest tests/youtab_runtime/test_managed_cli_e2e.py` | **12 passed** |
+| `pytest tests/youtab_runtime/test_managed_continuous_e2e.py` (added — the ONE continuous E2E) | **2 passed** |
+| focused managed suites together (cli_e2e + binding_e2e + admission_ordering) | **45 passed** |
 | token-auth-security (5 files) | **95 passed** |
 | provider-resolution (2 files) | **64 passed** |
 | `ruff check` (6 changed files) | clean |
 | secret gate on `git archive HEAD` | `passed: true`, `policy_errors: []` |
 
-## CI / E2E scenario matrix (shipped CLI, both `chat -q` and `-Q`)
+## Focused CLI scenario matrix — `tests/youtab_runtime/test_managed_cli_e2e.py`
+
+These are the **focused, single-transition** shipped-CLI checks (both `chat -q` and
+`-Q`). Each runs the real worker CLI subprocess and proves one admission/ordering
+property in isolation. The positive row proves the ordered valid path *up to and
+including* one loopback inference dial (single verified pre-admission load →
+pre-credential provider gate → exactly-once credential resolution → actual-resolved-
+identity compare → real client construction → final admission → loopback dial); it
+does **not** by itself drive a kanban tool call or assert terminal task completion.
+Terminal completion of the whole lifecycle is proven separately by the continuous
+E2E below — this matrix does not claim it.
 
 | Scenario | preadmit | provider-gate | credresolve count | client | admit | net | rc |
 |---|---|---|---|---|---|---|---|
@@ -54,6 +67,65 @@ Markdown is the authoritative evidence (no PDF).
 | Youtab drift | ✓ | ✓ | **0** (no refresh) | ✗ | ✗ | ✗ | 3 |
 | missing / tampered / forged / expired grant, cross-run / -ws / -tenant | ✓ | — | **0** | ✗ | ✗ | ✗ | 3 |
 | grant expired during startup (unit) | n/a | n/a | n/a | n/a | refused before authority attached | — | — |
+
+## Continuous managed-runtime E2E — `tests/youtab_runtime/test_managed_continuous_e2e.py`
+
+The single, uninterrupted end-to-end proof (added in the PR #44 final batch). Unlike
+the focused checks and unlike the binding-E2E happy path (whose stub worker calls
+`kb.complete_task` directly, bypassing the tool-authority gate), this drives the
+**whole lifecycle in one flow** with the Simorgh trust mode set to `managed` (the
+admission + tool-authority gates ACTIVE, never inert):
+
+    runtime preflight (real ingress)
+      → create_run persistence (real Ed25519 grant + HMAC + create_task_ex atomic
+        binding/grant/manifest/mode + row-pinned provider_override/model_override)
+        → PRODUCTION worker-invocation construction via the REAL
+          `youtab_agent_cli.kanban_db.build_worker_invocation`, executed UNCHANGED
+          → the shipped worker CLI (`chat -q "work kanban task <id>"`, and the `-Q`
+            goal-mode variant build_worker_invocation appends)
+            → single verified pre-admission load → pre-credential provider gate →
+              credential resolution EXACTLY ONCE → actual-resolved-identity compare →
+              real shipped provider client construction → FINAL managed admission
+              → loopback inference → a REAL `kanban_complete` tool call admitted by
+                the tool_executor authority gate (effect-class `none`, in the frozen
+                manifest) → the card reaches a TERMINAL completed state, observed via
+                the real events API.
+
+Two tests (both **passed**): `test_continuous_managed_e2e_chat_q` (non-goal) and
+`test_continuous_managed_e2e_chat_Q` (goal-mode). Each asserts, on the SAME identity
+produced by the real preflight/create (nothing manually seeded on the positive path):
+
+| Assertion | Result |
+|---|---|
+| single verified pre-admission load ran | ✓ |
+| pre-credential provider gate ran | ✓ |
+| credential resolution occurred **exactly once** (`credresolve_count == 1`) | ✓ |
+| a real shipped provider client was constructed | ✓ |
+| **final managed admission ran and succeeded** | ✓ |
+| no Vertex mint / Youtab refresh (no cloud drift) | ✓ |
+| **every socket destination dialed was loopback** (`127.0.0.1`) | ✓ |
+| run and task reached the **terminal `completed`** state | ✓ |
+
+Honest boundary — REAL vs substituted:
+- **REAL:** the FastAPI ingress + token_auth + RuntimeServiceProvider; the create/
+  preflight endpoints and `create_task_ex` atomic persistence; the dispatcher and its
+  `build_worker_invocation`-built worker command (executed unchanged); the shipped CLI
+  worker subprocess; `worker_admission` (single-snapshot pre-admission, pre-credential
+  provider gate, resolve-once, route-vs-binding compare, final admission); the frozen
+  capability manifest and the `tool_executor` authority gate; and the real
+  `kanban_complete` tool → terminal `complete_task` transition.
+- **SUBSTITUTED (and why):** only the model "brain" — a hermetic loopback
+  OpenAI/Ollama-compatible responder on `127.0.0.1` returns a scripted `kanban_complete`
+  tool call (and a `"done"` verdict for the goal-mode judge). No paid provider, no cloud,
+  no live model. The (provider, model, endpoint) substrate is one consistent local
+  `ollama`/`qwen:test`/loopback identity so preflight and create bind the SAME digest
+  offline and the worker's ACTUAL resolved route matches the persisted binding exactly.
+- **Test precondition (not a production behaviour change):** the test calls
+  `tools.registry.discover_builtin_tools()` in the ingress process before create — the
+  same discovery the production runtime/gateway process performs at import
+  (`model_tools.py:197`). It populates the tool registry so the ingress freezes a
+  non-empty capability manifest that authorizes `kanban_complete`, exactly as a real
+  runtime process does. No production code was modified for this batch.
 
 ## No paid/cloud benchmark
 
