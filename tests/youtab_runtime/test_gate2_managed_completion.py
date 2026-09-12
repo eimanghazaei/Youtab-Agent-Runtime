@@ -177,8 +177,10 @@ def test_chat_path_establishes_managed_admission():
     src = Path(__file__).resolve().parents[2] / "cli.py"
     text = src.read_text(encoding="utf-8")
     # The establish call must be present inside the chat() turn handler, before
-    # the human-facing single-query path delegates to it.
-    assert "establish_managed_admission(agent)" in text
+    # the human-facing single-query path delegates to it. WAVE-30H Batch4 #1 threads
+    # the verified pre-admission snapshot into the call (no reload), so match the
+    # call head rather than the exact arity.
+    assert "establish_managed_admission(\n" in text or "establish_managed_admission(agent" in text
     # And the ingress freeze must thread the execution-context toolsets.
     runtime_src = (src.parent / "youtab_agent_cli" / "web_routers" / "runtime.py").read_text(
         encoding="utf-8"

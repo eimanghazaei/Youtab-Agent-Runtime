@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -393,6 +395,80 @@ def _load_managed_grant_context():
     )
 
 
+@dataclass(frozen=True)
+class ManagedPreadmission:
+    """One immutable, verified pre-admission snapshot for a managed run.
+
+    WAVE-30H Batch4 #1: the CLI previously loaded the grant + binding THREE times
+    (``preadmit_managed_run`` -> ``managed_bound_identity`` -> ``establish_managed_
+    admission``), a check-to-use TOCTOU where a later reload could observe a
+    different binding than the one the route was validated against. This snapshot is
+    produced by a SINGLE :func:`_load_managed_grant_context` load, carries every
+    field the downstream stages need (bound identity for the route gate + the loaded
+    grant context for final admission), and is threaded through pre-admission, route
+    validation, and ``establish_managed_admission`` so every stage uses the SAME
+    verified binding. Frozen => no stage can mutate it between check and use."""
+
+    __slots__ = ("context",)
+    context: "_ManagedGrantContext"
+
+    @property
+    def task_id(self) -> str:
+        return self.context.task_id
+
+    @property
+    def binding(self) -> Optional[dict]:
+        return self.context.binding
+
+    def bound_identity(self) -> Dict[str, Any]:
+        """The ``{task_id, provider, model, endpoint_fingerprint}`` the route gate
+        compares against — derived from the already-verified binding on this
+        snapshot (no reload)."""
+        b = self.context.binding or {}
+        return {
+            "task_id": self.context.task_id,
+            "provider": (b.get("provider") or ""),
+            "model": (b.get("model") or ""),
+            "endpoint_fingerprint": b.get("endpoint_fingerprint"),
+        }
+
+
+def load_verified_preadmission() -> "Optional[ManagedPreadmission]":
+    """Load + verify THIS managed run's grant/binding EXACTLY ONCE and snapshot it.
+
+    Returns ``None`` for a standalone / non-kanban run (no managed constraints).
+    For a managed run it loads the persisted grant + binding a SINGLE time, runs the
+    client-independent fail-closed gate (presence / integrity / corruption /
+    cross-tenant / run-scope / workspace-scope — ``require_client_match=False``, so
+    NO provider client and NO network), and returns an immutable
+    :class:`ManagedPreadmission` the caller threads through the route gate and
+    :func:`establish_managed_admission`. Raises :class:`ManagedWorkerAdmissionError`
+    (fail closed) on any invalid grant/binding — BEFORE any credential resolution,
+    client construction, socket, or budget. Replaces the
+    ``preadmit_managed_run()`` + ``managed_bound_identity()`` double-load.
+    """
+    ctx = _load_managed_grant_context()
+    if ctx is None:
+        return None
+    env = ctx.admitted.envelope
+    _enforce_effective_binding(
+        None, env, ctx.binding, ctx.task_id,
+        require_client_match=False,
+        authoritative_run_id=ctx.task_id,
+        authoritative_workspace=getattr(env, "workspace_id", None),
+        created_at=ctx.created_at,
+    )
+    # The client-independent gate above already refuses a missing/corrupt binding;
+    # be explicit so a managed run can never carry a None/corrupt binding past here.
+    b = ctx.binding
+    if not isinstance(b, dict) or b.get("__corrupt__"):
+        raise ManagedWorkerAdmissionError(
+            f"managed run {ctx.task_id} has no usable effective binding "
+            "(missing/corrupt); refusing before credential resolution"
+        )
+    return ManagedPreadmission(context=ctx)
+
+
 def preadmit_managed_run() -> bool:
     """Fail-closed managed gate that runs BEFORE the agent/provider client is built.
 
@@ -458,46 +534,55 @@ def managed_bound_identity():
 
 
 def assert_route_matches_binding(identity, *, provider, model, base_url) -> None:
-    """Pure route-vs-binding comparison — NO provider client, NO network, NO budget.
+    """STRICT pure route-vs-binding gate — NO provider client, NO network, NO budget.
 
-    ``identity`` is a :func:`managed_bound_identity` result (``None`` for a standalone
-    run => no-op). For a managed run this compares the CLI's RESOLVED route
-    (``provider`` / ``model`` / the fingerprint of ``base_url``) against the bound
-    substrate and raises :class:`ManagedWorkerAdmissionError` on any drift, so a
-    credential-fallback or mis-resolution to an UNBOUND provider/model/endpoint is
-    refused BEFORE ``_init_agent`` constructs a client (WAVE-30H Batch3 #1). Mirrors
-    the drift fields of :func:`_enforce_effective_binding`'s post-construction check,
-    but runs earlier and without ever touching a client. Each field is compared only
-    when both sides are present (an unresolved side is caught by the full gate).
+    ``identity`` is a bound-identity dict (from
+    :meth:`ManagedPreadmission.bound_identity` / :func:`managed_bound_identity`;
+    ``None`` for a standalone run => no-op). For a managed run the PROPOSED provider,
+    model, AND endpoint fingerprint must ALL be present AND equal to the bound
+    substrate; a missing/unresolved field OR any drift raises
+    :class:`ManagedWorkerAdmissionError`.
+
+    WAVE-30H Batch4 #1: this now runs against the PURELY-PLANNED route (see
+    :func:`runtime_provider.plan_runtime_route`) BEFORE credential resolution, so a
+    managed run whose configured route drifts from — or underspecifies — its binding
+    is refused before any OAuth mint / key refresh / credential-pool I/O / provider
+    client / socket. The previous "compare each field only when BOTH sides are
+    present" was the defect: an absent side slipped through. An absent side now FAILS
+    CLOSED. The full post-construction drift + attested model-digest re-probe in
+    :func:`establish_managed_admission` remains the last line of defense.
     """
     if not identity:
         return
     from youtab_agent_cli import effective_binding as _eb
 
     task_id = identity.get("task_id") or "?"
+
     r_provider = (provider or "").strip().lower()
     b_provider = str(identity.get("provider") or "").strip().lower()
-    if r_provider and b_provider and r_provider != b_provider:
+    if not r_provider or not b_provider or r_provider != b_provider:
         raise ManagedWorkerAdmissionError(
-            f"managed run {task_id} resolved provider {r_provider!r} drifted from the "
-            f"bound identity {b_provider!r}; refusing before client construction"
+            f"managed run {task_id} resolved provider "
+            f"{r_provider or '<missing>'!r} drifted from the bound identity "
+            f"{b_provider or '<missing>'!r}; refusing before client construction"
         )
     r_model = (model or "").strip()
     b_model = str(identity.get("model") or "").strip()
-    if r_model and b_model and r_model != b_model:
+    if not r_model or not b_model or r_model != b_model:
         raise ManagedWorkerAdmissionError(
-            f"managed run {task_id} resolved model drifted from the bound identity; "
-            "refusing before client construction"
+            f"managed run {task_id} resolved model drifted from the bound identity "
+            "(missing or mismatched); refusing before client construction"
         )
     b_fp = identity.get("endpoint_fingerprint")
-    if base_url is not None and b_fp and _eb.compute_endpoint_fingerprint(base_url) != b_fp:
+    r_fp = _eb.compute_endpoint_fingerprint(base_url) if base_url else ""
+    if not base_url or not b_fp or r_fp != b_fp:
         raise ManagedWorkerAdmissionError(
-            f"managed run {task_id} resolved endpoint drifted from the bound identity; "
-            "refusing before client construction"
+            f"managed run {task_id} resolved endpoint drifted from the bound identity "
+            "(missing or mismatched); refusing before client construction"
         )
 
 
-def establish_managed_admission(agent) -> bool:
+def establish_managed_admission(agent, *, snapshot: "Optional[ManagedPreadmission]" = None) -> bool:
     """Attach the sealed Simorgh AdmittedCommand to ``agent`` for a managed run.
 
     Returns True when an admitted context was established; False when this is not
@@ -505,12 +590,16 @@ def establish_managed_admission(agent) -> bool:
     kanban worker). Raises :class:`ManagedWorkerAdmissionError` (fail closed)
     when a managed kanban run has no valid persisted grant.
 
-    :func:`preadmit_managed_run` SHOULD have already run the client-independent gate
-    before the agent was constructed (WAVE-30H #2); this re-runs the full gate
-    (idempotent, no nonce re-burn) and adds the provider/model/endpoint drift +
-    attested model-digest re-probe now that the agent's resolved substrate is known.
+    WAVE-30H Batch4 #1: when the caller already produced a verified
+    :class:`ManagedPreadmission` (the CLI paths do, via
+    :func:`load_verified_preadmission`), it is passed in as ``snapshot`` and REUSED
+    here — the grant/binding are NOT reloaded, so final admission enforces the exact
+    same binding the pre-credential route gate validated (no check-to-use TOCTOU).
+    Callers without a snapshot (e.g. the pooled worker) still load here. This runs
+    the full gate (idempotent, no nonce re-burn) and adds the provider/model/endpoint
+    drift + attested model-digest re-probe now that the agent's substrate is known.
     """
-    ctx = _load_managed_grant_context()
+    ctx = snapshot.context if snapshot is not None else _load_managed_grant_context()
     if ctx is None:
         return False
     task_id = ctx.task_id

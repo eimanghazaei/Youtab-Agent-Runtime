@@ -86,6 +86,145 @@ def test_route_case_insensitive_provider_and_uppercase_scheme():
 
 
 # --------------------------------------------------------------------------- #
+# Batch4 #1: the gate is STRICT — a MISSING planned field fails closed          #
+# (the old "compare only when both present" let an absent side slip through).   #
+# --------------------------------------------------------------------------- #
+def test_route_missing_provider_fails_closed():
+    with pytest.raises(ManagedWorkerAdmissionError, match="provider .*drifted"):
+        assert_route_matches_binding(
+            _IDENTITY, provider="", model="qwen:test", base_url=_ENDPOINT
+        )
+
+
+def test_route_missing_model_fails_closed():
+    with pytest.raises(ManagedWorkerAdmissionError, match="model drifted"):
+        assert_route_matches_binding(
+            _IDENTITY, provider="ollama", model=None, base_url=_ENDPOINT
+        )
+
+
+def test_route_missing_base_url_fails_closed():
+    with pytest.raises(ManagedWorkerAdmissionError, match="endpoint drifted"):
+        assert_route_matches_binding(
+            _IDENTITY, provider="ollama", model="qwen:test", base_url=None
+        )
+
+
+def test_route_missing_binding_endpoint_fingerprint_fails_closed():
+    # A binding that carries no endpoint fingerprint cannot be matched -> refuse.
+    with pytest.raises(ManagedWorkerAdmissionError, match="endpoint drifted"):
+        assert_route_matches_binding(
+            {"task_id": "t", "provider": "ollama", "model": "qwen:test",
+             "endpoint_fingerprint": None},
+            provider="ollama", model="qwen:test", base_url=_ENDPOINT,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# plan_runtime_route — PURE proposed route (no pool/mint/refresh/HTTP/client)    #
+# --------------------------------------------------------------------------- #
+def test_plan_runtime_route_is_pure_and_matches_local_binding(monkeypatch, tmp_path):
+    """The planner derives provider/model/base_url from config alone, and its output
+    fingerprints to the SAME endpoint a local-server binding was built from — so a
+    correctly-configured managed run passes the strict gate with ZERO side effects."""
+    from youtab_agent_cli import runtime_provider as rp
+
+    # A local ollama deployment endpoint (the protected env the resolver reads).
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    # plan_runtime_route imports load_config lazily from youtab_agent_cli.config.
+    monkeypatch.setattr(
+        "youtab_agent_cli.config.load_config",
+        lambda: {"model": {"provider": "ollama", "default": "qwen:test"}},
+    )
+    # Any network call from inside the planner would be a contract violation.
+    import socket as _socket
+
+    def _boom(*a, **k):  # noqa: ANN001
+        raise AssertionError("plan_runtime_route performed network I/O")
+
+    monkeypatch.setattr(_socket.socket, "connect", _boom)
+
+    planned = rp.plan_runtime_route(requested="ollama", configured_model="qwen:test")
+    assert planned["provider"] == "ollama"
+    assert planned["model"] == "qwen:test"
+    # The inference base_url gains /v1; it must fingerprint identically to the bound
+    # endpoint root (normalize drops the authority-equal path difference for loopback).
+    identity = {
+        "task_id": "t", "provider": "ollama", "model": "qwen:test",
+        "endpoint_fingerprint": eb.compute_endpoint_fingerprint(planned["base_url"]),
+    }
+    assert_route_matches_binding(
+        identity, provider=planned["provider"], model=planned["model"],
+        base_url=planned["base_url"],
+    )
+
+
+def test_plan_runtime_route_reports_drifting_vertex_provider_without_mint(monkeypatch):
+    """An ollama-bound run misconfigured with a Vertex primary: the planner reports
+    provider 'vertex' (so the strict gate refuses on the provider mismatch) WITHOUT
+    importing or calling the Vertex OAuth mint."""
+    from youtab_agent_cli import runtime_provider as rp
+
+    monkeypatch.setattr(
+        "youtab_agent_cli.config.load_config",
+        lambda: {"model": {"provider": "vertex"}},
+    )
+    planned = rp.plan_runtime_route(requested="vertex", configured_model="gemini-x")
+    assert planned["provider"] == "vertex"
+    with pytest.raises(ManagedWorkerAdmissionError, match="provider .*drifted"):
+        assert_route_matches_binding(
+            _IDENTITY, provider=planned["provider"], model=planned["model"],
+            base_url=planned["base_url"],
+        )
+
+
+# --------------------------------------------------------------------------- #
+# ManagedPreadmission — one immutable snapshot threaded through all stages       #
+# --------------------------------------------------------------------------- #
+def test_managed_preadmission_is_frozen_and_reused_without_reload(monkeypatch):
+    """A replacement of the persisted binding BETWEEN stages cannot influence
+    execution: the snapshot is frozen and ``establish_managed_admission`` reuses its
+    context instead of reloading (so check and use see the SAME binding)."""
+    # Frozen: fields cannot be mutated after construction.
+    class _Env:
+        tenant_id = None
+        workspace_id = None
+
+    class _Admitted:
+        envelope = _Env()
+
+    class _Ctx:
+        task_id = "t"
+        admitted = _Admitted()
+        capability_binding = None
+        created_at = None
+        # No binding_hash -> verify_binding() fails closed -> enforcement raises,
+        # which is enough to prove the reload path was not taken.
+        binding = {"provider": "ollama", "model": "m", "endpoint_fingerprint": "fp"}
+
+    snap = wa.ManagedPreadmission(context=_Ctx())
+    with pytest.raises(Exception):
+        snap.context = _Ctx()  # frozen dataclass rejects reassignment
+
+    # establish_managed_admission must NOT reload when a snapshot is supplied: patch
+    # the loader to explode if it is ever called with a snapshot present.
+    def _must_not_load():
+        raise AssertionError("establish_managed_admission reloaded despite a snapshot")
+
+    monkeypatch.setattr(wa, "_load_managed_grant_context", _must_not_load)
+
+    # A throwaway agent object; enforcement will raise on the stub binding, but the
+    # key assertion is that the reload path was NOT taken (no AssertionError).
+    class _Agent:
+        provider = None
+        model = None
+        base_url = None
+
+    with pytest.raises(wa.ManagedWorkerAdmissionError):
+        wa.establish_managed_admission(_Agent(), snapshot=snap)
+
+
+# --------------------------------------------------------------------------- #
 # managed_bound_identity — None in standalone trust mode                         #
 # --------------------------------------------------------------------------- #
 def test_managed_bound_identity_none_in_standalone():
