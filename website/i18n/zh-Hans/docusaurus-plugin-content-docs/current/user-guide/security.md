@@ -539,10 +539,10 @@ security:
   tirith_enabled: true       # 启用/禁用 tirith 扫描（默认：true）
   tirith_path: "tirith"      # tirith 二进制路径（默认：PATH 查找）
   tirith_timeout: 5          # 子进程超时（秒）
-  tirith_fail_open: true     # tirith 不可用时允许执行（默认：true）
+  tirith_fail_open: false    # tirith 不可用时阻止执行（默认：false）
 ```
 
-当 `tirith_fail_open` 为 `true`（默认）时，若 tirith 未安装或超时，命令照常执行。在高安全性环境中，将其设置为 `false` 可在 tirith 不可用时阻止命令执行。
+当 `tirith_fail_open` 为 `false`（默认）时，若 tirith 未安装、超时或失败，命令会被阻止。仅在明确接受扫描器不可用风险的交互式本地环境中，才应将其设置为 `true`。
 
 Tirith 为 Linux（x86_64 / aarch64）和 macOS（x86_64 / arm64）提供预构建二进制文件。在没有预构建二进制文件的平台（Windows 等）上，tirith 会被静默跳过——模式匹配防护仍然运行，CLI 不会显示"不可用"横幅。若要在 Windows 上使用 tirith，请在 WSL 下运行 Youtab。
 
@@ -640,7 +640,7 @@ youtab doctor --ack <advisory-id>
 工作原理：
 
 1. 后端模块在其首次导入路径的顶部调用 `ensure("feature.name")`。
-2. 若依赖缺失，`ensure` 检查 `config.yaml` 中的 `security.allow_lazy_installs`（默认 `true`），并为允许列表中的规格运行 venv 作用域的 `pip install`。
+2. 若依赖缺失，`ensure` 检查 `config.yaml` 中的 `security.allow_lazy_installs`。未显式配置时，仅非托管的本地交互环境允许安装；托管、cron 和 gateway 环境默认禁止。允许时，只为允许列表中的规格运行 venv 作用域的 `pip install`。
 3. 若安装失败或用户已禁用懒加载安装，调用会抛出 `FeatureUnavailable`，附带实际的 pip stderr 和指向 `youtab tools` 的提示。
 
 `tools/lazy_deps.py` 强制执行的安全保证：

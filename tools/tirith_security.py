@@ -71,7 +71,7 @@ def _load_security_config() -> dict:
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
-        "tirith_fail_open": True,
+        "tirith_fail_open": False,
     }
     try:
         from youtab_agent_cli.config import load_config
@@ -750,13 +750,16 @@ def check_command_security(command: str) -> dict:
     # → fail-open → agent retry loop, hanging the user for 20+ minutes
     # (issue #41400).
     if _circuit_open:
-        return {"action": "allow", "findings": [], "summary": "tirith disabled (circuit breaker)"}
+        action = "allow" if cfg["tirith_fail_open"] else "block"
+        return {"action": action, "findings": [], "summary": "tirith disabled (circuit breaker)"}
 
     # Unsupported platform (Windows etc.) — tirith has no binary here and
     # never will. Skip the resolver entirely so we don't even try to spawn.
     # Pattern-matching guards still run via the rest of approval.py.
     if not is_platform_supported():
-        return {"action": "allow", "findings": [], "summary": ""}
+        action = "allow" if cfg["tirith_fail_open"] else "block"
+        summary = "" if action == "allow" else "tirith unsupported on this platform"
+        return {"action": action, "findings": [], "summary": summary}
 
     tirith_path = _resolve_tirith_path(cfg["tirith_path"])
     timeout = cfg["tirith_timeout"]

@@ -512,20 +512,38 @@ def _allow_lazy_installs() -> bool:
        redirected there (a path that structurally cannot break the sealed
        venv) and are therefore allowed.
 
-    Defaults to True. If config is unreadable we fail open (allow), because
-    refusing to install would lock people out of their own backends; the
-    decision to block is an explicit user opt-in.
+    An explicit boolean always wins. With the profile-aware default (None),
+    installs remain available to an unmanaged local process but are disabled
+    in cron, gateway and managed deployments. An unreadable config fails closed.
     """
     # (1) Config kill switch wins in every mode.
     try:
         from youtab_agent_cli.config import load_config
         cfg = load_config()
     except Exception:
-        cfg = None
+        return False
     if cfg is not None:
         sec = cfg.get("security") or {}
-        if not bool(sec.get("allow_lazy_installs", True)):
+        configured = sec.get("allow_lazy_installs")
+        if configured is not None:
+            return bool(configured)
+
+    unattended = any(
+        os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+        for name in (
+            "YOUTAB_AGENT_CRON_SESSION",
+            "YOUTAB_AGENT_GATEWAY_SESSION",
+            "YOUTAB_AGENT_MANAGED",
+        )
+    )
+    if unattended:
+        return False
+    try:
+        from youtab_agent_cli.managed_scope import get_managed_dir
+        if get_managed_dir() is not None:
             return False
+    except Exception:
+        return False
 
     # (2) Sealed-venv env var: blocks ONLY when there is no safe durable
     # target to redirect into. With a target set, the install goes to the

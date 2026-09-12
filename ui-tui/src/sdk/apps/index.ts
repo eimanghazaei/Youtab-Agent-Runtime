@@ -3,8 +3,13 @@
  *  from $YOUTAB_AGENT_HOME/tui-widgets ride the same import (async, non-fatal). */
 import { loadUserWidgets, watchUserWidgets } from '../userWidgets.js'
 
-void loadUserWidgets()
-watchUserWidgets()
+// Test workers import this registry many times. They must not read or watch the
+// operator's real widget directory; watcher accumulation can also exhaust the
+// process file-descriptor budget before the security suite completes.
+if (!process.env.VITEST) {
+  void loadUserWidgets()
+  watchUserWidgets()
+}
 
 export { dialogTestApp } from './dialogTest.js'
 export { gridTestApp } from './gridTest.js'

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "exceptions": [
+    {
+      "id": "website-image-size-build-dos-2026-09",
+      "owner": "@eimanghazaei",
+      "ecosystem": "npm",
+      "package": "image-size",
+      "advisories": [
+        "GHSA-w3rx-r6r6-pgpr",
+        "GHSA-5p2g-fcmc-qvqq"
+      ],
+      "severity": "high",
+      "scope": "website trusted build-time only; no package is shipped in the runtime artifact",
+      "reachability": "transitive only through @docusaurus/mdx-loader while reading repository documentation images",
+      "mitigations": [
+        "documentation builds accept repository files only",
+        "the generated static site does not execute image-size",
+        "npm audit is rerun before the exception expires"
+      ],
+      "accepted_on": "2026-09-12",
+      "expires_on": "2026-10-12",
+      "upstream_fix": "none available as of 2026-09-12"
+    }
+  ]
+}

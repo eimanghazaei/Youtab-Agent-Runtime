@@ -1580,7 +1580,7 @@ security:
   tirith_enabled: true           # 为终端命令启用 Tirith 安全扫描
   tirith_path: "tirith"          # tirith 二进制文件路径（默认：$PATH 中的 "tirith"）
   tirith_timeout: 5              # 等待 tirith 扫描的秒数
-  tirith_fail_open: true         # 如果 tirith 不可用，允许命令执行
+  tirith_fail_open: false        # 如果 tirith 不可用，阻止命令执行
   website_blocklist:             # 参见下方网站黑名单部分
     enabled: false
     domains: []
@@ -1591,7 +1591,7 @@ security:
 - `tirith_enabled` —— 为 `true` 时，终端命令在执行前由 [Tirith](https://github.com/sheeki03/tirith) 扫描以检测潜在危险操作。
 - `tirith_path` —— tirith 二进制文件的路径。如果 tirith 安装在非标准位置，请设置此项。
 - `tirith_timeout` —— 等待 tirith 扫描的最大秒数。如果扫描超时，命令继续执行。
-- `tirith_fail_open` —— 为 `true`（默认）时，如果 tirith 不可用或失败，允许命令执行。设置为 `false` 以在 tirith 无法验证时阻止命令。
+- `tirith_fail_open` —— 为 `false`（默认）时，如果 tirith 不可用或失败，阻止命令执行。仅在明确接受扫描器不可用风险的交互式本地环境中，才应将其设置为 `true`。
 
 ## 网站黑名单
 

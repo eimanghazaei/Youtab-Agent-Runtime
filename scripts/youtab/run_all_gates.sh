@@ -44,6 +44,7 @@ record branding $?
 
 begin secrets
 "$python_bin" scripts/youtab/secret_gate.py --root . --output "$evidence_dir/secrets.json"
+"$python_bin" scripts/youtab/dependency_exception_gate.py
 record secrets $?
 
 begin dependencies

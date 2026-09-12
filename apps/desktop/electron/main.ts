@@ -12,6 +12,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  ClipboardItem,
   dialog,
   net as electronNet,
   globalShortcut,
@@ -4760,7 +4761,12 @@ async function copyImageFromUrl(rawUrl) {
     throw new Error('Could not read image')
   }
 
-  clipboard.writeImage(image)
+  const png = image.toPNG()
+  await clipboard.write([
+    new ClipboardItem({
+      'image/png': new Blob([new Uint8Array(png)], { type: 'image/png' }),
+    }),
+  ])
 }
 
 async function saveImageFromUrl(rawUrl) {
@@ -10399,10 +10405,17 @@ ipcMain.handle('youtab:saveImageBuffer', async (_event, payload) => {
 })
 
 ipcMain.handle('youtab:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
-
-  if (image && !image.isEmpty()) {
-    return writeComposerImage(image.toPNG(), '.png')
+  const items = await clipboard.read()
+  for (const item of items) {
+    const imageType = item.types.find((type) => type.startsWith('image/'))
+    if (!imageType) continue
+    const blob = await item.getType(imageType)
+    if (blob instanceof Blob) {
+      return writeComposerImage(
+        Buffer.from(await blob.arrayBuffer()),
+        extensionForMimeType(imageType) || '.png',
+      )
+    }
   }
 
   // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the

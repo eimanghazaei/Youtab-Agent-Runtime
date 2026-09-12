@@ -47,6 +47,30 @@ def test_load_managed_env_and_is_env_managed(tmp_path, monkeypatch):
     assert managed_scope.is_env_managed("OTHER") is False
 
 
+def test_malformed_managed_config_fails_closed(tmp_path, monkeypatch):
+    from youtab_agent_cli import managed_scope
+
+    _write_managed(tmp_path, monkeypatch, config="security: [unterminated\n")
+    with pytest.raises(managed_scope.ManagedScopeError, match="managed policy is invalid"):
+        managed_scope.load_managed_config()
+
+
+def test_non_mapping_managed_config_fails_closed(tmp_path, monkeypatch):
+    from youtab_agent_cli import managed_scope
+
+    _write_managed(tmp_path, monkeypatch, config="- security\n- policy\n")
+    with pytest.raises(managed_scope.ManagedScopeError, match="root must be a mapping"):
+        managed_scope.load_managed_config()
+
+
+def test_malformed_managed_env_fails_closed(tmp_path, monkeypatch):
+    from youtab_agent_cli import managed_scope
+
+    _write_managed(tmp_path, monkeypatch, env="VALID=1\nBROKEN_LINE\n")
+    with pytest.raises(managed_scope.ManagedScopeError, match="managed policy is invalid"):
+        managed_scope.load_managed_env()
+
+
 
 
 def test_managed_dir_env_scrubbed_by_default():
