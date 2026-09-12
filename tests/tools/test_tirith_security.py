@@ -137,7 +137,8 @@ class TestOSErrorFailOpen:
                                  "tirith_timeout": 5, "tirith_fail_open": False}
         mock_run.side_effect = FileNotFoundError("No such file: tirith")
         result = check_command_security("echo hi")
-        assert result["action"] == "block"
+        assert result["action"] == "warn"
+        assert result["operational_failure"] is True
         assert "fail-closed" in result["summary"]
 
 
@@ -149,7 +150,8 @@ class TestTimeoutFailOpen:
                                  "tirith_timeout": 5, "tirith_fail_open": False}
         mock_run.side_effect = subprocess.TimeoutExpired(cmd="tirith", timeout=5)
         result = check_command_security("slow command")
-        assert result["action"] == "block"
+        assert result["action"] == "warn"
+        assert result["operational_failure"] is True
         assert "fail-closed" in result["summary"]
 
 
@@ -161,7 +163,8 @@ class TestUnknownExitCode:
                                  "tirith_timeout": 5, "tirith_fail_open": False}
         mock_run.return_value = _mock_run(99, "")
         result = check_command_security("cmd")
-        assert result["action"] == "block"
+        assert result["action"] == "warn"
+        assert result["operational_failure"] is True
         assert "exit code 99" in result["summary"]
 
 
@@ -267,9 +270,27 @@ class TestUnsupportedPlatform:
              patch("tools.tirith_security.subprocess.run") as mock_run, \
              patch("tools.tirith_security._resolve_tirith_path") as mock_resolve:
             result = check_command_security("rm -rf /")
-            assert result == {"action": "allow", "findings": [], "summary": ""}
+            assert result == {
+                "action": "allow",
+                "findings": [],
+                "summary": "",
+                "operational_failure": True,
+            }
             mock_run.assert_not_called()
             mock_resolve.assert_not_called()
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_unsupported_fail_closed_is_approvable_warning(self, mock_cfg):
+        mock_cfg.return_value = {"tirith_enabled": True, "tirith_path": "tirith",
+                                 "tirith_timeout": 5, "tirith_fail_open": False}
+        with patch("tools.tirith_security.is_platform_supported", return_value=False), \
+             patch("tools.tirith_security.subprocess.run") as mock_run:
+            result = check_command_security("echo hello")
+
+        assert result["action"] == "warn"
+        assert result["operational_failure"] is True
+        assert "unsupported" in result["summary"]
+        mock_run.assert_not_called()
 
     @patch("tools.tirith_security._load_security_config")
     def test_explicit_path_still_honored_on_unsupported_platform(self, mock_cfg):

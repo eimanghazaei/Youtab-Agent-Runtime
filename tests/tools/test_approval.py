@@ -1365,6 +1365,94 @@ class TestTirithImportErrorFailOpenPolicy:
         assert "tirith" in calls[0]["description"].lower() or "unavailable" in calls[0]["description"].lower()
 
 
+class TestTirithOperationalFailurePolicy:
+    """Operational scanner failures require a local human or deny execution."""
+
+    def _fail_closed_config(self):
+        return {
+            "approvals": {"mode": "manual", "cron_mode": "approve"},
+            "security": {"tirith_enabled": True, "tirith_fail_open": False,
+                         "tirith_path": "tirith", "tirith_timeout": 5},
+        }
+
+    def test_windows_unsupported_local_interactive_prompts(self, monkeypatch):
+        calls = []
+
+        def approval_callback(command, description, **kwargs):
+            calls.append((command, description))
+            return "deny"
+
+        monkeypatch.setenv("YOUTAB_AGENT_INTERACTIVE", "1")
+        for name in (
+            "YOUTAB_AGENT_CRON_SESSION", "YOUTAB_AGENT_GATEWAY_SESSION",
+            "YOUTAB_AGENT_EXEC_ASK", "YOUTAB_AGENT_MANAGED",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+        with (
+            mock_patch("youtab_agent_cli.config.load_config",
+                       return_value=self._fail_closed_config()),
+            mock_patch("tools.tirith_security._load_security_config",
+                       return_value=self._fail_closed_config()["security"]),
+            mock_patch("tools.tirith_security.is_platform_supported", return_value=False),
+            mock_patch("tools.approval.detect_dangerous_command",
+                       return_value=(False, None, None)),
+            mock_patch("tools.approval._is_managed_security_context", return_value=False),
+            mock_patch("tools.approval._is_interactive_cli", return_value=True),
+            mock_patch("tools.approval._is_gateway_approval_context", return_value=False),
+            mock_patch("tools.approval._get_approval_mode", return_value="manual"),
+            mock_patch("tools.approval._command_matches_permanent_allowlist", return_value=False),
+            mock_patch("tools.approval.is_current_session_yolo_enabled", return_value=False),
+            mock_patch("tools.approval.is_approved", return_value=False),
+            mock_patch.object(approval_module, "_YOLO_MODE_FROZEN", False),
+        ):
+            result = approval_module.check_all_command_guards(
+                "echo hello", "local", approval_callback=approval_callback,
+            )
+
+        assert result["approved"] is False
+        assert result["outcome"] == "denied"
+        assert len(calls) == 1
+        assert "unsupported" in calls[0][1].lower()
+
+    @pytest.mark.parametrize("surface", ["batch", "cron", "gateway", "managed"])
+    def test_windows_unsupported_unattended_denies(self, monkeypatch, surface):
+        for name in (
+            "YOUTAB_AGENT_INTERACTIVE", "YOUTAB_AGENT_CRON_SESSION",
+            "YOUTAB_AGENT_GATEWAY_SESSION", "YOUTAB_AGENT_EXEC_ASK",
+            "YOUTAB_AGENT_MANAGED",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        if surface == "cron":
+            monkeypatch.setenv("YOUTAB_AGENT_CRON_SESSION", "1")
+        elif surface == "gateway":
+            monkeypatch.setenv("YOUTAB_AGENT_GATEWAY_SESSION", "1")
+        elif surface == "managed":
+            monkeypatch.setenv("YOUTAB_AGENT_MANAGED", "1")
+
+        with (
+            mock_patch("youtab_agent_cli.config.load_config",
+                       return_value=self._fail_closed_config()),
+            mock_patch("tools.tirith_security._load_security_config",
+                       return_value=self._fail_closed_config()["security"]),
+            mock_patch("tools.tirith_security.is_platform_supported", return_value=False),
+            mock_patch("tools.approval.detect_dangerous_command",
+                       return_value=(False, None, None)),
+            mock_patch("tools.approval._get_approval_mode", return_value="manual"),
+            mock_patch("tools.approval._command_matches_permanent_allowlist", return_value=False),
+            mock_patch("tools.approval.is_current_session_yolo_enabled", return_value=False),
+            mock_patch("tools.approval._is_interactive_cli", return_value=False),
+            mock_patch("tools.approval._is_gateway_approval_context",
+                       return_value=surface == "gateway"),
+            mock_patch.object(approval_module, "_YOLO_MODE_FROZEN", False),
+        ):
+            result = approval_module.check_all_command_guards("echo hello", "local")
+
+        assert result["approved"] is False
+        assert result["operational_failure"] is True
+        assert "unsupported" in result["message"].lower()
+
+
 class TestApprovalPromptRedaction:
     """Secrets are masked in user-facing approval surfaces (#13139).
 

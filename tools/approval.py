@@ -3265,6 +3265,79 @@ def _format_tirith_description(tirith_result: dict) -> str:
     return "Security scan — " + "; ".join(parts)
 
 
+def _tirith_import_failure_result() -> dict:
+    """Map an unavailable scanner module to the configured safety policy."""
+    enabled = True
+    fail_open = False
+    try:
+        from youtab_agent_cli.config import load_config
+
+        security = (load_config() or {}).get("security", {}) or {}
+        enabled = bool(security.get("tirith_enabled", True))
+        fail_open = bool(security.get("tirith_fail_open", False))
+    except Exception:
+        # An unreadable policy cannot silently turn off a security boundary.
+        pass
+    if not enabled or fail_open:
+        return {"action": "allow", "findings": [], "summary": ""}
+    return {
+        "action": "warn",
+        "findings": [
+            {
+                "rule_id": "tirith-import-error",
+                "severity": "HIGH",
+                "title": "Tirith security module unavailable",
+                "description": (
+                    "The Tirith security scanner could not be imported. "
+                    "Because security.tirith_fail_open is false, this command "
+                    "cannot be silently allowed."
+                ),
+            }
+        ],
+        "summary": "Tirith unavailable (fail-closed)",
+        "operational_failure": True,
+    }
+
+
+def _run_tirith_command_guard(command: str) -> dict:
+    """Run Tirith and normalize a missing module into a structured result."""
+    try:
+        from tools.tirith_security import check_command_security
+
+        return check_command_security(command)
+    except ImportError:
+        return _tirith_import_failure_result()
+
+
+def _is_managed_security_context() -> bool:
+    """Return whether administrator policy makes this a managed runtime."""
+    if env_var_enabled("YOUTAB_AGENT_MANAGED"):
+        return True
+    try:
+        from youtab_agent_cli.managed_scope import get_managed_dir
+
+        return get_managed_dir() is not None
+    except Exception:
+        # Failure to establish the managed boundary must not grant an override.
+        return True
+
+
+def _unattended_tirith_block(tirith_result: dict, context: str) -> dict | None:
+    """Deny scan warnings/failures when no local human can assess them."""
+    if tirith_result.get("action") not in {"block", "warn"}:
+        return None
+    description = _format_tirith_description(tirith_result)
+    return {
+        "approved": False,
+        "message": (
+            f"BLOCKED: {description}. {context} cannot override a security "
+            "scanner warning or availability failure without a local human."
+        ),
+        "description": description,
+        "operational_failure": bool(tirith_result.get("operational_failure")),
+    }
+
+
 def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                             *, surface: str = "gateway") -> dict:
     """Enqueue *approval_data*, notify the user, and block the calling agent
@@ -3441,118 +3514,44 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("YOUTAB_AGENT_EXEC_ASK")
 
-    # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
-    # flows, we do not block on approvals and we skip external guard work.
+    # Without a human approval surface, a scanner warning or availability
+    # failure is a denial. Local interactive sessions handle the same
+    # operational failure below as an approvable warning.
     if not is_cli and not is_gateway and not is_ask:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("YOUTAB_AGENT_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
-                # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
-                if is_dangerous:
-                    return {
-                        "approved": False,
-                        "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
-                            "but cron jobs run without a user present to approve it. "
-                            "Find an alternative approach that avoids this command. "
-                            "To allow dangerous commands in cron jobs, set "
-                            "approvals.cron_mode: approve in config.yaml."
-                        ),
-                    }
-                # Also run tirith check in cron-deny mode so content-level
-                # threats (homograph URLs, pipe-to-interpreter, terminal
-                # injection, etc.) are caught even when they do not match
-                # the pattern-based detection above.
-                try:
-                    from tools.tirith_security import check_command_security
-                    _cron_tirith = check_command_security(command)
-                    if _cron_tirith.get("action") in ("block", "warn"):
-                        _cron_desc = _format_tirith_description(_cron_tirith)
-                        return {
-                            "approved": False,
-                            "message": (
-                                f"BLOCKED: {_cron_desc} "
-                                "but cron jobs run without a user present to approve it. "
-                                "Find an alternative approach that avoids this command. "
-                                "To allow dangerous commands in cron jobs, set "
-                                "approvals.cron_mode: approve in config.yaml."
-                            ),
-                        }
-                except ImportError:
-                    # Tirith not installed. Honour security.tirith_fail_open:
-                    # the default (True) allows as before, but when an operator
-                    # has explicitly opted into fail-closed the command cannot
-                    # be silently allowed — and a cron session has no user to
-                    # approve it, so fail-closed means block (mirrors the
-                    # fail-closed synthesis in the main flow below; see #20733).
-                    _cron_fail_open = False
-                    try:
-                        from youtab_agent_cli.config import load_config as _load_cfg
-                        _sec = (_load_cfg() or {}).get("security", {}) or {}
-                        if _sec.get("tirith_enabled", True):
-                            _cron_fail_open = bool(_sec.get("tirith_fail_open", False))
-                    except Exception:
-                        pass
-                    if not _cron_fail_open:
-                        return {
-                            "approved": False,
-                            "message": (
-                                "BLOCKED: the Tirith security scanner could not be "
-                                "imported and security.tirith_fail_open is false, "
-                                "so this command cannot be silently allowed — and "
-                                "cron jobs run without a user present to approve it. "
-                                "Find an alternative approach, install tirith, or set "
-                                "approvals.cron_mode: approve in config.yaml."
-                            ),
-                        }
-                    # else: tirith_fail_open is True — allow as before
+        is_cron = env_var_enabled("YOUTAB_AGENT_CRON_SESSION")
+        if is_cron and _get_cron_approval_mode() == "deny":
+            is_dangerous, _pk, description = detect_dangerous_command(command)
+            if is_dangerous:
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        "Find an alternative approach that avoids this command."
+                    ),
+                }
+
+        tirith_result = _run_tirith_command_guard(command)
+        context = "Cron execution" if is_cron else "Unattended execution"
+        blocked = _unattended_tirith_block(tirith_result, context)
+        if blocked is not None:
+            return blocked
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
 
-    # Tirith check — wrapper guarantees no raise for expected failures.
-    # Only catch ImportError (module not installed).
-    tirith_result = {"action": "allow", "findings": [], "summary": ""}
-    try:
-        from tools.tirith_security import check_command_security
-        tirith_result = check_command_security(command)
-    except ImportError:
-        # Tirith module not installed.  When tirith_fail_open is True (the
-        # default) we silently allow, matching the pre-existing behaviour.
-        # When tirith_fail_open is False the operator has explicitly opted into
-        # fail-closed; an import failure must not silently grant access, so we
-        # synthesize a warn result that will be surfaced to the user through the
-        # normal approval flow.  Fixes #20733.
-        _tirith_enabled = True
-        _tirith_fail_open = False
-        try:
-            from youtab_agent_cli.config import load_config as _load_cfg
-            _sec = (_load_cfg() or {}).get("security", {}) or {}
-            _tirith_enabled = _sec.get("tirith_enabled", True)
-            if _tirith_enabled:
-                _tirith_fail_open = bool(_sec.get("tirith_fail_open", False))
-        except Exception:
-            pass
-        if _tirith_enabled and not _tirith_fail_open:
-            tirith_result = {
-                "action": "warn",
-                "findings": [
-                    {
-                        "rule_id": "tirith-import-error",
-                        "severity": "HIGH",
-                        "title": "Tirith security module unavailable",
-                        "description": (
-                            "The Tirith security scanner could not be imported. "
-                            "Because security.tirith_fail_open is false, this "
-                            "command cannot be silently allowed. Approve only if "
-                            "you have verified the command is safe."
-                        ),
-                    }
-                ],
-                "summary": "Tirith unavailable (fail-closed)",
-            }
-        # else: tirith_fail_open is True — allow as before (tirith_result stays "allow")
+    tirith_result = _run_tirith_command_guard(command)
+
+    # Gateway and managed surfaces do not provide the local-owner override
+    # needed to assess an unavailable scanner. Actual scanner findings retain
+    # their existing approval behavior; only operational failures are denied.
+    if tirith_result.get("operational_failure") and (
+        is_gateway or _is_managed_security_context()
+    ):
+        context = "Gateway execution" if is_gateway else "Managed execution"
+        blocked = _unattended_tirith_block(tirith_result, context)
+        if blocked is not None:
+            return blocked
 
     # Dangerous command check (detection only, no approval)
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
