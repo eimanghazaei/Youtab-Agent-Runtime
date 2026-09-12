@@ -334,6 +334,21 @@ def test_unknown_binding_version_refused_at_worker():
         _enforce(_agent(), _env(), b)
 
 
+def test_unresolved_binding_refused_when_client_match_required():
+    # WAVE-30H Batch3: a real-model worker (require_client_match) must refuse a binding
+    # whose model is not fully resolved — BEFORE any provider client/budget. Covered
+    # here deterministically (single binding, no duplicate); the duplicate-version
+    # corruption path is exercised in the subprocess E2E.
+    b = _binding(model=None)
+    assert b["model_identifier_status"] != "resolved"
+    assert eb.verify_binding(b) is True  # self-consistent, just unresolved
+    with pytest.raises(ManagedWorkerAdmissionError, match="not fully resolved"):
+        _enforce(
+            _agent(provider="ollama", model="qwen:tag", base_url="http://127.0.0.1:11434"),
+            _env(), b, require_client_match=True,
+        )
+
+
 def test_legacy_v1_refused_outside_migration_window(monkeypatch):
     monkeypatch.delenv("YOUTAB_MANAGED_BINDING_LEGACY_UNTIL", raising=False)
     monkeypatch.delenv("YOUTAB_MANAGED_BINDING_LEGACY_CREATED_BEFORE", raising=False)

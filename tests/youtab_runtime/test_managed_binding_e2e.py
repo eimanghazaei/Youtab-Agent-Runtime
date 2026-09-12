@@ -779,32 +779,34 @@ def test_E_create_side_managed_model_unresolved(managed_deferred, monkeypatch):
     assert r.json()["detail"]["error"] == "managed_model_unresolved"
 
 
-def test_E_worker_side_unresolved_binding_fails_closed(managed_deferred, tmp_path):
-    """The create endpoint fail-closes an unresolved managed model-run, so the
-    worker-side "not fully resolved" gate cannot be reached through create — the
-    unresolved binding is seeded DIRECTLY onto a legitimately-created run and the
-    real-model worker is then run against it."""
+def test_E_worker_side_duplicate_version_binding_refused_as_corrupt(managed_deferred, tmp_path):
+    """WAVE-30H Batch3 #2: the run already carries its create-time binding (current
+    version). Seeding a SECOND, self-consistent, correctly-rehashed binding at the
+    SAME version is a duplicate on an append-only contract: it must be refused as
+    CORRUPT before any execution — it can never silently replace the original
+    provider/model/endpoint binding. (The worker-side "not fully resolved" substrate
+    gate is unit-covered deterministically in test_binding_enforcement.)"""
     _, header = _mint_grant()
     run_id = _create(managed_deferred, grant_header=header).json()["run_id"]
 
-    # Seed a self-consistent but UNRESOLVED binding (higher version -> current),
-    # correctly scoped to this run/tenant/workspace so it passes every earlier gate
-    # and reaches the fully-resolved check.
-    unresolved = eb.build_effective_binding(
+    # A self-consistent, fully-rehashed replacement at the SAME version as the
+    # create-time binding, correctly scoped so it passes every per-field gate — but a
+    # DUPLICATE version. Its substrate even differs (unresolved model), which is
+    # exactly the silent-displacement the duplicate guard prevents.
+    duplicate = eb.build_effective_binding(
         provider=SUB_PROVIDER, model=None, endpoint=SUB_ENDPOINT,
         binding_version=2, run_id=run_id, root_run_id=run_id,
         tenant=TENANT, workspace=rca.WORKSPACE_UNSCOPED,
     )
-    assert unresolved["model_identifier_status"] != "resolved"
-    assert eb.verify_binding(unresolved) is True
-    _seed_binding(tmp_path, run_id, unresolved)
+    assert eb.verify_binding(duplicate) is True  # the replacement self-verifies
+    _seed_binding(tmp_path, run_id, duplicate)
 
     rc, res, net_s, client_s = _run_neg_worker(
         tmp_path, run_id, provider=SUB_PROVIDER, model=SUB_MODEL, base_url=SUB_ENDPOINT
     )
     _assert_refused_zero_execution(
         tmp_path, rc, res,
-        f"managed run {run_id} effective binding is not fully resolved; refusing",
+        f"managed run {run_id} effective binding is corrupt; refusing",
         net_s, client_s,
     )
 

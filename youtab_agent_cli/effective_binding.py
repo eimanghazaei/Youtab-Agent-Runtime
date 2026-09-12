@@ -125,7 +125,10 @@ def classify_endpoint(url: Optional[str]) -> str:
     raw = (url or "").strip()
     if not raw:
         return "unavailable"
-    if not raw.startswith("http"):
+    # Scheme detection is CASE-INSENSITIVE and mirrors ``normalize_endpoint`` (only
+    # prepend when there is no scheme at all). ``raw.startswith("http")`` missed an
+    # uppercase ``HTTPS://…`` and prepended ``http://`` to it, misclassifying the host.
+    if "://" not in raw:
         raw = "http://" + raw
     try:
         host = (urlparse(raw).hostname or "").lower().rstrip(".")
@@ -413,18 +416,24 @@ def effective_binding_from_events(events: Sequence[Any]) -> Optional[Dict[str, A
     """Return the CURRENT effective binding for a run, or ``None``.
 
     The current binding is the highest-``binding_version`` :data:`BINDING_EVENT`
-    payload (append-only: a rebind appends version+1). At a version TIE the LAST
-    such event wins (``>=``), so the MOST RECENTLY appended binding is authoritative:
-    an injected binding at the same version is EVALUATED (and then refused by the
-    integrity / scope / version gates) rather than silently shadowed by the original
-    — strictly more fail-closed than first-wins. In normal operation each version is
-    appended exactly once, so ties only arise under injection/tests. Returns ``None``
-    for a legacy/standalone run with no binding event, and ``{"__corrupt__": True}``
-    when a binding event lacks a valid integer ``binding_version`` (so the caller can
-    fail closed rather than guess).
+    payload (append-only: a legitimate rebind appends a STRICTLY INCREASING version
+    under explicit authorization). The binding log is an immutable append-only
+    contract, so TWO binding events sharing the same ``binding_version`` are
+    CORRUPTION — never "the last one wins". A self-consistent, correctly re-hashed
+    same-version replacement would otherwise silently displace the original
+    provider/model/endpoint binding (the unkeyed self-hash can be recomputed for the
+    replacement and the downstream integrity/scope/version gates cannot detect it when
+    the replacement keeps the same run/tenant/workspace). So a duplicate version fails
+    closed here: we return ``{"__corrupt__": True}`` and the caller refuses. Selection
+    is therefore strictly increasing (``>``), and there is NO unsigned rebind-acceptance
+    path — a rebind must arrive as a higher version through the authorized protocol.
+    Returns ``None`` for a legacy/standalone run with no binding event, and
+    ``{"__corrupt__": True}`` when a binding event lacks a valid integer
+    ``binding_version`` OR when any version appears more than once.
     """
     current: Optional[Dict[str, Any]] = None
     best = -1
+    seen_versions: set = set()
     for e in events:
         if getattr(e, "kind", None) != BINDING_EVENT:
             continue
@@ -435,6 +444,11 @@ def effective_binding_from_events(events: Sequence[Any]) -> Optional[Dict[str, A
             version = int(payload.get("binding_version"))
         except (TypeError, ValueError):
             return {"__corrupt__": True}
-        if version >= best:
+        if version in seen_versions:
+            # Duplicate version on an append-only contract = corruption / injected
+            # replacement. Refuse fail-closed rather than pick a winner.
+            return {"__corrupt__": True}
+        seen_versions.add(version)
+        if version > best:
             best, current = version, dict(payload)
     return current

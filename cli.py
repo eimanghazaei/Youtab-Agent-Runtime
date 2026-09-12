@@ -13349,7 +13349,36 @@ class YoutabCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
 
-        # Refresh provider credentials if needed (handles key rotation transparently)
+        # WAVE-30H Batch3 #1: run the CLIENT-INDEPENDENT managed pre-admission gate
+        # BEFORE credential resolution. _ensure_runtime_credentials() resolves the
+        # provider — which can MINT/REFRESH credentials (Vertex OAuth token, Youtab
+        # key refresh) and can SWITCH the route to a fallback — all provider I/O that
+        # an invalid managed run must never trigger. Gating first means a missing /
+        # forged / expired grant, or a missing / corrupt / tampered / cross-tenant /
+        # cross-run / cross-workspace binding, is refused with ZERO credential
+        # resolution, ZERO client, ZERO network, ZERO budget. No-op (returns False) in
+        # standalone / non-kanban runs; it re-verifies the persisted signed grant (no
+        # nonce re-burn, no authority broadening) and the binding's presence/integrity/
+        # version/tenant/run/workspace scope. ``_managed_bound_identity`` is the bound
+        # substrate (None in standalone) used to (a) forbid credential fallback for a
+        # managed run and (b) compare the resolved route to the binding below. Fails
+        # closed exit 3 — the error is NOT swallowed.
+        try:
+            from youtab_agent_cli.worker_admission import (
+                ManagedWorkerAdmissionError,
+                managed_bound_identity,
+                preadmit_managed_run,
+            )
+
+            preadmit_managed_run()
+            self._managed_bound_identity = managed_bound_identity()
+        except ManagedWorkerAdmissionError as _adm_exc:
+            print(f"managed_admission_failed: {_adm_exc}", file=sys.stderr)
+            sys.exit(3)
+
+        # Refresh provider credentials if needed (handles key rotation transparently).
+        # For a managed run this resolves the bound provider and NEVER falls back to an
+        # unbound provider (the fallback path is gated on ``_managed_bound_identity``).
         if not self._ensure_runtime_credentials():
             return None
 
@@ -13357,24 +13386,25 @@ class YoutabCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if turn_route["signature"] != self._active_agent_route_signature:
             self.agent = None
 
-        # WAVE-30H Batch2 #F1: run the CLIENT-INDEPENDENT pre-admission gate BEFORE
-        # constructing the agent. _init_agent resolves a provider client and performs
-        # Ollama/OpenRouter/LM-Studio HTTP; a managed run with a missing / forged /
-        # expired / tampered / cross-tenant / cross-run / cross-workspace grant or
-        # binding must be refused with NO client and NO network. preadmit is a no-op
-        # (returns False) in standalone / non-kanban runs; it re-verifies the persisted
-        # signed grant (no nonce re-burn, no authority broadening) and the binding's
-        # presence/integrity/version/tenant/run/workspace scope. The FULL admission
-        # (provider/model/endpoint drift + attested model-digest re-probe) still runs
-        # post-construction below. The error is NOT swallowed — it fails closed exit 3.
+        # WAVE-30H Batch3 #1: PURE route-vs-binding comparison BEFORE _init_agent builds
+        # any provider client. A managed run whose RESOLVED provider/model/endpoint
+        # drifted from the bound identity (e.g. a credential fallback that slipped
+        # through) is refused here with NO client and NO network. No-op in standalone;
+        # the FULL post-construction drift + attested model-digest re-probe still runs
+        # in establish_managed_admission below.
         try:
             from youtab_agent_cli.worker_admission import (
-                ManagedWorkerAdmissionError,
-                preadmit_managed_run,
+                ManagedWorkerAdmissionError as _RouteAdmErr,
+                assert_route_matches_binding,
             )
 
-            preadmit_managed_run()
-        except ManagedWorkerAdmissionError as _adm_exc:
+            assert_route_matches_binding(
+                getattr(self, "_managed_bound_identity", None),
+                provider=self.provider,
+                model=turn_route["model"],
+                base_url=self.base_url,
+            )
+        except _RouteAdmErr as _adm_exc:
             print(f"managed_admission_failed: {_adm_exc}", file=sys.stderr)
             sys.exit(3)
 
@@ -17837,6 +17867,22 @@ def main(
                 # Quiet mode: suppress banner, spinner, tool previews.
                 # Only print the final response and parseable session info.
                 cli.tool_progress_mode = "off"
+                # WAVE-30H Batch3 #1: managed pre-admission BEFORE credential
+                # resolution — a missing/forged/expired grant or invalid binding is
+                # refused with ZERO credential resolution (no Vertex mint / Youtab
+                # refresh / fallback), ZERO client, ZERO network. No-op in standalone.
+                try:
+                    from youtab_agent_cli.worker_admission import (
+                        ManagedWorkerAdmissionError,
+                        managed_bound_identity,
+                        preadmit_managed_run,
+                    )
+
+                    preadmit_managed_run()
+                    cli._managed_bound_identity = managed_bound_identity()
+                except ManagedWorkerAdmissionError as _adm_exc:
+                    print(f"managed_admission_failed: {_adm_exc}", file=sys.stderr)
+                    sys.exit(3)
                 if cli._ensure_runtime_credentials():
                     effective_query: Any = query
                     if single_query_images or single_query_image_urls:
@@ -17899,19 +17945,25 @@ def main(
                     turn_route = cli._resolve_turn_agent_config(effective_query)
                     if turn_route["signature"] != cli._active_agent_route_signature:
                         cli.agent = None
-                    # WAVE-30H Batch2 #F1: client-independent pre-admission gate BEFORE
-                    # _init_agent — a managed run with an invalid grant/binding is
-                    # refused (exit 3) with NO provider client and NO network. No-op in
-                    # standalone; full admission (drift + digest re-probe) still runs
-                    # post-construction below. Error is NOT swallowed.
+                    # WAVE-30H Batch3 #1: PURE route-vs-binding comparison BEFORE
+                    # _init_agent builds any provider client — a managed run whose
+                    # resolved provider/model/endpoint drifted from the bound identity
+                    # (e.g. a credential fallback) is refused (exit 3) with NO client
+                    # and NO network. No-op in standalone; full post-construction drift
+                    # + attested digest re-probe still runs below. Not swallowed.
                     try:
                         from youtab_agent_cli.worker_admission import (
-                            ManagedWorkerAdmissionError,
-                            preadmit_managed_run,
+                            ManagedWorkerAdmissionError as _RouteAdmErr,
+                            assert_route_matches_binding,
                         )
 
-                        preadmit_managed_run()
-                    except ManagedWorkerAdmissionError as _adm_exc:
+                        assert_route_matches_binding(
+                            getattr(cli, "_managed_bound_identity", None),
+                            provider=cli.provider,
+                            model=turn_route["model"],
+                            base_url=cli.base_url,
+                        )
+                    except _RouteAdmErr as _adm_exc:
                         print(
                             f"managed_admission_failed: {_adm_exc}", file=sys.stderr
                         )

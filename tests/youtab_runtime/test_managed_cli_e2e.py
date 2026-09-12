@@ -78,6 +78,48 @@ try:
     _ac.resolve_provider_client = _spy_rpc
 except Exception:
     pass
+
+# Credential-resolution sentinel (Batch3 #1) — the UMBRELLA over all credential I/O:
+# Vertex OAuth token mint AND Youtab key refresh both happen INSIDE
+# resolve_runtime_provider, so if it never runs neither can. _ensure_runtime_credentials
+# imports this name at call time, so patching the module attribute is picked up.
+_R = os.environ.get("E2E_CREDRESOLVE_SENTINEL")
+try:
+    import youtab_agent_cli.runtime_provider as _rp
+    _real_rrp = _rp.resolve_runtime_provider
+    def _spy_rrp(*a, **k):
+        _touch(_R)
+        return _real_rrp(*a, **k)
+    _rp.resolve_runtime_provider = _spy_rrp
+except Exception:
+    pass
+
+# Vertex OAuth token-mint sentinel.
+_V = os.environ.get("E2E_VERTEX_SENTINEL")
+try:
+    import agent.vertex_adapter as _va
+    _real_gvc = _va.get_vertex_config
+    def _spy_gvc(*a, **k):
+        _touch(_V)
+        return _real_gvc(*a, **k)
+    _va.get_vertex_config = _spy_gvc
+except Exception:
+    pass
+
+# Youtab credential-refresh sentinel (pool.try_refresh_current on the pool class).
+_Y = os.environ.get("E2E_YOUTAB_SENTINEL")
+try:
+    import agent.credential_pool as _cp
+    for _nm in dir(_cp):
+        _o = getattr(_cp, _nm)
+        if isinstance(_o, type) and "try_refresh_current" in getattr(_o, "__dict__", {}):
+            _real_trc = _o.try_refresh_current
+            def _spy_trc(self, *a, _r=_real_trc, **k):
+                _touch(_Y)
+                return _r(self, *a, **k)
+            _o.try_refresh_current = _spy_trc
+except Exception:
+    pass
 '''
 
 
@@ -94,6 +136,9 @@ def _run_cli(tmp_path: Path, db_path: Path, task_id: str, *, quiet_Q: bool = Fal
     home.mkdir(parents=True, exist_ok=True)
     client_sentinel = tmp_path / "client_constructed.sentinel"
     net_sentinel = tmp_path / "network_attempted.sentinel"
+    credresolve_sentinel = tmp_path / "credresolve.sentinel"
+    vertex_sentinel = tmp_path / "vertex_minted.sentinel"
+    youtab_sentinel = tmp_path / "youtab_refreshed.sentinel"
     pki = _pki_dir(tmp_path)
 
     env = dict(os.environ)
@@ -134,6 +179,9 @@ def _run_cli(tmp_path: Path, db_path: Path, task_id: str, *, quiet_Q: bool = Fal
     env["OPENAI_API_KEY"] = "e2e-local-not-a-real-key"
     env["E2E_CLIENT_SENTINEL"] = str(client_sentinel)
     env["E2E_NET_SENTINEL"] = str(net_sentinel)
+    env["E2E_CREDRESOLVE_SENTINEL"] = str(credresolve_sentinel)
+    env["E2E_VERTEX_SENTINEL"] = str(vertex_sentinel)
+    env["E2E_YOUTAB_SENTINEL"] = str(youtab_sentinel)
     # sitecustomize dir FIRST so it is imported at interpreter startup, then the repo.
     env["PYTHONPATH"] = str(pki) + os.pathsep + str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
 
@@ -150,6 +198,9 @@ def _run_cli(tmp_path: Path, db_path: Path, task_id: str, *, quiet_Q: bool = Fal
         "client_constructed": client_sentinel.exists(),
         "network_attempted": net_sentinel.exists(),
         "budget_opened": budget_db.exists(),
+        "credential_resolved": credresolve_sentinel.exists(),
+        "vertex_minted": vertex_sentinel.exists(),
+        "youtab_refreshed": youtab_sentinel.exists(),
     }
 
 
@@ -158,18 +209,27 @@ def _diag(res) -> str:
     opaque rc=1 again (Batch2 #F2)."""
     return (
         f"\nrc={res['rc']} client_constructed={res['client_constructed']} "
-        f"network_attempted={res['network_attempted']} budget_opened={res['budget_opened']}"
+        f"network_attempted={res['network_attempted']} budget_opened={res['budget_opened']} "
+        f"credential_resolved={res['credential_resolved']} "
+        f"vertex_minted={res['vertex_minted']} youtab_refreshed={res['youtab_refreshed']}"
         f"\n--- STDERR (last 1500) ---\n{res['stderr'][-1500:]}"
         f"\n--- STDOUT (last 1500) ---\n{res['stdout'][-1500:]}"
     )
 
 
 def _assert_refused_before_construction(res, *, error_substr):
-    """A pre-admission refusal: exit 3, the exact refusal reason, and PROOF nothing
-    was constructed/dialed/budgeted (preadmit ran before _init_agent)."""
+    """A grant/binding pre-admission refusal: exit 3, the exact refusal reason, and
+    PROOF nothing was resolved/constructed/dialed/budgeted. Batch3 #1: because
+    preadmit now runs BEFORE _ensure_runtime_credentials(), an invalid grant/binding
+    is refused with ZERO credential resolution — so the Vertex token-mint and Youtab
+    key-refresh sentinels (both reachable only INSIDE resolve_runtime_provider) are
+    likewise ABSENT."""
     assert res["rc"] == 3, _diag(res)
     assert "managed_admission_failed" in res["stderr"], _diag(res)
     assert error_substr in res["stderr"], _diag(res)
+    assert not res["credential_resolved"], "credentials were resolved on an invalid-grant refusal" + _diag(res)
+    assert not res["vertex_minted"], "a Vertex token was minted on refusal" + _diag(res)
+    assert not res["youtab_refreshed"], "a Youtab key was refreshed on refusal" + _diag(res)
     assert not res["client_constructed"], "provider client was constructed on refusal" + _diag(res)
     assert not res["network_attempted"], "a socket was opened on refusal" + _diag(res)
     assert not res["budget_opened"], "execution-tree budget was opened on refusal" + _diag(res)
@@ -297,30 +357,37 @@ def test_cli_Q_quiet_path_missing_binding_refused_before_init_agent(tmp_path):
         error_substr="has no effective binding")
 
 
-# ── valid binding: preadmit does NOT block; construction is reached ───────────
+# ── valid binding, drifting route: no UNBOUND client is constructed (Batch3 #1) ──
 
-def test_cli_valid_binding_passes_preadmission_and_reaches_construction(tmp_path):
-    # A VALID managed binding must NOT be refused by the pre-admission gate: the run
-    # proceeds PAST preadmit into _init_agent (provider-client construction reached ->
-    # CLIENT sentinel present) and there is NO pre-admission refusal. (A full model
-    # turn needs a live model + matching profile substrate, which the real HTTP+worker
-    # E2E in test_managed_binding_e2e.py drives; here we prove the gate is not
-    # over-blocking a valid run and that preadmit precedes construction.)
-    task_id = "task-cli-valid"
+def test_cli_valid_binding_but_route_drift_refused_before_construction(tmp_path):
+    # Batch3 #1 / Codex required test #5: a VALID, self-consistent managed binding
+    # (bound to ollama) whose resolved default route is a DIFFERENT provider
+    # (openrouter) must be refused by the PURE route-vs-binding gate BEFORE any
+    # provider client is constructed — a managed run can never construct an UNBOUND
+    # fallback client. The binding passes preadmit (grant + integrity + scope are
+    # valid), credentials ARE resolved (positive control: the credresolve sentinel
+    # fires, proving the sentinel is installed and that resolution ran), and THEN the
+    # route drift is refused with NO client, NO network, NO budget.
+    task_id = "task-cli-valid-routedrift"
     db = tmp_path / "kanban.db"
     env, header = _mint("grant-cli-valid-012345678901")
     persisted = cm.binding_to_persisted(_ingress_manifest(env))
     _persist_run(db, task_id, grant_header=header, manifest_payload=persisted,
-                 seed_binding=True)  # a valid, self-consistent binding for this run
+                 seed_binding=True)  # valid, self-consistent ollama binding for this run
     res = _run_cli(tmp_path, db, task_id)
-    # Construction was reached -> preadmit admitted the valid binding and ran BEFORE
-    # _init_agent (the sentinel only fires from provider-client resolution).
-    assert res["client_constructed"], _diag(res)
-    # It was NOT stopped by a PRE-admission refusal (a post-construction drift/model
-    # failure may still occur — construction happening is the discriminator that the
-    # gate did not block a valid run).
-    if "managed_admission_failed" in res["stderr"]:
-        # If admission failed, it must be a POST-construction reason (drift), never
-        # the pre-admission "no effective binding" / grant refusal.
-        assert "has no effective binding" not in res["stderr"]
-        assert "grant re-admission failed" not in res["stderr"]
+    assert res["rc"] == 3, _diag(res)
+    assert "managed_admission_failed" in res["stderr"], _diag(res)
+    # The refusal is the PRE-construction route drift, NOT a preadmit grant/binding
+    # refusal — the binding itself is valid.
+    assert "before client construction" in res["stderr"], _diag(res)
+    assert "drifted from the bound identity" in res["stderr"], _diag(res)
+    assert "has no effective binding" not in res["stderr"], _diag(res)
+    assert "grant re-admission failed" not in res["stderr"], _diag(res)
+    # Positive control: credentials WERE resolved (the route gate runs AFTER
+    # credential resolution), proving the credresolve sentinel is wired and that the
+    # invalid-grant refusals above genuinely skipped resolution.
+    assert res["credential_resolved"], "credential resolution did not run on a valid binding" + _diag(res)
+    # ...but NO unbound client was constructed, NO socket opened, NO budget opened.
+    assert not res["client_constructed"], "an unbound provider client was constructed" + _diag(res)
+    assert not res["network_attempted"], "a socket was opened before refusal" + _diag(res)
+    assert not res["budget_opened"], "execution-tree budget was opened before refusal" + _diag(res)

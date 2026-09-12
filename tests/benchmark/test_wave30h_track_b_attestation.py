@@ -290,6 +290,8 @@ def test_effective_identity_persisted_into_all_evidence(tmp_path):
     out = tmp_path / "out"
     runner = _runner(out)
     _emit(runner, provenance={**_ATTESTED,
+                              "bound_provider": _EXP_PROVIDER,
+                              "bound_model": _EXP_MODEL,
                               "dispatched_provider": _EXP_PROVIDER,
                               "dispatched_model": _EXP_MODEL})
     summary = runner.recorder.finalize()
@@ -316,6 +318,8 @@ def test_retry_and_repetition_preserve_identical_identity(tmp_path):
     for i in range(2):  # a retry/repetition landing a second record on the run
         _emit(runner, sid=f"s{i}", run_id=f"r{i}",
               provenance={**_ATTESTED,
+                          "bound_provider": _EXP_PROVIDER,
+                          "bound_model": _EXP_MODEL,
                           "dispatched_provider": _EXP_PROVIDER,
                           "dispatched_model": _EXP_MODEL})
     summary = runner.recorder.finalize()
@@ -326,16 +330,21 @@ def test_retry_and_repetition_preserve_identical_identity(tmp_path):
 
 
 def test_dispatched_provider_divergence_is_flagged(tmp_path):
-    # axis 4: a run that actually dispatched on a different provider than attested
-    # (e.g. via a conflicting scenario engine) is caught and fails closed.
+    # axis 4: a run bound correctly (attested == bound) but that actually DISPATCHED on
+    # a different provider is caught and fails closed. The drift flags against BOTH the
+    # attested and the bound side (attested_vs_dispatched + bound_vs_dispatched).
     out = tmp_path / "out"
     runner = _runner(out)
     _emit(runner, provenance={**_ATTESTED,
+                              "bound_provider": _EXP_PROVIDER,
+                              "bound_model": _EXP_MODEL,
                               "dispatched_provider": "other-cloud",
                               "dispatched_model": _EXP_MODEL})
     summary = runner.recorder.finalize()
-    assert summary["identity_divergence_count"] == 1
-    d = summary["identity_divergences"][0]
+    kinds = {d["kind"] for d in summary["identity_divergences"]}
+    assert {"attested_vs_dispatched", "bound_vs_dispatched"} <= kinds
+    d = next(x for x in summary["identity_divergences"]
+             if x["kind"] == "attested_vs_dispatched")
     assert d["attested"]["provider"] == _EXP_PROVIDER
     assert d["dispatched"]["provider"] == "other-cloud"
 
@@ -344,11 +353,16 @@ def test_dispatched_model_divergence_is_flagged(tmp_path):
     out = tmp_path / "out"
     runner = _runner(out)
     _emit(runner, provenance={**_ATTESTED,
+                              "bound_provider": _EXP_PROVIDER,
+                              "bound_model": _EXP_MODEL,
                               "dispatched_provider": _EXP_PROVIDER,
                               "dispatched_model": "provider-x-model-v2"})
     summary = runner.recorder.finalize()
-    assert summary["identity_divergence_count"] == 1
-    assert summary["identity_divergences"][0]["dispatched"]["model"] == "provider-x-model-v2"
+    kinds = {d["kind"] for d in summary["identity_divergences"]}
+    assert {"attested_vs_dispatched", "bound_vs_dispatched"} <= kinds
+    d = next(x for x in summary["identity_divergences"]
+             if x["kind"] == "attested_vs_dispatched")
+    assert d["dispatched"]["model"] == "provider-x-model-v2"
 
 
 def test_attested_vs_bound_divergence_is_flagged(tmp_path):

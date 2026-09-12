@@ -262,10 +262,14 @@ def _run(args) -> int:
             # contract before the first task (engine/provider/model/endpoint-class/
             # cost-policy + optional model digest) — fail closed on any mismatch.
             if args.mode == MODE_LOCAL_RUNTIME and track is not None:
-                assert_engine_attestation(
+                effective = assert_engine_attestation(
                     posture, track,
                     expected_model_digest=args.expected_model_digest,
                 )
+                # WAVE-30H Batch3 #3: persist the Track A ATTESTED identity into every
+                # record (as Track B already does) so the recorder proves attested ==
+                # bound == dispatched — not merely bound == dispatched.
+                track_prov = {**(track_prov or {}), **effective}
             # Track B (cloud): verify the runtime's EFFECTIVE provider/model equals
             # the Owner-selected identity and persist that identity into every record
             # so the evidence is self-describing and the recorder can fail closed on

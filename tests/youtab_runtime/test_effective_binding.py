@@ -79,11 +79,56 @@ def test_from_events_corrupt_version_is_flagged():
     assert eb.effective_binding_from_events(evs) == {"__corrupt__": True}
 
 
+def test_from_events_duplicate_version_fails_closed():
+    # WAVE-30H Batch3 #2: on an append-only contract a SECOND event at the same
+    # binding_version is corruption — never "last wins". A self-consistent, correctly
+    # re-hashed same-version replacement (different substrate, same version) that would
+    # otherwise silently displace the original must be refused fail-closed.
+    original = eb.build_effective_binding(
+        provider="ollama", model="qwen:tag", endpoint="http://127.0.0.1:11434",
+        run_id="run-A", root_run_id="run-A", tenant="t1", workspace="w1",
+        binding_version=2,
+    )
+    # A fully-valid replacement at the SAME version but a DIFFERENT substrate.
+    replacement = eb.build_effective_binding(
+        provider="openai", model="gpt-x", endpoint="",
+        run_id="run-A", root_run_id="run-A", tenant="t1", workspace="w1",
+        binding_version=2,
+    )
+    assert eb.verify_binding(replacement) is True  # the replacement self-verifies
+    evs = [
+        _ev(eb.BINDING_EVENT, original),
+        _ev(eb.BINDING_EVENT, replacement),
+    ]
+    assert eb.effective_binding_from_events(evs) == {"__corrupt__": True}
+
+
+def test_from_events_strictly_increasing_rebind_is_authoritative():
+    # A legitimate rebind uses a STRICTLY INCREASING version and wins; no tie involved.
+    evs = [
+        _ev(eb.BINDING_EVENT, {"binding_version": 1, "provider": "a"}),
+        _ev(eb.BINDING_EVENT, {"binding_version": 2, "provider": "b"}),
+        _ev(eb.BINDING_EVENT, {"binding_version": 3, "provider": "c"}),
+    ]
+    assert eb.effective_binding_from_events(evs)["provider"] == "c"
+
+
 def test_classify_endpoint_local_vs_public():
     assert eb.classify_endpoint("http://127.0.0.1:11434") == "loopback"
     assert eb.classify_endpoint("http://10.0.0.5:11434") == "private"
     assert eb.classify_endpoint("https://api.openai.com") == "hostname"
     assert eb.classify_endpoint("") == "unavailable"
+
+
+def test_classify_endpoint_scheme_is_case_insensitive():
+    # WAVE-30H Batch3 #4: an UPPERCASE scheme must classify by the real host, not be
+    # prepended with http:// and misclassified. HTTPS://127.0.0.1 is loopback, not a
+    # bare-hostname "https".
+    assert eb.classify_endpoint("HTTPS://127.0.0.1:11434") == "loopback"
+    assert eb.classify_endpoint("HTTP://10.0.0.5:11434") == "private"
+    assert eb.classify_endpoint("HTTPS://api.openai.com") == "hostname"
+    # Mixed case agrees with the lower-case form.
+    assert eb.classify_endpoint("HtTpS://127.0.0.1") == eb.classify_endpoint("https://127.0.0.1")
 
 
 def test_rescope_preserves_substrate_and_reruns_scope():

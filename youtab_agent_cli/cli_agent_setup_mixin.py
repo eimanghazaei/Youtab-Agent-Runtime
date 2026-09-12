@@ -47,7 +47,15 @@ class CLIAgentSetupMixin:
             _primary_exc = exc
 
         # Primary provider auth failed — try fallback providers before giving up.
-        if runtime is None and _primary_exc is not None:
+        # WAVE-30H Batch3 #1: a MANAGED run must NEVER switch to an UNBOUND fallback
+        # provider/model on primary-auth failure — that would resolve credentials for,
+        # and construct a client on, a substrate the Simorgh binding never authorized
+        # (the pre-construction route-vs-binding gate would then reject it, but we must
+        # not perform the fallback provider I/O at all). Credential fallback for a
+        # managed run is permitted only via an authorized signed rebind; absent that we
+        # fail closed here (no provider switch) and let the caller refuse.
+        _managed_run = getattr(self, "_managed_bound_identity", None)
+        if runtime is None and _primary_exc is not None and not _managed_run:
             from youtab_agent_cli.auth import AuthError
             if isinstance(_primary_exc, AuthError):
                 _fb_chain = self._fallback_model if isinstance(self._fallback_model, list) else []

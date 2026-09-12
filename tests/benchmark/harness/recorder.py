@@ -240,42 +240,34 @@ class Recorder:
                         left: {"provider": lp or None, "model": lm or None},
                         right: {"provider": rp or None, "model": rm or None},
                     })
-            # WAVE-30H #5 + Batch2 #F5: the three-way identity proof requires COMPLETE
-            # provider+model tuples — a PARTIAL side (provider XOR model) is never valid
-            # evidence and always fails closed (previously the gate accepted provider-
-            # only or model-only dispatched evidence, and the pairwise checks silently
-            # skipped a half-populated side).
+            # WAVE-30H #5 + Batch2 #F5 + Batch3 #3: the three-way identity proof
+            # requires a COMPLETE provider+model tuple on EVERY side of a real-runtime
+            # record. A real (local_runtime/real_provider) run must prove
+            # attested == bound == dispatched, so a MISSING side (both empty) is
+            # rejected as well as a PARTIAL side (provider XOR model): previously a
+            # Track A record with NO attested identity (attested not persisted) and a
+            # run that exposed no dispatched identity could still certify clean. A
+            # deterministic record carries no identity at all and stays clean — there
+            # only a PARTIAL side is corruption.
             _is_real_runtime = r.get("mode") in (MODE_LOCAL_RUNTIME, MODE_REAL_PROVIDER)
             for _side in ("attested", "bound", "dispatched"):
                 _sp, _sm = sides[_side]
-                if bool(_sp) != bool(_sm):  # exactly one present -> partial -> fail closed
+                _complete = bool(_sp) and bool(_sm)
+                _partial = bool(_sp) != bool(_sm)
+                if _is_real_runtime and not _complete:
+                    identity_divergences.append({
+                        "scenario_id": r["scenario_id"],
+                        "run_id": r["run_id"],
+                        "kind": f"{_side}_incomplete" if _partial else f"{_side}_missing",
+                        _side: {"provider": _sp or None, "model": _sm or None},
+                    })
+                elif (not _is_real_runtime) and _partial:
                     identity_divergences.append({
                         "scenario_id": r["scenario_id"],
                         "run_id": r["run_id"],
                         "kind": f"{_side}_incomplete",
                         _side: {"provider": _sp or None, "model": _sm or None},
                     })
-            # A real-runtime run that carries a COMPLETE attested/bound identity MUST
-            # also expose a COMPLETE dispatched identity (what actually executed). A
-            # fully-missing dispatched identity is caught here; a partial one is caught
-            # by the completeness loop above. Mode-gated so deterministic / Track-A
-            # records (no attested/bound) stay clean.
-            attested_or_bound_complete = (
-                (sides["attested"][0] and sides["attested"][1])
-                or (sides["bound"][0] and sides["bound"][1])
-            )
-            dp, dm = sides["dispatched"]
-            if _is_real_runtime and attested_or_bound_complete and not (dp or dm):
-                identity_divergences.append({
-                    "scenario_id": r["scenario_id"],
-                    "run_id": r["run_id"],
-                    "kind": "dispatched_missing",
-                    "attested": {"provider": sides["attested"][0] or None,
-                                 "model": sides["attested"][1] or None},
-                    "bound": {"provider": sides["bound"][0] or None,
-                              "model": sides["bound"][1] or None},
-                    "dispatched": {"provider": None, "model": None},
-                })
 
         summary = {
             "schema_version": SCHEMA_VERSION,

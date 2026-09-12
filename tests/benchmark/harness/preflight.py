@@ -296,7 +296,7 @@ def assert_engine_attestation(
     track: Mapping[str, Any],
     *,
     expected_model_digest: Optional[str] = None,
-) -> None:
+) -> Dict[str, Any]:
     """Refuse a live Track A run unless the runtime's EFFECTIVE engine binding
     matches the track contract (WAVE-30D §B1/§B3).
 
@@ -377,6 +377,22 @@ def assert_engine_attestation(
             raise PreflightError(
                 f"model manifest digest {got or '<none>'!r} != expected {exp!r} — refusing"
             )
+
+    # On success, RETURN the normalized attested provenance (NON-SECRET names only),
+    # mirroring the Track B :func:`assert_cloud_attestation` sibling, so the CLI can
+    # persist it into EVERY Track A record. WAVE-30H Batch3 #3: previously this
+    # returned nothing, so a Track A record carried no attested identity and a
+    # two-of-three (bound == dispatched, attested absent) record certified clean —
+    # it did NOT prove preflight-attested == persisted-bound == worker-dispatched.
+    return {
+        "effective_provider": (att.get("provider") or "").strip(),
+        "effective_model": (att.get("model") or "").strip(),
+        "effective_endpoint_class": (att.get("endpoint_class") or "").strip().lower(),
+        "effective_cost_policy": att.get("provider_cost_policy"),
+        "effective_credential_source": "local",
+        "effective_binding_version": att.get("binding_version"),
+        "effective_model_ref": att.get("model_ref"),
+    }
 
 
 def assert_cloud_attestation(

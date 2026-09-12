@@ -422,6 +422,81 @@ def preadmit_managed_run() -> bool:
     return True
 
 
+def managed_bound_identity():
+    """The BOUND provider/model/endpoint identity for the current managed run, or None.
+
+    Returns ``None`` when this is not a managed kanban worker (standalone trust mode,
+    or not a dispatched kanban worker) — the CLI treats a ``None`` return as "no
+    managed constraints apply". For a managed run it returns the bound substrate
+    identity ``{task_id, provider, model, endpoint_fingerprint}`` derived from the
+    persisted, already-verified effective binding. Reuses the same pure verification
+    as :func:`preadmit_managed_run` (no nonce re-burn, no authority broadening),
+    and FAILS CLOSED (:class:`ManagedWorkerAdmissionError`) when the managed binding
+    is missing or corrupt — so a managed run can never resolve credentials for, or
+    construct a provider client on, an UNBOUND substrate.
+
+    Used by the CLI to (a) forbid credential fallback for managed runs and (b) compare
+    the resolved route to the binding BEFORE any provider client is constructed
+    (WAVE-30H Batch3 #1). The full post-construction drift + model-digest re-probe in
+    :func:`establish_managed_admission` still runs as the last line of defense.
+    """
+    ctx = _load_managed_grant_context()
+    if ctx is None:
+        return None
+    b = ctx.binding
+    if not isinstance(b, dict) or b.get("__corrupt__"):
+        raise ManagedWorkerAdmissionError(
+            f"managed run {ctx.task_id} has no usable effective binding "
+            "(missing/corrupt); refusing before credential resolution"
+        )
+    return {
+        "task_id": ctx.task_id,
+        "provider": (b.get("provider") or ""),
+        "model": (b.get("model") or ""),
+        "endpoint_fingerprint": b.get("endpoint_fingerprint"),
+    }
+
+
+def assert_route_matches_binding(identity, *, provider, model, base_url) -> None:
+    """Pure route-vs-binding comparison — NO provider client, NO network, NO budget.
+
+    ``identity`` is a :func:`managed_bound_identity` result (``None`` for a standalone
+    run => no-op). For a managed run this compares the CLI's RESOLVED route
+    (``provider`` / ``model`` / the fingerprint of ``base_url``) against the bound
+    substrate and raises :class:`ManagedWorkerAdmissionError` on any drift, so a
+    credential-fallback or mis-resolution to an UNBOUND provider/model/endpoint is
+    refused BEFORE ``_init_agent`` constructs a client (WAVE-30H Batch3 #1). Mirrors
+    the drift fields of :func:`_enforce_effective_binding`'s post-construction check,
+    but runs earlier and without ever touching a client. Each field is compared only
+    when both sides are present (an unresolved side is caught by the full gate).
+    """
+    if not identity:
+        return
+    from youtab_agent_cli import effective_binding as _eb
+
+    task_id = identity.get("task_id") or "?"
+    r_provider = (provider or "").strip().lower()
+    b_provider = str(identity.get("provider") or "").strip().lower()
+    if r_provider and b_provider and r_provider != b_provider:
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} resolved provider {r_provider!r} drifted from the "
+            f"bound identity {b_provider!r}; refusing before client construction"
+        )
+    r_model = (model or "").strip()
+    b_model = str(identity.get("model") or "").strip()
+    if r_model and b_model and r_model != b_model:
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} resolved model drifted from the bound identity; "
+            "refusing before client construction"
+        )
+    b_fp = identity.get("endpoint_fingerprint")
+    if base_url is not None and b_fp and _eb.compute_endpoint_fingerprint(base_url) != b_fp:
+        raise ManagedWorkerAdmissionError(
+            f"managed run {task_id} resolved endpoint drifted from the bound identity; "
+            "refusing before client construction"
+        )
+
+
 def establish_managed_admission(agent) -> bool:
     """Attach the sealed Simorgh AdmittedCommand to ``agent`` for a managed run.
 

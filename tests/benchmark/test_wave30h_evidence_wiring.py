@@ -121,13 +121,23 @@ def _scenario(sid: str, mode: str) -> Scenario:
 
 
 def _drive(*, mode: str, detail: Dict[str, Any], out: Path,
-           runtime_build_sha: Optional[str] = None):
+           runtime_build_sha: Optional[str] = None, attested: bool = False):
     """Run one scenario through the REAL run_scenario + finalize path using the
-    fabricated seam. Returns ``(row, summary)``."""
+    fabricated seam. Returns ``(row, summary)``.
+
+    ``attested`` stamps the ATTESTED identity into every record via the Runner's
+    ``track_provenance`` (exactly as the CLI does after ``assert_engine_attestation``/
+    ``assert_cloud_attestation`` — effective_provider/effective_model), so a genuine
+    three-way (attested == bound == dispatched) record can be exercised."""
     recorder = Recorder(out)
     seam = _FabricatedRuntimeSeam(detail)
+    track_provenance = (
+        {"effective_provider": _PROVIDER, "effective_model": _MODEL}
+        if attested else None
+    )
     runner = Runner(recorder, mode=mode, seam=seam, repo_root=_REPO_ROOT,
-                    runtime_build_sha=runtime_build_sha)
+                    runtime_build_sha=runtime_build_sha,
+                    track_provenance=track_provenance)
     row = runner.run_scenario(_scenario("s1", mode), 0)
     summary = recorder.finalize()
     return row, summary
@@ -136,13 +146,21 @@ def _drive(*, mode: str, detail: Dict[str, Any], out: Path,
 # --------------------------------------------------------------------------- #
 # 1. bound_* carried end-to-end through seam -> runner -> recorder              #
 # --------------------------------------------------------------------------- #
-def test_bound_identity_carried_end_to_end(tmp_path):
+def test_three_way_identity_happy_path_certifies_clean(tmp_path):
+    # WAVE-30H Batch3 #3: a GENUINE Track A three-way proof — attested (persisted via
+    # track_provenance) == bound (from the binding) == dispatched (what ran) — all
+    # present and equal. This is the ONLY clean real-runtime shape now; two-of-three
+    # no longer certifies (see the *_missing tests below).
     row, summary = _drive(
         mode=MODE_LOCAL_RUNTIME,
         detail=_detail(bound=True, dispatched=True),
         out=tmp_path / "out",
+        attested=True,
     )
     prov = row["provenance"]
+    # Attested identity was persisted into the record.
+    assert prov["effective_provider"] == _PROVIDER
+    assert prov["effective_model"] == _MODEL
     # WAVE-30H #5: bound_* survived run_scenario's identity projection into the record.
     assert prov["bound_provider"] == _PROVIDER
     assert prov["bound_model"] == _MODEL
@@ -153,9 +171,40 @@ def test_bound_identity_carried_end_to_end(tmp_path):
     # ...and the finalized summary's effective identity exposes the bound identity.
     assert summary["effective_identity"]["bound_provider"] == _PROVIDER
     assert summary["effective_identity"]["bound_model"] == _MODEL
-    # Three-way agreement (bound == dispatched, no attested) certifies clean.
+    # Full three-way agreement certifies clean.
     assert summary["identity_divergences"] == []
     assert _cli.identity_gate_exit_code(summary) == 0
+
+
+def test_two_of_three_no_attested_fails_closed(tmp_path):
+    # WAVE-30H Batch3 #3: the false-green Codex flagged — a real-runtime record with
+    # bound == dispatched but NO attested identity must NO LONGER certify clean.
+    _, summary = _drive(
+        mode=MODE_LOCAL_RUNTIME,
+        detail=_detail(bound=True, dispatched=True),
+        out=tmp_path / "out",
+        attested=False,
+    )
+    kinds = {d["kind"] for d in summary["identity_divergences"]}
+    assert "attested_missing" in kinds
+    d = next(x for x in summary["identity_divergences"]
+             if x["kind"] == "attested_missing")
+    assert d["attested"] == {"provider": None, "model": None}
+    assert _cli.identity_gate_exit_code(summary) == 6
+
+
+def test_missing_bound_identity_fails_closed(tmp_path):
+    # attested + dispatched present, bound absent: a real run must prove what it was
+    # BOUND to, not only what it attested and dispatched.
+    _, summary = _drive(
+        mode=MODE_LOCAL_RUNTIME,
+        detail=_detail(bound=False, dispatched=True),
+        out=tmp_path / "out",
+        attested=True,
+    )
+    kinds = {d["kind"] for d in summary["identity_divergences"]}
+    assert "bound_missing" in kinds
+    assert _cli.identity_gate_exit_code(summary) == 6
 
 
 def test_real_provider_mode_also_carries_bound_identity(tmp_path):
@@ -173,18 +222,18 @@ def test_real_provider_mode_also_carries_bound_identity(tmp_path):
 # 2. missing dispatched identity fails closed (mode-gated)                      #
 # --------------------------------------------------------------------------- #
 def test_missing_dispatched_identity_fails_closed(tmp_path):
-    # bound identity present, but the worker exposed NO dispatched identity: a real
+    # attested + bound present, but the worker exposed NO dispatched identity: a real
     # managed run must not certify green with no proof of what actually executed.
     _, summary = _drive(
         mode=MODE_LOCAL_RUNTIME,
         detail=_detail(bound=True, dispatched=False),
         out=tmp_path / "out",
+        attested=True,
     )
     kinds = {d["kind"] for d in summary["identity_divergences"]}
     assert "dispatched_missing" in kinds
     d = next(x for x in summary["identity_divergences"]
              if x["kind"] == "dispatched_missing")
-    assert d["bound"]["provider"] == _PROVIDER
     assert d["dispatched"] == {"provider": None, "model": None}
     assert _cli.identity_gate_exit_code(summary) == 6
 
@@ -224,6 +273,7 @@ def test_evidence_sha_is_runtime_build_sha(tmp_path):
         detail=_detail(bound=True, dispatched=True),
         out=tmp_path / "out",
         runtime_build_sha=build_sha,
+        attested=True,
     )
     # Every record + the summary stamp the runtime's verified build SHA, not the
     # harness checkout HEAD.
@@ -268,19 +318,34 @@ def _dispatched_missing() -> Dict[str, Any]:
     }
 
 
+def _missing(side: str) -> Dict[str, Any]:
+    """A single-side *_missing divergence in the exact shape recorder.finalize emits
+    (WAVE-30H Batch3 #3): only the missing side's key, both fields None."""
+    return {
+        "scenario_id": f"scn-{side}-missing", "run_id": f"run-{side}-missing",
+        "kind": f"{side}_missing",
+        side: {"provider": None, "model": None},
+    }
+
+
 def test_printer_handles_every_divergence_kind(capsys):
     summary = {"identity_divergences": [
         _pair("attested_vs_bound", "attested", "bound"),
         _pair("bound_vs_dispatched", "bound", "dispatched"),
         _pair("attested_vs_dispatched", "attested", "dispatched"),
         _dispatched_missing(),
+        _missing("attested"),
+        _missing("bound"),
+        _missing("dispatched"),
     ]}
     # Pre-fix this raised KeyError (d['attested']/d['dispatched'] hard-coded) for
-    # bound_vs_dispatched and attested_vs_bound. It must now print every kind.
+    # bound_vs_dispatched and attested_vs_bound. It must now print every kind,
+    # including the new single-side *_missing shapes.
     _cli._print_identity_divergences(summary)  # no exception
     err = capsys.readouterr().err
     for kind in ("attested_vs_bound", "bound_vs_dispatched",
-                 "attested_vs_dispatched", "dispatched_missing"):
+                 "attested_vs_dispatched", "dispatched_missing",
+                 "attested_missing", "bound_missing"):
         assert f"[{kind}]" in err
 
 
@@ -425,8 +490,10 @@ def test_partial_bound_identity_fails_closed(tmp_path):
 
 
 def test_all_three_complete_and_equal_is_clean(tmp_path):
-    # bound + dispatched complete & equal (attested absent here) -> no divergence.
-    _, summary = _drive(mode=MODE_LOCAL_RUNTIME, out=tmp_path / "e",
+    # WAVE-30H Batch3 #3: clean requires ALL THREE sides complete & equal — attested
+    # (persisted via track_provenance) == bound == dispatched. Two-of-three (no
+    # attested) now fails closed (see test_two_of_three_no_attested_fails_closed).
+    _, summary = _drive(mode=MODE_LOCAL_RUNTIME, out=tmp_path / "e", attested=True,
                         detail=_detail_parts(bp=_PROVIDER, bm=_MODEL,
                                              dp=_PROVIDER, dm=_MODEL))
     assert _cli.identity_gate_exit_code(summary) == 0

@@ -1488,7 +1488,10 @@ def _endpoint_class(url: Optional[str]) -> str:
     raw = (url or "").strip()
     if not raw:
         return "unavailable"
-    if not raw.startswith("http"):
+    # Case-insensitive scheme detection (mirror of the canonical ``classify_endpoint``
+    # and ``normalize_endpoint``): only prepend when there is no scheme at all, so an
+    # uppercase ``HTTPS://…`` is not misclassified by a lower-case-only prefix test.
+    if "://" not in raw:
         raw = "http://" + raw
     try:
         host = (urlparse(raw).hostname or "").lower().rstrip(".")
