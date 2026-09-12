@@ -10406,10 +10406,16 @@ ipcMain.handle('youtab:saveImageBuffer', async (_event, payload) => {
 
 ipcMain.handle('youtab:saveClipboardImage', async () => {
   const items = await clipboard.read()
+
   for (const item of items) {
     const imageType = item.types.find((type) => type.startsWith('image/'))
-    if (!imageType) continue
+
+    if (!imageType) {
+      continue
+    }
+
     const blob = await item.getType(imageType)
+
     if (blob instanceof Blob) {
       return writeComposerImage(
         Buffer.from(await blob.arrayBuffer()),
