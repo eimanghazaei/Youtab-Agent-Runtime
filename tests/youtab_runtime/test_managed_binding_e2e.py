@@ -709,6 +709,69 @@ def test_C_retry_rescopes_binding_onto_child(managed):
     assert "worker_admission_error" not in kinds, payloads.get("worker_admission_error")
 
 
+def _reasoning(now, **over):
+    base = {
+        "max_iterations": 4, "max_spawn_depth": 1, "max_concurrent_agents": 1,
+        "max_total_tokens": 2000, "max_cost_micros": 0, "max_retries": 0,
+        "deadline_at": now + timedelta(minutes=20),
+    }
+    base.update(over)
+    return base
+
+
+@pytest.mark.parametrize(
+    "dim,value",
+    [
+        ("max_total_tokens", 999_999),
+        ("max_cost_micros", 5_000_000),
+        ("max_iterations", 99),
+        ("max_spawn_depth", 9),
+        ("max_concurrent_agents", 9),
+        ("max_retries", 5),
+    ],
+)
+def test_C_retry_rejects_widened_budget(managed_deferred, dim, value):
+    # SEC-9 #6: a retry grant that widens ANY execution-tree budget dimension is
+    # refused at ingress (422) before a child run is created.
+    now = datetime.now(UTC).replace(microsecond=0)
+    _, orig_header = _mint_grant(now=now)
+    run_id = _create(managed_deferred, grant_header=orig_header).json()["run_id"]
+    _, widened = _mint_grant(now=now, reasoning=_reasoning(now, **{dim: value}))
+    r = _retry(managed_deferred, run_id, grant_header=widened)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "retry_budget_widened"
+    assert r.json()["detail"]["dimension"] == dim
+
+
+def test_C_retry_rejects_extended_deadline_window(managed_deferred):
+    now = datetime.now(UTC).replace(microsecond=0)
+    _, orig_header = _mint_grant(now=now)
+    run_id = _create(managed_deferred, grant_header=orig_header).json()["run_id"]
+    # A retry window of 90 minutes is wider than the original 20-minute window
+    # (bump expiry too so the envelope's deadline<=expiry invariant holds).
+    _, widened = _mint_grant(
+        now=now,
+        reasoning=_reasoning(now, deadline_at=now + timedelta(minutes=90)),
+        expires_at=now + timedelta(minutes=120),
+    )
+    r = _retry(managed_deferred, run_id, grant_header=widened)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["dimension"] == "deadline_at"
+
+
+def test_C_retry_equal_or_tighter_budget_allowed(managed_deferred):
+    # Equal budget (the common case) and a strictly-tighter retry both pass.
+    now = datetime.now(UTC).replace(microsecond=0)
+    _, orig_header = _mint_grant(now=now)
+    run_id = _create(managed_deferred, grant_header=orig_header).json()["run_id"]
+    _, tighter = _mint_grant(
+        now=now, reasoning=_reasoning(now, max_total_tokens=1000, max_iterations=2)
+    )
+    r = _retry(managed_deferred, run_id, grant_header=tighter)
+    assert r.status_code == 200, r.text
+    assert r.json()["run_id"] != run_id
+
+
 def test_C_retry_tampered_child_binding_fails_closed_at_worker(managed_deferred, tmp_path):
     # Create + retry through the REAL ingress (deferred dispatch: no auto-run).
     _, orig_header = _mint_grant()

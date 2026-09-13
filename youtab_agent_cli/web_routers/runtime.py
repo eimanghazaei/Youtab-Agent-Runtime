@@ -856,6 +856,74 @@ def _retry_execution_binding(
     }
 
 
+_RETRY_BUDGET_DIMENSIONS = (
+    "max_iterations",
+    "max_spawn_depth",
+    "max_concurrent_agents",
+    "max_total_tokens",
+    "max_cost_micros",
+    "max_retries",
+)
+
+
+def _assert_retry_grant_budget_not_widened(orig_events, retry_grant_header) -> None:
+    """SEC-9 #6: a retry must never widen an execution-tree budget dimension or
+    extend the deadline relative to the ORIGINAL run's grant.
+
+    The execution-tree budget is anchored (worker side) to the inherited binding
+    root, so a retry shares the ORIGINAL tree and ``open_tree``'s no-reseed keeps
+    the ceilings — but reject an over-provisioned retry grant HERE too, before the
+    child run is created, so the drift is refused early and explicitly rather than
+    only being clamped later. No-op in standalone, or when either grant is absent
+    (a legacy original with no persisted grant), so legitimate retries with equal
+    or tighter reasoning pass unchanged.
+    """
+    from youtab_runtime import managed_execution as mx
+
+    if mx.current_trust_mode() is not mx.TrustMode.MANAGED or not retry_grant_header:
+        return
+    orig_header = None
+    for e in orig_events:
+        if getattr(e, "kind", None) == _GRANT_EVENT and isinstance(
+            getattr(e, "payload", None), dict
+        ):
+            orig_header = e.payload.get("grant")
+            break
+    if not orig_header:
+        return  # legacy original run with no persisted grant to compare against
+    try:
+        orig_env = mx.decode_grant_header(orig_header)
+        retry_env = mx.decode_grant_header(retry_grant_header)
+    except Exception:  # noqa: BLE001 — a malformed grant is already fail-closed at admission
+        return
+    orig_reasoning = getattr(orig_env, "reasoning", None)
+    retry_reasoning = getattr(retry_env, "reasoning", None)
+    if orig_reasoning is None or retry_reasoning is None:
+        return
+    for dim in _RETRY_BUDGET_DIMENSIONS:
+        ov = getattr(orig_reasoning, dim, None)
+        rv = getattr(retry_reasoning, dim, None)
+        if ov is not None and rv is not None and rv > ov:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "retry_budget_widened", "dimension": dim},
+            )
+    # Deadline: compare the WINDOW DURATION (deadline_at - issued_at), never the
+    # absolute wall-clock deadline — a legitimate retry is minted later and so has
+    # a later absolute deadline_at for the SAME window. Widening the window is the
+    # drift to refuse.
+    od = getattr(orig_reasoning, "deadline_at", None)
+    rd = getattr(retry_reasoning, "deadline_at", None)
+    oi = getattr(orig_env, "issued_at", None)
+    ri = getattr(retry_env, "issued_at", None)
+    if od is not None and rd is not None and oi is not None and ri is not None:
+        if (rd - ri) > (od - oi):
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "retry_budget_widened", "dimension": "deadline_at"},
+            )
+
+
 def _run_summary(
     task: "kb.Task", *, cancelled: bool = False, execution_mode: str = "model",
     interactive: "Optional[str]" = None,
@@ -2638,28 +2706,46 @@ async def runtime_resume_run(
     """
     await _verify_signed_command(request, identity)
     await _admit_execution_grant(request, identity)
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        with kb.write_txn(conn):
-            task = _load_owned_task(conn, run_id, identity)
-            events = kb.list_events(conn, task.id)
-            cancelled = _is_cancelled(events)
-            if _run_status(task, cancelled=cancelled) in _TERMINAL_PRODUCT_STATUSES:
-                raise HTTPException(status_code=409, detail={"error": "run_terminal"})
-            if _interactive_status(events) == _rc.PAUSE_FAILED:
-                raise HTTPException(status_code=409,
-                                    detail={"error": "pause_failed_requires_recovery"})
-            if not _rc.has_valid_checkpoint_for_resume(events):
-                raise HTTPException(status_code=409, detail={"error": "run_not_paused"})
-            kb._append_event(conn, task.id, _rc.RESUME, {"by": identity.user})
-    # Re-queue OUTSIDE the append txn (unblock_task opens its own write txn), then
-    # ensure the dispatcher is ticking so a fresh worker re-claims and resumes
-    # from the checkpoint. The worker paused itself by blocking the task; flipping
-    # blocked->ready makes it claimable again for a brand-new worker process.
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        try:
-            kb.unblock_task(conn, run_id)
-        except Exception as exc:  # noqa: BLE001 — resume event is the source of truth
-            _log.warning("runtime resume: unblock failed for %s: %s", run_id, exc)
+    # SEC-9 #9: the resume event AND the blocked->ready requeue are ONE atomic
+    # write. Previously the RESUME event committed in one txn and ``unblock_task``
+    # ran in a SEPARATE txn whose failure was swallowed — leaving the run with
+    # ``run_resume`` recorded but still blocked while the API falsely returned
+    # ``status=running``. Now both happen inside a single ``write_txn``: a requeue
+    # failure rolls the RESUME event back too, and a DB failure returns an explicit
+    # retryable error rather than a false ``running``.
+    try:
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            with kb.write_txn(conn):
+                task = _load_owned_task(conn, run_id, identity)
+                events = kb.list_events(conn, task.id)
+                cancelled = _is_cancelled(events)
+                if _run_status(task, cancelled=cancelled) in _TERMINAL_PRODUCT_STATUSES:
+                    raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+                if _interactive_status(events) == _rc.PAUSE_FAILED:
+                    raise HTTPException(status_code=409,
+                                        detail={"error": "pause_failed_requires_recovery"})
+                if not _rc.has_valid_checkpoint_for_resume(events):
+                    raise HTTPException(status_code=409, detail={"error": "run_not_paused"})
+                kb._append_event(conn, task.id, _rc.RESUME, {"by": identity.user})
+                # The worker paused itself by BLOCKING the task; flipping
+                # blocked->ready makes it claimable by a fresh worker. Do it in
+                # THIS txn via the locked core. If it cannot flip (already
+                # requeued by a concurrent resume, or not in blocked/scheduled),
+                # roll back the RESUME event too and report a conflict — never a
+                # false ``running`` and never a stranded run_resume.
+                if not kb._unblock_task_locked(conn, run_id):
+                    raise HTTPException(status_code=409,
+                                        detail={"error": "resume_requeue_conflict"})
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — DB failure: explicit + retryable
+        _log.warning("runtime resume: atomic resume failed for %s: %s", run_id, exc)
+        raise HTTPException(
+            status_code=503, detail={"error": "resume_unavailable_retryable"}
+        ) from exc
+    # Committed: the RESUME event and the blocked->ready requeue are both durable.
+    # Only now tick the dispatcher so a fresh worker re-claims and resumes from the
+    # checkpoint (no step is re-executed).
     ensure_dispatcher_running()
     return {"run_id": run_id, "status": "running"}
 
@@ -2686,7 +2772,13 @@ async def runtime_retry_run(
     # Authorize ownership FIRST — a caller that does not own run_id gets 404 and
     # no effect-ledger row is ever created in their namespace (reviewer A INFO-2).
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        _load_owned_task(conn, run_id, identity)
+        _owned = _load_owned_task(conn, run_id, identity)
+        # SEC-9 #6: refuse a retry grant that widens the budget / extends the
+        # deadline vs the original run — BEFORE claiming the effect or creating any
+        # child (so no partial state on a rejected retry).
+        _assert_retry_grant_budget_not_widened(
+            kb.list_events(conn, _owned.id), _retry_grant_header
+        )
     # WAVE-26 effect-level idempotency: a retry spawns a fresh run (an observable
     # effect). When the caller supplies an Idempotency-Key, atomically CLAIM the
     # effect so a double-submitted or concurrently-retried request (even across

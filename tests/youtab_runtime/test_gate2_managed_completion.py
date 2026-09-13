@@ -141,6 +141,7 @@ def test_gate_authorizes_completion_tool_when_in_frozen_manifest():
             toolset="kanban",
             effect_class=EffectClass.NONE,
             arguments={"result": "4"},
+            schema_hash=registry.get_entry("kanban_complete").schema_hash,
         ),
     )
     assert decision.execute_in_runtime is True
@@ -160,6 +161,7 @@ def test_gate_denies_completion_tool_absent_from_frozen_manifest():
             toolset="kanban",
             effect_class=EffectClass.NONE,
             arguments={"result": "4"},
+            schema_hash=registry.get_entry("kanban_complete").schema_hash,
         ),
     )
     assert decision.execute_in_runtime is False

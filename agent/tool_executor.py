@@ -408,11 +408,17 @@ def enforce_managed_tool_authority(
     except ValueError:
         # Unknown/unmapped effect class -> treat as effect-bearing (fail safe).
         effect = EffectClass.WRITE
+    # SEC-9 #4: carry the LIVE registry entry's canonical schema hash so the
+    # authority gate compares (name, schema_hash) against the frozen manifest —
+    # name-only authorization is insufficient. A missing/deregistered entry
+    # yields ``None`` here, which ``decide_tool`` (via ``authorizes_pair``) treats
+    # as unverifiable and denies fail-closed.
     intent = ToolIntent(
         tool_name=function_name,
         toolset=toolset,
         effect_class=effect,
         arguments=final_args if isinstance(final_args, dict) else {},
+        schema_hash=getattr(entry, "schema_hash", None) if entry else None,
     )
     decision = AuthorityBoundary().decide_tool(admitted, intent)
     if not decision.execute_in_runtime:

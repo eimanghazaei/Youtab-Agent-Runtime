@@ -5902,61 +5902,76 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    Self-contained: opens its own ``write_txn``. Callers that must perform the
+    requeue ATOMICALLY with another write (SEC-9 #9: the runtime resume endpoint
+    persists the ``run_resume`` event and requeues in ONE transaction) call
+    :func:`_unblock_task_locked` while already holding a ``write_txn`` instead.
     """
-    now = int(time.time())
     with write_txn(conn):
-        stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (task_id,),
-        ).fetchone()
-        if stale and stale["current_run_id"]:
-            conn.execute(
-                """
-                UPDATE task_runs
-                   SET status = 'reclaimed', outcome = 'reclaimed',
-                       summary = COALESCE(summary, 'invariant recovery on unblock'),
-                       ended_at = ?,
-                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
-                 WHERE id = ? AND ended_at IS NULL
-                """,
-                (now, int(stale["current_run_id"])),
-            )
-        # Re-gate on parent completion before flipping 'blocked' back to
-        # 'ready'. Unconditionally setting status='ready' here bypasses the
-        # parent-completion invariant (the dispatcher trusts that column);
-        # if parents are still in progress the task must wait in 'todo'
-        # until recompute_ready picks it up. RCA: Bug 2 at
-        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
-        # NOTE: deliberately does NOT touch ``block_recurrences`` or
-        # ``block_kind``. Resetting the recurrence counter on unblock is exactly
-        # the amnesia that let a cron unblock → worker re-block loop run
-        # unbounded (Dale's report). The counter survives the unblock so that a
-        # subsequent same-cause ``block_task`` can detect the loop and route to
-        # triage at ``BLOCK_RECURRENCE_LIMIT``. It is reset to 0 only on a
-        # successful completion (see ``complete_task``). ``consecutive_failures``
-        # (the *dispatcher* spawn/crash/timeout counter — a different signal) is
-        # still reset here, which is correct: a deliberate unblock is a fresh
-        # start for the dispatcher's retry budget.
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (new_status, task_id),
+        return _unblock_task_locked(conn, task_id)
+
+
+def _unblock_task_locked(conn: sqlite3.Connection, task_id: str) -> bool:
+    """The ``unblock_task`` body, assuming the caller ALREADY holds a
+    ``write_txn(conn)``. Extracted (SEC-9 #9) so the runtime resume endpoint can
+    append the ``run_resume`` event and flip ``blocked``->``ready`` atomically in
+    a single transaction — a failure there rolls back BOTH, so a run can never be
+    left with ``run_resume`` recorded while still blocked. Behaviour is identical
+    to the public :func:`unblock_task` for every external caller."""
+    now = int(time.time())
+    stale = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+        (task_id,),
+    ).fetchone()
+    if stale and stale["current_run_id"]:
+        conn.execute(
+            """
+            UPDATE task_runs
+               SET status = 'reclaimed', outcome = 'reclaimed',
+                   summary = COALESCE(summary, 'invariant recovery on unblock'),
+                   ended_at = ?,
+                   claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+             WHERE id = ? AND ended_at IS NULL
+            """,
+            (now, int(stale["current_run_id"])),
         )
-        if cur.rowcount != 1:
-            return False
-        _append_event(
-            conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
-        )
-        return True
+    # Re-gate on parent completion before flipping 'blocked' back to
+    # 'ready'. Unconditionally setting status='ready' here bypasses the
+    # parent-completion invariant (the dispatcher trusts that column);
+    # if parents are still in progress the task must wait in 'todo'
+    # until recompute_ready picks it up. RCA: Bug 2 at
+    # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+    undone_parents = conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    new_status = "todo" if undone_parents else "ready"
+    # NOTE: deliberately does NOT touch ``block_recurrences`` or
+    # ``block_kind``. Resetting the recurrence counter on unblock is exactly
+    # the amnesia that let a cron unblock → worker re-block loop run
+    # unbounded (Dale's report). The counter survives the unblock so that a
+    # subsequent same-cause ``block_task`` can detect the loop and route to
+    # triage at ``BLOCK_RECURRENCE_LIMIT``. It is reset to 0 only on a
+    # successful completion (see ``complete_task``). ``consecutive_failures``
+    # (the *dispatcher* spawn/crash/timeout counter — a different signal) is
+    # still reset here, which is correct: a deliberate unblock is a fresh
+    # start for the dispatcher's retry budget.
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, current_run_id = NULL, "
+        "consecutive_failures = 0, last_failure_error = NULL "
+        "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+        (new_status, task_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    _append_event(
+        conn, task_id, "unblocked",
+        {"status": new_status} if new_status != "ready" else None,
+    )
+    return True
 
 
 def specify_triage_task(

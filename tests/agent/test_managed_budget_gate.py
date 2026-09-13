@@ -154,6 +154,153 @@ def test_delegation_permit_refused_past_depth():
     assert tb.active_agent_count("run-perm4") == 0
 
 
+# ── SEC-9 #3: accounting failures fail CLOSED ────────────────────────────────
+
+
+def test_debit_tokens_infra_failure_returns_durable_stop(monkeypatch):
+    import sqlite3
+
+    tb.open_tree("run-f3a", _params(max_total_tokens=100))
+    agent = _Agent(root="run-f3a")
+
+    def _boom(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(tb, "consume", _boom)
+    # A non-budget infra failure must NOT propagate/​swallow — it returns a durable
+    # stop so the loop cannot make another provider call.
+    assert mbg.execution_tree_debit_tokens(agent, input_tokens=5, output_tokens=5) == "tree_budget_error"
+
+
+def test_pre_iteration_infra_failure_fails_closed(monkeypatch):
+    tb.open_tree("run-f3b", _params())
+    agent = _Agent(root="run-f3b")
+
+    def _boom(*a, **k):
+        raise RuntimeError("io error")
+
+    monkeypatch.setattr(tb, "consume", _boom)
+    assert mbg.execution_tree_pre_iteration(agent) == "tree_budget_error"
+
+
+# ── SEC-9 #2: monetary ceiling enforced against real provider usage ──────────
+
+
+def _cost_agent(root, *, provider=None, base_url=None, model="m", api_key=""):
+    a = _Agent(root=root)
+    a.provider = provider
+    a.base_url = base_url
+    a.model = model
+    a.api_key = api_key
+    return a
+
+
+def test_cost_precheck_local_zero_allowed():
+    # ollama @ loopback is a verified local-zero engine: allowed even at max_cost=0.
+    tb.open_tree("run-lz", _params(max_cost_micros=0))
+    agent = _cost_agent("run-lz", provider="ollama", base_url="http://127.0.0.1:11434")
+    assert mbg.execution_tree_cost_precheck(agent) is None
+
+
+def test_cost_precheck_zero_budget_blocks_known_paid(monkeypatch):
+    from agent import usage_pricing as up
+
+    tb.open_tree("run-zp", _params(max_cost_micros=0))
+    agent = _cost_agent("run-zp", provider="openai", base_url="https://api.openai.com/v1")
+    monkeypatch.setattr(up, "classify_local_zero", lambda *a, **k: False)
+    monkeypatch.setattr(up, "has_known_pricing", lambda *a, **k: True)
+    monkeypatch.setattr(up, "resolve_billing_route",
+                        lambda *a, **k: type("R", (), {"billing_mode": "metered"})())
+    # max_cost_micros == 0 + a KNOWN-PAID route => no paid call permitted.
+    assert mbg.execution_tree_cost_precheck(agent) == "tree_cost_micros"
+
+
+def test_cost_precheck_zero_budget_allows_unpriced_route(monkeypatch):
+    from agent import usage_pricing as up
+
+    tb.open_tree("run-zu", _params(max_cost_micros=0))
+    agent = _cost_agent("run-zu", provider="local", model="local-deterministic")
+    monkeypatch.setattr(up, "classify_local_zero", lambda *a, **k: False)
+    monkeypatch.setattr(up, "has_known_pricing", lambda *a, **k: False)
+    monkeypatch.setattr(up, "resolve_billing_route",
+                        lambda *a, **k: type("R", (), {"billing_mode": "metered"})())
+    # An unpriced/local route costs nothing; a "spend nothing" grant allows it.
+    assert mbg.execution_tree_cost_precheck(agent) is None
+
+
+def test_cost_precheck_positive_budget_unpriced_fails_closed(monkeypatch):
+    from agent import usage_pricing as up
+
+    tb.open_tree("run-pu", _params(max_cost_micros=10_000))
+    agent = _cost_agent("run-pu", provider="mystery", base_url="https://api.example.com")
+    monkeypatch.setattr(up, "classify_local_zero", lambda *a, **k: False)
+    monkeypatch.setattr(up, "has_known_pricing", lambda *a, **k: False)
+    monkeypatch.setattr(up, "resolve_billing_route",
+                        lambda *a, **k: type("R", (), {"billing_mode": "metered"})())
+    # A euro ceiling is set but the route cannot be priced => cannot enforce => stop.
+    assert mbg.execution_tree_cost_precheck(agent) == "tree_cost_pricing_unavailable"
+
+
+def test_cost_precheck_positive_budget_exhausted_blocks(monkeypatch):
+    from agent import usage_pricing as up
+
+    tb.open_tree("run-pe", _params(max_cost_micros=1_000))
+    agent = _cost_agent("run-pe", provider="openai", base_url="https://api.openai.com/v1")
+    monkeypatch.setattr(up, "classify_local_zero", lambda *a, **k: False)
+    monkeypatch.setattr(up, "has_known_pricing", lambda *a, **k: True)
+    monkeypatch.setattr(up, "resolve_billing_route",
+                        lambda *a, **k: type("R", (), {"billing_mode": "metered"})())
+    tb.consume("run-pe", cost_micros=1_000)  # exhaust the ceiling
+    assert mbg.execution_tree_cost_precheck(agent) == "tree_cost_micros"
+
+
+def test_cost_debit_within_budget_records_micros():
+    tb.open_tree("run-cd", _params(max_cost_micros=1_000_000))
+    agent = _Agent(root="run-cd")
+    assert mbg.execution_tree_debit_cost(agent, amount_usd=0.5) is None
+    assert tb.snapshot("run-cd").cost_micros_used == 500_000
+
+
+def test_cost_debit_overflow_saturates_and_stops():
+    tb.open_tree("run-co", _params(max_cost_micros=1_000))
+    agent = _Agent(root="run-co")
+    assert mbg.execution_tree_debit_cost(agent, amount_usd=0.5) == "tree_cost_micros"
+    assert tb.snapshot("run-co").cost_micros_used == 1_000  # saturated, never beyond
+
+
+def test_cost_debit_none_and_zero_are_noops():
+    tb.open_tree("run-cn", _params(max_cost_micros=1_000))
+    agent = _Agent(root="run-cn")
+    assert mbg.execution_tree_debit_cost(agent, amount_usd=None) is None
+    assert mbg.execution_tree_debit_cost(agent, amount_usd=0.0) is None
+    assert tb.snapshot("run-cn").cost_micros_used == 0
+
+
+def test_cost_debit_conservative_ceil_rounding():
+    tb.open_tree("run-cr", _params(max_cost_micros=1_000_000))
+    agent = _Agent(root="run-cr")
+    # 0.0000001 USD => 0.1 micro => ceil to 1 micro (never rounds down to 0).
+    assert mbg.execution_tree_debit_cost(agent, amount_usd=0.0000001) is None
+    assert tb.snapshot("run-cr").cost_micros_used == 1
+
+
+def test_cost_debit_infra_failure_fails_closed(monkeypatch):
+    tb.open_tree("run-ci", _params(max_cost_micros=1_000_000))
+    agent = _Agent(root="run-ci")
+
+    def _boom(*a, **k):
+        raise RuntimeError("io")
+
+    monkeypatch.setattr(tb, "consume", _boom)
+    assert mbg.execution_tree_debit_cost(agent, amount_usd=0.1) == "tree_budget_error"
+
+
+def test_cost_gate_noop_for_non_managed():
+    agent = _cost_agent(None, provider="openai", base_url="https://api.openai.com/v1")
+    assert mbg.execution_tree_cost_precheck(agent) is None
+    assert mbg.execution_tree_debit_cost(agent, amount_usd=1.0) is None
+
+
 def test_delegation_permit_records_incarnation_for_reaping():
     tb.open_tree("run-perm5", _params(max_concurrent_agents=1))
     a = _Agent(root="run-perm5", subagent_id="sa-a")

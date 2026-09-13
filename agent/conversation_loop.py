@@ -3761,8 +3761,27 @@ def _run_conversation_impl(
                         )
                         if _tree_tok_stop:
                             agent._tree_token_stop = _tree_tok_stop
-                    except Exception:  # noqa: BLE001 - accounting must never crash the turn
-                        pass
+                        # SEC-9 #2: debit the ACTUAL provider cost of this call
+                        # against the shared execution-tree budget so the signed
+                        # max_cost_micros ceiling is enforced (not just tokens).
+                        _call_cost_usd = None
+                        if cost_result.amount_usd is not None:
+                            _call_cost_usd = float(cost_result.amount_usd)
+                        if _moa_ref_cost is not None:
+                            try:
+                                _call_cost_usd = (_call_cost_usd or 0.0) + float(_moa_ref_cost)
+                            except (TypeError, ValueError):  # pragma: no cover - defensive
+                                pass
+                        _tree_cost_stop = _mbg.execution_tree_debit_cost(
+                            agent, amount_usd=_call_cost_usd
+                        )
+                        if _tree_cost_stop:
+                            agent._tree_token_stop = _tree_cost_stop
+                    except Exception:  # noqa: BLE001 - SEC-9 #3: accounting failure FAILS CLOSED
+                        # Never swallow: an infrastructure failure in budget
+                        # accounting must halt the run at the next loop boundary
+                        # rather than silently permit another paid provider call.
+                        agent._tree_token_stop = "tree_budget_error"
 
                     if agent.verbose_logging:
                         logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")

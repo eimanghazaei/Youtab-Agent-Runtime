@@ -23,12 +23,15 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import base64
 import contextvars
+import hashlib
 import json
 import logging
 import os
 import re
 import time
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,7 +59,49 @@ from utils import atomic_write_text
 # at most once, to seed the contextvar, and is NEVER consulted per storage
 # operation — the enforcement point (get_memory_dir) reads the contextvar only.
 MEMORY_NAMESPACE_ENV = "YOUTAB_AGENT_MEMORY_NAMESPACE"
-_NAMESPACE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+# Explicit on-disk encoding version for a namespace component. Bump only with a
+# migration rule (see ``encode_namespace_component``).
+_NAMESPACE_ENC_VERSION = "v1"
+# Runs of anything but lowercase ASCII alphanumerics collapse to a single "-" in
+# the *human-readable* slug. The slug carries NO uniqueness (see below), so this
+# lossy collapse is safe.
+_NAMESPACE_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def encode_namespace_component(raw: str) -> str:
+    """Injective, case-insensitive-filesystem-safe, versioned encoding of one
+    namespace component (a tenant or workspace id).
+
+    The previous encoding replaced every disallowed character with ``_``, which
+    was NOT injective: ``tenant/a`` and ``tenant?a`` (and ``Tenant`` vs
+    ``tenant`` on a case-insensitive filesystem, and NFC vs NFD forms) collapsed
+    to the same directory, crossing tenant/workspace boundaries.
+
+    Uniqueness here comes from a collision-resistant digest over the
+    NFC-normalized UTF-8 bytes, so two distinct components can never share a
+    directory regardless of:
+      * disallowed characters collapsing (``a/b`` vs ``a?b``),
+      * ASCII case folding on case-insensitive filesystems (Windows/macOS) — the
+        entire encoded name is lowercase, so folding is a no-op and distinct
+        digests stay distinct real paths,
+      * Unicode NFC/NFD form (normalized before hashing, so the two forms of one
+        id map to the SAME directory).
+
+    A short human-readable slug is prepended purely for legibility; it carries no
+    uniqueness. The ``v<N>-`` prefix and ``-<digest>`` suffix also guarantee the
+    result can never be a reserved Windows device name (CON/PRN/AUX/NUL/COM#/LPT#)
+    and can never contain a path separator or a ``..`` traversal component.
+    """
+    norm = unicodedata.normalize("NFC", raw or "").strip()
+    digest = hashlib.sha256(norm.encode("utf-8")).digest()
+    # base32 alphabet is [A-Z2-7]; lowercased it is [a-z2-7] — stable under case
+    # folding and free of path-hostile characters.
+    token = base64.b32encode(digest).decode("ascii").rstrip("=").lower()[:20]
+    slug = _NAMESPACE_SLUG_RE.sub("-", norm.lower()).strip("-")[:24]
+    if slug:
+        return f"{_NAMESPACE_ENC_VERSION}-{slug}-{token}"
+    return f"{_NAMESPACE_ENC_VERSION}-{token}"
 
 
 @dataclass(frozen=True)
@@ -71,15 +116,19 @@ class MemoryNamespace:
     workspace: str
 
     def safe_parts(self) -> list:
-        """Traversal-safe path components, or [] if this scope is empty."""
+        """Collision-free, traversal-safe path components, or [] if empty.
+
+        Each component is encoded with :func:`encode_namespace_component`, which
+        is injective over the NFC-normalized bytes, so distinct tenant/workspace
+        ids can never resolve to a shared directory (even across case-folding or
+        Unicode-form differences).
+        """
         parts = []
         for component in (self.tenant, self.workspace):
             component = (component or "").strip()
             if not component:
                 continue
-            safe = _NAMESPACE_COMPONENT_RE.sub("_", component)
-            safe = safe.strip(".") or "_"  # guard ".."-style traversal
-            parts.append(safe)
+            parts.append(encode_namespace_component(component))
         return parts
 
 

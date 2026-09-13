@@ -536,6 +536,55 @@ def test_pause_checkpoints_and_resume_continues_from_state(tmp_path):
         assert _kinds(done).count("worker_started") == 1     # started once, resumed once
 
 
+def test_resume_requeue_db_failure_rolls_back_and_is_retryable(tmp_path, monkeypatch):
+    # SEC-9 #9: if the blocked->ready requeue fails, the RESUME event must roll
+    # back with it (never a stranded run_resume) and the API must return an
+    # explicit retryable error — never a false status=running.
+    import sqlite3
+
+    with managed_client(tmp_path, "pause") as client:
+        run_id = _create(client).json()["run_id"]
+        _wait(client, run_id, lambda x: len(_work_steps(x)) >= 1)
+        _post(client, f"/api/runtime/v1/runs/{run_id}/pause", {}, grant=_mint())
+        _wait(client, run_id, lambda x: x["status"] == rc.PAUSED
+              and "run_checkpoint" in _kinds(x))
+
+        def _boom(conn, task_id):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(kb, "_unblock_task_locked", _boom)
+        rr = _post(client, f"/api/runtime/v1/runs/{run_id}/resume", {}, grant=_mint())
+        assert rr.status_code == 503, rr.text
+        assert rr.json()["detail"]["error"] == "resume_unavailable_retryable"
+        # Atomic rollback: the RESUME event did NOT persist and the run is left in
+        # its EXACT prior resumable state (still paused, not stranded) — so the
+        # operation is safely retryable/idempotent once the fault clears.
+        state = _events(client, run_id, after=0).json()
+        assert "run_resume" not in _kinds(state)
+        assert state["status"] == rc.PAUSED
+
+
+def test_resume_requeue_conflict_never_reports_running(tmp_path, monkeypatch):
+    # SEC-9 #9: if the requeue cannot flip the row (e.g. a concurrent resume
+    # already did), the endpoint returns a conflict and does NOT persist a
+    # spurious run_resume nor claim status=running.
+    with managed_client(tmp_path, "pause") as client:
+        run_id = _create(client).json()["run_id"]
+        _wait(client, run_id, lambda x: len(_work_steps(x)) >= 1)
+        _post(client, f"/api/runtime/v1/runs/{run_id}/pause", {}, grant=_mint())
+        _wait(client, run_id, lambda x: x["status"] == rc.PAUSED
+              and "run_checkpoint" in _kinds(x))
+
+        monkeypatch.setattr(kb, "_unblock_task_locked", lambda conn, task_id: False)
+        rr = _post(client, f"/api/runtime/v1/runs/{run_id}/resume", {}, grant=_mint())
+        assert rr.status_code == 409, rr.text
+        assert rr.json()["detail"]["error"] == "resume_requeue_conflict"
+        # No spurious run_resume, no false "running": the run stays paused.
+        state = _events(client, run_id, after=0).json()
+        assert "run_resume" not in _kinds(state)
+        assert state["status"] == rc.PAUSED
+
+
 def test_resume_requires_paused_and_not_terminal(tmp_path):
     with managed_client(tmp_path, "pause") as client:
         run_id = _create(client).json()["run_id"]

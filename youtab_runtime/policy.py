@@ -85,6 +85,12 @@ class ToolIntent(BaseModel):
     toolset: str = Field(min_length=1, max_length=128)
     effect_class: EffectClass
     arguments: dict[str, object]
+    # The canonical schema hash of the LIVE registry entry resolved at invocation
+    # time (SEC-9 #4). ``decide_tool`` compares this against the frozen manifest
+    # so a same-name tool whose schema was changed/replaced after admission is
+    # NOT authorized by name alone. ``None`` means the caller could not resolve a
+    # live entry — a binding-gated decision then fails closed.
+    schema_hash: str | None = Field(default=None, max_length=128)
 
 
 class ManagedToolDecision(BaseModel):
@@ -235,12 +241,16 @@ class AuthorityBoundary:
         # dynamic inclusion. (No binding == boundary unit test / local-standalone,
         # which keep the pre-manifest behaviour.)
         binding = admitted.capability_binding
-        if binding is not None and not binding.authorizes(intent.tool_name):
+        if binding is not None and not binding.authorizes_pair(
+            intent.tool_name, intent.schema_hash
+        ):
             return ManagedToolDecision(
                 execute_in_runtime=False,
                 reason=(
                     "tool is not in the capability manifest bound at admission "
-                    "(a newly registered or unentitled tool is never swept in by '*')"
+                    "(name+schema-hash must match the frozen manifest; a newly "
+                    "registered, schema-changed, replaced or unentitled tool is "
+                    "never swept in by '*')"
                 ),
             )
         if intent.effect_class in {EffectClass.NONE, EffectClass.READ}:

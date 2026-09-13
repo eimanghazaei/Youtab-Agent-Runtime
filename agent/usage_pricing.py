@@ -69,7 +69,16 @@ def is_verified_local_zero_endpoint(base_url: Optional[str]) -> bool:
     raw = (base_url or "").strip()
     if not raw:
         return False
-    if not raw.startswith("http"):
+    # Scheme recognition is case-insensitive and consistent with endpoint
+    # canonicalization: ``HTTPS://127.0.0.1`` is HTTPS loopback, not host
+    # ``https``. Only http/https may be a local-zero candidate — a non-http
+    # scheme (ftp/file/...) fails closed. A scheme-less value (``127.0.0.1:11434``)
+    # is treated as http.
+    _scheme = re.match(r"^([a-zA-Z][a-zA-Z0-9+.\-]*)://", raw)
+    if _scheme is not None:
+        if _scheme.group(1).lower() not in ("http", "https"):
+            return False  # non-http scheme is never local-zero
+    else:
         raw = "http://" + raw
     try:
         parsed = urlparse(raw)

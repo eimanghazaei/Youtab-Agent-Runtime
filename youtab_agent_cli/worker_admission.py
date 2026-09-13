@@ -378,16 +378,48 @@ def _load_managed_grant_context():
     # Reconstruct the SAME capability binding the ingress froze (correction 2), so
     # the worker enforces exactly the tool set authorized at admission — never a
     # tool registered after. A tampered persisted manifest fails the hash check.
+    #
+    # SEC-9 #5: in managed mode the persisted manifest is MANDATORY and its
+    # integrity hash must verify (``managed=True``). A managed run with NO
+    # manifest event must NOT fall through to a ``None`` binding (which would let
+    # ``decide_tool`` skip the manifest gate and authorize the full ``"*"``
+    # envelope). It fails closed, with the SAME bounded, audited legacy-quarantine
+    # escape used for a missing effective binding — a genuinely pre-contract run
+    # (operator window open + created before the contract epoch + audit write
+    # succeeds) is quarantined with a null binding; every post-contract run
+    # refuses.
     capability_binding = None
     if manifest_payload is not None:
         from youtab_agent_cli import capability_manifest as cm
 
         try:
-            capability_binding = cm.binding_from_persisted(manifest_payload)
+            capability_binding = cm.binding_from_persisted(
+                manifest_payload, managed=True
+            )
         except ValueError as exc:
             raise ManagedWorkerAdmissionError(
                 f"managed run {task_id} capability manifest integrity failure"
             ) from exc
+    else:
+        cutoff = _legacy_contract_cutoff_epoch()
+        genuinely_legacy = (
+            _legacy_binding_quarantine_active()
+            and cutoff is not None
+            and created_at is not None
+            and int(created_at) < cutoff
+        )
+        if genuinely_legacy:
+            if not _audit_binding_quarantine(task_id, "missing_capability_manifest"):
+                raise ManagedWorkerAdmissionError(
+                    f"managed run {task_id} legacy-quarantine audit write failed; "
+                    "refusing (no unaudited proceed)"
+                )
+        else:
+            raise ManagedWorkerAdmissionError(
+                f"managed run {task_id} has no persisted capability manifest; "
+                "refusing (a managed run must not run with the full '*' envelope "
+                "unbound; no fallback, no standalone downgrade)"
+            )
 
     try:
         admitted = mx.re_admit_worker_grant(
@@ -739,7 +771,24 @@ def establish_managed_admission(agent, *, snapshot: "Optional[ManagedPreadmissio
     if reasoning is not None and hasattr(reasoning, "max_cost_micros"):
         from youtab_runtime import execution_tree_budget as etb
 
-        root_run_id = getattr(env, "root_run_id", None) or getattr(env, "task_id")
+        # SEC-9 #6: anchor the execution-tree budget to the AUTHORITATIVE run root
+        # — the effective binding's ``root_run_id``, which every retry/delegated
+        # child inherits UNCHANGED (via ``_retry_execution_binding`` +
+        # ``rescope_binding``) — NOT the per-grant ``root_run_id``. A retry re-mints
+        # its OWN grant with a fresh grant-root; keying the tree on that would open a
+        # brand-new tree and reset the shared ceilings. Keying on the binding root
+        # means the original run and all its retries/children open the SAME tree, so
+        # ``open_tree``'s no-reseed invariant preserves the original limits — a retry
+        # can neither introduce a different root nor widen any budget dimension. Fall
+        # back to the grant root only for a legacy run with no binding root.
+        _binding_root = None
+        if isinstance(binding_payload, dict):
+            _binding_root = (binding_payload.get("root_run_id") or "").strip() or None
+        root_run_id = (
+            _binding_root
+            or getattr(env, "root_run_id", None)
+            or getattr(env, "task_id")
+        )
         try:
             etb.open_tree(
                 root_run_id, etb.reasoning_to_tree_params(reasoning)

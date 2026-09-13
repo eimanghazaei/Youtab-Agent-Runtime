@@ -18,6 +18,8 @@ after admission is never swept in by ``"*"``.
 
 from __future__ import annotations
 
+import hmac
+import re
 from typing import Any, Iterable, Optional
 
 from youtab_runtime.admission import CapabilityBinding
@@ -25,6 +27,11 @@ from youtab_runtime.policy import AuthorityBoundary
 
 # The kind under which the frozen manifest is persisted alongside the grant.
 MANIFEST_EVENT_KIND = "runtime_capability_manifest"
+
+# ``CapabilityBinding.manifest_hash`` is ``hashlib.sha256(...).hexdigest()`` — 64
+# lowercase hex characters. A persisted hash that is not well-formed is treated as
+# malformed and fails closed in managed mode.
+_MANIFEST_HASH_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 def _versions(envelope) -> tuple[str, str]:
@@ -95,12 +102,21 @@ def binding_to_persisted(binding: CapabilityBinding) -> dict[str, Any]:
     }
 
 
-def binding_from_persisted(data: dict[str, Any]) -> CapabilityBinding:
+def binding_from_persisted(
+    data: dict[str, Any], *, managed: bool = False
+) -> CapabilityBinding:
     """Reconstruct the frozen manifest the ingress persisted (worker side).
 
     Fail-closed on corruption: if the persisted ``manifest_hash`` does not match
     the hash recomputed from the persisted contents, the manifest was tampered
     and re-admission must not proceed.
+
+    SEC-9 #5: in ``managed`` mode the integrity hash is MANDATORY. A persisted
+    manifest whose ``manifest_hash`` is missing, empty, malformed, or mismatched
+    is rejected — the worker must never reconstruct-and-trust an unverified (or
+    hash-stripped) manifest. ``managed=False`` (the default) keeps the lenient
+    round-trip behaviour for non-managed / value-semantics callers; it must NOT
+    be used to admit a managed run.
     """
     binding = CapabilityBinding.build(
         [tuple(pair) for pair in data.get("tool_hashes", [])],
@@ -109,6 +125,20 @@ def binding_from_persisted(data: dict[str, Any]) -> CapabilityBinding:
         dynamic_inclusion=bool(data.get("dynamic_inclusion", False)),
     )
     persisted_hash = data.get("manifest_hash")
+    if managed:
+        # Mandatory, well-formed, matching — no reconstruct-and-reseal-as-trusted.
+        if not isinstance(persisted_hash, str) or not persisted_hash:
+            raise ValueError(
+                "managed capability manifest is missing its integrity hash"
+            )
+        if not _MANIFEST_HASH_RE.match(persisted_hash):
+            raise ValueError("managed capability manifest hash is malformed")
+        if not hmac.compare_digest(persisted_hash, binding.manifest_hash):
+            raise ValueError(
+                "persisted capability manifest hash mismatch (tampered)"
+            )
+        return binding
+    # Non-managed / legacy: verify when a hash is present, but do not require one.
     if persisted_hash and persisted_hash != binding.manifest_hash:
         raise ValueError("persisted capability manifest hash mismatch (tampered)")
     return binding

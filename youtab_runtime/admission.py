@@ -95,12 +95,39 @@ class CapabilityBinding:
     def authorizes(self, tool_name: str) -> bool:
         """True if ``tool_name`` was in the manifest frozen at admission.
 
-        ``dynamic_inclusion`` (an explicit bound-policy opt-in) is the only way a
-        tool NOT in the frozen manifest becomes authorized; it is off by default.
+        NAME-ONLY membership. Retained for value-semantics callers only; the
+        execution-time gate uses :meth:`authorizes_pair`, which additionally binds
+        the live schema hash (SEC-9 #4). ``dynamic_inclusion`` (an explicit
+        bound-policy opt-in) is the only way a tool NOT in the frozen manifest
+        becomes authorized; it is off by default.
         """
         if self.dynamic_inclusion:
             return True
         return any(name == tool_name for name, _ in self.tool_hashes)
+
+    def authorizes_pair(self, tool_name: str, schema_hash: str | None) -> bool:
+        """True iff the LIVE ``(tool_name, schema_hash)`` matches what was frozen
+        at admission (SEC-9 #4 — name-only authorization is insufficient).
+
+        Fail-closed rules:
+
+        * ``schema_hash is None`` (the caller could not resolve a live registry
+          entry — missing/deregistered/ambiguous) → never authorized. This holds
+          even under ``dynamic_inclusion``: dynamic inclusion authorizes a
+          freshly-resolved live tool, never a null/absent registration.
+        * ``dynamic_inclusion`` → authorized for any tool that DOES resolve to a
+          concrete live hash (the explicit bound-policy opt-in), but the live
+          hash is still required — never a blanket bypass of hash verification.
+        * otherwise → the exact ``(name, schema_hash)`` tuple must be present in
+          the frozen manifest. A same-name tool whose schema changed after
+          admission (drifted hash) is rejected.
+        """
+        if schema_hash is None:
+            return False
+        if self.dynamic_inclusion:
+            return True
+        pair = (str(tool_name), str(schema_hash))
+        return pair in self.tool_hashes
 
 
 def _binding_hash(binding: "CapabilityBinding | None") -> str:

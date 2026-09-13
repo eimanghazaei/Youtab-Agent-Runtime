@@ -97,7 +97,7 @@ def test_new_tool_registered_after_admission_is_denied_under_star():
     # a tool registered AFTER admission
     reg.register_spec(_spec("late_tool", "safe"))
 
-    # even under "*", the late tool is not authorized...
+    # even under "*", the late tool is not authorized (even with its live hash)...
     late = boundary.decide_tool(
         admitted,
         ToolIntent(
@@ -105,10 +105,11 @@ def test_new_tool_registered_after_admission_is_denied_under_star():
             toolset="safe",
             effect_class=EffectClass.READ,
             arguments={},
+            schema_hash=reg.get_entry("late_tool").schema_hash,
         ),
     )
     assert late.execute_in_runtime is False
-    # ...but a tool that WAS in the frozen manifest still is
+    # ...but a tool that WAS in the frozen manifest still is (name+hash match)
     early = boundary.decide_tool(
         admitted,
         ToolIntent(
@@ -116,6 +117,7 @@ def test_new_tool_registered_after_admission_is_denied_under_star():
             toolset="safe",
             effect_class=EffectClass.READ,
             arguments={},
+            schema_hash=reg.get_entry("read_file").schema_hash,
         ),
     )
     assert early.execute_in_runtime is True
@@ -146,3 +148,58 @@ def test_tampered_persisted_manifest_is_rejected():
     persisted["tool_hashes"].append(["exfiltrate", "deadbeef"])
     with pytest.raises(ValueError, match="manifest hash mismatch"):
         cm.binding_from_persisted(persisted)
+
+
+# ── SEC-9 #5: managed mode requires a valid integrity hash (fail closed) ──────
+
+
+def _persisted(reg=None):
+    reg = reg or _reg_with_tools()
+    private, _ = keypair()
+    envelope = signed_envelope(private, allowed_toolsets=("*",))
+    return cm.binding_to_persisted(cm.build_ingress_binding(envelope, registry=reg))
+
+
+def test_managed_missing_hash_rejected():
+    persisted = _persisted()
+    del persisted["manifest_hash"]
+    with pytest.raises(ValueError, match="missing its integrity hash"):
+        cm.binding_from_persisted(persisted, managed=True)
+
+
+def test_managed_empty_hash_rejected():
+    persisted = _persisted()
+    persisted["manifest_hash"] = ""
+    with pytest.raises(ValueError, match="missing its integrity hash"):
+        cm.binding_from_persisted(persisted, managed=True)
+
+
+@pytest.mark.parametrize("bad", [123, ["x"], "not-hex", "abcd", "A" * 64, "f" * 63])
+def test_managed_malformed_hash_rejected(bad):
+    persisted = _persisted()
+    persisted["manifest_hash"] = bad
+    with pytest.raises(ValueError):
+        cm.binding_from_persisted(persisted, managed=True)
+
+
+def test_managed_tool_added_hash_mismatch_rejected():
+    persisted = _persisted()
+    persisted["tool_hashes"].append(["exfiltrate", "deadbeef"])
+    with pytest.raises(ValueError, match="mismatch"):
+        cm.binding_from_persisted(persisted, managed=True)
+
+
+def test_managed_dynamic_inclusion_tamper_rejected():
+    # Flipping dynamic_inclusion is covered by the hash (admission.py folds it in),
+    # so a tamper that widens authority without fixing the hash fails closed.
+    persisted = _persisted()
+    persisted["dynamic_inclusion"] = not persisted["dynamic_inclusion"]
+    with pytest.raises(ValueError, match="mismatch"):
+        cm.binding_from_persisted(persisted, managed=True)
+
+
+def test_managed_valid_roundtrip_accepted():
+    persisted = _persisted()
+    rebuilt = cm.binding_from_persisted(persisted, managed=True)
+    # equals the untampered original
+    assert rebuilt.manifest_hash == persisted["manifest_hash"]

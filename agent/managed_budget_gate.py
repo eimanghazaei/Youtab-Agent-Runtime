@@ -93,13 +93,21 @@ def execution_tree_pre_iteration(agent, *, now=None) -> Optional[str]:
         return "tree_deadline"
     except etb.TreeBudgetError:
         return "tree_budget_error"
+    except Exception:  # noqa: BLE001 — SEC-9 #3: any infra failure fails CLOSED
+        return "tree_budget_error"
     try:
         etb.consume(root, iterations=1)
     except etb.TreeBudgetExceeded as exc:
         return f"tree_{exc.dimension}"
     except etb.TreeBudgetError:
         return "tree_budget_error"
-    return None
+    except Exception:  # noqa: BLE001 — SEC-9 #3: DB lock / I/O / malformed => fail closed
+        return "tree_budget_error"
+    # SEC-9 #2: before the loop's provider call, refuse a PAID call the signed
+    # monetary ceiling cannot afford (``max_cost_micros == 0`` => no paid calls at
+    # all) or that we cannot price under a positive ceiling (fail closed). A
+    # verified local-zero engine is never gated here.
+    return execution_tree_cost_precheck(agent)
 
 
 def execution_tree_debit_tokens(
@@ -127,8 +135,103 @@ def execution_tree_debit_tokens(
             remaining = etb.snapshot(root).remaining("tokens")
             if remaining > 0:
                 etb.consume(root, tokens=remaining)
-        except etb.TreeBudgetError:
+        except Exception:  # noqa: BLE001 — best-effort saturation; never re-raise
             pass
         return "tree_tokens"
     except etb.TreeBudgetError:
+        return "tree_budget_error"
+    except Exception:  # noqa: BLE001 — SEC-9 #3: DB lock / I/O / malformed usage
+        # The debit failed on an infrastructure error, not a budget ceiling. The
+        # tokens are already spent; fail CLOSED with a durable stop so the loop
+        # cannot make another provider call, rather than swallowing and continuing.
+        return "tree_budget_error"
+
+
+def execution_tree_cost_precheck(agent) -> Optional[str]:
+    """Pre-call monetary gate (SEC-9 #2). Returns a stop reason, or None to allow.
+
+    Enforced against the SIGNED grant's ``max_cost_micros`` (opened into the tree
+    at admission — never a hard-coded amount). Rules, in order:
+
+    * non-managed run (no tree root) => no-op;
+    * a verified local-zero engine (``classify_local_zero``) => allowed (€0);
+    * a subscription-included route => allowed (not a metered paid call);
+    * ``max_cost_micros == 0`` (a "spend nothing" grant): a KNOWN-PAID route is
+      refused (``tree_cost_micros``); an unpriced/local route costs nothing and is
+      allowed;
+    * a POSITIVE ceiling with an unpriceable non-local route: we cannot enforce the
+      euro ceiling => fail closed (``tree_cost_pricing_unavailable``);
+    * a positive ceiling, priced route, budget exhausted => ``tree_cost_micros``.
+
+    Fails closed (``tree_budget_error``) on any pricing/accounting error.
+    """
+    root = _root(agent)
+    if not root:
+        return None
+    provider = getattr(agent, "provider", None)
+    base_url = getattr(agent, "base_url", None)
+    model = getattr(agent, "model", None)
+    api_key = getattr(agent, "api_key", "") or ""
+    try:
+        from agent import usage_pricing as up
+        from youtab_runtime import execution_tree_budget as etb
+
+        if up.classify_local_zero(provider, base_url):
+            return None
+        route = up.resolve_billing_route(model, provider=provider, base_url=base_url)
+        if getattr(route, "billing_mode", None) == "subscription_included":
+            return None
+        known_paid = up.has_known_pricing(model, provider, base_url, api_key)
+        snap = etb.snapshot(root)
+        if snap.max_cost_micros == 0:
+            # "spend nothing": a known-paid provider is refused; an unpriced route
+            # (deterministic/local) costs nothing and proceeds.
+            return "tree_cost_micros" if known_paid else None
+        if not known_paid:
+            # A positive euro ceiling is set but we have no verified pricing for a
+            # potentially-paid route — the ceiling cannot be enforced. Fail closed.
+            return "tree_cost_pricing_unavailable"
+        if snap.remaining("cost_micros") <= 0:
+            return "tree_cost_micros"
+        return None
+    except Exception:  # noqa: BLE001 — SEC-9 #2/#3: pricing/accounting failure fails closed
+        return "tree_budget_error"
+
+
+def execution_tree_debit_cost(agent, *, amount_usd) -> Optional[str]:
+    """Debit the ACTUAL provider cost of the call just made against the shared tree
+    (SEC-9 #2). ``amount_usd`` is the priced cost (USD); it is converted to
+    micro-USD with ceil rounding (conservative — accumulated rounding can never
+    drift the tree over the signed ceiling). No-op for a non-managed run or a
+    zero/none cost. On overflow the remaining budget is saturated and a durable
+    stop is returned; any infra failure fails closed (``tree_budget_error``)."""
+    root = _root(agent)
+    if not root:
+        return None
+    if amount_usd is None:
+        return None
+    try:
+        import math
+
+        micros = int(math.ceil(float(amount_usd) * 1_000_000))
+    except (TypeError, ValueError):
+        return None
+    if micros <= 0:
+        return None
+    from youtab_runtime import execution_tree_budget as etb
+
+    try:
+        etb.consume(root, cost_micros=micros)
+        return None
+    except etb.TreeBudgetExceeded:
+        try:
+            remaining = etb.snapshot(root).remaining("cost_micros")
+            if remaining > 0:
+                etb.consume(root, cost_micros=remaining)
+        except Exception:  # noqa: BLE001 — best-effort saturation; never re-raise
+            pass
+        return "tree_cost_micros"
+    except etb.TreeBudgetError:
+        return "tree_budget_error"
+    except Exception:  # noqa: BLE001 — SEC-9 #3: infra failure fails closed
         return "tree_budget_error"

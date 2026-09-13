@@ -362,6 +362,23 @@ def test_worker_refuses_when_no_grant_persisted(tmp_path):
     assert "admission_error" in res
 
 
+def test_worker_refuses_when_manifest_missing(tmp_path):
+    # SEC-9 #5: a managed run with a valid grant (+ effective binding) but NO
+    # persisted capability manifest must fail closed — it must never fall through
+    # to a null binding that lets decide_tool authorize the full "*" envelope.
+    task_id = "task-nomanifest"
+    db_path = tmp_path / "kanban.db"
+    now = datetime.now(UTC).replace(microsecond=0)
+    _envelope, header = _grant_header(
+        nonce="grant-subproc-nomanifest-0123456789a", now=now
+    )
+    _persist_run(db_path, task_id, grant_header=header, manifest_payload=None)
+    rc, res = _run_worker(tmp_path, db_path, task_id)
+    assert rc == 3, res.get("_stderr")
+    assert "admission_error" in res
+    assert "no persisted capability manifest" in res["admission_error"]
+
+
 def test_worker_refuses_tampered_manifest(tmp_path):
     task_id = "task-tampered"
     db_path = tmp_path / "kanban.db"
