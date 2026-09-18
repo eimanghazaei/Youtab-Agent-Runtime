@@ -39,6 +39,8 @@ existence).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import threading
@@ -62,6 +64,14 @@ router = APIRouter()
 # against this on connect; a mismatch surfaces as ``runtime_incompatible``
 # rather than a silent empty success.
 CONTRACT_VERSION = "1"
+
+# Additive execution/idempotency contract this surface implements on the create
+# path. Advertised in ``/capabilities`` ONLY when the durable idempotency path
+# is genuinely active (the run store carries the fingerprint column that backs
+# changed-payload conflict detection). Independent of any managed-grant
+# contract — it governs (tenant, user, Idempotency-Key)-scoped create dedupe
+# only. See ``runtime_create_run`` for the enforcement and the retention policy.
+IDEMPOTENCY_CONTRACT = "runs.create.idempotency.v1"
 
 # Product runs live on a dedicated board so they are cleanly separated from any
 # other kanban usage of the same home. Tenant filtering is the primary isolation
@@ -767,25 +777,96 @@ async def runtime_health(identity: RuntimeIdentity = Depends(require_service_ide
     }
 
 
+def _effect_fingerprint(
+    *,
+    agent: str,
+    task_text: str,
+    title: str,
+    engine: str,
+    goal_mode: bool,
+    skills: Optional[List[str]],
+    max_runtime: Optional[int],
+    mode: str,
+) -> str:
+    """SHA-256 (hex) of the EFFECT-BEARING fields of a create-run request.
+
+    Two requests carrying the same ``Idempotency-Key`` describe "the same
+    effect" iff these canonicalise identically. Transport/cosmetic fields that
+    legitimately differ across an idempotent retry — the signed-command nonce,
+    signature, timestamp, and even the correlation id — are deliberately
+    EXCLUDED so a genuine retry replays instead of falsely 409-ing. Everything
+    that changes what the run actually does (which agent, the prompt, the
+    branded engine, goal-loop toggle, forced skills, runtime cap, execution
+    mode) IS included, so a reused key with a changed effect is detectable.
+
+    Canonicalisation is a sorted-key, tight-separator JSON dump, so field order
+    and whitespace never change the digest.
+    """
+    canonical = {
+        "agent": agent,
+        "task": task_text,
+        "title": title,
+        "engine": engine or None,
+        "goal_mode": bool(goal_mode),
+        "skills": list(skills) if skills else None,
+        "max_runtime_seconds": max_runtime,
+        "mode": mode,
+    }
+    blob = json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _idempotency_contract_active() -> bool:
+    """True only when the DURABLE idempotency path is genuinely available.
+
+    The ``runs.create.idempotency.v1`` contract is backed by the runtime
+    board's ``tasks.idempotency_fingerprint`` column (the durable store of the
+    effect fingerprint used for changed-payload conflict detection). We probe
+    the real schema so the capability is advertised ONLY when it is truly
+    active — never faked. On any error we fail closed (report inactive).
+    """
+    try:
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        return "idempotency_fingerprint" in cols
+    except Exception as exc:  # noqa: BLE001 — honest: unknown => not advertised
+        _log.warning("idempotency contract probe failed: %s", exc)
+        return False
+
+
 @router.get("/api/runtime/v1/capabilities")
 async def runtime_capabilities(
     identity: RuntimeIdentity = Depends(require_service_identity),
 ):
     from youtab_agent_cli import __version__ as engine_version
+    supported = [
+        "agents", "runs.create", "runs.list", "runs.detail",
+        "runs.events", "runs.cancel", "runs.retry",
+        "runs.logs", "tools", "skills", "sandboxes", "artifacts",
+    ]
+    # Advertise the additive idempotent-create contract ONLY when the durable
+    # path is genuinely active (fingerprint column present). Honest capability
+    # negotiation: the connector must not enable changed-payload conflict
+    # handling against an engine that cannot actually persist it.
+    idempotency_active = _idempotency_contract_active()
+    if idempotency_active:
+        supported.append(IDEMPOTENCY_CONTRACT)
     return {
         "contract_version": CONTRACT_VERSION,
         "engine_version": engine_version,
-        "supported": [
-            "agents", "runs.create", "runs.list", "runs.detail",
-            "runs.events", "runs.cancel", "runs.retry",
-            "runs.logs", "tools", "skills", "sandboxes", "artifacts",
-        ],
+        "supported": supported,
         # Honest capability flags — the connector/UI must not offer what the
         # engine does not genuinely do. The kanban engine has no resume-from-
         # checkpoint primitive; recovery is retry (a fresh run), so resume is
         # reported unsupported rather than faked.
         "resume_supported": False,
         "logs_supported": True,
+        # Explicit boolean mirror of the ``runs.create.idempotency.v1`` entry in
+        # ``supported`` — durable (tenant, user, key)-scoped create dedupe with
+        # changed-payload 409 conflicts. True only when genuinely persisted.
+        "idempotency_contract": idempotency_active,
         "sandbox_backends": _sandbox_backends().get("backends", []),
         "reasoning_strategies": ["single_shot", "goal_loop"],
     }
@@ -1068,26 +1149,73 @@ async def runtime_create_run(
     want_det = bool(payload.get("deterministic", False))
     mode = "deterministic" if (want_det and _deterministic_worker_enabled()) else "model"
 
-    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        run_id, created = kb.create_task_ex(
-            conn,
+    # Idempotent-create contract (``runs.create.idempotency.v1``). When the
+    # caller supplies an ``Idempotency-Key`` we bind it to a fingerprint of the
+    # EFFECT-BEARING request fields and persist it durably (survives restart,
+    # scoped to this (tenant, user)). On a re-submit under the same key:
+    #   * same effect  -> the SAME existing run is returned (200, no second
+    #     create-time event, no second dispatch — enforced by ``created`` below);
+    #   * changed effect -> ``create_task_ex`` raises ``IdempotencyConflict`` and
+    #     we surface an explicit 409 (never silently create or overwrite);
+    #   * a completed/cancelled/archived run under the key still replays
+    #     (RETENTION: ``idempotency_include_archived`` returns the original run,
+    #     so a spent key can never mint a duplicate);
+    #   * concurrent same-key creates collapse to exactly one durable run (the
+    #     atomic insert-or-get inside ``create_task_ex``'s BEGIN IMMEDIATE txn).
+    # Uniqueness is scoped to (tenant, created_by, key), so a colliding key from
+    # another tenant/user is enumeration-resistant — it neither observes nor
+    # suppresses this principal's run; it simply creates its own.
+    fingerprint = (
+        _effect_fingerprint(
+            agent=agent,
+            task_text=task_text,
             title=title,
-            body=task_text,
-            assignee=agent,
-            created_by=identity.user,
-            tenant=identity.tenant,
-            idempotency_key=identity.idempotency_key,
-            skills=skills,
+            engine=engine,
             goal_mode=goal_mode,
-            max_runtime_seconds=max_runtime,
-            model_override=model_override,
-            provider_override=provider_override,
-            board=RUNTIME_BOARD,
-            # Authoritative dedicated correlation column (canonical v1). The
-            # session_id write below stays UNCHANGED as the legacy overload.
-            correlation_id=identity.correlation_id,
-            session_id=identity.correlation_id,
+            skills=skills,
+            max_runtime=max_runtime,
+            mode=mode,
         )
+        if identity.idempotency_key
+        else None
+    )
+
+    with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+        try:
+            run_id, created = kb.create_task_ex(
+                conn,
+                title=title,
+                body=task_text,
+                assignee=agent,
+                created_by=identity.user,
+                tenant=identity.tenant,
+                idempotency_key=identity.idempotency_key,
+                idempotency_fingerprint=fingerprint,
+                idempotency_conflict_on_mismatch=True,
+                idempotency_include_archived=True,
+                skills=skills,
+                goal_mode=goal_mode,
+                max_runtime_seconds=max_runtime,
+                model_override=model_override,
+                provider_override=provider_override,
+                board=RUNTIME_BOARD,
+                # Authoritative dedicated correlation column (canonical v1). The
+                # session_id write below stays UNCHANGED as the legacy overload.
+                correlation_id=identity.correlation_id,
+                session_id=identity.correlation_id,
+            )
+        except kb.IdempotencyConflict as exc:
+            # Same key, different effect-bearing payload -> explicit conflict.
+            # The existing run id is returned so the caller can reconcile
+            # against the run the key already owns (never leaked cross-owner:
+            # the lookup is scoped to this tenant/user).
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "idempotency_key_conflict",
+                    "run_id": exc.existing_id,
+                },
+            ) from exc
         # Record the resolved mode as a create-time event (survives restart,
         # visible in the run's own event stream, read by the dispatcher spawn).
         # The correlation id is stamped on this authoritative dispatch event
