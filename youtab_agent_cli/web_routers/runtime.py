@@ -1912,9 +1912,10 @@ async def runtime_capabilities(
         "resume_supported": False,
         "logs_supported": True,
         # Explicit boolean mirror of the ``runs.create.idempotency.v1`` entry in
-        # ``supported`` — durable (tenant, user, key)-scoped create dedupe with
-        # changed-payload 409 conflicts + legacy-NULL fail-closed. True only when
-        # genuinely persisted.
+        # ``supported`` — durable (tenant, user, workspace, key)-scoped create
+        # dedupe with changed-payload 409 conflicts + legacy-NULL fail-closed
+        # (C3: same key in two different authorised workspaces -> independent
+        # runs). True only when genuinely persisted.
         "idempotency_contract": idempotency_active,
         # Explicit boolean mirror of the ``signature.canonical.v2`` marker — the
         # shared cross-repo canonical-v2 HMAC contract. True only when genuinely
@@ -2411,8 +2412,8 @@ async def runtime_create_run(
     # Idempotent-create contract (``runs.create.idempotency.v1``). When the caller
     # supplies an ``Idempotency-Key`` we bind it to a fingerprint of the
     # EFFECT-BEARING request fields (agent/task/title/engine/goal_mode/skills/
-    # runtime-cap/mode) and persist it durably, scoped to (tenant, user). On a
-    # re-submit under the same key:
+    # runtime-cap/mode) and persist it durably, scoped to
+    # (tenant, user, workspace). On a re-submit under the same key:
     #   * same effect  -> the SAME existing run is returned (200, no second create
     #     event, no second dispatch — enforced by ``created`` below);
     #   * changed effect -> ``create_task_ex`` raises ``IdempotencyConflict`` and we
@@ -2427,8 +2428,15 @@ async def runtime_create_run(
     #     not proof of a known payload, so we never assume a legacy row matches);
     #   * concurrent same-key creates collapse to exactly one durable run (atomic
     #     insert-or-get inside create_task_ex's BEGIN IMMEDIATE txn).
-    # Scope is (tenant, created_by, key); workspace-awareness is a later C3 task —
-    # the (tenant, user) scope here is the seam it will extend, not replace.
+    # Scope is (tenant, created_by, workspace, key) (C3): the admitted canonical
+    # Runtime-identity workspace (``identity.workspace``, "-" when unscoped and,
+    # after managed admission, guaranteed == the grant envelope's workspace_id) is
+    # a fourth scope dimension passed to ``create_task_ex`` below. The SAME
+    # (tenant, user, key) in two DIFFERENT authorised workspaces therefore resolves
+    # to INDEPENDENT runs — no cross-workspace disclosure and no suppression — while
+    # within a single workspace spent-key replay + changed-payload 409 are
+    # preserved. Workspace is a SCOPE dimension, NOT an effect signal, so it is
+    # deliberately EXCLUDED from ``_effect_fingerprint`` above.
     _idem_fingerprint = (
         _effect_fingerprint(
             agent=agent,
@@ -2499,6 +2507,11 @@ async def runtime_create_run(
                 idempotency_fingerprint=_idem_fingerprint,
                 idempotency_conflict_on_mismatch=True,
                 idempotency_include_archived=True,
+                # C3: the admitted canonical Runtime-identity workspace ("-" when
+                # unscoped; == the grant envelope's workspace_id after managed
+                # admission) is the fourth idempotency scope dimension, so a
+                # replayed key is only honoured WITHIN the same workspace.
+                workspace=identity.workspace,
                 skills=skills,
                 goal_mode=goal_mode,
                 max_runtime_seconds=max_runtime,
@@ -2518,15 +2531,19 @@ async def runtime_create_run(
             # conflict (CXR-05). Nothing is created or overwritten. The existing
             # run id is returned so the caller can reconcile against the run the
             # key already owns (never leaked cross-owner: the lookup is scoped to
-            # this tenant/user).
+            # this tenant/user AND this workspace, so a different authorised
+            # workspace never even sees this run — C3).
             raise HTTPException(
                 status_code=409,
                 detail={"error": "idempotency_key_conflict", "run_id": exc.existing_id},
             ) from exc
         except kb.IdempotencyLegacyUnknown as exc:
-            # Existing keyed row with a NULL/unknown fingerprint -> fail closed
-            # (CXR-06). We cannot prove the new payload matches the original, so we
-            # neither replay a possibly-changed request nor create a duplicate.
+            # Existing keyed row of UNKNOWN provenance -> fail closed. Either a
+            # NULL/unknown fingerprint (CXR-06) or a NULL/unknown workspace (C3:
+            # a legacy/pre-column row whose scope cannot be proven). We cannot
+            # prove the new request matches/shares scope with the original, so we
+            # neither replay a possibly-changed request nor create a divergent
+            # parallel run nor a duplicate.
             raise HTTPException(
                 status_code=409,
                 detail={"error": "idempotency_legacy_unknown", "run_id": exc.existing_id},

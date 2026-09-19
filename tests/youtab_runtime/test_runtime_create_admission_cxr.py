@@ -189,14 +189,19 @@ def _mint_grant(*, signer=_SIGNER, tenant=TENANT, user=USER, workspace="-",
     return env, header
 
 
-def _headers(tenant=TENANT, user=USER, correlation=None):
-    return {
+def _headers(tenant=TENANT, user=USER, correlation=None, workspace=None):
+    h = {
         "Authorization": f"Bearer {SECRET}",
         "X-Youtab-Tenant-Id": tenant,
         "X-Youtab-User-Id": user,
         "X-Youtab-Roles": "member",
         "X-Youtab-Correlation-Id": correlation or f"cid-{uuid.uuid4().hex[:8]}",
     }
+    if workspace is not None:
+        # Canonical Runtime-identity workspace. In managed mode this MUST equal the
+        # grant envelope's workspace_id (``_check_binding``) or admission refuses it.
+        h[rca.WORKSPACE_HEADER] = workspace
+    return h
 
 
 def _sign(method, path, tenant, user, body, correlation, nonce=None):
@@ -211,14 +216,16 @@ def _sign(method, path, tenant, user, body, correlation, nonce=None):
 
 
 def _create(client, *, tenant=TENANT, user=USER, grant_header=None,
-            task="add 2 and 2", nonce=None):
+            task="add 2 and 2", nonce=None, workspace=None, idem_key=None):
     body = json.dumps({"agent": "default", "task": task}).encode()
     path = "/api/runtime/v1/runs"
-    h = _headers(tenant, user)
+    h = _headers(tenant, user, workspace=workspace)
     h.update(_sign("POST", path, tenant, user, body, h["X-Youtab-Correlation-Id"], nonce=nonce))
     h["Content-Type"] = "application/json"
     if grant_header is not None:
         h[mx.GRANT_HEADER] = grant_header
+    if idem_key is not None:
+        h["Idempotency-Key"] = idem_key
     return client.post(path, content=body, headers=h)
 
 
@@ -324,6 +331,69 @@ def test_managed_positive_create_admits_and_persists_grant(managed):
     assert len(grant_events) == 1, ev
     persisted = mx.decode_grant_header(grant_events[0]["payload"]["grant"])
     assert persisted.tenant_id == TENANT and persisted.user_id == USER
+
+
+def _run_workspace(db_path, run_id):
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT workspace FROM tasks WHERE id = ?", (run_id,)
+        ).fetchone()["workspace"]
+    finally:
+        conn.close()
+
+
+def _rows_for_key(db_path, key):
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM tasks WHERE idempotency_key = ?", (key,)
+        ).fetchone()["n"]
+    finally:
+        conn.close()
+
+
+# ── C3: managed admission workspace flows into the idempotency scope ───────────
+
+
+def test_managed_grant_workspace_scopes_idempotency(managed):
+    # A grant minted for a CONCRETE workspace_id + the matching
+    # ``x-youtab-workspace-id`` header is admitted (``_check_binding`` requires
+    # header == grant workspace_id), and the admitted workspace is PERSISTED as the
+    # run's idempotency scope. Two DIFFERENT authorised workspaces reusing the SAME
+    # Idempotency-Key mint INDEPENDENT runs (each single-use grant carries its own
+    # nonce, so this is not a transport replay) — proving idempotency is scoped by
+    # (tenant, user, workspace, key) at the managed boundary too.
+    key = "idem-managed-ws-001"
+
+    _, header_a = _mint_grant(workspace="ws-alpha")
+    ra = _create(managed, grant_header=header_a, workspace="ws-alpha", idem_key=key)
+    assert ra.status_code == 200, ra.text
+    run_a = ra.json()["run_id"]
+    assert _run_workspace(managed._db_path, run_a) == "ws-alpha"
+
+    _, header_b = _mint_grant(workspace="ws-beta")
+    rb = _create(managed, grant_header=header_b, workspace="ws-beta", idem_key=key)
+    assert rb.status_code == 200, rb.text
+    run_b = rb.json()["run_id"]
+    assert run_b != run_a, "same key in a different authorised workspace -> new run"
+    assert _run_workspace(managed._db_path, run_b) == "ws-beta"
+
+    # Exactly two durable rows under the shared key: one per workspace.
+    assert _rows_for_key(managed._db_path, key) == 2
+
+
+def test_managed_grant_workspace_mismatch_refused_before_creation(managed):
+    # Defence-in-depth control: a grant for ws-alpha but a request header naming
+    # ws-beta is refused at admission (never widened), so no run is created and the
+    # workspace scope can never be spoofed past the grant.
+    _, header = _mint_grant(workspace="ws-alpha")
+    r = _create(managed, grant_header=header, workspace="ws-beta")
+    assert r.status_code in (401, 403), r.text
+    assert r.json()["detail"]["error"] == "grant_workspace_mismatch"
+    assert _task_count(managed._db_path) == 0
 
 
 # ── CXR-02 standalone: a managed grant is refused, never silently honoured ─────
