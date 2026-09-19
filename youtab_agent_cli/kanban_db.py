@@ -919,6 +919,14 @@ class Task:
     project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
+    # SHA-256 (hex) of the caller's canonical EFFECT-BEARING request fields,
+    # captured on the FIRST create under ``idempotency_key``. Backs the
+    # ``runs.create.idempotency.v1`` changed-payload conflict detection: a reused
+    # key whose fingerprint differs is a CHANGED effect (409 conflict), never a
+    # silent replay/overwrite. NULL on legacy rows and rows created without a
+    # fingerprint — a NULL stored value is treated as UNKNOWN (not "matches"), so
+    # a keyed create against it fails closed rather than assuming equality (CXR-06).
+    idempotency_fingerprint: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
     #   * timed_out outcome (worker exceeded max_runtime_seconds)
@@ -1021,6 +1029,11 @@ class Task:
             tenant=row["tenant"] if "tenant" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
+            idempotency_fingerprint=(
+                row["idempotency_fingerprint"]
+                if "idempotency_fingerprint" in keys
+                else None
+            ),
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
                 # Pre-migration fallback: ``_migrate_add_optional_columns`` always
@@ -1201,6 +1214,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     tenant               TEXT,
     result               TEXT,
     idempotency_key      TEXT,
+    -- SHA-256 (hex) of the caller's canonical EFFECT-BEARING request fields,
+    -- captured on the first create under an ``idempotency_key``. Lets the
+    -- idempotent-create contract detect a REUSED key carrying a CHANGED effect
+    -- (same key, different payload) and refuse it as a 409 conflict rather than
+    -- silently replaying or overwriting. NULL for rows created without a
+    -- fingerprint (legacy rows and callers that don't opt in) — a NULL stored
+    -- value is treated as UNKNOWN: column existence is NOT proof of a known
+    -- payload, so a keyed create against a NULL fingerprint fails CLOSED
+    -- (idempotency_legacy_unknown) instead of assuming a match. Additive +
+    -- reversible (a downgrade simply stops reading the column).
+    idempotency_fingerprint TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
     -- The circuit breaker in _record_task_failure trips when this
@@ -2337,6 +2361,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
         )
+    if "idempotency_fingerprint" not in cols:
+        # Effect-bearing request fingerprint backing the ``runs.create.idempotency.v1``
+        # changed-payload conflict detection. Additive + reversible: legacy rows get
+        # NULL, treated as UNKNOWN so a keyed create against them fails CLOSED
+        # (idempotency_legacy_unknown) rather than assuming the payload matches; a
+        # downgrade simply stops reading the column.
+        _add_column_if_missing(
+            conn, "tasks", "idempotency_fingerprint", "idempotency_fingerprint TEXT"
+        )
     # ``idx_tasks_idempotency`` is created unconditionally below alongside
     # the other additive-column indexes — see the block after the
     # legacy-column migration. Creating it here too would be redundant.
@@ -2884,6 +2917,57 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+class IdempotencyConflict(ValueError):
+    """Raised when an ``idempotency_key`` is reused with a CHANGED effect.
+
+    The idempotent-create contract (``runs.create.idempotency.v1``) guarantees
+    that a given ``(tenant, created_by, idempotency_key)`` maps to exactly one
+    run with one effect. When a caller re-submits the same key but a different
+    effect-bearing payload (its ``idempotency_fingerprint`` differs from the row
+    already stored), we must NOT silently replay the original run and must NOT
+    overwrite it — we fail closed with this conflict so the boundary can surface
+    an explicit 409. ``existing_id`` is the run the key already owns. Permanent:
+    a changed payload conflicts at ANY age (CXR-05), including against a spent
+    (completed/cancelled/archived) run.
+
+    Only raised when the caller opts in via ``idempotency_conflict_on_mismatch``
+    AND both fingerprints are known (a NULL stored fingerprint is handled by
+    :class:`IdempotencyLegacyUnknown`, which fails closed rather than compares).
+    """
+
+    def __init__(self, existing_id: str):
+        self.existing_id = existing_id
+        super().__init__(
+            f"idempotency_key reused with a changed effect-bearing payload; "
+            f"existing run {existing_id}"
+        )
+
+
+class IdempotencyLegacyUnknown(ValueError):
+    """Raised when a keyed create hits an existing row with a NULL fingerprint.
+
+    CXR-06 (fail closed): the presence of the ``idempotency_fingerprint`` COLUMN
+    is not proof that any given row's payload is known. For an existing keyed row
+    whose stored fingerprint is NULL/unknown (a legacy/pre-column row, or one
+    created without opting in), a create under the same key CANNOT prove the new
+    payload matches the original — so it must NOT silently replay a possibly
+    different request and must NOT create a duplicate. We fail closed with this
+    explicit, stable error so the boundary can surface a 409
+    ``idempotency_legacy_unknown`` and create no new run/effect. ``existing_id``
+    is the run the key already owns.
+
+    Only raised when the caller opts in via ``idempotency_conflict_on_mismatch``
+    AND supplies a fingerprint to compare against.
+    """
+
+    def __init__(self, existing_id: str):
+        self.existing_id = existing_id
+        super().__init__(
+            f"idempotency_key maps to a run with an unknown (NULL) fingerprint; "
+            f"cannot prove payload equality, failing closed; existing run {existing_id}"
+        )
+
+
 def create_task(conn: sqlite3.Connection, **kwargs) -> str:
     """Backward-compatible wrapper: create a task and return only its id.
 
@@ -2912,6 +2996,9 @@ def create_task_ex(
     parents: Iterable[str] = (),
     triage: bool = False,
     idempotency_key: Optional[str] = None,
+    idempotency_fingerprint: Optional[str] = None,
+    idempotency_conflict_on_mismatch: bool = False,
+    idempotency_include_archived: bool = False,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
@@ -2943,6 +3030,35 @@ def create_task_ex(
     same key already exists, returns the existing task's id instead of
     creating a duplicate. Useful for retried webhooks / automation that
     should not double-write.
+
+    Idempotent-create contract knobs (``runs.create.idempotency.v1``) — all
+    additive and default to the historical behaviour so existing callers are
+    unaffected:
+
+    * ``idempotency_fingerprint`` — SHA-256 (hex) of the caller's canonical
+      effect-bearing request fields. Stored on the row at create time and
+      compared against the stored value on an idempotency hit.
+    * ``idempotency_conflict_on_mismatch`` — when True AND the caller supplies a
+      fingerprint, an idempotency hit is resolved as follows: (a) a stored
+      fingerprint that DIFFERS raises :class:`IdempotencyConflict` (same key,
+      changed effect — never replay/overwrite); (b) a stored fingerprint that is
+      NULL/unknown raises :class:`IdempotencyLegacyUnknown` and fails CLOSED
+      (CXR-06: column existence is not proof of a known payload, so we never
+      assume a legacy row matches); (c) an equal fingerprint replays the run.
+      Default False preserves the old replay-regardless behaviour.
+    * ``idempotency_include_archived`` — when True the idempotency lookup ALSO
+      matches archived/terminal rows and returns the ORIGINAL (oldest) run, so a
+      completed/cancelled/archived run under the same key still replays and a
+      duplicate is never silently created (CXR-05 retention: a finalized/spent
+      key permanently replays its original run — no TTL, no reuse-after-N-hours).
+      Default False keeps the historical "archived rows free the key" behaviour.
+
+    The uniqueness guarantee is an ATOMIC insert-or-get, not a read-then-write
+    race: the pre-lock lookup is only a fast path; the authoritative re-check
+    (and the conflict/legacy decision) runs INSIDE the ``BEGIN IMMEDIATE`` write
+    transaction, which SQLite admits one writer at a time — so two concurrent
+    same-key creators yield exactly one row (the loser observes the winner's
+    committed row and returns it with ``created=False``).
 
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
@@ -3137,18 +3253,54 @@ def create_task_ex(
     # owner's run (disclosing its tenant/correlation id and suppressing their
     # own create). Scoped, a colliding key from a different owner simply creates
     # their own run. ``IS`` gives correct NULL-matches-NULL semantics.
-    def _existing_idempotent() -> Optional[str]:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
+    #
+    # RETENTION (CXR-05): by default archived rows are excluded, so an archived
+    # run frees its key for reuse (historical behaviour). When
+    # ``idempotency_include_archived`` is set the lookup matches EVERY status and
+    # returns the ORIGINAL (oldest) run, so a completed/cancelled/archived run
+    # under the same key still replays and a duplicate is never silently created.
+    def _existing_idempotent() -> Optional[sqlite3.Row]:
+        if idempotency_include_archived:
+            status_clause = ""
+            order = "ASC"  # original (oldest) run wins on retention replay
+        else:
+            status_clause = "AND status != 'archived' "
+            order = "DESC"
+        return conn.execute(
+            "SELECT id, idempotency_fingerprint FROM tasks "
+            "WHERE idempotency_key = ? " + status_clause +
             "AND tenant IS ? AND created_by IS ? "
-            "ORDER BY created_at DESC LIMIT 1",
+            f"ORDER BY created_at {order} LIMIT 1",
             (idempotency_key, tenant, created_by),
         ).fetchone()
-        return row["id"] if row else None
+
+    def _resolve_idempotent() -> Optional[str]:
+        """Return the existing run id for this key, or raise on a changed/legacy row.
+
+        When conflict detection is opted into AND the caller supplies a
+        fingerprint, an existing row is resolved fail-closed:
+          * stored fingerprint is NULL/unknown -> :class:`IdempotencyLegacyUnknown`
+            (CXR-06: column existence is not proof of a known payload; never
+            assume a legacy row matches);
+          * stored fingerprint DIFFERS -> :class:`IdempotencyConflict` (CXR-05:
+            same key, changed effect — permanent 409, at any age);
+          * stored fingerprint EQUALS -> replay (return the existing id).
+        Otherwise (no opt-in, or no supplied fingerprint) the historical
+        replay-regardless behaviour is preserved.
+        """
+        row = _existing_idempotent()
+        if row is None:
+            return None
+        if idempotency_conflict_on_mismatch and idempotency_fingerprint is not None:
+            stored = row["idempotency_fingerprint"]
+            if stored is None:
+                raise IdempotencyLegacyUnknown(existing_id=row["id"])
+            if stored != idempotency_fingerprint:
+                raise IdempotencyConflict(existing_id=row["id"])
+        return row["id"]
 
     if idempotency_key:
-        existing = _existing_idempotent()
+        existing = _resolve_idempotent()
         if existing is not None:
             return existing, False
 
@@ -3187,9 +3339,11 @@ def create_task_ex(
                 # has committed its INSERT, and now observes the existing row.
                 # Returning here (no writes performed) commits an empty
                 # transaction and yields the winner's run with created=False, so
-                # exactly one row per key is ever inserted.
+                # exactly one row per key is ever inserted. ``_resolve_idempotent``
+                # is used here too so a changed/legacy row is detected (409/fail
+                # closed) under the lock, never a silent insert of a duplicate.
                 if idempotency_key:
-                    existing = _existing_idempotent()
+                    existing = _resolve_idempotent()
                     if existing is not None:
                         return existing, False
 
@@ -3249,10 +3403,11 @@ def create_task_ex(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
+                        idempotency_fingerprint,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         goal_mode, goal_max_turns, session_id, correlation_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3269,6 +3424,7 @@ def create_task_ex(
                         project_id,
                         tenant,
                         idempotency_key,
+                        idempotency_fingerprint,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
