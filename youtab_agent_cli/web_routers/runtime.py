@@ -1140,14 +1140,39 @@ def _summary_signals(conn: "Any", task_ids: "List[str]") -> "Dict[str, Tuple[boo
 
 
 def _load_owned_task(conn: "Any", run_id: str, identity: RuntimeIdentity) -> "kb.Task":
-    """Load a task and enforce (tenant, user) ownership. 404 on any mismatch."""
+    """Load a task and enforce (tenant, created_by, workspace) ownership.
+
+    Workspace is a HARD scope dimension here, not merely tenant+user. A run
+    created under workspace A must be INVISIBLE and IMMUTABLE from workspace B
+    even for the SAME (tenant, user): a caller acting in B can neither read nor
+    mutate A's runs. This is the SINGLE shared loader behind every per-run
+    handler (get / events / logs / artifacts / cancel / retry / pause / resume
+    / answer / approve), so enforcing the workspace predicate here closes the
+    gap for all of them at once rather than per-handler.
+
+    Any mismatch — wrong tenant, wrong user, OR wrong workspace — raises the
+    SAME enum-resistant 404 that a cross-user mismatch already produced, so an
+    out-of-workspace run is indistinguishable from a non-existent one (never
+    leak absent-vs-forbidden).
+
+    Legacy rule (fail-closed): a NEW row is ALWAYS stored with a concrete
+    workspace scope (``WORKSPACE_UNSCOPED`` == "-" when the caller is unscoped),
+    never NULL — see ``kanban_db.create_task_ex``. A stored NULL is a pre-column
+    legacy row whose workspace is UNKNOWN and therefore NOT attributable to any
+    workspace; it matches NO workspace-scoped read, not even the "-" unscoped
+    caller. Because ``identity.workspace`` is itself normalised to "-" when
+    unscoped (never None, see ``require_service_identity``), the check is a plain
+    equality: a NULL stored workspace can never equal a "-"/concrete caller
+    value, so legacy rows fail closed.
+    """
     task = kb.get_task(conn, run_id)
     if (
         task is None
         or task.tenant != identity.tenant
         or task.created_by != identity.user
+        or task.workspace != identity.workspace
     ):
-        # Never leak existence across tenant/user boundaries.
+        # Never leak existence across tenant / user / workspace boundaries.
         raise HTTPException(status_code=404, detail={"error": "run_not_found"})
     return task
 
@@ -1991,13 +2016,25 @@ async def runtime_list_runs(
         # blocks every other request that uvicorn worker is serving. The
         # connection is opened and closed entirely within this thread.
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-            # Tenant is the DB-level filter; user ownership is enforced per row so
-            # a tenant admin still can't read another user's runs here.
+            # Tenant is the DB-level filter; user AND workspace ownership are
+            # enforced per row so a tenant admin still can't read another user's
+            # runs, and a caller acting in workspace B never sees the runs they
+            # created in workspace A. The list is scoped to the caller's ACTIVE
+            # workspace only — the same (tenant, created_by, workspace) predicate
+            # the per-run loader (_load_owned_task) applies. A legacy NULL-
+            # workspace row (task.workspace is None) equals neither a concrete
+            # workspace nor the "-" unscoped sentinel, so it fails closed and is
+            # never listed under any workspace.
             tasks = kb.list_tasks(
                 conn, tenant=identity.tenant, include_archived=True,
                 order_by="created-desc",
             )
-            owned = [t for t in tasks if t.created_by == identity.user]
+            owned = [
+                t
+                for t in tasks
+                if t.created_by == identity.user
+                and t.workspace == identity.workspace
+            ]
             # One batched query for cancel/mode signals instead of a per-task
             # full-history list_events fan-out (the N+1).
             signals = _summary_signals(conn, [t.id for t in owned])
