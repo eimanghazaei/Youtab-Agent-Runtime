@@ -288,7 +288,17 @@ def _uv_self_update_is_fresh(now: float | None = None) -> bool:
 
         stamp = get_youtab_home() / "cache" / ".uv_self_update_stamp"
         age = (now if now is not None else time.time()) - stamp.stat().st_mtime
-        return 0 <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
+        # Freshness is bounded ONLY from above. A just-written stamp can read an
+        # mtime slightly AFTER a subsequent ``time.time()`` (Windows rounds/skews
+        # filesystem timestamps forward), which makes ``age`` a small NEGATIVE
+        # number. A stamp cannot be "too new": a now-or-future mtime is, by
+        # definition, a recent write and therefore fresh. The old ``0 <= age``
+        # lower bound rejected exactly this skew case, so the blocking network
+        # self-update ran when it should have been skipped (CI flake). We keep a
+        # sanity floor of one whole interval into the future so a genuinely
+        # corrupt clock (mtime absurdly ahead) fails closed and still triggers
+        # the update rather than suppressing it forever.
+        return -UV_SELF_UPDATE_INTERVAL_SECONDS < age < UV_SELF_UPDATE_INTERVAL_SECONDS
     except Exception:
         return False
 

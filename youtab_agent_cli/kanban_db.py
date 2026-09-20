@@ -353,6 +353,14 @@ def _relative_age(ts: Optional[int], now: Optional[int] = None) -> str:
 # ---------------------------------------------------------------------------
 
 DEFAULT_BOARD = "default"
+# Canonical Runtime-identity workspace sentinel for an UNSCOPED / standalone
+# create. Mirrors ``runtime_command_auth.WORKSPACE_UNSCOPED`` ("-") but is
+# duplicated as a plain literal here so this low-level store module keeps no
+# dependency on the runtime-auth surface. A NEW row is ALWAYS stored with a
+# concrete scope value (this sentinel when unscoped), never NULL; a stored NULL
+# is reserved to mean a legacy/pre-column row whose workspace is UNKNOWN (see
+# ``create_task_ex`` idempotency scoping + ``IdempotencyLegacyUnknown``).
+WORKSPACE_UNSCOPED = "-"
 _CURRENT_BOARD_OVERRIDE: ContextVar[str | None] = ContextVar(
     "youtab_kanban_current_board_override",
     default=None,
@@ -919,6 +927,20 @@ class Task:
     project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
+    # SHA-256 (hex) of the caller's canonical EFFECT-BEARING request fields,
+    # captured on the FIRST create under ``idempotency_key``. Backs the
+    # ``runs.create.idempotency.v1`` changed-payload conflict detection: a reused
+    # key whose fingerprint differs is a CHANGED effect (409 conflict), never a
+    # silent replay/overwrite. NULL on legacy rows and rows created without a
+    # fingerprint — a NULL stored value is treated as UNKNOWN (not "matches"), so
+    # a keyed create against it fails closed rather than assuming equality (CXR-06).
+    idempotency_fingerprint: Optional[str] = None
+    # Canonical Runtime-identity workspace the run was admitted under. SCOPE
+    # dimension of the idempotent-create contract: dedupe/replay/conflict are
+    # keyed on ``(tenant, created_by, workspace, idempotency_key)``. NEW rows
+    # always carry a concrete value ("-" when unscoped); a NULL is a
+    # legacy/pre-column row treated as UNKNOWN (keyed create fails closed).
+    workspace: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
     #   * spawn failure (dispatcher couldn't launch the worker)
     #   * timed_out outcome (worker exceeded max_runtime_seconds)
@@ -1021,6 +1043,12 @@ class Task:
             tenant=row["tenant"] if "tenant" in keys else None,
             result=row["result"] if "result" in keys else None,
             idempotency_key=row["idempotency_key"] if "idempotency_key" in keys else None,
+            idempotency_fingerprint=(
+                row["idempotency_fingerprint"]
+                if "idempotency_fingerprint" in keys
+                else None
+            ),
+            workspace=row["workspace"] if "workspace" in keys else None,
             consecutive_failures=(
                 row["consecutive_failures"] if "consecutive_failures" in keys
                 # Pre-migration fallback: ``_migrate_add_optional_columns`` always
@@ -1201,6 +1229,30 @@ CREATE TABLE IF NOT EXISTS tasks (
     tenant               TEXT,
     result               TEXT,
     idempotency_key      TEXT,
+    -- SHA-256 (hex) of the caller's canonical EFFECT-BEARING request fields,
+    -- captured on the first create under an ``idempotency_key``. Lets the
+    -- idempotent-create contract detect a REUSED key carrying a CHANGED effect
+    -- (same key, different payload) and refuse it as a 409 conflict rather than
+    -- silently replaying or overwriting. NULL for rows created without a
+    -- fingerprint (legacy rows and callers that don't opt in) — a NULL stored
+    -- value is treated as UNKNOWN: column existence is NOT proof of a known
+    -- payload, so a keyed create against a NULL fingerprint fails CLOSED
+    -- (idempotency_legacy_unknown) instead of assuming a match. Additive +
+    -- reversible (a downgrade simply stops reading the column).
+    idempotency_fingerprint TEXT,
+    -- Canonical Runtime-identity workspace this run was admitted under (the
+    -- ``x-youtab-workspace-id`` value, guaranteed == the Simorgh grant's
+    -- workspace_id after managed admission). A SCOPE dimension of the
+    -- idempotent-create contract: dedupe / replay / conflict detection are keyed
+    -- on ``(tenant, created_by, workspace, idempotency_key)`` so the SAME
+    -- (tenant, user, key) in two DIFFERENT authorised workspaces yields
+    -- INDEPENDENT runs (no cross-workspace disclosure or suppression). NEW rows
+    -- always store a concrete value ("-" when unscoped/standalone), NEVER NULL.
+    -- A NULL is reserved for legacy/pre-column rows and is treated as UNKNOWN: a
+    -- keyed create matching a NULL-workspace row fails CLOSED
+    -- (idempotency_legacy_unknown) rather than assuming a shared scope. Additive
+    -- + reversible (a downgrade simply stops reading the column).
+    workspace TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
     -- The circuit breaker in _record_task_failure trips when this
@@ -2337,6 +2389,23 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
         )
+    if "idempotency_fingerprint" not in cols:
+        # Effect-bearing request fingerprint backing the ``runs.create.idempotency.v1``
+        # changed-payload conflict detection. Additive + reversible: legacy rows get
+        # NULL, treated as UNKNOWN so a keyed create against them fails CLOSED
+        # (idempotency_legacy_unknown) rather than assuming the payload matches; a
+        # downgrade simply stops reading the column.
+        _add_column_if_missing(
+            conn, "tasks", "idempotency_fingerprint", "idempotency_fingerprint TEXT"
+        )
+    if "workspace" not in cols:
+        # Canonical Runtime-identity workspace backing the SCOPE dimension of the
+        # ``runs.create.idempotency.v1`` contract — dedupe/replay/conflict are keyed
+        # on ``(tenant, created_by, workspace, idempotency_key)``. Additive +
+        # reversible: legacy rows get NULL, treated as UNKNOWN so a keyed create
+        # matching a NULL-workspace row fails CLOSED (idempotency_legacy_unknown)
+        # rather than assuming a shared scope; a downgrade simply stops reading it.
+        _add_column_if_missing(conn, "tasks", "workspace", "workspace TEXT")
     # ``idx_tasks_idempotency`` is created unconditionally below alongside
     # the other additive-column indexes — see the block after the
     # legacy-column migration. Creating it here too would be redundant.
@@ -2884,6 +2953,62 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+class IdempotencyConflict(ValueError):
+    """Raised when an ``idempotency_key`` is reused with a CHANGED effect.
+
+    The idempotent-create contract (``runs.create.idempotency.v1``) guarantees
+    that a given ``(tenant, created_by, workspace, idempotency_key)`` maps to
+    exactly one run with one effect. When a caller re-submits the same key but a different
+    effect-bearing payload (its ``idempotency_fingerprint`` differs from the row
+    already stored), we must NOT silently replay the original run and must NOT
+    overwrite it — we fail closed with this conflict so the boundary can surface
+    an explicit 409. ``existing_id`` is the run the key already owns. Permanent:
+    a changed payload conflicts at ANY age (CXR-05), including against a spent
+    (completed/cancelled/archived) run.
+
+    Only raised when the caller opts in via ``idempotency_conflict_on_mismatch``
+    AND both fingerprints are known (a NULL stored fingerprint is handled by
+    :class:`IdempotencyLegacyUnknown`, which fails closed rather than compares).
+    """
+
+    def __init__(self, existing_id: str):
+        self.existing_id = existing_id
+        super().__init__(
+            f"idempotency_key reused with a changed effect-bearing payload; "
+            f"existing run {existing_id}"
+        )
+
+
+class IdempotencyLegacyUnknown(ValueError):
+    """Raised when a keyed create hits an existing row of UNKNOWN provenance.
+
+    CXR-06 / C3 (fail closed): the presence of the ``idempotency_fingerprint`` or
+    ``workspace`` COLUMN is not proof that any given row's payload or scope is
+    known. This is raised for an existing keyed row whose stored ``workspace`` is
+    NULL/unknown (a legacy/pre-column row whose workspace scope cannot be proven —
+    checked first, so a row written between the fingerprint and workspace
+    migrations still fails closed even if its fingerprint would match) OR whose
+    stored ``idempotency_fingerprint`` is NULL/unknown (a legacy/pre-column row,
+    or one created without opting in). In either case a create under the same key
+    CANNOT prove the new request matches/shares scope with the original — so it
+    must NOT silently replay a possibly different request, must NOT create a
+    divergent parallel run, and must NOT create a duplicate. We fail closed with
+    this explicit, stable error so the boundary can surface a 409
+    ``idempotency_legacy_unknown`` and create no new run/effect. ``existing_id``
+    is the run the key already owns.
+
+    Only raised when the caller opts in via ``idempotency_conflict_on_mismatch``
+    AND supplies a fingerprint to compare against.
+    """
+
+    def __init__(self, existing_id: str):
+        self.existing_id = existing_id
+        super().__init__(
+            f"idempotency_key maps to a run with an unknown (NULL) fingerprint; "
+            f"cannot prove payload equality, failing closed; existing run {existing_id}"
+        )
+
+
 def create_task(conn: sqlite3.Connection, **kwargs) -> str:
     """Backward-compatible wrapper: create a task and return only its id.
 
@@ -2912,6 +3037,10 @@ def create_task_ex(
     parents: Iterable[str] = (),
     triage: bool = False,
     idempotency_key: Optional[str] = None,
+    idempotency_fingerprint: Optional[str] = None,
+    idempotency_conflict_on_mismatch: bool = False,
+    idempotency_include_archived: bool = False,
+    workspace: Optional[str] = None,
     max_runtime_seconds: Optional[int] = None,
     skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None,
@@ -2943,6 +3072,48 @@ def create_task_ex(
     same key already exists, returns the existing task's id instead of
     creating a duplicate. Useful for retried webhooks / automation that
     should not double-write.
+
+    Idempotent-create contract knobs (``runs.create.idempotency.v1``) — all
+    additive and default to the historical behaviour so existing callers are
+    unaffected:
+
+    * ``idempotency_fingerprint`` — SHA-256 (hex) of the caller's canonical
+      effect-bearing request fields. Stored on the row at create time and
+      compared against the stored value on an idempotency hit.
+    * ``idempotency_conflict_on_mismatch`` — when True AND the caller supplies a
+      fingerprint, an idempotency hit is resolved as follows: (a) a stored
+      fingerprint that DIFFERS raises :class:`IdempotencyConflict` (same key,
+      changed effect — never replay/overwrite); (b) a stored fingerprint that is
+      NULL/unknown raises :class:`IdempotencyLegacyUnknown` and fails CLOSED
+      (CXR-06: column existence is not proof of a known payload, so we never
+      assume a legacy row matches); (c) an equal fingerprint replays the run.
+      Default False preserves the old replay-regardless behaviour.
+    * ``idempotency_include_archived`` — when True the idempotency lookup ALSO
+      matches archived/terminal rows and returns the ORIGINAL (oldest) run, so a
+      completed/cancelled/archived run under the same key still replays and a
+      duplicate is never silently created (CXR-05 retention: a finalized/spent
+      key permanently replays its original run — no TTL, no reuse-after-N-hours).
+      Default False keeps the historical "archived rows free the key" behaviour.
+    * ``workspace`` — canonical Runtime-identity workspace (C3): a SCOPE dimension
+      of the idempotency lookup/replay/conflict/insert-or-get, so the full scope
+      is ``(tenant, created_by, workspace, idempotency_key)``. The SAME
+      (tenant, user, key) in two DIFFERENT authorised workspaces resolves to
+      INDEPENDENT runs (neither can observe or suppress the other). ``None``
+      (direct callers/tests that omit it, and unscoped/standalone creates) is
+      treated as unscoped and normalised to ``WORKSPACE_UNSCOPED`` ("-") on INSERT
+      so a NEW row always lands under a concrete scope. A stored NULL is reserved
+      for legacy/pre-column rows and means UNKNOWN: a keyed create matching a
+      NULL-workspace row fails CLOSED via :class:`IdempotencyLegacyUnknown` (only
+      when ``idempotency_conflict_on_mismatch`` is set), never assuming a shared
+      scope. NOT part of the effect fingerprint — workspace is a scope, not an
+      effect signal.
+
+    The uniqueness guarantee is an ATOMIC insert-or-get, not a read-then-write
+    race: the pre-lock lookup is only a fast path; the authoritative re-check
+    (and the conflict/legacy decision) runs INSIDE the ``BEGIN IMMEDIATE`` write
+    transaction, which SQLite admits one writer at a time — so two concurrent
+    same-key creators yield exactly one row (the loser observes the winner's
+    committed row and returns it with ``created=False``).
 
     ``max_runtime_seconds`` caps how long a worker may run before the
     dispatcher SIGTERMs (then SIGKILLs after a grace window) and
@@ -3122,6 +3293,14 @@ def create_task_ex(
             )
         skills_list = cleaned
 
+    # Canonical Runtime-identity workspace scope for this create (C3). ``None``
+    # (direct callers/tests that omit the kwarg, and unscoped/standalone creates)
+    # is treated as unscoped and normalised to ``WORKSPACE_UNSCOPED`` ("-"): a NEW
+    # row is ALWAYS stored with a concrete scope, so a stored NULL can be reserved
+    # to mean a legacy/pre-column row of UNKNOWN workspace. Used both as the INSERT
+    # value below and as the ``_existing_idempotent`` lookup scope.
+    _workspace_scope = workspace if workspace is not None else WORKSPACE_UNSCOPED
+
     # Idempotency FAST PATH — return the existing task instead of creating a
     # duplicate. Done BEFORE entering write_txn to keep the common (already
     # exists) case cheap and to avoid taking a write lock just to look up.
@@ -3129,26 +3308,87 @@ def create_task_ex(
     # miss it), so it is NOT authoritative: the write_txn below re-checks under
     # the BEGIN IMMEDIATE lock before inserting (see ``_existing_idempotent``).
     #
-    # SECURITY: the lookup is scoped to the SAME (tenant, created_by) that owns
-    # the run — the exact ownership boundary the runtime surface enforces on
-    # every read (see web_routers/runtime.py::_load_owned_task). An
+    # SECURITY: the lookup is scoped to the SAME (tenant, created_by, workspace)
+    # that owns the run — the exact ownership boundary the runtime surface
+    # enforces on every read (see web_routers/runtime.py::_load_owned_task). An
     # Idempotency-Key is caller-controlled, so without this scope a different
     # tenant/user submitting a colliding key would be handed back another
     # owner's run (disclosing its tenant/correlation id and suppressing their
     # own create). Scoped, a colliding key from a different owner simply creates
     # their own run. ``IS`` gives correct NULL-matches-NULL semantics.
-    def _existing_idempotent() -> Optional[str]:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
+    #
+    # WORKSPACE SCOPE (C3): the canonical Runtime-identity ``workspace`` is a
+    # fourth scope dimension, so the full tuple is
+    # ``(tenant, created_by, workspace, idempotency_key)``. The SAME
+    # (tenant, user, key) in two DIFFERENT authorised workspaces resolves to
+    # INDEPENDENT runs — each scoped lookup misses the other, so there is no
+    # cross-workspace disclosure and no suppression. A NEW row always stores a
+    # concrete workspace (``_workspace_scope``; "-" when unscoped), NEVER NULL.
+    # The lookup therefore matches ``workspace IS <scope> OR workspace IS NULL``:
+    # the concrete arm gives same-workspace replay/conflict, while the NULL arm
+    # catches a legacy/pre-column row of UNKNOWN workspace so a keyed create
+    # against it FAILS CLOSED (see ``_resolve_idempotent``) instead of silently
+    # minting a divergent parallel run that ignores it. A row in a DIFFERENT
+    # concrete workspace is neither arm, so it is correctly not matched.
+    #
+    # RETENTION (CXR-05): by default archived rows are excluded, so an archived
+    # run frees its key for reuse (historical behaviour). When
+    # ``idempotency_include_archived`` is set the lookup matches EVERY status and
+    # returns the ORIGINAL (oldest) run, so a completed/cancelled/archived run
+    # under the same key still replays and a duplicate is never silently created.
+    # ASC ordering also makes the legacy-NULL arm fail-closed-leaning: a
+    # pre-column row (the oldest under a key) is surfaced ahead of any newer row.
+    def _existing_idempotent() -> Optional[sqlite3.Row]:
+        if idempotency_include_archived:
+            status_clause = ""
+            order = "ASC"  # original (oldest) run wins on retention replay
+        else:
+            status_clause = "AND status != 'archived' "
+            order = "DESC"
+        return conn.execute(
+            "SELECT id, idempotency_fingerprint, workspace FROM tasks "
+            "WHERE idempotency_key = ? " + status_clause +
             "AND tenant IS ? AND created_by IS ? "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key, tenant, created_by),
+            "AND (workspace IS ? OR workspace IS NULL) "
+            f"ORDER BY created_at {order} LIMIT 1",
+            (idempotency_key, tenant, created_by, _workspace_scope),
         ).fetchone()
-        return row["id"] if row else None
+
+    def _resolve_idempotent() -> Optional[str]:
+        """Return the existing run id for this key, or raise on a changed/legacy row.
+
+        When conflict detection is opted into AND the caller supplies a
+        fingerprint, an existing row is resolved fail-closed:
+          * stored ``workspace`` is NULL/unknown -> :class:`IdempotencyLegacyUnknown`
+            (C3 fail-closed: a legacy/pre-column row's workspace is UNKNOWN, so we
+            cannot prove the new create shares its scope; checked BEFORE the
+            fingerprint so a row written in the window between the fingerprint and
+            workspace migrations still fails closed even if its fingerprint would
+            match);
+          * stored fingerprint is NULL/unknown -> :class:`IdempotencyLegacyUnknown`
+            (CXR-06: column existence is not proof of a known payload; never
+            assume a legacy row matches);
+          * stored fingerprint DIFFERS -> :class:`IdempotencyConflict` (CXR-05:
+            same key, changed effect — permanent 409, at any age);
+          * stored fingerprint EQUALS -> replay (return the existing id).
+        Otherwise (no opt-in, or no supplied fingerprint) the historical
+        replay-regardless behaviour is preserved.
+        """
+        row = _existing_idempotent()
+        if row is None:
+            return None
+        if idempotency_conflict_on_mismatch and idempotency_fingerprint is not None:
+            if row["workspace"] is None:
+                raise IdempotencyLegacyUnknown(existing_id=row["id"])
+            stored = row["idempotency_fingerprint"]
+            if stored is None:
+                raise IdempotencyLegacyUnknown(existing_id=row["id"])
+            if stored != idempotency_fingerprint:
+                raise IdempotencyConflict(existing_id=row["id"])
+        return row["id"]
 
     if idempotency_key:
-        existing = _existing_idempotent()
+        existing = _resolve_idempotent()
         if existing is not None:
             return existing, False
 
@@ -3187,9 +3427,11 @@ def create_task_ex(
                 # has committed its INSERT, and now observes the existing row.
                 # Returning here (no writes performed) commits an empty
                 # transaction and yields the winner's run with created=False, so
-                # exactly one row per key is ever inserted.
+                # exactly one row per key is ever inserted. ``_resolve_idempotent``
+                # is used here too so a changed/legacy row is detected (409/fail
+                # closed) under the lock, never a silent insert of a duplicate.
                 if idempotency_key:
-                    existing = _existing_idempotent()
+                    existing = _resolve_idempotent()
                     if existing is not None:
                         return existing, False
 
@@ -3249,10 +3491,11 @@ def create_task_ex(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
+                        idempotency_fingerprint, workspace,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
                         goal_mode, goal_max_turns, session_id, correlation_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3269,6 +3512,10 @@ def create_task_ex(
                         project_id,
                         tenant,
                         idempotency_key,
+                        idempotency_fingerprint,
+                        # C3: NEW rows always store a concrete scope ("-" when
+                        # unscoped), never NULL — NULL is reserved for legacy rows.
+                        _workspace_scope,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,

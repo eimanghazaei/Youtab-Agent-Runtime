@@ -39,6 +39,7 @@ existence).
 """
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import logging
@@ -67,6 +68,21 @@ router = APIRouter()
 # against this on connect; a mismatch surfaces as ``runtime_incompatible``
 # rather than a silent empty success.
 CONTRACT_VERSION = "1"
+
+# Additive execution/idempotency contract this surface implements on the create
+# path. Advertised in ``/capabilities`` ONLY when the durable idempotency path is
+# genuinely active (the run store carries the ``idempotency_fingerprint`` column
+# that backs changed-payload conflict detection). Independent of any managed-grant
+# contract — it governs (tenant, user, Idempotency-Key)-scoped create dedupe with
+# retention + changed-payload 409s. See ``runtime_create_run`` for enforcement.
+IDEMPOTENCY_CONTRACT = "runs.create.idempotency.v1"
+
+# Capability marker advertising that this engine speaks the shared cross-repo
+# canonical-v2 signature contract (CXR-01). Advertised ONLY when the runtime
+# genuinely supports the v2 canonical builder + verifier — never hardcoded (see
+# ``_canonical_v2_supported``). The AI-OS connector negotiates on this before
+# emitting v2-signed commands.
+CANONICAL_V2_CAPABILITY = "signature.canonical.v2"
 
 # Product runs live on a dedicated board so they are cleanly separated from any
 # other kanban usage of the same home. Tenant filtering is the primary isolation
@@ -1124,14 +1140,39 @@ def _summary_signals(conn: "Any", task_ids: "List[str]") -> "Dict[str, Tuple[boo
 
 
 def _load_owned_task(conn: "Any", run_id: str, identity: RuntimeIdentity) -> "kb.Task":
-    """Load a task and enforce (tenant, user) ownership. 404 on any mismatch."""
+    """Load a task and enforce (tenant, created_by, workspace) ownership.
+
+    Workspace is a HARD scope dimension here, not merely tenant+user. A run
+    created under workspace A must be INVISIBLE and IMMUTABLE from workspace B
+    even for the SAME (tenant, user): a caller acting in B can neither read nor
+    mutate A's runs. This is the SINGLE shared loader behind every per-run
+    handler (get / events / logs / artifacts / cancel / retry / pause / resume
+    / answer / approve), so enforcing the workspace predicate here closes the
+    gap for all of them at once rather than per-handler.
+
+    Any mismatch — wrong tenant, wrong user, OR wrong workspace — raises the
+    SAME enum-resistant 404 that a cross-user mismatch already produced, so an
+    out-of-workspace run is indistinguishable from a non-existent one (never
+    leak absent-vs-forbidden).
+
+    Legacy rule (fail-closed): a NEW row is ALWAYS stored with a concrete
+    workspace scope (``WORKSPACE_UNSCOPED`` == "-" when the caller is unscoped),
+    never NULL — see ``kanban_db.create_task_ex``. A stored NULL is a pre-column
+    legacy row whose workspace is UNKNOWN and therefore NOT attributable to any
+    workspace; it matches NO workspace-scoped read, not even the "-" unscoped
+    caller. Because ``identity.workspace`` is itself normalised to "-" when
+    unscoped (never None, see ``require_service_identity``), the check is a plain
+    equality: a NULL stored workspace can never equal a "-"/concrete caller
+    value, so legacy rows fail closed.
+    """
     task = kb.get_task(conn, run_id)
     if (
         task is None
         or task.tenant != identity.tenant
         or task.created_by != identity.user
+        or task.workspace != identity.workspace
     ):
-        # Never leak existence across tenant/user boundaries.
+        # Never leak existence across tenant / user / workspace boundaries.
         raise HTTPException(status_code=404, detail={"error": "run_not_found"})
     return task
 
@@ -1788,25 +1829,123 @@ async def runtime_preflight(
     }
 
 
+def _effect_fingerprint(
+    *,
+    agent: str,
+    task_text: str,
+    title: str,
+    engine: Optional[str],
+    goal_mode: bool,
+    skills: Optional[List[str]],
+    max_runtime: Optional[int],
+    mode: str,
+) -> str:
+    """SHA-256 (hex) of the EFFECT-BEARING fields of a create-run request.
+
+    Two requests carrying the same ``Idempotency-Key`` describe "the same effect"
+    iff these canonicalise identically. Transport/cosmetic fields that legitimately
+    differ across an idempotent retry — the signed-command nonce, signature,
+    timestamp, and even the correlation id / the per-run Simorgh grant — are
+    deliberately EXCLUDED so a genuine retry replays instead of falsely 409-ing.
+    Everything that changes what the run actually does (which agent, the prompt,
+    the branded engine, goal-loop toggle, forced skills, runtime cap, execution
+    mode) IS included, so a reused key with a changed effect is detectable.
+
+    Canonicalisation is a sorted-key, tight-separator JSON dump, so field order
+    and whitespace never change the digest.
+    """
+    canonical = {
+        "agent": agent,
+        "task": task_text,
+        "title": title,
+        "engine": engine or None,
+        "goal_mode": bool(goal_mode),
+        "skills": list(skills) if skills else None,
+        "max_runtime_seconds": max_runtime,
+        "mode": mode,
+    }
+    blob = json.dumps(
+        canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _idempotency_contract_active() -> bool:
+    """True only when the DURABLE idempotency path is genuinely available.
+
+    The ``runs.create.idempotency.v1`` contract is backed by the runtime board's
+    ``tasks.idempotency_fingerprint`` column (the durable store of the effect
+    fingerprint used for changed-payload conflict detection + legacy-fail-closed).
+    We probe the REAL schema so the capability is advertised ONLY when it is truly
+    active — never faked. On any error we fail closed (report inactive).
+    """
+    try:
+        with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+        return "idempotency_fingerprint" in cols
+    except Exception as exc:  # noqa: BLE001 — honest: unknown => not advertised
+        _log.warning("idempotency contract probe failed: %s", exc)
+        return False
+
+
+def _canonical_v2_supported() -> bool:
+    """True only when this engine genuinely speaks the canonical-v2 signature.
+
+    Probes the real ``runtime_command_auth`` surface (the v2 canonical builder +
+    the verifier's supported-protocol set) rather than hardcoding a boolean, so
+    the ``signature.canonical.v2`` marker is advertised ONLY when the code can
+    actually build and verify a v2 signature (CXR-01: advertised only when
+    supported).
+    """
+    return (
+        hasattr(rca, "canonical_string_v2")
+        and getattr(rca, "CANONICAL_V2", None) in getattr(rca, "_SUPPORTED_PROTOS", frozenset())
+    )
+
+
 @router.get("/api/runtime/v1/capabilities")
 async def runtime_capabilities(
     identity: RuntimeIdentity = Depends(require_service_identity),
 ):
     from youtab_agent_cli import __version__ as engine_version
+    supported = [
+        "agents", "runs.create", "runs.list", "runs.detail",
+        "runs.events", "runs.cancel", "runs.retry",
+        "runs.logs", "tools", "skills", "sandboxes", "artifacts",
+    ]
+    # Advertise the additive idempotent-create contract ONLY when the durable
+    # path is genuinely active (fingerprint column present). Honest capability
+    # negotiation: the connector must not enable changed-payload conflict
+    # handling against an engine that cannot actually persist it.
+    idempotency_active = _idempotency_contract_active()
+    if idempotency_active:
+        supported.append(IDEMPOTENCY_CONTRACT)
+    # Advertise canonical-v2 signature support ONLY when the code genuinely
+    # implements the v2 builder + verifier (CXR-01). The AI-OS connector reads
+    # this before emitting v2-signed commands.
+    canonical_v2 = _canonical_v2_supported()
+    if canonical_v2:
+        supported.append(CANONICAL_V2_CAPABILITY)
     return {
         "contract_version": CONTRACT_VERSION,
         "engine_version": engine_version,
-        "supported": [
-            "agents", "runs.create", "runs.list", "runs.detail",
-            "runs.events", "runs.cancel", "runs.retry",
-            "runs.logs", "tools", "skills", "sandboxes", "artifacts",
-        ],
+        "supported": supported,
         # Honest capability flags — the connector/UI must not offer what the
         # engine does not genuinely do. The kanban engine has no resume-from-
         # checkpoint primitive; recovery is retry (a fresh run), so resume is
         # reported unsupported rather than faked.
         "resume_supported": False,
         "logs_supported": True,
+        # Explicit boolean mirror of the ``runs.create.idempotency.v1`` entry in
+        # ``supported`` — durable (tenant, user, workspace, key)-scoped create
+        # dedupe with changed-payload 409 conflicts + legacy-NULL fail-closed
+        # (C3: same key in two different authorised workspaces -> independent
+        # runs). True only when genuinely persisted.
+        "idempotency_contract": idempotency_active,
+        # Explicit boolean mirror of the ``signature.canonical.v2`` marker — the
+        # shared cross-repo canonical-v2 HMAC contract. True only when genuinely
+        # supported by the runtime_command_auth surface.
+        "canonical_v2_supported": canonical_v2,
         "sandbox_backends": _sandbox_backends().get("backends", []),
         "reasoning_strategies": ["single_shot", "goal_loop"],
     }
@@ -1877,13 +2016,25 @@ async def runtime_list_runs(
         # blocks every other request that uvicorn worker is serving. The
         # connection is opened and closed entirely within this thread.
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-            # Tenant is the DB-level filter; user ownership is enforced per row so
-            # a tenant admin still can't read another user's runs here.
+            # Tenant is the DB-level filter; user AND workspace ownership are
+            # enforced per row so a tenant admin still can't read another user's
+            # runs, and a caller acting in workspace B never sees the runs they
+            # created in workspace A. The list is scoped to the caller's ACTIVE
+            # workspace only — the same (tenant, created_by, workspace) predicate
+            # the per-run loader (_load_owned_task) applies. A legacy NULL-
+            # workspace row (task.workspace is None) equals neither a concrete
+            # workspace nor the "-" unscoped sentinel, so it fails closed and is
+            # never listed under any workspace.
             tasks = kb.list_tasks(
                 conn, tenant=identity.tenant, include_archived=True,
                 order_by="created-desc",
             )
-            owned = [t for t in tasks if t.created_by == identity.user]
+            owned = [
+                t
+                for t in tasks
+                if t.created_by == identity.user
+                and t.workspace == identity.workspace
+            ]
             # One batched query for cancel/mode signals instead of a per-task
             # full-history list_events fan-out (the N+1).
             signals = _summary_signals(conn, [t.id for t in owned])
@@ -2295,6 +2446,49 @@ async def runtime_create_run(
 
     _enqueue_epoch_ns = _st_ing.mark_epoch() if _st_ing is not None else None
 
+    # Idempotent-create contract (``runs.create.idempotency.v1``). When the caller
+    # supplies an ``Idempotency-Key`` we bind it to a fingerprint of the
+    # EFFECT-BEARING request fields (agent/task/title/engine/goal_mode/skills/
+    # runtime-cap/mode) and persist it durably, scoped to
+    # (tenant, user, workspace). On a re-submit under the same key:
+    #   * same effect  -> the SAME existing run is returned (200, no second create
+    #     event, no second dispatch — enforced by ``created`` below);
+    #   * changed effect -> ``create_task_ex`` raises ``IdempotencyConflict`` and we
+    #     surface an explicit 409 (never silently create or overwrite), at ANY age
+    #     including against a spent run (CXR-05 permanent conflict);
+    #   * a completed/cancelled/archived run under the key still replays the
+    #     ORIGINAL run (CXR-05 retention: ``idempotency_include_archived=True``), so
+    #     a spent key can never mint a duplicate — no TTL, no reuse-after-N-hours;
+    #   * an existing row whose stored fingerprint is NULL/unknown (a legacy /
+    #     pre-column row) raises ``IdempotencyLegacyUnknown`` -> 409
+    #     ``idempotency_legacy_unknown`` (CXR-06 fail-closed: column existence is
+    #     not proof of a known payload, so we never assume a legacy row matches);
+    #   * concurrent same-key creates collapse to exactly one durable run (atomic
+    #     insert-or-get inside create_task_ex's BEGIN IMMEDIATE txn).
+    # Scope is (tenant, created_by, workspace, key) (C3): the admitted canonical
+    # Runtime-identity workspace (``identity.workspace``, "-" when unscoped and,
+    # after managed admission, guaranteed == the grant envelope's workspace_id) is
+    # a fourth scope dimension passed to ``create_task_ex`` below. The SAME
+    # (tenant, user, key) in two DIFFERENT authorised workspaces therefore resolves
+    # to INDEPENDENT runs — no cross-workspace disclosure and no suppression — while
+    # within a single workspace spent-key replay + changed-payload 409 are
+    # preserved. Workspace is a SCOPE dimension, NOT an effect signal, so it is
+    # deliberately EXCLUDED from ``_effect_fingerprint`` above.
+    _idem_fingerprint = (
+        _effect_fingerprint(
+            agent=agent,
+            task_text=task_text,
+            title=title,
+            engine=(engine or None),
+            goal_mode=goal_mode,
+            skills=skills,
+            max_runtime=max_runtime,
+            mode=mode,
+        )
+        if identity.idempotency_key
+        else None
+    )
+
     def _persist_run_metadata(conn, rid):
         """Create-once metadata persisted INSIDE create_task_ex's own write_txn.
 
@@ -2338,28 +2532,59 @@ async def runtime_create_run(
                 kb._append_event(conn, rid, _GRANT_MANIFEST_EVENT, grant_manifest)
 
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        run_id, created = kb.create_task_ex(
-            conn,
-            title=title,
-            body=task_text,
-            assignee=agent,
-            created_by=identity.user,
-            tenant=identity.tenant,
-            idempotency_key=identity.idempotency_key,
-            skills=skills,
-            goal_mode=goal_mode,
-            max_runtime_seconds=max_runtime,
-            max_retries=_task_max_retries,
-            model_override=model_override,
-            provider_override=provider_override,
-            board=RUNTIME_BOARD,
-            # Authoritative dedicated correlation column (canonical v1). The
-            # session_id write below stays UNCHANGED as the legacy overload.
-            correlation_id=identity.correlation_id,
-            session_id=identity.correlation_id,
-            # Persist binding/grant/mode atomically with the row (see hook).
-            on_created=_persist_run_metadata,
-        )
+        try:
+            run_id, created = kb.create_task_ex(
+                conn,
+                title=title,
+                body=task_text,
+                assignee=agent,
+                created_by=identity.user,
+                tenant=identity.tenant,
+                idempotency_key=identity.idempotency_key,
+                idempotency_fingerprint=_idem_fingerprint,
+                idempotency_conflict_on_mismatch=True,
+                idempotency_include_archived=True,
+                # C3: the admitted canonical Runtime-identity workspace ("-" when
+                # unscoped; == the grant envelope's workspace_id after managed
+                # admission) is the fourth idempotency scope dimension, so a
+                # replayed key is only honoured WITHIN the same workspace.
+                workspace=identity.workspace,
+                skills=skills,
+                goal_mode=goal_mode,
+                max_runtime_seconds=max_runtime,
+                max_retries=_task_max_retries,
+                model_override=model_override,
+                provider_override=provider_override,
+                board=RUNTIME_BOARD,
+                # Authoritative dedicated correlation column (canonical v1). The
+                # session_id write below stays UNCHANGED as the legacy overload.
+                correlation_id=identity.correlation_id,
+                session_id=identity.correlation_id,
+                # Persist binding/grant/mode atomically with the row (see hook).
+                on_created=_persist_run_metadata,
+            )
+        except kb.IdempotencyConflict as exc:
+            # Same key, DIFFERENT effect-bearing payload -> explicit, permanent
+            # conflict (CXR-05). Nothing is created or overwritten. The existing
+            # run id is returned so the caller can reconcile against the run the
+            # key already owns (never leaked cross-owner: the lookup is scoped to
+            # this tenant/user AND this workspace, so a different authorised
+            # workspace never even sees this run — C3).
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "idempotency_key_conflict", "run_id": exc.existing_id},
+            ) from exc
+        except kb.IdempotencyLegacyUnknown as exc:
+            # Existing keyed row of UNKNOWN provenance -> fail closed. Either a
+            # NULL/unknown fingerprint (CXR-06) or a NULL/unknown workspace (C3:
+            # a legacy/pre-column row whose scope cannot be proven). We cannot
+            # prove the new request matches/shares scope with the original, so we
+            # neither replay a possibly-changed request nor create a divergent
+            # parallel run nor a duplicate.
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "idempotency_legacy_unknown", "run_id": exc.existing_id},
+            ) from exc
         # WAVE-30H #8 + Batch2 #F4: on an idempotent hit the run already exists with
         # its persisted binding; a caller pinning an expected digest must have it match
         # the EXISTING run's binding — else a replayed Idempotency-Key could attach the

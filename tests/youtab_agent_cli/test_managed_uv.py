@@ -334,6 +334,54 @@ class TestUpdateManagedUv:
         assert mock_run.call_args_list[0][0][0] == [str(uv), "self", "update"]
         assert stamp.stat().st_mtime > old + 30, "successful self-update must refresh the stamp"
 
+    def test_future_skewed_stamp_reads_fresh(self, tmp_path):
+        """Regression for the CI flake: a stamp whose mtime is a few seconds in
+        the FUTURE relative to ``now`` must read FRESH.
+
+        A stamp written by ``stamp.touch()`` and then read back can carry an
+        mtime slightly after a subsequent ``time.time()`` because Windows
+        rounds/skews filesystem timestamps forward. The old ``0 <= age`` lower
+        bound treated that just-written stamp as NOT fresh, so the blocking
+        network ``uv self update`` ran and ``mock_run.call_count`` flaked to 1.
+        A stamp can never be "too new"; freshness is bounded only from above.
+        """
+        import os as _os
+        import time as _time
+
+        from youtab_agent_cli.managed_uv import _uv_self_update_is_fresh
+
+        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+        now = _time.time()
+        future = now + 5  # the exact skew that flaked: mtime just ahead of now
+        _os.utime(stamp, (future, future))
+
+        with patch("youtab_constants.get_youtab_home", return_value=tmp_path):
+            assert _uv_self_update_is_fresh(now=now) is True
+
+    def test_far_future_stamp_is_not_fresh(self, tmp_path):
+        """A stamp more than one whole interval into the future is not a recent
+        write but a corrupt clock; it must fail closed (NOT fresh) so the
+        self-update still runs instead of being suppressed forever."""
+        import os as _os
+        import time as _time
+
+        from youtab_agent_cli.managed_uv import (
+            UV_SELF_UPDATE_INTERVAL_SECONDS,
+            _uv_self_update_is_fresh,
+        )
+
+        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.touch()
+        now = _time.time()
+        corrupt = now + 2 * UV_SELF_UPDATE_INTERVAL_SECONDS
+        _os.utime(stamp, (corrupt, corrupt))
+
+        with patch("youtab_constants.get_youtab_home", return_value=tmp_path):
+            assert _uv_self_update_is_fresh(now=now) is False
+
 
 
 
