@@ -70,9 +70,10 @@ export function isAttachmentAttachable(attachment: ComposerAttachment): boolean 
   if (state === undefined) {
     // A server-RETURNED reference from the authenticated file.attach response (or a
     // gateway-resolvable in-app @file: ref). NOTE: refText is only a server-returned
-    // REFERENCE — it is NOT an authority or an immutable binding here. The Gateway/
-    // Runtime revalidates it (resolving @file: in the authenticated workspace) when
-    // the prompt is submitted; the frontend does not treat it as authorization.
+    // REFERENCE — it is NOT an authority or an immutable binding here, and the
+    // frontend never treats it as authorization. The Gateway/Runtime MUST revalidate
+    // it (resolving @file: in the authenticated workspace) at submit — that is a
+    // REQUIRED contract (DR-GW-2), not a fact proven by this frontend.
     if (isNonEmptyString(attachment.refText)) {
       return true
     }

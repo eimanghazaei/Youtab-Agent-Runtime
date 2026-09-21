@@ -60,9 +60,9 @@ New rows (frontend-owned, buildable now):
 
 | ID | Capability | Status | Evidence (clean-chain SHA) | Disposition |
 |---|---|---|---|---|
-| CX-13 | Bounded inline-image policy (MIME allowlist + byte cap; SVG excluded; fail-closed) | `[ ] VERIFIED_NOT_REVIEWED` | `f6d81464a` | full server-side inline-image validation/scanning is a BLOCKED Gateway dep |
-| CX-14 | Capability requires explicit feature fields + workspace context + compatible schema (not just $gatewayState open) | `[ ] VERIFIED_NOT_REVIEWED` | `f6d81464a` | real availability BLOCKED on approved Gateway status contract |
-| CX-15 | refText treated as a server-RETURNED reference (not authority/immutable); revalidated by Gateway at submit | `[ ] VERIFIED_NOT_REVIEWED` | `f6d81464a` (documented) + `b3de32bf6` (invariant) | — |
+| CX-13 | Bounded inline-image policy (MIME allowlist + byte cap; SVG excluded; fail-closed) — **defense-in-depth only** | `[ ] IMPLEMENTED_NOT_VERIFIED` | `f6d81464a` | authoritative inline-image validation/scanning is Gateway's (DR-GW-3); needs live E2E |
+| CX-14 | Capability requires explicit feature fields + workspace context + compatible schema (not just $gatewayState open) | `[ ] IMPLEMENTED_NOT_VERIFIED` | `f6d81464a` | real availability requires the approved Gateway status contract + live E2E |
+| CX-15 | refText treated as a server-RETURNED reference (not authority/immutable); Gateway MUST revalidate at submit — **required contract (DR-GW-2), not a proven fact** | `[ ] IMPLEMENTED_NOT_VERIFIED` | `f6d81464a` + `b3de32bf6` | Gateway/Runtime revalidation unproven until live cross-repo E2E |
 
 ## Dependency requests sent to the owning sibling sessions (frontend BLOCKED until delivered)
 
@@ -72,7 +72,7 @@ New rows (frontend-owned, buildable now):
 - **DR-RT-1 (Runtime/Electron):** real `window.youtabDesktop.folderGrants` implementation (request/list/revoke/read/write + traversal/symlink enforcement + approval-before-write). Blocks FR-04/05/06, FW-01/02, AP-01, E2E-03.
 - **DR-RT-2 (Runtime):** consume approved dep-CVE remediation `e5edea91df1cac36db0417f5d0a2e95123e57bb1` (npm audit 0) at final integration — NOT duplicated in frontend. Blocks the npm-audit gate.
 - **DR-RT-3 (Runtime):** real CRM / ERP / SAP / CAD-DFM-FEA typed operation contracts + approval/effect/receipt/reconciliation backend for F4/F5. No vendor platform built in frontend; UI consumes typed manifests + real Runtime operations when delivered.
-- **DR-OWNER:** live provider creds (inference receipt), reachable MCP server (tool op), authorization to run live cross-repo browser E2E (F6).
+- ~~**DR-OWNER:** live provider creds / MCP / E2E authorization~~ — **REMOVED as a blocker.** The Owner authorized ephemeral test-only secrets, deterministic local reference services, and teardown. F1/F2 live proof + F6 E2E proceed against ephemeral LOCAL reference services (real Frontend consumers + config UI + persistence; no mocked Gateway/UI handlers); live vendor credentials are NOT required.
 
 ## Scope status (six-day mode)
 
