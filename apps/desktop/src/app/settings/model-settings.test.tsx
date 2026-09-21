@@ -565,3 +565,26 @@ describe('ModelSettings MoA preset editor', () => {
     }
   })
 })
+
+// ME-05 (Wave 2.1): the InferenceReceiptCard is MOUNTED on the shipped Model
+// surface (Settings → Models), reachable through existing navigation — not a
+// standalone/unmounted component and not a duplicate settings page. The receipt's
+// success / failed / invalid-credential / unavailable-provider / no-fabrication
+// rendering is proven at the component level in
+// src/app/model-receipt/inference-receipt.test.tsx (same mounted component).
+describe('ModelSettings ME-05 inference summary (mounted, shipped surface)', () => {
+  it('is reachable on the Model surface and shows a truthful empty state before any run', async () => {
+    const { container } = await renderModelSettings()
+
+    // Reachable through the shipped Model settings page (no separate page added).
+    expect(await screen.findByText('Run a model to see its inference summary.')).toBeTruthy()
+    expect(container.querySelector('[data-slot="inference-receipt-section"]')).toBeTruthy()
+
+    // Truthful empty state: nothing has run, so NO fabricated run id / status /
+    // endpoint / latency is rendered on the mounted surface.
+    expect(screen.queryByTestId('receipt-run-id')).toBeNull()
+    expect(screen.queryByTestId('receipt-status')).toBeNull()
+    expect(screen.queryByTestId('receipt-endpoint')).toBeNull()
+    expect(screen.queryByTestId('receipt-latency')).toBeNull()
+  })
+})

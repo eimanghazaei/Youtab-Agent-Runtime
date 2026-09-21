@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { InferenceReceiptCard } from '@/app/model-receipt/inference-receipt'
+import { useInferenceReceipt } from '@/app/model-receipt/use-inference-receipt'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -185,6 +187,10 @@ interface ModelSettingsProps {
 export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
   const { t } = useI18n()
   const m = t.settings.model
+  // ME-05: the last real inference round-trip, shown truthfully on the Model
+  // surface. Reads existing session stores; renders an empty state until a run
+  // occurs, and never fabricates absent backend fields.
+  const inferenceReceipt = useInferenceReceipt()
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
@@ -1275,6 +1281,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
           </div>
         </section>
       )}
+      <section data-slot="inference-receipt-section">
+        <InferenceReceiptCard receipt={inferenceReceipt} />
+      </section>
     </div>
   )
 }
