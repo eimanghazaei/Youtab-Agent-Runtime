@@ -53,3 +53,29 @@ Active clean-chain commits (base→HEAD): `09182127d` docs · `7e913b158` file/f
 ## Verdict
 
 **FRONTEND NO-GO.** Totals (48 rows: 45 from v1.0 + CX-10/11/12): DONE **0** · VERIFIED_NOT_REVIEWED **24** · IMPLEMENTED_NOT_VERIFIED **5** · BLOCKED **19** (incl. QD-01/QD-03 as debt blockers to the 0-warnings/stderr gate). Blockers: approved Gateway file-ingress SHA, approved Workspace Authority SHA, Runtime/Electron folder-grant impl, approved Runtime dep-CVE remediation, live provider creds / reachable MCP, live browser E2E, exact-SHA review APPROVED, and the repo-wide pre-existing ESLint/stderr debt (QD-01/QD-03). No row DONE.
+
+## Wave 2.6 — Six-day delivery mode (in progress; frozen review checkpoint 9b1843005)
+
+New rows (frontend-owned, buildable now):
+
+| ID | Capability | Status | Evidence (clean-chain SHA) | Disposition |
+|---|---|---|---|---|
+| CX-13 | Bounded inline-image policy (MIME allowlist + byte cap; SVG excluded; fail-closed) | `[ ] VERIFIED_NOT_REVIEWED` | `f6d81464a` | full server-side inline-image validation/scanning is a BLOCKED Gateway dep |
+| CX-14 | Capability requires explicit feature fields + workspace context + compatible schema (not just $gatewayState open) | `[ ] VERIFIED_NOT_REVIEWED` | `f6d81464a` | real availability BLOCKED on approved Gateway status contract |
+| CX-15 | refText treated as a server-RETURNED reference (not authority/immutable); revalidated by Gateway at submit | `[ ] VERIFIED_NOT_REVIEWED` | `f6d81464a` (documented) + `b3de32bf6` (invariant) | — |
+
+## Dependency requests sent to the owning sibling sessions (frontend BLOCKED until delivered)
+
+- **DR-GW-1 (Gateway):** approve + advertise file-ingress capability in `GET /api/status` as `features:{file_ingress:true,workspace_authority:true}` + `workspace:{id}` + `file_capability_schema:1`; deliver `POST /v1/files/upload` (snake_case `file_id`/`workspace_id`) + scan lifecycle + error codes. Source candidate `5064b54a913f428bd61917adcf63830b9f92577d` / evidence `34a3e72624c6adf7a66c34c937a9d16021958147` — NOT approved. Blocks F3 live, SC-*, CX-04/05/07, E2E-04.
+- **DR-GW-2 (Gateway):** approved Workspace Authority `GET /v1/agents/workspace/active` → `{workspace_id}`; revalidation of refText/fileId at submit. Blocks CX-03/05, SC-04.
+- **DR-GW-3 (Gateway):** approved server-side inline-image validation/scanning policy (bounded MIME/size + malware scan). Blocks CX-13 full closure.
+- **DR-RT-1 (Runtime/Electron):** real `window.youtabDesktop.folderGrants` implementation (request/list/revoke/read/write + traversal/symlink enforcement + approval-before-write). Blocks FR-04/05/06, FW-01/02, AP-01, E2E-03.
+- **DR-RT-2 (Runtime):** consume approved dep-CVE remediation `e5edea91df1cac36db0417f5d0a2e95123e57bb1` (npm audit 0) at final integration — NOT duplicated in frontend. Blocks the npm-audit gate.
+- **DR-RT-3 (Runtime):** real CRM / ERP / SAP / CAD-DFM-FEA typed operation contracts + approval/effect/receipt/reconciliation backend for F4/F5. No vendor platform built in frontend; UI consumes typed manifests + real Runtime operations when delivered.
+- **DR-OWNER:** live provider creds (inference receipt), reachable MCP server (tool op), authorization to run live cross-repo browser E2E (F6).
+
+## Scope status (six-day mode)
+
+- **F1 Model/Engine, F2 API/MCP:** already REAL/backed in-repo (verified prior waves); live inference / live MCP-op / real tool-listing E2E are OWNER/live-dependency-blocked.
+- **F3 File/Folder:** security hardening done (CX-10..15); ingest/workspace/folder-grant BLOCKED on DR-GW-1/2, DR-RT-1.
+- **F4 Enterprise (CRM/ERP/SAP/CAD), F5 Approval/Receipts, F6 Browser E2E:** BLOCKED on DR-RT-3, DR-GW-*, DR-RT-1, DR-OWNER — no fake/disconnected surfaces built.
