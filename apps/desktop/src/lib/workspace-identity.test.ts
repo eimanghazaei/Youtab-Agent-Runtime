@@ -2,13 +2,9 @@ import { describe, expect, it } from 'vitest'
 
 import { $activeGatewayProfile } from '@/store/profile'
 
-import { isWorkspaceAuthorityAvailable, resolveCanonicalWorkspaceId, workspaceIdMatches } from './workspace-identity'
+import { resolveCanonicalWorkspaceId, workspaceIdMatches } from './workspace-identity'
 
 describe('canonical workspace identity (fail-closed, no client substitution)', () => {
-  it('has no backend workspace authority integrated yet', () => {
-    expect(isWorkspaceAuthorityAvailable()).toBe(false)
-  })
-
   it('never substitutes the gateway profile as the workspace id', () => {
     $activeGatewayProfile.set('my-profile')
     expect(resolveCanonicalWorkspaceId()).toBeNull()

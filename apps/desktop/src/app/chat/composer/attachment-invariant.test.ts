@@ -8,28 +8,41 @@ function att(overrides: Partial<ComposerAttachment> = {}): ComposerAttachment {
   return { id: 'a', kind: 'file', label: 'report.pdf', ...overrides }
 }
 
-describe('isAttachmentAttachable — strict invariant (Wave 2.4 fail-open closure)', () => {
-  // ── Legacy path ──────────────────────────────────────────────────────────
-  it('rejects a legacy (undefined state) attachment with NO attachedSessionId', () => {
-    // This is the fail-open bypass the review flagged: undefined alone must NOT pass.
+describe('isAttachmentAttachable — strict invariant (Wave 2.5 authority hardening)', () => {
+  // ── Legacy path: only a SERVER-issued binding, never a client id ──────────
+  it('rejects a legacy (undefined state) attachment with no server binding', () => {
     expect(isAttachmentAttachable(att({ uploadState: undefined }))).toBe(false)
   })
 
-  it('accepts a legacy attachment only once it has a valid attachedSessionId', () => {
-    expect(isAttachmentAttachable(att({ uploadState: undefined, attachedSessionId: 'sess-1' }))).toBe(true)
-    expect(isAttachmentAttachable(att({ uploadState: undefined, attachedSessionId: '' }))).toBe(false)
+  it('rejects a FORGED attachedSessionId — a client-controlled id is never authority', () => {
+    // The remaining fail-open exception is closed: attachedSessionId alone (no
+    // server refText / no inline image) must NOT make an attachment attachable.
+    expect(isAttachmentAttachable(att({ uploadState: undefined, attachedSessionId: 'forged-sess' }))).toBe(false)
+    expect(
+      isAttachmentAttachable(att({ uploadState: undefined, attachedSessionId: 'forged', path: '/Users/me/x' }))
+    ).toBe(false)
   })
 
-  it('rejects a local-path-only attachment (path but no session, no clean scan)', () => {
+  it('rejects a local-path-only attachment (path but no server ref)', () => {
     expect(isAttachmentAttachable(att({ path: '/Users/me/secret/report.pdf' }))).toBe(false)
   })
 
-  it('accepts a pure in-app context ref (resolvable refText, no local path, no upload needed)', () => {
-    expect(isAttachmentAttachable(att({ uploadState: undefined, refText: '@file:`docs/readme.md`' }))).toBe(true)
+  it('accepts a server-issued file ref (non-empty refText from file.attach), even alongside a local path', () => {
+    // refText is issued by the authenticated file.attach response; the submit path
+    // sends the ref, never the local path, so this is safe and correct.
+    expect(isAttachmentAttachable(att({ uploadState: undefined, refText: '@file:`abc123`' }))).toBe(true)
+    expect(
+      isAttachmentAttachable(att({ uploadState: undefined, refText: '@file:`abc123`', path: '/Users/me/x' }))
+    ).toBe(true)
+    expect(isAttachmentAttachable(att({ uploadState: undefined, refText: '' }))).toBe(false)
   })
 
-  it('still rejects a refText that also carries a local path but no session (path-leak guard)', () => {
-    expect(isAttachmentAttachable(att({ uploadState: undefined, refText: '@file:x', path: '/Users/me/x' }))).toBe(false)
+  it('accepts an inline image (data: previewUrl) but rejects an image without inline bytes', () => {
+    expect(
+      isAttachmentAttachable(att({ kind: 'image', uploadState: undefined, previewUrl: 'data:image/png;base64,AAA' }))
+    ).toBe(true)
+    expect(isAttachmentAttachable(att({ kind: 'image', uploadState: undefined, previewUrl: 'blob:local' }))).toBe(false)
+    expect(isAttachmentAttachable(att({ kind: 'image', uploadState: undefined, attachedSessionId: 's' }))).toBe(false)
   })
 
   // ── Scan-managed path ────────────────────────────────────────────────────

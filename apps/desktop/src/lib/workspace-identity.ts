@@ -17,10 +17,10 @@
  *   not match the workspace the file/grant was issued for.
  */
 
-/** True only when the real backend workspace-authority is wired in (not yet). */
-export function isWorkspaceAuthorityAvailable(): boolean {
-  return false
-}
+// NOTE (Wave 2.5): the earlier static `isWorkspaceAuthorityAvailable()` constant
+// was removed per the exact-SHA review. Workspace-authority availability is now
+// derived from a REAL Gateway runtime signal — see
+// `app/files/use-file-capability.ts` (`useFileCapability`).
 
 /**
  * Resolve the canonical authenticated workspace id from the backend authority.

@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -7,6 +8,18 @@ import { $connection, setCurrentCwd } from '@/store/session'
 import { resetProjectTreeState } from './files/use-project-tree'
 
 import { RightSidebarPane } from './index'
+
+// The mounted LocalFilesPanel uses useFileCapability (react-query); the app root
+// provides a QueryClient in production, so the test mirrors that.
+function renderPane() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+  return render(
+    <QueryClientProvider client={client}>
+      <RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />
+    </QueryClientProvider>
+  )
+}
 
 const readDir = vi.fn<(path: string) => Promise<YoutabReadDirResult>>()
 
@@ -34,7 +47,7 @@ describe('RightSidebarPane', () => {
   it('renders the tree whenever the session has a working dir (repo or not) — no picker', async () => {
     setCurrentCwd('/repo')
 
-    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+    renderPane()
 
     const refresh = await screen.findByRole('button', { name: 'Refresh tree' })
 
@@ -49,7 +62,7 @@ describe('RightSidebarPane', () => {
   it('shows no tree for a detached chat (no working dir)', async () => {
     setCurrentCwd('')
 
-    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+    renderPane()
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
     expect(readDir).not.toHaveBeenCalled()
@@ -60,7 +73,7 @@ describe('RightSidebarPane', () => {
   it('mounts LocalFilesPanel in the shipped right-sidebar surface (reachable, not orphaned)', async () => {
     setCurrentCwd('/repo')
 
-    const { container } = render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+    const { container } = renderPane()
 
     // The panel is mounted inside the shipped sidebar aside (a real navigable surface).
     const mount = container.querySelector('[data-slot="local-files-panel-mount"]')

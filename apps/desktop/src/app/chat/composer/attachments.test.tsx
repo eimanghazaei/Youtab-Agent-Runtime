@@ -147,7 +147,9 @@ describe('AttachmentList', () => {
   it('applies the strict attachability invariant (see attachment-invariant.test.ts for the full matrix)', () => {
     // Legacy undefined state is attachable ONLY with a completed attachedSessionId.
     expect(isAttachmentAttachable({ id: 'a', kind: 'file', label: 'a' })).toBe(false)
-    expect(isAttachmentAttachable({ id: 'a2', kind: 'file', label: 'a', attachedSessionId: 'sess' })).toBe(true)
+    // A client-set attachedSessionId is NOT authority — a server-issued refText is.
+    expect(isAttachmentAttachable({ id: 'a2', kind: 'file', label: 'a', attachedSessionId: 'sess' })).toBe(false)
+    expect(isAttachmentAttachable({ id: 'a3', kind: 'file', label: 'a', refText: '@file:`x`' })).toBe(true)
     // A clean scan state without a server fileId + canonical workspace is NOT attachable.
     expect(isAttachmentAttachable({ id: 'b', kind: 'file', label: 'b', uploadState: 'clean' })).toBe(false)
     expect(isAttachmentAttachable({ id: 'c', kind: 'file', label: 'c', uploadState: 'uploading' })).toBe(false)

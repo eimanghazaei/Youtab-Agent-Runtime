@@ -8,18 +8,18 @@ import { $connection, $currentCwd } from '@/store/session'
 
 import { LocalFilesPanel } from './local-files-panel'
 
-// Wave 2.4 (item 5): the file Add/drop affordance is gated behind the real Gateway
-// ingest + workspace authority. Both are unavailable in production today; these
-// flags let the select/DnD tests exercise the affordance, and a dedicated test
-// asserts the truthful unavailable state when they are off.
-const avail = vi.hoisted(() => ({ ingest: true, workspace: true }))
-vi.mock(import('@/lib/file-ingress'), async importOriginal => ({
-  ...(await importOriginal()),
-  isFileIngestAvailable: () => avail.ingest
+// Wave 2.5 (items 2/4): the file Add/drop affordance is gated by the REAL runtime
+// capability hook (useFileCapability, derived from live $gatewayState + /api/status).
+// The panel is tested with the hook mocked; the hook's own real-signal derivation
+// is proven in use-file-capability.test.ts. `cap` lets tests drive each truthful
+// state (available / loading / unavailable / error).
+const cap = vi.hoisted(() => ({
+  reason: null as null | string,
+  state: 'available' as 'available' | 'error' | 'loading' | 'unavailable'
 }))
-vi.mock(import('@/lib/workspace-identity'), async importOriginal => ({
+vi.mock(import('./use-file-capability'), async importOriginal => ({
   ...(await importOriginal()),
-  isWorkspaceAuthorityAvailable: () => avail.workspace
+  useFileCapability: () => ({ reason: cap.reason, state: cap.state })
 }))
 
 const ABS_A = '/Users/me/secret/report.pdf'
@@ -96,8 +96,8 @@ describe('LocalFilesPanel', () => {
     $currentCwd.set('')
     $activeGatewayProfile.set('default')
     $connection.set(null)
-    avail.ingest = true
-    avail.workspace = true
+    cap.state = 'available'
+    cap.reason = null
   })
 
   afterEach(() => {
@@ -206,17 +206,44 @@ describe('LocalFilesPanel', () => {
     await waitFor(() => expect(screen.queryByText('report.pdf')).toBeNull())
   })
 
-  it('shows a truthful unavailable state (no doomed Add button) when file ingest/workspace authority are off', async () => {
-    avail.ingest = false
-    avail.workspace = false
+  it('keeps the Add control VISIBLE but DISABLED with dependency status when capability is unavailable', async () => {
+    cap.state = 'unavailable'
+    cap.reason = 'The gateway does not advertise the capability.'
     stubDesktop({ selectPaths: [ABS_A] })
     const { container } = await renderPanel()
 
-    // The clickable Add Files control that would always fail is NOT rendered.
-    expect(screen.queryByRole('button', { name: 'Add files' })).toBeNull()
-    // A visible, truthful capability-unavailable state is shown instead.
-    expect(container.querySelector('[data-slot="file-ingest-unavailable"]')).not.toBeNull()
-    expect(screen.getByText('Secure file scanning unavailable')).toBeDefined()
+    // The planned Add control is NOT hidden/deleted — it stays visible, disabled.
+    const addBtn = screen.getByRole('button', { name: 'Add files' })
+    expect(addBtn).toHaveProperty('disabled', true)
+    // A truthful capability status (dependency + remediation) is shown in place.
+    const status = container.querySelector('[data-slot="file-ingest-status"]')
+    expect(status).not.toBeNull()
+    expect(status?.getAttribute('data-capability-state')).toBe('unavailable')
+    expect(status?.textContent).toContain('The gateway does not advertise the capability.')
+  })
+
+  it('shows a truthful loading state while the capability is being checked', async () => {
+    cap.state = 'loading'
+    cap.reason = 'Checking gateway capability…'
+    stubDesktop({ selectPaths: [ABS_A] })
+    const { container } = await renderPanel()
+
+    expect(screen.getByRole('button', { name: 'Add files' })).toHaveProperty('disabled', true)
+    expect(container.querySelector('[data-slot="file-ingest-status"]')?.getAttribute('data-capability-state')).toBe(
+      'loading'
+    )
+  })
+
+  it('shows a truthful error state when the capability probe fails', async () => {
+    cap.state = 'error'
+    cap.reason = 'Could not read the gateway status.'
+    stubDesktop({ selectPaths: [ABS_A] })
+    const { container } = await renderPanel()
+
+    expect(screen.getByRole('button', { name: 'Add files' })).toHaveProperty('disabled', true)
+    expect(container.querySelector('[data-slot="file-ingest-status"]')?.getAttribute('data-capability-state')).toBe(
+      'error'
+    )
   })
 
   it('shows the truthful "Local Runtime required" state when the folder bridge is absent', async () => {
