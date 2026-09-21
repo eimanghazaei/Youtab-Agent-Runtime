@@ -5,6 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { MessagingPlatformInfo } from '@/types/youtab'
 
+// Static import so the view's module graph is transformed/evaluated at
+// collection rather than lazily inside the first timed test body (see the note
+// in skills/index.test.tsx). Keeps each test to render+assert under the
+// official 15s timeout without altering it.
+import { MessagingView } from './index'
+
 const getMessagingPlatforms = vi.fn()
 const updateMessagingPlatform = vi.fn()
 const getPairing = vi.fn()
@@ -59,7 +65,6 @@ afterEach(() => {
 })
 
 async function renderMessaging() {
-  const { MessagingView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(

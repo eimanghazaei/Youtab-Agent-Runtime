@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProfileInfo } from '@/types/youtab'
 
@@ -55,6 +55,16 @@ afterEach(() => {
   cleanup()
   vi.clearAllMocks()
 })
+
+// Warm the heavy GatewaySettings module transform once, off the 15s per-test
+// budget. It cannot be a static top-level import: the '@/store/profile' mock
+// factory dereferences the `profiles` atom at eval time, which a hoisted import
+// would run before `profiles` is assigned. The in-test `await import` below then
+// hits the module cache, leaving the test body to render+assert under the
+// official (unchanged) 15s timeout. The 60s here is this hook's timeout only.
+beforeAll(async () => {
+  await import('./gateway-settings')
+}, 60_000)
 
 describe('GatewaySettings', () => {
   it('labels local mode as default inheritance for a named profile', async () => {
