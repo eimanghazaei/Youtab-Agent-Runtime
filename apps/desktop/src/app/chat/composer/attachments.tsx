@@ -7,12 +7,83 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
-import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, Terminal } from '@/lib/icons'
+import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, Lock, Terminal } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { openPreview } from '@/store/preview'
+
+type UploadState = NonNullable<ComposerAttachment['uploadState']>
+
+// Bytes are still being staged / scanned — show a spinner, not attachable yet.
+const PENDING_STATES = new Set<UploadState>(['uploading', 'scanning'])
+
+// A truthful failure/blocked outcome from the ingress scan lifecycle — show a
+// destructive icon + label; never attachable.
+const PROBLEM_STATES = new Set<UploadState>([
+  'error',
+  'quarantined',
+  'rejected',
+  'oversized',
+  'quota_exceeded',
+  'unsupported_type',
+  'scanner_unavailable',
+  'workspace_denied',
+  'interrupted'
+])
+
+export function isAttachmentPending(state?: ComposerAttachment['uploadState']): boolean {
+  return !!state && PENDING_STATES.has(state)
+}
+
+export function hasAttachmentProblem(state?: ComposerAttachment['uploadState']): boolean {
+  return !!state && PROBLEM_STATES.has(state)
+}
+
+/**
+ * Only a `clean` attachment (or a legacy one with no uploadState, which the
+ * pre-scan attach path already treats as staged) may be submitted onward. Every
+ * pending or problem state is withheld from the outgoing payload.
+ */
+export function isAttachmentAttachable(attachment: ComposerAttachment): boolean {
+  const state = attachment.uploadState
+
+  return !state || state === 'clean'
+}
+
+type ScanStateCopy = {
+  uploading: string
+  scanning: string
+  quarantined: string
+  rejected: string
+  oversized: string
+  quotaExceeded: string
+  unsupportedType: string
+  scannerUnavailable: string
+  workspaceDenied: string
+  interrupted: string
+  error: string
+}
+
+function scanStateLabel(copy: ScanStateCopy, state: UploadState): string | undefined {
+  const map: Record<UploadState, string | undefined> = {
+    uploading: copy.uploading,
+    scanning: copy.scanning,
+    quarantined: copy.quarantined,
+    rejected: copy.rejected,
+    oversized: copy.oversized,
+    quota_exceeded: copy.quotaExceeded,
+    unsupported_type: copy.unsupportedType,
+    scanner_unavailable: copy.scannerUnavailable,
+    workspace_denied: copy.workspaceDenied,
+    interrupted: copy.interrupted,
+    error: copy.error,
+    clean: undefined
+  }
+
+  return map[state]
+}
 
 export function AttachmentList({
   attachments,
@@ -37,15 +108,24 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
   // The tile's cwd when this pill lives in a tile composer, not the primary's:
   // a relative attachment path has to resolve against its own session's root.
   const cwd = useStore(useSessionView().$cwd)
-  const isUploading = attachment.uploadState === 'uploading'
-  const hasUploadError = attachment.uploadState === 'error'
-  const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal' && !isUploading
-  const detail = attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined
+  const state = attachment.uploadState
+  const isPending = isAttachmentPending(state)
+  const hasUploadError = hasAttachmentProblem(state)
+  const stateLabel = state ? scanStateLabel(c.scanState, state) : undefined
+
+  const canPreview = attachment.kind !== 'folder' && attachment.kind !== 'terminal' && !isPending && !hasUploadError
+
+  // While a scan is in flight or a state label applies, that truthful status
+  // replaces the raw path detail so the pill never implies a clean attach.
+  const detail =
+    stateLabel ?? (attachment.detail && attachment.detail !== attachment.label ? attachment.detail : undefined)
+
   // An attached image already holds its full bytes as a data URL, so it belongs
   // in the same lightbox the thread uses. The rail is for files you read or
   // edit — not a picture you just want to look at. Images that never resolved a
   // thumbnail still fall through to the rail rather than dead-clicking.
-  const lightboxSrc = attachment.kind === 'image' && !isUploading ? attachment.previewUrl : undefined
+  const lightboxSrc = attachment.kind === 'image' && !isPending ? attachment.previewUrl : undefined
+  const ProblemIcon = state === 'scanner_unavailable' || state === 'workspace_denied' ? Lock : AlertCircle
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const { download, saving } = useImageDownload(lightboxSrc)
 
@@ -91,8 +171,14 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
       <Tip label={attachment.path || attachment.detail || attachment.label}>
         <div className="group/attachment relative min-w-0 shrink-0">
           <button
-            aria-busy={isUploading || undefined}
-            aria-label={canPreview ? c.previewLabel(attachment.label) : attachment.label}
+            aria-busy={isPending || undefined}
+            aria-label={
+              canPreview
+                ? c.previewLabel(attachment.label)
+                : stateLabel
+                  ? `${attachment.label} — ${stateLabel}`
+                  : attachment.label
+            }
             className={cn(
               'flex max-w-56 items-center gap-2 rounded-2xl border bg-background/50 px-2 py-1.5 text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] transition-colors disabled:cursor-default',
               hasUploadError
@@ -114,14 +200,14 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
               ) : (
                 <Icon className="size-3.5" />
               )}
-              {isUploading && (
+              {isPending && (
                 <span className="absolute inset-0 grid place-items-center bg-background/60 backdrop-blur-[1px]">
                   <Loader2 className="size-3.5 animate-spin text-foreground/75" />
                 </span>
               )}
               {hasUploadError && (
                 <span className="absolute inset-0 grid place-items-center bg-destructive/15">
-                  <AlertCircle className="size-3.5 text-destructive" />
+                  <ProblemIcon className="size-3.5 text-destructive" />
                 </span>
               )}
             </span>

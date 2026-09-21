@@ -5,7 +5,7 @@ import { I18nProvider } from '@/i18n/context'
 import type { ComposerAttachment } from '@/store/composer'
 import { $previewTabs } from '@/store/preview'
 
-import { AttachmentList } from './attachments'
+import { AttachmentList, hasAttachmentProblem, isAttachmentAttachable, isAttachmentPending } from './attachments'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -107,5 +107,55 @@ describe('AttachmentList', () => {
 
     expect(screen.queryByRole('dialog')).toBeNull()
     expect($previewTabs.get().map(tab => tab.target.path)).toEqual(['/tmp/notes.md'])
+  })
+
+  it('shows a truthful scanning state and blocks preview while pending', async () => {
+    const scanning: ComposerAttachment = { id: 's', kind: 'file', label: 'report.pdf', uploadState: 'scanning' }
+
+    await renderWithI18n(<AttachmentList attachments={[scanning]} />)
+
+    // The pill labels the scan and is not clickable-for-preview (disabled).
+    const button = screen.getByRole('button', { name: /report\.pdf — Scanning/i })
+    expect(button.hasAttribute('disabled')).toBe(true)
+    expect(button.getAttribute('aria-busy')).toBe('true')
+    expect(screen.getByText('Scanning…')).toBeDefined()
+  })
+
+  it('surfaces a quarantined attachment with a destructive label, never attachable', async () => {
+    const bad: ComposerAttachment = { id: 'q', kind: 'file', label: 'evil.exe', uploadState: 'quarantined' }
+
+    await renderWithI18n(<AttachmentList attachments={[bad]} />)
+
+    expect(screen.getByText('Quarantined')).toBeDefined()
+    expect(isAttachmentAttachable(bad)).toBe(false)
+  })
+
+  it('renders the scanner-unavailable truthful state (no fake clean)', async () => {
+    const unavailable: ComposerAttachment = {
+      id: 'u',
+      kind: 'file',
+      label: 'doc.txt',
+      uploadState: 'scanner_unavailable'
+    }
+
+    await renderWithI18n(<AttachmentList attachments={[unavailable]} />)
+
+    expect(screen.getByText('Scanner unavailable')).toBeDefined()
+    expect(isAttachmentAttachable(unavailable)).toBe(false)
+  })
+
+  it('treats only clean or legacy-undefined attachments as attachable', () => {
+    expect(isAttachmentAttachable({ id: 'a', kind: 'file', label: 'a' })).toBe(true)
+    expect(isAttachmentAttachable({ id: 'b', kind: 'file', label: 'b', uploadState: 'clean' })).toBe(true)
+    expect(isAttachmentAttachable({ id: 'c', kind: 'file', label: 'c', uploadState: 'uploading' })).toBe(false)
+    expect(isAttachmentAttachable({ id: 'd', kind: 'file', label: 'd', uploadState: 'rejected' })).toBe(false)
+
+    expect(isAttachmentPending('uploading')).toBe(true)
+    expect(isAttachmentPending('scanning')).toBe(true)
+    expect(isAttachmentPending('clean')).toBe(false)
+
+    expect(hasAttachmentProblem('oversized')).toBe(true)
+    expect(hasAttachmentProblem('workspace_denied')).toBe(true)
+    expect(hasAttachmentProblem('scanning')).toBe(false)
   })
 })

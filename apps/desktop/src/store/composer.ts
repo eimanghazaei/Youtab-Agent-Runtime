@@ -13,8 +13,28 @@ export interface ComposerAttachment {
   attachedSessionId?: string
   /** Set while the file/image bytes are being staged into the session
    * workspace (remote upload or local stage), and 'error' if that failed.
-   * Drives the spinner / error state on the composer attachment card. */
-  uploadState?: 'uploading' | 'error'
+   * Drives the spinner / error state on the composer attachment card.
+   *
+   * The extended states mirror the Gateway file-ingress scan lifecycle
+   * (see lib/file-ingress.ts `FileScanState`) so the composer pill can report
+   * a truthful result instead of a fake "clean". Only `clean` (or a legacy
+   * undefined state with an attachedSessionId) is treated as attachable. */
+  uploadState?:
+    | 'uploading'
+    | 'error'
+    | 'scanning'
+    | 'clean'
+    | 'quarantined'
+    | 'rejected'
+    | 'oversized'
+    | 'quota_exceeded'
+    | 'unsupported_type'
+    | 'scanner_unavailable'
+    | 'workspace_denied'
+    | 'interrupted'
+  /** Server-issued file id from the gateway ingress — the ONLY reference sent
+   * onward in a submit payload. Never a local absolute path. */
+  fileId?: string
 }
 
 export const $composerDraft = atom('')

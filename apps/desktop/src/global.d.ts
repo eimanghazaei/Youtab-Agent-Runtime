@@ -292,8 +292,53 @@ declare global {
       findInPage: (query: string, options?: { forward?: boolean; findNext?: boolean }) => Promise<{ count: number }>
       stopFindInPage: () => Promise<void>
       onFoundInPage: (callback: (result: { activeMatchOrdinal: number; count: number }) => void) => () => void
+      // Local Runtime folder-grant bridge (RUNTIME_FRONTEND_CONTRACTS_v1.0 §1).
+      // OPTIONAL: absent today — the Runtime/Electron session owns the
+      // implementation. When absent the renderer must show a truthful
+      // "Local Runtime required" state, never a fake grant. All access is
+      // enforced server-side (path-traversal / symlink escape rejected,
+      // absolute path never returned beyond safeLabel, workspace-bound).
+      folderGrants?: YoutabFolderGrantsBridge
     }
   }
+}
+
+// The permission tier a folder grant confers. Read-only is the default the
+// renderer requests; read-write requires an explicit user gesture + approval.
+export type YoutabFolderPermission = 'read-only' | 'read-write'
+
+export type YoutabFolderGrantStatus = 'active' | 'revoked' | 'expired'
+
+// A single Runtime-issued folder grant. `safeLabel` is the ONLY user-facing
+// reference — the absolute path never crosses the bridge to the renderer.
+export interface YoutabFolderGrant {
+  grantId: string
+  safeLabel: string
+  permission: YoutabFolderPermission
+  status: YoutabFolderGrantStatus
+  workspaceId: string
+  createdAt: string
+}
+
+export interface YoutabFolderWriteOptions {
+  // High-risk write → the Runtime must obtain approval first and fail closed
+  // if it was not granted.
+  requireApproval?: boolean
+}
+
+export interface YoutabFolderGrantsBridge {
+  // MUST be user-gesture initiated; MUST NOT enumerate before approval.
+  request: (options: { readOnly: boolean }) => Promise<YoutabFolderGrant>
+  list: () => Promise<YoutabFolderGrant[]>
+  // Access must be rejected immediately after revoke resolves.
+  revoke: (grantId: string) => Promise<{ revoked: true }>
+  read: (grantId: string, relPath: string) => Promise<{ bytes: ArrayBuffer }>
+  write: (
+    grantId: string,
+    relPath: string,
+    bytes: ArrayBuffer,
+    options?: YoutabFolderWriteOptions
+  ) => Promise<{ written: true; receiptId: string }>
 }
 
 export interface DesktopMarketplaceSearchItem {
