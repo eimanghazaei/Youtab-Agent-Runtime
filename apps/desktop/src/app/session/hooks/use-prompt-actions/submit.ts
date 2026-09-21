@@ -590,12 +590,14 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return abortForSessionSwitch(sessionId)
         }
 
-        // Wave 2.4 (item 2): enforce the STRICT attachability invariant on the
-        // real submit path — the single seam shared by Chat and Agent Run tiles.
-        // Only legacy attachments completed into a session (attachedSessionId) or
-        // scan-managed clean+fileId+canonical-workspace files may enter the payload;
-        // every pending/quarantined/rejected/interrupted or missing-field attachment
-        // is withheld, so no unclean file and no local-only path is ever submitted.
+        // Enforce the STRICT attachability invariant on the real submit path — the
+        // single seam shared by Chat and Agent Run tiles. Only a server-authorized
+        // attachment may enter the payload: a legacy attachment with a server-issued
+        // `refText` (from file.attach) or inline image bytes, or a scan-managed
+        // clean+fileId+canonical-workspace file. A client-controlled `attachedSessionId`
+        // is NOT authority (Wave 2.5); every pending/quarantined/rejected/interrupted
+        // or missing-binding attachment is withheld, so no unclean file and no
+        // local-only path is ever submitted.
         const submittableAttachments = syncedAttachments.filter(isAttachmentAttachable)
 
         // Rewrite the optimistic message + prompt text with the synced refs so
