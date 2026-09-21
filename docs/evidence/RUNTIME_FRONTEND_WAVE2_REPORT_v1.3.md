@@ -12,7 +12,7 @@ Exact-SHA review CHANGES-REQUIRED correction pass + clean-attribution delivery.
 
 ## 2. Clean-attribution remediation (why v2 exists)
 
-The v1.2 exact-SHA review returned CHANGES REQUIRED. The additive corrections were made on descendants of the frozen candidate, but three of those commit messages contained the word "Codex" — which the OWNER lists among forbidden attribution tokens (`co-authored | claude | anthropic | openai | codex | generated with`). History is not rewritten. As with the earlier `Co-Authored-By` remediation, the final tree was **replayed onto a fresh branch (`…-v2`) with sanitized messages**. 
+The v1.2 exact-SHA review returned CHANGES REQUIRED. The additive corrections were made on descendants of the frozen candidate, but three of those commit messages contained the word "Codex" — which the OWNER lists among forbidden attribution tokens (`co-authored | claude | anthropic | openai | codex | generated with`). History is not rewritten. As with the earlier `Co-Authored-By` remediation, the final tree was **replayed onto a fresh branch (`…-v2`) with sanitized messages**.
 
 - **Attribution scan** `git log 20d69ce4…..HEAD --format=%B | grep -icE "co-authored|claude|anthropic|openai|codex|generated with"` → **0**.
 - **All authors and committers** = `Eiman Ghazaei <eiman.ghazaei@gmail.com>`.
