@@ -3,8 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { YoutabFolderGrant } from '@/global'
 import { I18nProvider } from '@/i18n/context'
-import type * as FileIngressModule from '@/lib/file-ingress'
-import type * as WorkspaceIdentityModule from '@/lib/workspace-identity'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $currentCwd } from '@/store/session'
 
@@ -15,12 +13,12 @@ import { LocalFilesPanel } from './local-files-panel'
 // flags let the select/DnD tests exercise the affordance, and a dedicated test
 // asserts the truthful unavailable state when they are off.
 const avail = vi.hoisted(() => ({ ingest: true, workspace: true }))
-vi.mock('@/lib/file-ingress', async importActual => ({
-  ...(await importActual<FileIngressModule>()),
+vi.mock(import('@/lib/file-ingress'), async importOriginal => ({
+  ...(await importOriginal()),
   isFileIngestAvailable: () => avail.ingest
 }))
-vi.mock('@/lib/workspace-identity', async importActual => ({
-  ...(await importActual<WorkspaceIdentityModule>()),
+vi.mock(import('@/lib/workspace-identity'), async importOriginal => ({
+  ...(await importOriginal()),
   isWorkspaceAuthorityAvailable: () => avail.workspace
 }))
 
