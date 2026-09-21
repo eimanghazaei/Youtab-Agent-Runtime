@@ -35,6 +35,10 @@ export interface ComposerAttachment {
   /** Server-issued file id from the gateway ingress — the ONLY reference sent
    * onward in a submit payload. Never a local absolute path. */
   fileId?: string
+  /** Canonical, backend-issued workspace id this scan-managed file was bound to
+   * (from the ingress result). A scan-managed file is attachable only when this
+   * matches the authenticated canonical workspace. Never a profile/cwd. */
+  workspaceId?: string
 }
 
 export const $composerDraft = atom('')

@@ -8,7 +8,7 @@ import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import type { YoutabFolderGrant } from '@/global'
 import { useI18n } from '@/i18n'
 import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
-import { ingestFile } from '@/lib/file-ingress'
+import { ingestFile, isFileIngestAvailable } from '@/lib/file-ingress'
 import {
   FolderGrantsUnavailableError,
   isFolderGrantsAvailable,
@@ -18,7 +18,7 @@ import {
 } from '@/lib/folder-grants'
 import { FileText, FolderOpen, Loader2, Lock, Plus, RefreshCw, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { resolveCanonicalWorkspaceId } from '@/lib/workspace-identity'
+import { isWorkspaceAuthorityAvailable, resolveCanonicalWorkspaceId } from '@/lib/workspace-identity'
 import { type ComposerAttachment, type ComposerAttachmentScope, createComposerAttachmentScope } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
@@ -224,6 +224,10 @@ export function LocalFilesPanel() {
 
   // ── Folder grants ────────────────────────────────────────────────────────
   const grantsAvailable = isFolderGrantsAvailable()
+  // File attach requires BOTH the real Gateway ingress scanner AND a canonical
+  // workspace authority. Neither is integrated, so the Add/drop affordance shows a
+  // truthful unavailable state rather than a doomed control (Wave 2.4 item 5).
+  const fileScanReady = isFileIngestAvailable() && isWorkspaceAuthorityAvailable()
   const [grants, setGrants] = useState<YoutabFolderGrant[]>([])
   const [grantBusy, setGrantBusy] = useState(false)
 
@@ -289,35 +293,53 @@ export function LocalFilesPanel() {
       </header>
 
       <div className="flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          <button
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/60 px-2.5 py-1.5 text-xs font-medium text-foreground/90 transition-colors hover:border-primary/35 hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
-            onClick={() => void pickContextPaths('file')}
-            type="button"
-          >
-            <Plus className="size-3.5" />
-            {copy.addFiles}
-          </button>
-          {pendingCount > 0 && (
-            <span aria-live="polite" className="text-[0.7rem] text-muted-foreground">
-              {copy.pending(pendingCount)}
-            </span>
-          )}
-        </div>
+        {fileScanReady ? (
+          <>
+            <div className="flex items-center gap-2">
+              <button
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/60 px-2.5 py-1.5 text-xs font-medium text-foreground/90 transition-colors hover:border-primary/35 hover:bg-accent/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+                onClick={() => void pickContextPaths('file')}
+                type="button"
+              >
+                <Plus className="size-3.5" />
+                {copy.addFiles}
+              </button>
+              {pendingCount > 0 && (
+                <span aria-live="polite" className="text-[0.7rem] text-muted-foreground">
+                  {copy.pending(pendingCount)}
+                </span>
+              )}
+            </div>
 
-        <div
-          aria-label={copy.dropZone}
-          className={cn(
-            'relative flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border border-dashed px-3 py-4 text-center text-xs transition-colors',
-            dragKind === 'files'
-              ? 'border-primary/60 bg-primary/5 text-foreground'
-              : 'border-border/55 text-muted-foreground'
-          )}
-          {...dropHandlers}
-        >
-          <FileText className="size-4 opacity-60" />
-          <span>{dragKind === 'files' ? copy.dropZoneActive : copy.dropZone}</span>
-        </div>
+            <div
+              aria-label={copy.dropZone}
+              className={cn(
+                'relative flex min-h-16 flex-col items-center justify-center gap-1 rounded-xl border border-dashed px-3 py-4 text-center text-xs transition-colors',
+                dragKind === 'files'
+                  ? 'border-primary/60 bg-primary/5 text-foreground'
+                  : 'border-border/55 text-muted-foreground'
+              )}
+              {...dropHandlers}
+            >
+              <FileText className="size-4 opacity-60" />
+              <span>{dragKind === 'files' ? copy.dropZoneActive : copy.dropZone}</span>
+            </div>
+          </>
+        ) : (
+          // Codex Wave 2.4 (item 5): do NOT ship a clickable Add Files control that
+          // is guaranteed to fail (workspace_denied) — the Gateway file-ingress
+          // scanner + workspace authority are not connected. Show a truthful,
+          // visible capability-unavailable state instead of an inert/doomed button.
+          <div
+            className="flex flex-col items-center gap-1 rounded-xl border border-dashed border-border/55 px-3 py-4 text-center text-xs text-muted-foreground"
+            data-slot="file-ingest-unavailable"
+            role="status"
+          >
+            <Lock className="size-4 opacity-70" />
+            <span className="font-medium text-foreground/80">{copy.ingestUnavailable}</span>
+            <span className="text-[0.7rem]">{copy.ingestUnavailableHint}</span>
+          </div>
+        )}
 
         {attachments.length === 0 ? (
           <p className="text-[0.7rem] text-muted-foreground/80">{copy.empty}</p>

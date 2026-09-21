@@ -1,5 +1,6 @@
 import { type MutableRefObject, useCallback } from 'react'
 
+import { isAttachmentAttachable } from '@/app/chat/composer/attachment-invariant'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
@@ -589,12 +590,20 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           return abortForSessionSwitch(sessionId)
         }
 
+        // Wave 2.4 (item 2): enforce the STRICT attachability invariant on the
+        // real submit path — the single seam shared by Chat and Agent Run tiles.
+        // Only legacy attachments completed into a session (attachedSessionId) or
+        // scan-managed clean+fileId+canonical-workspace files may enter the payload;
+        // every pending/quarantined/rejected/interrupted or missing-field attachment
+        // is withheld, so no unclean file and no local-only path is ever submitted.
+        const submittableAttachments = syncedAttachments.filter(isAttachmentAttachable)
+
         // Rewrite the optimistic message + prompt text with the synced refs so
         // the gateway receives @file: paths that resolve in its workspace.
         // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
-        attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
+        attachmentRefs = submittableAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(sessionId)
-        const text = buildContextText(syncedAttachments)
+        const text = buildContextText(submittableAttachments)
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,

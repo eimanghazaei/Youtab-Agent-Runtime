@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
+import { isAttachmentAttachable } from '@/app/chat/composer/attachment-invariant'
 import { useSessionView } from '@/app/chat/session-view'
 import { ImageLightbox } from '@/components/chat/zoomable-image'
 import { Codicon } from '@/components/ui/codicon'
@@ -41,16 +42,10 @@ export function hasAttachmentProblem(state?: ComposerAttachment['uploadState']):
   return !!state && PROBLEM_STATES.has(state)
 }
 
-/**
- * Only a `clean` attachment (or a legacy one with no uploadState, which the
- * pre-scan attach path already treats as staged) may be submitted onward. Every
- * pending or problem state is withheld from the outgoing payload.
- */
-export function isAttachmentAttachable(attachment: ComposerAttachment): boolean {
-  const state = attachment.uploadState
-
-  return !state || state === 'clean'
-}
+// The strict attachability invariant lives in ./attachment-invariant (a pure,
+// component-free module so the real submit path can enforce it without importing
+// React). Re-exported here for the existing composer import sites.
+export { isAttachmentAttachable }
 
 type ScanStateCopy = {
   uploading: string

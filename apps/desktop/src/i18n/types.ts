@@ -1768,6 +1768,8 @@ export interface Translations {
     noGrants: string
     runtimeRequired: string
     runtimeRequiredHint: string
+    ingestUnavailable: string
+    ingestUnavailableHint: string
     grantFailed: string
     revokeFailed: string
     readOnlyBadge: string

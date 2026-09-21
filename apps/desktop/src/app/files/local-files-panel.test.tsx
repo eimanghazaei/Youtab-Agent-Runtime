@@ -3,10 +3,26 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { YoutabFolderGrant } from '@/global'
 import { I18nProvider } from '@/i18n/context'
+import type * as FileIngressModule from '@/lib/file-ingress'
+import type * as WorkspaceIdentityModule from '@/lib/workspace-identity'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $currentCwd } from '@/store/session'
 
 import { LocalFilesPanel } from './local-files-panel'
+
+// Wave 2.4 (item 5): the file Add/drop affordance is gated behind the real Gateway
+// ingest + workspace authority. Both are unavailable in production today; these
+// flags let the select/DnD tests exercise the affordance, and a dedicated test
+// asserts the truthful unavailable state when they are off.
+const avail = vi.hoisted(() => ({ ingest: true, workspace: true }))
+vi.mock('@/lib/file-ingress', async importActual => ({
+  ...(await importActual<FileIngressModule>()),
+  isFileIngestAvailable: () => avail.ingest
+}))
+vi.mock('@/lib/workspace-identity', async importActual => ({
+  ...(await importActual<WorkspaceIdentityModule>()),
+  isWorkspaceAuthorityAvailable: () => avail.workspace
+}))
 
 const ABS_A = '/Users/me/secret/report.pdf'
 const ABS_B = '/Users/me/secret/data.csv'
@@ -82,6 +98,8 @@ describe('LocalFilesPanel', () => {
     $currentCwd.set('')
     $activeGatewayProfile.set('default')
     $connection.set(null)
+    avail.ingest = true
+    avail.workspace = true
   })
 
   afterEach(() => {
@@ -188,6 +206,19 @@ describe('LocalFilesPanel', () => {
     })
 
     await waitFor(() => expect(screen.queryByText('report.pdf')).toBeNull())
+  })
+
+  it('shows a truthful unavailable state (no doomed Add button) when file ingest/workspace authority are off', async () => {
+    avail.ingest = false
+    avail.workspace = false
+    stubDesktop({ selectPaths: [ABS_A] })
+    const { container } = await renderPanel()
+
+    // The clickable Add Files control that would always fail is NOT rendered.
+    expect(screen.queryByRole('button', { name: 'Add files' })).toBeNull()
+    // A visible, truthful capability-unavailable state is shown instead.
+    expect(container.querySelector('[data-slot="file-ingest-unavailable"]')).not.toBeNull()
+    expect(screen.getByText('Secure file scanning unavailable')).toBeDefined()
   })
 
   it('shows the truthful "Local Runtime required" state when the folder bridge is absent', async () => {

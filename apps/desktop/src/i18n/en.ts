@@ -2117,6 +2117,9 @@ export const en: Translations = {
     noGrants: 'No folders granted.',
     runtimeRequired: 'Local Runtime required',
     runtimeRequiredHint: 'Folder access needs the Local Runtime. Start it to grant a folder.',
+    ingestUnavailable: 'Secure file scanning unavailable',
+    ingestUnavailableHint:
+      'Attaching local files needs the Gateway file-ingress scanner and a workspace identity, which are not yet connected. Files cannot be scanned or attached until they are.',
     grantFailed: 'Could not grant folder access',
     revokeFailed: 'Could not revoke folder access',
     readOnlyBadge: 'Read-only',

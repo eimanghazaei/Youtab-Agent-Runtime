@@ -96,3 +96,14 @@ export async function ingestFile(input: IngestFileInput, options?: IngestOptions
 export function isAttachable(result: Pick<FileIngressResult, 'state' | 'fileId'>): boolean {
   return result.state === 'clean' && !!result.fileId
 }
+
+/**
+ * True only when the REAL integrated Gateway file-ingress contract is wired in.
+ * It is not (the approved Gateway SHA has not landed), so this returns false and
+ * callers must present a truthful "capability unavailable" state rather than a
+ * clickable control that is guaranteed to fail. Flip to true only when the real
+ * ingress transport is integrated against the approved Gateway SHA.
+ */
+export function isFileIngestAvailable(): boolean {
+  return false
+}

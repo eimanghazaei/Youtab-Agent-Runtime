@@ -2310,6 +2310,8 @@ export const zh: Translations = {
     noGrants: '尚未授予文件夹。',
     runtimeRequired: '需要本地运行时',
     runtimeRequiredHint: '文件夹访问需要本地运行时。请启动它以授予文件夹。',
+    ingestUnavailable: '安全文件扫描不可用',
+    ingestUnavailableHint: '附加本地文件需要网关文件接入扫描器和工作区标识，二者尚未连接。在此之前文件无法扫描或附加。',
     grantFailed: '无法授予文件夹访问权限',
     revokeFailed: '无法撤销文件夹访问权限',
     readOnlyBadge: '只读',
