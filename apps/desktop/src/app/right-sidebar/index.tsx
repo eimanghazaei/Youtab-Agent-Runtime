@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import type { ComponentProps } from 'react'
 
+import { LocalFilesPanel } from '@/app/files/local-files-panel'
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
@@ -100,6 +101,14 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder }: RightSide
         onRefresh={() => void refreshRoot()}
         openState={openState}
       />
+      <ErrorBoundary>
+        <section
+          className="shrink-0 overflow-y-auto border-t border-(--ui-stroke-secondary) px-2 py-2"
+          data-slot="local-files-panel-mount"
+        >
+          <LocalFilesPanel />
+        </section>
+      </ErrorBoundary>
     </aside>
   )
 }

@@ -54,4 +54,18 @@ describe('RightSidebarPane', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
     expect(readDir).not.toHaveBeenCalled()
   })
+  // Codex Wave 2.3 item 1: LocalFilesPanel must be MOUNTED in a shipped, visible,
+  // navigable production surface (RightSidebarPane), not only by a direct
+  // by a direct component render. This proves the control is not disconnected.
+  it('mounts LocalFilesPanel in the shipped right-sidebar surface (reachable, not orphaned)', async () => {
+    setCurrentCwd('/repo')
+
+    const { container } = render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    // The panel is mounted inside the shipped sidebar aside (a real navigable surface).
+    const mount = container.querySelector('[data-slot="local-files-panel-mount"]')
+    expect(mount).not.toBeNull()
+    // The real LocalFilesPanel component is rendered within it.
+    expect(mount?.querySelector('[data-slot="local-files-panel"]')).not.toBeNull()
+  })
 })
