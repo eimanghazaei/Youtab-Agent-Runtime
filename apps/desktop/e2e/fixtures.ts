@@ -287,7 +287,9 @@ export function findElectron(): string {
   // In dev mode, we use the `electron` binary directly (not the packaged app).
   // The dev:electron script in package.json does exactly this: `electron .`
   // after building. We replicate that here.
-  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
+  // The Electron binary is `electron.exe` on Windows and `electron` elsewhere.
+  const electronExe = process.platform === 'win32' ? 'electron.exe' : 'electron'
+  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', electronExe)
 
   if (fs.existsSync(localElectron)) {
     return localElectron
