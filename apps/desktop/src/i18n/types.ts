@@ -1732,6 +1732,46 @@ export interface Translations {
     snippets: Record<string, { label: string; description: string; text: string }>
     dropFiles: string
     dropSession: string
+    // File scan lifecycle states, shown on the attachment pill.
+    scanState: {
+      uploading: string
+      scanning: string
+      quarantined: string
+      rejected: string
+      oversized: string
+      quotaExceeded: string
+      unsupportedType: string
+      scannerUnavailable: string
+      workspaceDenied: string
+      interrupted: string
+      error: string
+    }
+  }
+
+  localFiles: {
+    title: string
+    description: string
+    addFiles: string
+    addFilesHint: string
+    dropZone: string
+    dropZoneActive: string
+    empty: string
+    remove: (label: string) => string
+    retry: (label: string) => string
+    cancel: (label: string) => string
+    pending: (count: number) => string
+    grantsTitle: string
+    grantsDescription: string
+    grantFolder: string
+    grantFolderReadOnly: string
+    revokeGrant: (label: string) => string
+    noGrants: string
+    runtimeRequired: string
+    runtimeRequiredHint: string
+    grantFailed: string
+    revokeFailed: string
+    readOnlyBadge: string
+    readWriteBadge: string
   }
 
   statusStack: {
@@ -1978,6 +2018,30 @@ export interface Translations {
     search: string
     noAuthenticatedProviders: string
     addProvider: string
+  }
+
+  modelReceipt: {
+    title: string
+    empty: string
+    model: string
+    provider: string
+    endpoint: string
+    runId: string
+    tokens: string
+    latency: string
+    cost: string
+    notReported: string
+    statusSuccess: string
+    statusPending: string
+    statusFailed: string
+    statusInvalidCredential: string
+    statusUnavailableProvider: string
+    tokensDetail: (input: number, output: number, total: number) => string
+    latencyDetail: (ms: number) => string
+    costDetail: (usd: number) => string
+    unavailableHint: (provider: string) => string
+    unavailableHintGeneric: string
+    invalidCredentialHint: string
   }
 
   shell: {

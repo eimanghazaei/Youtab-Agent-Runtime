@@ -2258,6 +2258,19 @@ export const zh: Translations = {
     snippetsDesc: '选择一个起始提示词放入输入框。',
     dropFiles: '拖放文件以附加',
     dropSession: '拖放以链接此对话',
+    scanState: {
+      uploading: '上传中…',
+      scanning: '扫描中…',
+      quarantined: '已隔离',
+      rejected: '已拒绝',
+      oversized: '文件过大',
+      quotaExceeded: '超出配额',
+      unsupportedType: '不支持的类型',
+      scannerUnavailable: '扫描器不可用',
+      workspaceDenied: '工作区被拒绝',
+      interrupted: '已中断',
+      error: '上传失败'
+    },
     snippets: {
       codeReview: {
         label: '代码审查',
@@ -2275,6 +2288,32 @@ export const zh: Translations = {
         text: '请解释这是如何工作的，并指给我关键文件。'
       }
     }
+  },
+
+  localFiles: {
+    title: '本地文件',
+    description: '附加本机文件，或向本地运行时授予文件夹访问权限。',
+    addFiles: '添加文件',
+    addFilesHint: '选择要作为上下文附加的文件。',
+    dropZone: '将文件拖放到此处以附加',
+    dropZoneActive: '释放以附加',
+    empty: '尚未附加文件。',
+    remove: label => `移除 ${label}`,
+    retry: label => `重试 ${label}`,
+    cancel: label => `取消 ${label}`,
+    pending: count => (count === 1 ? '1 个文件待处理' : `${count} 个文件待处理`),
+    grantsTitle: '文件夹访问',
+    grantsDescription: '向本地运行时授予某个文件夹的只读访问权限。',
+    grantFolder: '授予文件夹',
+    grantFolderReadOnly: '授予文件夹（只读）',
+    revokeGrant: label => `撤销对 ${label} 的访问`,
+    noGrants: '尚未授予文件夹。',
+    runtimeRequired: '需要本地运行时',
+    runtimeRequiredHint: '文件夹访问需要本地运行时。请启动它以授予文件夹。',
+    grantFailed: '无法授予文件夹访问权限',
+    revokeFailed: '无法撤销文件夹访问权限',
+    readOnlyBadge: '只读',
+    readWriteBadge: '读写'
   },
 
   statusStack: {
@@ -2556,6 +2595,31 @@ export const zh: Translations = {
     search: '搜索模型',
     noAuthenticatedProviders: '没有已认证的提供方。',
     addProvider: '添加提供方…'
+  },
+
+  modelReceipt: {
+    title: '推理摘要',
+    empty: '运行模型后可查看其推理摘要。',
+    model: '模型',
+    provider: '提供方',
+    endpoint: '端点',
+    runId: '运行 ID',
+    tokens: '令牌',
+    latency: '延迟',
+    cost: '费用',
+    notReported: '后端未提供',
+    statusSuccess: '已完成',
+    statusPending: '运行中…',
+    statusFailed: '推理失败',
+    statusInvalidCredential: '凭据无效',
+    statusUnavailableProvider: '提供方未配置',
+    tokensDetail: (input, output, total) =>
+      `输入 ${input.toLocaleString()} / 输出 ${output.toLocaleString()} · 共 ${total.toLocaleString()}`,
+    latencyDetail: ms => `${ms.toLocaleString()} 毫秒`,
+    costDetail: usd => `$${usd.toFixed(4)}`,
+    unavailableHint: provider => `请为 ${provider} 添加凭据以运行推理。`,
+    unavailableHintGeneric: '请配置推理提供方以运行模型。',
+    invalidCredentialHint: '请检查提供方的 API 密钥后重试。'
   },
 
   shell: {

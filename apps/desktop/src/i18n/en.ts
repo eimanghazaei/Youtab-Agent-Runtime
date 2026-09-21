@@ -2065,6 +2065,19 @@ export const en: Translations = {
     snippetsDesc: 'Pick a starter prompt to drop into the composer.',
     dropFiles: 'Drop files to attach',
     dropSession: 'Drop to link this chat',
+    scanState: {
+      uploading: 'Uploading…',
+      scanning: 'Scanning…',
+      quarantined: 'Quarantined',
+      rejected: 'Rejected',
+      oversized: 'Too large',
+      quotaExceeded: 'Quota exceeded',
+      unsupportedType: 'Unsupported type',
+      scannerUnavailable: 'Scanner unavailable',
+      workspaceDenied: 'Workspace denied',
+      interrupted: 'Interrupted',
+      error: 'Upload failed'
+    },
     snippets: {
       codeReview: {
         label: 'Code review',
@@ -2082,6 +2095,32 @@ export const en: Translations = {
         text: 'Please explain how this works and point me to the key files.'
       }
     }
+  },
+
+  localFiles: {
+    title: 'Local files',
+    description: 'Attach files from this machine, or grant a folder to the Local Runtime.',
+    addFiles: 'Add files',
+    addFilesHint: 'Choose files to attach as context.',
+    dropZone: 'Drop files here to attach',
+    dropZoneActive: 'Release to attach',
+    empty: 'No files attached yet.',
+    remove: label => `Remove ${label}`,
+    retry: label => `Retry ${label}`,
+    cancel: label => `Cancel ${label}`,
+    pending: count => (count === 1 ? '1 file pending' : `${count} files pending`),
+    grantsTitle: 'Folder access',
+    grantsDescription: 'Grant the Local Runtime read-only access to a folder.',
+    grantFolder: 'Grant a folder',
+    grantFolderReadOnly: 'Grant a folder (read-only)',
+    revokeGrant: label => `Revoke access to ${label}`,
+    noGrants: 'No folders granted.',
+    runtimeRequired: 'Local Runtime required',
+    runtimeRequiredHint: 'Folder access needs the Local Runtime. Start it to grant a folder.',
+    grantFailed: 'Could not grant folder access',
+    revokeFailed: 'Could not revoke folder access',
+    readOnlyBadge: 'Read-only',
+    readWriteBadge: 'Read-write'
   },
 
   statusStack: {
@@ -2375,6 +2414,31 @@ export const en: Translations = {
     search: 'Search models',
     noAuthenticatedProviders: 'No authenticated providers.',
     addProvider: 'Add provider…'
+  },
+
+  modelReceipt: {
+    title: 'Inference summary',
+    empty: 'Run a model to see its inference summary.',
+    model: 'Model',
+    provider: 'Provider',
+    endpoint: 'Endpoint',
+    runId: 'Run ID',
+    tokens: 'Tokens',
+    latency: 'Latency',
+    cost: 'Cost',
+    notReported: 'not reported by backend',
+    statusSuccess: 'Completed',
+    statusPending: 'Running…',
+    statusFailed: 'Inference failed',
+    statusInvalidCredential: 'Invalid credentials',
+    statusUnavailableProvider: 'Provider not set up',
+    tokensDetail: (input, output, total) =>
+      `${input.toLocaleString()} in / ${output.toLocaleString()} out · ${total.toLocaleString()} total`,
+    latencyDetail: ms => `${ms.toLocaleString()} ms`,
+    costDetail: usd => `$${usd.toFixed(4)}`,
+    unavailableHint: provider => `Add credentials for ${provider} to run inference.`,
+    unavailableHintGeneric: 'Set up an inference provider to run a model.',
+    invalidCredentialHint: 'Check the provider API key and try again.'
   },
 
   shell: {
