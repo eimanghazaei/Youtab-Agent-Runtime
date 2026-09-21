@@ -9,6 +9,7 @@ import type { ProfileInfo } from '@/types/youtab'
 // factory — the factory dereferences `profiles` at eval time.
 const { getConnectionConfig, profiles } = vi.hoisted(() => {
   const { atom } = require('nanostores') as typeof Nanostores
+
   return { getConnectionConfig: vi.fn(), profiles: atom<ProfileInfo[]>([]) }
 })
 
