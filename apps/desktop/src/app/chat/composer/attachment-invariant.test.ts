@@ -37,12 +37,28 @@ describe('isAttachmentAttachable — strict invariant (Wave 2.5 authority harden
     expect(isAttachmentAttachable(att({ uploadState: undefined, refText: '' }))).toBe(false)
   })
 
-  it('accepts an inline image (data: previewUrl) but rejects an image without inline bytes', () => {
+  it('accepts a bounded inline image (allowlisted MIME + base64) but rejects non-inline images', () => {
     expect(
-      isAttachmentAttachable(att({ kind: 'image', uploadState: undefined, previewUrl: 'data:image/png;base64,AAA' }))
+      isAttachmentAttachable(att({ kind: 'image', uploadState: undefined, previewUrl: 'data:image/png;base64,AAAA' }))
     ).toBe(true)
     expect(isAttachmentAttachable(att({ kind: 'image', uploadState: undefined, previewUrl: 'blob:local' }))).toBe(false)
     expect(isAttachmentAttachable(att({ kind: 'image', uploadState: undefined, attachedSessionId: 's' }))).toBe(false)
+  })
+
+  it('bounds inline images: rejects a disallowed MIME, non-base64, and an oversized payload', () => {
+    // SVG (script-capable) is NOT allowlisted.
+    expect(
+      isAttachmentAttachable(
+        att({ kind: 'image', uploadState: undefined, previewUrl: 'data:image/svg+xml;base64,AAAA' })
+      )
+    ).toBe(false)
+    // Not base64-encoded.
+    expect(
+      isAttachmentAttachable(att({ kind: 'image', uploadState: undefined, previewUrl: 'data:image/png,AAAA' }))
+    ).toBe(false)
+    // Over the 10 MiB byte cap (~14M base64 chars).
+    const huge = `data:image/png;base64,${'A'.repeat(14_000_001)}`
+    expect(isAttachmentAttachable(att({ kind: 'image', uploadState: undefined, previewUrl: huge }))).toBe(false)
   })
 
   // ── Scan-managed path ────────────────────────────────────────────────────

@@ -11,8 +11,15 @@ import { useFileCapability } from './use-file-capability'
 const getStatus = vi.hoisted(() => vi.fn())
 vi.mock(import('@/youtab'), async importOriginal => ({ ...(await importOriginal()), getStatus: () => getStatus() }))
 
-function status(features?: Record<string, unknown>): StatusResponse {
-  return { gateway_running: true, ...(features ? { features } : {}) } as unknown as StatusResponse
+function status(extra?: Record<string, unknown>): StatusResponse {
+  return { gateway_running: true, ...(extra ?? {}) } as unknown as StatusResponse
+}
+
+// A fully-advertised, schema-compatible capability response.
+const ADVERTISED = {
+  features: { file_ingress: true, workspace_authority: true },
+  workspace: { id: 'ws-canonical' },
+  file_capability_schema: 1
 }
 
 function wrapper() {
@@ -55,17 +62,41 @@ describe('useFileCapability — real runtime signal, not a static flag', () => {
     expect(result.current.reason).toContain('does not advertise')
   })
 
-  it('is available ONLY when the live status advertises file_ingress + workspace_authority', async () => {
+  it('is available ONLY with explicit features + workspace context + compatible schema', async () => {
     $gatewayState.set('open')
-    getStatus.mockResolvedValue(status({ file_ingress: true, workspace_authority: true }))
+    getStatus.mockResolvedValue(status(ADVERTISED))
     const { result } = renderHook(() => useFileCapability(), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.state).toBe('available'))
     expect(result.current.reason).toBeNull()
   })
 
-  it('is unavailable when only one of the two capability flags is advertised', async () => {
+  it('is unavailable when only one capability flag is advertised', async () => {
     $gatewayState.set('open')
-    getStatus.mockResolvedValue(status({ file_ingress: true }))
+    getStatus.mockResolvedValue(
+      status({ features: { file_ingress: true }, workspace: { id: 'w' }, file_capability_schema: 1 })
+    )
+    const { result } = renderHook(() => useFileCapability(), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.state).toBe('unavailable'))
+  })
+
+  it('is unavailable when the workspace context is missing ($gatewayState open is not enough)', async () => {
+    $gatewayState.set('open')
+    getStatus.mockResolvedValue(
+      status({ features: { file_ingress: true, workspace_authority: true }, file_capability_schema: 1 })
+    )
+    const { result } = renderHook(() => useFileCapability(), { wrapper: wrapper() })
+    await waitFor(() => expect(result.current.state).toBe('unavailable'))
+  })
+
+  it('is unavailable when the capability schema is incompatible', async () => {
+    $gatewayState.set('open')
+    getStatus.mockResolvedValue(
+      status({
+        features: { file_ingress: true, workspace_authority: true },
+        workspace: { id: 'w' },
+        file_capability_schema: 999
+      })
+    )
     const { result } = renderHook(() => useFileCapability(), { wrapper: wrapper() })
     await waitFor(() => expect(result.current.state).toBe('unavailable'))
   })

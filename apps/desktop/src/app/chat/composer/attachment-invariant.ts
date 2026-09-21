@@ -5,6 +5,33 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0
 }
 
+// Bounded inline-image policy (Wave 2.6 security correction). A `data:` image is
+// NOT inherently trusted: it is accepted only within a bounded MIME allowlist and
+// byte-size cap. The APPROVED server-side inline-image validation/scanning policy
+// (owned by the Gateway) is still a BLOCKED dependency; these client-side bounds
+// are a fail-closed floor, not a substitute for it.
+const INLINE_IMAGE_MIME_ALLOWLIST = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
+const INLINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024 // 10 MiB
+
+function isBoundedInlineImage(previewUrl: string | undefined): boolean {
+  if (typeof previewUrl !== 'string' || !previewUrl.startsWith('data:')) {
+    return false
+  }
+
+  const header = previewUrl.slice(5, previewUrl.indexOf(','))
+  const mime = header.split(';')[0]?.trim().toLowerCase()
+
+  if (!mime || !INLINE_IMAGE_MIME_ALLOWLIST.has(mime) || !header.includes('base64')) {
+    return false
+  }
+
+  const base64 = previewUrl.slice(previewUrl.indexOf(',') + 1)
+  // 4 base64 chars ≈ 3 bytes; cheap upper-bound estimate, no decode.
+  const approxBytes = Math.floor((base64.length * 3) / 4)
+
+  return approxBytes > 0 && approxBytes <= INLINE_IMAGE_MAX_BYTES
+}
+
 /**
  * The STRICT clean-file / legacy attachability invariant (Wave 2.4 item 1,
  * hardened in Wave 2.5 per the exact-SHA review).
@@ -41,14 +68,19 @@ export function isAttachmentAttachable(attachment: ComposerAttachment): boolean 
   // Legacy (no scan lifecycle) — requires a server-issued binding, never a
   // client-controlled id.
   if (state === undefined) {
-    // Server-issued file ref (from file.attach's authenticated response) or a
-    // gateway-resolvable in-app @file: ref.
+    // A server-RETURNED reference from the authenticated file.attach response (or a
+    // gateway-resolvable in-app @file: ref). NOTE: refText is only a server-returned
+    // REFERENCE — it is NOT an authority or an immutable binding here. The Gateway/
+    // Runtime revalidates it (resolving @file: in the authenticated workspace) when
+    // the prompt is submitted; the frontend does not treat it as authorization.
     if (isNonEmptyString(attachment.refText)) {
       return true
     }
 
-    // Inline image bytes staged via the authenticated image.attach[_bytes].
-    if (attachment.kind === 'image' && attachment.previewUrl?.startsWith('data:') === true) {
+    // Inline image: accepted only within a bounded MIME allowlist + byte cap.
+    // A `data:` URL is not inherently trusted; full server validation/scanning is a
+    // blocked Gateway dependency. Out-of-bounds → fail closed.
+    if (attachment.kind === 'image' && isBoundedInlineImage(attachment.previewUrl)) {
       return true
     }
 

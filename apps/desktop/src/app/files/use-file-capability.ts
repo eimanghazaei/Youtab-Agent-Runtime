@@ -30,15 +30,33 @@ export interface FileCapability {
 
 export const FILE_CAPABILITY_QUERY_KEY = ['file-ingest-capability'] as const
 
+// The frontend consumer is built against this file-ingress capability schema
+// version; the Gateway must advertise a compatible one (Wave 2.6: capability needs
+// explicit feature fields + workspace context + compatible schema, not just an
+// open socket).
+const SUPPORTED_FILE_CAPABILITY_SCHEMA = 1
+
 /**
- * True only when the live Gateway status advertises BOTH the secure file-ingress
- * scanner and the workspace-authority capability. Reads optional `features` flags
- * the approved Gateway is expected to publish; absent today → false.
+ * True only when the live Gateway status advertises, EXPLICITLY:
+ *  - `features.file_ingress === true` AND `features.workspace_authority === true`;
+ *  - a non-empty workspace context (`workspace.id`); AND
+ *  - a compatible capability schema (`file_capability_schema === SUPPORTED_...`).
+ *
+ * `$gatewayState === 'open'` alone is NOT proof of availability — all of the above
+ * must be present in the authenticated response. Absent/incompatible → false.
  */
 function statusAdvertisesFileIngest(status: StatusResponse): boolean {
-  const features = (status as unknown as { features?: Record<string, unknown> }).features
+  const s = status as unknown as {
+    features?: Record<string, unknown>
+    workspace?: { id?: unknown }
+    file_capability_schema?: unknown
+  }
 
-  return features?.file_ingress === true && features?.workspace_authority === true
+  const featuresOk = s.features?.file_ingress === true && s.features?.workspace_authority === true
+  const workspaceOk = typeof s.workspace?.id === 'string' && s.workspace.id.length > 0
+  const schemaOk = s.file_capability_schema === SUPPORTED_FILE_CAPABILITY_SCHEMA
+
+  return featuresOk && workspaceOk && schemaOk
 }
 
 export function useFileCapability(): FileCapability {
