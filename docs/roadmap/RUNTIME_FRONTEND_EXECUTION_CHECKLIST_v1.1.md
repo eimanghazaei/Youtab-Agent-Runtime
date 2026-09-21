@@ -79,3 +79,20 @@ New rows (frontend-owned, buildable now):
 - **F1 Model/Engine, F2 API/MCP:** already REAL/backed in-repo (verified prior waves); live inference / live MCP-op / real tool-listing E2E are OWNER/live-dependency-blocked.
 - **F3 File/Folder:** security hardening done (CX-10..15); ingest/workspace/folder-grant BLOCKED on DR-GW-1/2, DR-RT-1.
 - **F4 Enterprise (CRM/ERP/SAP/CAD), F5 Approval/Receipts, F6 Browser E2E:** BLOCKED on DR-RT-3, DR-GW-*, DR-RT-1, DR-OWNER — no fake/disconnected surfaces built.
+
+## Wave 2.6 — F1–F6 buildability audit (truthful, no fabrication)
+
+Substrate audit (read-only) results + this-session execution feasibility:
+
+| Agent | Substrate | This-session execution | Status / action |
+|---|---|---|---|
+| **F1 Model/Engine** | REAL config UI + consumers (`app/settings/*`) + routes `/api/config`, `/api/env`, `/api/providers/custom-endpoints*`, `/api/providers/validate`, OAuth. create/test/use/revoke proven at the reference-service boundary (`api-connection.integration.test.ts`, Wave-2.2, `7e913b158`/`9faa412c3`). | Full-app inference E2E needs electron+backend (see F6). | `[ ] IMPLEMENTED_NOT_VERIFIED` — reference-proven; live app E2E BLOCKED on F6 env |
+| **F2 API/MCP** | REAL MCP UI (`app/skills/mcp-tab.tsx`) + routes `/api/mcp/servers*`, catalog, auth, oauth flows. add/auth/test/catalog/remove proven (`mcp-consumers.integration.test.ts`). | Same as F1. | `[ ] IMPLEMENTED_NOT_VERIFIED` — reference-proven; live op E2E BLOCKED on F6 env |
+| **F3 File/Folder** | Security hardened this session (CX-10..15). | Ingest/folder-grant fail-closed. | live BLOCKED on DR-GW-1/2/3, DR-RT-1 |
+| **F4 Enterprise (CRM/ERP/SAP/CAD)** | **ABSENT** — no capability/operation-manifest consumer; zero CRM/ERP/SAP/CAD surface in `src`. | n/a | **DR-RT-3a (BLOCKED):** Runtime must deliver a typed generic operation-manifest consumer contract (op id, params, risk, approval, preview, execute, receipt, reconciliation) + the domain manifests. NOT fabricated in frontend. |
+| **F5 Approval/Receipts** | **ABSENT as specified** — only a 2-tool event-driven approval primitive (`components/assistant-ui/tool/approval.tsx`); no effect ledger/receipt/reconciliation/governance REST API. | n/a | **DR-RT-3b (BLOCKED):** Runtime must deliver a generic approval + effect-ledger API (request→approve/deny→decision→effect→receipt→reconciliation, + expiry/replay/payload-change/revoked-delegation/workspace-mismatch). NOT fabricated. |
+| **F6 Browser E2E** | **EXISTS** — Playwright `@playwright/test 1.58.2`, `apps/desktop/e2e/` (fixtures.ts `setupMockBackend` boots real electron → real youtab backend → mock LLM `e2e/mock-server.ts`; 18 spec files incl. chat/onboarding/image-attachment). No live vendors. | **NOT RUNNABLE this session:** `node_modules/electron/dist/electron.exe` ABSENT, no built `dist/`, youtab backend runtime not provisioned here. | `[ ] BLOCKED (env)` — harness real + CI-proven; local electron run needs electron binary + build + backend runtime |
+
+**DR-RT-3 refined:** split into DR-RT-3a (operation-manifest consumer contract) and DR-RT-3b (approval + effect-ledger API). Until Runtime delivers these exact-SHA contracts, F4/F5 are recorded dependencies — no fake enterprise/governance framework is built in the frontend.
+
+**F6 execution environment note:** the E2E harness is real and boots without live vendors, but this session lacks the electron binary + a built `dist/` + a provisioned youtab backend runtime. Executing the full browser path (including a new F1/F2 provider-config → inference spec) requires that environment (available in CI). A speculative, unexecutable e2e spec is intentionally NOT committed (violates the targeted-test-green rule).
