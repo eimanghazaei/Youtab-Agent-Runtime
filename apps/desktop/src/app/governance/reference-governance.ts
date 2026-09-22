@@ -12,7 +12,12 @@
 // success/failure is a pure function of the request id, so the same input
 // always yields the same terminal phase.
 
-import type { GovernanceDecision, GovernancePhase, GovernanceReceipt, GovernanceRequest } from './governance-model'
+import type {
+  GovernanceDecision,
+  GovernancePhase,
+  GovernanceRequest,
+  ReferenceGovernanceResult
+} from './governance-model'
 
 /** Configuration for a deterministic reference service instance. */
 export interface ReferenceGovernanceConfig {
@@ -62,9 +67,10 @@ function stableDigest(value: string): number {
   return hash >>> 0
 }
 
-function referenceReceipt(requestId: string, phase: GovernancePhase, detail: string | null): GovernanceReceipt {
-  // Reference receipts NEVER carry a fabricated effectId/receiptId.
-  return { requestId, phase, effectId: null, receiptId: null, source: 'reference', detail }
+function referenceReceipt(requestId: string, phase: GovernancePhase, detail: string | null): ReferenceGovernanceResult {
+  // Reference results NEVER carry a fabricated effect/receipt id — their
+  // simulated slots are distinctly named and always null.
+  return { requestId, phase, source: 'reference', detail, simulatedEffectRef: null, simulatedReceiptRef: null }
 }
 
 /**
@@ -98,7 +104,7 @@ export class ReferenceGovernanceService {
    * Submit a request. Detects replay (same id twice), workspace mismatch and
    * revoked delegation up-front. Returns the resulting receipt.
    */
-  submitRequest(request: GovernanceRequest): GovernanceReceipt {
+  submitRequest(request: GovernanceRequest): ReferenceGovernanceResult {
     assertNoSecretInPayload(request.payloadHash)
 
     if (this.requests.has(request.id)) {
@@ -155,7 +161,7 @@ export class ReferenceGovernanceService {
    * decision time. `currentPayloadHash` lets a caller prove the payload was not
    * modified between submit and decision.
    */
-  decide(requestId: string, decision: GovernanceDecision, currentPayloadHash?: string): GovernanceReceipt {
+  decide(requestId: string, decision: GovernanceDecision, currentPayloadHash?: string): ReferenceGovernanceResult {
     const stored = this.requests.get(requestId)
 
     if (!stored) {
@@ -200,7 +206,7 @@ export class ReferenceGovernanceService {
    * Execute the approved effect. Only an `approved` request produces an effect.
    * The reference effect carries NO effectId (that is Runtime-only).
    */
-  completeEffect(requestId: string): GovernanceReceipt {
+  completeEffect(requestId: string): ReferenceGovernanceResult {
     const stored = this.requests.get(requestId)
 
     if (!stored) {
@@ -222,7 +228,7 @@ export class ReferenceGovernanceService {
    * is a pure function of the request id (even digest → succeeded, odd → failed)
    * so both branches are reachable and reproducible.
    */
-  reconcile(requestId: string): GovernanceReceipt {
+  reconcile(requestId: string): ReferenceGovernanceResult {
     const stored = this.requests.get(requestId)
 
     if (!stored) {
@@ -243,7 +249,7 @@ export class ReferenceGovernanceService {
   }
 
   /** Current receipt for a request, or `null` if unknown. */
-  getReceipt(requestId: string): GovernanceReceipt | null {
+  getReceipt(requestId: string): ReferenceGovernanceResult | null {
     const stored = this.requests.get(requestId)
 
     if (!stored) {

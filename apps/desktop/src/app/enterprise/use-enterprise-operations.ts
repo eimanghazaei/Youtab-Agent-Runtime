@@ -16,23 +16,37 @@
 
 import { useCallback, useMemo, useState } from 'react'
 
-import type { OperationManifest, OperationPhase, OperationReceipt } from './operation-manifest'
+import type { OperationManifest, OperationPhase, OperationReceipt, ReferenceScenarioResult } from './operation-manifest'
+import { isCanonicalRuntimeReceipt } from './operation-manifest'
 import type { OperationDomain } from './operation-manifest'
 import { executeReference, getReferenceManifests } from './reference-operations'
+
+/**
+ * A run result is either the CANONICAL Runtime receipt or a renderer-local
+ * reference simulation — never conflated. The hook stores this union; only a
+ * value that passes `isCanonicalRuntimeReceipt` is ever placed in the canonical
+ * authority slot.
+ */
+export type OperationRunResult = OperationReceipt | ReferenceScenarioResult
+
+/** Read the effect identifier from either result kind (real id vs simulated ref). */
+export function runResultEffectRef(result: OperationRunResult): string | null {
+  return isCanonicalRuntimeReceipt(result) ? result.effectId : result.simulatedEffectRef
+}
 
 /** Execute service shape. The reference impl and (later) the Runtime impl both satisfy it. */
 export type ExecuteService = (
   manifest: OperationManifest,
   params: Record<string, unknown>,
   options: { approved: boolean }
-) => Promise<OperationReceipt>
+) => Promise<OperationRunResult>
 
 /** Reconciliation service: confirms an effect actually landed. */
-export type ReconcileService = (receipt: OperationReceipt) => Promise<boolean>
+export type ReconcileService = (result: OperationRunResult) => Promise<boolean>
 
 /** Default reconcile for the reference provider: a completed reference effect reconciles. */
-function defaultReconcile(receipt: OperationReceipt): Promise<boolean> {
-  return Promise.resolve(receipt.status === 'effect_complete' && receipt.effectId != null)
+function defaultReconcile(result: OperationRunResult): Promise<boolean> {
+  return Promise.resolve(result.status === 'effect_complete' && runResultEffectRef(result) != null)
 }
 
 export interface UseEnterpriseOperationsOptions {
@@ -50,7 +64,14 @@ export interface EnterpriseOperationsState {
   /** Manifests for the active domain (reference today). */
   manifests: OperationManifest[]
   phase: OperationPhase
-  receipt: OperationReceipt | null
+  /** The most recent run result — canonical receipt OR reference simulation. */
+  receipt: OperationRunResult | null
+  /**
+   * AUTHORITY slot: holds ONLY a CANONICAL Runtime receipt (gated via
+   * `isCanonicalRuntimeReceipt`). A reference simulation never lands here, so
+   * downstream authority logic can trust this is a real Runtime effect.
+   */
+  canonicalReceipt: OperationReceipt | null
   /** Human-readable failure reason for `failed`/`denied`/`reconcile_failed`. */
   error: string | null
   /** Whether the last completed run reconciled successfully. */
@@ -75,13 +96,15 @@ export function useEnterpriseOperations(
   const manifests = useMemo(() => getReferenceManifests(domain), [domain])
 
   const [phase, setPhase] = useState<OperationPhase>('idle')
-  const [receipt, setReceipt] = useState<OperationReceipt | null>(null)
+  const [receipt, setReceipt] = useState<OperationRunResult | null>(null)
+  const [canonicalReceipt, setCanonicalReceipt] = useState<OperationReceipt | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [reconciled, setReconciled] = useState(false)
 
   const preview = useCallback(() => {
     setPhase('preview')
     setReceipt(null)
+    setCanonicalReceipt(null)
     setError(null)
     setReconciled(false)
   }, [])
@@ -89,6 +112,7 @@ export function useEnterpriseOperations(
   const reset = useCallback(() => {
     setPhase('idle')
     setReceipt(null)
+    setCanonicalReceipt(null)
     setError(null)
     setReconciled(false)
   }, [])
@@ -97,8 +121,9 @@ export function useEnterpriseOperations(
     setPhase('denied')
     setError('Operation denied by operator.')
     setReconciled(false)
+    setCanonicalReceipt(null)
     setReceipt({
-      effectId: null,
+      simulatedEffectRef: null,
       status: 'denied',
       detail: 'Operator denied the pending approval.',
       source: 'reference'
@@ -110,12 +135,13 @@ export function useEnterpriseOperations(
       const approved = runOpts.approved ?? false
       setError(null)
       setReconciled(false)
+      setCanonicalReceipt(null)
 
       // Approval gate — surface it before any effect is attempted.
       if (manifest.requiresApproval && !approved) {
         setPhase('approval_required')
         setReceipt({
-          effectId: null,
+          simulatedEffectRef: null,
           status: 'approval_required',
           detail: 'This operation requires operator approval before it will run.',
           source: 'reference'
@@ -129,14 +155,19 @@ export function useEnterpriseOperations(
       }
 
       setPhase('executing')
-      let result: OperationReceipt
+      let result: OperationRunResult
 
       try {
         result = await execute(manifest, params, { approved })
       } catch (cause) {
         setPhase('failed')
         setError(cause instanceof Error ? cause.message : 'Operation failed to execute.')
-        setReceipt({ effectId: null, status: 'failed', detail: 'Execution raised an error.', source: 'reference' })
+        setReceipt({
+          simulatedEffectRef: null,
+          status: 'failed',
+          detail: 'Execution raised an error.',
+          source: 'reference'
+        })
 
         return
       }
@@ -151,6 +182,12 @@ export function useEnterpriseOperations(
 
       setPhase('effect_complete')
       setReceipt(result)
+
+      // Authority gate: ONLY a canonical Runtime receipt reaches the authority
+      // slot. A reference simulation is displayed but never treated as real.
+      if (isCanonicalRuntimeReceipt(result)) {
+        setCanonicalReceipt(result)
+      }
 
       // Post-effect reconciliation.
       let ok: boolean
@@ -175,5 +212,5 @@ export function useEnterpriseOperations(
     [execute, reconcile]
   )
 
-  return { manifests, phase, receipt, error, reconciled, preview, runOperation, deny, reset }
+  return { manifests, phase, receipt, canonicalReceipt, error, reconciled, preview, runOperation, deny, reset }
 }

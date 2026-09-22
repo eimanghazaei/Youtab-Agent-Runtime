@@ -16,9 +16,10 @@ import { Button } from '@/components/ui/button'
 import { AlertCircle, AlertTriangle, CheckCircle2, Clock, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
-import type { GovernancePhase, GovernanceReceipt, GovernanceRequest } from './governance-model'
-import { TERMINAL_PHASES } from './governance-model'
+import type { GovernancePhase, GovernanceRequest } from './governance-model'
+import { governanceEffectRef, governanceReceiptRef, TERMINAL_PHASES } from './governance-model'
 import type { ReferenceGovernanceConfig } from './reference-governance'
+import type { GovernanceRunResult } from './use-governance'
 import { useGovernance } from './use-governance'
 
 const PHASE_LABEL: Record<GovernancePhase, string> = {
@@ -181,7 +182,7 @@ export const GovernancePanel: FC<GovernancePanelProps> = ({ request, config }) =
         {phase === null ? (
           <p className="text-(--ui-text-secondary)">No request submitted yet.</p>
         ) : (
-          <ReceiptView receipt={receipt as GovernanceReceipt} />
+          <ReceiptView receipt={receipt as GovernanceRunResult} />
         )}
       </div>
 
@@ -281,7 +282,7 @@ export const GovernancePanel: FC<GovernancePanelProps> = ({ request, config }) =
   )
 }
 
-const ReceiptView: FC<{ receipt: GovernanceReceipt }> = ({ receipt }) => {
+const ReceiptView: FC<{ receipt: GovernanceRunResult }> = ({ receipt }) => {
   const tone = PHASE_TONE[receipt.phase]
 
   return (
@@ -292,7 +293,8 @@ const ReceiptView: FC<{ receipt: GovernanceReceipt }> = ({ receipt }) => {
       </p>
       {receipt.detail ? <p className="text-xs text-(--ui-text-secondary)">{receipt.detail}</p> : null}
       <p className="text-[0.6875rem] text-(--ui-text-secondary)">
-        source: {receipt.source} · effectId: {receipt.effectId ?? '—'} · receiptId: {receipt.receiptId ?? '—'}
+        source: {receipt.source} · effectId: {governanceEffectRef(receipt) ?? '—'} · receiptId:{' '}
+        {governanceReceiptRef(receipt) ?? '—'}
       </p>
     </>
   )

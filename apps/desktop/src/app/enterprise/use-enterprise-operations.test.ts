@@ -2,8 +2,8 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import type { OperationManifest, OperationReceipt } from './operation-manifest'
-import { useEnterpriseOperations } from './use-enterprise-operations'
+import type { OperationManifest, ReferenceScenarioResult } from './operation-manifest'
+import { runResultEffectRef, useEnterpriseOperations } from './use-enterprise-operations'
 
 const noApproval: OperationManifest = {
   id: 'crm.create_lead',
@@ -17,8 +17,8 @@ const noApproval: OperationManifest = {
 
 const withApproval: OperationManifest = { ...noApproval, id: 'crm.merge_accounts', requiresApproval: true }
 
-const okReceipt: OperationReceipt = {
-  effectId: 'ref-00000001',
+const okReceipt: ReferenceScenarioResult = {
+  simulatedEffectRef: 'ref-00000001',
   status: 'effect_complete',
   detail: 'ref',
   source: 'reference'
@@ -63,7 +63,7 @@ describe('useEnterpriseOperations phase machine', () => {
       await result.current.runOperation(withApproval, {})
     })
     expect(result.current.phase).toBe('approval_required')
-    expect(result.current.receipt?.effectId).toBeNull()
+    expect(result.current.receipt ? runResultEffectRef(result.current.receipt) : null).toBeNull()
 
     await act(async () => {
       await result.current.runOperation(withApproval, {}, { approved: true })

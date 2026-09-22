@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { isTruthfulReceipt } from './governance-model'
-import type { GovernanceRequest } from './governance-model'
+import { isCanonicalGovernanceReceipt, isTruthfulReceipt } from './governance-model'
+import type { GovernanceReceipt, GovernanceRequest, ReferenceGovernanceResult } from './governance-model'
 import { assertNoSecretInPayload, ReferenceGovernanceService } from './reference-governance'
 
 function makeRequest(over: Partial<GovernanceRequest> = {}): GovernanceRequest {
@@ -113,8 +113,8 @@ describe('ReferenceGovernanceService — truthfulness', () => {
 
     for (const r of receipts) {
       expect(r.source).toBe('reference')
-      expect(r.effectId).toBeNull()
-      expect(r.receiptId).toBeNull()
+      expect(r.simulatedEffectRef).toBeNull()
+      expect(r.simulatedReceiptRef).toBeNull()
       expect(isTruthfulReceipt(r)).toBe(true)
     }
   })
@@ -138,5 +138,51 @@ describe('ReferenceGovernanceService — truthfulness', () => {
   it('submitRequest throws when the payload leaks a secret', () => {
     const svc = newService()
     expect(() => svc.submitRequest(makeRequest({ id: 's', payloadHash: 'C:\\keys\\a.pem' }))).toThrow()
+  })
+})
+
+describe('reference/canonical governance type separation (security boundary)', () => {
+  it('a reference result fails the canonical runtime guard', () => {
+    const svc = newService()
+    const result = svc.submitRequest(makeRequest({ id: 'sep-1' }))
+    expect(result.source).toBe('reference')
+    expect(isCanonicalGovernanceReceipt(result)).toBe(false)
+  })
+
+  it('a canonical runtime receipt passes the guard', () => {
+    const canonical: GovernanceReceipt = {
+      requestId: 'rt-1',
+      phase: 'effect_complete',
+      effectId: 'rt-effect-1',
+      receiptId: 'rt-receipt-1',
+      source: 'runtime',
+      detail: 'runtime'
+    }
+
+    expect(isCanonicalGovernanceReceipt(canonical)).toBe(true)
+  })
+
+  it('names the simulated identifiers distinctly — never as canonical effectId/receiptId', () => {
+    const svc = newService()
+    const result = svc.submitRequest(makeRequest({ id: 'sep-2' }))
+    expect(result).toHaveProperty('simulatedEffectRef')
+    expect(result).toHaveProperty('simulatedReceiptRef')
+    expect(result).not.toHaveProperty('effectId')
+    expect(result).not.toHaveProperty('receiptId')
+  })
+
+  it('compile-time: a reference result is NOT assignable to the canonical receipt', () => {
+    const reference: ReferenceGovernanceResult = {
+      requestId: 'ref-1',
+      phase: 'approval_required',
+      source: 'reference',
+      detail: 'simulation',
+      simulatedEffectRef: null,
+      simulatedReceiptRef: null
+    }
+
+    // @ts-expect-error a ReferenceGovernanceResult must never be usable as a canonical GovernanceReceipt
+    const canonical: GovernanceReceipt = reference
+    expect(canonical.source).toBe('reference')
   })
 })

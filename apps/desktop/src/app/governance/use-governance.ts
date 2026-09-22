@@ -9,24 +9,36 @@
 
 import { useCallback, useMemo, useState } from 'react'
 
-import type { GovernanceDecision, GovernanceReceipt, GovernanceRequest } from './governance-model'
+import type {
+  GovernanceDecision,
+  GovernanceReceipt,
+  GovernanceRequest,
+  ReferenceGovernanceResult
+} from './governance-model'
 import { type ReferenceGovernanceConfig, ReferenceGovernanceService } from './reference-governance'
+
+/**
+ * A governance outcome is either the CANONICAL Runtime receipt or a renderer
+ * -local reference simulation — the hook stays transport-agnostic over the union
+ * and never conflates the two.
+ */
+export type GovernanceRunResult = GovernanceReceipt | ReferenceGovernanceResult
 
 /** Minimal service surface the hook depends on (satisfied by the reference impl). */
 export interface GovernanceService {
-  submitRequest(req: GovernanceRequest): GovernanceReceipt
-  decide(requestId: string, decision: GovernanceDecision, currentPayloadHash?: string): GovernanceReceipt
-  completeEffect(requestId: string): GovernanceReceipt
-  reconcile(requestId: string): GovernanceReceipt
-  getReceipt(requestId: string): GovernanceReceipt | null
+  submitRequest(req: GovernanceRequest): GovernanceRunResult
+  decide(requestId: string, decision: GovernanceDecision, currentPayloadHash?: string): GovernanceRunResult
+  completeEffect(requestId: string): GovernanceRunResult
+  reconcile(requestId: string): GovernanceRunResult
+  getReceipt(requestId: string): GovernanceRunResult | null
 }
 
 export interface UseGovernanceResult {
-  receipt: GovernanceReceipt | null
-  submit: (req: GovernanceRequest, currentPayloadHash?: string) => GovernanceReceipt
-  decide: (decision: GovernanceDecision) => GovernanceReceipt | null
-  runEffect: () => GovernanceReceipt | null
-  reconcile: () => GovernanceReceipt | null
+  receipt: GovernanceRunResult | null
+  submit: (req: GovernanceRequest, currentPayloadHash?: string) => GovernanceRunResult
+  decide: (decision: GovernanceDecision) => GovernanceRunResult | null
+  runEffect: () => GovernanceRunResult | null
+  reconcile: () => GovernanceRunResult | null
   reset: () => void
   /**
    * The live governance service (reference today, Runtime later). Exposed so the
@@ -34,9 +46,9 @@ export interface UseGovernanceResult {
    * against the REAL service synchronously — no fabricated receipts.
    */
   service: GovernanceService
-  /** Display a receipt produced by a direct service call. Clears the tracked
+  /** Display a result produced by a direct service call. Clears the tracked
    *  request id (adversarial outcomes are terminal — nothing more to decide). */
-  show: (receipt: GovernanceReceipt) => void
+  show: (receipt: GovernanceRunResult) => void
 }
 
 export function useGovernance(serviceOrConfig: GovernanceService | ReferenceGovernanceConfig): UseGovernanceResult {
@@ -51,7 +63,7 @@ export function useGovernance(serviceOrConfig: GovernanceService | ReferenceGove
     // memoizes its config), so keying on identity is correct.
   }, [serviceOrConfig])
 
-  const [receipt, setReceipt] = useState<GovernanceReceipt | null>(null)
+  const [receipt, setReceipt] = useState<GovernanceRunResult | null>(null)
   const [requestId, setRequestId] = useState<string | null>(null)
   const [lastPayloadHash, setLastPayloadHash] = useState<string | undefined>(undefined)
 
@@ -109,7 +121,7 @@ export function useGovernance(serviceOrConfig: GovernanceService | ReferenceGove
     setReceipt(null)
   }, [])
 
-  const show = useCallback((next: GovernanceReceipt) => {
+  const show = useCallback((next: GovernanceRunResult) => {
     // Adversarial outcomes are terminal: forget the tracked request so the
     // normal approve/effect controls stay disabled until a fresh submit.
     setRequestId(null)

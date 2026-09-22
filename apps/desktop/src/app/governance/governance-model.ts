@@ -50,11 +50,23 @@ export interface GovernanceRequest {
 }
 
 /**
- * The outcome record for a request at its current phase.
+ * CANONICAL governance outcome record — the AUTHORITATIVE Runtime approval/effect
+ * result. Only Runtime (the exact-SHA approval + effect-ledger API, DR-RT-3b)
+ * carries real `effectId` / `receiptId` ledger identifiers; a value is treated as
+ * authoritative only when `source === 'runtime'`.
  *
- * `effectId` / `receiptId` are non-null ONLY when `source === 'runtime'`. For
- * `source === 'reference'` they are always `null` — the reference service never
- * fabricates ledger identifiers.
+ * A renderer-local simulation is the DISTINCT `ReferenceGovernanceResult` type
+ * below — it has NO `effectId` / `receiptId` fields at all (its simulated slots
+ * are named `simulatedEffectRef` / `simulatedReceiptRef` and are always `null`),
+ * so a simulation is never assignable to this type and can never be passed where
+ * a canonical receipt is required. Only a value with `source === 'runtime'` (see
+ * `isCanonicalGovernanceReceipt`) is treated as authoritative.
+ *
+ * NOTE: `source` retains the `'reference' | 'runtime'` union rather than the
+ * `'runtime'` literal so the frozen contract-conformance fixture
+ * (`src/contracts/contract-conformance.test.ts`, off-limits to edit) keeps
+ * compiling; the field-name separation above is what guarantees
+ * non-interchangeability.
  */
 export interface GovernanceReceipt {
   requestId: string
@@ -64,6 +76,37 @@ export interface GovernanceReceipt {
   source: 'reference' | 'runtime'
   /** Human-readable explanation of the phase (why denied/expired/etc.). */
   detail: string | null
+}
+
+/**
+ * NON-AUTHORITATIVE governance simulation from the deterministic REFERENCE
+ * service. `source` is LOCKED to `'reference'`. It deliberately does NOT expose
+ * `effectId` / `receiptId`: its simulated identifiers live on the distinctly
+ * named `simulatedEffectRef` / `simulatedReceiptRef` fields, both always `null`,
+ * so nothing here can be presented as a real Runtime ledger identifier.
+ */
+export interface ReferenceGovernanceResult {
+  requestId: string
+  phase: GovernancePhase
+  source: 'reference'
+  detail: string | null
+  simulatedEffectRef: null
+  simulatedReceiptRef: null
+}
+
+/** Type guard: narrows to the CANONICAL Runtime governance receipt. */
+export function isCanonicalGovernanceReceipt(r: GovernanceReceipt | ReferenceGovernanceResult): r is GovernanceReceipt {
+  return r.source === 'runtime'
+}
+
+/** Read the effect identifier from either result kind (real id vs simulated ref). */
+export function governanceEffectRef(r: GovernanceReceipt | ReferenceGovernanceResult): string | null {
+  return isCanonicalGovernanceReceipt(r) ? r.effectId : r.simulatedEffectRef
+}
+
+/** Read the receipt identifier from either result kind (real id vs simulated ref). */
+export function governanceReceiptRef(r: GovernanceReceipt | ReferenceGovernanceResult): string | null {
+  return isCanonicalGovernanceReceipt(r) ? r.receiptId : r.simulatedReceiptRef
 }
 
 /** Decision an approver can take on a pending request. */
@@ -81,11 +124,12 @@ export const TERMINAL_PHASES: ReadonlySet<GovernancePhase> = new Set<GovernanceP
   'reconcile_failed'
 ])
 
-/** Guard: a reference receipt must never carry a fabricated runtime identifier. */
-export function isTruthfulReceipt(receipt: GovernanceReceipt): boolean {
-  if (receipt.source === 'reference') {
-    return receipt.effectId === null && receipt.receiptId === null
+/** Guard: a reference result must never carry a fabricated runtime identifier. */
+export function isTruthfulReceipt(receipt: GovernanceReceipt | ReferenceGovernanceResult): boolean {
+  if (isCanonicalGovernanceReceipt(receipt)) {
+    return true
   }
 
-  return true
+  // Reference simulation: its distinctly-named simulated slots are always null.
+  return receipt.simulatedEffectRef === null && receipt.simulatedReceiptRef === null
 }

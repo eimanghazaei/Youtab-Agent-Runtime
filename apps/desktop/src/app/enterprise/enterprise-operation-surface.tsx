@@ -17,8 +17,9 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 
 import type { OperationManifest, OperationParam, RiskLevel } from './operation-manifest'
+import { isCanonicalRuntimeReceipt } from './operation-manifest'
 import type { ExecuteService, ReconcileService } from './use-enterprise-operations'
-import { useEnterpriseOperations } from './use-enterprise-operations'
+import { runResultEffectRef, useEnterpriseOperations } from './use-enterprise-operations'
 
 const RISK_VARIANT: Record<RiskLevel, 'muted' | 'warn' | 'destructive'> = {
   low: 'muted',
@@ -278,8 +279,10 @@ export function EnterpriseOperationSurface({
         <div className="rounded-[3px] border border-(--ui-stroke-secondary) p-3 text-xs" data-testid="receipt">
           <div className="mb-1 font-medium">Effect receipt</div>
           <div>
-            <span className="text-muted-foreground">effectId: </span>
-            <span data-testid="receipt-effect-id">{receipt.effectId ?? '—'}</span>
+            <span className="text-muted-foreground">
+              {isCanonicalRuntimeReceipt(receipt) ? 'effectId: ' : 'Simulated reference — not a Runtime effect id: '}
+            </span>
+            <span data-testid="receipt-effect-id">{runResultEffectRef(receipt) ?? '—'}</span>
           </div>
           <div>
             <span className="text-muted-foreground">status: </span>

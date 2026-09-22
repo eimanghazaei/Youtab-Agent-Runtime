@@ -11,7 +11,7 @@
 //
 // No secret, credential, or local filesystem path is read, logged, or embedded.
 
-import type { OperationDomain, OperationManifest, OperationReceipt } from './operation-manifest'
+import type { OperationDomain, OperationManifest, ReferenceScenarioResult } from './operation-manifest'
 
 const REFERENCE_MANIFESTS: Record<OperationDomain, OperationManifest[]> = {
   crm: [
@@ -102,7 +102,7 @@ export function getReferenceManifests(domain: OperationDomain): OperationManifes
  * stable so reference runs are reproducible. Never includes secrets/paths — it
  * hashes only the manifest id and the operator-supplied param values.
  */
-function deterministicEffectId(manifestId: string, params: Record<string, unknown>): string {
+function deterministicSimulatedRef(manifestId: string, params: Record<string, unknown>): string {
   const canonical = Object.keys(params)
     .sort()
     .map(key => `${key}=${String(params[key])}`)
@@ -127,20 +127,22 @@ export interface ExecuteReferenceOptions {
  * Reference execute service. Deterministic; always `source: 'reference'`.
  *
  * - If the manifest requires approval and it has not been approved, returns an
- *   `approval_required` receipt with a null effectId (no effect is produced).
- * - Otherwise returns an `effect_complete` receipt with a deterministic
- *   `ref-…` effectId.
+ *   `approval_required` result with a null `simulatedEffectRef` (no effect is
+ *   produced).
+ * - Otherwise returns an `effect_complete` result with a deterministic
+ *   `ref-…` `simulatedEffectRef`.
  *
- * It never contacts a vendor or Runtime and never returns `source: 'runtime'`.
+ * It never contacts a vendor or Runtime and always returns
+ * `source: 'reference'` — it can NEVER produce a canonical `OperationReceipt`.
  */
 export function executeReference(
   manifest: OperationManifest,
   params: Record<string, unknown>,
   options: ExecuteReferenceOptions
-): Promise<OperationReceipt> {
+): Promise<ReferenceScenarioResult> {
   if (manifest.requiresApproval && !options.approved) {
     return Promise.resolve({
-      effectId: null,
+      simulatedEffectRef: null,
       status: 'approval_required',
       detail: 'Reference operation requires operator approval before it will run.',
       source: 'reference'
@@ -148,9 +150,9 @@ export function executeReference(
   }
 
   return Promise.resolve({
-    effectId: deterministicEffectId(manifest.id, params),
+    simulatedEffectRef: deterministicSimulatedRef(manifest.id, params),
     status: 'effect_complete',
-    detail: `Reference effect for "${manifest.title}" (deterministic; not a live Runtime effect).`,
+    detail: `Reference effect for "${manifest.title}" (deterministic simulation; not a live Runtime effect).`,
     source: 'reference'
   })
 }

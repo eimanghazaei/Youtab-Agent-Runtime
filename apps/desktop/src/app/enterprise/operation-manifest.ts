@@ -38,12 +38,6 @@ export interface OperationManifest {
   requiresApproval: boolean
 }
 
-/** Provenance of a manifest/receipt. `'reference'` today (deterministic reference
- *  provider); `'runtime'` once the real exact-SHA operation API lands (DR-RT-3a). */
-export interface OperationSource {
-  source: 'reference' | 'runtime'
-}
-
 /**
  * Lifecycle of one operation run. The consumer hook drives this machine:
  *
@@ -67,18 +61,52 @@ export type OperationPhase =
   | 'failed'
 
 /**
- * The result of an operation run.
+ * CANONICAL operation receipt — the AUTHORITATIVE Runtime effect record whose
+ * `effectId` is a real exact-SHA ledger identifier (DR-RT-3a).
  *
- * For a REAL run, `effectId` and `status` are authoritative values returned by
- * Runtime (the exact-SHA effect ledger). The reference service instead returns
- * clearly-marked reference receipts: `source: 'reference'`, a deterministic
- * `ref-…` effectId, and `detail` text that names the reference nature. A
- * reference receipt is NEVER emitted with `source: 'runtime'`.
+ * The security boundary is enforced STRUCTURALLY: a renderer-local
+ * reference/simulation result is a DISTINCT type (`ReferenceScenarioResult`,
+ * below) that carries NO `effectId` field at all — its simulated identifier is
+ * the differently-named `simulatedEffectRef`. A `ReferenceScenarioResult` is
+ * therefore NEVER assignable to `OperationReceipt` (and vice-versa), so a
+ * simulation can never be passed where a canonical receipt is required. Only a
+ * value with `source === 'runtime'` (see `isCanonicalRuntimeReceipt`) is treated
+ * as authoritative.
+ *
+ * NOTE: `source` retains the `'reference' | 'runtime'` union rather than the
+ * `'runtime'` literal so the frozen contract-conformance fixture
+ * (`src/contracts/contract-conformance.test.ts`, off-limits to edit) keeps
+ * compiling; the field-name separation above is what actually guarantees
+ * non-interchangeability.
  */
 export interface OperationReceipt {
-  /** Runtime effect id (real) or a deterministic `ref-…` id (reference). Null before an effect lands. */
+  /** Real Runtime effect id. Null before an effect lands. */
   effectId: string | null
   status: OperationPhase
   detail: string | null
-  source: OperationSource['source']
+  source: 'reference' | 'runtime'
+}
+
+/**
+ * NON-AUTHORITATIVE simulation result from the renderer-local DETERMINISTIC
+ * REFERENCE provider. It intentionally does NOT carry an `effectId`: its
+ * simulated identifier lives on the distinctly-named `simulatedEffectRef` field
+ * and its `source` is LOCKED to `'reference'`. This type is deliberately NOT
+ * assignable to `OperationReceipt`, so a simulated result can never be presented
+ * as a real Runtime effect.
+ */
+export interface ReferenceScenarioResult {
+  /** Deterministic `ref-…` simulation reference — NOT a Runtime effect id. Null when no effect is simulated. */
+  simulatedEffectRef: string | null
+  status: OperationPhase
+  detail: string | null
+  source: 'reference'
+}
+
+/**
+ * Type guard: narrows to the CANONICAL Runtime receipt. Any authority slot that
+ * must not accept a simulation result should gate on this.
+ */
+export function isCanonicalRuntimeReceipt(r: OperationReceipt | ReferenceScenarioResult): r is OperationReceipt {
+  return r.source === 'runtime'
 }
