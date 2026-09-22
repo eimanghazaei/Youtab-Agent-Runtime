@@ -1,7 +1,7 @@
 // Frontend contract-conformance tests.
 //
 // WHAT THESE PROVE: the published sibling contracts (fixtures/*.json) are
-// well-formed, are labelled PENDING_INTEGRATION, and the FRONTEND's own typed
+// well-formed, are labelled DRAFT_CONSUMER_EXPECTATION / UNBOUND, and the FRONTEND's own typed
 // consumers (@/app/enterprise/operation-manifest, @/app/governance/governance-model)
 // are shape-compatible with the 3a/3b contracts — union members and field names
 // match exactly, so drift on either side fails the build.
@@ -119,12 +119,12 @@ function expectSameSet(actual: readonly string[], expected: readonly string[]): 
   expect([...actual].sort()).toEqual([...expected].sort())
 }
 
-describe('contract fixtures are well-formed and PENDING_INTEGRATION', () => {
+describe('contract fixtures are DRAFT_CONSUMER_EXPECTATION / UNBOUND', () => {
   it('exposes exactly the six published contracts', () => {
     expectSameSet(Object.keys(CONTRACTS), EXPECTED_IDS)
   })
 
-  it.each(EXPECTED_IDS)('contract %s is well-formed and pending integration', id => {
+  it.each(EXPECTED_IDS)('contract %s is a well-formed, UNBOUND consumer expectation', id => {
     const entry = CONTRACTS[id]
 
     expect(entry).toBeDefined()
@@ -132,13 +132,23 @@ describe('contract fixtures are well-formed and PENDING_INTEGRATION', () => {
     expect(typeof entry.title).toBe('string')
     expect(entry.title.length).toBeGreaterThan(0)
     expect(entry.ownerSession === 'Gateway' || entry.ownerSession === 'Runtime').toBe(true)
-    expect(entry.status).toBe('PENDING_INTEGRATION')
+    // A Frontend consumer expectation, UNBOUND to any provider SHA — never a
+    // canonical contract, never verified, never signed.
+    expect(entry.classification).toBe('DRAFT_CONSUMER_EXPECTATION')
+    expect(entry.status).toBe('UNBOUND')
+    expect(entry.pendingSiblingSha).toBeNull()
+    expect(entry.signature).toBeNull()
+    expect(entry.expectedProviderRepo.length).toBeGreaterThan(0)
+    expect(entry.schemaVersion).toBe(1)
 
     const fixture = entry.fixture as Record<string, unknown>
 
-    expect(fixture.status).toBe('PENDING_INTEGRATION')
+    expect(fixture.status).toBe('UNBOUND')
+    expect(fixture.classification).toBe('DRAFT_CONSUMER_EXPECTATION')
+    expect(fixture.signature).toBeNull()
+    expect(fixture.verificationClaim).toBe('none')
     expect(typeof fixture.contractLabel).toBe('string')
-    expect(String(fixture.contractLabel)).toContain('CONTRACT')
+    expect(String(fixture.contractLabel)).toContain('DRAFT_CONSUMER_EXPECTATION')
   })
 
   it('binds the expected owner session to each contract', () => {
@@ -251,23 +261,27 @@ describe('DR-RT-3b governance fixture matches the frontend governance types exac
 })
 
 describe('conformance does NOT imply any backend is verified', () => {
-  it('every contract stays PENDING_INTEGRATION — no fixture is flagged verified', () => {
+  it('every contract stays UNBOUND — no fixture is flagged verified or bound', () => {
     for (const id of EXPECTED_IDS) {
-      expect(CONTRACTS[id].status).toBe('PENDING_INTEGRATION')
+      expect(CONTRACTS[id].status).toBe('UNBOUND')
+      expect(CONTRACTS[id].pendingSiblingSha).toBeNull()
+      expect(CONTRACTS[id].signature).toBeNull()
       const fixture = CONTRACTS[id].fixture as Record<string, unknown>
-      expect(fixture.status).toBe('PENDING_INTEGRATION')
-      // No fixture may carry any "verified" signal.
-      expect(JSON.stringify(fixture).toLowerCase()).not.toContain('"verified"')
+      expect(fixture.status).toBe('UNBOUND')
+      // No fixture may carry any "verified"/"bound"/"signature" authority signal.
+      const blob = JSON.stringify(fixture).toLowerCase()
+      expect(blob).not.toContain('"verified"')
+      expect(blob).not.toContain('"bound"')
     }
   })
 
-  it('the ContractStatus type has no VERIFIED member (only PENDING_INTEGRATION is representable)', () => {
-    // If a VERIFIED member were ever added to ContractStatus, this exhaustive
-    // record would need a new key and fail to type-check.
+  it('the ContractStatus type has no VERIFIED/BOUND member (only UNBOUND is representable)', () => {
+    // If a VERIFIED/BOUND member were ever added to ContractStatus, this
+    // exhaustive record would need a new key and fail to type-check.
     const statuses: Record<(typeof CONTRACTS)[string]['status'], true> = {
-      PENDING_INTEGRATION: true
+      UNBOUND: true
     }
 
-    expect(Object.keys(statuses)).toEqual(['PENDING_INTEGRATION'])
+    expect(Object.keys(statuses)).toEqual(['UNBOUND'])
   })
 })

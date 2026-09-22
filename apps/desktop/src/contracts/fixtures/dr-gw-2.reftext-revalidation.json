@@ -1,9 +1,15 @@
 {
   "id": "DR-GW-2",
   "title": "Gateway refText re-validation contract",
-  "status": "PENDING_INTEGRATION",
+  "classification": "DRAFT_CONSUMER_EXPECTATION",
+  "status": "UNBOUND",
   "ownerSession": "Gateway",
-  "contractLabel": "CONTRACT — pending exact-SHA integration. NOT live data.",
+  "expectedProviderRepo": "eimanghazaei/youtab-ai-os",
+  "schemaVersion": 1,
+  "pendingSiblingSha": null,
+  "signature": null,
+  "verificationClaim": "none",
+  "contractLabel": "DRAFT_CONSUMER_EXPECTATION — a Frontend consumer expectation, UNBOUND to any provider SHA. NOT a canonical contract, NOT live data, grants no authority.",
   "note": "This fixture is the machine-readable contract the sibling Gateway session must satisfy. Passing conformance here proves ONLY Frontend shape-compatibility; it does NOT mark the Gateway VERIFIED.",
   "contract": {
     "requirement": "At submit, the Gateway MUST re-resolve any server-issued refText / '@file:' reference against the AUTHENTICATED workspace. The client-supplied refText is a reference only, never authority.",

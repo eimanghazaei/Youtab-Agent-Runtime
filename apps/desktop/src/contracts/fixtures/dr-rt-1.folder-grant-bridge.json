@@ -1,9 +1,15 @@
 {
   "id": "DR-RT-1",
   "title": "Runtime folder-grant desktop bridge contract",
-  "status": "PENDING_INTEGRATION",
+  "classification": "DRAFT_CONSUMER_EXPECTATION",
+  "status": "UNBOUND",
   "ownerSession": "Runtime",
-  "contractLabel": "CONTRACT — pending exact-SHA integration. NOT live data.",
+  "expectedProviderRepo": "eimanghazaei/Youtab-Agent-Runtime",
+  "schemaVersion": 1,
+  "pendingSiblingSha": null,
+  "signature": null,
+  "verificationClaim": "none",
+  "contractLabel": "DRAFT_CONSUMER_EXPECTATION — a Frontend consumer expectation, UNBOUND to any provider SHA. NOT a canonical contract, NOT live data, grants no authority.",
   "note": "This fixture is the machine-readable contract the sibling Runtime session must satisfy. Passing conformance here proves ONLY Frontend shape-compatibility; it does NOT mark the Runtime VERIFIED.",
   "contract": {
     "bridge": "window.youtabDesktop.folderGrants",
@@ -17,9 +23,18 @@
           "status": "string"
         }
       },
-      "list": { "args": [], "returns": "grant[]" },
-      "revoke": { "args": ["grantId"], "returns": "void" },
-      "read": { "args": ["grantId", "relPath"], "returns": "bytes" },
+      "list": {
+        "args": [],
+        "returns": "grant[]"
+      },
+      "revoke": {
+        "args": ["grantId"],
+        "returns": "void"
+      },
+      "read": {
+        "args": ["grantId", "relPath"],
+        "returns": "bytes"
+      },
       "write": {
         "args": ["grantId", "relPath", "bytes", "{ requireApproval }"],
         "returns": "receipt"
