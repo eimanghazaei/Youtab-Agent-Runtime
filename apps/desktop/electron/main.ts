@@ -34,6 +34,7 @@ import nodePty from 'node-pty'
 import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
+import { readImagePngFromClipboardViaRenderer, writeImagePngToClipboardViaRenderer } from './clipboard-image'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeYoutabHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForYoutabReady } from './backend-health'
@@ -4818,14 +4819,16 @@ async function copyImageFromUrl(rawUrl) {
     throw new Error('Could not read image')
   }
 
-  // The synchronous clipboard image API is not present on every Electron build
-  // (electron@44's clipboard is async-only). Feature-detect so this degrades to
-  // a clear error instead of a "writeImage is not a function" crash.
-  if (typeof clipboard.writeImage !== 'function') {
-    throw new Error('Copying images to the clipboard is not supported by this Electron build')
+  // Prefer the sync clipboard image API when a build provides it; electron@44
+  // does not, so fall back to the SUPPORTED async path driven through the app's
+  // own secure-context renderer. Only error out when neither is available.
+  if (typeof clipboard.writeImage === 'function') {
+    clipboard.writeImage(image)
+  } else if (mainWindow && !mainWindow.isDestroyed()) {
+    await writeImagePngToClipboardViaRenderer(mainWindow.webContents, image.toPNG())
+  } else {
+    throw new Error('Copying images to the clipboard is not supported (no renderer available)')
   }
-
-  clipboard.writeImage(image)
 }
 
 async function saveImageFromUrl(rawUrl) {
@@ -10464,10 +10467,21 @@ ipcMain.handle('youtab:saveImageBuffer', async (_event, payload) => {
 })
 
 ipcMain.handle('youtab:saveClipboardImage', async () => {
-  // Feature-detect the sync image API (absent on electron@44's async-only
-  // clipboard); when unavailable, fall through to the WSL / other fallbacks
-  // below instead of crashing on `readImage is not a function`.
-  const image = typeof clipboard.readImage === 'function' ? clipboard.readImage() : null
+  // Prefer the sync image API when present (electron@44 lacks it); otherwise
+  // read via the SUPPORTED async path through the app's secure-context renderer.
+  let image = typeof clipboard.readImage === 'function' ? clipboard.readImage() : null
+
+  if ((!image || image.isEmpty()) && mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      const png = await readImagePngFromClipboardViaRenderer(mainWindow.webContents)
+
+      if (png) {
+        image = nativeImage.createFromBuffer(png)
+      }
+    } catch (error) {
+      rememberLog(`Clipboard image read via renderer failed: ${(error as Error).message}`)
+    }
+  }
 
   if (image && !image.isEmpty()) {
     return writeComposerImage(image.toPNG(), '.png')
