@@ -22,11 +22,13 @@ Time-based complement to :func:`effect_ledger.recover_interrupted`. Pure-stdlib.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Mapping, Optional
 
+from youtab_runtime import effect_evidence as _evidence
 from youtab_runtime import effect_ledger as _ledger
+from youtab_runtime.effect_evidence import ReconciliationEvidence
 from youtab_runtime.run_journal import Principal, default_db_path
 from youtab_runtime.run_states import EffectState
 
@@ -34,7 +36,7 @@ __all__ = [
     "LeaseError",
     "WorkspaceMismatchError",
     "ReconciliationError",
-    "EffectEvidence",
+    "ReconciliationEvidence",
     "lease_detail",
     "assert_lease_holder",
     "assert_workspace",
@@ -228,45 +230,61 @@ def sweep_expired_leases(
 # --------------------------------------------------------------------------- #
 # Evidence-bound reconciliation                                               #
 # --------------------------------------------------------------------------- #
-@dataclass(frozen=True)
-class EffectEvidence:
-    """Reconciliation evidence from the connector/provider/reference boundary."""
-
-    effect_id: str            # provider/effect idempotency identity
-    operation_digest: str     # must equal the effect's stored target scope digest
-    workspace_id: str
-    outcome: str              # "succeeded" | "failed"
-    result_digest: str        # digest of the provider/reference result
-    provenance: str           # who produced this evidence (connector/reference id)
-    verified_at: float        # epoch seconds the outcome was verified
+def _coerce_now(now) -> datetime:
+    """Accept a tz-aware datetime (preferred) or an epoch-seconds float for
+    backward compatibility, and normalise to a tz-aware UTC datetime."""
+    if isinstance(now, datetime):
+        return now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    return datetime.fromtimestamp(float(now), UTC)
 
 
 def reconcile_to_terminal(
-    effect_id: str, principal: Principal, evidence: EffectEvidence,
-    *, workspace_id: str, now: float, max_age_seconds: float = 3600.0,
+    effect_id: str, principal: Principal, evidence: ReconciliationEvidence,
+    *, workspace_id: str, now, max_age_seconds: float = 3600.0,
+    live_provider_keys: Optional[Mapping[str, str]] = None,
+    recompute_reference: Optional[Callable[[ReconciliationEvidence], str]] = None,
     db_path: Optional[Path] = None,
 ) -> str:
     """Resolve an ambiguous effect (``unknown`` / ``reconciliation_required``) to a
-    terminal state using verifiable ``evidence``. Refuses (leaving the effect
-    non-terminal) if the evidence is forged (wrong effect id/workspace), mismatched
-    (wrong operation digest), or stale (verified too long ago / in the future).
-    ``succeeded`` -> committed; ``failed`` -> failed."""
+    terminal state using NON-FORGEABLE ``evidence``.
+
+    Field equality alone is never sufficient: the evidence is routed through
+    :func:`effect_evidence.verify_evidence`, which requires a verifying Ed25519
+    signature from a trusted LIVE provider, or an independent recomputation for a
+    REFERENCE provider, and binds the evidence to *this* effect's id, bound
+    workspace and stored target-scope digest. Any evidence that is forged
+    (matching fields but no valid signature), signed by the wrong/unknown signer,
+    stale, digest-mismatched, or replayed for a different effect leaves the effect
+    NON-terminal and raises :class:`ReconciliationError`.
+
+    ``succeeded`` -> committed; ``failed`` -> failed. The bound workspace and the
+    ambiguous-state guard are enforced exactly as before.
+    """
     assert_workspace(effect_id, principal, workspace_id, db_path=db_path)
     rec = _ledger.get_effect(effect_id, principal, db_path=db_path)
     if rec is None:
         raise LeaseError("effect not found or not owned")
     if rec.state not in (EffectState.UNKNOWN, EffectState.RECONCILIATION_REQUIRED):
         raise ReconciliationError("effect is not in an ambiguous state")
-    if evidence.effect_id != effect_id or evidence.workspace_id != workspace_id:
-        raise ReconciliationError("evidence identity does not match the effect")
-    if evidence.operation_digest != rec.target_scope_digest:
-        raise ReconciliationError("evidence operation digest does not match the effect")
-    if evidence.verified_at > now or (now - evidence.verified_at) > float(max_age_seconds):
-        raise ReconciliationError("evidence is stale or from the future")
-    if evidence.outcome not in ("succeeded", "failed"):
-        raise ReconciliationError("evidence outcome is not conclusive")
-    ev = {"reconciled": True, "result_digest": evidence.result_digest,
-          "provenance": evidence.provenance}
-    if evidence.outcome == "succeeded":
+
+    try:
+        outcome = _evidence.verify_evidence(
+            evidence,
+            expected_effect_id=effect_id,
+            expected_workspace_id=workspace_id,
+            expected_operation_digest=rec.target_scope_digest,
+            now=_coerce_now(now),
+            max_age_seconds=max_age_seconds,
+            live_provider_keys=live_provider_keys,
+            recompute_reference=recompute_reference,
+        )
+    except _evidence.EvidenceVerificationError as exc:
+        # Verification failed for a specific, fail-closed reason: the effect is
+        # left in its ambiguous state; the caller learns why via the message.
+        raise ReconciliationError(str(exc)) from exc
+
+    ev = {"reconciled": True, "result_digest": outcome.result_digest,
+          "provenance": outcome.kind, "provider": outcome.provider}
+    if outcome.terminal_state == "succeeded":
         return _ledger.mark_committed(effect_id, principal, detail=ev, db_path=db_path).state.value
     return _ledger.mark_failed(effect_id, principal, detail=ev, db_path=db_path).state.value

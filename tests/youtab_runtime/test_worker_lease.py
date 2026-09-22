@@ -23,12 +23,15 @@ if _ROOT not in sys.path:
 from youtab_runtime import effect_ledger as ledger  # noqa: E402
 from youtab_runtime.approval import compute_effect_digest, content_digest  # noqa: E402
 from youtab_runtime.effect_authorization import TestEffectAuthority  # noqa: E402
+from youtab_runtime.effect_evidence import (  # noqa: E402
+    ReconciliationEvidence,
+    ReferenceEvidenceSigner,
+)
 from youtab_runtime.folder_grant import FolderGrant, resolve_within_grant  # noqa: E402
 from youtab_runtime.grant_fs import claim_granted_fs_effect, settle_committed, settle_unknown  # noqa: E402
 from youtab_runtime.run_journal import Principal  # noqa: E402
 from youtab_runtime.run_states import EffectState  # noqa: E402
 from youtab_runtime.worker_lease import (  # noqa: E402
-    EffectEvidence,
     LeaseError,
     ReconciliationError,
     WorkspaceMismatchError,
@@ -38,6 +41,12 @@ from youtab_runtime.worker_lease import (  # noqa: E402
     renew_lease,
     sweep_expired_leases,
 )
+
+# A deterministic 64-hex sha256-shaped result digest used across evidence cases.
+RESULT_DIGEST = "a" * 64
+# Reference provenance is recomputation-backed: this recompute reproduces the
+# evidence's own digest, which is the trusted independent check.
+_RECOMPUTE_OK = lambda ev: ev.result_digest  # noqa: E731
 
 RUN, TENANT, USER, WS, NOW = "run-1", "t-A", "u-A", "ws-1", 1_000_000.0
 CMD = "cmd-00000001"
@@ -192,41 +201,78 @@ def _digest_of(effect_id, p, db):
     return ledger.get_effect(effect_id, p, db_path=db).target_scope_digest
 
 
-def _evidence(effect_id, p, db, *, outcome="succeeded", verified_at=NOW + 5, ws=WS,
-              op_digest=None):
-    return EffectEvidence(
+def _ref_evidence(effect_id, p, db, *, outcome="succeeded", observed_at=NOW + 5, ws=WS,
+                  op_digest=None, result_digest=RESULT_DIGEST):
+    """A REFERENCE-provenance evidence (recomputation-backed, unsigned)."""
+    return ReconciliationEvidence(
+        provider="reference-provider", capability="fs", capability_version="v1",
         effect_id=effect_id,
         operation_digest=op_digest if op_digest is not None else _digest_of(effect_id, p, db),
-        workspace_id=ws, outcome=outcome, result_digest="r" * 8,
-        provenance="reference-provider", verified_at=verified_at,
+        workspace_id=ws, provider_txn_id=None, observed_terminal_state=outcome,
+        observed_at=_dt(observed_at), result_digest=result_digest, provenance="reference",
+        signature=None,
     )
 
 
-def test_reconcile_with_valid_evidence_commits(tmp_root, db):
+def test_reconcile_with_valid_reference_evidence_commits(tmp_root, db):
     p = _p()
     eff = _claim(_grant(tmp_root), "f.txt", db=db)
     settle_unknown(eff, p, workspace_id=WS, db_path=db)  # crash before proof
-    ev = _evidence(eff.effect_id, p, db, outcome="succeeded")
-    assert reconcile_to_terminal(eff.effect_id, p, ev, workspace_id=WS, now=NOW + 10, db_path=db) == "committed"
+    ev = _ref_evidence(eff.effect_id, p, db, outcome="succeeded")
+    assert reconcile_to_terminal(
+        eff.effect_id, p, ev, workspace_id=WS, now=NOW + 10,
+        recompute_reference=_RECOMPUTE_OK, db_path=db) == "committed"
+
+
+def test_reconcile_with_valid_signed_live_evidence_commits(tmp_root, db):
+    p = _p()
+    eff = _claim(_grant(tmp_root), "f.txt", db=db)
+    settle_unknown(eff, p, workspace_id=WS, db_path=db)
+    signer = ReferenceEvidenceSigner(provider="billing")
+    ev = signer.mint(
+        capability="fs", capability_version="v1", effect_id=eff.effect_id,
+        workspace_id=WS, operation_digest=_digest_of(eff.effect_id, p, db),
+        provider_txn_id="txn-123", observed_terminal_state="succeeded",
+        observed_at=_dt(NOW + 5), result_digest=RESULT_DIGEST,
+    )
+    assert reconcile_to_terminal(
+        eff.effect_id, p, ev, workspace_id=WS, now=NOW + 10,
+        live_provider_keys=signer.keyring(), db_path=db) == "committed"
 
 
 def test_reconcile_failed_outcome_is_terminal_failed(tmp_root, db):
     p = _p()
     eff = _claim(_grant(tmp_root), "f.txt", db=db)
     settle_unknown(eff, p, workspace_id=WS, db_path=db)
-    ev = _evidence(eff.effect_id, p, db, outcome="failed")
-    assert reconcile_to_terminal(eff.effect_id, p, ev, workspace_id=WS, now=NOW + 10, db_path=db) == "failed"
+    ev = _ref_evidence(eff.effect_id, p, db, outcome="failed")
+    assert reconcile_to_terminal(
+        eff.effect_id, p, ev, workspace_id=WS, now=NOW + 10,
+        recompute_reference=_RECOMPUTE_OK, db_path=db) == "failed"
 
 
-def test_reconcile_forged_evidence_rejected(tmp_root, db):
+def test_reconcile_forged_matching_fields_rejected(tmp_root, db):
+    # A reference evidence with correct-looking fields but NO recompute check
+    # supplied must NOT be trusted (field equality alone is forgeable).
     p = _p()
     eff = _claim(_grant(tmp_root), "f.txt", db=db)
     settle_unknown(eff, p, workspace_id=WS, db_path=db)
-    bad = EffectEvidence(effect_id="deadbeef" * 4, operation_digest=_digest_of(eff.effect_id, p, db),
-                         workspace_id=WS, outcome="succeeded", result_digest="r" * 8,
-                         provenance="x", verified_at=NOW + 5)
+    ev = _ref_evidence(eff.effect_id, p, db, outcome="succeeded")
     _expect(ReconciliationError,
-            lambda: reconcile_to_terminal(eff.effect_id, p, bad, workspace_id=WS, now=NOW + 10, db_path=db))
+            lambda: reconcile_to_terminal(eff.effect_id, p, ev, workspace_id=WS,
+                                          now=NOW + 10, db_path=db))
+    assert ledger.get_effect(eff.effect_id, p, db_path=db).state == EffectState.UNKNOWN
+
+
+def test_reconcile_evidence_for_another_effect_rejected(tmp_root, db):
+    p = _p()
+    eff = _claim(_grant(tmp_root), "f.txt", db=db)
+    settle_unknown(eff, p, workspace_id=WS, db_path=db)
+    ev = _ref_evidence("deadbeef" * 4, p, db, outcome="succeeded",
+                       op_digest=_digest_of(eff.effect_id, p, db))
+    _expect(ReconciliationError,
+            lambda: reconcile_to_terminal(eff.effect_id, p, ev, workspace_id=WS,
+                                          now=NOW + 10, recompute_reference=_RECOMPUTE_OK,
+                                          db_path=db))
     assert ledger.get_effect(eff.effect_id, p, db_path=db).state == EffectState.UNKNOWN
 
 
@@ -234,29 +280,33 @@ def test_reconcile_mismatched_operation_digest_rejected(tmp_root, db):
     p = _p()
     eff = _claim(_grant(tmp_root), "f.txt", db=db)
     settle_unknown(eff, p, workspace_id=WS, db_path=db)
-    ev = _evidence(eff.effect_id, p, db, op_digest="0" * 64)
+    ev = _ref_evidence(eff.effect_id, p, db, op_digest="0" * 64)
     _expect(ReconciliationError,
-            lambda: reconcile_to_terminal(eff.effect_id, p, ev, workspace_id=WS, now=NOW + 10, db_path=db))
+            lambda: reconcile_to_terminal(eff.effect_id, p, ev, workspace_id=WS,
+                                          now=NOW + 10, recompute_reference=_RECOMPUTE_OK,
+                                          db_path=db))
 
 
 def test_reconcile_stale_evidence_rejected(tmp_root, db):
     p = _p()
     eff = _claim(_grant(tmp_root), "f.txt", db=db)
     settle_unknown(eff, p, workspace_id=WS, db_path=db)
-    ev = _evidence(eff.effect_id, p, db, verified_at=NOW - 10_000)  # long ago
+    ev = _ref_evidence(eff.effect_id, p, db, observed_at=NOW - 10_000)  # long ago
     _expect(ReconciliationError,
             lambda: reconcile_to_terminal(eff.effect_id, p, ev, workspace_id=WS,
-                                          now=NOW + 10, max_age_seconds=3600, db_path=db))
+                                          now=NOW + 10, max_age_seconds=3600,
+                                          recompute_reference=_RECOMPUTE_OK, db_path=db))
 
 
 def test_reconcile_wrong_workspace_rejected(tmp_root, db):
     p = _p()
     eff = _claim(_grant(tmp_root), "f.txt", db=db)
     settle_unknown(eff, p, workspace_id=WS, db_path=db)
-    ev = _evidence(eff.effect_id, p, db, ws="ws-OTHER")
+    ev = _ref_evidence(eff.effect_id, p, db, ws="ws-OTHER")
     _expect(WorkspaceMismatchError,
             lambda: reconcile_to_terminal(eff.effect_id, p, ev, workspace_id="ws-OTHER",
-                                          now=NOW + 10, db_path=db))
+                                          now=NOW + 10, recompute_reference=_RECOMPUTE_OK,
+                                          db_path=db))
 
 
 def _run_standalone() -> int:
