@@ -180,3 +180,31 @@ All SHAs full 40-char. Lane-1 HEAD at analysis time = `f5895a799a1f42c0c9f768cba
 4. `search_files` — **not grant-routed** (read at the authority gate).
 5. **No integrated Lane1+Lane2+Lane3 exact-SHA suite** exists.
 6. Lockfile-frozen (`uv sync --frozen`) supported-Python run pending an env with `uv`.
+
+---
+
+## 11. v1.2 corrections (authoritative closure)
+
+### 11.1 Authoritative lockfile-derived qualification
+- `uv==0.8.17` installed; `uv sync --frozen --extra dev` (from committed `uv.lock`, sha256 `0bad12260bbd349f7e640bc8c9911ec52049f135491d0c7a3c747327e4b10d27`) into a Python **3.12.10** `.venv` (project `youtab-agent-runtime==0.20.0`). Dev-pinned tools: **pytest 9.0.3**, **ruff 0.15.10**, **ty 0.0.21** (the project's configured type checker — not mypy).
+- `python -m pytest <22 Lane-1 files>` → **collected & passed** (exit 0). `ruff check` clean · `py_compile` (3.12) OK · `ty check <runtime modules>` clean · `git diff --check` clean. This supersedes the §10.1 pip-venv run as the authoritative environment. Exact final count in §11.6.
+
+### 11.2 Corrected Lane-3 SHA
+- The Lane-3 SHA in §10.4 (`d877b373c48103d24fea94be4d32cf2390c544b0`) was a **stale earlier packaging-round HEAD**. The **real frozen Lane-3** delivery is `474eac31f8c83c9939d1d2d6f5450260dcf43dec` (subject: bounded Electron E2E teardown; a later commit). Neither is an ancestor of the other; their common base is `8ac1c5e72cf31f0190ce5e7d5676cca7239637d7`.
+- Re-analysis against the correct SHA: `git merge-base(Lane1, 474eac31f…)` = `c92069a5a…` (shared PX base); **Lane1 ∩ Lane3 overlap = 0 files; `git merge-tree` conflicts = 0** — disjoint, conflict-free.
+
+### 11.3 Disconnected-main history — root cause + resolution
+- Root cause: the local clone was **shallow** (`git rev-parse --is-shallow-repository` = true), so the commits connecting Lane-1 to `origin/main` were absent → the earlier "no common ancestor" was a **shallow-clone artifact, not a genuine history split**. No grafts, no replace-refs.
+- Resolution: `git fetch --unshallow` (bounded) → repo full (`is-shallow` = false). Then `git merge-base(Lane1, origin/main c7650a1b9…)` = `13f79aa6caae907af16c6ce87012021671319952`. **Lane1 ∩ main overlap = 0 files; merge-tree conflicts = 0** (main moved only 3 files since the base — website logo image uploads).
+- Migration note: the frozen PX base `c92069a5a…` is **not** an ancestor of `origin/main`; Lane-1's base line has not been integrated to main. Lane-1 is textually conflict-free with main, but the Master Integrator must bring the PX baseline forward (a separate track) rather than merge Lane-1 directly onto main. No `--allow-unrelated-histories`, rebase, merge or rewrite was performed.
+
+### 11.4 Lane-1 ↔ Lane-2 semantic compatibility (beyond file overlap)
+Full matrix: `docs/evidence/RUNTIME_LANE1_LANE2_COMPAT_MATRIX_v1.0.md`. Lane-2's `enterprise/*` connector consumes the shared contracts Lane-1 changed. **9 of 10 surfaces COMPATIBLE** (additive `operation` widening, unchanged approval/ledger/lease signatures, new-alongside-old workspace lookups). **1 surface ADAPTER_REQUIRED/BLOCKING:** Lane-2 reconciliation uses the **removed** `worker_lease.EffectEvidence` + the old `reconcile_to_terminal`; Lane-1's non-forgeable-evidence correction requires `effect_evidence.ReconciliationEvidence`. Master must adapt the Lane-2 callsite (bounded, Lane-2-only, no Lane-1 relaxation). This is the concrete integration gate a zero-conflict check misses.
+
+### 11.5 UNKNOWN semantics at the mutation boundary (A vs B)
+- **A — deterministic failure BEFORE mutation** (e.g. unsigned write, destination outside grant, not-applicable patch): zero mutation, zero receipt, **zero effect-ledger row** — never an ambiguous UNKNOWN.
+- **B — mutation SUCCEEDS then failure before settlement**: the router now downgrades a settlement failure to `settle_unknown` (never reports committed without a recorded receipt). Proven for **write** (`test_write_mutation_then_settle_crash_is_unknown`) and **delete** (`test_delete_mutation_then_settle_crash_is_unknown`): the bytes/absence prove the mutation occurred, the effect is `unknown`, a retry with the same single-use authorization does not repeat, reconciliation remains required.
+
+### 11.6 `search_files` security decision + final counts
+- `search_files` **was exposed** in managed mode (registered `side_effect_class="read"` → admitted ungoverned by the authority gate) — a filename/content disclosure path. It is now **fail-closed in managed mode** at the router (`test_managed_search_files_fails_closed`), inert in standalone (`test_standalone_search_files_passthrough`). Recorded as explicitly unsupported until grant/workspace-scoped.
+- Final authoritative counts (uv-frozen 3.12): see §11.1 command; exact `collected`/`passed` recorded in the handoff.
