@@ -19,9 +19,10 @@ const HEX64 = /^[0-9a-f]{64}$/
 // root digest of the frozen `youtab-backend` (youtab_agent_cli.main `serve`)
 // bundle shipped via extraResources. Recomputed at launch and compared; a
 // mismatch is refused fail-closed. Rebuild + re-pin when the bundle changes.
-//   build: python 3.12.10, uv 0.12.17, pyinstaller 6.22.3 (win32/x64)
+//   build: python 3.11.9, uv 0.8.17, pyinstaller 6.22.3 (win32/x64);
+//   entry youtab_agent_cli.main via sidecar_main.py (loopback-only enforced).
 export const TRUSTED_SIDECAR_ROOT_DIGEST: string | null =
-  'de2ad3962fae390b15a12160e03be5ece50c2ec66538827d044b6a4da05eea10'
+  'eac6b6ef4f6613c3adf84bf8b53559845e8827bccea0489847c1624693ca3973'
 
 /**
  * Resolve the effective trust anchor: an operator/CI env override (must be a

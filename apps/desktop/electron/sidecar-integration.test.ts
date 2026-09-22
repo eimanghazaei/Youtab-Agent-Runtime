@@ -142,6 +142,87 @@ function treeKill(pid: number): void {
   }
 }
 
+// The actual listening TCP socket addresses owned by a pid (real socket state,
+// not an HTTP probe). win32 uses Get-NetTCPConnection; elsewhere best-effort.
+function listenAddrsFor(pid: number): string[] {
+  if (process.platform !== 'win32') {
+    return []
+  }
+
+  try {
+    const out = execFileSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        `Get-NetTCPConnection -OwningProcess ${pid} -State Listen -ErrorAction SilentlyContinue | ForEach-Object { $_.LocalAddress }`
+      ],
+      { encoding: 'utf8' }
+    )
+
+    return out
+      .split(/\r?\n/)
+      .map(s => s.trim())
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+function isLoopbackAddr(addr: string): boolean {
+  const a = addr.replace(/^\[|\]$/g, '').toLowerCase()
+
+  return a === '127.0.0.1' || a.startsWith('127.') || a === '::1'
+}
+
+interface RefusalResult {
+  pid: number
+  exitCode: number | null
+  readyAnnounced: boolean
+  listeners: string[]
+}
+
+// Spawn the frozen backend on a host expected to be REFUSED: it must exit
+// (non-zero) without ever announcing readiness, and no listener may exist.
+function startBackendRefused(host: string, timeoutMs = 20_000): Promise<RefusalResult> {
+  const home = mkTmp('sc-int-refuse-')
+
+  const proc = spawn(EXE, ['serve', '--host', host, '--port', '0'], {
+    env: { ...process.env, YOUTAB_AGENT_HOME: home, YOUTAB_AGENT_DESKTOP: '1' },
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  running.push(proc)
+  let readyAnnounced = false
+  let out = ''
+
+  return new Promise<RefusalResult>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`host ${host} neither exited nor announced in ${timeoutMs}ms`)),
+      timeoutMs
+    )
+
+    const onData = (c: Buffer) => {
+      out += c.toString()
+
+      if (READY_RE.test(out)) {
+        readyAnnounced = true
+      }
+    }
+
+    proc.stdout!.on('data', onData)
+    proc.stderr!.on('data', onData)
+    proc.once('exit', code => {
+      clearTimeout(timer)
+      resolve({ pid: proc.pid!, exitCode: code, readyAnnounced, listeners: listenAddrsFor(proc.pid!) })
+    })
+    proc.once('error', err => {
+      clearTimeout(timer)
+      reject(err)
+    })
+  })
+}
+
 let bundleCopy: string | null = null
 
 beforeAll(() => {
@@ -394,4 +475,33 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
 
     assert.notEqual(res.status, 200, `0.0.0.0 bind served a protected endpoint (not fail-closed): ${res.status}`)
   }, 40_000)
+
+  // 17 — loopback hosts are ACCEPTED, and the real listening socket is
+  // loopback-only (validated via Get-NetTCPConnection, not just an HTTP probe).
+  test('17: loopback hosts (127.0.0.1, ::1) are accepted and the real socket is loopback-only', async () => {
+    for (const host of ['127.0.0.1', '::1']) {
+      const b = await startBackend({}, 30_000, host)
+      const addrs = listenAddrsFor(b.proc.pid!)
+      assert.ok(addrs.length > 0, `no listening socket found for host ${host}`)
+
+      for (const a of addrs) {
+        assert.ok(isLoopbackAddr(a), `host ${host} opened a NON-loopback listener: ${a} (all: ${addrs.join(',')})`)
+      }
+
+      treeKill(b.proc.pid!)
+    }
+  }, 120_000)
+
+  // 18 — non-loopback hosts are REFUSED before readiness: the process exits with
+  // the config code, never announces a port, opens NO listener, and leaves no
+  // orphan. This is the socket-level loopback-only guarantee.
+  test('18: 0.0.0.0, :: and a LAN address are refused before readiness (no listener, no orphan)', async () => {
+    for (const host of ['0.0.0.0', '::', '10.255.255.254']) {
+      const r = await startBackendRefused(host)
+      assert.equal(r.readyAnnounced, false, `host ${host} announced readiness (must be refused before bind)`)
+      assert.equal(r.exitCode, 78, `host ${host} exit code was ${r.exitCode}, expected 78 (EX_CONFIG refusal)`)
+      assert.equal(r.listeners.length, 0, `host ${host} created a listener: ${r.listeners.join(',')}`)
+      assert.ok(!alive(r.pid), `host ${host} left an orphan process`)
+    }
+  }, 90_000)
 })
