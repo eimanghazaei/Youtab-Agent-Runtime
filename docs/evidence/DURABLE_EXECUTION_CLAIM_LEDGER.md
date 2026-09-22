@@ -101,3 +101,52 @@ Legend — **Result**: CONFIRMED (reproduced-in-source) · PARTIAL · DISPROVED 
 - Several named components **do not exist** in this fork (A2A adapter; `<<ccr:...>>`; `SESSION_HANDOFF.md`).
 - The **genuine, reproduce-worthy** defects on THIS fork: kanban progress-stall (liveness≠progress) [C-2.2b], effect-then-die without idempotency [C-2.2d], configured-timeout loses partial [C-2.1c], sync-delegation non-durable [C-2.1d], hook multiplex inert security hooks [C-3.4], Windows MCP orphan reaping [C-3.2b], `/v1/runs` in-memory + no reconnect-from-sequence [Web/Electron], app-close kills backend on Win/Linux [Web/Electron], denial not advertised pre-exec [C-2.3].
 - Structural items [IC-1, IC-2, IC-3] are governance/compliance layers — integrate with existing controls; do not rebuild.
+
+---
+
+## Revision 2 — Owner corrections (additive; supersedes Section 1 verdict cells where noted)
+
+**Verdict labels:** `PHASE 0/1 AUDIT COMPLETE_NOT_REVIEWED` · `PHASE 2 REPRODUCTION IN PROGRESS` · `DURABLE EXECUTION PRODUCT NO-GO`.
+No defect is called "fixed" until a failing deterministic reproduction turns green on the exact candidate SHA.
+
+### R2.1 Mechanical claim-ID enumeration and reconciliation
+Prior checkpoint said "27" and category totals summed to 25 — both were wrong (a regex undercount: lowercase suffixes `a/b/c/d` and `VER/LIC` rows were missed). Full manual enumeration of **28 report-derived claim IDs** + **2 audit-derived IDs** (`C-WEB-1`, `C-WEB-2`) = **30 total**:
+
+`C-VER-1, C-LIC-1, C-LIC-2, C-2.1a, C-2.1b, C-2.1c, C-2.1d, C-2.2a, C-2.2b, C-2.2c, C-2.2d, C-2.3, C-2.4, C-2.5, C-3.1, C-3.2a, C-3.2b, C-3.2c, C-3.3, C-3.4, C-4.1, C-4.2, C-5.1, C-6.1, C-6.3, IC-1, IC-2, IC-3` (28) + `C-WEB-1, C-WEB-2` (2).
+
+### R2.2 Required classification (8 categories) — exact counts
+
+| Category | Count | Claim IDs |
+|---|---|---|
+| REPRODUCED_CONFIRMED | 0 | (none — dynamic reproductions pending Phase 2) |
+| PRESENT_NOT_YET_REPRODUCED | 11 | C-2.1c, C-2.1d, C-2.2b, C-2.2d, C-2.3, C-3.2b, C-3.2c, C-3.4, C-WEB-1, C-WEB-2, IC-1 |
+| ALREADY_FIXED_ON_BASE | 6 | C-2.1b, C-2.2c, C-3.1, C-3.2a, C-3.3, C-LIC-1 |
+| REPORT_CLAIM_DISPROVED | 4 | C-VER-1, C-2.1a, C-2.2a, C-2.4 |
+| UPSTREAM_ONLY | 0 | (none cleanly isolated on this base) |
+| NOT_APPLICABLE_TO_RUNTIME_REPO | 4 | C-4.1, C-4.2, C-6.1, C-6.3 |
+| INCONCLUSIVE_ENV_UNAVAILABLE | 1 | C-LIC-2 (packaged-artifact portion) |
+| DEFERRED_TO_NAMED_OWNER | 4 | C-2.5 (Enterprise Memory), C-5.1 (Owner/P2 skills), IC-2 (Lane 1/2 governance), IC-3 (Owner compliance) |
+| **TOTAL** | **30** | |
+
+### R2.3 Scope corrections
+- **C-4.1 / C-4.2 (A2A):** reclassified `NOT_APPLICABLE_TO_RUNTIME_REPO — Gateway/AI-OS requires separate audit`. Proven only that the report's A2A implementation is **absent from this Runtime repository** (`acp_adapter/` = ACP editor protocol). NOT a claim about the whole Youtab platform.
+- **C-LIC-2 (CN Desktop / PolyForm):** reclassified `INCONCLUSIVE_ENV_UNAVAILABLE`. Established on the selected base: **0 tracked source/license references** (`polyform|wanderminds|qingdao|noncommercial`); desktop `extraResources` bundles only `install-stamp.json` + `icon.ico`; no SBOM in tree; **no built installer/app.asar exists in the worktree to inspect.** Still to inspect before a final verdict: Electron dependency tree, `apps/desktop/package-lock.json` (not present on base), built `app.asar` inventory, `extraResources`/`extraFiles` of a real build, SBOM, installed artifact. Scope = component provenance + license inventory only, not a broad legal review.
+- **Version — three DISTINCT identities (do not collapse):**
+  1. remote-default Runtime **source base** = `0.19.1` (`pyproject.toml:5`, origin/main `c7650a1b`);
+  2. Desktop **package** version = `0.17.0` (`apps/desktop/package.json`);
+  3. a recently produced **local packaged sidecar** reportedly exposed `0.20.0` — belongs to a different **unintegrated delivery line**, NOT evidence about origin/main.
+
+### R2.4 Async delegation wording correction
+`tools/async_delegation.py` provides **DURABLE IDENTITY / RECOVERABLE STATUS** only, NOT full durable execution. Proven: durable delegation id/spec/state row (`:200-226`), abandonment detection (`:293`), undelivered-completion restoration (`:344`). NOT yet proven (requires executable restart/resume tests): continuation from last execution step; child restart from a checkpoint; effect-safe resume; model/context continuation; exactly-once final-result delivery across all crash windows. C-2.1d stays `PRESENT_NOT_YET_REPRODUCED`.
+
+### R2.5 Ownership boundaries (no duplicate ledgers)
+Lane frozen SHAs (all reachable read-only in this repo): Lane 1 `4edbbe78e46337018cd4aa92bee3437a13f4b413`, Lane 2 `1ed19f0914cce6d074aae6cf378d81f05bc6d283`, Lane 3 `474eac31f8c83c9939d1d2d6f5450260dcf43dec`. Lane 1/2 own the canonical **effect ledger, approvals, worker lease, UNKNOWN/reconciliation, receipts, enterprise governed execution**. **Durable Execution (this stream) owns:** durable task/run identity, task event sequence, execution checkpoints, restart/resume, parent/child lifecycle, progress watchdog, cancellation, reconnect + late-result delivery. Where canonical Lane APIs are absent on the selected base, emit a **typed interface request** (Master Integrator combines later); do NOT create a second effect ledger / approval system / reconciliation state machine on origin/main.
+
+### R2.6 Authoritative test environment (established)
+- CI-supported pin (from `.github/workflows/youtab-ci.yml:95`): `python -m pip install 'uv==0.8.17'`; Python `3.12` via `actions/setup-python@v7.0.0` (`:33,:189`).
+- This stream: bootstrapped `uv 0.8.17` (via pip in an isolated scratch venv), then `uv sync --frozen --extra dev` with `UV_PYTHON=python3.12`, creating `.venv` **inside the worktree** (Python 3.12.10, `youtab-agent-runtime==0.19.1` editable, 250 locked pkgs; heavy deps limited to numpy/scipy/scikit-learn/onnxruntime — no torch/CUDA). Root worktree venv NOT mutated; no PYTHONPATH borrowing for authoritative runs; `UV_CACHE_DIR` on C: to spare F:.
+- Disk: before 13 GB free (85 GB used) → after 13 GB free (86 GB used); delta ≈ 1 GB.
+- Validation: `tests/tools/test_async_delegation.py` → **19 passed** (incl. the real-subprocess test that failed under the diagnostic borrow-harness), confirming subprocesses inherit the environment. This env is qualification-grade.
+
+### R2.7 Progress-vs-heartbeat (design note, pre-implementation)
+Do not add a heartbeat field yet. First determine whether existing `task_events` (monotonic AUTOINCREMENT id) + a checkpoint digest can serve as the monotonic progress marker. Final design must SEPARATE: worker liveness heartbeat · lease renewal · progress sequence · checkpoint digest · current step · no-progress duration. A live heartbeat without progress must produce a visible STALLED/BLOCKED recovery state — never an immediate destructive kill.
