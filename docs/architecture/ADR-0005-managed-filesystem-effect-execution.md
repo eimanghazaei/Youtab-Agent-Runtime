@@ -63,6 +63,15 @@ The terminal / arbitrary-shell tool carries an effectful `side_effect_class`; `d
 
 The authorized-execution path is **fail-closed until an approved Simorgh SHA issues signed `EffectAuthorization`s** cross-repo. The Runtime publishes the exact typed `EffectAuthorization` contract for Simorgh to implement; until then, and whenever no valid signed authorization is present, the managed WRITE/PATCH/DELETE/MOVE path denies (identical to today's behaviour), so shipping the wiring changes no production behaviour. A Runtime signer is **never** inserted as a substitute. Rollback = the path stays denied.
 
+### 7. Disposition of the remaining direct-Python writer tools
+
+A callsite inventory found that, besides the arbitrary external-fs / shell / code tools closed in (1)+(5) (`write_file`, `patch`, `terminal`, `execute_code`, `process` — now effect-classified and fail-closed in managed mode), several tools mutate the filesystem via direct Python (`Path.write_text`/`mkdir`/`shutil`) while registered `side_effect_class="none"`: `todo`, `kanban`, `skill`, `project`, `cron`, plus `image`/`checkpoint`. These split into two classes:
+
+- **Agent control-plane state** (`todo`, `kanban`, `skill`, `project`, `cron`): the run's own orchestration/state, analogous to memory. Classifying them as an *external* `write` is semantically wrong and would break a managed run's own self-management. Like `memory_write`, they warrant their **own scoped-authority class governed by a grant scope** — a follow-up decision, not an external-effect block. They are recorded here as a deliberate scoping boundary, **not** left silently unclassified.
+- **External artifacts** (`image` file output, `checkpoint` disk writes): candidates for the external-effect path; deferred pending confirmation of whether each targets a managed artifact store vs. an arbitrary path.
+
+This ADR's scope is the arbitrary-external-fs / shell / code bypass (closed). The control-plane class is a named follow-up, so no managed writer is both unclassified and unbounded.
+
 ## Consequences
 
 - **Positive:** the fs primitives gain a real, single, non-bypassable execution seam; managed READ becomes grant-scoped; at-most-once + workspace-bound receipts + evidence-bound reconciliation become the contract for fs effects; the shell/terminal bypass is closed fail-closed; nothing is weakened and no runtime authority is minted.
