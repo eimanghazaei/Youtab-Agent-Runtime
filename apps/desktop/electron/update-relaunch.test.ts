@@ -38,7 +38,7 @@ import {
 } from './update-relaunch'
 
 const ROOT = '/home/u/.youtab-agent-runtime/youtab-agent-runtime'
-const UNPACKED = path.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked')
+const UNPACKED = path.posix.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked')
 
 // ---------------------------------------------------------------------------
 // 1) The execPath split — the heart of the GUI/backend skew guard.
@@ -50,7 +50,7 @@ test('unpackedDirName maps platform to the electron-builder dir', () => {
 })
 
 test('resolveUnpackedRelease returns the dir for a binary UNDER release/<plat>-unpacked', () => {
-  const exec = path.join(UNPACKED, 'youtab')
+  const exec = path.posix.join(UNPACKED, 'youtab')
   assert.equal(resolveUnpackedRelease(exec, ROOT, 'linux'), UNPACKED)
   // The unpacked dir itself also counts.
   assert.equal(resolveUnpackedRelease(UNPACKED, ROOT, 'linux'), UNPACKED)
@@ -73,12 +73,12 @@ test('resolveUnpackedRelease is null for AppImage / .deb / .rpm / dev / unresolv
   )
   // empty / missing
   assert.equal(resolveUnpackedRelease('', ROOT, 'linux'), null)
-  assert.equal(resolveUnpackedRelease(path.join(UNPACKED, 'youtab'), '', 'linux'), null)
+  assert.equal(resolveUnpackedRelease(path.posix.join(UNPACKED, 'youtab'), '', 'linux'), null)
 })
 
 test('resolveUnpackedRelease is not fooled by a sibling prefix dir', () => {
   // `.../release/linux-unpacked-evil` must NOT match `.../release/linux-unpacked`.
-  const sneaky = path.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked-evil', 'youtab')
+  const sneaky = path.posix.join(ROOT, 'apps', 'desktop', 'release', 'linux-unpacked-evil', 'youtab')
   assert.equal(resolveUnpackedRelease(sneaky, ROOT, 'linux'), null)
 })
 
