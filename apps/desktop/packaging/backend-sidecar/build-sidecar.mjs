@@ -11,8 +11,10 @@
 //
 import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
+
+import { manifestEntriesFromBundle, rootDigestFromEntries } from './root-digest.mjs'
 
 const PYINSTALLER_VERSION = '6.22.3' // pinned — do not float
 const REPO_ROOT = resolve(process.cwd())
@@ -28,11 +30,6 @@ function sh(bin, args, env) {
   return execFileSync(bin, args, { cwd: REPO_ROOT, stdio: 'pipe', encoding: 'utf8', maxBuffer: 1 << 28, env: { ...process.env, ...env } })
 }
 const sha256 = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
-const sha256str = (s) => createHash('sha256').update(s).digest('hex')
-function walk(d, acc = []) {
-  for (const n of readdirSync(d)) { const p = join(d, n); statSync(p).isDirectory() ? walk(p, acc) : acc.push(p) }
-  return acc
-}
 const trim = (s) => String(s).trim()
 
 mkdirSync(OUT_DIR, { recursive: true })
@@ -69,12 +66,11 @@ const bundleRoot = join(DIST, NAME)
 const exe = join(bundleRoot, process.platform === 'win32' ? `${NAME}.exe` : NAME)
 if (!existsSync(exe)) { console.error('[sidecar] no executable produced — fail closed'); process.exit(3) }
 
-// 3) per-file manifest + deterministic root digest
-const files = walk(bundleRoot).sort()
-let total = 0
-const manifestFiles = files.map((p) => { const bytes = statSync(p).size; total += bytes; return { path: relative(bundleRoot, p).split('\\').join('/'), bytes, sha256: sha256(p) } })
-// root digest = sha256 over the sorted "sha256␠path\n" lines — binds the whole tree
-const rootDigest = sha256str(manifestFiles.map((f) => `${f.sha256} ${f.path}`).join('\n') + '\n')
+// 3) per-file manifest + deterministic root digest (canonical algorithm shared
+//    with the offline verifier and the Electron trusted-binding check).
+const manifestFiles = manifestEntriesFromBundle(bundleRoot)
+const total = manifestFiles.reduce((n, f) => n + f.bytes, 0)
+const rootDigest = rootDigestFromEntries(manifestFiles)
 const manifest = {
   schema: 'youtab.backend_sidecar_manifest/v1', name: NAME, entry: 'tui_gateway.entry',
   build: { python: pyVersion, uv: uvVersion, pyinstaller: piVersion, lockfile: 'uv.lock', frozen: true },

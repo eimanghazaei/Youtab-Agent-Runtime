@@ -46,6 +46,29 @@ if (dist && fs.existsSync(distBinary(dist))) {
       "via @electron/get (electronVersion + ELECTRON_MIRROR)."
   )
 }
+
+// Self-contained backend sidecar (Lane 3): ship the frozen onedir bundle via
+// extraResources → <resourcesPath>/backend-sidecar so the packaged app can run
+// the backend without a system Python/uv. The bundle is a heavy PyInstaller
+// output built out of band (`node packaging/backend-sidecar/build-sidecar.mjs`)
+// and git-ignored, so we APPEND the extraResources entry only when it is
+// actually present — a normal `npm run dist` without the sidecar built stays
+// unaffected. Appending at index 2 preserves the two static entries in
+// package.json (install-stamp.json, icon.ico) instead of replacing the array.
+const sidecarBundle = path.resolve("build/backend-sidecar/dist/youtab-backend")
+if (fs.existsSync(sidecarBundle)) {
+  console.log(`[run-electron-builder] shipping backend sidecar from ${sidecarBundle}`)
+  args.push(
+    "-c.extraResources.2.from=build/backend-sidecar/dist/youtab-backend",
+    "-c.extraResources.2.to=backend-sidecar"
+  )
+} else {
+  console.warn(
+    "[run-electron-builder] no backend sidecar bundle at build/backend-sidecar/dist/youtab-backend; " +
+      "packaging without it (run packaging/backend-sidecar/build-sidecar.mjs to include it)."
+  )
+}
+
 args.push(...process.argv.slice(2))
 
 const result = spawnSync(process.execPath, [electronBuilderCli(), ...args], {
