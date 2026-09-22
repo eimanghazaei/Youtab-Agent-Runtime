@@ -81,6 +81,14 @@ class EffectAuthorization(BaseModel):
     capability: str = Field(min_length=1, max_length=128)
     operation: Literal["read", "write", "create"]
     effect_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Correlation back to the EffectProposal this authorization answers (item 5).
+    # Optional so a direct grant-bound authorization (no proposal round-trip) still
+    # validates; when the authorization transport is used, both are present and the
+    # signature covers them, so an authorization cannot be lifted onto a different
+    # proposal / a changed request. ``request_digest`` is the proposal's
+    # ``arguments_digest``.
+    proposal_id: Optional[str] = Field(default=None, max_length=128)
+    request_digest: Optional[str] = Field(default=None, max_length=64)
     issued_at: datetime
     expires_at: datetime
     key_id: str = Field(min_length=3, max_length=128)
@@ -184,12 +192,15 @@ class TestEffectAuthority:
         effect_digest: str,
         issued_at: datetime,
         expires_at: datetime,
+        proposal_id: Optional[str] = None,
+        request_digest: Optional[str] = None,
     ) -> EffectAuthorization:
         unsigned = EffectAuthorization(
             issuer=self.issuer, authorization_id=authorization_id,
             tenant_id=tenant_id, user_id=user_id, workspace_id=workspace_id,
             command_id=command_id, capability=capability, operation=operation,
             effect_digest=effect_digest, issued_at=issued_at, expires_at=expires_at,
+            proposal_id=proposal_id, request_digest=request_digest,
             key_id=self.key_id, signature="0" * 64,
         )
         sig = self._sk.sign(unsigned.canonical_payload())
