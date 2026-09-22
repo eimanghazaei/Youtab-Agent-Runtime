@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://youtab.io/contracts/gateway_manifest.schema.json",
+  "title": "Gateway Ed25519-signed enterprise capability manifest (envelope v2)",
+  "description": "Machine-readable contract for the signed capability manifest verified by youtab_runtime.enterprise.manifest_crypto.CryptoManifestVerifier. Field-for-field mirror of the envelope produced by Ed25519ManifestSigner.sign.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "algorithm",
+    "schema_version",
+    "issuer",
+    "key_id",
+    "issued_at",
+    "expires_at",
+    "tenant_scope",
+    "workspace_scope",
+    "manifest_digest",
+    "signature",
+    "capabilities"
+  ],
+  "properties": {
+    "algorithm": {
+      "description": "Signature algorithm. Any value other than ed25519 is algorithm confusion and MUST be rejected.",
+      "type": "string",
+      "enum": ["ed25519"]
+    },
+    "schema_version": {
+      "type": "string",
+      "enum": ["youtab.enterprise.manifest/v1"]
+    },
+    "issuer": {
+      "description": "Gateway issuer identity. Trust and revocation are decided server-side, never from the wire.",
+      "type": "string",
+      "minLength": 1
+    },
+    "key_id": {
+      "description": "Rotating signing key id resolved against the Runtime public-key registry.",
+      "type": "string",
+      "minLength": 1
+    },
+    "issued_at": {
+      "description": "Unix seconds the manifest became valid.",
+      "type": "integer"
+    },
+    "expires_at": {
+      "description": "Unix seconds the manifest stops being valid; MUST be after issued_at.",
+      "type": "integer"
+    },
+    "tenant_scope": {
+      "description": "Authenticated tenant the manifest is pinned to.",
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_scope": {
+      "description": "Authenticated workspace the manifest is pinned to.",
+      "type": "string",
+      "minLength": 1
+    },
+    "manifest_digest": {
+      "description": "sha256 (64 lowercase hex) over the sorted per-capability entry digests.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "signature": {
+      "description": "Ed25519 envelope signature, hex or base64.",
+      "type": "string",
+      "minLength": 1
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/capability" }
+    }
+  },
+  "$defs": {
+    "typed_schema": {
+      "description": "A typed field map; each value is one of the allowed token types.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["str", "int", "float", "bool", "dict", "list"]
+      }
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_id",
+        "capability_version",
+        "operation_id",
+        "request_schema",
+        "response_schema",
+        "request_schema_digest",
+        "response_schema_digest",
+        "tenant_scope",
+        "workspace_scope",
+        "risk_class",
+        "approval_required",
+        "idempotency",
+        "receipt_supported",
+        "reconciliation_supported",
+        "provenance",
+        "provider",
+        "signature"
+      ],
+      "properties": {
+        "capability_id": { "type": "string", "minLength": 1 },
+        "capability_version": { "type": "string", "minLength": 1 },
+        "operation_id": { "type": "string", "minLength": 1 },
+        "request_schema": { "$ref": "#/$defs/typed_schema" },
+        "response_schema": { "$ref": "#/$defs/typed_schema" },
+        "request_schema_digest": { "$ref": "#/$defs/sha256_hex" },
+        "response_schema_digest": { "$ref": "#/$defs/sha256_hex" },
+        "tenant_scope": { "type": "string", "minLength": 1 },
+        "workspace_scope": { "type": "string", "minLength": 1 },
+        "risk_class": {
+          "type": "string",
+          "enum": ["read", "low", "medium", "high"]
+        },
+        "approval_required": { "type": "boolean" },
+        "idempotency": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["supported", "semantics"],
+          "properties": {
+            "supported": { "type": "boolean" },
+            "semantics": {
+              "type": "string",
+              "enum": ["none", "at_least_once", "exactly_once"]
+            }
+          }
+        },
+        "receipt_supported": { "type": "boolean" },
+        "reconciliation_supported": { "type": "boolean" },
+        "provenance": {
+          "type": "string",
+          "enum": ["LIVE", "REFERENCE"]
+        },
+        "provider": { "type": "string", "minLength": 1 },
+        "signature": {
+          "description": "Per-capability Ed25519 signature, hex or base64.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
