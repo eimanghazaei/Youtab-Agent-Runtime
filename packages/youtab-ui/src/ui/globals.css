@@ -459,3 +459,121 @@
     @apply text-background;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   NEUMORPHISM (soft-UI) LAYER — VISUAL ONLY. LENS_0 "Youtab Teal".
+   Raised surfaces look extruded from the dark teal canvas; fields look inset.
+   Palette, layout, spacing and functionality are unchanged — this only adds
+   soft dual-source depth (light top-left, shadow bottom-right), rounds corners
+   a touch more, and trades hard 1px borders for soft shadow edges. Applied on
+   the shared shadcn `data-slot` contracts so every card/button/field/menu
+   inherits it automatically.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* The canvas the depth is sculpted from (near --background). */
+  --neu-bg: var(--background-base, #041c1c);
+  /* Light source (top-left) and cast shadow (bottom-right), tuned for dark teal. */
+  --neu-light: rgba(255, 255, 255, 0.03);
+  --neu-dark: rgba(0, 0, 0, 0.34);
+  /* Depth presets (softened — subtler, lighter shadows). */
+  --neu-raised: 4px 4px 11px var(--neu-dark), -4px -4px 11px var(--neu-light);
+  --neu-raised-sm: 2px 2px 6px var(--neu-dark), -2px -2px 6px var(--neu-light);
+  --neu-raised-lg: 6px 6px 16px var(--neu-dark), -6px -6px 16px var(--neu-light);
+  --neu-inset: inset 3px 3px 7px var(--neu-dark), inset -3px -3px 7px var(--neu-light);
+  --neu-inset-sm: inset 1px 1px 4px var(--neu-dark), inset -1px -1px 4px var(--neu-light);
+  /* Softer radii for the extruded look. */
+  --neu-radius: 0.9rem;
+  --neu-radius-control: 0.7rem;
+  /* A11y focus ring (Ice-Blue) layered on top of the depth. */
+  --neu-focus-ring: 0 0 0 2px color-mix(in srgb, var(--youtab-ice-blue) 85%, transparent);
+}
+
+/* DAY (light) mode: classic light neumorphism on white — a soft grey cast
+   shadow (bottom-right) + a white highlight (top-left). The dark-teal values
+   above stay under `.dark`. Offsets/radii are inherited unchanged. */
+:root:not(.dark) {
+  --neu-dark: rgba(0, 0, 0, 0.12);
+  --neu-light: rgba(255, 255, 255, 0.9);
+}
+
+/* ── RAISED surfaces: cards, panels, popovers, menus, dialogs, tooltips ─────── */
+[data-slot='card'],
+.card,
+[data-slot='popover-content'],
+[data-slot='hover-card-content'],
+[data-slot='dropdown-menu-content'],
+[data-slot='menubar-content'],
+[data-slot='context-menu-content'],
+[data-slot='select-content'],
+[data-slot='command'],
+[data-slot='dialog-content'],
+[data-slot='alert-dialog-content'],
+[data-slot='sheet-content'],
+[data-slot='tooltip-content'] {
+  background-color: var(--neu-bg);
+  border-color: transparent;
+  box-shadow: var(--neu-raised);
+  border-radius: var(--neu-radius);
+}
+
+/* ── RAISED interactive: buttons, badges, pills, tabs, toggles ──────────────── */
+[data-slot='button'],
+[data-slot='badge'],
+[data-slot='toggle'],
+[data-slot='tabs-trigger'] {
+  border-color: transparent;
+  box-shadow: var(--neu-raised-sm);
+  border-radius: var(--neu-radius-control);
+  transition: box-shadow 160ms ease-out;
+}
+
+[data-slot='button']:hover:not(:disabled),
+[data-slot='toggle']:hover:not(:disabled) {
+  box-shadow: var(--neu-raised);
+}
+
+/* Pressed / selected / open → recessed. */
+[data-slot='button']:active:not(:disabled),
+[data-slot='button'][data-state='open'],
+[data-slot='button'][aria-pressed='true'],
+[data-slot='toggle'][data-state='on'],
+[data-slot='tabs-trigger'][data-state='active'] {
+  box-shadow: var(--neu-inset);
+}
+
+/* ── INSET surfaces: text fields, textareas, selects, search, toggle tracks ─── */
+[data-slot='input'],
+[data-slot='textarea'],
+[data-slot='select-trigger'],
+textarea,
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']) {
+  background-color: var(--neu-bg);
+  border-color: transparent;
+  box-shadow: var(--neu-inset);
+  border-radius: var(--neu-radius-control);
+}
+
+/* Switch: recessed track, raised thumb. */
+[data-slot='switch'] {
+  border-color: transparent;
+  box-shadow: var(--neu-inset-sm);
+}
+[data-slot='switch-thumb'] {
+  box-shadow: var(--neu-raised-sm);
+}
+
+/* ── Focus: keep an always-visible accent ring for a11y (never removed). ────── */
+[data-slot='input']:focus-visible,
+[data-slot='textarea']:focus-visible,
+[data-slot='select-trigger']:focus-visible,
+textarea:focus-visible,
+input:focus-visible {
+  outline: none;
+  box-shadow: var(--neu-inset), var(--neu-focus-ring);
+}
+[data-slot='button']:focus-visible,
+[data-slot='toggle']:focus-visible,
+[data-slot='tabs-trigger']:focus-visible {
+  outline: none;
+  box-shadow: var(--neu-raised-sm), var(--neu-focus-ring);
+}
