@@ -18,7 +18,7 @@ Nothing pushed.
 | | SHA |
 |---|---|
 | Repository | `github.com/eimanghazaei/Youtab-Agent-Runtime` (PRIVATE) |
-| Branch | `delivery/runtime-folder-grant` (worktree `C:\Users\eiman\worktrees\rt-lane1-delivery`) |
+| Branch | `delivery/runtime-folder-grant` (worktree `C:\Users\<user>\worktrees\rt-lane1-delivery`) |
 | Base (frozen PX product SHA) | `c92069a5a3a9b83d80e0e0074fe05f0561d3b19c` |
 | Code-final SHA | `dd21b04f9d9f02a3a835178a7c0ba38030adb7be` |
 | Final SHA (this report commit) | *the commit that adds this file — the branch HEAD after it lands* |
@@ -119,7 +119,7 @@ Note: full-repo mypy chases imports into pre-existing unrelated files (e.g. a sy
 ### 10.1 Supported-Python (3.12) qualification
 
 Environment facts (mechanically recorded):
-- `py -3 --version` → **Python 3.14.5**, executable `C:\Users\eiman\AppData\Local\Python\pythoncore-3.14-64\python.exe` — **outside** `requires-python = ">=3.11,<3.14"`, so the 3.14 run in §7 is **diagnostic only**.
+- `py -3 --version` → **Python 3.14.5**, executable `C:\Users\<user>\AppData\Local\Python\pythoncore-3.14-64\python.exe` — **outside** `requires-python = ">=3.11,<3.14"`, so the 3.14 run in §7 is **diagnostic only**.
 - `uv` → **not available** in this environment (`command not found`), so the exact `uv sync --frozen` env **cannot be created here**.
 - `uv.lock` present, sha256 `0bad12260bbd349f7e640bc8c9911ec52049f135491d0c7a3c747327e4b10d27`.
 - **`py -3.12` → Python 3.12.10** (within `requires-python`).
