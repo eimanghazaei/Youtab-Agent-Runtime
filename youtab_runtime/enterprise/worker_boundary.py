@@ -75,12 +75,16 @@ class WorkerBoundary:
         python_argv: Optional[Sequence[str]] = None,
         repo_root: Optional[str] = None,
         env_overrides: Optional[Mapping[str, str]] = None,
+        max_request_bytes: int = 1_000_000,
+        max_response_bytes: int = 4_000_000,
     ) -> None:
         self._argv = list(
             python_argv or [sys.executable, "-m", "youtab_runtime.enterprise.worker"]
         )
         self._repo_root = repo_root or os.getcwd()
         self._env_overrides = dict(env_overrides or {})
+        self._max_request_bytes = int(max_request_bytes)
+        self._max_response_bytes = int(max_response_bytes)
 
     def _child_env(self) -> dict:
         env = {}
@@ -96,7 +100,14 @@ class WorkerBoundary:
 
     def run(self, request: Mapping[str, Any], *, deadline_seconds: float) -> WorkerResult:
         payload = json.dumps(request)
+        # Bounded request size: refuse an oversized request before spawning.
+        if len(payload.encode("utf-8")) > self._max_request_bytes:
+            raise WorkerBoundaryError("worker request exceeds size bound")
         try:
+            # shell=False (argv is a list), scrubbed env, controlled cwd. The
+            # worker spawns no grandchildren, so killing the direct child on
+            # timeout terminates the whole work tree. A future streaming/long-run
+            # worker would need process-group kill + lease heartbeat (documented).
             proc = subprocess.run(
                 self._argv,
                 input=payload,
@@ -105,6 +116,7 @@ class WorkerBoundary:
                 timeout=deadline_seconds,
                 env=self._child_env(),
                 cwd=self._repo_root,
+                shell=False,
             )
         except subprocess.TimeoutExpired as exc:
             raise WorkerTimeout(
@@ -117,6 +129,9 @@ class WorkerBoundary:
         out = (proc.stdout or "").strip()
         if not out:
             raise WorkerCrash("worker produced no output")
+        # Bounded response size.
+        if len(out.encode("utf-8")) > self._max_response_bytes:
+            raise WorkerMalformed("worker response exceeds size bound")
         try:
             envelope = json.loads(out)
         except json.JSONDecodeError as exc:

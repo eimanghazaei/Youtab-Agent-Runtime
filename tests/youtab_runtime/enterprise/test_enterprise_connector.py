@@ -534,3 +534,29 @@ if __name__ == "__main__":  # pragma: no cover - standalone smoke run
                 traceback.print_exc()
     print(f"\nenterprise_connector standalone: {passed} passed, {failed} failed")
     raise SystemExit(1 if failed else 0)
+
+
+def test_worker_request_size_bounded(db_path, principal):
+    from youtab_runtime.enterprise.worker_boundary import (
+        WorkerBoundary,
+        WorkerBoundaryError,
+    )
+    b = WorkerBoundary(repo_root=REPO_ROOT, max_request_bytes=10)
+    with pytest.raises(WorkerBoundaryError):
+        b.run({"operation_id": "crm.contact.read", "workspace": "w",
+               "business_key": "k", "payload": {}, "request_digest": "d",
+               "provenance": "REFERENCE"}, deadline_seconds=10.0)
+
+
+def test_worker_response_size_bounded(db_path):
+    import sys as _sys
+    from youtab_runtime.enterprise.worker_boundary import (
+        WorkerBoundary,
+        WorkerMalformed,
+    )
+    big = ("import sys,json; sys.stdin.read();"
+           "print(json.dumps({'ok':True,'result':{'x':'a'*100000}}))")
+    b = WorkerBoundary(python_argv=[_sys.executable, "-c", big],
+                       repo_root=REPO_ROOT, max_response_bytes=100)
+    with pytest.raises(WorkerMalformed):
+        b.run({"operation_id": "x"}, deadline_seconds=10.0)
