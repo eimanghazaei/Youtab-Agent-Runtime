@@ -1960,6 +1960,62 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         )
 
 
+def _detach_timed_out_child(*, child, child_future, child_task_id, task_index,
+                            api_calls, duration, child_timeout) -> Dict[str, Any]:
+    """Parent wait budget elapsed on a PROGRESSING child: detach instead of kill.
+
+    The child keeps running (not interrupted); its eventual result is captured
+    durably in the canonical RunStore keyed by the child task id so the parent (or
+    a later reconnect) can retrieve it. Returns a typed non-terminal result —
+    RUNNING + task_id + recovery action — never a bare summary=None.
+    """
+    recovery = "durable capture unavailable; child continues in-process"
+    try:
+        from youtab_runtime.durable_run_store import (
+            RunIdentity, RunState, create_run_store,
+        )
+
+        store = create_run_store("sqlite")
+        if store.get_run(child_task_id) is None:
+            store.create_run(RunIdentity(
+                task_id=child_task_id, run_id=child_task_id, tenant_id="local",
+                organization_id="local", workspace_id="local", principal_id="local",
+                agent_id=str(getattr(child, "model", None) or "agent"), operation="delegate",
+            ))
+        store.set_state(child_task_id, RunState.RUNNING, strict=False, kind="delegate.detached")
+
+        def _persist_terminal(fut) -> None:
+            try:
+                r = fut.result()
+                summ = r.get("final_response") if isinstance(r, dict) else None
+                store.set_state(child_task_id, RunState.SUCCEEDED, strict=False,
+                                result_ref=(str(summ) if summ else None),
+                                kind="delegate.completed")
+            except BaseException as exc:  # noqa: BLE001
+                store.set_state(child_task_id, RunState.FAILED, strict=False,
+                                error_ref=f"error://{type(exc).__name__}",
+                                kind="delegate.failed")
+
+        child_future.add_done_callback(_persist_terminal)
+        recovery = f"reconnect via RunStore.get_run({child_task_id!r}) / wait_for_terminal"
+    except Exception:
+        logger.debug("durable detach capture failed for %s", child_task_id, exc_info=True)
+    return {
+        "task_index": task_index,
+        "status": "running",
+        "task_id": child_task_id,
+        "detached": True,
+        "summary": None,
+        "note": "parent wait budget elapsed; child continues under its lease and was NOT killed",
+        "recovery_action": recovery,
+        "api_calls": api_calls,
+        "duration_seconds": duration,
+        "wait_budget_seconds": child_timeout,
+        "exit_reason": "wait_budget_detached",
+        "_child_role": getattr(child, "_delegate_role", None),
+    }
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -2191,7 +2247,26 @@ def _run_single_child(
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
-            # Signal the child to stop so its thread can exit cleanly.
+            is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
+            duration = round(time.monotonic() - child_start, 2)
+            # Decide BEFORE interrupting: the configured child_timeout is a PARENT
+            # WAIT budget, not a task kill. A progressing child (>=1 API call) that
+            # merely outlives the parent's wait is DETACHED — it keeps running
+            # under its own lease and its eventual result is captured durably for
+            # reconnect. Only a stuck 0-API-call child (never reached its first LLM
+            # call) or a real error is stopped and diagnosed below.
+            _api_calls_early = 0
+            try:
+                _api_calls_early = int(child.get_activity_summary().get("api_call_count", 0) or 0)
+            except Exception:
+                pass
+            if is_timeout and _api_calls_early > 0:
+                return _detach_timed_out_child(
+                    child=child, child_future=_child_future, child_task_id=child_task_id,
+                    task_index=task_index, api_calls=_api_calls_early, duration=duration,
+                    child_timeout=child_timeout,
+                )
+            # Not detaching (stuck/errored): signal the child to stop cleanly.
             try:
                 if hasattr(child, "interrupt"):
                     child.interrupt()
@@ -2200,8 +2275,6 @@ def _run_single_child(
             except Exception:
                 pass
 
-            is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
-            duration = round(time.monotonic() - child_start, 2)
             logger.warning(
                 "Subagent %d %s after %.1fs",
                 task_index,
