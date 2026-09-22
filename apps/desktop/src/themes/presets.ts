@@ -11,20 +11,28 @@ import type { DesktopTheme, DesktopThemeTypography } from './types'
 // Covers macOS, Windows, Linux, plus the `emoji` generic for anything else.
 export const EMOJI_FALLBACK = '"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji'
 
+// Match the Youtab Web Platform's default font stacks verbatim
+// (web/src/index.css `--theme-font-sans` / `--theme-font-mono`), with the
+// emoji fallback appended so glyphs still render. The web dashboard renders
+// body/wordmark text in this system stack (not a bundled display face), so
+// mirroring it here gives the desktop the same typography.
 const SYSTEM_SANS =
-  '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
-  EMOJI_FALLBACK
+  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif, ' + EMOJI_FALLBACK
 
-const SYSTEM_MONO = 'Menlo, Monaco, "SF Mono", "Courier Prime", monospace, ' + EMOJI_FALLBACK
+const SYSTEM_MONO = 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace, ' + EMOJI_FALLBACK
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
-const YOUTAB_BLUE = '#0053FD'
-const PSYCHE_BLUE = '#1540B1'
+const YOUTAB_EMERALD = '#34D399' // day-mode accent (matches the web emerald seed)
 const PSYCHE_WARM = '#FFE6CB'
 
-const youtabTint = (pct: number) => `color-mix(in srgb, ${YOUTAB_BLUE} ${pct}%, #FFFFFF)`
-const youtabTintTransparent = (pct: number) => `color-mix(in srgb, ${YOUTAB_BLUE} ${pct}%, transparent)`
+// Youtab Web Platform "Youtab Teal" (LENS_0) default palette — the visual
+// source of truth. See web/src/index.css + web/src/themes/presets.ts.
+const WEB_TEAL_BG = '#041C1C' // deep teal canvas (web --background-base)
+const WEB_CREAM = PSYCHE_WARM // #FFE6CB — web --midground-base (primary text/chrome)
+const WEB_CREAM_15 = 'color-mix(in srgb, #FFE6CB 15%, transparent)' // web --color-border / --color-input
+const WEB_CREAM_18 = 'color-mix(in srgb, #FFE6CB 18%, transparent)'
+const WEB_DESTRUCTIVE = '#FB2C36' // web --color-destructive
 
 /**
  * Youtab — canonical Youtab desktop identity. The palette keeps the current
@@ -35,64 +43,72 @@ export const youtabTheme: DesktopTheme = {
   name: 'youtab',
   label: 'Youtab',
   description: 'Glass neutrals with Youtab blue accents',
+  // LIGHT variant — clean WHITE canvas + near-BLACK text (Day mode). The emerald
+  // Youtab accent keeps chrome alive; borders are a soft neutral grey. This is
+  // the deliberate white/black day theme paired with the Sun/Moon quick toggle.
   colors: {
-    background: '#F8FAFF',
-    foreground: '#17171A',
+    background: '#FFFFFF',
+    foreground: '#0A0A0A',
     card: '#FFFFFF',
-    cardForeground: '#17171A',
-    muted: youtabTint(5),
-    mutedForeground: '#666678',
+    cardForeground: '#0A0A0A',
+    muted: '#F0F0EE',
+    mutedForeground: '#5A5A57',
     popover: '#FFFFFF',
-    popoverForeground: '#17171A',
-    primary: YOUTAB_BLUE,
-    primaryForeground: '#FCFCFC',
-    secondary: youtabTint(7),
-    secondaryForeground: '#242432',
-    accent: youtabTint(10),
-    accentForeground: '#202030',
-    border: youtabTintTransparent(22),
-    input: youtabTintTransparent(30),
-    ring: YOUTAB_BLUE,
-    midground: YOUTAB_BLUE,
-    composerRing: YOUTAB_BLUE,
+    popoverForeground: '#0A0A0A',
+    primary: YOUTAB_EMERALD,
+    primaryForeground: '#04231A',
+    secondary: '#F0F0EE',
+    secondaryForeground: '#1A1A18',
+    accent: YOUTAB_EMERALD,
+    accentForeground: '#04231A',
+    border: '#E2E2DE',
+    input: '#E2E2DE',
+    ring: YOUTAB_EMERALD,
+    midground: '#0A0A0A',
+    composerRing: YOUTAB_EMERALD,
     destructive: '#C72E4D',
     destructiveForeground: '#FFFFFF',
-    sidebarBackground: '#F3F7FF',
-    sidebarBorder: youtabTintTransparent(18),
-    userBubble: youtabTint(6),
-    userBubbleBorder: youtabTintTransparent(24)
+    sidebarBackground: '#F7F7F6',
+    sidebarBorder: '#E2E2DE',
+    userBubble: '#F0F0EE',
+    userBubbleBorder: '#E2E2DE'
   },
+  // DARK variant (desktop default) — the web "Youtab Teal" (LENS_0) palette:
+  // deep teal canvas, cream primary/text, cream-alpha borders. Every derived
+  // --ui-*/--dt-*/--color-* token in styles.css recomputes from these seeds,
+  // so the whole app inherits the web look.
   darkColors: {
-    background: '#0D2F86',
-    foreground: PSYCHE_WARM,
-    card: '#12378F',
-    cardForeground: PSYCHE_WARM,
-    muted: '#183F9A',
-    mutedForeground: '#B5C7F3',
-    popover: '#123A96',
-    popoverForeground: PSYCHE_WARM,
-    primary: PSYCHE_WARM,
-    primaryForeground: '#0D2F86',
-    secondary: '#1B45A4',
-    secondaryForeground: '#E0E8FF',
-    accent: PSYCHE_BLUE,
-    accentForeground: '#F0F4FF',
-    border: '#3158AD',
-    input: '#0B2566',
-    ring: PSYCHE_WARM,
-    midground: YOUTAB_BLUE,
-    composerRing: PSYCHE_WARM,
-    destructive: '#C0473A',
-    destructiveForeground: '#FEF2F2',
-    sidebarBackground: '#09286F',
-    sidebarBorder: '#234A9C',
-    userBubble: '#143B91',
-    userBubbleBorder: '#3A63BD'
+    background: WEB_TEAL_BG,
+    foreground: WEB_CREAM,
+    card: '#0C2222',
+    cardForeground: WEB_CREAM,
+    muted: '#152A2A',
+    mutedForeground: '#C9BBA6',
+    popover: '#0C2222',
+    popoverForeground: WEB_CREAM,
+    primary: WEB_CREAM,
+    primaryForeground: WEB_TEAL_BG,
+    secondary: '#102626',
+    secondaryForeground: WEB_CREAM,
+    accent: '#182B2B',
+    accentForeground: WEB_CREAM,
+    border: WEB_CREAM_15,
+    input: WEB_CREAM_15,
+    ring: WEB_CREAM,
+    midground: WEB_CREAM,
+    composerRing: WEB_CREAM,
+    destructive: WEB_DESTRUCTIVE,
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: '#052121',
+    sidebarBorder: WEB_CREAM_15,
+    userBubble: '#0C2222',
+    userBubbleBorder: WEB_CREAM_18
   },
+  // Match the web default typography: system sans + system mono, no external
+  // font fetch (the web dashboard does not network-load a mono face by default).
   typography: {
     fontSans: SYSTEM_SANS,
-    fontMono: SYSTEM_MONO,
-    fontUrl: 'https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap'
+    fontMono: SYSTEM_MONO
   }
 }
 
