@@ -48,3 +48,18 @@ One live checklist for this stream. Updated in place; no versioned reports/bundl
 
 ## Hook fix isolation (C-3.4)
 Separate small commit ONLY after: failing two-profile test; explicit hook-ownership contract; proof default-profile unchanged; failure visible (never silently ignored). Do NOT mix into task-journal changes.
+
+## Phase 3 implementation status
+Verdict: `DURABLE EXECUTION IMPLEMENTED_NOT_VERIFIED` (until restart/crash/reconnect + independent exact-SHA verification pass).
+
+| step | scope | status | evidence |
+|---|---|---|---|
+| 3-A(1) | durable schema/store + migration | DONE `687f33ca` | youtab_runtime/durable_run_store.py; 10 desired-invariant tests + real cross-process acceptance test (wait 2s→RUNNING+task_id, worker survives, reconnect, restart, exactly-once, 0 orphans) |
+| 3-B(core) | progress vs liveness + STALLED | DONE (in store) | heartbeat=liveness-only; record_progress advances progress_seq; detect_stalled separate windows → visible STALLED, no kill |
+| 3-A(2) | wire `/v1/runs` create/get/result/events to store | TODO | consumer contract IR-2 |
+| wait/lifetime | delegate_tool: parent-wait returns typed non-terminal, child continues | TODO | store.wait_for_terminal ready |
+| 3-D | profile hook isolation (separate commit) | TODO | baseline P0-F green |
+| 3-E | Windows Job Object supervision | TODO | baseline P0-G green; reuse enterprise-lane Job Object primitives |
+| 3-C | Lane-1 effect/lease adapter + contract tests | TODO (IMPLEMENTED_NOT_VERIFIED) | EffectLedger Protocol + AbsentEffectLedger fail-closed shipped |
+
+Gates on `687f33ca`: ruff clean · ty clean · git diff --check clean · 27/27 durable_execution tests pass. Author Eiman, 0-attribution. No push.
