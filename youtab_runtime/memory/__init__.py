@@ -67,6 +67,18 @@ from .outbox import (
     new_event,
 )
 from .outbox_sqlite import DigestMismatch, SqliteOutbox
+from .placement import (
+    PlacementError,
+    PlacementVerifier,
+    SignedScopePlacement,
+    VerifiedPlacement,
+)
+from .retrieval import (
+    RetrievalConfig,
+    RetrievalOutcome,
+    RetrievalPipeline,
+    RetrievalResult,
+)
 from .router import MemoryRouter, MemoryRoutingDecision, MemoryWriteIntent, RouteOwner
 from .scope import MemoryScope, ScopeAdmission
 from .simorgh_client import (
@@ -133,7 +145,15 @@ __all__ = [
     "OutboxEvent",
     "OutboxEventType",
     "OutboxStatus",
+    "PlacementError",
+    "PlacementVerifier",
     "PromotionCandidate",
+    "RetrievalConfig",
+    "RetrievalOutcome",
+    "RetrievalPipeline",
+    "RetrievalResult",
+    "SignedScopePlacement",
+    "VerifiedPlacement",
     "ReferenceMemoryBus",
     "ReferenceMemoryBusResult",
     "ReferenceProvenanceError",
