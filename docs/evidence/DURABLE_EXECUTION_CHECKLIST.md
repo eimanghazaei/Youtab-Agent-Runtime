@@ -84,3 +84,15 @@ Gates on `687f33ca`: ruff clean · ty clean · git diff --check clean · 27/27 d
 | PostgreSQL backend | OPEN (stub) | — | PostgresRunStore raises |
 
 Suite on e8e4feb9: 38/38 durable_execution; ruff/ty/whitespace clean. Author Eiman, 0-attribution. No push.
+
+## 30-minute wall-clock acceptance (shipped /v1/runs path) — PASS
+Evidence: docs/evidence/DURABLE_EXECUTION_30MIN_ACCEPTANCE.json (real aiohttp over the
+shipped api_server handlers; long mock agent, 20s progress cadence).
+- T+0.6s accepted: HTTP 202 RUNNING + task_id (<10s).
+- T+601s: status=running, alive, retrievable, progress_seq=32 (32 durable events) —
+  NOT killed by any 600s limit; task recoverable mid-flight.
+- T+1823s (~30.4 min): SUCCEEDED, exactly-once (completions=1), durable result_ref,
+  93 durable events, /result terminal. verdict PASS.
+- Worker in-process (no subprocess) + acceptance process exit 0 -> zero orphan workers.
+Note: a store-only or substitute-handler run would NOT satisfy this; this used the
+real shipped handlers.
