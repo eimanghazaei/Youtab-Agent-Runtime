@@ -45,17 +45,18 @@ For each check: the claim, how to verify, and the expected result.
 - **Verify:** `tests/tools/test_result_store_cleanup_lifecycle.py` — teardown (`_cleanup_inactive_envs`, `cleanup_vm`) invokes `cleanup_run_scope`; teardown survives cleanup raising / returning False; cleanup uses a bounded timeout, deletes only the current run scope, and issues no process kill. `test_tool_result_storage_containment.py` proves scope containment + private perms + bounded spill.
 - **Expected:** green.
 
-## I. Supported-Python tests
-- **Verify:** on Python 3.12 (ideally `uv sync --frozen`; else a 3.12 venv with pytest/cryptography/pydantic + pyyaml/psutil/python-dotenv/requests), run the 22 Lane-1 files (§7 list). Also `py -3.12 -m py_compile` the runtime modules.
-- **Expected:** 266 collected / 266 passed; py_compile OK (no 3.14-only syntax).
+## I. Supported-Python tests (authoritative lockfile env)
+- **Verify:** `uv==0.8.17`; `uv sync --frozen --extra dev` (from `uv.lock` sha256 `0bad1226…`) into a Python 3.12 `.venv` (dev pins pytest 9.0.3, ruff 0.15.10, ty 0.0.21); run the 22 Lane-1 files (§7 list) with `.venv` python; `py_compile` (3.12) the runtime modules; `ruff check`; `ty check` the runtime modules.
+- **Expected:** **275 collected / 275 passed** (exit 0); py_compile OK (no 3.14-only syntax); ruff/ty clean. (`py -3` here = unsupported 3.14 = diagnostic only.)
 
 ## J. Attribution & secrets
 - **Verify:** `git log --format='%an <%ae>' c92069a5a..HEAD | sort -u` (single author Eiman); `git log --format='%B' c92069a5a..HEAD | grep -iE 'co-authored-by|generated with|claude'` (empty); secret/machine-path scan over changed files (`git diff --name-only c92069a5a..HEAD`) for `AKIA…`, `-----BEGIN … PRIVATE`, machine paths.
 - **Expected:** single author; no attribution; no secrets/machine paths.
 
-## K. Cross-lane conflict analysis (read-only)
-- **Verify:** `git merge-base <Lane1> 1ed19f0914cce6d074aae6cf378d81f05bc6d283` = `ca89219ae…`; overlap Lane1∩Lane2 = 0; `git merge-tree ca89219ae <Lane1> 1ed19f091…` conflicts = 0; Lane1∩Lane3 (`d877b373c`) = 0 conflicts at base `c92069a5a`. `origin/main` (`c7650a1b9…`) had no local common ancestor — recompute against full-history main.
-- **Expected:** Lane1 disjoint + conflict-free with Lane2 and Lane3; main pending.
+## K. Cross-lane conflict analysis (read-only) + semantic compat
+- **Verify (file/textual):** `git merge-base <Lane1> 1ed19f0914cce6d074aae6cf378d81f05bc6d283` = `ca89219ae…`; Lane1∩Lane2 file overlap = 0; `git merge-tree ca89219ae <Lane1> 1ed19f091` conflicts = 0. **Correct** frozen Lane-3 = `474eac31f8c83c9939d1d2d6f5450260dcf43dec` (NOT `d877b373c`, an earlier packaging HEAD): `merge-base` = `c92069a5a`, overlap 0, conflicts 0. Main: the clone was **shallow** → `git fetch --unshallow` → `merge-base(Lane1, origin/main c7650a1b9)` = `13f79aa6c…`, overlap 0, conflicts 0 (main moved 3 website-image files); PX base `c92069a5a` is not an ancestor of main.
+- **Verify (semantic — the real gate):** `docs/evidence/RUNTIME_LANE1_LANE2_COMPAT_MATRIX_v1.0.md` — 9/10 surfaces COMPATIBLE; **1 ADAPTER_REQUIRED/BLOCKING**: Lane-2 reconciliation uses removed `worker_lease.EffectEvidence` + old `reconcile_to_terminal`; must adopt `effect_evidence.ReconciliationEvidence` (Lane-2-only adapter).
+- **Expected:** disjoint/conflict-free at the file level; reconciliation-adapter required for the integrated build.
 
 ## L. Static gates
 - **Verify:** `ruff check <changed .py>`; `mypy --ignore-missing-imports --follow-imports=skip <11 runtime modules>`; `git diff --check c92069a5a..HEAD`.
