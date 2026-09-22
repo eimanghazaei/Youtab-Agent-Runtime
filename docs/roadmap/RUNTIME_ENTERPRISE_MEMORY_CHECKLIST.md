@@ -273,6 +273,44 @@ tested with exact commands+counts+exit codes, NOT-integrated list, pause rationa
 conditions R1–R9 with owners + acceptance tests, integration caution: integrate corrected HEAD
 `5bf8e396` not just frozen `3e9a3dff`). Prior detail: `INTEGRATION_PREFLIGHT_HANDOFF.md`.
 
+## Round 4 — independent qualification during pause (read-only + tests; no live wiring)
+
+Corrected candidate code = `5bf8e396` (HEAD `4540c123` = same code + docs). No foundation change,
+no live wiring, no new versioned report.
+
+### Full-suite qualification of the corrected candidate (Python 3.12.10, isolated --basetemp)
+- `pytest tests/youtab_runtime -q --basetemp=<uniq1>` → **650 passed + 1 flake**, exit 1 — the flake
+  is the documented `test_diagnostics_absent_on_a_green_run` (concurrent foreign pytest, the Durable
+  session, GC-racing the shared `pytest-of-eiman` temp root; reappears even with my isolated basetemp
+  because the OTHER process shares the root). See `TEST_INTERFERENCE_ANALYSIS.md`.
+- `pytest tests/youtab_runtime -q --basetemp=<uniq2>` (serial) → **651 passed / 0 failed**, exit 0.
+  Corrected candidate total = **651** (647 foundation + 4 OutboxConflict tests). ruff + ty clean.
+- `pytest tests/youtab_runtime/test_integration_contracts.py` → **4 passed**, exit 0.
+
+### Scale / latency measurements (disposable temp, no customer data)
+- **EncryptedScopedCache**: GET p50 **0.33ms** / p95 0.47ms (O(1), direct file). PUT p50 grows
+  **17ms → 106ms over 300 writes (6.2×)** → **write is O(N) per put** (double `os.walk` for size +
+  expiry) **plus a per-put `fsync`**. 2000-write run did not finish in 180s. **FINDING/LIMITATION:**
+  the cache is read-cheap but write-expensive and does NOT scale to high write volume as built;
+  needs an index (drop `os.walk`) + batched/deferred fsync before any high-write use. Correctness
+  unaffected.
+- **SqliteOutbox** (N=10 000): ENQUEUE ~**235 ops/s**, CLAIM+ACK ~**230 ops/s**, converged=9999.
+  Durable (`synchronous=FULL`, autocommit → fsync/stmt); adequate for memory transport, improvable
+  via batched transactions. **No correctness issue.**
+- **Cross-scope isolation at scale**: 40 scopes exhaustive → **cross_scope_leaks=0**, all own reads OK.
+
+### Reproducible integration-readiness tests (against documented interfaces, test doubles)
+`tests/youtab_runtime/test_integration_contracts.py` (4): end-to-end signed-placement → verify →
+enabled retrieval → stub Simorgh transport → bounded, cited injection; fail-closed on unknown key
+(R2 gap); disabled pipeline unavailable; Durable reference shape is opaque/transport-only (R4).
+When R1–R4 real interfaces arrive, the doubles are swapped for live services.
+
+### Remaining dependencies (unchanged, R1–R9 in MEMORY_PAUSE_HANDOFF.md)
+Gateway signer/key-registry/revocation/durable-replay (R1–R3), Durable checkpoint interface +
+`a990839b` decision (R4–R5), Integrator forward-integration of `5bf8e396` + Lanes (R6), ADR-0006
+ratification (R7), Linux/macOS key store (R8), latency/scale/recall benchmark harness (R9 — this
+round is a first read-only measurement, not the full harness). **Live wiring remains PAUSED.**
+
 ## Owner authorization (recorded)
 
 - Base = current remote default (`main` @ `c7650a1b9`). Lane/Frontend/evidence branches NOT used as base and untouched.
