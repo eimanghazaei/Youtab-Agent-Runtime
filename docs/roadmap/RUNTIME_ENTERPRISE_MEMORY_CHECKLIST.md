@@ -100,8 +100,11 @@ Zero-arg `MemoryStore()` appears only in `tests/tools/test_memory_tool.py`.
 - Selection: `memory.provider` string; **one external provider at a time** (MemoryManager). **No `memory_mode` key exists.**
 - Bundled providers (additive, default OFF `provider:""`): `byterover`, `hindsight`, `holographic`, `honcho`, `mem0`, `openviking`, `retaindb`, `supermemory` + shared `config_schema.py`, `query_rewrite.py`.
 
-**Consequence for Phase 3.4:** the Simorgh adapter should be a NEW bundled provider under
-`plugins/memory/simorgh/` implementing `MemoryProvider` — the seam already exists; no parallel stack.
+**Consequence for Phase 3.4 (CORRECTED):** `plugins/memory/` is CLOSED to new bundled
+providers (CONTRIBUTING.md:70-84). The Simorgh seam is therefore the typed
+`youtab_runtime/memory/` MemoryBus contract (`bus.py`), NOT a new `plugins/memory/simorgh/`
+directory. A future live client is a standalone plugin against the `MemoryProvider` ABC or
+the MemoryBus contract — never a bundled provider dir.
 
 ### Store semantics (AGENT 1 VERIFIED)
 
@@ -132,7 +135,7 @@ The genuine base gaps that are memory/continuity and do NOT overlap Lane effect/
    (bridging `BrainCommandEnvelope` tenant/org/workspace/principal/agent/run ↔ the live `session_key`/`gateway_routing.scope`),
    classifies writes, and exposes the one configured store/provider — built ON `agent/memory_manager.py` + `MemoryProvider` ABC + `runtime_provider.py`, not a new stack.
 2. **MemoryClaim model (Phase 3.3):** pending Agent 3 (does a canonical model already exist? — if yes, extend; if no, add typed model, do not duplicate Lane).
-3. **Simorgh provider adapter (Phase 3.4):** new `plugins/memory/simorgh/` implementing `MemoryProvider`; versioned typed interface + deterministic local reference boundary (NOT LIVE); cross-repo dependency contract.
+3. **Simorgh MemoryBus contract (Phase 3.4):** typed `youtab_runtime/memory/bus.py` (NOT a `plugins/memory/` dir); versioned interface + deterministic local reference boundary (NON-LIVE, type-distinct); cross-repo dependency contract.
 4. **Task resume token / checkpoint capsule (Phase 4):** a durable resume token in `state_meta` (or a small new table) that REFERENCES existing `checkpoint_manager` (files) + compression persistence (convo) + run position + effect refs — reifying `checkpointed_for_resume`. Does NOT reimplement effect_ledger/run_journal (Lane).
 5. **Token-budget policy (Phase 3.7):** model-aware budget layer wrapping the existing char-limit capsule, backward compatible.
 
@@ -142,30 +145,58 @@ The genuine base gaps that are memory/continuity and do NOT overlap Lane effect/
 |---|---|---|---|
 | 3.1/3.2 | Memory Router + scoped identity | **IMPLEMENTED (inert, tested)** | `youtab_runtime/memory/{scope,router}.py`; commit `41a89413`; 524→ green |
 | 3.3 | MemoryClaim canonical model | **IMPLEMENTED (tested)** | `youtab_runtime/memory/claim.py`; lifecycle + hash + trust invariants |
-| 3.4 | Simorgh/MemoryBus typed contract + NON-LIVE reference | **IMPLEMENTED (tested, NON-LIVE)** | `youtab_runtime/memory/bus.py` + `docs/architecture/RUNTIME_SIMORGH_MEMORYBUS_CONTRACT.md`; 8 bus tests; scope-isolation + non-live stamping proven |
-| 3.5 | Offline cache/outbox/reconciliation | NOT STARTED | delivery_ledger reusable; general reconcile unimplemented |
-| 3.6 | Hybrid retrieval pipeline (lexical+vector+graph, rerank, budget) | NOT STARTED | holographic FTS5+HRR reusable |
-| 3.7 | Token-budget policy (model-aware, backward-compat) | **IMPLEMENTED (tested)** | `youtab_runtime/memory/budget.py`; hard capsule cap (3000 tok), per-deployment-class allocation, tokenizer-supplied counts with conservative multilingual fallback, `legacy_capsule_fits()` proves 2200+1375 fits. Integration into agent_init capsule = remaining. |
-| 4 | Long-running resume token / checkpoint capsule | **IMPLEMENTED (tested)** | `youtab_runtime/continuity/checkpoint.py`; hash-chained TaskCheckpoint + CheckpointChain (tamper/stale/scope-cross detection, safe-resume-point, model-neutral content-addressing); references checkpoint_manager + state_meta + effect_refs, does NOT reimplement Lane effect_ledger. Persistence wiring to state_meta = remaining. |
-| 5 | Multi-tenant security proofs | PARTIAL (scope isolation unit-proven) | needs default-deny at persistence + adversarial |
-| 6 | CRM/ERP/SAP/CAD scenarios | NOT STARTED | reference providers are Lane-only |
-| 7 | Adversarial/scale/eval | NOT STARTED | |
-| 9 | ADR + evidence report | PARTIAL | MemoryBus contract drafted; ADR-XXXX pending |
+| 3.4 | Simorgh/MemoryBus typed contract + NON-LIVE reference | **IMPLEMENTED (tested, NON-LIVE)** | `bus.py`: reference/live TYPE separation (`MemoryBusResult` vs `ReferenceMemoryBusResult`) + `consume_for_live` fail-closed guard + negative tests; `RUNTIME_SIMORGH_MEMORYBUS_CONTRACT.md` |
+| 3.5 | Offline cache/outbox/reconciliation | NOT STARTED (next: item 12-B/C/D) | delivery_ledger reusable |
+| 3.6 | Hybrid retrieval pipeline | NOT STARTED (item 12-E) | holographic FTS5+HRR reusable |
+| 3.7 | Token-budget policy (model-aware, backward-compat) | **IMPLEMENTED (tested)** | `budget.py`: CONFIGURABLE capsule cap per deployment/task class (not universal), derived from output/tool/safety/compaction reserves; `selective_retrieval_tokens` proves large memory stays external; `legacy_capsule_fits` |
+| 4 | Long-running resume capsule | **IMPLEMENTED_NOT_INTEGRATED — pending Durable Execution owner** | `continuity/checkpoint.py` FROZEN; NOT wired to state_meta; integrity = tamper-EVIDENT (accidental) only; interface request filed |
+| 5 | Multi-tenant security proofs | PARTIAL (scope + reference/live isolation unit-proven) | needs signed Gateway placement + persistence adversarial |
+| 6 | CRM/ERP/SAP/CAD scenarios | NOT STARTED (item 12-H) | |
+| 7 | Adversarial/scale/eval | NOT STARTED (item 12-G/I) | |
+| 9 | ADR + evidence | **ADR-0006 DRAFT (PROPOSED)** + MemoryBus/Gateway/Durable/ownership docs | not self-accepted |
 
-Truthful overall: foundational contracts done and green; large surface (retrieval,
-resume, offline, scenarios, scale, security proofs) remains. NOT claiming completion.
+### Supported-Python qualification (authoritative — Python 3.12.10)
 
-Commits so far (all author=Eiman, 0 attribution trailer, NO push; base `c7650a1b9`):
-- `41a89413f4c4e3b2e29bc567595100f530eacb53` — scope/claim/router seam + checklist.
-- `930a11d8aaab3bbeb97fae7411c6f2bf9946c2f0` — MemoryBus contract + reference bus + dependency doc.
-- `a990839b25dfcb6511aee0bc82c7ea7eeb6b9d39` — hash-chained TaskCheckpoint capsule.
-- `68bf3501027f7748aef543b13ba1b370fcfa1587` — model-aware token-budget policy.
+`requires-python = ">=3.11,<3.14"` → 3.14 is OUT of range. Qualified via `uv sync --frozen
+--python 3.12 --extra dev` (uv 0.12.17). Tools: pytest 9.0.2, ruff 0.15.10, ty 0.0.21
+(project uses **ty**, not mypy).
 
-Totals: 51 new unit tests; `tests/youtab_runtime` = 549 passed / 0 failed; ruff + mypy clean.
-Verdict: FOUNDATION landed, NOT complete. NO-GO for any completion claim. NO push/PR/merge.
+| Command | Exit | Result |
+|---|---|---|
+| pytest (6 new memory/continuity files) | 0 | 65 passed |
+| pytest tests/youtab_runtime | 0 | 549 passed, 1 pre-existing warning |
+| ruff check (new files) | 0 | All checks passed |
+| ty check (new packages) | 0 | All checks passed |
+
+### Phase-1 baseline experiments (EXECUTED — disposable temp homes, no customer data)
+
+Harness: `scratchpad/baseline_experiments.py`, run under 3.12 venv.
+
+| Experiment | Result |
+|---|---|
+| EXP1 limits 2200/1375 vs 8000/3000 | HONORED (effective caps match config) |
+| EXP7 over-limit write | REJECTED (consolidation-failure, keys error/usage/current_entries) |
+| EXP8 repeated over-limit (consolidation) | terminal stop-guidance emitted |
+| EXP2 same-turn visibility | system-prompt snapshot UNCHANGED same-turn (frozen-snapshot semantics) |
+| EXP3 fresh-session visibility | new session SEES prior write |
+| EXP4 process-restart visibility | reconstructed store SEES prior write (disk-backed) |
+| EXP5 two concurrent sessions | BOTH writes persist (file-locked) |
+| EXP6 two-profile isolation | profile B CANNOT see profile A |
+| EXP9 provider enabled/disabled | default `provider=""` → built-in store only |
+| session switch | mechanism = EXP3/EXP6 (home switch); code path `agent_init` re-resolves home |
+| delegation `skip_memory=True` | CODE-VERIFIED: provider block skipped (`agent_init.py:1637`); built-in only if toolset requested |
+| Web/Electron access path | CODE-VERIFIED: NO dedicated MemoryStore construction site; reach memory via `agent_init`/`load_on_disk_store` — same contract/caps |
+
+Executed 1–9 mechanically; session-switch/delegation/Web-Electron are code-path-verified
+(no separate store), distinguished honestly from executed rows.
+
+Commits after corrections (all author=Eiman, 0 attribution, NO push; base `c7650a1b9`):
+- `41a89413` scope/claim/router · `930a11d8` MemoryBus · `a990839b` checkpoint · `68bf3501` budget · `c7333822` checklist · (this correction commit appended).
+
+Verdict: ENTERPRISE MEMORY FOUNDATION IMPLEMENTED_NOT_INTEGRATED · LIVE SIMORGH MEMORY NOT VERIFIED · PRODUCT NO-GO. NO push/PR/merge/live-wiring.
 
 ## Owner authorization (recorded)
 
 - Base = current remote default (`main` @ `c7650a1b9`). Lane/Frontend/evidence branches NOT used as base and untouched.
-- Local commits: author/committer = Owner/Eiman; per active session reminder the commit trailer `Co-Authored-By: Claude Opus 4.8` applies (reminder overrides earlier 0-attrib default; Owner may direct otherwise).
+- Local commits: author/committer = **Eiman** per repository convention; **ZERO AI/Claude/Codex attribution trailers** (Owner instruction for this branch takes precedence over any session reminder). Verified across `base..HEAD`: 0 attribution trailers, every commit author=Eiman.
 - No amend/rebase/squash/push/PR/merge/deploy/tag. Any future push needs separate Owner auth naming exact full SHA + exact remote branch.

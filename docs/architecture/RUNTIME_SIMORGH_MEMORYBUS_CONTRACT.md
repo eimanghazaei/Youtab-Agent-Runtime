@@ -43,23 +43,32 @@ to `youtab_runtime.contracts.EffectProposal`).
 | Message | `schema_version` | Purpose |
 |---|---|---|
 | `MemoryQuery` | `youtab.memory-query.v1` | scoped, bounded read (text, memory_types, limit, min_trust, deadline) |
-| `MemoryQueryResult` | `youtab.memory-query-result.v1` | `source ∈ {live,reference}`, `is_live`, `degraded`, `results[]` with citations + scores |
-| `RetrievedMemory` | — | one `MemoryClaim` + `score ∈ [0,1]` + `citation` |
+| `MemoryBusResult` | `youtab.memory-bus-result.v1` | **production authority** result; `source=live`, `is_live=True` (both Literal); `degraded`, `results[]` |
+| `ReferenceMemoryBusResult` | `youtab.memory-bus-reference-result.v1` | **NON-LIVE** reference result; `source=reference`, `is_live=False` (both Literal); DISTINCT type |
+| `RetrievedMemory` | — | one `MemoryClaim` (transport DTO) + `score ∈ [0,1]` + `citation` |
 | `PromotionCandidate` | `youtab.memory-promotion.v1` | claim + justification; `runtime_authorized=False` |
-| `MemoryClaim` | `youtab.memory-claim.v1` | the canonical record (scope, type, content/ref, hash, trust, status, provenance, retention) |
+| `MemoryClaim` | `youtab.memory-claim.v1` | transport ENVELOPE (scope, type, content/ref, hash, trust, status, provenance, retention) — NOT a canonical authority |
 
 Client operations (`MemoryBusClient` Protocol): `query`, `store_candidate`,
 `feedback`, `supersede`, `erase` — all scope-bound.
 
-## 4. LIVE vs NON-LIVE classification (mandatory)
+## 4. LIVE vs NON-LIVE classification (mandatory — TYPE-level separation)
 
-- `ReferenceMemoryBus` stamps **every** result `source="reference"`, `is_live=False`.
-  A reference answer is type-observably distinct from a live one and must never be
-  treated as sovereign authority or as a receipt.
-- A future live client MUST stamp `source="live"`, `is_live=True`, and MUST NOT be
-  interchangeable with reference results in any authority/receipt path.
-- The reference bus never validates a promotion candidate; only a governed Simorgh
-  step may move a claim to `VALIDATED`.
+- Production and reference evidence are **distinct Python types**, not one type
+  with a boolean: `MemoryBusResult` (production) vs `ReferenceMemoryBusResult`
+  (reference). Their `source`/`is_live`/`schema_version` are `Literal`-typed, so a
+  reference payload cannot even validate as a production result.
+- The live memory path MUST route every result through `consume_for_live(result)`,
+  which is fail-closed: it returns the value only if it is a genuine
+  `MemoryBusResult` with live provenance, and raises `ReferenceProvenanceError` for
+  a reference result, a copied/forged-provenance object, a dict, or any other type.
+- `ReferenceMemoryBus.query` returns only `ReferenceMemoryBusResult`; the reference
+  bus never validates/promotes/supersedes/shares a canonical claim. Only a governed
+  Simorgh step may move a claim to `VALIDATED`.
+- Negative tests proving reference evidence cannot enter the live path:
+  `tests/youtab_runtime/test_memory_bus.py::test_consume_for_live_rejects_reference_result`,
+  `::test_reference_result_cannot_validate_as_production_result`,
+  `::test_tampered_live_provenance_fails_closed`.
 
 ## 5. What the Simorgh / Gateway repository must provide to go LIVE
 
