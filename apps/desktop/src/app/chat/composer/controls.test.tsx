@@ -84,38 +84,20 @@ describe('wake-word ear visibility', () => {
     resetWakeWordState()
   })
 
-  it('stays mounted during a busy agent turn', () => {
+  it('is hidden from the default composer toolbar', () => {
+    // The wake-word ear was removed from the default composer toolbar per
+    // product design; it remains only inside the active voice-conversation
+    // pill (covered below). It must not render in the normal toolbar in any
+    // wake state.
     applyWakeStatus({ available: true, enabled: true, listening: true, phrase: 'hey youtab' })
     renderControls({ busy: true, busyAction: 'stop' })
+    expect(screen.queryByLabelText('Wake word: "hey youtab" — listening')).toBeNull()
 
-    expect(screen.getByLabelText('Wake word: "hey youtab" — listening')).toBeTruthy()
-  })
-
-  it('stays mounted (enabled in config) even when a start was refused', () => {
-    applyWakeStatus({ available: true, enabled: true, listening: false, phrase: 'hey youtab' })
-    // Transient refusal marks available false but enabled keeps it mounted.
+    resetWakeWordState()
+    applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey youtab' })
     applyWakeStartResult({ hint: 'mic busy', reason: 'unavailable', started: false })
     renderControls()
-
-    expect(screen.getByLabelText('Wake word: "hey youtab" — off')).toBeTruthy()
-  })
-
-  it('stays visible (never hides) even when unavailable and not enabled', () => {
-    applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey youtab' })
-    renderControls()
-
-    // The ear ALWAYS shows so the user can click to enable; a failed start
-    // surfaces its reason in the tooltip rather than hiding the control.
-    expect(screen.getByLabelText('Wake word: "hey youtab" — off')).toBeTruthy()
-  })
-
-  it('surfaces the backend refusal reason in the tooltip, still visible', () => {
-    applyWakeStatus({ available: false, enabled: false, listening: false, phrase: 'hey youtab' })
-    applyWakeStartResult({ hint: 'run `youtab tools` (Voice section)', reason: 'unavailable', started: false })
-    renderControls()
-
-    const ear = screen.getByLabelText('Wake word: "hey youtab" — off')
-    expect(ear).toBeTruthy()
+    expect(screen.queryByLabelText('Wake word: "hey youtab" — off')).toBeNull()
   })
 
   it('shows a disabled paused ear inside the voice-conversation pill', () => {
