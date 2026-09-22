@@ -6052,6 +6052,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_statuses.get(run_id, {}).get("status", "running"),
                 last_event=event.get("event"),
             )
+            # Persist a durable, replayable progress event for the lifecycle
+            # timeline (skip high-frequency message.delta text — it is live-only
+            # and reconstructable from the final result). This gives reconnect /
+            # restart a monotonic progress sequence distinct from liveness.
+            _store = getattr(self, "_run_store", None)
+            _kind = event.get("event")
+            if _store is not None and _kind and _kind != "message.delta":
+                try:
+                    _store.record_progress(run_id, step=_kind,
+                                           metric={"tool": event.get("tool")})
+                except Exception:
+                    pass
             q = self._run_streams.get(run_id)
             if q is None:
                 return
