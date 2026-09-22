@@ -206,6 +206,7 @@ class RunStore(Protocol):
     def detect_stalled(self, *, stall_threshold: float, liveness_window: float = ..., now: Optional[float] = ...) -> List[str]: ...
     def request_cancel(self, run_id: str, *, reason: str, by: str) -> Dict[str, Any]: ...
     def reconcile_dead_owner(self, is_alive, *, operation: Optional[str] = ...) -> List[str]: ...
+    def enforce_execution_deadlines(self, *, now: Optional[float] = ...) -> List[str]: ...
     def wait_for_terminal(self, run_id: str, *, wait_timeout: float, poll: float = ...) -> WaitResult: ...
 
 
@@ -642,20 +643,70 @@ class SqliteRunStore:
             rows = conn.execute(q, params).fetchall()
             now = time.time()
             for run_id, owner, _state in rows:
-                if not owner or not str(owner).startswith("pid:"):
-                    continue
-                try:
-                    pid = int(str(owner).split(":", 1)[1])
-                except (ValueError, IndexError):
-                    continue
-                if is_alive(pid):
+                reason = None
+                if not owner:
+                    # Admission aborted before claim (create_run succeeded, claim
+                    # never committed): an ownerless non-terminal run is abandoned
+                    # and recoverable — it is NOT and never was a running effectful
+                    # child. A recovery sweep only runs at startup/recovery, when
+                    # no admission is legitimately in progress.
+                    reason = "admission_incomplete_no_owner"
+                elif str(owner).startswith("pid:"):
+                    try:
+                        pid = int(str(owner).split(":", 1)[1])
+                    except (ValueError, IndexError):
+                        continue
+                    if is_alive(pid):
+                        continue
+                    reason = "owner_process_dead"
+                else:
                     continue
                 conn.execute("UPDATE runs SET state='UNKNOWN', updated_at=? WHERE run_id=?", (now, run_id))
                 self._append_event_locked(conn, run_id, "state.unknown",
-                                          {"reason": "owner_process_dead", "owner": owner})
+                                          {"reason": reason, "owner": owner})
                 reconciled.append(run_id)
             conn.execute("COMMIT")
             return reconciled
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    def enforce_execution_deadlines(self, *, now: Optional[float] = None) -> List[str]:
+        """ACTIVE enforcement of the persisted execution_deadline (independent of
+        any parent wait). A non-terminal run whose execution_deadline has passed is
+        moved to CANCELLING with a deadline-reached event — a controlled
+        termination, distinct from a caller-wait timeout (which never stops a run).
+        Returns the run_ids whose deadline was enforced."""
+        now = now if now is not None else time.time()
+        conn = self._connect()
+        enforced: List[str] = []
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT run_id, state FROM runs WHERE execution_deadline IS NOT NULL "
+                "AND execution_deadline < ? AND state IN "
+                "('QUEUED','CLAIMED','RUNNING','WAITING_CHILD','WAITING_APPROVAL','PAUSING','PAUSED','STALLED')",
+                (now,),
+            ).fetchall()
+            for run_id, state in rows:
+                cur_state = RunState(state)
+                target = (RunState.CANCELLING
+                          if RunState.CANCELLING in _TRANSITIONS.get(cur_state, frozenset())
+                          else RunState.FAILED)
+                conn.execute(
+                    "UPDATE runs SET state=?, cancel_requested_at=?, cancel_reason=?, updated_at=? WHERE run_id=?",
+                    (target.value, now, "execution_deadline_reached", now, run_id),
+                )
+                self._append_event_locked(conn, run_id, "state.deadline_enforced",
+                                          {"reason": "execution_deadline_reached", "to": target.value})
+                enforced.append(run_id)
+            conn.execute("COMMIT")
+            return enforced
         except Exception:
             try:
                 conn.execute("ROLLBACK")
