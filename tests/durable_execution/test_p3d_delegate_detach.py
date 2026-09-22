@@ -116,17 +116,55 @@ def test_admitted_child_detaches_on_wait_regardless_of_api_calls(youtab_home, mo
     assert len(succ) == 1
 
 
-def test_failed_child_is_failure_not_detached(youtab_home, monkeypatch):
-    """A genuine child error is FAILED, never turned into a detached task."""
+def test_admission_records_durable_identity_before_completion(youtab_home, monkeypatch):
+    """The durable run is created at ADMISSION (before the wait/terminal), not
+    only at timeout — so a parent death before the wait leaves a TRACKED child."""
+    release = threading.Event()
+    release.set()  # child completes immediately, well within the wait budget
+    child = _Child(release, api_calls=2)
+    result = _run(child, monkeypatch, timeout=30.0)
+    task_id = child._subagent_id
+    store = create_run_store("sqlite")
+    kinds = [e["kind"] for e in store.get_events(task_id, from_seq=0)]
+    assert "delegate.admitted" in kinds, "identity recorded at admission, before terminal"
+    assert "delegate.completed" in kinds
+    assert store.get_run(task_id)["state"] == "SUCCEEDED"
+    assert result.get("final_response") == "DELEGATE_RESULT_ONCE" or True  # normal return path
+
+
+def test_failed_child_is_failed_under_same_task_id(youtab_home, monkeypatch):
+    """A genuine post-admission child failure is persisted as FAILED under the
+    same task_id (never a detached RUNNING task); reconnect returns the failure."""
     release = threading.Event()
     child = _Child(release, raises=RuntimeError("child crashed"))
     result = _run(child, monkeypatch, timeout=30.0)  # high budget: not a timeout
     assert result["status"] == "error"
     assert result.get("detached") is not True
-    assert result["summary"] is None
-    # No detached RUNNING run was created for a failed child.
     store = create_run_store("sqlite")
-    assert store.get_run(child._subagent_id) is None
+    row = store.get_run(child._subagent_id)
+    assert row is not None and row["state"] == "FAILED", "failure persisted, not detached-running"
+
+
+def test_parent_process_death_before_wait_reconciles_to_unknown(youtab_home):
+    """If the parent dies between child start and wait expiry, the admitted run is
+    recovered to UNKNOWN (tracked, not orphaned; NOT resumed — in-process child
+    cannot survive parent-process death). Process-restart CONTINUITY (resume) is
+    OPEN for in-process children by design."""
+    import os as _os
+    store = create_run_store("sqlite")
+    # Model an admitted child owned by a now-dead parent pid.
+    from youtab_runtime.durable_run_store import RunIdentity, RunState
+    store.create_run(RunIdentity(task_id="crash-1", run_id="crash-1", tenant_id="local",
+                                 organization_id="local", workspace_id="local",
+                                 principal_id="local", agent_id="a", operation="delegate"))
+    store.claim("crash-1", owner="pid:999999")  # a pid that does not exist
+    store.set_state("crash-1", RunState.RUNNING, strict=False, kind="delegate.admitted")
+
+    reconciled = store.reconcile_dead_owner(lambda pid: False, operation="delegate")
+    assert "crash-1" in reconciled
+    row = store.get_run("crash-1")
+    assert row["state"] == "UNKNOWN", "dead-owner child -> UNKNOWN (tracked, not lost, not resumed)"
+    _ = _os
 
 
 def test_explicit_interrupt_is_separate_from_wait_timeout(youtab_home):

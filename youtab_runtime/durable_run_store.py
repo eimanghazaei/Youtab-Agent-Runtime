@@ -205,6 +205,7 @@ class RunStore(Protocol):
     def heartbeat(self, run_id: str, owner: str, epoch: int, *, ttl_seconds: float = ...) -> bool: ...
     def detect_stalled(self, *, stall_threshold: float, liveness_window: float = ..., now: Optional[float] = ...) -> List[str]: ...
     def request_cancel(self, run_id: str, *, reason: str, by: str) -> Dict[str, Any]: ...
+    def reconcile_dead_owner(self, is_alive, *, operation: Optional[str] = ...) -> List[str]: ...
     def wait_for_terminal(self, run_id: str, *, wait_timeout: float, poll: float = ...) -> WaitResult: ...
 
 
@@ -617,6 +618,49 @@ class SqliteRunStore:
             return stalled
         except Exception:
             conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def reconcile_dead_owner(self, is_alive, *, operation: Optional[str] = None) -> List[str]:
+        """Recover runs whose owning process has died. A non-terminal run whose
+        lease_owner is 'pid:<n>' with a dead pid is moved to UNKNOWN (never
+        silently lost, never resumed). ``is_alive(pid:int)->bool`` decides
+        liveness. Returns the run_ids reconciled. In-process children cannot be
+        resumed across an owner-process death — this only makes their outcome
+        explicitly UNKNOWN for reconciliation."""
+        conn = self._connect()
+        reconciled: List[str] = []
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            q = ("SELECT run_id, lease_owner, state FROM runs "
+                 "WHERE state IN ('QUEUED','CLAIMED','RUNNING','WAITING_CHILD','WAITING_APPROVAL','PAUSING','PAUSED','STALLED','CANCELLING')")
+            params: tuple = ()
+            if operation is not None:
+                q += " AND operation=?"
+                params = (operation,)
+            rows = conn.execute(q, params).fetchall()
+            now = time.time()
+            for run_id, owner, _state in rows:
+                if not owner or not str(owner).startswith("pid:"):
+                    continue
+                try:
+                    pid = int(str(owner).split(":", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                if is_alive(pid):
+                    continue
+                conn.execute("UPDATE runs SET state='UNKNOWN', updated_at=? WHERE run_id=?", (now, run_id))
+                self._append_event_locked(conn, run_id, "state.unknown",
+                                          {"reason": "owner_process_dead", "owner": owner})
+                reconciled.append(run_id)
+            conn.execute("COMMIT")
+            return reconciled
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
             raise
         finally:
             conn.close()
