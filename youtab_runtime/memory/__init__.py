@@ -65,6 +65,7 @@ from .outbox import (
     ScopeRevoked,
     new_event,
 )
+from .outbox_sqlite import DigestMismatch, SqliteOutbox
 from .router import MemoryRouter, MemoryRoutingDecision, MemoryWriteIntent, RouteOwner
 from .scope import MemoryScope, ScopeAdmission
 from .simorgh_client import (
@@ -100,6 +101,7 @@ __all__ = [
     "ClaimStatus",
     "CompactionSummary",
     "DeploymentClass",
+    "DigestMismatch",
     "DpapiKeyStore",
     "EncryptedScopedCache",
     "ExactTokenCounter",
@@ -138,6 +140,7 @@ __all__ = [
     "RouteOwner",
     "ScopeAdmission",
     "ScopeRevoked",
+    "SqliteOutbox",
     "TaskClass",
     "TrustLevel",
     "account",
