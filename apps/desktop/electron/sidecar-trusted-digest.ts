@@ -22,12 +22,15 @@ const HEX64 = /^[0-9a-f]{64}$/
 //   build: python 3.12.10 (PINNED via SIDECAR_BUILD_PYTHON), uv 0.8.17,
 //   pyinstaller 6.22.3 (win32/x64); entry youtab_agent_cli.main via
 //   sidecar_main.py (loopback-only enforced).
-//   ⚠ The PyInstaller onedir freeze is NOT bit-reproducible (two clean builds
-//   on the same pinned toolchain gave 54e4823b… and 0b2ba35d…), so this anchor
-//   is a per-RELEASE attestation of one specific frozen bundle — re-pin it (and
-//   rebuild the installer) on every sidecar build.
+//   ⚠ The PyInstaller onedir freeze is NOT bit-reproducible (clean builds on the
+//   same pinned toolchain gave 54e4823b…, 0b2ba35d…, 60933699…, 83823e99… and
+//   13f2ad93…), so this anchor is a per-RELEASE attestation of one specific
+//   frozen bundle — re-pin it (and rebuild the installer) on every sidecar
+//   build. Re-pinned for the Runtime lanes-integration packaged build that
+//   INCLUDES the attachment-persistence fix (3eac0af5) frozen into run_agent.py
+//   (toolchain unchanged: python 3.12.10, uv 0.8.17, pyinstaller 6.22.3).
 export const TRUSTED_SIDECAR_ROOT_DIGEST: string | null =
-  '0b2ba35d4d98b52b837889fb752f9ccadafeb234e78efe5f4cfe7ff20ca27be5'
+  '13f2ad93d08bf3b5368248294ed30d347e3b0276bf45ce3bdf61d792114704fb'
 
 /**
  * Resolve the effective trust anchor: an operator/CI env override (must be a
