@@ -1,17 +1,12 @@
 #!/usr/bin/env node
-// Reproducible build of the self-contained Youtab backend sidecar.
+// Reproducible, self-provisioning build of the self-contained Youtab backend
+// sidecar. Does NOT depend on PyInstaller being preinstalled in the active venv:
+// it creates an ISOLATED build environment from the committed lockfile, pins the
+// build tool, freezes `tui_gateway.entry` into a PyInstaller `onedir` bundle, and
+// emits a per-file manifest (+ root digest) and an SBOM. Source-only; the build
+// outputs under apps/desktop/build/ are git-ignored.
 //
-// Freezes the existing `tui_gateway.entry` backend into a PyInstaller `onedir`
-// bundle that runs with NO repository, venv, uv, Python or developer PATH — the
-// binary the packaged Electron app resolves from `process.resourcesPath`.
-//
-// This script is the reproducible build specification: it pins the PyInstaller
-// version and the exact invocation, then emits a manifest (per-file SHA-256 +
-// sizes + total bundle size) and an SBOM (bundled Python dependency inventory).
-// It commits only source; the produced binaries/manifests are build outputs and
-// are git-ignored.
-//
-// Usage (from repo root, with the backend venv already `uv sync`-ed):
+// Usage (from repo root; needs `uv` on PATH — nothing else):
 //   node apps/desktop/packaging/backend-sidecar/build-sidecar.mjs
 //
 import { createHash } from 'node:crypto'
@@ -21,87 +16,86 @@ import { join, relative, resolve } from 'node:path'
 
 const PYINSTALLER_VERSION = '6.22.3' // pinned — do not float
 const REPO_ROOT = resolve(process.cwd())
-const VENV_PY = process.platform === 'win32'
-  ? join(REPO_ROOT, '.venv', 'Scripts', 'python.exe')
-  : join(REPO_ROOT, '.venv', 'bin', 'python')
 const ENTRY = join(REPO_ROOT, 'tui_gateway', 'entry.py')
 const OUT_DIR = join(REPO_ROOT, 'apps', 'desktop', 'build', 'backend-sidecar')
+const BUILD_VENV = join(OUT_DIR, '.buildvenv') // isolated; NOT the dev .venv
 const DIST = join(OUT_DIR, 'dist')
 const WORK = join(OUT_DIR, 'build')
 const NAME = 'youtab-backend'
+const VENV_PY = join(BUILD_VENV, process.platform === 'win32' ? 'Scripts' : 'bin', process.platform === 'win32' ? 'python.exe' : 'python')
 
-function sh(bin, args) {
-  return execFileSync(bin, args, { cwd: REPO_ROOT, stdio: 'pipe', encoding: 'utf8', maxBuffer: 1 << 28 })
+function sh(bin, args, env) {
+  return execFileSync(bin, args, { cwd: REPO_ROOT, stdio: 'pipe', encoding: 'utf8', maxBuffer: 1 << 28, env: { ...process.env, ...env } })
 }
 const sha256 = (p) => createHash('sha256').update(readFileSync(p)).digest('hex')
+const sha256str = (s) => createHash('sha256').update(s).digest('hex')
 function walk(d, acc = []) {
-  for (const n of readdirSync(d)) {
-    const p = join(d, n)
-    statSync(p).isDirectory() ? walk(p, acc) : acc.push(p)
-  }
+  for (const n of readdirSync(d)) { const p = join(d, n); statSync(p).isDirectory() ? walk(p, acc) : acc.push(p) }
   return acc
 }
+const trim = (s) => String(s).trim()
 
-if (!existsSync(VENV_PY)) {
-  console.error(`[sidecar] backend venv missing at ${VENV_PY}. Run: uv sync`)
-  process.exit(2)
-}
 mkdirSync(OUT_DIR, { recursive: true })
 if (existsSync(DIST)) rmSync(DIST, { recursive: true, force: true })
+if (existsSync(BUILD_VENV)) rmSync(BUILD_VENV, { recursive: true, force: true })
 
-console.log(`[sidecar] pinning PyInstaller==${PYINSTALLER_VERSION}`)
-sh('uv', ['pip', 'install', `pyinstaller==${PYINSTALLER_VERSION}`])
+const uvVersion = trim(sh('uv', ['--version']))
+console.log(`[sidecar] uv: ${uvVersion}`)
 
+// 1) isolated build venv from the committed lockfile (no dev-venv dependency)
+console.log('[sidecar] creating isolated build venv')
+sh('uv', ['venv', BUILD_VENV])
+const pyVersion = trim(sh(VENV_PY, ['--version']))
+console.log(`[sidecar] python: ${pyVersion}`)
+// application + runtime deps from the frozen lockfile, into the isolated venv
+console.log('[sidecar] uv sync --frozen (app deps from lockfile) into isolated venv')
+sh('uv', ['sync', '--frozen'], { UV_PROJECT_ENVIRONMENT: BUILD_VENV, VIRTUAL_ENV: BUILD_VENV })
+// pinned build tool, isolated
+sh('uv', ['pip', 'install', `pyinstaller==${PYINSTALLER_VERSION}`], { VIRTUAL_ENV: BUILD_VENV })
+const piVersion = trim(sh(VENV_PY, ['-m', 'PyInstaller', '--version']))
+console.log(`[sidecar] pyinstaller: ${piVersion}`)
+if (piVersion !== PYINSTALLER_VERSION) { console.error(`[sidecar] pyinstaller version drift: ${piVersion} != ${PYINSTALLER_VERSION}`); process.exit(4) }
+
+// 2) freeze (onedir)
 console.log('[sidecar] freezing tui_gateway backend (onedir)')
 sh(VENV_PY, [
   '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', NAME,
   '--distpath', DIST, '--workpath', WORK, '--specpath', WORK,
-  '--collect-submodules', 'tui_gateway',
-  '--collect-submodules', 'youtab_runtime',
-  '--collect-submodules', 'gateway',
-  '--collect-data', 'tui_gateway',
-  ENTRY,
-])
+  '--collect-submodules', 'tui_gateway', '--collect-submodules', 'youtab_runtime',
+  '--collect-submodules', 'gateway', '--collect-data', 'tui_gateway', ENTRY,
+], { VIRTUAL_ENV: BUILD_VENV })
 
 const bundleRoot = join(DIST, NAME)
 const exe = join(bundleRoot, process.platform === 'win32' ? `${NAME}.exe` : NAME)
-if (!existsSync(exe)) {
-  console.error('[sidecar] freeze produced no executable — failing closed')
-  process.exit(3)
-}
+if (!existsSync(exe)) { console.error('[sidecar] no executable produced — fail closed'); process.exit(3) }
+
+// 3) per-file manifest + deterministic root digest
 const files = walk(bundleRoot).sort()
 let total = 0
-const manifestFiles = files.map((p) => {
-  const size = statSync(p).size
-  total += size
-  return { path: relative(bundleRoot, p).split('\\').join('/'), bytes: size, sha256: sha256(p) }
-})
+const manifestFiles = files.map((p) => { const bytes = statSync(p).size; total += bytes; return { path: relative(bundleRoot, p).split('\\').join('/'), bytes, sha256: sha256(p) } })
+// root digest = sha256 over the sorted "sha256␠path\n" lines — binds the whole tree
+const rootDigest = sha256str(manifestFiles.map((f) => `${f.sha256} ${f.path}`).join('\n') + '\n')
 const manifest = {
-  schema: 'youtab.backend_sidecar_manifest/v1',
-  name: NAME,
-  entry: 'tui_gateway.entry',
-  pyinstaller: PYINSTALLER_VERSION,
-  platform: process.platform,
-  arch: process.arch,
-  generated_utc: new Date().toISOString(),
-  executable: relative(bundleRoot, exe).split('\\').join('/'),
-  file_count: manifestFiles.length,
-  total_bytes: total,
-  files: manifestFiles,
+  schema: 'youtab.backend_sidecar_manifest/v1', name: NAME, entry: 'tui_gateway.entry',
+  build: { python: pyVersion, uv: uvVersion, pyinstaller: piVersion, lockfile: 'uv.lock', frozen: true },
+  platform: process.platform, arch: process.arch, generated_utc: new Date().toISOString(),
+  executable: relative(bundleRoot, exe).split('\\').join('/'), file_count: manifestFiles.length,
+  total_bytes: total, root_digest_sha256: rootDigest, files: manifestFiles,
 }
 writeFileSync(join(OUT_DIR, 'manifest.json'), JSON.stringify(manifest, null, 2))
 
-// SBOM: bundled Python dependency inventory (name+version) from the venv.
-let sbom = { schema: 'youtab.backend_sidecar_sbom/v1', generated_utc: new Date().toISOString(), packages: [] }
-try {
-  const list = JSON.parse(sh('uv', ['pip', 'list', '--format', 'json']))
-  sbom.packages = list.map((p) => ({ name: p.name, version: p.version }))
-} catch (e) {
-  sbom.error = String(e)
-}
+// 4) SBOM (bundled dependency inventory from the isolated build venv)
+let sbom = { schema: 'youtab.backend_sidecar_sbom/v1', generated_utc: new Date().toISOString(), python: pyVersion, packages: [] }
+try { sbom.packages = JSON.parse(sh('uv', ['pip', 'list', '--format', 'json'], { VIRTUAL_ENV: BUILD_VENV })).map((p) => ({ name: p.name, version: p.version })) } catch (e) { sbom.error = String(e) }
 writeFileSync(join(OUT_DIR, 'sbom.json'), JSON.stringify(sbom, null, 2))
 
-console.log(`[sidecar] OK — ${manifest.file_count} files, ${(total / 1048576).toFixed(1)} MiB total`)
-console.log(`[sidecar] exe: ${exe}`)
-console.log(`[sidecar] manifest: ${join(OUT_DIR, 'manifest.json')}`)
-console.log(`[sidecar] sbom: ${join(OUT_DIR, 'sbom.json')} (${sbom.packages.length} packages)`)
+// 5) the root digest as a standalone trusted-binding input (A2 embeds this in Electron)
+writeFileSync(join(OUT_DIR, 'sidecar-root-digest.txt'), rootDigest + '\n')
+
+const manifestSha = sha256(join(OUT_DIR, 'manifest.json'))
+const sbomSha = sha256(join(OUT_DIR, 'sbom.json'))
+console.log(`[sidecar] OK — ${manifest.file_count} files, ${(total / 1048576).toFixed(1)} MiB`)
+console.log(`[sidecar] python=${pyVersion} uv=${uvVersion} pyinstaller=${piVersion}`)
+console.log(`[sidecar] root_digest=${rootDigest}`)
+console.log(`[sidecar] manifest.json sha256=${manifestSha}`)
+console.log(`[sidecar] sbom.json sha256=${sbomSha}`)
