@@ -48,28 +48,82 @@ if (dist && fs.existsSync(distBinary(dist))) {
 }
 
 // Self-contained backend sidecar (Lane 3): ship the frozen onedir bundle via
-// extraResources → <resourcesPath>/backend-sidecar so the packaged app can run
-// the backend without a system Python/uv. The bundle is a heavy PyInstaller
-// output built out of band (`node packaging/backend-sidecar/build-sidecar.mjs`)
-// and git-ignored, so we APPEND the extraResources entry only when it is
-// actually present — a normal `npm run dist` without the sidecar built stays
-// unaffected. Appending at index 2 preserves the two static entries in
-// package.json (install-stamp.json, icon.ico) instead of replacing the array.
-const sidecarBundle = path.resolve("build/backend-sidecar/dist/youtab-backend")
-if (fs.existsSync(sidecarBundle)) {
-  console.log(`[run-electron-builder] shipping backend sidecar from ${sidecarBundle}`)
+// extraResources → <resourcesPath>/backend-sidecar so the packaged app runs the
+// backend without a system Python/uv.
+//
+// TWO EXPLICIT MODES (fail-closed by default):
+//   • RELEASE / qualification (default): the sidecar bundle, manifest.json,
+//     sbom.json and sidecar-root-digest.txt MUST be present, and the bundle's
+//     recomputed root digest MUST equal the committed digest AND the embedded
+//     Electron trust anchor. Any gap aborts the build — a production installer
+//     can never silently ship a shell-only package.
+//   • DEVELOPER (opt-in only): pass --allow-no-sidecar (or set
+//     YOUTAB_AGENT_DESKTOP_ALLOW_NO_SIDECAR=1) to package without the sidecar,
+//     e.g. for a UI-only local build. Never used by dist:*.
+//
+// NOTE — this gate proves INTEGRITY (the shipped bytes match the committed
+// digest and the code's trust anchor). It does NOT assert PROVENANCE /
+// authenticity: there is no code-signature over the digest here, so it does not
+// prove the digest itself came from the controlled build. Signing is out of
+// scope and not claimed.
+const passthrough = process.argv.slice(2)
+const allowNoSidecar =
+  passthrough.includes("--allow-no-sidecar") || process.env.YOUTAB_AGENT_DESKTOP_ALLOW_NO_SIDECAR === "1"
+const sidecarPassthrough = passthrough.filter((a) => a !== "--allow-no-sidecar")
+
+const sidecarOutDir = path.resolve("build/backend-sidecar")
+const sidecarBundle = path.join(sidecarOutDir, "dist/youtab-backend")
+const sidecarExe = path.join(sidecarBundle, process.platform === "win32" ? "youtab-backend.exe" : "youtab-backend")
+
+function abort(msg) {
+  console.error(`[run-electron-builder] RELEASE PACKAGING ABORTED (fail-closed): ${msg}`)
+  console.error("[run-electron-builder] build the sidecar first (node apps/desktop/packaging/backend-sidecar/build-sidecar.mjs),")
+  console.error("[run-electron-builder] or pass --allow-no-sidecar for an explicit developer (shell-only) package.")
+  process.exit(3)
+}
+
+async function enforceSidecar() {
+  const required = [
+    [sidecarExe, "frozen backend executable"],
+    [path.join(sidecarOutDir, "manifest.json"), "manifest.json"],
+    [path.join(sidecarOutDir, "sbom.json"), "sbom.json"],
+    [path.join(sidecarOutDir, "sidecar-root-digest.txt"), "sidecar-root-digest.txt"]
+  ]
+  for (const [p, label] of required) {
+    if (!fs.existsSync(p)) abort(`missing ${label} at ${p}`)
+  }
+
+  // Recompute the bundle digest and require it to equal BOTH the committed
+  // digest file AND the embedded Electron trust anchor.
+  const { rootDigestFromBundle, parseTrustedDigest } = await import(
+    path.resolve("packaging/backend-sidecar/root-digest.mjs")
+  )
+  const committed = parseTrustedDigest(fs.readFileSync(path.join(sidecarOutDir, "sidecar-root-digest.txt"), "utf8"))
+  if (!committed) abort("sidecar-root-digest.txt is malformed")
+
+  const actual = rootDigestFromBundle(sidecarBundle)
+  if (actual !== committed) abort(`recomputed root digest ${actual} != committed ${committed}`)
+
+  const anchorSrc = fs.readFileSync(path.resolve("electron/sidecar-trusted-digest.ts"), "utf8")
+  const anchorMatch = anchorSrc.match(/TRUSTED_SIDECAR_ROOT_DIGEST[^'"]*['"]([0-9a-f]{64})['"]/)
+  const anchor = anchorMatch ? anchorMatch[1] : null
+  if (!anchor) abort("Electron trust anchor TRUSTED_SIDECAR_ROOT_DIGEST is not pinned (null)")
+  if (anchor !== actual) abort(`Electron trust anchor ${anchor} != bundle digest ${actual}`)
+
+  console.log(`[run-electron-builder] sidecar integrity OK — root digest ${actual} matches committed + trust anchor`)
   args.push(
     "-c.extraResources.2.from=build/backend-sidecar/dist/youtab-backend",
     "-c.extraResources.2.to=backend-sidecar"
   )
-} else {
-  console.warn(
-    "[run-electron-builder] no backend sidecar bundle at build/backend-sidecar/dist/youtab-backend; " +
-      "packaging without it (run packaging/backend-sidecar/build-sidecar.mjs to include it)."
-  )
 }
 
-args.push(...process.argv.slice(2))
+if (allowNoSidecar) {
+  console.warn("[run-electron-builder] --allow-no-sidecar: DEVELOPER package WITHOUT a bundled backend (shell-only).")
+} else {
+  await enforceSidecar()
+}
+
+args.push(...sidecarPassthrough)
 
 const result = spawnSync(process.execPath, [electronBuilderCli(), ...args], {
   stdio: "inherit",

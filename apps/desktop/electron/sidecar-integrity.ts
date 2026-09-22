@@ -17,6 +17,7 @@ export interface SidecarLaunchDecision {
   reason:
     | 'verified'
     | 'no-bundle'
+    | 'missing-sidecar'
     | 'no-trusted-digest'
     | 'digest-mismatch'
     | 'compute-error'
@@ -39,8 +40,11 @@ export interface DecideSidecarLaunchInput {
 /**
  * Decide whether the packaged sidecar may launch.
  *
- *   no bundle present            → skip   (nothing shipped; caller uses its
- *                                          normal runtime-resolution chain)
+ *   no bundle, no anchor         → skip   (nothing shipped and none expected;
+ *                                          caller uses its normal chain — dev)
+ *   no bundle, anchor pinned     → refuse (a release build that pinned a trust
+ *                                          anchor MUST ship the sidecar; a
+ *                                          missing one fails closed)
  *   bundle present, no anchor    → refuse (unverifiable trusted code)
  *   bundle present, mismatch     → refuse (tampered / drifted)
  *   bundle present, digest error → refuse (cannot prove integrity)
@@ -52,11 +56,23 @@ export function decideSidecarLaunch({
   trustedDigest,
   computeDigest = rootDigestFromBundle
 }: DecideSidecarLaunchInput): SidecarLaunchDecision {
+  const anchor = trustedDigest && /^[0-9a-f]{64}$/.test(trustedDigest) ? trustedDigest : null
+
   if (!bundlePresent || !bundleDir) {
+    if (anchor) {
+      return {
+        action: 'refuse',
+        reason: 'missing-sidecar',
+        expected: anchor,
+        actual: null,
+        detail: 'a trusted sidecar digest is pinned but no bundle is present; a release build must ship the sidecar'
+      }
+    }
+
     return { action: 'skip', reason: 'no-bundle' }
   }
 
-  const expected = trustedDigest && /^[0-9a-f]{64}$/.test(trustedDigest) ? trustedDigest : null
+  const expected = anchor
 
   if (!expected) {
     return {

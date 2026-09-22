@@ -15,9 +15,13 @@
 
 const HEX64 = /^[0-9a-f]{64}$/
 
-// Pinned at release time from a reproducible build (A1). null == not yet
-// pinned; the gate then refuses any shipped sidecar (see decideSidecarLaunch).
-export const TRUSTED_SIDECAR_ROOT_DIGEST: string | null = null
+// Pinned at release time from the controlled build (build-sidecar.mjs): the
+// root digest of the frozen `youtab-backend` (youtab_agent_cli.main `serve`)
+// bundle shipped via extraResources. Recomputed at launch and compared; a
+// mismatch is refused fail-closed. Rebuild + re-pin when the bundle changes.
+//   build: python 3.12.10, uv 0.12.17, pyinstaller 6.22.3 (win32/x64)
+export const TRUSTED_SIDECAR_ROOT_DIGEST: string | null =
+  'de2ad3962fae390b15a12160e03be5ece50c2ec66538827d044b6a4da05eea10'
 
 /**
  * Resolve the effective trust anchor: an operator/CI env override (must be a

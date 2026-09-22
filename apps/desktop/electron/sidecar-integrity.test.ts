@@ -11,10 +11,17 @@ import { decideSidecarLaunch } from './sidecar-integrity'
 const DIGEST = 'a'.repeat(64)
 const OTHER = 'b'.repeat(64)
 
-test('no bundle present → skip (fall through to normal chain)', () => {
+test('no bundle present and no anchor → skip (dev; fall through to normal chain)', () => {
   const d = decideSidecarLaunch({ bundlePresent: false })
   assert.equal(d.action, 'skip')
   assert.equal(d.reason, 'no-bundle')
+})
+
+test('no bundle present but anchor pinned → refuse (release must ship the sidecar)', () => {
+  const d = decideSidecarLaunch({ bundlePresent: false, trustedDigest: DIGEST })
+  assert.equal(d.action, 'refuse')
+  assert.equal(d.reason, 'missing-sidecar')
+  assert.equal(d.expected, DIGEST)
 })
 
 test('bundle present but no trusted anchor → refuse (fail closed)', () => {

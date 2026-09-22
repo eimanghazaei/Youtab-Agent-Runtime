@@ -34,6 +34,7 @@ import nodePty from 'node-pty'
 import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
+import { resolvePackagedSidecarBackend } from './sidecar-backend'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeYoutabHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForYoutabReady } from './backend-health'
@@ -1869,6 +1870,12 @@ const _serveSupportCache = new Map()
 
 function backendSupportsServe(backend) {
   if (!backend || !backend.command) {
+    return true
+  }
+
+  // The packaged sidecar is a freeze of the current `youtab_agent_cli.main`,
+  // which always declares `serve` — skip the ~10s cold `serve --help` probe.
+  if (backend.sidecar) {
     return true
   }
 
@@ -3822,6 +3829,36 @@ function resolveYoutabBackend(backendArgs) {
     }
   }
 
+  // 1b. Packaged self-contained sidecar. In a packaged app the frozen
+  //     `youtab-backend` executable shipped under process.resourcesPath is the
+  //     canonical backend: it runs the SAME `serve` entrypoint as dev, so the
+  //     existing HTTP lifecycle (port announcement, /api/health, session token,
+  //     shutdown) consumes it unchanged. Fail-closed: a tampered/missing/
+  //     unverifiable bundle returns a 'sidecar-refused' backend that ensureRuntime
+  //     surfaces as a visible boot failure instead of silently downgrading.
+  //     Dev mode (isPackaged=false) returns null → the source/venv chain below.
+  //     An explicit YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT override (step 1) still
+  //     wins so a developer can drive a packaged build against a checkout.
+  const sidecarBackend = resolvePackagedSidecarBackend(backendArgs, {
+    isPackaged: IS_PACKAGED,
+    resourcesPath: process.resourcesPath,
+    platform: process.platform,
+    fileExists,
+    env: process.env
+  })
+
+  if (sidecarBackend) {
+    if (sidecarBackend.kind === 'sidecar-refused') {
+      rememberLog(
+        `[sidecar] refusing bundled backend: ${sidecarBackend.sidecarRefusal.reason} — ${sidecarBackend.sidecarRefusal.detail || ''}`
+      )
+    } else {
+      rememberLog(`[sidecar] using bundled backend at ${sidecarBackend.command} (digest ${sidecarBackend.sidecarDigest})`)
+    }
+
+    return sidecarBackend
+  }
+
   // 2. Development source -- when running `npm run dev` from a checkout, the
   //    cloned repo at SOURCE_REPO_ROOT takes precedence over ACTIVE and any
   //    installed `youtab` on PATH so local Python edits are actually exercised.
@@ -3987,6 +4024,25 @@ function resolveYoutabBackend(backendArgs) {
 }
 
 async function ensureRuntime(backend) {
+  // Fail-closed: a packaged sidecar that failed the integrity gate must NOT be
+  // launched and must NOT silently downgrade to another runtime. Surface a
+  // visible boot failure (BootFailureOverlay) with a recovery hint.
+  if (backend.kind === 'sidecar-refused') {
+    const refusal = backend.sidecarRefusal || {}
+    const sidecarError = new Error(
+      `The bundled Youtab backend failed integrity verification (${refusal.reason || 'unknown'}). ` +
+        `${refusal.detail || ''} Reinstall the Youtab desktop app to restore a trusted backend.`
+    ) as any
+
+    sidecarError.isBootstrapFailure = true
+    sidecarError.sidecarRefused = true
+    sidecarError.sidecarRefusalReason = refusal.reason || null
+    // Latch so repeated startYoutab() calls return the same failure without
+    // re-attempting to launch unverified code.
+    bootstrapFailure = sidecarError
+    throw sidecarError
+  }
+
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 

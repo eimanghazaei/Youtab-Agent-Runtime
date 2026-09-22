@@ -18,7 +18,11 @@ import { manifestEntriesFromBundle, rootDigestFromEntries } from './root-digest.
 
 const PYINSTALLER_VERSION = '6.22.3' // pinned — do not float
 const REPO_ROOT = resolve(process.cwd())
-const ENTRY = join(REPO_ROOT, 'tui_gateway', 'entry.py')
+// Freeze the SAME backend entrypoint Electron runs in dev (`youtab_agent_cli.main`)
+// so the packaged executable serves the existing HTTP loopback gateway
+// (`serve --host 127.0.0.1 --port 0` → port announcement + /api/health). A thin
+// launcher preserves the youtab_agent_cli package context when frozen.
+const ENTRY = join(REPO_ROOT, 'apps', 'desktop', 'packaging', 'backend-sidecar', 'sidecar_main.py')
 const OUT_DIR = join(REPO_ROOT, 'apps', 'desktop', 'build', 'backend-sidecar')
 const BUILD_VENV = join(OUT_DIR, '.buildvenv') // isolated; NOT the dev .venv
 const DIST = join(OUT_DIR, 'dist')
@@ -53,13 +57,20 @@ const piVersion = trim(sh(VENV_PY, ['-m', 'PyInstaller', '--version']))
 console.log(`[sidecar] pyinstaller: ${piVersion}`)
 if (piVersion !== PYINSTALLER_VERSION) { console.error(`[sidecar] pyinstaller version drift: ${piVersion} != ${PYINSTALLER_VERSION}`); process.exit(4) }
 
-// 2) freeze (onedir)
-console.log('[sidecar] freezing tui_gateway backend (onedir)')
+// 2) freeze (onedir). Collect the whole first-party backend import graph plus
+//    the dynamically-imported server stack (uvicorn workers, provider plugins)
+//    that PyInstaller's static analysis would otherwise miss.
+console.log('[sidecar] freezing youtab_agent_cli backend (serve; onedir)')
 sh(VENV_PY, [
   '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--name', NAME,
   '--distpath', DIST, '--workpath', WORK, '--specpath', WORK,
-  '--collect-submodules', 'tui_gateway', '--collect-submodules', 'youtab_runtime',
-  '--collect-submodules', 'gateway', '--collect-data', 'tui_gateway', ENTRY,
+  '--collect-submodules', 'youtab_agent_cli',
+  '--collect-submodules', 'tui_gateway',
+  '--collect-submodules', 'youtab_runtime',
+  '--collect-submodules', 'gateway',
+  '--collect-data', 'youtab_agent_cli', '--collect-data', 'tui_gateway',
+  '--collect-all', 'uvicorn', '--collect-all', 'fastapi', '--collect-all', 'starlette',
+  ENTRY,
 ], { VIRTUAL_ENV: BUILD_VENV })
 
 const bundleRoot = join(DIST, NAME)
