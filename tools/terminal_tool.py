@@ -1767,6 +1767,15 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         except ImportError:
             pass
 
+        # Remove this run's tool-result spill scope (ADR-0005 §7a) while the env
+        # can still run a shell command — before its sandbox is torn down. Scoped
+        # + fail-safe: it only ever removes {store-root}/{run-scope}.
+        try:
+            from tools.tool_result_storage import cleanup_run_scope
+            cleanup_run_scope(env)
+        except Exception:
+            pass
+
         try:
             if hasattr(env, 'cleanup'):
                 env.cleanup()
@@ -1917,6 +1926,14 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
 
     if env is None:
         return
+
+    # Remove this run's tool-result spill scope (ADR-0005 §7a) before the env is
+    # torn down. Scoped + fail-safe: only {store-root}/{run-scope} is removed.
+    try:
+        from tools.tool_result_storage import cleanup_run_scope
+        cleanup_run_scope(env)
+    except Exception:
+        pass
 
     try:
         if hasattr(env, 'cleanup'):

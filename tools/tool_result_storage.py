@@ -66,7 +66,11 @@ def _run_scope(env) -> str | None:
     truncates)."""
     if env is None:
         return None
-    sid = getattr(env, "_session_id", None)
+    # Prefer the public accessor; fall back to the private field for envs/stubs
+    # that predate it. Never derived from caller/model input.
+    sid = getattr(env, "session_scope", None)
+    if not isinstance(sid, str):
+        sid = getattr(env, "_session_id", None)
     if isinstance(sid, str) and _SAFE_SCOPE.fullmatch(sid):
         return f"run-{sid}"
     scope = getattr(env, _RESULT_SCOPE_ATTR, None)
