@@ -149,6 +149,39 @@ def test_atomic_write_leaves_no_partial_on_disk(tmp_path) -> None:
     assert leftover == []
 
 
+def test_size_counter_matches_full_recount(tmp_path) -> None:
+    cache = EncryptedScopedCache(str(tmp_path), _ks())
+    s = _scope()
+    for i in range(20):
+        cache.put(s, f"k{i}", b"payload" * (i + 1))
+    cache.delete(s, "k3")
+    cache.tombstone(s, "k4")
+    # incremental counter must equal a fresh full walk
+    assert cache.size_bytes() == cache._total_bytes()  # type: ignore[attr-defined]
+    # reopening recomputes the same size from disk
+    reopened = EncryptedScopedCache(str(tmp_path), _ks())
+    assert reopened.size_bytes() == cache.size_bytes()
+
+
+def test_put_latency_does_not_grow_with_store_size(tmp_path) -> None:
+    import time
+    cache = EncryptedScopedCache(str(tmp_path), _ks())
+    s = _scope()
+
+    def batch(prefix: str, n: int) -> float:
+        t0 = time.perf_counter()
+        for i in range(n):
+            cache.put(s, f"{prefix}{i}", b"x" * 256)
+        return (time.perf_counter() - t0) / n
+
+    early = batch("e", 40)          # store ~empty
+    for i in range(400):            # grow the store
+        cache.put(s, f"fill{i}", b"x" * 256)
+    late = batch("l", 40)           # store has 400+ records
+    # O(1) put: late per-op must NOT be a large multiple of early (was ~6x, O(N)).
+    assert late <= early * 3 + 0.005
+
+
 @pytest.mark.skipif(os.name != "nt", reason="DPAPI is Windows-only")
 def test_dpapi_keystore_roundtrip_on_windows(tmp_path) -> None:
     ks = DpapiKeyStore()

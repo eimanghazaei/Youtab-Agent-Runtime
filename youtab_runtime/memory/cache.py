@@ -61,6 +61,7 @@ class EncryptedScopedCache:
         self._max_bytes = max_bytes
         self._clock = clock
         self._dek: bytes | None = None
+        self._bytes = 0  # incremental size of .rec files; avoids O(N) walks per put
         self._enabled = bool(keystore is not None and keystore.is_available())
         if self._enabled:
             os.makedirs(self._root, exist_ok=True)
@@ -69,6 +70,7 @@ class EncryptedScopedCache:
             except OSError:
                 pass  # Windows: best-effort; ACLs govern instead
             self._dek = self._load_or_create_dek()
+            self._bytes = self._total_bytes()  # one-time walk at open (amortized)
 
     @property
     def enabled(self) -> bool:
@@ -155,9 +157,6 @@ class EncryptedScopedCache:
     ) -> None:
         if not self._enabled or self._dek is None:
             raise CacheDisabled("cache disabled; refusing to write plaintext")
-        self._evict_expired()
-        if self._total_bytes() + len(value) > self._max_bytes:
-            raise CacheFull("cache size bound exceeded")
         nonce = os.urandom(_NONCE_LEN)
         aad = self._aad(scope, key)
         ct = AESGCM(self._dek).encrypt(nonce, value, aad)
@@ -172,7 +171,13 @@ class EncryptedScopedCache:
             "expires_at": (now + ttl_seconds) if ttl_seconds is not None else None,
             "tombstone": False,
         }
-        self._atomic_write(self._record_path(scope, key), json.dumps(rec).encode("utf-8"))
+        data = json.dumps(rec).encode("utf-8")
+        path = self._record_path(scope, key)
+        old_size = self._file_size(path)  # O(1) stat, not an O(N) walk
+        if self._bytes - old_size + len(data) > self._max_bytes:
+            raise CacheFull("cache size bound exceeded")
+        self._atomic_write(path, data)
+        self._bytes += len(data) - old_size
 
     def get(self, scope: MemoryScope, key: str) -> bytes | None:
         if not self._enabled or self._dek is None:
@@ -212,7 +217,11 @@ class EncryptedScopedCache:
         now = self._clock()
         rec = {"tombstone": True, "created_at": now, "expires_at": None,
                 "nonce": "", "ct": "", "aad_sha256": "", "key_id": "", "key_version": 0}
-        self._atomic_write(self._record_path(scope, key), json.dumps(rec).encode("utf-8"))
+        data = json.dumps(rec).encode("utf-8")
+        path = self._record_path(scope, key)
+        old_size = self._file_size(path)
+        self._atomic_write(path, data)
+        self._bytes += len(data) - old_size
 
     def purge_scope(self, scope: MemoryScope) -> None:
         """Erasure: remove every record under a scope partition."""
@@ -222,19 +231,42 @@ class EncryptedScopedCache:
             for f in os.listdir(d):
                 self._delete_path(os.path.join(d, f))
 
+    def sweep_expired(self) -> None:
+        """On-demand O(N) reclamation of expired records (NOT on the put hot path).
+
+        Expiry is enforced lazily on get(); this is an optional maintenance sweep.
+        """
+
+        self._evict_expired()
+
+    def size_bytes(self) -> int:
+        """Current tracked size of .rec records (incrementally maintained)."""
+
+        return self._bytes
+
     # ---- internals ---------------------------------------------------------
 
+    def _file_size(self, path: str) -> int:
+        try:
+            return os.path.getsize(path)
+        except OSError:
+            return 0
+
     def _delete_path(self, path: str) -> None:
+        size = self._file_size(path) if path.endswith(".rec") else 0
         try:
             os.remove(path)
+            self._bytes -= size
         except OSError:
             pass
 
     def _quarantine(self, path: str) -> None:
         qdir = os.path.join(self._root, ".quarantine")
         os.makedirs(qdir, exist_ok=True)
+        size = self._file_size(path) if path.endswith(".rec") else 0
         try:
             os.replace(path, os.path.join(qdir, f"{os.path.basename(path)}.{os.urandom(4).hex()}"))
+            self._bytes -= size  # moved out of the .rec tree
         except OSError:
             self._delete_path(path)
 
