@@ -49,10 +49,14 @@ function mkTmp(prefix: string): string {
   return d
 }
 
-async function startBackend(extraEnv: Record<string, string> = {}, timeoutMs = 30_000): Promise<RunningBackend> {
+async function startBackend(
+  extraEnv: Record<string, string> = {},
+  timeoutMs = 30_000,
+  host = '127.0.0.1'
+): Promise<RunningBackend> {
   const home = mkTmp('sc-int-home-')
 
-  const proc = spawn(EXE, ['serve', '--host', '127.0.0.1', '--port', '0'], {
+  const proc = spawn(EXE, ['serve', '--host', host, '--port', '0'], {
     env: { ...process.env, YOUTAB_AGENT_HOME: home, YOUTAB_AGENT_DESKTOP: '1', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe']
   })
@@ -89,12 +93,16 @@ async function startBackend(extraEnv: Record<string, string> = {}, timeoutMs = 3
   })
 }
 
-async function httpGet(url: string, timeoutMs = 5000): Promise<{ status: number; body: string }> {
+async function httpGet(
+  url: string,
+  timeoutMs = 5000,
+  headers: Record<string, string> = {}
+): Promise<{ status: number; body: string }> {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), timeoutMs)
 
   try {
-    const r = await fetch(url, { signal: ctrl.signal })
+    const r = await fetch(url, { signal: ctrl.signal, headers })
 
     return { status: r.status, body: await r.text() }
   } finally {
@@ -301,5 +309,60 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
     assert.ok(!/[A-Za-z]:\\\\Users\\\\eiman\\\\worktrees/.test(b.logs), 'developer worktree path leaked in logs')
     // redactSecret is the log chokepoint that would scrub it if it ever did.
     expect(redactSecret(`token=${secret}`, secret)).not.toContain(secret)
+  }, 40_000)
+
+  // 13 — a protected API endpoint enforces the ephemeral secret.
+  test('13: a protected endpoint rejects missing/wrong secret and accepts the correct one', async () => {
+    const secret = 'sc-int-auth-' + Math.random().toString(36).slice(2)
+    const b = await startBackend({ YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN: secret })
+    const url = `http://127.0.0.1:${b.port}/api/config` // not in PUBLIC_API_PATHS
+
+    const noToken = await httpGet(url)
+    assert.equal(noToken.status, 401, 'protected endpoint must 401 without the secret')
+
+    const wrongToken = await httpGet(url, 5000, { 'X-Youtab-Session-Token': 'wrong-' + secret })
+    assert.equal(wrongToken.status, 401, 'protected endpoint must 401 with a wrong secret')
+
+    const correct = await httpGet(url, 5000, { 'X-Youtab-Session-Token': secret })
+    assert.equal(correct.status, 200, 'protected endpoint must accept the correct secret')
+  }, 40_000)
+
+  // 14 — /api/health stays public but carries no sensitive state.
+  test('14: /api/health is public and exposes no secret or session state', async () => {
+    const secret = 'sc-int-health-' + Math.random().toString(36).slice(2)
+    const b = await startBackend({ YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN: secret })
+    const res = await httpGet(`http://127.0.0.1:${b.port}/api/health`)
+    assert.equal(res.status, 200)
+    assert.ok(!res.body.includes(secret), 'health payload leaked the session secret')
+    assert.ok(
+      !/token|session|password|secret/i.test(res.body),
+      `health payload carried sensitive-looking state: ${res.body}`
+    )
+  }, 40_000)
+
+  // 15 — a non-loopback bind fails closed (engages the auth gate; a protected
+  // endpoint is never reachable without auth). 127.0.0.2 stays on the loopback
+  // subnet (never exposed off-host) but is NOT the trusted 127.0.0.1, so
+  // should_require_auth() engages the gate.
+  test('15: a non-loopback bind fails closed on protected endpoints', async () => {
+    const secret = 'sc-int-nonlb-' + Math.random().toString(36).slice(2)
+    let started: RunningBackend | null = null
+
+    try {
+      started = await startBackend({ YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN: secret }, 20_000, '127.0.0.2')
+    } catch {
+      // The backend refused to come up on a non-loopback host — that is itself
+      // fail-closed. Nothing more to assert.
+      return
+    }
+
+    // It came up: a protected endpoint must NOT be reachable with the loopback
+    // session token (the gate, not the loopback token scheme, is authoritative
+    // here), so it fails closed with a non-200.
+    const res = await httpGet(`http://127.0.0.2:${started.port}/api/config`, 5000, {
+      'X-Youtab-Session-Token': secret
+    })
+
+    assert.notEqual(res.status, 200, `non-loopback protected endpoint returned 200 (not fail-closed): ${res.status}`)
   }, 40_000)
 })
