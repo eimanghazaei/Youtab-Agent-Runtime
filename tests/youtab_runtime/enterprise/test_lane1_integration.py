@@ -154,6 +154,32 @@ def test_commit_without_authorization_refused(db_path, principal):
     assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
 
 
+def test_commit_capability_without_approval_required_refused(db_path, principal):
+    """A signed manifest that marks a COMMIT op approval_required=False must be
+    refused: mutating effects are always per-effect authorization-gated."""
+    op = "crm.contact.update.commit"
+    signer = Ed25519ManifestSigner.generate(ISSUER, KEY_ID)
+    registry = PublicKeyRegistry({ISSUER: {KEY_ID: signer.public_bytes()}})
+    cap = _cap_dict(op)
+    cap["approval_required"] = False  # mislabelled mutating capability
+    cap["idempotency"] = {"supported": False, "semantics": "none"}
+    signed = signer.sign([cap], issued_at=NOW - 10, expires_at=NOW + 100_000,
+                         tenant_scope="tenant-a", workspace_scope="ws-acme")
+    allow = AllowlistPolicy({(op, "1.0.0")}, {"reference"})
+    manifest = CryptoManifestVerifier(registry, allow, production=True,
+                                      clock=lambda: NOW).verify(signed)
+    authority = TestEffectAuthority()
+    adapter = Lane1AuthorityAdapter(production=False, test_authority_keys=authority.keyring(),
+                                    db_path=db_path, clock=lambda: NOW)
+    conn = Lane1GovernedConnector(
+        manifest, adapter, RuntimeIdempotencyPolicy(set()),
+        WorkerBoundary(repo_root=REPO_ROOT), production=True, db_path=db_path)
+    req = _req(op, principal)
+    with pytest.raises(Lane1GovernedConnectorError):
+        conn.execute(req, authorization=_mint(authority, adapter, op, req))
+    assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
+
+
 def test_runtime_cannot_mint_no_issue_approval():
     import youtab_runtime.approval as ap
     from youtab_runtime.enterprise import lane1_adapter

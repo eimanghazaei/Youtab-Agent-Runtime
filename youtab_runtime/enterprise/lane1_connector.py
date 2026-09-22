@@ -96,6 +96,14 @@ class Lane1GovernedConnector:
                 "(fail-closed until an approved Gateway SHA supplies it)"
             )
         cap.request_schema.validate_payload(req.payload, "input")
+        # Invariant: a mutating (commit-class) capability MUST require approval.
+        # A manifest that marks a commit operation approval_required=False would
+        # turn per-effect signed authorization into a blanket standing grant —
+        # refuse it fail-closed rather than execute an unauthorized mutation.
+        if providers.operation_class(cap.operation_id) == "commit" and not cap.approval_required:
+            raise Lane1GovernedConnectorError(
+                f"commit capability {cap.capability_id!r} must require approval"
+            )
         if cap.tenant_scope != req.principal.tenant:
             raise Lane1GovernedConnectorError("capability tenant binding mismatch")
         if cap.workspace_scope != req.raw_workspace:
@@ -188,11 +196,16 @@ class Lane1GovernedConnector:
         action = cap.operation_id
         effect_id = _ledger.compute_effect_id(req.run_id, req.principal, action, scope)
 
-        # A signed authorization is verified + single-use consumed ONLY when
-        # creating the effect (retry-safe). The Runtime never self-approves.
+        # A signed authorization is verified + single-use consumed on FIRST
+        # creation of every commit-class effect — unconditionally, never keyed on
+        # a manifest boolean (the commit invariant is enforced in _prepare). The
+        # Runtime never self-approves. NOTE (fail-closed): consumption is durable
+        # and precedes begin_effect; a crash between the two makes a retry
+        # re-present the now-consumed authorization and be refused — it requires a
+        # freshly signed authorization, which is safe (never double-executes).
         authorization_id = "none"
         existing = _ledger.get_effect(effect_id, req.principal, db_path=self._db_path)
-        if existing is None and cap.approval_required:
+        if existing is None:
             if authorization is None:
                 raise Lane1GovernedConnectorError(
                     f"operation {cap.operation_id!r} requires a signed authorization"
