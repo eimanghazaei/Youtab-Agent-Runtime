@@ -14,6 +14,15 @@ self-promote knowledge to One Brain.
 
 from __future__ import annotations
 
+from .bus import (
+    MemoryBusClient,
+    MemoryQuery,
+    MemoryQueryResult,
+    PromotionCandidate,
+    ReferenceMemoryBus,
+    RetrievedMemory,
+    degraded_result,
+)
 from .claim import (
     Classification,
     ClaimStatus,
@@ -27,13 +36,20 @@ from .scope import MemoryScope, ScopeAdmission
 __all__ = [
     "Classification",
     "ClaimStatus",
+    "MemoryBusClient",
     "MemoryClaim",
+    "MemoryQuery",
+    "MemoryQueryResult",
     "MemoryRouter",
     "MemoryRoutingDecision",
     "MemoryScope",
     "MemoryType",
     "MemoryWriteIntent",
+    "PromotionCandidate",
+    "ReferenceMemoryBus",
+    "RetrievedMemory",
     "RouteOwner",
     "ScopeAdmission",
     "TrustLevel",
+    "degraded_result",
 ]

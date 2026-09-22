@@ -136,6 +136,29 @@ The genuine base gaps that are memory/continuity and do NOT overlap Lane effect/
 4. **Task resume token / checkpoint capsule (Phase 4):** a durable resume token in `state_meta` (or a small new table) that REFERENCES existing `checkpoint_manager` (files) + compression persistence (convo) + run position + effect refs — reifying `checkpointed_for_resume`. Does NOT reimplement effect_ledger/run_journal (Lane).
 5. **Token-budget policy (Phase 3.7):** model-aware budget layer wrapping the existing char-limit capsule, backward compatible.
 
+## Implementation status (live)
+
+| Phase | Item | Status | Evidence |
+|---|---|---|---|
+| 3.1/3.2 | Memory Router + scoped identity | **IMPLEMENTED (inert, tested)** | `youtab_runtime/memory/{scope,router}.py`; commit `41a89413`; 524→ green |
+| 3.3 | MemoryClaim canonical model | **IMPLEMENTED (tested)** | `youtab_runtime/memory/claim.py`; lifecycle + hash + trust invariants |
+| 3.4 | Simorgh/MemoryBus typed contract + NON-LIVE reference | **IMPLEMENTED (tested, NON-LIVE)** | `youtab_runtime/memory/bus.py` + `docs/architecture/RUNTIME_SIMORGH_MEMORYBUS_CONTRACT.md`; 8 bus tests; scope-isolation + non-live stamping proven |
+| 3.5 | Offline cache/outbox/reconciliation | NOT STARTED | delivery_ledger reusable; general reconcile unimplemented |
+| 3.6 | Hybrid retrieval pipeline (lexical+vector+graph, rerank, budget) | NOT STARTED | holographic FTS5+HRR reusable |
+| 3.7 | Token-budget policy (model-aware, backward-compat) | NOT STARTED | wraps char-limit capsule |
+| 4 | Long-running resume token / checkpoint capsule | NOT STARTED | references checkpoint_manager + state_meta; NOT effect_ledger (Lane) |
+| 5 | Multi-tenant security proofs | PARTIAL (scope isolation unit-proven) | needs default-deny at persistence + adversarial |
+| 6 | CRM/ERP/SAP/CAD scenarios | NOT STARTED | reference providers are Lane-only |
+| 7 | Adversarial/scale/eval | NOT STARTED | |
+| 9 | ADR + evidence report | PARTIAL | MemoryBus contract drafted; ADR-XXXX pending |
+
+Truthful overall: foundational contracts done and green; large surface (retrieval,
+resume, offline, scenarios, scale, security proofs) remains. NOT claiming completion.
+
+Two commits so far (both author=Eiman, 0 attribution trailer, NO push):
+- `41a89413f4c4e3b2e29bc567595100f530eacb53` — scope/claim/router seam + checklist.
+- (slice 2) — MemoryBus contract + reference bus + dependency doc.
+
 ## Owner authorization (recorded)
 
 - Base = current remote default (`main` @ `c7650a1b9`). Lane/Frontend/evidence branches NOT used as base and untouched.
