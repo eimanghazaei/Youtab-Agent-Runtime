@@ -195,6 +195,29 @@ Commits after corrections (all author=Eiman, 0 attribution, NO push; base `c7650
 
 Verdict: ENTERPRISE MEMORY FOUNDATION IMPLEMENTED_NOT_INTEGRATED · LIVE SIMORGH MEMORY NOT VERIFIED · PRODUCT NO-GO. NO push/PR/merge/live-wiring.
 
+## Review follow-up — round 2 (CONDITIONAL ADR DIRECTION)
+
+Frozen reviewed candidate: `34f57ab76c28ea4144d4213b20905e09148ef389`. OQ-1 decided by Owner:
+local/Desktop = one active local principal per install, but ALL records scoped by the full
+7-tuple; server = multi-tenant default-deny; no global single-tenant namespace. No live wiring.
+
+| Item | Deliverable | Status |
+|---|---|---|
+| 1 | Production limit call-path table | `docs/architecture/MEMORY_LIMIT_CALLPATH_AUDIT.md` — 2200/1375 is ONE value gating storage+injection; wrap injection with token budget, don't raise it |
+| 2 | Model-aware token accounting | `youtab_runtime/memory/tokenizer.py` — provider-selected tokenizer, heuristic fallback + margin, per-script (Persian/Dutch/English/JSON/code/SAP/CAD); proves sublinear prompt vs corpus + pre-overflow compaction; 9 tests |
+| 3 | Checkpoint dependency matrix | `docs/architecture/CHECKPOINT_COMMIT_DEPENDENCY_MATRIX.md` — continuity is a LEAF; no Memory commit depends on `a990839b`; cleanly excludable |
+| 4 | Test interference | `docs/architecture/TEST_INTERFERENCE_ANALYSIS.md` — NOT candidate-caused (static-clean + D 119 green); root = pytest shared-basetemp GC racing a concurrent suite; fix = isolated `--basetemp`; E1/E2 = 586/586 green |
+| 5 | Authenticated Simorgh client (DEFAULT DISABLED) | `youtab_runtime/memory/simorgh_client.py` — fail-closed, deadline/cancel, idempotent retries, circuit breaker, digests, redaction, no fallback, no fake provider; 9 tests |
+| 6 | Outbox contract | `youtab_runtime/memory/outbox.py` — event lifecycle, dedupe, crash/restart, inflight reclaim, ordering, poison→dead-letter, revoked-scope fail-closed, tombstone, encryption metadata, convergence cursor; 10 tests |
+| 7 | Design evidence matrix | `docs/architecture/MEMORY_DESIGN_EVIDENCE_MATRIX.md` — OpenAI Sessions / sandbox memory / LangGraph / Temporal / Simorgh ADRs / WP-13 → adopt/reject |
+| 8 | Gateway signed-scope interface (machine-readable) | `docs/architecture/gateway_signed_scope_placement.schema.json` — `youtab.scope-placement.v1` |
+
+Round-2 qualification (Python 3.12.10, pinned tools): new-module tests all green; full
+`tests/youtab_runtime` **586 passed** on two serial isolated-basetemp runs; ruff + ty clean.
+
+2200-limit: **NOT declared solved.** The token-budget wrapper is implemented and proven inert;
+it is NOT yet wired into `agent_init`/`system_prompt` (that is item 12-F, gated on ADR ratification).
+
 ## Owner authorization (recorded)
 
 - Base = current remote default (`main` @ `c7650a1b9`). Lane/Frontend/evidence branches NOT used as base and untouched.
