@@ -80,6 +80,7 @@ function wslUncBase(distro: string): string {
   // stall, and a source of non-deterministic test timeouts). Only genuinely old
   // builds fall through to the probe, where distinguishing the form matters.
   const build = Number(os.release().split('.')[2] ?? '0')
+
   if (!Number.isFinite(build) || build >= 21364) {
     cachedUncBase = modern
 
