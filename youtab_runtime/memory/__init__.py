@@ -45,13 +45,32 @@ from .claim import (
 )
 from .router import MemoryRouter, MemoryRoutingDecision, MemoryWriteIntent, RouteOwner
 from .scope import MemoryScope, ScopeAdmission
+from .tokenizer import (
+    CompactionSummary,
+    ExactTokenCounter,
+    HeuristicTokenCounter,
+    ModelCapability,
+    PromptAccounting,
+    PromptComponents,
+    TokenCounter,
+    account,
+    needs_compaction,
+    select_counter,
+)
 
 __all__ = [
     "BudgetAllocation",
     "BudgetInputs",
     "Classification",
     "ClaimStatus",
+    "CompactionSummary",
     "DeploymentClass",
+    "ExactTokenCounter",
+    "HeuristicTokenCounter",
+    "ModelCapability",
+    "PromptAccounting",
+    "PromptComponents",
+    "TokenCounter",
     "MemoryBusClient",
     "MemoryBusResult",
     "MemoryClaim",
@@ -70,10 +89,13 @@ __all__ = [
     "ScopeAdmission",
     "TaskClass",
     "TrustLevel",
+    "account",
     "allocate",
     "consume_for_live",
     "degraded_result",
     "estimate_tokens",
     "legacy_capsule_fits",
+    "needs_compaction",
+    "select_counter",
     "selective_retrieval_tokens",
 ]
