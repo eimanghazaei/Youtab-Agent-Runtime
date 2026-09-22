@@ -34,11 +34,11 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Dict, List, Optional, Protocol, cast, runtime_checkable
 
 from youtab_constants import get_youtab_home
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _BUSY_TIMEOUT_MS = 5000
 
 
@@ -160,6 +160,7 @@ class RunIdentity:
     workspace_id: str
     principal_id: str
     agent_id: str
+    operation: str = "run"
     parent_task_id: Optional[str] = None
     delegation_id: Optional[str] = None
     idempotency_key: Optional[str] = None
@@ -184,9 +185,33 @@ class WaitResult:
 
 
 # --------------------------------------------------------------------------- #
-# Store
+# One typed interface; backend-specific implementations (no two authorities)
 # --------------------------------------------------------------------------- #
-class DurableRunStore:
+@runtime_checkable
+class RunStore(Protocol):
+    """The single typed run-store contract. SQLite (desktop/offline) and a future
+    PostgreSQL (server/enterprise) implementation share identical state and
+    idempotency semantics behind this interface. There is never synchronization
+    between two authoritative stores — a deployment selects exactly one backend."""
+
+    def create_run(self, identity: RunIdentity, *, initial_state: RunState = ...) -> Dict[str, Any]: ...
+    def get_run(self, run_id: str) -> Optional[Dict[str, Any]]: ...
+    def transition(self, run_id: str, to_state: RunState, **kw: Any) -> Dict[str, Any]: ...
+    def record_progress(self, run_id: str, **kw: Any) -> int: ...
+    def append_event(self, run_id: str, kind: str, payload: Optional[dict] = ...) -> int: ...
+    def get_events(self, run_id: str, *, from_seq: int = ..., limit: int = ...) -> List[Dict[str, Any]]: ...
+    def claim(self, run_id: str, owner: str, *, ttl_seconds: float = ...) -> Optional[int]: ...
+    def heartbeat(self, run_id: str, owner: str, epoch: int, *, ttl_seconds: float = ...) -> bool: ...
+    def detect_stalled(self, *, stall_threshold: float, liveness_window: float = ..., now: Optional[float] = ...) -> List[str]: ...
+    def request_cancel(self, run_id: str, *, reason: str, by: str) -> Dict[str, Any]: ...
+    def wait_for_terminal(self, run_id: str, *, wait_timeout: float, poll: float = ...) -> WaitResult: ...
+
+
+class SqliteRunStore:
+    """SQLite implementation of :class:`RunStore` — local/offline Desktop backend.
+    Local correctness evidence only (fenced claim under DELETE mode), NOT
+    multi-host scale evidence; server/enterprise uses the PostgreSQL backend."""
+
     def __init__(self, db_path: Optional[Path] = None):
         self._db_path = Path(db_path) if db_path else (get_youtab_home() / "durable_runs.db")
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -220,6 +245,7 @@ class DurableRunStore:
                     workspace_id TEXT NOT NULL,
                     principal_id TEXT NOT NULL,
                     agent_id TEXT NOT NULL,
+                    operation TEXT NOT NULL DEFAULT 'run',
                     parent_task_id TEXT,
                     delegation_id TEXT,
                     idempotency_key TEXT,
@@ -242,9 +268,13 @@ class DurableRunStore:
                     updated_at REAL NOT NULL
                 )"""
             )
+            # Idempotency is SCOPED, never global: the same key in a different
+            # tenant/workspace/principal/operation is an independent task, and a
+            # scoped lookup cannot leak a foreign tenant's task existence.
             conn.execute(
                 """CREATE UNIQUE INDEX IF NOT EXISTS ux_runs_idempotency
-                   ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL"""
+                   ON runs(tenant_id, workspace_id, principal_id, operation, idempotency_key)
+                   WHERE idempotency_key IS NOT NULL"""
             )
             conn.execute(
                 """CREATE TABLE IF NOT EXISTS run_events (
@@ -297,8 +327,13 @@ class DurableRunStore:
         try:
             conn.execute("BEGIN IMMEDIATE")
             if identity.idempotency_key:
+                # SCOPED lookup — cannot see another tenant/workspace/principal/
+                # operation's run, so no cross-tenant existence leak.
                 cur = conn.execute(
-                    "SELECT * FROM runs WHERE idempotency_key=?", (identity.idempotency_key,)
+                    "SELECT * FROM runs WHERE tenant_id=? AND workspace_id=? AND principal_id=? "
+                    "AND operation=? AND idempotency_key=?",
+                    (identity.tenant_id, identity.workspace_id, identity.principal_id,
+                     identity.operation, identity.idempotency_key),
                 )
                 existing = cur.fetchone()
                 if existing is not None:
@@ -306,17 +341,18 @@ class DurableRunStore:
                     conn.execute("COMMIT")
                     if (identity.request_digest or None) != (row.get("request_digest") or None):
                         raise IdempotencyConflict(
-                            f"idempotency_key {identity.idempotency_key!r} exists with a different digest"
+                            f"scoped idempotency key {identity.idempotency_key!r} exists with a "
+                            f"different request_digest"
                         )
                     return row
             conn.execute(
                 """INSERT INTO runs(run_id, task_id, tenant_id, organization_id, workspace_id,
-                        principal_id, agent_id, parent_task_id, delegation_id, idempotency_key,
-                        request_digest, state, progress_seq, execution_deadline, lease_epoch,
-                        attempts, created_at, updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,0,?,?)""",
+                        principal_id, agent_id, operation, parent_task_id, delegation_id,
+                        idempotency_key, request_digest, state, progress_seq, execution_deadline,
+                        lease_epoch, attempts, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,0,?,?)""",
                 (identity.run_id, identity.task_id, identity.tenant_id, identity.organization_id,
-                 identity.workspace_id, identity.principal_id, identity.agent_id,
+                 identity.workspace_id, identity.principal_id, identity.agent_id, identity.operation,
                  identity.parent_task_id, identity.delegation_id, identity.idempotency_key,
                  identity.request_digest, initial_state.value, identity.execution_deadline, now, now),
             )
@@ -572,3 +608,38 @@ class DurableRunStore:
                     reconnect=f"/v1/runs/{run_id}/events?from_seq={int(row['progress_seq'] or 0)}",
                 )
             time.sleep(min(poll, max(0.0, deadline - time.time())))
+
+
+# Backward-compatible alias: the canonical name callers use.
+DurableRunStore = SqliteRunStore
+
+
+class PostgresRunStore:
+    """Server/enterprise backend placeholder — same RunStore contract.
+
+    Not implemented on this base: server deployment integration is a separate,
+    later work item. It is declared here so the typed interface and factory make
+    the backend choice explicit; SQLite must never be presented as multi-host
+    distributed-execution evidence.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        raise NotImplementedError(
+            "PostgresRunStore is not integrated on this base; use the SQLite "
+            "backend for local/desktop, and wire the Postgres backend when the "
+            "server persistence layer is integrated (same RunStore contract)."
+        )
+
+
+def create_run_store(backend: str = "sqlite", **kwargs: Any) -> RunStore:
+    """Select the single canonical run-store backend for this deployment.
+
+    ``sqlite`` -> local/offline Desktop; ``postgres`` -> server/enterprise.
+    Exactly one authoritative store per deployment — never both.
+    """
+    backend = (backend or "sqlite").lower()
+    if backend == "sqlite":
+        return cast(RunStore, SqliteRunStore(**kwargs))
+    if backend in ("postgres", "postgresql", "pg"):
+        return cast(RunStore, PostgresRunStore(**kwargs))
+    raise ValueError(f"unknown run-store backend: {backend!r}")

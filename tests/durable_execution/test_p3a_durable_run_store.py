@@ -48,9 +48,75 @@ def test_create_is_durable_and_idempotent(tmp_path):
     # same key + same digest -> same run (idempotent)
     again = s.create_run(_identity(idempotency_key="k1", request_digest="d1"))
     assert again["run_id"] == row["run_id"]
-    # same key + different digest -> fail closed
+    # same scoped key + different digest -> fail closed
     with pytest.raises(IdempotencyConflict):
         s.create_run(_identity(db_run_id="run-2", idempotency_key="k1", request_digest="d2"))
+
+
+def test_idempotency_is_scoped_not_global(tmp_path):
+    """Same key is INDEPENDENT across tenant/workspace/principal/operation; a
+    scoped lookup cannot leak a foreign tenant's task existence."""
+    s = DurableRunStore(db_path=tmp_path / "d.db")
+    a = s.create_run(_identity(db_run_id="rA", tenant_id="tA", idempotency_key="dup", request_digest="dX"))
+    # Different tenant, SAME key + even a different digest -> independent task,
+    # NOT a conflict, NOT a replay of tenant A's run.
+    b = s.create_run(_identity(db_run_id="rB", tenant_id="tB", idempotency_key="dup", request_digest="dY"))
+    assert a["run_id"] == "rA" and b["run_id"] == "rB"
+    assert a["tenant_id"] == "tA" and b["tenant_id"] == "tB"
+    # Different workspace -> independent.
+    c = s.create_run(_identity(db_run_id="rC", workspace_id="w2", idempotency_key="dup", request_digest="dZ"))
+    assert c["run_id"] == "rC"
+    # Different operation -> independent.
+    d = s.create_run(_identity(db_run_id="rD", operation="erp-commit", idempotency_key="dup", request_digest="dW"))
+    assert d["run_id"] == "rD"
+    # Same full scope + same digest -> replay original (no new row).
+    again = s.create_run(_identity(db_run_id="rA2", tenant_id="tA", idempotency_key="dup", request_digest="dX"))
+    assert again["run_id"] == "rA"
+
+
+def test_idempotency_index_is_composite(tmp_path):
+    s = DurableRunStore(db_path=tmp_path / "d.db")
+    conn = s._connect()
+    try:
+        idx = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_runs_idempotency'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    for col in ("tenant_id", "workspace_id", "principal_id", "operation", "idempotency_key"):
+        assert col in idx, f"idempotency index must be scoped by {col}"
+
+
+def test_concurrent_scoped_idempotent_create_single_row(tmp_path):
+    import threading
+    s = DurableRunStore(db_path=tmp_path / "d.db")
+    results = []
+    errors = []
+    barrier = threading.Barrier(6)
+
+    def _create(i):
+        cs = DurableRunStore(db_path=tmp_path / "d.db")
+        barrier.wait()
+        try:
+            row = cs.create_run(_identity(db_run_id=f"r{i}", idempotency_key="same",
+                                          request_digest="samedigest"))
+            results.append(row["run_id"])
+        except Exception as e:  # noqa: BLE001
+            errors.append(type(e).__name__)
+
+    ts = [threading.Thread(target=_create, args=(i,)) for i in range(6)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(10)
+    # Exactly one physical row exists; all idempotent creators resolve to it.
+    conn = s._connect()
+    try:
+        n = conn.execute("SELECT COUNT(*) FROM runs WHERE idempotency_key='same'").fetchone()[0]
+    finally:
+        conn.close()
+    assert n == 1, f"scoped idempotent create must yield one row, got {n}"
+    assert len(set(results)) == 1, f"all creators resolve to one run_id, got {set(results)}"
 
 
 def test_transition_validation_and_terminal_immutability(store):
