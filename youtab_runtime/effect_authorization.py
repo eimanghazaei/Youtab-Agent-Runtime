@@ -180,7 +180,7 @@ class TestEffectAuthority:
         workspace_id: str,
         command_id: str,
         capability: str,
-        operation: str,
+        operation: Literal["read", "write", "create"],
         effect_digest: str,
         issued_at: datetime,
         expires_at: datetime,
