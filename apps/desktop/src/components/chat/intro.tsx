@@ -146,6 +146,9 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
 
 const WORDMARK = 'YOUTAB AGENT'
 
+// Fixed intro subtitle (overrides the rotating intro-copy taglines).
+const SUBTITLE = 'Welcome to Youtab Agent Runtime - please drop a file path or give Youtab a task.'
+
 function resolveCopy(personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)
 
@@ -158,7 +161,7 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 
 export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const copy = { ...resolveCopy(personality, mountSeed + (seed ?? 0)), body: SUBTITLE }
 
   return (
     <div
