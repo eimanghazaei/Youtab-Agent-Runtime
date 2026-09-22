@@ -111,6 +111,21 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     the exec-arg ceiling.
     """
     storage_dir = os.path.dirname(remote_path)
+    # Containment invariant (ADR-0005 §7 — allow-listed internal-plane writer):
+    # the result-store write MUST target a single sanitized filename directly
+    # inside the store root — never a nested path or a parent-directory traversal.
+    # ``tool_use_id`` is the only attacker-influenceable input to the path and is
+    # already sanitized by ``_safe_result_filename``; enforcing it here makes the
+    # containment an EXPLICIT, testable invariant at the write chokepoint rather
+    # than an incidental property of the caller. Fail closed (no write) on any
+    # violation — the caller then falls back to inline truncation.
+    leaf = os.path.basename(remote_path.replace("\\", "/"))
+    if not leaf or leaf in (".", "..") or "/" in leaf or "\\" in leaf:
+        logger.warning(
+            "Refusing result-store write with an unsafe filename component: %r",
+            remote_path,
+        )
+        return False
     cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
     result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0

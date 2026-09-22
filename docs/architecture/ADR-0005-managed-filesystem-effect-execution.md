@@ -72,6 +72,16 @@ A callsite inventory found that, besides the arbitrary external-fs / shell / cod
 
 This ADR's scope is the arbitrary-external-fs / shell / code bypass (closed). The control-plane class is a named follow-up, so no managed writer is both unclassified and unbounded.
 
+#### 7a. Allow-listed internal-plane writer: the tool-result overflow store
+
+`tools/tool_result_storage.py` (`maybe_persist_tool_result` → `_write_to_sandbox`) writes to the backend filesystem during a managed run via `env.execute("mkdir -p <root> && cat > <path>", stdin_data=…)`, outside the `managed_fs_router` / grant / signed-authorization / effect-ledger / receipt path. This is a **deliberate allow-listed exception**, not an ungoverned bypass, because it is **internal runtime infrastructure**, not a model-directed external effect:
+
+- **What it writes:** a tool's *own* oversized output, spilled to disk so it does not overflow the context window (the model then reads it back through the governed `read_file`). It is result-caching, analogous to logging — the content originates from the runtime, not from a model-issued write request against user/workspace data.
+- **Where:** a fixed, infrastructure-controlled store root `{env.get_temp_dir()}/youtab-results/`, never a caller-supplied path.
+- **Containment invariant (enforced + tested):** the only attacker-influenceable input to the path is the system `tool_use_id`, which is sanitized to a single filename component by `_safe_result_filename` (`[^A-Za-z0-9_.-]+`→`_`, strips leading/trailing `._-`, appends a hash when altered). `_write_to_sandbox` additionally **fails closed** (no write, caller falls back to inline truncation) if the resolved leaf is empty, `.`/`..`, or contains a path separator — so a crafted `tool_use_id` can never escape the store root, nest, or traverse.
+
+Routing this through the signed-`EffectAuthorization` external-effect path is explicitly rejected: requiring Brain authorization to persist a tool's own output would break large-result handling for no security gain (the content is already in hand and the destination is a fixed runtime cache). **Follow-up (not required for this disposition):** run-scoping the store root (`…/youtab-results/<run_id>/`) for cross-run isolation-in-depth — currently unnecessary because the store is outside every workspace grant (so the governed `read_file` cannot reach it) and the effectful shell tools that could are already fail-closed for managed runs.
+
 ## Consequences
 
 - **Positive:** the fs primitives gain a real, single, non-bypassable execution seam; managed READ becomes grant-scoped; at-most-once + workspace-bound receipts + evidence-bound reconciliation become the contract for fs effects; the shell/terminal bypass is closed fail-closed; nothing is weakened and no runtime authority is minted.
