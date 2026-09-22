@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   Square,
   Terminal,
-} from "lucide-react";
+} from "@/lib/runtime-icons";
 
 import { Button } from "@youtab/ui/ui/components/button";
 import { Badge } from "@youtab/ui/ui/components/badge";

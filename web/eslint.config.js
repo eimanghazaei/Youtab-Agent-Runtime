@@ -13,11 +13,11 @@ export default defineConfig([
       js.configs.recommended,
       tseslint.configs.recommended,
       reactHooks.configs['flat/recommended'],
-      reactRefresh.configs.vite,
+      reactRefresh.configs.vite
     ],
     languageOptions: {
       ecmaVersion: 2020,
-      globals: globals.browser,
+      globals: globals.browser
     },
     rules: {
       // Context providers and hook files commonly export both a component
@@ -30,7 +30,43 @@ export default defineConfig([
       'react-hooks/set-state-in-effect': 'warn',
       'react-hooks/refs': 'warn',
       'react-hooks/preserve-manual-memoization': 'warn',
-      'react-hooks/static-components': 'warn',
-    },
+      'react-hooks/static-components': 'warn'
+    }
   },
+  // ── Design-system guard for Agent Runtime feature surfaces ────────────────
+  // Mechanically prevents visual fragmentation: any option/field a future
+  // session adds under the runtime feature dir must use DS semantic tokens and
+  // the shared icon registry — never a raw hex color or a direct icon import.
+  {
+    files: ['src/pages/runtime/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'lucide-react',
+              message: 'Import icons from @/lib/runtime-icons (the shared registry), not lucide-react directly.'
+            },
+            {
+              name: '@tabler/icons-react',
+              message: 'Import icons from @/lib/runtime-icons (the shared registry).'
+            }
+          ]
+        }
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'Literal[value=/#[0-9a-fA-F]{3,8}/]',
+          message:
+            'No raw hex colors in feature code — use design-system semantic tokens (bg-card, text-foreground, text-muted-foreground, border-border, --ui-*).'
+        },
+        {
+          selector: 'TemplateElement[value.raw=/#[0-9a-fA-F]{3,8}/]',
+          message: 'No raw hex colors in feature code — use design-system semantic tokens.'
+        }
+      ]
+    }
+  }
 ])

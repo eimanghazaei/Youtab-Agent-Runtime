@@ -77,5 +77,41 @@ export default [
         }
       ]
     }
+  },
+  // ── Design-system guard for enterprise / governance feature surfaces ──────
+  // Mechanically prevents visual fragmentation: any option/field a future
+  // session adds under these feature dirs must use DS semantic tokens and the
+  // shared icon registry — never a raw hex color or a direct icon import.
+  {
+    files: ['src/app/enterprise/**/*.{ts,tsx}', 'src/app/governance/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'lucide-react',
+              message: 'Import icons from the shared icon registry (@/lib/icons), not lucide-react directly.'
+            },
+            {
+              name: '@tabler/icons-react',
+              message: 'Import icons from the shared icon registry (@/lib/icons).'
+            }
+          ]
+        }
+      ],
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'Literal[value=/#[0-9a-fA-F]{3,8}/]',
+          message:
+            'No raw hex colors in feature code — use design-system semantic tokens (bg-card, text-foreground, text-muted-foreground, border-border, --ui-*).'
+        },
+        {
+          selector: 'TemplateElement[value.raw=/#[0-9a-fA-F]{3,8}/]',
+          message: 'No raw hex colors in feature code — use design-system semantic tokens.'
+        }
+      ]
+    }
   }
 ]
