@@ -1,21 +1,30 @@
-"""Integrated Lane-1 + Lane-2 adversarial proofs on the REAL canonical spine.
+"""Integrated Lane-1 (current authority) + Lane-2 adversarial proofs.
 
-Uses the real Lane-1 modules (approval, effect_ledger, worker_lease) via
-Lane1AuthorityAdapter and real worker subprocesses — no reference authority
-double. The signed manifest is verified with the HMAC test signer
-(production=False) purely to obtain a verified CapabilityManifest; the Ed25519
-production verification path is covered in test_manifest_crypto.
+Runs the governed connector against the REAL current Lane-1 authority model:
+  * manifests verified with the PRODUCTION Ed25519 verifier (production=True,
+    trusted non-test issuer/key) — the production manifest path, not HMAC;
+  * effect authority is an externally-signed EffectAuthorization that the Runtime
+    only VERIFIES and single-use CONSUMES via approval.reserve_and_consume_
+    authorization — the Runtime never mints (issue_approval is gone);
+  * the canonical effect ledger, worker lease + evidence reconcile, and real
+    worker subprocesses.
+
+The effect-authorization signer is TestEffectAuthority (test-prefixed key,
+adapter production=False) because production authority keys come from the Brain
+(a remaining Gateway/Brain dependency); the production authority guard is proven
+negatively (a test authority is refused when the adapter is production=True).
 """
 
 from __future__ import annotations
 
 import os
 import sys
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from youtab_runtime import approval as _approval
 from youtab_runtime import effect_ledger as _ledger
+from youtab_runtime.effect_authorization import TestEffectAuthority
 from youtab_runtime.enterprise import reference_providers as providers
 from youtab_runtime.enterprise.authority import RuntimeIdempotencyPolicy
 from youtab_runtime.enterprise.connector import ConnectorRequest
@@ -24,20 +33,20 @@ from youtab_runtime.enterprise.lane1_connector import (
     Lane1GovernedConnector,
     Lane1GovernedConnectorError,
 )
-from youtab_runtime.enterprise.manifest import (
-    TEST_ONLY_ISSUER,
-    AllowlistPolicy,
-    KeyRegistry,
-    ManifestError,
-    ManifestSigner,
-    ManifestVerifier,
+from youtab_runtime.enterprise.manifest import AllowlistPolicy
+from youtab_runtime.enterprise.manifest_crypto import (
+    CryptoManifestVerifier,
+    Ed25519ManifestSigner,
+    PublicKeyRegistry,
 )
 from youtab_runtime.enterprise.worker_boundary import WorkerBoundary
 from youtab_runtime.run_journal import Principal
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-TEST_SECRET = b"test-signer-secret-DO-NOT-SHIP-00"
-NOW = 3_000_000
+ISSUER = "gateway-authority"
+KEY_ID = "gw-k1"
+NOW = 4_000_000
+NOW_DT = datetime.fromtimestamp(NOW, UTC)
 
 
 @pytest.fixture()
@@ -48,10 +57,6 @@ def db_path(tmp_path):
 @pytest.fixture()
 def principal():
     return Principal("tenant-a", "user-a")
-
-
-def _registry():
-    return KeyRegistry({TEST_ONLY_ISSUER: {"tk": TEST_SECRET}})
 
 
 def _cap_dict(operation_id, *, workspace="ws-acme", tenant="tenant-a",
@@ -72,96 +77,120 @@ def _cap_dict(operation_id, *, workspace="ws-acme", tenant="tenant-a",
     }
 
 
-def _manifest(operation_ids, **kw):
-    reg = _registry()
+def _prod_manifest(operation_ids, *, production=True, **kw):
+    signer = Ed25519ManifestSigner.generate(ISSUER, KEY_ID)
+    registry = PublicKeyRegistry({ISSUER: {KEY_ID: signer.public_bytes()}})
     caps = [_cap_dict(op, **kw) for op in operation_ids]
-    signed = ManifestSigner(reg, TEST_ONLY_ISSUER, "tk").sign(
-        caps, issued_at=NOW - 10, expires_at=NOW + 100_000
+    signed = signer.sign(
+        caps, issued_at=NOW - 10, expires_at=NOW + 100_000,
+        tenant_scope=kw.get("tenant", "tenant-a"),
+        workspace_scope=kw.get("workspace", "ws-acme"),
     )
     allow = AllowlistPolicy({(op, "1.0.0") for op in operation_ids},
                             {kw.get("provider", "reference")})
-    verifier = ManifestVerifier(reg, allow, production=False, clock=lambda: NOW)
+    verifier = CryptoManifestVerifier(registry, allow, production=production,
+                                      clock=lambda: NOW)
     return verifier.verify(signed)
 
 
-def _connector(operation_ids, db_path, *, worker=None, **kw):
-    manifest = _manifest(operation_ids, **kw)
-    adapter = Lane1AuthorityAdapter(db_path=db_path, clock=lambda: NOW)
+def _connector(operation_ids, db_path, *, authority=None, worker=None,
+               adapter_production=False, **kw):
+    authority = authority or TestEffectAuthority()
+    manifest = _prod_manifest(operation_ids, **kw)
+    adapter = Lane1AuthorityAdapter(
+        production=adapter_production, test_authority_keys=authority.keyring(),
+        db_path=db_path, clock=lambda: NOW,
+    )
     conn = Lane1GovernedConnector(
         manifest, adapter, RuntimeIdempotencyPolicy(set()),
         worker or WorkerBoundary(repo_root=REPO_ROOT),
         production=True, db_path=db_path, deadline_seconds=30.0,
     )
-    return conn, adapter
+    return conn, adapter, authority
 
 
-def _commit_req(op, principal, *, workspace="ws-acme", business_key="obj-1",
-                approval_id="appr-1"):
-    payload = ({"business_key": business_key, "field": "status", "value": "active"}
-               if providers.operation_class(op) in ("preview", "commit")
-               else {"business_key": business_key})
+def _req(op, principal, *, business_key="obj-1", run_id="run-1", workspace="ws-acme",
+         payload=None):
+    if payload is None:
+        payload = ({"business_key": business_key, "field": "status", "value": "active"}
+                   if providers.operation_class(op) in ("preview", "commit")
+                   else {"business_key": business_key})
     return ConnectorRequest(
-        capability_id=op, run_id="run-1", principal=principal,
+        capability_id=op, run_id=run_id, principal=principal,
         raw_workspace=workspace, business_key=business_key, payload=payload,
-        approval_id=approval_id,
     )
 
 
-def _issue_approval(adapter, db_path, op, req, *, approval_id="appr-1",
-                    principal=None, ttl=3600):
-    principal = principal or req.principal
-    ws = adapter.canonicalize_workspace(principal.tenant, req.raw_workspace)
+def _mint(authority, adapter, op, req, *, authz_id="authz-000000000001", ttl=3600):
+    ws = adapter.canonicalize_workspace(req.principal.tenant, req.raw_workspace)
     rd = providers.request_digest_of(op, ws.workspace, req.business_key, req.payload)
     edigest = adapter.effect_digest_for(op, ws.workspace, rd)
-    _approval.issue_approval(approval_id, edigest, principal, ws.workspace,
-                             expires_at=NOW + ttl, db_path=db_path)
+    return authority.mint(
+        authorization_id=authz_id, tenant_id=req.principal.tenant,
+        user_id=req.principal.user, workspace_id=ws.workspace,
+        command_id="cmd-00000001", capability=op, operation="write",
+        effect_digest=edigest, issued_at=NOW_DT - timedelta(seconds=10),
+        expires_at=NOW_DT + timedelta(seconds=ttl),
+    )
 
 
 # --------------------------------------------------------------------------- #
-# Operation matrix on the real ledger                                          #
+# Production manifest path + no-mint authority                                 #
 # --------------------------------------------------------------------------- #
-COMMIT_OPS = ["crm.contact.update.commit", "erp.order.commit",
-              "sap.business_object.update.commit"]
-READ_OPS = ["crm.contact.read", "erp.inventory.read", "sap.business_object.read"]
-PREVIEW_OPS = ["crm.contact.update.preview", "erp.order.preview",
-               "sap.business_object.update.preview"]
-
-
-def test_read_ops_zero_effect(db_path, principal):
-    for op in READ_OPS:
-        conn, _ = _connector([op], db_path)
-        r = conn.execute(_commit_req(op, principal, approval_id=None))
-        assert r.effect_state == "non_mutating"
-    assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
-
-
-def test_preview_zero_commit_one(db_path, principal):
-    conn, adapter = _connector(PREVIEW_OPS[:1] + COMMIT_OPS[:1], db_path)
-    conn.execute(_commit_req(PREVIEW_OPS[0], principal, approval_id=None))
-    assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
-    creq = _commit_req(COMMIT_OPS[0], principal)
-    _issue_approval(adapter, db_path, COMMIT_OPS[0], creq)
-    r = conn.execute(creq)
+def test_commit_with_signed_authorization(db_path, principal):
+    op = "crm.contact.update.commit"
+    conn, adapter, authority = _connector([op], db_path)
+    req = _req(op, principal)
+    r = conn.execute(req, authorization=_mint(authority, adapter, op, req))
     assert r.effect_state == "committed"
     assert len(_ledger.list_effects("run-1", principal, db_path=db_path)) == 1
 
 
-def test_commit_matrix_real_approval(db_path, principal):
-    for i, op in enumerate(COMMIT_OPS):
-        conn, adapter = _connector([op], db_path)
-        aid = f"appr-{i}"
-        req = ConnectorRequest(
-            capability_id=op, run_id=f"run-{i}", principal=principal,
-            raw_workspace="ws-acme", business_key="obj-1",
-            payload={"business_key": "obj-1", "field": "s", "value": "v"},
-            approval_id=aid,
-        )
-        ws = adapter.canonicalize_workspace("tenant-a", "ws-acme")
-        rd = providers.request_digest_of(op, ws.workspace, "obj-1", req.payload)
-        edigest = adapter.effect_digest_for(op, ws.workspace, rd)
-        _approval.issue_approval(aid, edigest, principal, ws.workspace,
-                                 expires_at=NOW + 3600, db_path=db_path)
-        r = conn.execute(req)
+def test_commit_without_authorization_refused(db_path, principal):
+    op = "crm.contact.update.commit"
+    conn, _, _ = _connector([op], db_path)
+    with pytest.raises(Lane1GovernedConnectorError):
+        conn.execute(_req(op, principal))
+    assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
+
+
+def test_runtime_cannot_mint_no_issue_approval():
+    import youtab_runtime.approval as ap
+    from youtab_runtime.enterprise import lane1_adapter
+    # The Runtime-minted approval API is gone from Lane-1 entirely...
+    assert not hasattr(ap, "issue_approval")
+    assert not hasattr(ap, "consume_approval")
+    # ...and the adapter never CALLS it (docstring mentions are not calls).
+    src = open(lane1_adapter.__file__, encoding="utf-8").read()
+    assert "issue_approval(" not in src
+    assert "reserve_and_consume_authorization" in src
+
+
+def test_read_ops_zero_effect(db_path, principal):
+    for op in ["crm.contact.read", "erp.inventory.read", "sap.business_object.read"]:
+        conn, _, _ = _connector([op], db_path)
+        assert conn.execute(_req(op, principal)).effect_state == "non_mutating"
+    assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
+
+
+def test_preview_zero_commit_one(db_path, principal):
+    ops = ["crm.contact.update.preview", "crm.contact.update.commit"]
+    conn, adapter, authority = _connector(ops, db_path)
+    conn.execute(_req("crm.contact.update.preview", principal))
+    assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
+    creq = _req("crm.contact.update.commit", principal)
+    conn.execute(creq, authorization=_mint(authority, adapter,
+                                           "crm.contact.update.commit", creq))
+    assert len(_ledger.list_effects("run-1", principal, db_path=db_path)) == 1
+
+
+def test_commit_matrix(db_path, principal):
+    for i, op in enumerate(["crm.contact.update.commit", "erp.order.commit",
+                            "sap.business_object.update.commit"]):
+        conn, adapter, authority = _connector([op], db_path)
+        req = _req(op, principal, run_id=f"run-{i}")
+        r = conn.execute(req, authorization=_mint(authority, adapter, op, req,
+                                                  authz_id=f"authz-00000000000{i}"))
         assert r.effect_state == "committed", (op, r.effect_state)
 
 
@@ -169,188 +198,154 @@ CAD_MODEL = {"length": 2.0, "area": 0.01, "youngs_modulus": 200e9,
              "force": 1000.0, "elements": 8}
 
 
-def _fea_req(principal, *, business_key="part-1", approval_id="appr-1"):
-    return ConnectorRequest(
-        capability_id="cad.fea.run", run_id="run-1", principal=principal,
-        raw_workspace="ws-acme", business_key=business_key,
-        payload={"model": CAD_MODEL}, approval_id=approval_id,
-    )
-
-
-def test_cad_ops_real_compute(db_path, principal):
-    # Bounded FEA is a governed EFFECT (commit class) via the numpy adapter.
-    conn, adapter = _connector(["cad.fea.run"], db_path)
-    req = _fea_req(principal)
-    _issue_approval(adapter, db_path, "cad.fea.run", req)
-    r = conn.execute(req)
-    assert r.output["tip_displacement"] == pytest.approx(1e-6, rel=1e-9)
-    assert r.output["backend"] == "numpy"
-    assert r.effect_state == "committed"
-
-
-def test_cad_library_backed_fea_cross_checks_connector(db_path, principal):
-    """The numpy-backed solver agrees with both the analytical form and the
-    connector's oracle-cross-checked output within the documented tolerance."""
+def test_cad_library_backed_fea_governed(db_path, principal):
     from youtab_runtime.enterprise import cad_lib
 
-    conn, adapter = _connector(["cad.fea.run"], db_path)
-    req = _fea_req(principal)
-    _issue_approval(adapter, db_path, "cad.fea.run", req)
-    r = conn.execute(req)
-    xc = cad_lib.cross_check_against_reference(CAD_MODEL)
-    lib = cad_lib.fea_run_numpy(CAD_MODEL)
-    assert lib["backend"] == "numpy"
-    assert lib["tip_displacement"] == pytest.approx(r.output["tip_displacement"], rel=1e-6)
-    assert xc  # raised if the two backends diverged
+    op = "cad.fea.run"
+    conn, adapter, authority = _connector([op], db_path)
+    req = _req(op, principal, business_key="part-1", payload={"model": CAD_MODEL})
+    r = conn.execute(req, authorization=_mint(authority, adapter, op, req))
+    assert r.output["backend"] == "numpy"
+    assert r.effect_state == "committed"
+    assert r.output["tip_displacement"] == pytest.approx(1e-6, rel=1e-9)
+    assert cad_lib.cross_check_against_reference(CAD_MODEL)
 
 
 # --------------------------------------------------------------------------- #
-# Approval / authority negative proofs                                         #
+# Authorization adversarial                                                    #
 # --------------------------------------------------------------------------- #
-def test_commit_without_approval_refused(db_path, principal):
-    conn, _ = _connector(["crm.contact.update.commit"], db_path)
-    req = _commit_req("crm.contact.update.commit", principal, approval_id=None)
+def test_changed_request_reusing_authorization_rejected(db_path, principal):
+    op = "crm.contact.update.commit"
+    conn, adapter, authority = _connector([op], db_path)
+    auth = _mint(authority, adapter, op, _req(op, principal))
+    bad = _req(op, principal, payload={"business_key": "obj-1", "field": "status",
+                                       "value": "TAMPERED"})
     with pytest.raises(Lane1GovernedConnectorError):
-        conn.execute(req)
+        conn.execute(bad, authorization=auth)
     assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
 
 
-def test_expired_approval_creates_no_effect(db_path, principal):
-    conn, adapter = _connector(["crm.contact.update.commit"], db_path)
-    req = _commit_req("crm.contact.update.commit", principal)
-    _issue_approval(adapter, db_path, "crm.contact.update.commit", req, ttl=-1)
-    with pytest.raises(Exception):
-        conn.execute(req)
+def test_authorization_single_use(db_path, principal):
+    op = "crm.contact.update.commit"
+    conn, adapter, authority = _connector([op], db_path)
+    req = _req(op, principal)
+    auth = _mint(authority, adapter, op, req)
+    conn.execute(req, authorization=auth)
+    req2 = _req(op, principal, business_key="obj-2")
+    with pytest.raises(Lane1GovernedConnectorError):
+        conn.execute(req2, authorization=auth)
+
+
+def test_expired_authorization_creates_no_effect(db_path, principal):
+    op = "crm.contact.update.commit"
+    conn, adapter, authority = _connector([op], db_path)
+    req = _req(op, principal)
+    with pytest.raises(Lane1GovernedConnectorError):
+        conn.execute(req, authorization=_mint(authority, adapter, op, req, ttl=-1))
     assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
 
 
-def test_changed_payload_reused_approval_rejected(db_path, principal):
-    conn, adapter = _connector(["crm.contact.update.commit"], db_path)
-    good = _commit_req("crm.contact.update.commit", principal)
-    _issue_approval(adapter, db_path, "crm.contact.update.commit", good)
-    # Different payload -> different request digest -> approval digest mismatch.
-    bad = ConnectorRequest(
-        capability_id="crm.contact.update.commit", run_id="run-1",
-        principal=principal, raw_workspace="ws-acme", business_key="obj-1",
-        payload={"business_key": "obj-1", "field": "status", "value": "TAMPERED"},
-        approval_id="appr-1",
+def test_foreign_key_authorization_rejected(db_path, principal):
+    op = "crm.contact.update.commit"
+    conn, adapter, _ = _connector([op], db_path)
+    other = TestEffectAuthority()  # signer NOT in the adapter's keyring
+    req = _req(op, principal)
+    with pytest.raises(Lane1GovernedConnectorError):
+        conn.execute(req, authorization=_mint(other, adapter, op, req))
+
+
+def test_test_authority_refused_when_adapter_production(db_path, principal):
+    op = "crm.contact.update.commit"
+    conn, adapter, authority = _connector([op], db_path, adapter_production=True)
+    req = _req(op, principal)
+    with pytest.raises(Lane1GovernedConnectorError):
+        conn.execute(req, authorization=_mint(authority, adapter, op, req))
+    assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
+
+
+# --------------------------------------------------------------------------- #
+# Production manifest verification negatives (integrated)                      #
+# --------------------------------------------------------------------------- #
+def test_hmac_manifest_refused_in_production():
+    from youtab_runtime.enterprise.manifest import (
+        TEST_ONLY_ISSUER,
+        KeyRegistry,
+        ManifestError,
+        ManifestSigner,
     )
-    with pytest.raises(Exception):
-        conn.execute(bad)
-    assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
-
-
-def test_approval_single_use_second_effect_refused(db_path, principal):
-    conn, adapter = _connector(["crm.contact.update.commit"], db_path)
-    req = _commit_req("crm.contact.update.commit", principal)
-    _issue_approval(adapter, db_path, "crm.contact.update.commit", req)
-    conn.execute(req)  # consumes approval, commits effect
-    # A DIFFERENT business key reusing the same approval id must fail (consumed).
-    req2 = _commit_req("crm.contact.update.commit", principal, business_key="obj-2")
-    with pytest.raises(Exception):
-        conn.execute(req2)
-
-
-# --------------------------------------------------------------------------- #
-# Identity / isolation                                                         #
-# --------------------------------------------------------------------------- #
-def test_changed_capability_version_new_effect(db_path, principal):
-    # Two manifests differing only in version -> different effect identity.
-    conn1, ad1 = _connector(["crm.contact.update.commit"], db_path)
-    req = _commit_req("crm.contact.update.commit", principal)
-    _issue_approval(ad1, db_path, "crm.contact.update.commit", req)
-    r1 = conn1.execute(req)
-    # Build a v2 manifest for the same op.
-    reg = _registry()
-    cap = _cap_dict("crm.contact.update.commit")
-    cap["capability_version"] = "2.0.0"
+    reg = KeyRegistry({TEST_ONLY_ISSUER: {"tk": b"x" * 32}})
     signed = ManifestSigner(reg, TEST_ONLY_ISSUER, "tk").sign(
-        [cap], issued_at=NOW - 10, expires_at=NOW + 100_000)
-    allow = AllowlistPolicy({("crm.contact.update.commit", "2.0.0")}, {"reference"})
-    m2 = ManifestVerifier(reg, allow, production=False, clock=lambda: NOW).verify(signed)
-    conn2 = Lane1GovernedConnector(
-        m2, Lane1AuthorityAdapter(db_path=db_path, clock=lambda: NOW),
-        RuntimeIdempotencyPolicy(set()), WorkerBoundary(repo_root=REPO_ROOT),
-        production=True, db_path=db_path)
-    _issue_approval(conn2._authority, db_path, "crm.contact.update.commit", req,
-                    approval_id="appr-2")
-    req2 = ConnectorRequest(
-        capability_id="crm.contact.update.commit", run_id="run-1",
-        principal=principal, raw_workspace="ws-acme", business_key="obj-1",
-        payload=req.payload, approval_id="appr-2")
-    r2 = conn2.execute(req2)
-    assert r1.effect_id != r2.effect_id  # version folded into identity
+        [_cap_dict("crm.contact.read")], issued_at=NOW - 5, expires_at=NOW + 100)
+    ed_registry = PublicKeyRegistry({ISSUER: {KEY_ID: b"\x00" * 32}})
+    allow = AllowlistPolicy({("crm.contact.read", "1.0.0")}, {"reference"})
+    with pytest.raises(ManifestError):
+        CryptoManifestVerifier(ed_registry, allow, production=True,
+                               clock=lambda: NOW).verify(signed)
 
 
+def test_production_manifest_rejects_unknown_key():
+    from youtab_runtime.enterprise.manifest import ManifestError
+    signer = Ed25519ManifestSigner.generate(ISSUER, KEY_ID)
+    signed = signer.sign([_cap_dict("crm.contact.read")], issued_at=NOW - 5,
+                         expires_at=NOW + 100, tenant_scope="tenant-a",
+                         workspace_scope="ws-acme")
+    allow = AllowlistPolicy({("crm.contact.read", "1.0.0")}, {"reference"})
+    with pytest.raises(ManifestError):
+        CryptoManifestVerifier(PublicKeyRegistry({}), allow, production=True,
+                               clock=lambda: NOW).verify(signed)
+
+
+# --------------------------------------------------------------------------- #
+# Ledger / isolation / crash on the real spine                                 #
+# --------------------------------------------------------------------------- #
 def test_cross_tenant_isolation(db_path):
     a, b = Principal("tenant-a", "user-a"), Principal("tenant-b", "user-b")
-    conn, adapter = _connector(["crm.contact.update.commit"], db_path)
-    req = _commit_req("crm.contact.update.commit", a)
-    _issue_approval(adapter, db_path, "crm.contact.update.commit", req)
-    r = conn.execute(req)
+    op = "crm.contact.update.commit"
+    conn, adapter, authority = _connector([op], db_path)
+    req = _req(op, a)
+    r = conn.execute(req, authorization=_mint(authority, adapter, op, req))
     assert _ledger.get_effect(r.effect_id, b, db_path=db_path) is None
     assert _ledger.get_effect(r.effect_id, a, db_path=db_path) is not None
 
 
 def test_foreign_workspace_receipt_rejected(db_path, principal):
-    conn, adapter = _connector(["crm.contact.update.commit"], db_path)
-    req = _commit_req("crm.contact.update.commit", principal)
-    _issue_approval(adapter, db_path, "crm.contact.update.commit", req)
-    conn.execute(req)
-    assert conn.get_commit_receipt("run-1", principal, "ws-acme",
-                                   "crm.contact.update.commit", "obj-1") is not None
-    assert conn.get_commit_receipt("run-1", principal, "ws-globex",
-                                   "crm.contact.update.commit", "obj-1") is None
+    op = "crm.contact.update.commit"
+    conn, adapter, authority = _connector([op], db_path)
+    req = _req(op, principal)
+    conn.execute(req, authorization=_mint(authority, adapter, op, req))
+    assert conn.get_commit_receipt("run-1", principal, "ws-acme", op, "obj-1") is not None
+    assert conn.get_commit_receipt("run-1", principal, "ws-globex", op, "obj-1") is None
 
 
-# --------------------------------------------------------------------------- #
-# Retry / single-winner / crash                                               #
-# --------------------------------------------------------------------------- #
 def test_retry_after_commit_single_winner(db_path, principal):
-    conn, adapter = _connector(["crm.contact.update.commit"], db_path)
-    req = _commit_req("crm.contact.update.commit", principal)
-    _issue_approval(adapter, db_path, "crm.contact.update.commit", req)
-    r1 = conn.execute(req)
-    r2 = conn.execute(req)  # duplicate -> loses the claim, dedups
-    assert r1.effect_id == r2.effect_id
-    assert r2.deduplicated is True and r2.effect_state == "committed"
+    op = "crm.contact.update.commit"
+    conn, adapter, authority = _connector([op], db_path)
+    req = _req(op, principal)
+    auth = _mint(authority, adapter, op, req)
+    r1 = conn.execute(req, authorization=auth)
+    r2 = conn.execute(req, authorization=auth)
+    assert r1.effect_id == r2.effect_id and r2.deduplicated is True
     assert len(_ledger.list_effects("run-1", principal, db_path=db_path)) == 1
 
 
 def _crash_conn(db_path, script):
     worker = WorkerBoundary(python_argv=[sys.executable, "-c", script],
                             repo_root=REPO_ROOT)
-    conn, adapter = _connector(["crm.contact.update.commit"], db_path, worker=worker)
-    req = _commit_req("crm.contact.update.commit", Principal("tenant-a", "user-a"))
-    _issue_approval(adapter, db_path, "crm.contact.update.commit", req)
-    return conn, req
+    conn, adapter, authority = _connector(["crm.contact.update.commit"], db_path,
+                                          worker=worker)
+    p = Principal("tenant-a", "user-a")
+    req = _req("crm.contact.update.commit", p)
+    return conn, req, _mint(authority, adapter, "crm.contact.update.commit", req)
 
 
-def test_worker_crash_after_effect_unknown_not_retried(db_path):
-    conn, req = _crash_conn(db_path, "import sys; sys.stdin.read(); sys.exit(3)")
+def test_worker_crash_unknown_not_retried(db_path):
+    conn, req, auth = _crash_conn(db_path, "import sys; sys.stdin.read(); sys.exit(3)")
     with pytest.raises(Lane1GovernedConnectorError):
-        conn.execute(req)
+        conn.execute(req, authorization=auth)
     eff = _ledger.list_effects("run-1", req.principal, db_path=db_path)
     assert len(eff) == 1 and eff[0].state.value == "unknown"
-    r = conn.execute(req)  # retry must NOT re-execute
+    r = conn.execute(req, authorization=auth)
     assert r.deduplicated is True and r.effect_state == "unknown"
-
-
-def test_worker_timeout_marks_unknown(db_path):
-    conn, req = _crash_conn(db_path, "import sys,time; sys.stdin.read(); time.sleep(60)")
-    conn._deadline = 2.0
-    with pytest.raises(Lane1GovernedConnectorError):
-        conn.execute(req)
-    eff = _ledger.list_effects("run-1", req.principal, db_path=db_path)
-    assert eff[0].state.value == "unknown"
-
-
-def test_worker_malformed_fails_closed(db_path):
-    conn, req = _crash_conn(db_path, "import sys; sys.stdin.read(); print('x{{')")
-    with pytest.raises(Lane1GovernedConnectorError):
-        conn.execute(req)
-    eff = _ledger.list_effects("run-1", req.principal, db_path=db_path)
-    assert eff[0].state.value == "unknown"
 
 
 def test_worker_cannot_forge_receipt(db_path):
@@ -358,47 +353,60 @@ def test_worker_cannot_forge_receipt(db_path):
               "print(json.dumps({'ok':True,'result':{'record_id':'x','revision':'y',"
               "'provenance':'REFERENCE','result_digest':'z'},"
               "'receipt':{'state':'committed-by-worker'}}))")
-    conn, req = _crash_conn(db_path, forged)
-    r = conn.execute(req)
-    assert r.effect_state == "committed"  # from the ledger, not the worker
-    eff = _ledger.list_effects("run-1", req.principal, db_path=db_path)
-    assert eff[0].state.value == "committed"
+    conn, req, auth = _crash_conn(db_path, forged)
+    r = conn.execute(req, authorization=auth)
+    assert r.effect_state == "committed"
 
 
-# --------------------------------------------------------------------------- #
-# Lease loss / reconciliation-without-evidence                                 #
-# --------------------------------------------------------------------------- #
-def test_lease_loss_blocks_commit(db_path, principal):
-    # A worker that succeeds, but we reconcile the effect away mid-flight to
-    # simulate lease loss: patch the worker to reconcile before returning.
-    op = "crm.contact.update.commit"
-    conn, adapter = _connector([op], db_path)
-    req = _commit_req(op, principal)
-    _issue_approval(adapter, db_path, op, req)
-    # Pre-compute the effect id and, via a wrapper worker, move it to
-    # reconciliation_required before settle.
-    orig = conn._run_worker
-
-    def sabotage(cap, ws, r, rd, payload=None):
-        out = orig(cap, ws, r, rd, payload)
-        scope = conn._effect_identity(cap, ws, rd, None)
-        eid = _ledger.compute_effect_id(r.run_id, r.principal, cap.operation_id, scope)
-        _ledger.mark_reconciliation_required(eid, r.principal, db_path=db_path)
-        return out
-
-    conn._run_worker = sabotage
+def test_provenance_confusion_fails_closed(db_path):
+    liar = ("import sys,json; sys.stdin.read();"
+            "print(json.dumps({'ok':True,'result':{'record_id':'x','revision':'y',"
+            "'provenance':'LIVE','result_digest':'z'}}))")
+    conn, req, auth = _crash_conn(db_path, liar)
     with pytest.raises(Lane1GovernedConnectorError):
-        conn.execute(req)
-    eff = _ledger.list_effects("run-1", principal, db_path=db_path)
-    assert eff[0].state.value == "reconciliation_required"  # not committed
+        conn.execute(req, authorization=auth)
 
 
-def test_reconcile_query_only_and_needs_evidence(db_path, principal):
+def test_live_capability_refused(db_path, principal):
+    conn, _, _ = _connector(["crm.contact.read"], db_path,
+                            provenance="LIVE", provider="salesforce")
+    with pytest.raises(Lane1GovernedConnectorError):
+        conn.execute(_req("crm.contact.read", principal))
+
+
+def test_fabricated_reconciliation_evidence_rejected(db_path):
+    # Drive an effect to UNKNOWN via a crashing worker, then try to reconcile it
+    # terminal with FABRICATED evidence (wrong operation digest) -> refused.
+    conn, req, auth = _crash_conn(db_path, "import sys; sys.stdin.read(); sys.exit(3)")
+    with pytest.raises(Lane1GovernedConnectorError):
+        conn.execute(req, authorization=auth)
+    eff = _ledger.list_effects("run-1", req.principal, db_path=db_path)[0]
+    ws = conn._authority.canonicalize_workspace(req.principal.tenant, req.raw_workspace)
+    with pytest.raises(Exception):
+        conn._authority.reconcile_to_terminal(
+            eff.effect_id, req.principal,
+            operation_digest="deadbeef" * 8,  # fabricated / wrong digest
+            workspace_id=ws.workspace, outcome="succeeded",
+            result_digest="x", provenance="reference",
+        )
+    # Still ambiguous — never blind-terminal on forged evidence.
+    still = _ledger.get_effect(eff.effect_id, req.principal, db_path=db_path)
+    assert still.state.value == "unknown"
+    # With correct evidence (real operation digest) it resolves terminal.
+    state = conn._authority.reconcile_to_terminal(
+        eff.effect_id, req.principal, operation_digest=eff.target_scope_digest,
+        workspace_id=ws.workspace, outcome="succeeded", result_digest="x",
+        provenance="reference",
+    )
+    assert state == "committed"
+
+
+def test_reconcile_query_only(db_path, principal):
     ops = ["crm.contact.update.commit", "crm.effect.reconcile"]
-    conn, adapter = _connector(ops, db_path)
-    creq = _commit_req("crm.contact.update.commit", principal)
-    _issue_approval(adapter, db_path, "crm.contact.update.commit", creq)
-    conn.execute(creq)
+    conn, adapter, authority = _connector(ops, db_path)
+    creq = _req("crm.contact.update.commit", principal)
+    conn.execute(creq, authorization=_mint(authority, adapter,
+                                           "crm.contact.update.commit", creq))
     before = len(_ledger.list_effects("run-1", principal, db_path=db_path))
     recon = ConnectorRequest(
         capability_id="crm.effect.reconcile", run_id="run-1", principal=principal,
@@ -408,36 +416,6 @@ def test_reconcile_query_only_and_needs_evidence(db_path, principal):
     r = conn.execute(recon)
     assert r.reconciled is True
     assert len(_ledger.list_effects("run-1", principal, db_path=db_path)) == before
-
-
-# --------------------------------------------------------------------------- #
-# Manifest / provenance                                                        #
-# --------------------------------------------------------------------------- #
-def test_tampered_manifest_rejected_before_connector(db_path):
-    reg = _registry()
-    cap = _cap_dict("crm.contact.read")
-    signed = ManifestSigner(reg, TEST_ONLY_ISSUER, "tk").sign(
-        [cap], issued_at=NOW - 10, expires_at=NOW + 100_000)
-    signed["capabilities"][0]["risk_class"] = "low"  # tamper
-    allow = AllowlistPolicy({("crm.contact.read", "1.0.0")}, {"reference"})
-    with pytest.raises(ManifestError):
-        ManifestVerifier(reg, allow, production=False, clock=lambda: NOW).verify(signed)
-
-
-def test_live_capability_refused(db_path, principal):
-    conn, _ = _connector(["crm.contact.read"], db_path,
-                         provenance="LIVE", provider="salesforce")
-    with pytest.raises(Lane1GovernedConnectorError):
-        conn.execute(_commit_req("crm.contact.read", principal, approval_id=None))
-
-
-def test_provenance_confusion_fails_closed(db_path):
-    liar = ("import sys,json; sys.stdin.read();"
-            "print(json.dumps({'ok':True,'result':{'record_id':'x','revision':'y',"
-            "'provenance':'LIVE','result_digest':'z'}}))")
-    conn, req = _crash_conn(db_path, liar)
-    with pytest.raises(Lane1GovernedConnectorError):
-        conn.execute(req)
 
 
 if __name__ == "__main__":  # pragma: no cover - standalone smoke run

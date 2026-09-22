@@ -1,26 +1,26 @@
 """Concrete Lane-1 authority adapter for the Lane-2 governed connector.
 
-This binds the Lane-2 :class:`AuthorityBoundary` Protocol to the REAL Lane-1
-modules — no reference/test double on the production path:
+Binds the governed enterprise connector to the CURRENT Lane-1 authority model
+(the reshape at Lane-1 delivery ``ca89219a``): the Runtime NEVER mints, approves
+or self-authorizes an effect. Authority is an externally-signed
+:class:`~youtab_runtime.effect_authorization.EffectAuthorization` (Ed25519, from
+the Brain / a Simorgh authorization issuer). The Runtime only:
 
-  * approval verification + single-use consumption + operation/request-digest
-    binding  → :mod:`youtab_runtime.approval`;
-  * effect claim under a time-bounded worker lease, holder-only settle, and
-    lease-expiry reconciliation  → :mod:`youtab_runtime.worker_lease` +
-    :mod:`youtab_runtime.effect_ledger`;
-  * committed / failed / unknown / reconciliation-required transitions and the
-    per-principal, workspace-folded effect record that IS the canonical receipt
-    → :mod:`youtab_runtime.effect_ledger`.
+  * ``canonicalize_workspace`` — canonical tenant-scoped workspace;
+  * ``consume_authorization`` — verify the signed authorization against the
+    trusted keyring (test keys refused in production) and its tenant / principal
+    / workspace / capability / effect-digest binding, then **single-use consume**
+    it via Lane-1 ``approval.reserve_and_consume_authorization`` (durable
+    consumed-authorization ledger);
+  * ``acquire_worker_lease`` / ``lease_detail`` / ``assert_lease_holder`` /
+    ``sweep_expired_leases`` / ``reconcile_to_terminal`` — the canonical
+    worker-lease + evidence-reconcile spine.
 
-The adapter carries ``is_reference = False`` and is the only authority the
-production connector accepts. The reference/test double stays test-only and is
-refused whenever the connector runs with ``production=True``.
+There is **no** ``issue_approval`` here and no Runtime-minted approval anywhere:
+that API is gone from Lane-1 and must never return. ``is_reference = False``; the
+connector accepts only this adapter on the production path.
 
-Lane-1 owns its files; this adapter only *calls* their public APIs. No Lane-1
-file is modified. The one place Lane-1 has no public helper is canonical
-workspace derivation, so it is derived here deterministically (tenant-scoped)
-and folded into every approval, effect and receipt identity — see IR-2 for the
-request that Lane-1 expose a canonicalizer so this can be removed.
+Lane-1 owns its files; this adapter only *calls* their public APIs.
 """
 
 from __future__ import annotations
@@ -28,13 +28,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from typing import Optional
+from typing import Mapping, Optional
 
 from youtab_runtime import approval as _approval
-from youtab_runtime import effect_ledger as _ledger
 from youtab_runtime import worker_lease as _lease
+from youtab_runtime.effect_authorization import EffectAuthorization
 from youtab_runtime.enterprise.authority import (
-    ApprovalGrant,
     AuthorityError,
     CanonicalWorkspace,
     IdempotencyReservation,
@@ -42,30 +41,45 @@ from youtab_runtime.enterprise.authority import (
 )
 from youtab_runtime.run_journal import Principal
 
-__all__ = ["Lane1AuthorityAdapter"]
+__all__ = ["Lane1AuthorityAdapter", "ENTERPRISE_EFFECT_OPERATION"]
+
+#: Enterprise commit operations are effectful writes; the signed authorization's
+#: ``operation`` Literal (read|write|create) is bound into the effect digest.
+ENTERPRISE_EFFECT_OPERATION = "write"
 
 
-def _effect_digest(operation_id: str, workspace_canonical: str, request_digest: str) -> str:
-    """The Lane-1 approval binding for an enterprise effect.
+def _target_token(capability_id: str, request_digest: str) -> str:
+    """A canonical, non-filesystem target token for an enterprise effect.
 
-    Reuses ``approval.compute_effect_digest``; ``request_digest`` already folds
-    operation + workspace + business key + payload, so it serves as both the
-    canonical target token and the content digest — a changed payload yields a
-    different digest, so an approval for one request cannot authorize another.
+    Stands in for ``safe_path`` in ``approval.compute_effect_digest`` so the same
+    binding function (operation + target + workspace + content) yields the effect
+    digest the signed authorization must carry.
     """
-    return _approval.compute_effect_digest(
-        operation_id, request_digest, workspace_canonical, request_digest
-    )
+    return f"enterprise:{capability_id}#{request_digest}"
 
 
 class Lane1AuthorityAdapter:
-    """Real Lane-1-backed :class:`AuthorityBoundary`."""
+    """Real Lane-1-backed authority (signed EffectAuthorization model)."""
 
     is_reference = False
 
-    def __init__(self, *, lease_ttl_seconds: float = 300.0, db_path=None, clock=None) -> None:
+    def __init__(
+        self,
+        *,
+        production: bool,
+        authority_public_keys: Optional[Mapping[str, str]] = None,
+        test_authority_keys: Optional[Mapping[str, str]] = None,
+        lease_ttl_seconds: float = 300.0,
+        db_path=None,
+        clock=None,
+    ) -> None:
         import time as _time
 
+        self._production = production
+        self._prod_keys = (
+            dict(authority_public_keys) if authority_public_keys is not None else None
+        )
+        self._test_keys = dict(test_authority_keys or {})
         self._ttl = float(lease_ttl_seconds)
         self._db_path = db_path
         self._now = clock or _time.time
@@ -81,44 +95,53 @@ class Lane1AuthorityAdapter:
             workspace=f"{tenant.strip()}/{raw_workspace.strip().lower()}",
         )
 
-    # -- approval (single-use, digest-bound) ----------------------------- #
+    # -- signed-authorization binding ------------------------------------ #
     def effect_digest_for(
-        self, operation_id: str, workspace_canonical: str, request_digest: str
+        self, capability_id: str, workspace_canonical: str, request_digest: str
     ) -> str:
-        """The digest an approval for this operation+request must be issued against."""
-        return _effect_digest(operation_id, workspace_canonical, request_digest)
+        """The effect digest a signed authorization for this effect must carry."""
+        return _approval.compute_effect_digest(
+            ENTERPRISE_EFFECT_OPERATION,
+            _target_token(capability_id, request_digest),
+            workspace_canonical,
+            request_digest,
+        )
 
-    def verify_approval(
+    def consume_authorization(
         self,
+        authorization: EffectAuthorization,
         *,
-        approval_id: str,
+        capability_id: str,
         operation_id: str,
         request_digest: str,
-        delegation: str,
-        principal_tenant: str,
-        principal_user: str,
+        principal: Principal,
         workspace: CanonicalWorkspace,
-    ) -> ApprovalGrant:
-        """Atomically validate + CONSUME a single-use Lane-1 approval.
+    ) -> str:
+        """Verify + single-use consume a signed authorization, or fail closed.
 
-        The connector calls this ONLY when creating the effect for the first time
-        (mirroring ``grant_fs``), so a retry never re-spends the approval.
-        Fail-closed on unknown/expired/consumed/binding/digest mismatch.
+        The Runtime never mints: it resolves the trusted key (a test key is
+        refused in production), verifies the Ed25519 signature + expiry, checks
+        the tenant / principal / workspace / capability binding + effect digest,
+        and atomically consumes the single-use ``authorization_id`` in Lane-1's
+        durable ledger. Returns the consumed authorization id.
         """
-        principal = Principal(principal_tenant, principal_user)
-        edigest = _effect_digest(operation_id, workspace.workspace, request_digest)
+        if not isinstance(authorization, EffectAuthorization):
+            raise AuthorityError("authorization must be a signed EffectAuthorization")
+        if authorization.capability != capability_id:
+            raise AuthorityError("authorization not bound to this capability")
+        expected = self.effect_digest_for(capability_id, workspace.workspace, request_digest)
         try:
-            rec = _approval.consume_approval(
-                approval_id, edigest, principal, workspace.workspace,
-                now=self._now(), db_path=self._db_path,
+            _approval.reserve_and_consume_authorization(
+                authorization, expected, principal, workspace.workspace,
+                production=self._production, now=self._now(),
+                production_keys=self._prod_keys, test_keys=self._test_keys,
+                db_path=self._db_path,
             )
         except _approval.ApprovalError as exc:
-            raise AuthorityError(f"approval refused: {type(exc).__name__}") from exc
-        return ApprovalGrant(
-            approval_id=rec.approval_id, operation_id=operation_id,
-            request_digest=request_digest, delegation=delegation,
-            issuer="lane1-approval", expires_at=int(rec.expires_at),
-        )
+            raise AuthorityError(f"authorization refused: {type(exc).__name__}") from exc
+        except Exception as exc:  # noqa: BLE001 - EffectAuthorizationError family
+            raise AuthorityError(f"authorization refused: {type(exc).__name__}") from exc
+        return authorization.authorization_id
 
     # -- idempotency reservation ----------------------------------------- #
     def reserve_idempotency(
@@ -131,11 +154,11 @@ class Lane1AuthorityAdapter:
 
     # -- worker lease ----------------------------------------------------- #
     def acquire_worker_lease(
-        self, *, operation_id: str, workspace: CanonicalWorkspace, approval_id: str
+        self, *, operation_id: str, workspace: CanonicalWorkspace, authorization_id: str
     ) -> WorkerLease:
         token = hmac.new(
             os.urandom(16),
-            f"{operation_id}:{workspace.workspace}:{approval_id}".encode("utf-8"),
+            f"{operation_id}:{workspace.workspace}:{authorization_id}".encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()[:32]
         return WorkerLease(
@@ -144,7 +167,6 @@ class Lane1AuthorityAdapter:
             expires_at=int(self._now()) + int(self._ttl),
         )
 
-    # -- lease detail / holder assertion (canonical ledger) -------------- #
     def lease_detail(self, owner_token: str) -> dict:
         return _lease.lease_detail(owner_token, self._now() + self._ttl)
 
@@ -167,10 +189,30 @@ class Lane1AuthorityAdapter:
         )
 
     def reconcile_to_terminal(
-        self, effect_id: str, principal: Principal, *, committed: bool
+        self,
+        effect_id: str,
+        principal: Principal,
+        *,
+        operation_digest: str,
+        workspace_id: str,
+        outcome: str,
+        result_digest: str,
+        provenance: str,
     ) -> str:
-        """Resolve an ambiguous effect to a terminal state ONLY with out-of-band
-        proof (``committed``). Never marks terminal without evidence."""
+        """Resolve an ambiguous effect terminal ONLY with verifiable evidence.
+
+        Builds a Lane-1 :class:`EffectEvidence` bound to the effect's identity;
+        Lane-1 refuses forged (wrong effect/workspace), mismatched (wrong
+        operation digest) or stale evidence, so the Runtime can never mark an
+        effect terminal without provider/reference proof.
+        """
+        evidence = _lease.EffectEvidence(
+            effect_id=effect_id, operation_digest=operation_digest,
+            workspace_id=workspace_id, outcome=outcome,
+            result_digest=result_digest, provenance=provenance,
+            verified_at=self._now(),
+        )
         return _lease.reconcile_to_terminal(
-            effect_id, principal, committed=committed, db_path=self._db_path
+            effect_id, principal, evidence, workspace_id=workspace_id,
+            now=self._now(), db_path=self._db_path,
         )
