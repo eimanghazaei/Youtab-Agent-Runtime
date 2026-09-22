@@ -266,7 +266,12 @@ Foundation SHA `3e9a3dff` frozen; docs-only handoff `428f82c2` recorded. Correct
    proven; classified unimplemented for cross-restart.
 
 **PAUSE:** Memory product edits are paused pending Gateway/Durable interfaces; no further
-documentation-only cycles. Detail: `docs/architecture/INTEGRATION_PREFLIGHT_HANDOFF.md`.
+documentation-only cycles.
+
+**CANONICAL PAUSE HANDOFF → `docs/architecture/MEMORY_PAUSE_HANDOFF.md`** (identity, implemented/
+tested with exact commands+counts+exit codes, NOT-integrated list, pause rationale, restart
+conditions R1–R9 with owners + acceptance tests, integration caution: integrate corrected HEAD
+`5bf8e396` not just frozen `3e9a3dff`). Prior detail: `INTEGRATION_PREFLIGHT_HANDOFF.md`.
 
 ## Owner authorization (recorded)
 
