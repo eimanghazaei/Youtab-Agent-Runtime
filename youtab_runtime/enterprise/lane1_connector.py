@@ -339,11 +339,17 @@ class Lane1GovernedConnector:
         # Only WITH verifiable evidence may an ambiguous effect be moved
         # terminal; Lane-1 refuses forged/mismatched/stale evidence.
         if prior.state.value in ("unknown", "reconciliation_required") and evidence_matches:
+            # Independent recomputation for the REFERENCE trust model: the worker
+            # was just re-run deterministically above, so its freshly recomputed
+            # digest is what Lane-1 must reproduce — never an echo of the stored
+            # digest. If they diverge, Lane-1 leaves the effect ambiguous.
             self._authority.reconcile_to_terminal(
                 prior.effect_id, req.principal,
                 operation_digest=prior.target_scope_digest,
                 workspace_id=ws.workspace, outcome="succeeded",
                 result_digest=str(recorded_digest), provenance="reference",
+                capability=cap.capability_id,
+                recompute_reference=lambda: str(output.get("expected_digest")),
             )
             # No evidence -> leave it ambiguous (never blind-terminal).
         reconciled = bool(evidence_matches and prior.state.value in

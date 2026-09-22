@@ -408,21 +408,25 @@ def test_fabricated_reconciliation_evidence_rejected(db_path):
         conn.execute(req, authorization=auth)
     eff = _ledger.list_effects("run-1", req.principal, db_path=db_path)[0]
     ws = conn._authority.canonicalize_workspace(req.principal.tenant, req.raw_workspace)
+    # ReconciliationEvidence carries a 64-hex result digest; the reference model
+    # is trusted only when an INDEPENDENT recompute reproduces it.
+    rd = "a" * 64
     with pytest.raises(Exception):
         conn._authority.reconcile_to_terminal(
             eff.effect_id, req.principal,
             operation_digest="deadbeef" * 8,  # fabricated / wrong digest
             workspace_id=ws.workspace, outcome="succeeded",
-            result_digest="x", provenance="reference",
+            result_digest=rd, provenance="reference",
+            recompute_reference=lambda: rd,
         )
-    # Still ambiguous — never blind-terminal on forged evidence.
+    # Still ambiguous — never blind-terminal on forged (wrong-digest) evidence.
     still = _ledger.get_effect(eff.effect_id, req.principal, db_path=db_path)
     assert still.state.value == "unknown"
-    # With correct evidence (real operation digest) it resolves terminal.
+    # With correct evidence (real operation digest + reproduced digest) it resolves.
     state = conn._authority.reconcile_to_terminal(
         eff.effect_id, req.principal, operation_digest=eff.target_scope_digest,
-        workspace_id=ws.workspace, outcome="succeeded", result_digest="x",
-        provenance="reference",
+        workspace_id=ws.workspace, outcome="succeeded", result_digest=rd,
+        provenance="reference", recompute_reference=lambda: rd,
     )
     assert state == "committed"
 

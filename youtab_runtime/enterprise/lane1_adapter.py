@@ -28,9 +28,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from typing import Mapping, Optional
+from datetime import UTC, datetime
+from typing import Callable, Mapping, Optional
 
 from youtab_runtime import approval as _approval
+from youtab_runtime import effect_evidence as _evidence
 from youtab_runtime import worker_lease as _lease
 from youtab_runtime.effect_authorization import EffectAuthorization
 from youtab_runtime.enterprise.authority import (
@@ -198,21 +200,98 @@ class Lane1AuthorityAdapter:
         outcome: str,
         result_digest: str,
         provenance: str,
+        recompute_reference: Optional[Callable[[], str]] = None,
+        provider: str = "youtab.reference",
+        capability: str = "enterprise.effect",
+        capability_version: str = "v1",
+        provider_txn_id: Optional[str] = None,
+        signature: Optional[str] = None,
+        live_provider_keys: Optional[Mapping[str, str]] = None,
+        observed_at: Optional[object] = None,
+        max_age_seconds: float = 3600.0,
     ) -> str:
-        """Resolve an ambiguous effect terminal ONLY with verifiable evidence.
+        """Resolve an ambiguous effect to terminal ONLY with verifiable evidence.
 
-        Builds a Lane-1 :class:`EffectEvidence` bound to the effect's identity;
-        Lane-1 refuses forged (wrong effect/workspace), mismatched (wrong
-        operation digest) or stale evidence, so the Runtime can never mark an
-        effect terminal without provider/reference proof.
+        Reconciles against the CURRENT Lane-1 contract: it constructs a verified
+        :class:`~youtab_runtime.effect_evidence.ReconciliationEvidence` (the
+        removed ``worker_lease.EffectEvidence`` type is gone) bound to *this*
+        effect's identity — effect id, principal-owned workspace and stored
+        target-scope digest — and hands it to Lane-1's
+        :func:`worker_lease.reconcile_to_terminal`, which routes it through
+        :func:`effect_evidence.verify_evidence`. Field equality alone is never
+        enough:
+
+        * a REFERENCE outcome is trusted only if ``recompute_reference`` is
+          supplied and INDEPENDENTLY reproduces ``result_digest`` — the adapter
+          never echoes the claimed digest, and with no recompute source
+          reference reconciliation fails closed (never blind-terminal);
+        * a LIVE outcome is trusted only if a real ``provider_txn_id`` and an
+          Ed25519 ``signature`` verify against a pre-trusted
+          ``live_provider_keys[provider]``.
+
+        Copied, foreign (wrong tenant/principal/workspace), stale, unsigned,
+        digest-mismatched or replayed evidence all leave the effect ambiguous and
+        raise :class:`AuthorityError` (no relaxation of the Lane-1 contract, and
+        no second ledger or receipt type is introduced here).
         """
-        evidence = _lease.EffectEvidence(
-            effect_id=effect_id, operation_digest=operation_digest,
-            workspace_id=workspace_id, outcome=outcome,
-            result_digest=result_digest, provenance=provenance,
-            verified_at=self._now(),
-        )
-        return _lease.reconcile_to_terminal(
-            effect_id, principal, evidence, workspace_id=workspace_id,
-            now=self._now(), db_path=self._db_path,
-        )
+        if provenance not in ("live", "reference"):
+            raise AuthorityError("provenance must be 'live' or 'reference'")
+
+        def _to_dt(value: object) -> datetime:
+            dt = (
+                value if isinstance(value, datetime)
+                else datetime.fromtimestamp(float(value), UTC)  # type: ignore[arg-type]
+            )
+            return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+        # ``now`` is the adapter's current clock; ``observed_at`` is WHEN the
+        # outcome was observed (default: now). Keeping them independent lets
+        # Lane-1's freshness guard reject stale/future observations.
+        now_dt = _to_dt(self._now())
+        observed_dt = now_dt if observed_at is None else _to_dt(observed_at)
+
+        try:
+            evidence = _evidence.ReconciliationEvidence(
+                provider=provider,
+                capability=capability,
+                capability_version=capability_version,
+                effect_id=effect_id,
+                workspace_id=workspace_id,
+                operation_digest=operation_digest,
+                provider_txn_id=provider_txn_id,
+                observed_terminal_state=outcome,  # type: ignore[arg-type]
+                observed_at=observed_dt,
+                result_digest=result_digest,
+                provenance=provenance,  # type: ignore[arg-type]
+                signature=signature,
+            )
+        except Exception as exc:  # pydantic ValidationError -> fail closed
+            raise AuthorityError(
+                f"invalid reconciliation evidence: {type(exc).__name__}"
+            ) from exc
+
+        # The reference model demands an INDEPENDENT recomputation; wrap the
+        # caller-supplied recompute (which re-derives the digest from the bound
+        # operation, e.g. by re-running the deterministic reference worker) so
+        # Lane-1 compares it against the evidence's claimed digest.
+        recompute: Optional[Callable[[_evidence.ReconciliationEvidence], str]] = None
+        if recompute_reference is not None:
+            recompute = lambda _ev: recompute_reference()  # noqa: E731
+
+        try:
+            return _lease.reconcile_to_terminal(
+                effect_id, principal, evidence,
+                workspace_id=workspace_id, now=now_dt,
+                max_age_seconds=max_age_seconds,
+                live_provider_keys=live_provider_keys,
+                recompute_reference=recompute,
+                db_path=self._db_path,
+            )
+        except (
+            _lease.LeaseError,
+            _lease.WorkspaceMismatchError,
+            _lease.ReconciliationError,
+        ) as exc:
+            raise AuthorityError(
+                f"reconciliation refused: {type(exc).__name__}"
+            ) from exc
