@@ -43,8 +43,26 @@ from .claim import (
     MemoryType,
     TrustLevel,
 )
+from .outbox import (
+    MemoryOutbox,
+    OutboxEvent,
+    OutboxEventType,
+    OutboxStatus,
+    ScopeRevoked,
+    new_event,
+)
 from .router import MemoryRouter, MemoryRoutingDecision, MemoryWriteIntent, RouteOwner
 from .scope import MemoryScope, ScopeAdmission
+from .simorgh_client import (
+    AuthenticatedSimorghClient,
+    MemoryUnavailable,
+    ScopeBinding,
+    ScopeNotSigned,
+    SimorghClientConfig,
+    SimorghTransport,
+    request_digest,
+    response_digest,
+)
 from .tokenizer import (
     CompactionSummary,
     ExactTokenCounter,
@@ -59,6 +77,7 @@ from .tokenizer import (
 )
 
 __all__ = [
+    "AuthenticatedSimorghClient",
     "BudgetAllocation",
     "BudgetInputs",
     "Classification",
@@ -67,19 +86,28 @@ __all__ = [
     "DeploymentClass",
     "ExactTokenCounter",
     "HeuristicTokenCounter",
+    "MemoryUnavailable",
     "ModelCapability",
+    "ScopeBinding",
+    "ScopeNotSigned",
+    "SimorghClientConfig",
+    "SimorghTransport",
     "PromptAccounting",
     "PromptComponents",
     "TokenCounter",
     "MemoryBusClient",
     "MemoryBusResult",
     "MemoryClaim",
+    "MemoryOutbox",
     "MemoryQuery",
     "MemoryRouter",
     "MemoryRoutingDecision",
     "MemoryScope",
     "MemoryType",
     "MemoryWriteIntent",
+    "OutboxEvent",
+    "OutboxEventType",
+    "OutboxStatus",
     "PromotionCandidate",
     "ReferenceMemoryBus",
     "ReferenceMemoryBusResult",
@@ -87,15 +115,19 @@ __all__ = [
     "RetrievedMemory",
     "RouteOwner",
     "ScopeAdmission",
+    "ScopeRevoked",
     "TaskClass",
     "TrustLevel",
     "account",
+    "new_event",
     "allocate",
     "consume_for_live",
     "degraded_result",
     "estimate_tokens",
     "legacy_capsule_fits",
     "needs_compaction",
+    "request_digest",
+    "response_digest",
     "select_counter",
     "selective_retrieval_tokens",
 ]
