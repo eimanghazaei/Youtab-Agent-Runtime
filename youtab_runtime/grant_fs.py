@@ -42,6 +42,7 @@ from youtab_runtime.folder_grant import (
     FolderGrant,
     GrantRevokedError,
     GrantScopeError,
+    assert_no_reparse_ancestors,
     resolve_within_grant,
 )
 from youtab_runtime.run_journal import Principal
@@ -182,6 +183,19 @@ def settle_unknown(
     return _ledger.mark_unknown(effect.effect_id, principal, db_path=db_path).state.value
 
 
+def _same_object(a: os.stat_result, b: os.stat_result) -> bool:
+    """True only if two stat results provably refer to the same object.
+
+    Requires a usable (device, inode) identity; a zero identity (unavailable on
+    the platform) is treated as *not* verifiable so an effectful write fails
+    closed rather than trusting an unverified handle.
+    """
+    return (
+        a.st_ino != 0 and a.st_dev != 0
+        and a.st_ino == b.st_ino and a.st_dev == b.st_dev
+    )
+
+
 def open_within_grant(
     grant: FolderGrant,
     requested_path: str,
@@ -190,20 +204,37 @@ def open_within_grant(
     principal: Principal,
     workspace_id: str,
     now: Optional[float] = None,
+    _pre_open_hook: Optional[Callable[[], None]] = None,
 ) -> int:
     """Re-validate at the actual operation boundary and return an open fd.
 
-    Resolves the path *again* (never trusting an earlier resolution), opens it
-    with ``O_NOFOLLOW`` on the final component where the platform supports it,
-    then re-checks that the opened target's real path is still inside the grant —
-    defeating a symlink/junction/reparse point swapped in after an earlier check.
-    Fails closed (closing the fd) on any escape. Caller owns closing the fd.
+    Defence in depth against TOCTOU:
+      1. resolve the path *again* (never trust an earlier resolution) —
+         realpath containment;
+      2. validate that no ancestor component is a reparse point (symlink/junction)
+         *before* opening — covers a junctioned parent that ``O_NOFOLLOW`` on the
+         leaf would not;
+      3. open with ``O_NOFOLLOW`` on the leaf where supported;
+      4. *after* opening, re-validate the ancestors and confirm the opened handle
+         refers to the same object as the granted path (device+inode); for an
+         effectful write this identity is mandatory — if it cannot be verified,
+         fail closed.
+
+    ``_pre_open_hook`` is test-only (simulates an attacker swap in the window
+    between validation and open). Fails closed (closing the fd) on any escape;
+    caller owns closing the returned fd.
     """
     safe_path = resolve_within_grant(
         grant, requested_path, operation=operation,
         tenant_id=principal.tenant, principal_id=principal.user,
         workspace_id=workspace_id, now=now,
     )
+    root_real = grant.root_real()
+    assert_no_reparse_ancestors(root_real, safe_path)
+
+    if _pre_open_hook is not None:  # test-only injection point
+        _pre_open_hook()
+
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     binary = getattr(os, "O_BINARY", 0)
     if operation == "read":
@@ -214,10 +245,18 @@ def open_within_grant(
         flags = os.O_WRONLY | os.O_CREAT | nofollow | binary
     fd = os.open(safe_path, flags, 0o600)
     try:
-        root_real = grant.root_real()
+        # Re-validate ancestors post-open: a parent swapped in during the window
+        # is now a reparse point and is rejected.
+        assert_no_reparse_ancestors(root_real, safe_path)
         opened_real = os.path.normcase(os.path.realpath(safe_path))
         if not (opened_real == root_real or opened_real.startswith(root_real + os.sep)):
             raise GrantScopeError("opened path escapes the grant root")
+        # Handle identity: the opened fd must be the same object as the granted
+        # path. Mandatory for an effectful write (fail closed if unverifiable).
+        st_fd = os.fstat(fd)
+        st_path = os.stat(safe_path)
+        if operation in ("write", "create") and not _same_object(st_fd, st_path):
+            raise GrantScopeError("opened handle does not match the granted path")
     except Exception:
         os.close(fd)
         raise
