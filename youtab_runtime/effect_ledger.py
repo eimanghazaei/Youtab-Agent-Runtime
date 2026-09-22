@@ -730,6 +730,54 @@ def list_effects(
     return [_row_to_record(r) for r in rows]
 
 
+def get_effect_in_workspace(
+    effect_id: str,
+    principal: Principal,
+    workspace_id: str,
+    *,
+    db_path: Optional[Path] = None,
+) -> Optional[EffectRecord]:
+    """Canonical workspace-scoped receipt lookup for managed callers (Owner item 6).
+
+    Returns the effect only if it is owned by ``principal`` AND bound to
+    ``workspace_id`` (the workspace stored in the effect detail at creation). A
+    lookup from another workspace — even by the same tenant + user — returns
+    ``None`` (not-found), never the record or its metadata: the workspace boundary
+    fails closed. Managed APIs (effect/receipt reads, settle, reconcile) must use
+    this rather than the principal-only :func:`get_effect`, so a workspace-A
+    receipt is invisible to a workspace-B caller.
+    """
+    record = get_effect(effect_id, principal, db_path=db_path)
+    if record is None:
+        return None
+    if record.detail.get("workspace") != workspace_id:
+        return None
+    return record
+
+
+def list_effects_in_workspace(
+    run_id: str,
+    principal: Principal,
+    workspace_id: str,
+    *,
+    state: Optional[EffectState] = None,
+    limit: int = 500,
+    db_path: Optional[Path] = None,
+) -> List[EffectRecord]:
+    """List a run's effects scoped to the owning principal AND the bound workspace.
+
+    Cross-workspace effects of the same principal are filtered out (workspace-scoped
+    listing, Owner item 6) so a managed listing endpoint cannot enumerate another
+    workspace's receipts."""
+    return [
+        r
+        for r in list_effects(
+            run_id, principal, state=state, limit=limit, db_path=db_path
+        )
+        if r.detail.get("workspace") == workspace_id
+    ]
+
+
 def recover_interrupted(
     *,
     run_id: Optional[str] = None,
