@@ -14,6 +14,13 @@ self-promote knowledge to One Brain.
 
 from __future__ import annotations
 
+from .budget import (
+    BudgetAllocation,
+    DeploymentClass,
+    allocate,
+    estimate_tokens,
+    legacy_capsule_fits,
+)
 from .bus import (
     MemoryBusClient,
     MemoryQuery,
@@ -34,8 +41,10 @@ from .router import MemoryRouter, MemoryRoutingDecision, MemoryWriteIntent, Rout
 from .scope import MemoryScope, ScopeAdmission
 
 __all__ = [
+    "BudgetAllocation",
     "Classification",
     "ClaimStatus",
+    "DeploymentClass",
     "MemoryBusClient",
     "MemoryClaim",
     "MemoryQuery",
@@ -51,5 +60,8 @@ __all__ = [
     "RouteOwner",
     "ScopeAdmission",
     "TrustLevel",
+    "allocate",
     "degraded_result",
+    "estimate_tokens",
+    "legacy_capsule_fits",
 ]
