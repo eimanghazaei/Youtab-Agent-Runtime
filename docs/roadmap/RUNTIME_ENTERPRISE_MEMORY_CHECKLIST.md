@@ -305,6 +305,36 @@ enabled retrieval → stub Simorgh transport → bounded, cited injection; fail-
 (R2 gap); disabled pipeline unavailable; Durable reference shape is opaque/transport-only (R4).
 When R1–R4 real interfaces arrive, the doubles are swapped for live services.
 
+### Codex qualification-closure (gaps 1–3 + performance gate)
+
+- **Gap 1 (suite failure) — ROOT CAUSE ESTABLISHED, not a Memory-test defect.** `tests/conftest.py:62`
+  creates the session `youtab-test-home-*` via `tempfile.mkdtemp` under the SHARED system TEMP; the
+  diagnostic's green-probe subprocess inherits `YOUTAB_AGENT_HOME` pointing at it. A concurrent pytest
+  session (the Durable suite) sharing that system TEMP is the deletion vector. Controlled reproduction
+  in a FULLY PRIVATE TEMP (`TMP/TEMP/TMPDIR` + `--basetemp` unique): `test_import_failure_diagnostics.py`
+  = **26 passed × 3, exit 0** (deterministic). Not in Memory's own tests → repo-wide `conftest.py` not
+  modified (out of Memory scope). Run discipline: private per-session TEMP for overlapping runs.
+  OPEN (repo/Integrator): harden `conftest.py` session-home to a private root. Memory gate: not blocked.
+- **Gap 2 (outbox 9999 vs 10000) — RESOLVED, zero loss.** `converged_through()` returns the MAX cursor
+  (0-indexed position), NOT a count. Test proves 10000 accepted → exactly 10000 distinct ACKED, 0 pending,
+  0 dead-letter, converged==10000 (cursors 1..N); same-id-different-scope fails closed. No lost/unacked record.
+- **Gap 3 (final-HEAD qualification) — DONE.** Final HEAD `1a514e26` (tree `6f7e52c1`), full
+  `tests/youtab_runtime` in PRIVATE temp = **659 passed / 0 failed, exit 0**; ruff + ty clean.
+  (651 + 4 integration-contract + 2 outbox-accounting + 2 cache-perf.) Test-double integration tests are
+  clearly separated from any (absent) live Simorgh integration.
+- **Performance gate — PROFILED + FIXED.** PUT profile: os.walk (`_total_bytes`+`_evict_expired`) = 62→78→87%
+  of put and O(N); fsync ~7ms flat; encrypt ~0.005ms. Fix `b9a4adf1`: incremental byte counter, drop the
+  two per-put walks, lazy TTL on get. Before/after (512B): full_put p50 **31→5.2ms @100, 69→5.0 @300,
+  125→5.1 @600** — now O(1) (fsync-bound). Isolation/AEAD/TTL/tombstone/crash-safety preserved (14 cache
+  tests). Enterprise write-rate target: **no documented target exists** — benchmarked capacity stated, not
+  invented: post-fix cache PUT ~200/s (fsync-bound, single writer); SqliteOutbox ~235 enqueue/s. SqliteOutbox
+  transaction batching kept as a SEPARATE decision (measurements do not show it blocks a required rate;
+  none is specified).
+
+### Memory candidate GO / NO-GO
+- **Qualification (correctness + performance): GO** — all three gaps closed; 659 green in isolation; PUT O(1).
+- **Product / live integration: NO-GO** — not integrated; R1–R9 open; live wiring paused.
+
 ### Remaining dependencies (unchanged, R1–R9 in MEMORY_PAUSE_HANDOFF.md)
 Gateway signer/key-registry/revocation/durable-replay (R1–R3), Durable checkpoint interface +
 `a990839b` decision (R4–R5), Integrator forward-integration of `5bf8e396` + Lanes (R6), ADR-0006

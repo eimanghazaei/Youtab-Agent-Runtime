@@ -11,9 +11,19 @@ This is a **dependency pause**, not completion or abandonment.
 | Branch | `feat/runtime-enterprise-memory-v1` |
 | Integration base | `c7650a1b920224283ba3a59ca054d6625e07a5f3` (origin/main) |
 | **Frozen foundation SHA** | `3e9a3dff6b86f342e1fbb0d510f08397b790b168` |
-| **Corrected Memory HEAD (candidate)** | `5bf8e3964aef83aafcd7324d569b34944a3ecc6d` |
-| HEAD tree SHA | `782e655c40790f00cb745d7866fe0e108f19463f` |
+| Corrected Memory HEAD (prior) | `5bf8e3964aef83aafcd7324d569b34944a3ecc6d` |
+| **Latest candidate HEAD (qualification-closure)** | `1a514e26721714667b8184e2dc97745e56aa9158` (tree `6f7e52c1`) |
 | Worktree | clean; author=Eiman; zero attribution trailers |
+
+### Qualification-closure update (Codex gaps 1–3 + perf gate)
+- Final `tests/youtab_runtime` in a PRIVATE temp = **659 passed / 0 failed, exit 0**; ruff + ty clean.
+- Gap 1: suite flake root cause = shared system-TEMP `youtab-test-home-*` (`tests/conftest.py:62`) +
+  concurrent Durable pytest; deterministic green in isolation; not a Memory-test defect (repo `conftest.py`
+  hardening is an OPEN repo/Integrator item). Run overlapping suites with a private per-session TEMP.
+- Gap 2: outbox `converged_through()` is a 0-indexed cursor position, not a count; 10000→10000 acks, zero loss.
+- Perf: cache PUT is now O(1) (`b9a4adf1`; 31→5.2ms @100, 125→5.1ms @600), correctness preserved.
+- Memory candidate: qualification GO; product/live NO-GO (R1–R9 open).
+Integrate the LATEST candidate `1a514e26` (it carries the O(1) cache fix + accounting/qualification tests).
 
 Do NOT push/PR/merge/deploy/amend/rebase/squash.
 
