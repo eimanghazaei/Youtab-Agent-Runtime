@@ -549,6 +549,106 @@ def test_expired_authorization_refused(tmp_path, managed_env, exec_spy_disabled)
     assert spy.called is False and exec_spy_disabled.called is False
 
 
+def test_write_deterministic_prefault_produces_no_unknown(
+    tmp_path, managed_env, exec_spy_disabled
+):
+    """A — deterministic failure BEFORE any mutation (here: no authorization) →
+    zero filesystem mutation, zero committed receipt, and NO ambiguous UNKNOWN
+    effect (pre-execution rejection produces no effect row at all)."""
+    ws, effects_db, admitted, agent, signer, key_id = _make(
+        tmp_path, "cmd-mx-preA-w", "nonce-mx-preA-w-0000001")
+    target = ws / "f.txt"
+    task = "task-mx-preA-w"
+    final_args = {"path": "f.txt", "content": "never written"}
+    out = _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
+    assert out.blocked is True
+    assert not target.exists()
+    effects = list_effects_in_workspace(task, _principal(admitted), WS, db_path=effects_db)
+    assert effects == []  # no committed AND no unknown effect
+    assert exec_spy_disabled.called is False
+
+
+def test_write_mutation_then_settle_crash_is_unknown(
+    tmp_path, managed_env, exec_spy_disabled, monkeypatch
+):
+    """B — the write mutation SUCCEEDS, then settlement crashes before the canonical
+    commit is recorded → the bytes are on disk, the effect is UNKNOWN (not
+    committed), a retry does not blindly repeat, and reconciliation remains
+    required."""
+    import youtab_runtime.grant_fs as _gfs
+
+    ws, effects_db, admitted, agent, signer, key_id = _make(
+        tmp_path, "cmd-mx-crashB-w", "nonce-mx-crashB-w-000001")
+    target = ws / "f.txt"
+    task = "task-mx-crashB-w"
+    content = b"mutation really happened"
+    final_args = {"path": "f.txt", "content": content.decode()}
+    _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
+    edigest, proposal_id, rd = _op_identity(
+        admitted, ws, operation="write", requested_path="f.txt",
+        digest_bytes=content, descriptor=final_args, perms={"write"})
+    agent._effect_authorizations = [_sign_auth(
+        signer, key_id, authorization_id="authz-crashB-w-00001", admitted=admitted,
+        effect_digest=edigest, proposal_id=proposal_id, request_digest=rd,
+        operation="write")]
+
+    # settlement crashes AFTER the host-IO write has already applied.
+    monkeypatch.setattr(_gfs, "settle_committed",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("settle crash")))
+    out = _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
+    assert out.blocked is True and "reconciliation" in json.loads(out.result)["error"]
+    # the mutation is proven on disk ...
+    assert target.read_bytes() == content
+    # ... the effect is UNKNOWN, not committed ...
+    assert _committed(task, admitted, effects_db) == []
+    effects = list_effects_in_workspace(task, _principal(admitted), WS, db_path=effects_db)
+    assert len(effects) == 1 and effects[0].state.value == "unknown"
+
+    # retry with the same (single-use, already-consumed) authorization does NOT
+    # blindly repeat: no new committed effect, still exactly one (unknown) effect.
+    monkeypatch.undo()
+    agent._effect_authorizations = [_sign_auth(
+        signer, key_id, authorization_id="authz-crashB-w-00001", admitted=admitted,
+        effect_digest=edigest, proposal_id=proposal_id, request_digest=rd,
+        operation="write")]
+    retry = _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
+    assert _committed(task, admitted, effects_db) == []
+    assert len(list_effects_in_workspace(task, _principal(admitted), WS, db_path=effects_db)) == 1
+
+
+def test_delete_mutation_then_settle_crash_is_unknown(
+    tmp_path, managed_env, exec_spy_disabled, monkeypatch
+):
+    """B for delete — the delete mutation SUCCEEDS (file removed), then settlement
+    crashes → effect UNKNOWN, reconciliation required, retry does not repeat."""
+    import youtab_runtime.grant_fs as _gfs
+
+    ws, effects_db, admitted, agent, signer, key_id = _make(
+        tmp_path, "cmd-mx-crashB-d", "nonce-mx-crashB-d-000001")
+    target = ws / "gone.txt"
+    target.write_bytes(b"bye")
+    task = "task-mx-crashB-d"
+    final_args = _delete_args("gone.txt")
+    _patch(agent, final_args, task)
+    edigest, proposal_id, rd = _op_identity(
+        admitted, ws, operation="delete", requested_path="gone.txt",
+        digest_bytes=b"", descriptor={"tool": "patch", "op": "delete", "path": "gone.txt"},
+        perms={"delete"})
+    agent._effect_authorizations = [_sign_auth(
+        signer, key_id, authorization_id="authz-crashB-d-00001", admitted=admitted,
+        effect_digest=edigest, proposal_id=proposal_id, request_digest=rd,
+        operation="delete")]
+
+    monkeypatch.setattr(_gfs, "settle_committed",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("settle crash")))
+    out, _ = _patch(agent, final_args, task)
+    assert out.blocked is True and "reconciliation" in json.loads(out.result)["error"]
+    assert not target.exists()  # mutation proven: the file is gone
+    assert _committed(task, admitted, effects_db) == []
+    effects = list_effects_in_workspace(task, _principal(admitted), WS, db_path=effects_db)
+    assert len(effects) == 1 and effects[0].state.value == "unknown"
+
+
 def test_receipt_fields_and_foreign_principal_unreadable(
     tmp_path, managed_env, exec_spy_disabled
 ):

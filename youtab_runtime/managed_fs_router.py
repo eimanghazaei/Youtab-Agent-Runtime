@@ -68,7 +68,14 @@ _MAX_READ_BYTES = 8 * 1024 * 1024
 # Registered file tools this router owns, and their normalized operation.
 # ``search_files`` is intentionally NOT routed yet (a read at the gate); ``patch``
 # decomposes into governed write/delete/move effects.
-_FILE_TOOL_OP = {"read_file": "read", "write_file": "write", "patch": "patch"}
+_FILE_TOOL_OP = {
+    "read_file": "read", "write_file": "write", "patch": "patch",
+    # search_files is a multi-path read that is not yet grant/workspace-scoped;
+    # in managed mode it is fail-closed here to prevent filename/content
+    # disclosure (see route dispatch). Registered side_effect_class="read" would
+    # otherwise let the authority gate admit it ungoverned.
+    "search_files": "search",
+}
 
 
 class _PatchError(Exception):
@@ -248,9 +255,27 @@ def _govern(
 
 
 def _finish(ctx: _Ctx, effect, auth, extra: dict) -> RouteOutcome:
-    state = grant_fs.settle_committed(
-        effect, ctx.principal, workspace_id=ctx.workspace_id, db_path=ctx.db_path
-    )
+    # The actual filesystem mutation has already succeeded here. If the canonical
+    # ledger settlement then fails (a crash before/at settlement), the outcome is
+    # indeterminate from the ledger's view: downgrade to UNKNOWN for reconciliation
+    # rather than ever reporting committed without a recorded receipt. The
+    # single-use authorization was already consumed at claim, so a retry cannot
+    # blind-repeat the effect.
+    try:
+        state = grant_fs.settle_committed(
+            effect, ctx.principal, workspace_id=ctx.workspace_id, db_path=ctx.db_path
+        )
+    except Exception as exc:  # noqa: BLE001 — any settlement failure -> UNKNOWN, fail safe
+        try:
+            grant_fs.settle_unknown(
+                effect, ctx.principal, workspace_id=ctx.workspace_id, db_path=ctx.db_path
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return _blocked(
+            f"managed {extra.get('operation', 'effect')} mutation applied but commit "
+            f"was not recorded (left for reconciliation): {type(exc).__name__}"
+        )
     if auth.proposal_id:
         _tx.mark_proposal_consumed(auth.proposal_id, db_path=ctx.db_path)
     body = {
@@ -482,6 +507,15 @@ def route_managed_file_tool(
         return None
     if mx.current_trust_mode() is not mx.TrustMode.MANAGED:
         return None
+
+    if operation == "search":
+        # Fail closed in managed mode: search_files is a multi-path read that is
+        # not yet grant/workspace-scoped, so allowing it would leak filenames /
+        # content across the workspace boundary. Unsupported until grant-routed.
+        return _blocked(
+            "managed search_files is not grant/workspace-scoped; unsupported in "
+            "managed mode (fail closed to prevent filename/content disclosure)"
+        )
 
     admitted = getattr(agent, "_admitted_command", None)
     if not isinstance(admitted, AdmittedCommand):

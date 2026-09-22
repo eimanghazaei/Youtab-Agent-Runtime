@@ -188,6 +188,28 @@ def test_non_file_tool_returns_none(tmp_path, monkeypatch):
                                           task_id="task-00000001") is None
 
 
+def test_managed_search_files_fails_closed(tmp_path, monkeypatch):
+    # search_files is a multi-path read not yet grant-scoped: in managed mode it
+    # must fail closed (no filename/content disclosure), not fall through to the
+    # authority gate as an ungoverned read.
+    _managed(monkeypatch)
+    admitted = _admitted("nonce-router-000000000search1")
+    agent = _agent(tmp_path, admitted)
+    outcome = router.route_managed_file_tool(
+        agent, "search_files", {"pattern": "secret", "path": "."}, task_id="task-00000001")
+    assert outcome is not None and outcome.blocked is True
+    assert "search_files" in outcome.reason and "disclosure" in outcome.reason
+
+
+def test_standalone_search_files_passthrough(tmp_path, monkeypatch):
+    # In local-standalone the router does not apply (returns None → normal path).
+    monkeypatch.setattr(mx, "current_trust_mode", lambda: mx.TrustMode.LOCAL_STANDALONE)
+    admitted = _admitted("nonce-router-000000000search2")
+    agent = _agent(tmp_path, admitted)
+    assert router.route_managed_file_tool(
+        agent, "search_files", {"pattern": "x"}, task_id="task-00000001") is None
+
+
 # ── patch / delete / move operation matrix (ADR-0005) ────────────────────────
 
 
