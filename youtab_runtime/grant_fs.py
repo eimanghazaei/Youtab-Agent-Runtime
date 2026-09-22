@@ -215,6 +215,57 @@ def _same_object(a: os.stat_result, b: os.stat_result) -> bool:
     )
 
 
+def _final_path_from_handle(fd: int) -> Optional[str]:
+    """The OS-verified final path of the OPEN ``fd``, derived from the kernel
+    handle itself — NOT a second path-string ``realpath()`` of the request.
+
+    This is the authoritative containment source: because it comes from the
+    already-opened handle, a reparse point / junction / symlink swapped in AFTER
+    the open cannot redirect what we validate. Returns a normcased absolute path,
+    or ``None`` when the platform cannot supply a handle-derived path (caller then
+    falls back to device+inode identity and fails closed for effectful writes).
+    """
+    if os.name == "nt":
+        try:
+            import ctypes
+            import msvcrt
+            from ctypes import wintypes
+
+            handle = msvcrt.get_osfhandle(fd)
+            fn = ctypes.windll.kernel32.GetFinalPathNameByHandleW
+            fn.restype = wintypes.DWORD
+            fn.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD]
+            volume_name_dos = 0x0
+            length = fn(handle, None, 0, volume_name_dos)
+            if not length:
+                return None
+            buf = ctypes.create_unicode_buffer(length)
+            got = fn(handle, buf, length, volume_name_dos)
+            if not got or got >= length:
+                return None
+            final = buf.value
+            # Strip the \\?\ (and \\?\UNC\) prefix GetFinalPathNameByHandleW adds.
+            if final.startswith("\\\\?\\UNC\\"):
+                final = "\\\\" + final[len("\\\\?\\UNC\\"):]
+            elif final.startswith("\\\\?\\"):
+                final = final[len("\\\\?\\"):]
+            return os.path.normcase(os.path.abspath(final))
+        except (OSError, ValueError, AttributeError):
+            return None
+    # POSIX: the /proc/self/fd/<fd> magic symlink resolves to the fd's real path.
+    try:
+        if os.path.isdir("/proc/self/fd"):
+            return os.path.normcase(os.path.realpath(f"/proc/self/fd/{fd}"))
+    except OSError:
+        return None
+    return None
+
+
+def _assert_final_path_within(root_real: str, final_path: str) -> None:
+    if not (final_path == root_real or final_path.startswith(root_real + os.sep)):
+        raise GrantScopeError("opened handle's final path escapes the grant root")
+
+
 def open_within_grant(
     grant: FolderGrant,
     requested_path: str,
@@ -267,15 +318,27 @@ def open_within_grant(
         # Re-validate ancestors post-open: a parent swapped in during the window
         # is now a reparse point and is rejected.
         assert_no_reparse_ancestors(root_real, safe_path)
-        opened_real = os.path.normcase(os.path.realpath(safe_path))
-        if not (opened_real == root_real or opened_real.startswith(root_real + os.sep)):
-            raise GrantScopeError("opened path escapes the grant root")
-        # Handle identity: the opened fd must be the same object as the granted
-        # path. Mandatory for an effectful write (fail closed if unverifiable).
-        st_fd = os.fstat(fd)
-        st_path = os.stat(safe_path)
-        if operation in ("write", "create") and not _same_object(st_fd, st_path):
-            raise GrantScopeError("opened handle does not match the granted path")
+        # Authoritative containment derived from the OPEN handle itself (Windows
+        # GetFinalPathNameByHandleW / POSIX /proc/self/fd), NOT a second
+        # path-string realpath() of the request — so a junction/symlink swapped in
+        # after the open cannot redirect what we validate.
+        final_from_handle = _final_path_from_handle(fd)
+        if final_from_handle is not None:
+            _assert_final_path_within(root_real, final_from_handle)
+        # An effectful write requires a provably-verified handle. The handle-derived
+        # final path above is authoritative when available; otherwise fall back to
+        # device+inode identity plus a path-string containment cross-check, and fail
+        # closed if that identity is unavailable rather than trust an unverified fd.
+        if operation in ("write", "create") and final_from_handle is None:
+            st_fd = os.fstat(fd)
+            st_path = os.stat(safe_path)
+            if not _same_object(st_fd, st_path):
+                raise GrantScopeError(
+                    "cannot verify the opened handle (no final-path-by-handle and "
+                    "no usable device/inode identity); refusing effectful write"
+                )
+            opened_real = os.path.normcase(os.path.realpath(safe_path))
+            _assert_final_path_within(root_real, opened_real)
     except Exception:
         os.close(fd)
         raise
