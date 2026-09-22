@@ -17,6 +17,13 @@ import { join, relative, resolve } from 'node:path'
 import { manifestEntriesFromBundle, rootDigestFromEntries } from './root-digest.mjs'
 
 const PYINSTALLER_VERSION = '6.22.3' // pinned — do not float
+// Pin the interpreter for the isolated build venv. The project supports
+// >=3.11,<3.14; we build on 3.12 explicitly so the frozen bundle does not drift
+// with whatever python the ambient `uv` happens to default to (an unpinned
+// `uv venv` produced 3.12.10 under uv 0.12.17 but 3.11.9 under uv 0.8.17, which
+// changed the root digest). Override with SIDECAR_BUILD_PYTHON if a release
+// must target a different supported minor.
+const SIDECAR_PYTHON = process.env.SIDECAR_BUILD_PYTHON || '3.12'
 const REPO_ROOT = resolve(process.cwd())
 // Freeze the SAME backend entrypoint Electron runs in dev (`youtab_agent_cli.main`)
 // so the packaged executable serves the existing HTTP loopback gateway
@@ -44,8 +51,8 @@ const uvVersion = trim(sh('uv', ['--version']))
 console.log(`[sidecar] uv: ${uvVersion}`)
 
 // 1) isolated build venv from the committed lockfile (no dev-venv dependency)
-console.log('[sidecar] creating isolated build venv')
-sh('uv', ['venv', BUILD_VENV])
+console.log(`[sidecar] creating isolated build venv (python ${SIDECAR_PYTHON})`)
+sh('uv', ['venv', '--python', SIDECAR_PYTHON, BUILD_VENV])
 const pyVersion = trim(sh(VENV_PY, ['--version']))
 console.log(`[sidecar] python: ${pyVersion}`)
 // application + runtime deps from the frozen lockfile, into the isolated venv

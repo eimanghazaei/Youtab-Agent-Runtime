@@ -19,10 +19,15 @@ const HEX64 = /^[0-9a-f]{64}$/
 // root digest of the frozen `youtab-backend` (youtab_agent_cli.main `serve`)
 // bundle shipped via extraResources. Recomputed at launch and compared; a
 // mismatch is refused fail-closed. Rebuild + re-pin when the bundle changes.
-//   build: python 3.11.9, uv 0.8.17, pyinstaller 6.22.3 (win32/x64);
-//   entry youtab_agent_cli.main via sidecar_main.py (loopback-only enforced).
+//   build: python 3.12.10 (PINNED via SIDECAR_BUILD_PYTHON), uv 0.8.17,
+//   pyinstaller 6.22.3 (win32/x64); entry youtab_agent_cli.main via
+//   sidecar_main.py (loopback-only enforced).
+//   ⚠ The PyInstaller onedir freeze is NOT bit-reproducible (two clean builds
+//   on the same pinned toolchain gave 54e4823b… and 0b2ba35d…), so this anchor
+//   is a per-RELEASE attestation of one specific frozen bundle — re-pin it (and
+//   rebuild the installer) on every sidecar build.
 export const TRUSTED_SIDECAR_ROOT_DIGEST: string | null =
-  'eac6b6ef4f6613c3adf84bf8b53559845e8827bccea0489847c1624693ca3973'
+  '0b2ba35d4d98b52b837889fb752f9ccadafeb234e78efe5f4cfe7ff20ca27be5'
 
 /**
  * Resolve the effective trust anchor: an operator/CI env override (must be a
