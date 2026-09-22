@@ -2,7 +2,9 @@
 
 One live checklist for this stream. Updated in place; no versioned reports/bundles during implementation.
 
-**Verdict:** `PHASE 0/1 AUDIT COMPLETE_NOT_REVIEWED` · `PHASE 2 REPRODUCTION IN PROGRESS` · `DURABLE EXECUTION PRODUCT NO-GO`.
+**Verdict:** `PHASE 0/1 AUDIT COMPLETE_NOT_REVIEWED` · `P0-A…H DEFECTS REPRODUCED` · `DURABLE STORE COMPONENT VERIFIED_NOT_INTEGRATED` · `DURABLE EXECUTION PRODUCT NO-GO`.
+
+Storage decision + inventory + deadline matrix: see DURABLE_EXECUTION_STORAGE_DECISION.md. Idempotency now SCOPED (tenant/workspace/principal/operation/key) — commit a40fb392.
 
 ## Environment status
 - ⚠ Embedded SQLite 3.49.1 hits the WAL-reset bug advisory; kanban falls back to journal_mode=DELETE (environmental, non-blocking; `youtab update` repairs managed installs).
