@@ -1,10 +1,23 @@
 """Canonical scoped identity for every memory item.
 
 Every stored or retrieved memory item is bound to an explicit
-:class:`MemoryScope`. Scope is derived only from an admitted
-:class:`~youtab_runtime.contracts.BrainCommandEnvelope` plus admission-supplied
-placement (organization/workspace/agent/run). It is never guessed from
-filenames, working directories, the latest session, or mutable client input.
+:class:`MemoryScope`. It is never guessed from filenames, working directories,
+the latest session, or mutable client input.
+
+BINDING TRUTH (verified against the canonical base envelope, ``contracts.py``):
+the signed :class:`~youtab_runtime.contracts.BrainCommandEnvelope`
+cryptographically binds ONLY ``tenant_id``, ``user_id`` (principal), ``task_id``,
+``trace_id``, ``command_id``, ``nonce`` and ``parent_task_id``. It does **not**
+carry ``organization_id``, ``workspace_id``, ``agent_id`` or ``run_id``.
+
+Therefore only ``tenant_id`` and ``principal_id`` here are envelope-bound. The
+remaining placement fields are supplied by :class:`ScopeAdmission` and are, on
+the current base, **NOT cryptographically bound** — they depend on a
+Gateway/Workspace-authority admission interface that does not yet exist (see
+``docs/architecture/RUNTIME_SCOPE_GATEWAY_DEPENDENCY.md``). This module is
+fail-closed: a scope cannot be built without explicit admission placement, and
+placement is never inferred. Until Gateway provides a signed placement, callers
+must treat org/workspace/agent/run as trusted-input-from-admission only.
 """
 
 from __future__ import annotations
@@ -19,10 +32,12 @@ _ID = r"^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$"
 class ScopeAdmission(BaseModel):
     """Placement fields supplied by authenticated admission, not by the agent.
 
-    ``tenant_id`` and ``principal_id`` come from the signed command envelope;
-    the remaining dimensions are resolved by the Gateway/Workspace authority at
-    admission time and passed in explicitly. None may originate from tool
-    arguments or model output.
+    These dimensions (organization/workspace/agent/run/purpose) are NOT present
+    in the signed command envelope on the current base. They must be resolved by
+    the Gateway/Workspace authority at admission time and passed in explicitly;
+    none may originate from tool arguments, model output, cwd, filename, profile
+    or session key. Pending a signed Gateway placement, they are trusted input
+    from admission, not cryptographically bound identity.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -65,6 +80,11 @@ class MemoryScope(BaseModel):
         (signature + replay + forbidden-scope checks) via
         :class:`~youtab_runtime.policy.AuthorityBoundary` before calling this.
         This method binds identity; it does not verify signatures.
+
+        ``tenant_id``/``principal_id`` are taken from the (signed) envelope;
+        org/workspace/agent/run/purpose come from ``admission`` and are only as
+        trustworthy as that admission path (see module docstring). Fail-closed:
+        every placement field is required, so a scope can never be half-formed.
         """
 
         return cls(

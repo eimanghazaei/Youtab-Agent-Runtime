@@ -82,8 +82,12 @@ class TaskCheckpoint(BaseModel):
     def content_hash(self) -> str:
         """Deterministic hash over the canonical JSON of this checkpoint.
 
-        The hash covers ``parent_hash`` so it chains: any change to an earlier
-        checkpoint changes every later hash, making replay/tamper detectable.
+        The hash covers ``parent_hash`` so it chains: any *accidental* change to
+        an earlier checkpoint changes every later hash, making corruption and
+        reordering detectable. This is tamper-EVIDENT against accidental damage,
+        NOT secure against a malicious writer who can recompute the whole chain;
+        hostile-tamper integrity needs keyed/asymmetric authentication supplied
+        by the Durable Execution owner.
         """
 
         payload = self.model_dump(mode="json")
@@ -146,7 +150,11 @@ class CheckpointChain:
         return self.latest().resume_point
 
     def verify_contiguous(self) -> None:
-        """Re-verify the whole chain's linkage from genesis (tamper check)."""
+        """Re-verify the whole chain's linkage from genesis.
+
+        Detects accidental corruption / inconsistent relinking, not a malicious
+        writer who recomputes every hash. See the class/module integrity note.
+        """
 
         prev_hash: str | None = None
         for index, checkpoint in enumerate(self._chain):

@@ -16,18 +16,24 @@ from __future__ import annotations
 
 from .budget import (
     BudgetAllocation,
+    BudgetInputs,
     DeploymentClass,
+    TaskClass,
     allocate,
     estimate_tokens,
     legacy_capsule_fits,
+    selective_retrieval_tokens,
 )
 from .bus import (
     MemoryBusClient,
+    MemoryBusResult,
     MemoryQuery,
-    MemoryQueryResult,
     PromotionCandidate,
     ReferenceMemoryBus,
+    ReferenceMemoryBusResult,
+    ReferenceProvenanceError,
     RetrievedMemory,
+    consume_for_live,
     degraded_result,
 )
 from .claim import (
@@ -42,13 +48,14 @@ from .scope import MemoryScope, ScopeAdmission
 
 __all__ = [
     "BudgetAllocation",
+    "BudgetInputs",
     "Classification",
     "ClaimStatus",
     "DeploymentClass",
     "MemoryBusClient",
+    "MemoryBusResult",
     "MemoryClaim",
     "MemoryQuery",
-    "MemoryQueryResult",
     "MemoryRouter",
     "MemoryRoutingDecision",
     "MemoryScope",
@@ -56,12 +63,17 @@ __all__ = [
     "MemoryWriteIntent",
     "PromotionCandidate",
     "ReferenceMemoryBus",
+    "ReferenceMemoryBusResult",
+    "ReferenceProvenanceError",
     "RetrievedMemory",
     "RouteOwner",
     "ScopeAdmission",
+    "TaskClass",
     "TrustLevel",
     "allocate",
+    "consume_for_live",
     "degraded_result",
     "estimate_tokens",
     "legacy_capsule_fits",
+    "selective_retrieval_tokens",
 ]

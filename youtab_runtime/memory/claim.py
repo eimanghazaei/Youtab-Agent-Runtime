@@ -1,15 +1,25 @@
-"""The canonical typed memory-claim model.
+"""The versioned memory-claim TRANSPORT ENVELOPE (``youtab.memory-claim.v1``).
 
-A :class:`MemoryClaim` is the single record shape for anything the memory
-subsystem stores or exchanges. It carries scope, type, content (or a reference
-to out-of-line content), provenance, trust, lifecycle status, classification
-and retention. Only ``VALIDATED`` claims may enter production semantic
-retrieval; an ``AI_INFERRED`` claim can never silently become authoritative.
+A :class:`MemoryClaim` is a transport/DTO record shape for exchanging a memory
+item between the Runtime and the memory authority — it is NOT a competing
+canonical authority and NOT a second organizational memory database.
 
-This aligns with the proposed cognitive-growth memory model (ADR-0002). Trust,
-provenance and timestamps are intended to be *system-attributed* at admission,
-not asserted by the agent; this model enforces the shape, and the router/owner
-enforces who may set what.
+**Simorgh / One Brain is the memory authority.** The Runtime uses this envelope
+to *carry* a candidate or a retrieved item; it does not, by holding a claim,
+gain the right to: validate enterprise truth, promote AI inference to canonical
+memory, supersede a canonical Simorgh claim, or share across agents/workspaces
+without Simorgh/Gateway authorization. Those transitions are performed only by
+Simorgh's governed pipeline; the ``status``/``trust_level`` fields here are
+transport annotations, and the local ``with_status`` transition helper is for
+Runtime-local candidate bookkeeping and reference tests, never an authoritative
+promotion.
+
+The model enforces shape and self-consistency: exactly one of content/ref, a
+matching content hash, timezone-aware times, and the invariants that only a
+``VALIDATED`` envelope is retrievable for production and an ``AI_INFERRED``
+envelope cannot be born ``VALIDATED``. Trust, provenance and timestamps are
+intended to be system-attributed at admission. This aligns with the proposed
+cognitive-growth memory model (ADR-0002, still PROPOSED — not ratified).
 """
 
 from __future__ import annotations

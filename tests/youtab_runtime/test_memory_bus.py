@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import pytest
+
 from youtab_runtime.memory import (
     ClaimStatus,
-    MemoryBusClient,
+    MemoryBusResult,
     MemoryClaim,
     MemoryQuery,
     MemoryScope,
     MemoryType,
     PromotionCandidate,
     ReferenceMemoryBus,
+    ReferenceMemoryBusResult,
+    ReferenceProvenanceError,
     ScopeAdmission,
     TrustLevel,
+    consume_for_live,
     degraded_result,
 )
 
@@ -42,24 +47,64 @@ def _validated(scope: MemoryScope, content: str, mtype: MemoryType) -> MemoryCla
     ).with_status(ClaimStatus.VALIDATED)
 
 
-def test_reference_bus_satisfies_protocol_and_is_not_live() -> None:
+def test_reference_bus_returns_reference_result_type() -> None:
     bus = ReferenceMemoryBus()
-    assert isinstance(bus, MemoryBusClient)
-    assert bus.source == "reference"
     assert bus.is_live is False
-
-
-def test_query_result_is_stamped_non_live() -> None:
-    bus = ReferenceMemoryBus()
     scope = _scope()
     bus.seed_validated(_validated(scope, "acme prefers annual billing", MemoryType.SEMANTIC))
     result = bus.query(MemoryQuery(scope=scope, text="billing"))
+    assert isinstance(result, ReferenceMemoryBusResult)
+    assert not isinstance(result, MemoryBusResult)
     assert result.source == "reference"
     assert result.is_live is False
-    assert not result.degraded
     assert len(result.results) == 1
     assert result.results[0].citation.startswith("reference:")
 
+
+# ---- item 8: reference evidence can NEVER enter the live path -------------
+
+def test_consume_for_live_rejects_reference_result() -> None:
+    bus = ReferenceMemoryBus()
+    scope = _scope()
+    bus.seed_validated(_validated(scope, "fact", MemoryType.SEMANTIC))
+    ref = bus.query(MemoryQuery(scope=scope, text="fact"))
+    with pytest.raises(ReferenceProvenanceError):
+        consume_for_live(ref)
+
+
+def test_consume_for_live_rejects_foreign_and_none() -> None:
+    with pytest.raises(ReferenceProvenanceError):
+        consume_for_live(object())
+    with pytest.raises(ReferenceProvenanceError):
+        consume_for_live(None)
+    with pytest.raises(ReferenceProvenanceError):
+        consume_for_live({"source": "live", "is_live": True, "results": []})
+
+
+def test_reference_result_cannot_validate_as_production_result() -> None:
+    ref = ReferenceMemoryBusResult()
+    # A reference payload must not validate as a production MemoryBusResult:
+    # distinct schema_version literal + frozen/extra-forbid make it non-coercible.
+    with pytest.raises(Exception):
+        MemoryBusResult.model_validate(ref.model_dump())
+
+
+def test_consume_for_live_accepts_genuine_production_result() -> None:
+    live = MemoryBusResult(results=())
+    assert consume_for_live(live) is live
+    assert live.source == "live" and live.is_live is True
+
+
+def test_tampered_live_provenance_fails_closed() -> None:
+    # source/is_live are Literal-typed, so a mutated copy cannot even be built;
+    # attempting to forge a live stamp on reference data is rejected at validation.
+    with pytest.raises(Exception):
+        MemoryBusResult(source="reference")  # type: ignore[arg-type]
+    with pytest.raises(Exception):
+        MemoryBusResult(is_live=False)  # type: ignore[arg-type]
+
+
+# ---- scope isolation (item 9 negative coverage) --------------------------
 
 def test_query_is_scope_isolated_across_tenant_and_workspace() -> None:
     bus = ReferenceMemoryBus()
@@ -67,11 +112,8 @@ def test_query_is_scope_isolated_across_tenant_and_workspace() -> None:
     beta = _scope(tenant="tenant-beta")
     other_ws = _scope(tenant="tenant-alpha", workspace="ws-eng")
     bus.seed_validated(_validated(alpha, "secret alpha fact", MemoryType.SEMANTIC))
-    # cross-tenant: no bleed
     assert bus.query(MemoryQuery(scope=beta, text="alpha")).results == ()
-    # cross-workspace, same tenant: no bleed
     assert bus.query(MemoryQuery(scope=other_ws, text="alpha")).results == ()
-    # exact scope: visible
     assert len(bus.query(MemoryQuery(scope=alpha, text="alpha")).results) == 1
 
 
@@ -85,12 +127,8 @@ def test_only_validated_claims_are_returned() -> None:
         source_type="model",
         trust_level=TrustLevel.AI_INFERRED,
     )
-    # seed_validated refuses non-validated claims outright
-    try:
+    with pytest.raises(ValueError):
         bus.seed_validated(pending)
-        raise AssertionError("expected refusal")
-    except ValueError:
-        pass
 
 
 def test_store_candidate_queues_but_never_validates() -> None:
@@ -107,7 +145,6 @@ def test_store_candidate_queues_but_never_validates() -> None:
     assert candidate.runtime_authorized is False
     bus.store_candidate(candidate)
     assert bus.pending_candidates() == (candidate,)
-    # a queued candidate is NOT retrievable — promotion is not a write
     assert bus.query(MemoryQuery(scope=scope, text="candidate")).results == ()
 
 
@@ -117,12 +154,8 @@ def test_supersede_is_scope_bound() -> None:
     other = _scope(tenant="tenant-beta")
     claim = _validated(scope, "fact to supersede", MemoryType.SEMANTIC)
     bus.seed_validated(claim)
-    # cannot supersede from a foreign scope
-    try:
+    with pytest.raises(KeyError):
         bus.supersede(claim.memory_id, scope=other, by="mem-00000009")
-        raise AssertionError("expected KeyError")
-    except KeyError:
-        pass
     bus.supersede(claim.memory_id, scope=scope, by="mem-00000009")
     assert bus.query(MemoryQuery(scope=scope, text="fact")).results == ()
 
@@ -136,9 +169,11 @@ def test_erase_removes_from_scope() -> None:
     assert bus.query(MemoryQuery(scope=scope, text="erase")).results == ()
 
 
-def test_degraded_result_helper_is_explicit_and_empty() -> None:
+def test_degraded_result_is_live_typed_and_empty() -> None:
     d = degraded_result("brain unreachable")
+    assert isinstance(d, MemoryBusResult)
     assert d.degraded is True
     assert d.degraded_reason == "brain unreachable"
     assert d.results == ()
     assert d.is_live is True
+    assert consume_for_live(d) is d  # a degraded live result is still live evidence

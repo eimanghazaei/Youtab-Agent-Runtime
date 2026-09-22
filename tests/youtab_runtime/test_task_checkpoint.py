@@ -98,14 +98,16 @@ def test_scope_crossing_checkpoint_is_rejected() -> None:
         chain.append(genesis_other)
 
 
-def test_tamper_is_detected_by_verify_contiguous() -> None:
+def test_accidental_corruption_is_detected_by_verify_contiguous() -> None:
+    # NOTE: this proves tamper-EVIDENCE against accidental corruption/reordering,
+    # NOT security against a malicious writer who recomputes every hash.
     scope = _scope()
     chain = CheckpointChain("run-abc123", scope)
     h0 = chain.append(_cp(scope, 0, parent_hash=None))
     chain.append(_cp(scope, 1, parent_hash=h0))
-    # Mutate the internal genesis to simulate tampering, then re-verify.
-    tampered = _cp(scope, 0, parent_hash=None, next_action="TAMPERED")
-    chain._chain[0] = tampered  # type: ignore[attr-defined]
+    # Corrupt the internal genesis (as a disk-corruption/bad-merge would), re-verify.
+    corrupted = _cp(scope, 0, parent_hash=None, next_action="CORRUPTED")
+    chain._chain[0] = corrupted  # type: ignore[attr-defined]
     with pytest.raises(CheckpointChainError):
         chain.verify_contiguous()
 

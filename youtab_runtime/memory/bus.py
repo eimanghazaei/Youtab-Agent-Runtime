@@ -5,14 +5,22 @@ memory and *proposes* promotions to One Brain (Simorgh). The runtime never
 writes sovereign memory directly: a promotion is a candidate the Brain Effect
 Gate must authorize (mirroring :class:`~youtab_runtime.contracts.EffectProposal`).
 
-No live Simorgh endpoint exists in this repository yet. This module therefore
-defines the typed interface plus :class:`ReferenceMemoryBus`, a deterministic,
-in-process implementation for Runtime tests. The reference bus is *type-distinct*
-from any future live client: every result it returns is stamped
-``source="reference"`` and ``is_live=False`` so a reference answer can never be
-mistaken for live sovereign authority or a live receipt. See the exact
-cross-repository dependency contract in
-``docs/architecture/RUNTIME_SIMORGH_MEMORYBUS_CONTRACT.md``.
+**Simorgh is the memory authority.** This module is transport only. It defines
+the typed request/result envelopes plus two DELIBERATELY DISTINCT result types:
+
+* :class:`MemoryBusResult` — production authority evidence. It may originate ONLY
+  from an authenticated Simorgh client. ``is_live`` is the literal ``True``.
+* :class:`ReferenceMemoryBusResult` — deterministic, local, NON-LIVE reference
+  evidence produced by :class:`ReferenceMemoryBus` for Runtime tests. ``is_live``
+  is the literal ``False`` and its ``schema_version`` differs, so it is NOT
+  type-interchangeable with a production result and cannot validate as one.
+
+A live consumer MUST route results through :func:`consume_for_live`, which is
+fail-closed: it accepts only a genuine :class:`MemoryBusResult` and rejects a
+reference result, a copied/forged-provenance object, or anything else.
+
+No live Simorgh endpoint exists in this repository yet; nothing here is
+LIVE-integrated. See ``docs/architecture/RUNTIME_SIMORGH_MEMORYBUS_CONTRACT.md``.
 """
 
 from __future__ import annotations
@@ -24,8 +32,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .claim import ClaimStatus, MemoryClaim, MemoryType, TrustLevel
 from .scope import MemoryScope
-
-SourceLabel = Literal["live", "reference"]
 
 
 class MemoryQuery(BaseModel):
@@ -43,7 +49,7 @@ class MemoryQuery(BaseModel):
 
 
 class RetrievedMemory(BaseModel):
-    """One retrieved claim plus its citation and relevance score."""
+    """One retrieved claim (a transport DTO) plus its citation and score."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -52,8 +58,8 @@ class RetrievedMemory(BaseModel):
     citation: str = Field(min_length=1, max_length=1024)
 
 
-class MemoryQueryResult(BaseModel):
-    """The bounded, explainable result of a MemoryBus query.
+class MemoryBusResult(BaseModel):
+    """Production authority result — ONLY from an authenticated Simorgh client.
 
     ``degraded`` is True when authoritative retrieval was unavailable and the
     caller must surface that memory retrieval could not be completed. There is
@@ -62,21 +68,69 @@ class MemoryQueryResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["youtab.memory-query-result.v1"] = (
-        "youtab.memory-query-result.v1"
+    schema_version: Literal["youtab.memory-bus-result.v1"] = (
+        "youtab.memory-bus-result.v1"
     )
-    source: SourceLabel
-    is_live: bool
+    source: Literal["live"] = "live"
+    is_live: Literal[True] = True
     degraded: bool = False
     degraded_reason: str | None = Field(default=None, max_length=1024)
     results: tuple[RetrievedMemory, ...] = ()
+
+
+class ReferenceMemoryBusResult(BaseModel):
+    """NON-LIVE reference result — deterministic, local, for tests only.
+
+    A distinct type with a distinct ``schema_version`` so it can never be passed
+    where a production :class:`MemoryBusResult` is required.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["youtab.memory-bus-reference-result.v1"] = (
+        "youtab.memory-bus-reference-result.v1"
+    )
+    source: Literal["reference"] = "reference"
+    is_live: Literal[False] = False
+    degraded: bool = False
+    degraded_reason: str | None = Field(default=None, max_length=1024)
+    results: tuple[RetrievedMemory, ...] = ()
+
+
+class ReferenceProvenanceError(ValueError):
+    """Raised when reference (or non-authoritative) evidence reaches a live path."""
+
+
+def consume_for_live(result: object) -> MemoryBusResult:
+    """Fail-closed guard for the live memory path.
+
+    Accepts only a genuine production :class:`MemoryBusResult`. A reference
+    result, any object carrying reference provenance, or any other type is
+    rejected. This is the single chokepoint a live consumer must call before
+    trusting bus evidence.
+    """
+
+    if isinstance(result, ReferenceMemoryBusResult):
+        raise ReferenceProvenanceError(
+            "reference (NON-LIVE) evidence must not enter the live memory path"
+        )
+    if not isinstance(result, MemoryBusResult):
+        raise ReferenceProvenanceError(
+            f"expected an authenticated MemoryBusResult, got {type(result).__name__}"
+        )
+    # Defensive: reject a forged/copied object whose provenance was mutated.
+    if result.source != "live" or result.is_live is not True:
+        raise ReferenceProvenanceError("result provenance is not live")
+    return result
 
 
 class PromotionCandidate(BaseModel):
     """A claim the runtime proposes for Brain-governed promotion.
 
     This is a request, not a write: ``runtime_authorized`` is fixed False,
-    exactly as :class:`~youtab_runtime.contracts.EffectProposal`.
+    exactly as :class:`~youtab_runtime.contracts.EffectProposal`. The runtime
+    never validates, promotes, supersedes canonical claims, or shares across
+    agents without Simorgh/Gateway authorization.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -91,15 +145,18 @@ class PromotionCandidate(BaseModel):
 
 @runtime_checkable
 class MemoryBusClient(Protocol):
-    """The typed contract a live Simorgh client or the reference bus implements."""
+    """The typed contract an AUTHENTICATED live Simorgh client implements.
+
+    A live client returns :class:`MemoryBusResult`. The reference bus deliberately
+    does NOT satisfy this protocol's ``query`` return type — it returns
+    :class:`ReferenceMemoryBusResult` — which keeps reference evidence out of any
+    slot typed for a live client.
+    """
 
     @property
-    def source(self) -> SourceLabel: ...
+    def is_live(self) -> Literal[True]: ...
 
-    @property
-    def is_live(self) -> bool: ...
-
-    def query(self, request: MemoryQuery) -> MemoryQueryResult: ...
+    def query(self, request: MemoryQuery) -> MemoryBusResult: ...
 
     def store_candidate(self, candidate: PromotionCandidate) -> str: ...
 
@@ -115,13 +172,12 @@ class ReferenceMemoryBus:
 
     It enforces the same scope discipline a live bus must: a query only ever
     sees claims stored under an exactly-matching scope partition; there is no
-    cross-tenant, cross-workspace or cross-purpose bleed. Promotion candidates
-    are queued, never auto-validated — only an explicit governed step could
-    validate them, which this reference bus deliberately does not do.
+    cross-tenant, cross-workspace or cross-purpose bleed. It NEVER validates,
+    promotes, or shares a canonical claim: promotion candidates are queued and
+    left PENDING. Every result it returns is a :class:`ReferenceMemoryBusResult`.
     """
 
-    source: SourceLabel = "reference"
-    is_live: bool = False
+    is_live: Literal[False] = False
 
     def __init__(self) -> None:
         self._store: dict[str, dict[str, MemoryClaim]] = {}
@@ -134,7 +190,7 @@ class ReferenceMemoryBus:
             raise ValueError("reference bus only seeds VALIDATED claims for retrieval")
         self._store.setdefault(claim.scope.partition_key(), {})[claim.memory_id] = claim
 
-    def query(self, request: MemoryQuery) -> MemoryQueryResult:
+    def query(self, request: MemoryQuery) -> ReferenceMemoryBusResult:
         partition = self._store.get(request.scope.partition_key(), {})
         text = request.text.casefold()
         hits: list[RetrievedMemory] = []
@@ -154,11 +210,7 @@ class ReferenceMemoryBus:
                 )
             )
         hits.sort(key=lambda r: r.claim.memory_id)
-        return MemoryQueryResult(
-            source=self.source,
-            is_live=self.is_live,
-            results=tuple(hits[: request.limit]),
-        )
+        return ReferenceMemoryBusResult(results=tuple(hits[: request.limit]))
 
     def store_candidate(self, candidate: PromotionCandidate) -> str:
         self._pending[candidate.claim.memory_id] = candidate
@@ -186,13 +238,12 @@ class ReferenceMemoryBus:
         partition.pop(memory_id, None)
 
 
-def degraded_result(reason: str) -> MemoryQueryResult:
-    """Build an explicit degraded result (retrieval unavailable, no fallback)."""
+def degraded_result(reason: str) -> MemoryBusResult:
+    """Build an explicit degraded PRODUCTION result (retrieval unavailable).
 
-    return MemoryQueryResult(
-        source="live",
-        is_live=True,
-        degraded=True,
-        degraded_reason=reason,
-        results=(),
-    )
+    Degraded mode is a live-path concept: it tells the caller authoritative
+    retrieval failed, with no silent tenant fallback. It is intentionally a
+    :class:`MemoryBusResult` (not reference) because only a live consumer acts on it.
+    """
+
+    return MemoryBusResult(degraded=True, degraded_reason=reason, results=())
