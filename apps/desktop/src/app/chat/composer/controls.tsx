@@ -5,18 +5,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import {
-  AudioLines,
-  Ear,
-  EarOff,
-  iconSize,
-  Layers3,
-  Loader2,
-  Square,
-  SteeringWheel,
-  Volume2,
-  VolumeX
-} from '@/lib/icons'
+import { Ear, EarOff, iconSize, Layers3, Loader2, Mic, Square, SteeringWheel, Volume2, VolumeX } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $wakeWord, toggleWakeWord } from '@/store/wake-word'
 
@@ -123,7 +112,7 @@ export function ComposerControls({
             size="icon"
             type="button"
           >
-            <AudioLines className={iconSize.sm} />
+            <Mic className={iconSize.sm} />
           </Button>
         </Tip>
       ) : (

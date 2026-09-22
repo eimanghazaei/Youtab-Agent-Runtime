@@ -18,7 +18,9 @@ const cases = [
     b: 'midnight',
     junk: 'nope'
   },
-  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'light', a: 'dark', b: 'system', junk: 'dusk' }
+  // Default mode is 'dark' so a fresh install opens in the Youtab Teal look
+  // that matches the Web Platform (see normalizeMode in context.tsx).
+  { name: 'mode', pref: modePref as unknown as Pref, fallback: 'dark', a: 'light', b: 'system', junk: 'dusk' }
 ]
 
 describe.each(cases)('per-profile $name', ({ pref, fallback, a, b, junk }) => {
