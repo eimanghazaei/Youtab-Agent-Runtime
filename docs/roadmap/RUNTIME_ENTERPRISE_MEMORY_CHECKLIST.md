@@ -155,9 +155,14 @@ The genuine base gaps that are memory/continuity and do NOT overlap Lane effect/
 Truthful overall: foundational contracts done and green; large surface (retrieval,
 resume, offline, scenarios, scale, security proofs) remains. NOT claiming completion.
 
-Two commits so far (both author=Eiman, 0 attribution trailer, NO push):
+Commits so far (all author=Eiman, 0 attribution trailer, NO push; base `c7650a1b9`):
 - `41a89413f4c4e3b2e29bc567595100f530eacb53` — scope/claim/router seam + checklist.
-- (slice 2) — MemoryBus contract + reference bus + dependency doc.
+- `930a11d8aaab3bbeb97fae7411c6f2bf9946c2f0` — MemoryBus contract + reference bus + dependency doc.
+- `a990839b25dfcb6511aee0bc82c7ea7eeb6b9d39` — hash-chained TaskCheckpoint capsule.
+- `68bf3501027f7748aef543b13ba1b370fcfa1587` — model-aware token-budget policy.
+
+Totals: 51 new unit tests; `tests/youtab_runtime` = 549 passed / 0 failed; ruff + mypy clean.
+Verdict: FOUNDATION landed, NOT complete. NO-GO for any completion claim. NO push/PR/merge.
 
 ## Owner authorization (recorded)
 
