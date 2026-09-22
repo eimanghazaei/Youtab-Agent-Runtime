@@ -66,7 +66,7 @@ from .outbox import (
     ScopeRevoked,
     new_event,
 )
-from .outbox_sqlite import DigestMismatch, SqliteOutbox
+from .outbox_sqlite import DigestMismatch, OutboxConflict, SqliteOutbox
 from .placement import (
     PlacementError,
     PlacementVerifier,
@@ -149,6 +149,7 @@ __all__ = [
     "MemoryScope",
     "MemoryType",
     "MemoryWriteIntent",
+    "OutboxConflict",
     "OutboxEvent",
     "OutboxEventType",
     "OutboxStatus",

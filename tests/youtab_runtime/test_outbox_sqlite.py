@@ -9,6 +9,7 @@ import pytest
 from youtab_runtime.memory import (
     DigestMismatch,
     MemoryScope,
+    OutboxConflict,
     OutboxEventType,
     OutboxStatus,
     ScopeRevoked,
@@ -163,3 +164,39 @@ def test_payload_digest_mismatch_rejected(tmp_path) -> None:
     box.claim_batch(10, now_ms=0, consumer_id="c")
     with pytest.raises(DigestMismatch):
         box.ack("evt-00000001", ack_digest="a" * 64, payload_digest="e" * 64)
+
+
+# ---- item 4: conflicting re-enqueue must FAIL CLOSED, not be silently ignored
+
+def test_identical_reenqueue_is_idempotent(tmp_path) -> None:
+    box = SqliteOutbox(str(tmp_path / "o.db"))
+    s = _scope()
+    assert box.enqueue(_ev(s, "evt-00000001", "k1"), payload_digest="d" * 64) is True
+    assert box.enqueue(_ev(s, "evt-00000001", "k1"), payload_digest="d" * 64) is False
+    assert box.count(OutboxStatus.PENDING) == 1
+
+
+def test_conflicting_digest_same_id_fails_closed(tmp_path) -> None:
+    box = SqliteOutbox(str(tmp_path / "o.db"))
+    s = _scope()
+    box.enqueue(_ev(s, "evt-00000001", "k1"), payload_digest="d" * 64)
+    with pytest.raises(OutboxConflict):
+        box.enqueue(_ev(s, "evt-00000001", "k1"), payload_digest="e" * 64)
+    assert box.count(OutboxStatus.PENDING) == 1  # original untouched
+
+
+def test_same_id_different_scope_fails_closed(tmp_path) -> None:
+    box = SqliteOutbox(str(tmp_path / "o.db"))
+    box.enqueue(_ev(_scope("tenant-alpha"), "evt-00000001", "k1"), payload_digest="d" * 64)
+    with pytest.raises(OutboxConflict):
+        box.enqueue(_ev(_scope("tenant-beta"), "evt-00000001", "k1"), payload_digest="d" * 64)
+
+
+def test_conflict_persists_across_process_restart(tmp_path) -> None:
+    db = str(tmp_path / "obx.db")
+    # producer PROCESS writes the original (worker uses digest 'd'*64) and exits
+    _run("enqueue", db, "evt-00000001", "tenant-alpha", "k1", "1")
+    # a later process re-enqueues the SAME id with a DIFFERENT payload -> fail closed
+    box = SqliteOutbox(db)
+    with pytest.raises(OutboxConflict):
+        box.enqueue(_ev(_scope("tenant-alpha"), "evt-00000001", "k1"), payload_digest="e" * 64)

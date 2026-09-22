@@ -20,10 +20,21 @@ versioned evidence bundle.
 branch. No Lane/Durable branch touches `youtab_runtime/memory/` or `youtab_runtime/continuity/`.
 
 **Exact integration base:** `c7650a1b` (origin/main). My branch and Durable both fork from it
-and can integrate onto it directly (additive new files, no overlap). **The Lanes cannot be
-merged directly onto `c7650a1b`** — they are cut from the older `13f79aa6` and require their own
-forward-integration first (Master Integrator). My work does not depend on the Lanes and does not
-block them.
+and add only new files (no overlap). **CORRECTION (Codex):** the Lanes DO share ancestry with
+`c7650a1b` (their base `13f79aa6` is an ancestor of it), so **forward integration is possible but
+UNQUALIFIED** — the Lanes are simply cut from an older commit and would need forward-integration
+and re-qualification; this is NOT a claim that they "cannot merge". No merge/rebase/push is
+authorized here. My work does not depend on the Lanes and does not block them.
+
+### Lane-2 reconciliation (Codex item 2)
+The overlap matrix above used **`de246659`** (`delivery/runtime-generic-connector-v1`) as "Lane-2".
+The delivered frozen product SHA is **`1ed19f09`** (`integration/runtime-lane1-lane2-v2`).
+Verified ancestry: `de246659` is **NOT** an ancestor of `1ed19f09` — they are **distinct lineages**
+(the integration branch does not contain that delivery commit). Both share base `13f79aa6` with my
+HEAD. **Recomputed overlap of my changed files against the delivered `1ed19f09`: still ZERO**, and
+`1ed19f09` does not touch `youtab_runtime/memory` or `continuity`. So the zero-overlap conclusion
+holds against the delivered SHA. FLAG for the integration reviewer: `de246659` vs `1ed19f09`
+divergence should be reconciled on the Lane side (out of Memory scope).
 
 My source files (all additive, no overlap): `youtab_runtime/memory/{scope,claim,router,bus,
 budget,tokenizer,simorgh_client,outbox,outbox_sqlite,cache,keystore,placement,retrieval,shadow}.py`,
@@ -36,15 +47,20 @@ On base there is **no memory outbox / MemoryBus / Simorgh-sync store**. The exis
 queues are different domains: `gateway/delivery_ledger.py` = chat final-response delivery;
 `tools/async_delegation.py` = task/delegation completion delivery. Neither is memory transport.
 
-- **Server mode:** **Simorgh (via MemoryBus) is authoritative** for organizational memory.
-  `SqliteOutbox` is a LOCAL producer-side queue of pending memory-transport events (promotion
-  candidates / feedback / supersede / erasure). It is **never authoritative**.
-- **Local/offline mode:** `SqliteOutbox` holds pending events locally; on reconnect it syncs
-  **one-way** to Simorgh through the (currently DISABLED) `AuthenticatedSimorghClient`.
-- **No two authoritative queues** (delivery_ledger is chat, distinct). **No silent sync** (sync
-  is an explicit call through the disabled client, never implicit). **No duplicate writes**
-  (idempotency: stable `event_id` + `INSERT OR IGNORE`; ack requires matching payload digest;
-  `convergence_cursor` advances only on ack). Simorgh remains the single promotion/validation
+- **Server mode (TARGET CONTRACT, not a live result):** Simorgh (via MemoryBus) is *intended* to
+  be authoritative for organizational memory. **CORRECTION (Codex):** this is the target contract,
+  NOT a live server result — **server memory transport remains NOT INTEGRATED and fail-closed**
+  while the MemoryBus endpoint and Gateway signer are absent (`SimorghClientConfig.enabled=False`,
+  no transport shipped).
+- **Local/offline mode:** `SqliteOutbox` is a LOCAL producer-side queue of pending memory-transport
+  events (promotion candidates / feedback / supersede / erasure). It is **never authoritative**, and
+  it remains local/offline **pending an end-to-end synchronization proof** (no live sync exists yet).
+- **No two authoritative queues** (delivery_ledger is chat, distinct). **No silent sync** (sync would
+  be an explicit call through the disabled client, never implicit). **No duplicate writes**: stable
+  `event_id`; a conflicting re-enqueue (same id, different digest, or a different scope partition)
+  now **fails closed with `OutboxConflict`** rather than being silently ignored by `INSERT OR IGNORE`
+  (identical re-enqueue stays idempotent → False); ack requires a matching payload digest;
+  `convergence_cursor` advances only on ack. Simorgh remains the single promotion/validation
   authority; the Runtime only proposes.
 
 ## 3. Platform matrix (do NOT claim Linux enterprise cache works)
@@ -69,13 +85,18 @@ Present (Runtime side): `SignedScopePlacement` (`youtab.scope-placement.v1`), `P
 vs the signed envelope, Ed25519 verify, in-memory replay cache) → distinct `VerifiedPlacement`.
 Retrieval consumes only `VerifiedPlacement`; **JSON-schema validation alone is not authorization.**
 
+**Replay protection classification (Codex item 5): SINGLE-PROCESS ONLY.** The verifier's
+`(tenant_id, nonce)` replay cache is in-memory and per-verifier-instance; cross-process /
+cross-restart replay rejection is **NOT proven** and must be classified as unimplemented until a
+durable shared replay store is integrated and tested.
+
 **LIVE remains DISABLED until integrated with Gateway:**
 - a real Gateway **signer** issuing `youtab.scope-placement.v1`;
 - a **trusted key registry** (key_id → public key) with distribution;
 - **revocation** + rotation wired to that registry;
-- a **durable cross-process replay cache** (current cache is in-memory per verifier);
-- integration tests against the real signer. Gateway files are NOT modified here
-  (`docs/architecture/gateway_signed_scope_placement.schema.json`).
+- a **durable cross-process replay cache** (current cache is single-process, in-memory);
+- integration tests against the real signer, including cross-process replay rejection. Gateway
+  files are NOT modified here (`docs/architecture/gateway_signed_scope_placement.schema.json`).
 
 ## 5. Production call path that will replace the 2200 truncation (SHADOW-ONLY until approved)
 

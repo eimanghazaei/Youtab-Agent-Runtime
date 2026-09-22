@@ -37,6 +37,15 @@ class DigestMismatch(RuntimeError):
     """Raised when an ack's payload digest does not match the stored one."""
 
 
+class OutboxConflict(RuntimeError):
+    """Raised when an event_id is re-enqueued with a DIFFERENT payload digest.
+
+    Idempotent re-enqueue of the SAME event (equal digest) returns False; a
+    conflicting payload under the same id fails closed rather than being silently
+    dropped by INSERT OR IGNORE (which would hide a producer bug or a cross-scope
+    id collision)."""
+
+
 class SqliteOutbox:
     def __init__(
         self,
@@ -70,6 +79,28 @@ class SqliteOutbox:
         pk = event.scope.partition_key()
         if pk in self._revoked:
             raise ScopeRevoked("cannot enqueue for a revoked scope")
+        # Fail closed on a conflicting re-enqueue: same event_id, different digest
+        # (or a different scope partition under the same id). Identical re-enqueue
+        # is idempotent (returns False); INSERT OR IGNORE alone would hide a conflict.
+        existing = self._conn.execute(
+            "SELECT payload_digest, partition_key FROM outbox_events WHERE event_id=?",
+            (event.event_id,),
+        ).fetchone()
+        if existing is not None:
+            stored_digest, stored_pk = existing
+            if stored_pk != pk:
+                raise OutboxConflict(
+                    f"event_id {event.event_id} reused under a different scope"
+                )
+            if (
+                payload_digest is not None
+                and stored_digest is not None
+                and payload_digest != stored_digest
+            ):
+                raise OutboxConflict(
+                    f"event_id {event.event_id} re-enqueued with a different payload digest"
+                )
+            return False  # true idempotent duplicate
         cur = self._conn.execute(
             """INSERT OR IGNORE INTO outbox_events
                (event_id, partition_key, event_json, ordering_key, status, retry_count,

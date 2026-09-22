@@ -249,6 +249,25 @@ Every pytest invocation that may overlap another session MUST use a unique `--ba
 
 Storage limits 2200/1375: **UNCHANGED.** Production prompt behavior: **UNCHANGED.**
 
+## Codex preflight corrections (post-`3e9a3dff`, no new report)
+
+Foundation SHA `3e9a3dff` frozen; docs-only handoff `428f82c2` recorded. Corrections applied:
+1. Lanes SHARE ancestry with `c7650a1b` (base `13f79aa6` is an ancestor); forward integration is
+   POSSIBLE but UNQUALIFIED — not "cannot merge". No merge/rebase/push authorized.
+2. Lane-2 reconciled: overlap used `de246659`; delivered = `1ed19f09`; `de246659` is NOT an ancestor
+   of `1ed19f09` (distinct lineages). Recomputed overlap vs `1ed19f09` = ZERO; conclusion holds.
+3. Simorgh-as-authority = TARGET contract, not a live result. Server memory transport = NOT INTEGRATED,
+   fail-closed. `SqliteOutbox` = local/offline, pending an end-to-end sync proof.
+4. **CODE FIX:** `SqliteOutbox.enqueue` now fails closed with `OutboxConflict` on a conflicting
+   re-enqueue (same `event_id`, different digest, or different scope partition); identical re-enqueue
+   stays idempotent. Tests: idempotent dup, conflicting digest, cross-scope, cross-process restart.
+   `tests/youtab_runtime/test_outbox_sqlite.py` = 17 passed.
+5. Placement replay protection = SINGLE-PROCESS ONLY until a durable cross-process replay store is
+   proven; classified unimplemented for cross-restart.
+
+**PAUSE:** Memory product edits are paused pending Gateway/Durable interfaces; no further
+documentation-only cycles. Detail: `docs/architecture/INTEGRATION_PREFLIGHT_HANDOFF.md`.
+
 ## Owner authorization (recorded)
 
 - Base = current remote default (`main` @ `c7650a1b9`). Lane/Frontend/evidence branches NOT used as base and untouched.
