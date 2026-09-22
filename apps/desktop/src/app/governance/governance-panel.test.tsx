@@ -101,4 +101,37 @@ describe('GovernancePanel', () => {
     click(/submit request/i)
     expect((screen.getByRole('button', { name: /approve/i }) as HTMLButtonElement).disabled).toBe(false)
   })
+
+  it('adversarial: replay button drives a real replay_rejected', () => {
+    renderPanel(req({ id: 'adv-replay' }))
+    click(/replay a submitted request/i)
+    expect(phaseAttr()).toBe('replay_rejected')
+  })
+
+  it('adversarial: modify-payload button drives a real payload_modified', () => {
+    renderPanel(req({ id: 'adv-tamper' }))
+    click(/modify payload after submit/i)
+    expect(phaseAttr()).toBe('payload_modified')
+  })
+
+  it('adversarial: foreign-workspace button drives a real workspace_mismatch', () => {
+    renderPanel(req({ id: 'adv-ws' }))
+    click(/submit from a foreign workspace/i)
+    expect(phaseAttr()).toBe('workspace_mismatch')
+  })
+
+  it('adversarial: revoked-delegation button drives a real revoked_delegation', () => {
+    renderPanel(req({ id: 'adv-rev' }))
+    click(/use a revoked delegation/i)
+    expect(phaseAttr()).toBe('revoked_delegation')
+  })
+
+  it('adversarial receipts stay truthful (source: reference, no effect id)', () => {
+    renderPanel(req({ id: 'adv-truthful' }))
+    click(/submit from a foreign workspace/i)
+    const region = screen.getByTestId('governance-phase')
+    expect(region.textContent).toContain('source: reference')
+    expect(region.textContent).toContain('effectId: —')
+    expect(region.textContent).toContain('receiptId: —')
+  })
 })

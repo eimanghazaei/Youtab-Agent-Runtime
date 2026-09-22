@@ -28,6 +28,15 @@ export interface UseGovernanceResult {
   runEffect: () => GovernanceReceipt | null
   reconcile: () => GovernanceReceipt | null
   reset: () => void
+  /**
+   * The live governance service (reference today, Runtime later). Exposed so the
+   * panel can drive multi-step adversarial scenarios (replay, payload tamper)
+   * against the REAL service synchronously — no fabricated receipts.
+   */
+  service: GovernanceService
+  /** Display a receipt produced by a direct service call. Clears the tracked
+   *  request id (adversarial outcomes are terminal — nothing more to decide). */
+  show: (receipt: GovernanceReceipt) => void
 }
 
 export function useGovernance(serviceOrConfig: GovernanceService | ReferenceGovernanceConfig): UseGovernanceResult {
@@ -100,5 +109,13 @@ export function useGovernance(serviceOrConfig: GovernanceService | ReferenceGove
     setReceipt(null)
   }, [])
 
-  return { receipt, submit, decide, runEffect, reconcile, reset }
+  const show = useCallback((next: GovernanceReceipt) => {
+    // Adversarial outcomes are terminal: forget the tracked request so the
+    // normal approve/effect controls stay disabled until a fresh submit.
+    setRequestId(null)
+    setLastPayloadHash(undefined)
+    setReceipt(next)
+  }, [])
+
+  return { receipt, submit, decide, runEffect, reconcile, reset, service, show }
 }

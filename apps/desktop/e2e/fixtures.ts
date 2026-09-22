@@ -289,11 +289,20 @@ export function findElectron(): string {
   // after building. We replicate that here.
   const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
 
+  // On Windows the launched binary is `electron.exe`; prefer it so we hand
+  // Playwright the real executable, not a shell/.cmd shim (which fails
+  // `_electron.launch` with "The system cannot find the path specified").
+  const localElectronExe = `${localElectron}.exe`
+
+  if (fs.existsSync(localElectronExe)) {
+    return localElectronExe
+  }
+
   if (fs.existsSync(localElectron)) {
     return localElectron
   }
 
-  // Fall back to PATH
+  // Fall back to PATH (POSIX `which`).
   const result = spawnSync('which', ['electron'], {
     encoding: 'utf8',
   })

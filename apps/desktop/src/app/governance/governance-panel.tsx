@@ -10,7 +10,7 @@
 // Provenance is always visible: a `source: reference` indicator plus a note
 // that the real approval + effect-ledger API is a pending dependency (DR-RT-3b).
 
-import { type FC, useMemo } from 'react'
+import { type FC, useMemo, useRef } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { AlertCircle, AlertTriangle, CheckCircle2, Clock, RefreshCw } from '@/lib/icons'
@@ -100,10 +100,45 @@ export const GovernancePanel: FC<GovernancePanelProps> = ({ request, config }) =
   const activeRequest = useMemo(() => request ?? DEFAULT_REQUEST, [request])
   const activeConfig = useMemo(() => config ?? DEFAULT_CONFIG, [config])
 
-  const { receipt, submit, decide, runEffect, reconcile, reset } = useGovernance(activeConfig)
+  const { receipt, submit, decide, runEffect, reconcile, reset, service, show } = useGovernance(activeConfig)
 
   const phase = receipt?.phase ?? null
   const isTerminal = phase !== null && TERMINAL_PHASES.has(phase)
+
+  // A per-instance counter so every adversarial probe uses a FRESH request id
+  // (reusing one would itself trip the replay guard on the second click).
+  const probeCounter = useRef(0)
+
+  const nextProbe = () => {
+    probeCounter.current += 1
+
+    return `${activeRequest.id}-adv-${probeCounter.current}`
+  }
+
+  // Each handler drives the REAL reference service with adversarial inputs and
+  // shows the genuine rejection phase. No receipt is fabricated: reference
+  // receipts keep source:'reference' and effectId===null.
+  const probeReplay = () => {
+    const probe = { ...activeRequest, id: nextProbe() }
+    service.submitRequest(probe)
+    show(service.submitRequest(probe)) // second submit of the same id → replay_rejected
+  }
+
+  const probeTamperPayload = () => {
+    const probe = { ...activeRequest, id: nextProbe(), requiresApproval: true }
+    service.submitRequest(probe)
+    // Decide with a payload hash that differs from the one bound at submit.
+    show(service.decide(probe.id, 'approve', 'sha256:tampered-does-not-match'))
+  }
+
+  const probeForeignWorkspace = () => {
+    show(service.submitRequest({ ...activeRequest, id: nextProbe(), workspaceId: 'ws-intruder' }))
+  }
+
+  const probeRevokedDelegation = () => {
+    const revoked = [...(activeConfig.revokedDelegationIds ?? [])][0] ?? 'del-revoked'
+    show(service.submitRequest({ ...activeRequest, id: nextProbe(), delegationId: revoked }))
+  }
 
   return (
     <section aria-labelledby="governance-heading" className="flex flex-col gap-4 p-4 text-sm">
@@ -195,6 +230,53 @@ export const GovernancePanel: FC<GovernancePanelProps> = ({ request, config }) =
           Reset
         </Button>
       </div>
+
+      <section
+        aria-labelledby="governance-adversarial-heading"
+        className="flex flex-col gap-2"
+        data-testid="governance-adversarial"
+      >
+        <h3 className="text-sm font-semibold text-(--ui-text-primary)" id="governance-adversarial-heading">
+          Adversarial governance checks
+        </h3>
+        <p className="text-xs text-(--ui-text-secondary)">
+          Each check submits a REAL request to the reference service with a tampered input and shows the genuine
+          rejection above. Reference receipts stay <span className="font-mono">source: reference</span> with an empty
+          effect id — nothing is fabricated.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <Button data-testid="gov-replay" onClick={probeReplay} size="sm" type="button" variant="secondary">
+            Replay a submitted request
+          </Button>
+          <Button
+            data-testid="gov-tamper-payload"
+            onClick={probeTamperPayload}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            Modify payload after submit
+          </Button>
+          <Button
+            data-testid="gov-foreign-workspace"
+            onClick={probeForeignWorkspace}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            Submit from a foreign workspace
+          </Button>
+          <Button
+            data-testid="gov-revoked-delegation"
+            onClick={probeRevokedDelegation}
+            size="sm"
+            type="button"
+            variant="secondary"
+          >
+            Use a revoked delegation
+          </Button>
+        </div>
+      </section>
     </section>
   )
 }
