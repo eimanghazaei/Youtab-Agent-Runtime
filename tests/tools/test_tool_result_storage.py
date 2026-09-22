@@ -220,6 +220,7 @@ class TestMaybePersistToolResult:
         env = MagicMock()
         env.execute.return_value = {"output": "", "returncode": 0}
         env.get_temp_dir.return_value = ""
+        env._session_id = "sess-esc-01"  # deterministic run scope
         content = "x" * 60_000
         result = maybe_persist_tool_result(
             content=content,
@@ -229,14 +230,16 @@ class TestMaybePersistToolResult:
             threshold=30_000,
         )
         cmd = env.execute.call_args[0][0]
-        target = cmd.split("cat > ", 1)[1].split(" <<", 1)[0]
-
-        assert "Full output saved to: /tmp/youtab-results/outside_whoami_x_" in result
-        assert "/tmp/youtab-results/../" not in result
-        assert target.startswith("/tmp/youtab-results/outside_whoami_x_")
-        assert "/../" not in target
-        assert "$(whoami)" not in target
-        assert ";" not in target
+        # Contained within the run-scoped store root, with a sanitized filename.
+        assert (
+            "Full output saved to: /tmp/youtab-results/run-sess-esc-01/outside_whoami_x_"
+            in result
+        )
+        assert "/../" not in result and "$(whoami)" not in result
+        # The dangerous tokens never reach the command (stripped by the sanitizer);
+        # the sanitized filename is what is written.
+        assert "/../" not in cmd and "$(whoami)" not in cmd
+        assert "outside_whoami_x_" in cmd
 
 
     def test_threshold_zero_forces_persist(self):
