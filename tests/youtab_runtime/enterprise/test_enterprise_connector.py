@@ -15,7 +15,7 @@ import sys
 import pytest
 
 from youtab_runtime import effect_ledger
-from youtab_runtime.enterprise import providers
+from youtab_runtime.enterprise import reference_providers as providers
 from youtab_runtime.enterprise.authority import (
     ReferenceAuthorityBoundary,
     RuntimeIdempotencyPolicy,
@@ -220,15 +220,20 @@ def test_cad_matrix_real_computation(db_path, principal):
                  "min_feature_size": 2.0},
     ))
     assert r.output["passed"] is False
-    # fea.run
-    conn, _ = _connector(["cad.fea.run"], db_path)
-    r = conn.execute(ConnectorRequest(
+    # fea.run — now a governed EFFECT (commit class), library-backed via numpy.
+    conn, authority = _connector(["cad.fea.run"], db_path)
+    payload = {"model": {"length": 2.0, "area": 0.01, "youngs_modulus": 200e9,
+                         "force": 1000.0, "elements": 8}}
+    req = ConnectorRequest(
         capability_id="cad.fea.run", run_id="run-1", principal=principal,
-        raw_workspace="ws-acme", business_key="part-1",
-        payload={"model": {"length": 2.0, "area": 0.01, "youngs_modulus": 200e9,
-                          "force": 1000.0, "elements": 8}},
-    ))
+        raw_workspace="ws-acme", business_key="part-1", payload=payload,
+        approval_id="appr-1",
+    )
+    _register_commit_approval(authority, "cad.fea.run", req)
+    r = conn.execute(req)
     assert r.output["tip_displacement"] == pytest.approx(1e-6, rel=1e-9)
+    assert r.output["backend"] == "numpy"
+    assert r.effect_state == "committed"
 
 
 # --------------------------------------------------------------------------- #

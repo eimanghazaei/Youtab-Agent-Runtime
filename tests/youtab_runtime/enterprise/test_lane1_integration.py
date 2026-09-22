@@ -16,7 +16,7 @@ import pytest
 
 from youtab_runtime import approval as _approval
 from youtab_runtime import effect_ledger as _ledger
-from youtab_runtime.enterprise import providers
+from youtab_runtime.enterprise import reference_providers as providers
 from youtab_runtime.enterprise.authority import RuntimeIdempotencyPolicy
 from youtab_runtime.enterprise.connector import ConnectorRequest
 from youtab_runtime.enterprise.lane1_adapter import Lane1AuthorityAdapter
@@ -169,26 +169,34 @@ CAD_MODEL = {"length": 2.0, "area": 0.01, "youngs_modulus": 200e9,
              "force": 1000.0, "elements": 8}
 
 
-def test_cad_ops_real_compute(db_path, principal):
-    conn, _ = _connector(["cad.fea.run"], db_path)
-    r = conn.execute(ConnectorRequest(
+def _fea_req(principal, *, business_key="part-1", approval_id="appr-1"):
+    return ConnectorRequest(
         capability_id="cad.fea.run", run_id="run-1", principal=principal,
-        raw_workspace="ws-acme", business_key="part-1",
-        payload={"model": CAD_MODEL},
-    ))
+        raw_workspace="ws-acme", business_key=business_key,
+        payload={"model": CAD_MODEL}, approval_id=approval_id,
+    )
+
+
+def test_cad_ops_real_compute(db_path, principal):
+    # Bounded FEA is a governed EFFECT (commit class) via the numpy adapter.
+    conn, adapter = _connector(["cad.fea.run"], db_path)
+    req = _fea_req(principal)
+    _issue_approval(adapter, db_path, "cad.fea.run", req)
+    r = conn.execute(req)
     assert r.output["tip_displacement"] == pytest.approx(1e-6, rel=1e-9)
+    assert r.output["backend"] == "numpy"
+    assert r.effect_state == "committed"
 
 
 def test_cad_library_backed_fea_cross_checks_connector(db_path, principal):
     """The numpy-backed solver agrees with both the analytical form and the
-    connector's reference-oracle output within the documented tolerance."""
+    connector's oracle-cross-checked output within the documented tolerance."""
     from youtab_runtime.enterprise import cad_lib
 
-    conn, _ = _connector(["cad.fea.run"], db_path)
-    r = conn.execute(ConnectorRequest(
-        capability_id="cad.fea.run", run_id="run-1", principal=principal,
-        raw_workspace="ws-acme", business_key="part-1", payload={"model": CAD_MODEL},
-    ))
+    conn, adapter = _connector(["cad.fea.run"], db_path)
+    req = _fea_req(principal)
+    _issue_approval(adapter, db_path, "cad.fea.run", req)
+    r = conn.execute(req)
     xc = cad_lib.cross_check_against_reference(CAD_MODEL)
     lib = cad_lib.fea_run_numpy(CAD_MODEL)
     assert lib["backend"] == "numpy"

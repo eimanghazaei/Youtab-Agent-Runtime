@@ -1,6 +1,12 @@
-"""Real bounded CAD computation: geometry, DFM rules, and a 1-D FEA solver.
+"""Deterministic CAD TEST ORACLE: geometry, DFM rules, and a 1-D FEA solver.
 
-Review v1.0 item 7 requires the CAD reference boundary to perform *actual*
+ORACLE-ONLY. This hand-written, pure-stdlib module is a deterministic reference
+oracle — NOT a production CAD/FEA framework, and it must not grow into one. The
+bounded FEA proof path the connector uses runs through the maintained-library
+(numpy) adapter in :mod:`youtab_runtime.enterprise.cad_lib`, which cross-checks
+its result against this oracle within a documented tolerance.
+
+This module performs *actual*
 computation rather than return canned values. This module, pure-stdlib and
 deterministic, does exactly that:
 

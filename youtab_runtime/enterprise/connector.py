@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from youtab_runtime import effect_ledger
-from youtab_runtime.enterprise import providers
+from youtab_runtime.enterprise import reference_providers as providers
 from youtab_runtime.enterprise.authority import (
     RuntimeIdempotencyPolicy,
 )

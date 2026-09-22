@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from youtab_runtime import effect_ledger as _ledger
-from youtab_runtime.enterprise import providers
+from youtab_runtime.enterprise import reference_providers as providers
 from youtab_runtime.enterprise.authority import RuntimeIdempotencyPolicy
 from youtab_runtime.enterprise.connector import ConnectorRequest, Receipt
 from youtab_runtime.enterprise.lane1_adapter import Lane1AuthorityAdapter
