@@ -346,13 +346,9 @@ def _route_patch_replace(ctx: _Ctx, final_args: dict) -> RouteOutcome:
         sort_keys=True, separators=(",", ":"),
     ).encode("utf-8")
     grant = _grant(ctx, {"read", "write"})
-    outcome, effect, auth = _govern(
-        ctx, grant=grant, requested_path=requested_path, operation="write",
-        digest_bytes=patch_payload, descriptor=dict(final_args),
-    )
-    if outcome is not None:
-        return outcome
-    # Grant-bound read → apply the replacement → grant-bound write of the result.
+    # PRE-EXECUTION validation (before any effect is claimed): the target must be
+    # grant-contained and readable, and the patch must be applicable. A failure
+    # here is a clean rejection with ZERO effect row — never an UNKNOWN effect.
     try:
         fd = grant_fs.open_within_grant(
             grant, requested_path, operation="read",
@@ -362,11 +358,23 @@ def _route_patch_replace(ctx: _Ctx, final_args: dict) -> RouteOutcome:
             current = os.read(fd, _MAX_READ_BYTES).decode("utf-8", errors="replace")
         finally:
             os.close(fd)
+    except FolderGrantError as exc:
+        return _blocked(f"managed patch target refused: {type(exc).__name__}")
+    except OSError as exc:
+        return _blocked(f"managed patch target unreadable: {type(exc).__name__}")
+    try:
         new_text = _apply_replace(current, old, new, replace_all)
-    except (_PatchError, OSError) as exc:
-        return _unknown(ctx, effect, exc, "patch")
+    except _PatchError as exc:
+        return _blocked(f"managed patch not applicable: {exc}")
+    # Now claim the write effect and perform the actual mutation.
+    outcome, effect, auth = _govern(
+        ctx, grant=grant, requested_path=requested_path, operation="write",
+        digest_bytes=patch_payload, descriptor=dict(final_args),
+    )
+    if outcome is not None:
+        return outcome
     written = _host_write(ctx, grant, requested_path, new_text.encode("utf-8"))
-    if isinstance(written, RouteOutcome):
+    if isinstance(written, RouteOutcome):  # mutation-phase host-IO failure
         return _unknown(ctx, effect, OSError(written.reason or ""), "patch")
     return _finish(ctx, effect, auth, {"operation": "patch", "bytes_written": written})
 
@@ -417,6 +425,20 @@ def _route_patch_v4a(ctx: _Ctx, final_args: dict) -> RouteOutcome:
         if not op.new_path:
             return _blocked("managed V4A move requires a destination path")
         grant = _grant(ctx, {"move"})
+        # PRE-EXECUTION: BOTH source and destination must be grant-contained before
+        # any effect is claimed. A destination outside the grant is a clean
+        # rejection with ZERO effect row — never an UNKNOWN effect.
+        try:
+            resolve_within_grant(
+                grant, op.file_path, operation="move", tenant_id=ctx.principal.tenant,
+                principal_id=ctx.principal.user, workspace_id=ctx.workspace_id, now=ctx.now,
+            )
+            resolve_within_grant(
+                grant, op.new_path, operation="move", tenant_id=ctx.principal.tenant,
+                principal_id=ctx.principal.user, workspace_id=ctx.workspace_id, now=ctx.now,
+            )
+        except FolderGrantError as exc:
+            return _blocked(f"managed move refused: {type(exc).__name__}")
         descriptor = {"tool": "patch", "op": "move", "src": op.file_path, "dst": op.new_path}
         move_ident = json.dumps(
             {"src": op.file_path, "dst": op.new_path}, sort_keys=True, separators=(",", ":")
@@ -433,6 +455,7 @@ def _route_patch_v4a(ctx: _Ctx, final_args: dict) -> RouteOutcome:
                 workspace_id=ctx.workspace_id, now=ctx.now,
             )
         except (FolderGrantError, OSError) as exc:
+            # Post-claim boundary failure (e.g. a TOCTOU swap): outcome indeterminate.
             return _unknown(ctx, effect, exc, "move")
         return _finish(ctx, effect, auth, {"operation": "move", "destination": op.new_path})
 

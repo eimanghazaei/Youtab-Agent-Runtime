@@ -549,38 +549,80 @@ def test_expired_authorization_refused(tmp_path, managed_env, exec_spy_disabled)
     assert spy.called is False and exec_spy_disabled.called is False
 
 
+def test_receipt_fields_and_foreign_principal_unreadable(
+    tmp_path, managed_env, exec_spy_disabled
+):
+    """A committed op yields a canonical receipt bound to op / target / workspace /
+    principal / final-state, and the receipt is unreadable to a foreign principal."""
+    ws, effects_db, admitted, agent, signer, key_id = _make(
+        tmp_path, "cmd-mx-receipt-1", "nonce-mx-receipt-0000001")
+    target = ws / "r.txt"
+    task = "task-mx-receipt-1"
+    content = b"receipt payload"
+    final_args = {"path": "r.txt", "content": content.decode()}
+    _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
+    edigest, proposal_id, rd = _op_identity(
+        admitted, ws, operation="write", requested_path="r.txt",
+        digest_bytes=content, descriptor=final_args, perms={"write"})
+    agent._effect_authorizations = [_sign_auth(
+        signer, key_id, authorization_id="authz-receipt-000001", admitted=admitted,
+        effect_digest=edigest, proposal_id=proposal_id, request_digest=rd,
+        operation="write")]
+    out = _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
+    body = json.loads(out.result)
+    # result carries operation + canonical target + receipt binding
+    assert body["operation"] == "write"
+    assert body["resolved_path"].endswith("r.txt")
+    r = body["receipt"]
+    assert r["workspace_id"] == WS and r["state"] == "committed"
+    assert r["authorization_id"] == "authz-receipt-000001" and r["key_id"] == key_id
+    # canonical ledger record: correct final state + tenant/principal-bound digest
+    rec = get_effect_in_workspace(r["effect_id"], _principal(admitted), WS, db_path=effects_db)
+    assert rec is not None and rec.state.value == "committed"
+    assert rec.target_scope_digest  # canonical target/scope digest present
+    # foreign PRINCIPAL cannot read the receipt (tenant/user-bound), and foreign
+    # WORKSPACE cannot either.
+    assert get_effect_in_workspace(r["effect_id"], Principal("other-tenant", "other-user"),
+                                   WS, db_path=effects_db) is None
+    assert get_effect_in_workspace(r["effect_id"], _principal(admitted), "other-ws",
+                                   db_path=effects_db) is None
+    assert target.read_bytes() == content
+
+
 def test_replayed_copied_authorization_refused(tmp_path, managed_env, exec_spy_disabled):
+    # Uses write_file so the replay reaches the single-use/correlation layer (a
+    # patch-replace replay would instead be refused earlier because its old_string
+    # is already gone — a different, also-safe layer). Content is identical on the
+    # replay so the effect identity matches the consumed one.
     ws, effects_db, admitted, agent, signer, key_id = _make(
         tmp_path, "cmd-mx-copied-1", "nonce-mx-copied-00000001")
     target = ws / "f.txt"
-    target.write_bytes(b"aaa")
     task = "task-mx-copied-1"
-    final_args = _replace_args("f.txt", "aaa", "bbb")
+    content = b"committed once"
+    final_args = {"path": "f.txt", "content": content.decode()}
 
-    out0, _ = _patch(agent, final_args, task)  # emit proposal
-    assert out0.blocked is True
+    out0 = _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
+    assert out0.blocked is True  # emit proposal
     edigest, proposal_id, rd = _op_identity(
         admitted, ws, operation="write", requested_path="f.txt",
-        digest_bytes=_replace_bytes("aaa", "bbb"), descriptor=final_args,
-        perms={"read", "write"})
+        digest_bytes=content, descriptor=final_args, perms={"write"})
     auth = _sign_auth(
         signer, key_id, authorization_id="authz-copied-00000001", admitted=admitted,
         effect_digest=edigest, proposal_id=proposal_id, request_digest=rd,
         operation="write")
     agent._effect_authorizations = [auth]
 
-    first, _ = _patch(agent, final_args, task)
-    assert first.blocked is False and target.read_bytes() == b"bbb"
+    first = _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
+    assert first.blocked is False and target.read_bytes() == content
     assert len(_committed(task, admitted, effects_db)) == 1
 
     # Attacker copies the (now-consumed) authorization and resubmits it verbatim.
     agent._effect_authorizations = [auth]
-    replay, spy = _patch(agent, final_args, task)
+    replay = _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
     assert replay.blocked is True
-    assert "correlation failed" in json.loads(replay.result)["error"]
-    assert target.read_bytes() == b"bbb"
+    assert target.read_bytes() == content
     assert len(_committed(task, admitted, effects_db)) == 1  # no second receipt
-    assert spy.called is False and exec_spy_disabled.called is False
+    assert exec_spy_disabled.called is False
 
 
 def test_wrong_workspace_authorization_refused(tmp_path, managed_env, exec_spy_disabled):
@@ -771,14 +813,14 @@ def test_move_destination_outside_grant_fails_closed(
 
     out, spy = _patch(agent, final_args, task)
     assert out.blocked is True
+    assert "refused" in json.loads(out.result)["error"]
     assert src.read_bytes() == b"payload"
     assert not outside.exists()
-    # The effect was claimed then the host-IO failed closed → left non-terminal
-    # 'unknown' (never committed, never blind-replayed).
-    assert _committed(task, admitted, effects_db) == []
+    # Destination-outside-grant is a PRE-EXECUTION rejection (validated before any
+    # claim): ZERO effect row — never a committed OR an unknown effect.
     all_effects = list_effects_in_workspace(task, _principal(admitted), WS,
                                             db_path=effects_db)
-    assert any(e.state.value == "unknown" for e in all_effects)
+    assert all_effects == []
     assert spy.called is False and exec_spy_disabled.called is False
 
 
@@ -842,42 +884,49 @@ def test_symlink_junction_parent_escape_fails_closed(
     assert spy.called is False and exec_spy_disabled.called is False
 
 
-def test_crash_after_effect_left_unknown(tmp_path, managed_env, exec_spy_disabled):
-    """A host-IO failure AFTER the effect is claimed must leave the effect in a
-    non-terminal ``unknown`` state (never committed, never blind-replayed).
+def test_crash_after_effect_left_unknown(
+    tmp_path, managed_env, exec_spy_disabled, monkeypatch
+):
+    """A host-IO failure DURING the mutation phase (after the effect is claimed and
+    the single-use authorization consumed) must leave the effect non-terminal
+    ``unknown`` — never committed, never blind-replayed. The outcome is genuinely
+    indeterminate (the write may have partially applied), so ``unknown`` +
+    reconciliation is the correct classification (contrast: a pre-execution
+    rejection produces zero effect row — see the move/patch pre-execution tests).
 
-    We trigger it cleanly through the real middleware — no internal patching — by
-    authorizing a replace whose ``old_string`` is absent from the file: the effect
-    is claimed and the single-use authorization consumed, then the grant-bound
-    patch application raises, so the router settles the effect ``unknown``.
+    Failure injection is at the router's host-IO boundary (``_host_write``), so the
+    claim + consume have already happened when the mutation raises.
     """
+    import youtab_runtime.managed_fs_router as _router
+
     ws, effects_db, admitted, agent, signer, key_id = _make(
         tmp_path, "cmd-mx-crash-1", "nonce-mx-crash-00000001")
     target = ws / "f.txt"
-    target.write_bytes(b"hello world")
     task = "task-mx-crash-1"
-    # old_string not present in the file → application fails AFTER the claim.
-    final_args = _replace_args("f.txt", "NOT-PRESENT", "x")
+    content = b"crash payload"
+    final_args = {"path": "f.txt", "content": content.decode()}
 
-    _patch(agent, final_args, task)  # emit proposal
+    _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
     edigest, proposal_id, rd = _op_identity(
         admitted, ws, operation="write", requested_path="f.txt",
-        digest_bytes=_replace_bytes("NOT-PRESENT", "x"), descriptor=final_args,
-        perms={"read", "write"})
+        digest_bytes=content, descriptor=final_args, perms={"write"})
     agent._effect_authorizations = [_sign_auth(
         signer, key_id, authorization_id="authz-crash-0000001", admitted=admitted,
         effect_digest=edigest, proposal_id=proposal_id, request_digest=rd,
         operation="write")]
 
-    out, spy = _patch(agent, final_args, task)
+    # The effect is claimed + authorization consumed, THEN the host-IO write fails.
+    monkeypatch.setattr(
+        _router, "_host_write",
+        lambda *a, **k: _router.RouteOutcome(blocked=True, reason="simulated host-IO crash"))
+    out = _drive(agent, "write_file", dict(final_args), task, _ExecuteSpy("write_file"))
     assert out.blocked is True
     assert "reconciliation" in json.loads(out.result)["error"]
-    assert target.read_bytes() == b"hello world"  # unchanged
     assert _committed(task, admitted, effects_db) == []
     all_effects = list_effects_in_workspace(task, _principal(admitted), WS,
                                             db_path=effects_db)
     assert len(all_effects) == 1 and all_effects[0].state.value == "unknown"
-    assert spy.called is False and exec_spy_disabled.called is False
+    assert exec_spy_disabled.called is False
 
 
 def test_foreign_workspace_receipt_is_invisible(tmp_path, managed_env, exec_spy_disabled):

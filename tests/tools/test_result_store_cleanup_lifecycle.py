@@ -72,3 +72,66 @@ def test_run_scope_uses_public_accessor():
         _session_id = "SHOULD-NOT-BE-USED"
 
     assert trs._run_scope(_Env()) == "run-pub-scope-01"
+
+
+# ── cleanup lifecycle hardening (item 4) ─────────────────────────────────────
+
+
+def test_teardown_survives_scope_cleanup_raising(monkeypatch):
+    """If scope cleanup THROWS, environment teardown still completes."""
+    def _boom(env):
+        raise RuntimeError("scope cleanup exploded")
+    monkeypatch.setattr(trs, "cleanup_run_scope", _boom)
+    env = _FakeEnv("sess-raise-1")
+    _register("task-cleanup-raise", env)
+    try:
+        tt.cleanup_vm("task-cleanup-raise")
+    finally:
+        with tt._env_lock:
+            tt._active_environments.pop("task-cleanup-raise", None)
+            tt._last_activity.pop("task-cleanup-raise", None)
+    assert env.cleaned is True  # env.cleanup() still ran despite the cleanup error
+
+
+def test_teardown_survives_scope_cleanup_returning_false(monkeypatch):
+    monkeypatch.setattr(trs, "cleanup_run_scope", lambda env: False)
+    env = _FakeEnv("sess-false-1")
+    _register("task-cleanup-false", env, stale=True)
+    try:
+        tt._cleanup_inactive_envs(lifetime_seconds=0)
+    finally:
+        with tt._env_lock:
+            tt._active_environments.pop("task-cleanup-false", None)
+            tt._last_activity.pop("task-cleanup-false", None)
+    assert env.cleaned is True
+
+
+class _RecordingEnv:
+    """Records the shell command + kwargs cleanup_run_scope issues."""
+
+    def __init__(self, session_id="sess-rec", temp_dir="/sandbox/tmp"):
+        self._session_id = session_id
+        self._temp_dir = temp_dir
+        self.calls = []
+
+    @property
+    def session_scope(self):
+        return self._session_id
+
+    def get_temp_dir(self):
+        return self._temp_dir
+
+    def execute(self, cmd, **kwargs):
+        self.calls.append((cmd, kwargs))
+        return {"output": "", "returncode": 0}
+
+
+def test_scope_cleanup_uses_bounded_timeout_and_no_process_kill():
+    env = _RecordingEnv("sess-bounded-1")
+    assert trs.cleanup_run_scope(env) is True
+    cmd, kwargs = env.calls[-1]
+    # bounded: an explicit timeout is always passed to the backend
+    assert kwargs.get("timeout") and kwargs["timeout"] > 0
+    # deletes only the run scope; never a process kill (rm only, no kill/taskkill)
+    assert "rm -rf -- /sandbox/tmp/youtab-results/run-sess-bounded-1" in cmd
+    assert "kill" not in cmd and "taskkill" not in cmd
