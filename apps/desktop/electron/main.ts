@@ -4816,6 +4816,13 @@ async function copyImageFromUrl(rawUrl) {
     throw new Error('Could not read image')
   }
 
+  // The synchronous clipboard image API is not present on every Electron build
+  // (electron@44's clipboard is async-only). Feature-detect so this degrades to
+  // a clear error instead of a "writeImage is not a function" crash.
+  if (typeof clipboard.writeImage !== 'function') {
+    throw new Error('Copying images to the clipboard is not supported by this Electron build')
+  }
+
   clipboard.writeImage(image)
 }
 
@@ -10455,7 +10462,10 @@ ipcMain.handle('youtab:saveImageBuffer', async (_event, payload) => {
 })
 
 ipcMain.handle('youtab:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
+  // Feature-detect the sync image API (absent on electron@44's async-only
+  // clipboard); when unavailable, fall through to the WSL / other fallbacks
+  // below instead of crashing on `readImage is not a function`.
+  const image = typeof clipboard.readImage === 'function' ? clipboard.readImage() : null
 
   if (image && !image.isEmpty()) {
     return writeComposerImage(image.toPNG(), '.png')
