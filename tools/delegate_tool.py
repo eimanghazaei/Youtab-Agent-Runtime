@@ -2292,15 +2292,33 @@ def _run_single_child(
                 )
 
         _child_context = contextvars.copy_context()
-        _child_future = _timeout_executor.submit(
-            _child_context.run,
-            _run_with_thread_capture,
-        )
-        # Durable identity is recorded at ADMISSION (before awaiting the child),
-        # owned by this parent process — so the child is tracked even if the
-        # parent dies before the wait budget elapses (reconcile_dead_owner then
-        # moves it to UNKNOWN rather than leaving an untracked orphan).
+        # Start barrier: a submitted thread can begin before submit() returns, so
+        # the child must NOT run any effectful work until durable admission has
+        # COMMITTED. The child blocks on this gate; the parent commits the durable
+        # run (validate authority -> create run/task_id -> fenced ownership ->
+        # deadline/admitted state) and only THEN releases the gate. On admission
+        # failure the gate opens with permit=denied and the child aborts before any
+        # side effect — never an untracked effectful child, never an unbacked
+        # RUNNING response. This closes the submit->admission race.
+        _start_gate = threading.Event()
+        _admission = {"ok": False}
+        _ADMISSION_WAIT_S = 30.0
+
+        def _gated_worker():
+            if not _start_gate.wait(timeout=_ADMISSION_WAIT_S):
+                raise RuntimeError("durable admission did not complete; child not started")
+            if not _admission["ok"]:
+                raise RuntimeError(
+                    "durable admission failed; child execution aborted before any effect"
+                )
+            return _run_with_thread_capture()
+
+        _child_future = _timeout_executor.submit(_child_context.run, _gated_worker)
+        # Durable admission in the PARENT thread, BEFORE the child is permitted to
+        # execute. On failure, release no execution permit and hold no side effect.
         _durable_store = _admit_durable_child(child_task_id, child)
+        _admission["ok"] = _durable_store is not None
+        _start_gate.set()
         try:
             result = _child_future.result(timeout=child_timeout)
             _record_child_terminal(_durable_store, child_task_id, ok=True, result=result)

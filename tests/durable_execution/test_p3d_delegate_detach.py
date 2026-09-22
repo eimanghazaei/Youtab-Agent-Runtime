@@ -58,12 +58,16 @@ class _Child:
         self._final = final
         self._raises = raises
         self.interrupted = False
+        self.effect_ran = False
 
     def get_activity_summary(self):
         return {"api_call_count": self._api_calls, "max_iterations": 30,
                 "current_tool": None, "seconds_since_activity": 1}
 
     def run_conversation(self, user_message, task_id=None, stream_callback=None):
+        # Marks the start of effectful child work (must never run before the
+        # durable admission has committed, per the start barrier).
+        self.effect_ran = True
         if self._raises is not None:
             raise self._raises
         self._release.wait(5.0)
@@ -143,6 +147,49 @@ def test_failed_child_is_failed_under_same_task_id(youtab_home, monkeypatch):
     store = create_run_store("sqlite")
     row = store.get_run(child._subagent_id)
     assert row is not None and row["state"] == "FAILED", "failure persisted, not detached-running"
+
+
+def test_admission_failure_aborts_child_before_any_effect(youtab_home, monkeypatch):
+    """DB/admission failure between submit and admission commit: the start barrier
+    denies the execution permit, so NO effectful child starts and NO unbacked
+    RUNNING task is left behind."""
+    monkeypatch.setattr(delegate_tool, "_admit_durable_child", lambda *a, **k: None)
+    release = threading.Event()
+    release.set()
+    child = _Child(release, api_calls=1)
+    result = _run(child, monkeypatch, timeout=30.0)
+
+    # Child never ran effectful work; result is an error, not RUNNING/detached.
+    assert child.effect_ran is False, "no effectful child may start on admission failure"
+    assert result["status"] == "error"
+    assert result.get("detached") is not True
+    # No durable run was left behind for this task id.
+    store = create_run_store("sqlite")
+    assert store.get_run(child._subagent_id) is None
+
+
+def test_start_barrier_holds_child_until_admission_commits(youtab_home, monkeypatch):
+    """Deterministic ordering proof: at the moment durable admission runs (before
+    the gate is released), the child has NOT yet begun effectful work."""
+    real_admit = delegate_tool._admit_durable_child
+    captured = {}
+
+    def _capturing_admit(child_task_id, child):
+        # Observed strictly BEFORE the gate is released.
+        captured["effect_ran_during_admission"] = child.effect_ran
+        return real_admit(child_task_id, child)
+
+    monkeypatch.setattr(delegate_tool, "_admit_durable_child", _capturing_admit)
+    release = threading.Event()
+    release.set()
+    child = _Child(release, api_calls=1)
+    _run(child, monkeypatch, timeout=30.0)
+
+    assert captured["effect_ran_during_admission"] is False, (
+        "child must be gated: no effect before durable admission commits"
+    )
+    # After the gate opens and admission succeeded, the child did run.
+    assert child.effect_ran is True
 
 
 def test_parent_process_death_before_wait_reconciles_to_unknown(youtab_home):
