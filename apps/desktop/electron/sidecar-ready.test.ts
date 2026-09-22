@@ -17,6 +17,7 @@ import {
 function fakeChild() {
   const child: any = new EventEmitter()
   child.stdout = new EventEmitter()
+
   return child
 }
 

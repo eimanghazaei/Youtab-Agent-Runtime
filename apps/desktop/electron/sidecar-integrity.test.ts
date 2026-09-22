@@ -31,6 +31,7 @@ test('bundle present but no trusted anchor → refuse (fail closed)', () => {
     trustedDigest: null,
     computeDigest: () => DIGEST
   })
+
   assert.equal(d.action, 'refuse')
   assert.equal(d.reason, 'no-trusted-digest')
 })
@@ -42,6 +43,7 @@ test('matching digest → launch', () => {
     trustedDigest: DIGEST,
     computeDigest: () => DIGEST
   })
+
   assert.equal(d.action, 'launch')
   assert.equal(d.actual, DIGEST)
 })
@@ -53,6 +55,7 @@ test('mismatching digest → refuse (tamper)', () => {
     trustedDigest: DIGEST,
     computeDigest: () => OTHER
   })
+
   assert.equal(d.action, 'refuse')
   assert.equal(d.reason, 'digest-mismatch')
   assert.equal(d.expected, DIGEST)
@@ -68,6 +71,7 @@ test('digest computation throwing → refuse (cannot prove integrity)', () => {
       throw new Error('walk failed')
     }
   })
+
   assert.equal(d.action, 'refuse')
   assert.equal(d.reason, 'compute-error')
 })
@@ -79,6 +83,7 @@ test('malformed trusted anchor is treated as absent → refuse', () => {
     trustedDigest: 'xyz',
     computeDigest: () => DIGEST
   })
+
   assert.equal(d.action, 'refuse')
   assert.equal(d.reason, 'no-trusted-digest')
 })

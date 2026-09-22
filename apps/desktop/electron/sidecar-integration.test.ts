@@ -11,18 +11,19 @@
  * Run: npx vitest run --project electron electron/sidecar-integration.test.ts
  */
 import assert from 'node:assert/strict'
-import { execFileSync, spawn, type ChildProcess } from 'node:child_process'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, appendFileSync } from 'node:fs'
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process'
+import { appendFileSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'vitest'
 
+import { rootDigestFromBundle } from '../packaging/backend-sidecar/root-digest.mjs'
+
 import { decideSidecarLaunch } from './sidecar-integrity'
 import { redactSecret } from './sidecar-launch'
 import { TRUSTED_SIDECAR_ROOT_DIGEST } from './sidecar-trusted-digest'
-import { rootDigestFromBundle } from '../packaging/backend-sidecar/root-digest.mjs'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
 const DESKTOP_ROOT = path.resolve(HERE, '..')
@@ -44,15 +45,18 @@ const running: ChildProcess[] = []
 function mkTmp(prefix: string): string {
   const d = mkdtempSync(path.join(tmpdir(), prefix))
   tmpDirs.push(d)
+
   return d
 }
 
 async function startBackend(extraEnv: Record<string, string> = {}, timeoutMs = 30_000): Promise<RunningBackend> {
   const home = mkTmp('sc-int-home-')
+
   const proc = spawn(EXE, ['serve', '--host', '127.0.0.1', '--port', '0'], {
     env: { ...process.env, YOUTAB_AGENT_HOME: home, YOUTAB_AGENT_DESKTOP: '1', ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe']
   })
+
   running.push(proc)
   let logs = ''
 
@@ -61,14 +65,17 @@ async function startBackend(extraEnv: Record<string, string> = {}, timeoutMs = 3
       () => reject(new Error(`backend did not announce a port in ${timeoutMs}ms; logs:\n${logs}`)),
       timeoutMs
     )
+
     const onData = (chunk: Buffer) => {
       logs += chunk.toString()
       const m = logs.match(READY_RE)
+
       if (m) {
         clearTimeout(timer)
         resolve({ proc, port: Number(m[1]), logs })
       }
     }
+
     proc.stdout!.on('data', onData)
     proc.stderr!.on('data', onData)
     proc.once('error', err => {
@@ -85,8 +92,10 @@ async function startBackend(extraEnv: Record<string, string> = {}, timeoutMs = 3
 async function httpGet(url: string, timeoutMs = 5000): Promise<{ status: number; body: string }> {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), timeoutMs)
+
   try {
     const r = await fetch(url, { signal: ctrl.signal })
+
     return { status: r.status, body: await r.text() }
   } finally {
     clearTimeout(t)
@@ -97,9 +106,12 @@ function alive(pid: number): boolean {
   try {
     if (process.platform === 'win32') {
       const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH'], { encoding: 'utf8' })
+
       return out.includes(String(pid))
     }
+
     process.kill(pid, 0)
+
     return true
   } catch {
     return false
@@ -135,7 +147,9 @@ beforeAll(() => {
 
 afterEach(() => {
   for (const p of running.splice(0)) {
-    if (p.pid) treeKill(p.pid)
+    if (p.pid) {
+      treeKill(p.pid)
+    }
   }
 })
 
@@ -159,11 +173,13 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
   test('2: real bundle digest matches the pinned trust anchor → launch', () => {
     const actual = rootDigestFromBundle(BUNDLE_DIR)
     assert.equal(actual, TRUSTED_SIDECAR_ROOT_DIGEST)
+
     const d = decideSidecarLaunch({
       bundlePresent: true,
       bundleDir: BUNDLE_DIR,
       trustedDigest: TRUSTED_SIDECAR_ROOT_DIGEST
     })
+
     assert.equal(d.action, 'launch')
   }, 60_000)
 
@@ -184,11 +200,13 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
   // 4
   test('4: missing sidecar fails closed when an anchor is pinned', () => {
     const empty = mkTmp('sc-int-empty-')
+
     const d = decideSidecarLaunch({
       bundlePresent: false,
       bundleDir: path.join(empty, 'nope'),
       trustedDigest: TRUSTED_SIDECAR_ROOT_DIGEST
     })
+
     assert.equal(d.action, 'refuse')
     assert.equal(d.reason, 'missing-sidecar')
   })
@@ -221,13 +239,15 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
     const b = await startBackend({ YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN: secret })
     // Real argv of the spawned process must not contain the secret.
     let cmdline = ''
+
     if (process.platform === 'win32') {
       cmdline = execFileSync(
         'powershell',
-        ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter \"ProcessId=${b.proc.pid}\").CommandLine`],
+        ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${b.proc.pid}").CommandLine`],
         { encoding: 'utf8' }
       )
     }
+
     assert.ok(!cmdline.includes(secret), 'session token leaked into process argv')
     const res = await httpGet(`http://127.0.0.1:${b.port}/api/health`)
     assert.equal(res.status, 200)
@@ -245,12 +265,14 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
     const { SidecarRestartPolicy } = await import('./sidecar-restart')
     const policy = new SidecarRestartPolicy({ maxRestarts: 2, windowMs: 10 ** 9, backoffMs: () => 0 })
     const decisions: boolean[] = []
+
     for (let i = 0; i < 3; i++) {
       const b = await startBackend()
       assert.ok(alive(b.proc.pid!))
       treeKill(b.proc.pid!) // real crash
       decisions.push(policy.onCrash(i).restart)
     }
+
     assert.deepEqual(decisions, [true, true, false]) // ceiling stops the 3rd
   }, 90_000)
 
@@ -260,10 +282,12 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
     const pid = b.proc.pid!
     assert.ok(alive(pid))
     treeKill(pid)
+
     // Poll briefly for the OS to reap it.
     for (let i = 0; i < 20 && alive(pid); i++) {
       await new Promise(r => setTimeout(r, 100))
     }
+
     assert.ok(!alive(pid), `backend pid ${pid} still alive after tree kill`)
   }, 40_000)
 

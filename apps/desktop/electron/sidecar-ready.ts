@@ -8,7 +8,7 @@
 // watches stdout for that event and resolves with its payload, rejecting if the
 // child exits/errrors first or the deadline elapses. Injectable/pure enough to
 // unit-test with a fake EventEmitter child.
-import { EventEmitter } from 'node:events'
+import type { EventEmitter } from 'node:events'
 
 export const DEFAULT_GATEWAY_READY_TIMEOUT_MS = 90_000
 export const MIN_GATEWAY_READY_TIMEOUT_MS = 45_000

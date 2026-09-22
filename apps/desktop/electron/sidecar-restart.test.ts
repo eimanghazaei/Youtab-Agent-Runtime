@@ -49,6 +49,10 @@ test('default backoff grows and is capped', () => {
   assert.equal(p.onCrash(0).delayMs, 500)
   assert.equal(p.onCrash(0).delayMs, 1000)
   assert.equal(p.onCrash(0).delayMs, 2000)
-  for (let i = 0; i < 10; i++) p.onCrash(0)
+
+  for (let i = 0; i < 10; i++) {
+    p.onCrash(0)
+  }
+
   assert.ok(p['backoffMs'](20) <= 10_000)
 })

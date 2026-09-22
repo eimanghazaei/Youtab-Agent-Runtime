@@ -7,14 +7,14 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  LOOPBACK_HOST,
-  SIDECAR_BIND_ENV,
-  SIDECAR_SECRET_ENV,
   buildSidecarLaunch,
   generateEphemeralSecret,
   isLoopbackOnly,
+  LOOPBACK_HOST,
   redactSecret,
-  secretInArgv
+  secretInArgv,
+  SIDECAR_BIND_ENV,
+  SIDECAR_SECRET_ENV
 } from './sidecar-launch'
 
 function launch(overrides: Partial<Parameters<typeof buildSidecarLaunch>[0]> = {}) {

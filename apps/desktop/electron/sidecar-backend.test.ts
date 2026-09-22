@@ -25,6 +25,7 @@ test('packaged + verified bundle → command backend with serve args and no argv
     trustedDigest: DIGEST,
     computeDigest: () => DIGEST
   })
+
   assert.ok(b)
   assert.equal(b!.kind, 'command')
   assert.equal((b as any).command, path.join('/app/resources', 'backend-sidecar', 'youtab-backend'))
@@ -44,6 +45,7 @@ test('packaged + tampered bundle → sidecar-refused (fail closed)', () => {
     trustedDigest: DIGEST,
     computeDigest: () => 'b'.repeat(64)
   })
+
   assert.equal(b!.kind, 'sidecar-refused')
   assert.equal((b as any).sidecarRefusal.reason, 'digest-mismatch')
   assert.equal((b as any).command, null)
@@ -57,6 +59,7 @@ test('packaged + missing bundle but anchor pinned → sidecar-refused (release m
     fileExists: () => false,
     trustedDigest: DIGEST
   })
+
   assert.equal(b!.kind, 'sidecar-refused')
   assert.equal((b as any).sidecarRefusal.reason, 'missing-sidecar')
 })
@@ -69,6 +72,7 @@ test('packaged + missing bundle and no anchor → null (dev-packaged build witho
     fileExists: () => false,
     trustedDigest: null
   })
+
   assert.equal(b, null)
 })
 

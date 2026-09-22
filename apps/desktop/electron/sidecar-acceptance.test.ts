@@ -7,48 +7,54 @@
  */
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
+import { rootDigestFromBundle } from '../packaging/backend-sidecar/root-digest.mjs'
+
 import { stopBackendChild } from './backend-child'
 import { decideSidecarLaunch } from './sidecar-integrity'
 import {
-  LOOPBACK_HOST,
-  SIDECAR_BIND_ENV,
-  SIDECAR_SECRET_ENV,
   buildSidecarLaunch,
   generateEphemeralSecret,
   isLoopbackOnly,
+  LOOPBACK_HOST,
   redactSecret,
-  secretInArgv
+  secretInArgv,
+  SIDECAR_BIND_ENV,
+  SIDECAR_SECRET_ENV
 } from './sidecar-launch'
 import { waitForGatewayReady } from './sidecar-ready'
 import { resolveSidecarPaths } from './sidecar-resolve'
 import { SidecarRestartPolicy } from './sidecar-restart'
-import { rootDigestFromBundle } from '../packaging/backend-sidecar/root-digest.mjs'
 
 const cleanups: Array<() => void> = []
 afterEach(() => {
-  while (cleanups.length) cleanups.pop()!()
+  while (cleanups.length) {
+    cleanups.pop()!()
+  }
 })
 
 function bundleFixture(files: Record<string, string>): string {
   const root = mkdtempSync(path.join(tmpdir(), 'sc-accept-'))
   cleanups.push(() => rmSync(root, { recursive: true, force: true }))
+
   for (const [rel, content] of Object.entries(files)) {
     const p = path.join(root, rel)
     mkdirSync(path.dirname(p), { recursive: true })
     writeFileSync(p, content)
   }
+
   return root
 }
 
 function fakeChild() {
   const child: any = new EventEmitter()
   child.stdout = new EventEmitter()
+
   return child
 }
 
@@ -76,6 +82,7 @@ test('acceptance 3: an ephemeral per-launch secret is handed to the sidecar via 
   const s1 = generateEphemeralSecret()
   const s2 = generateEphemeralSecret()
   assert.notEqual(s1, s2)
+
   const d = buildSidecarLaunch({
     executable: '/x',
     userDataDir: '/u',
@@ -84,6 +91,7 @@ test('acceptance 3: an ephemeral per-launch secret is handed to the sidecar via 
     env: {},
     platform: 'linux'
   })
+
   assert.equal(d.env[SIDECAR_SECRET_ENV], s1)
 })
 
@@ -125,6 +133,7 @@ test('acceptance 7: a tampered bundle is refused (digest binding)', () => {
 // 8 — no secret in argv or logs.
 test('acceptance 8: the secret never appears in argv and is redacted from logs', () => {
   const secret = generateEphemeralSecret()
+
   const d = buildSidecarLaunch({
     executable: '/x',
     userDataDir: '/u',
@@ -133,6 +142,7 @@ test('acceptance 8: the secret never appears in argv and is redacted from logs',
     env: {},
     platform: 'linux'
   })
+
   assert.equal(secretInArgv(d.args, secret), false)
   assert.ok(!redactSecret(`spawn ${d.command} ${SIDECAR_SECRET_ENV}=${secret}`, secret).includes(secret))
 })
@@ -147,6 +157,7 @@ test('acceptance 9: the launch descriptor is loopback-only (no external bind)', 
     env: {},
     platform: 'linux'
   })
+
   assert.equal(d.env[SIDECAR_BIND_ENV], LOOPBACK_HOST)
   assert.equal(isLoopbackOnly(d), true)
 })
@@ -161,7 +172,9 @@ test('acceptance 10: USERPROFILE (win) / HOME (posix) is set so Python Path.home
     env: {},
     platform: 'win32'
   })
+
   assert.equal(win.env.USERPROFILE, 'C:\\Users\\u')
+
   const posix = buildSidecarLaunch({
     executable: '/x',
     userDataDir: '/u',
@@ -170,5 +183,6 @@ test('acceptance 10: USERPROFILE (win) / HOME (posix) is set so Python Path.home
     env: {},
     platform: 'linux'
   })
+
   assert.equal(posix.env.HOME, '/home/u')
 })
