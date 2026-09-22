@@ -572,6 +572,45 @@ export interface PackagedAppFixture {
  *
  * Skips if the packaged binary doesn't exist — run `npm run pack` first.
  */
+/**
+ * Launch the *packaged* Electron binary with its REAL bundled backend (the
+ * frozen youtab-backend sidecar under the app's resources) — NO BOOT_FAKE, no
+ * dev renderer, no dev-checkout backend. The dev-checkout root override is
+ * stripped so resolveYoutabBackend takes the packaged-sidecar branch and the
+ * integrity gate runs over the shipped bundle. Takes an existing (disposable)
+ * sandbox so the same profile can be preserved across a close+relaunch.
+ */
+export async function launchPackagedAppRealBackend(
+  sandbox: Sandbox,
+): Promise<{ app: ElectronApplication; page: Page }> {
+  if (!packagedBinaryExists()) {
+    throw new Error(`Built app binary not found: ${PACKAGED_BINARY_PATH}. Run 'npm run dist:win' first.`)
+  }
+
+  const env = buildAppEnv(sandbox)
+  // Use the packaged binary's OWN bundled renderer + bundled sidecar backend,
+  // not the dev checkout: without the root override, main.ts resolves the
+  // packaged sidecar (IS_PACKAGED) instead of a dev venv/source.
+  delete (env as Record<string, string | undefined>).YOUTAB_AGENT_DESKTOP_DEV_SERVER
+  delete (env as Record<string, string | undefined>).YOUTAB_AGENT_DESKTOP_YOUTAB
+  delete (env as Record<string, string | undefined>).YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT
+
+  const app = await _electron.launch({
+    executablePath: PACKAGED_BINARY_PATH,
+    args: ['--disable-gpu', '--no-sandbox'],
+    env,
+  })
+  const page = await app.firstWindow()
+  installErrorBannerGuard(page)
+  return { app, page }
+}
+
+/** Close a packaged app launched by launchPackagedAppRealBackend, killing its
+ * process tree (and thus the bundled sidecar) if a graceful close stalls. */
+export async function closePackagedApp(app: ElectronApplication): Promise<void> {
+  await closeDesktopApp(app)
+}
+
 export async function setupPackagedApp(): Promise<PackagedAppFixture> {
   if (!packagedBinaryExists()) {
     throw new Error(
