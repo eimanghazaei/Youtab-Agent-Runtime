@@ -1961,7 +1961,8 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
 
 
 def _detach_timed_out_child(*, child, child_future, child_task_id, task_index,
-                            api_calls, duration, child_timeout) -> Dict[str, Any]:
+                            api_calls, duration, child_timeout,
+                            diagnostic_path=None) -> Dict[str, Any]:
     """Parent wait budget elapsed on a PROGRESSING child: detach instead of kill.
 
     The child keeps running (not interrupted); its eventual result is captured
@@ -2012,6 +2013,7 @@ def _detach_timed_out_child(*, child, child_future, child_task_id, task_index,
         "duration_seconds": duration,
         "wait_budget_seconds": child_timeout,
         "exit_reason": "wait_budget_detached",
+        "diagnostic_path": diagnostic_path,
         "_child_role": getattr(child, "_delegate_role", None),
     }
 
@@ -2249,24 +2251,43 @@ def _run_single_child(
         except Exception as _timeout_exc:
             is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             duration = round(time.monotonic() - child_start, 2)
-            # Decide BEFORE interrupting: the configured child_timeout is a PARENT
-            # WAIT budget, not a task kill. A progressing child (>=1 API call) that
-            # merely outlives the parent's wait is DETACHED — it keeps running
-            # under its own lease and its eventual result is captured durably for
-            # reconnect. Only a stuck 0-API-call child (never reached its first LLM
-            # call) or a real error is stopped and diagnosed below.
-            _api_calls_early = 0
-            try:
-                _api_calls_early = int(child.get_activity_summary().get("api_call_count", 0) or 0)
-            except Exception:
-                pass
-            if is_timeout and _api_calls_early > 0:
+            # The configured child_timeout is a PARENT WAIT budget, not a task
+            # kill. A FuturesTimeoutError means the admitted child is STILL
+            # RUNNING past the budget — it is alive, so it is DETACHED
+            # UNCONDITIONALLY (api_calls is NOT a termination signal: a legitimate
+            # child may think, wait, or run a long tool before its first API call,
+            # and one past API call does not prove current progress). The child is
+            # never interrupted here; its result is captured durably for reconnect.
+            # Stall/liveness is a SEPARATE mechanism (RunStore.detect_stalled) that
+            # yields a visible durable STALLED state — never a parent-wait kill.
+            if is_timeout:
+                _api_calls = 0
+                try:
+                    _api_calls = int(child.get_activity_summary().get("api_call_count", 0) or 0)
+                except Exception:
+                    pass
+                # Investigation artifact only (does NOT stop the child): a child
+                # that has not yet made an API call gets a diagnostic dump so a
+                # human can inspect what it is doing while it continues.
+                _diag: Optional[str] = None
+                if _api_calls == 0:
+                    try:
+                        _diag = _dump_subagent_timeout_diagnostic(
+                            child=child, task_index=task_index,
+                            timeout_seconds=float(child_timeout or 0.0),
+                            duration_seconds=float(duration),
+                            worker_thread=_worker_thread_holder.get("t"), goal=goal,
+                        )
+                    except Exception:
+                        _diag = None
                 return _detach_timed_out_child(
                     child=child, child_future=_child_future, child_task_id=child_task_id,
-                    task_index=task_index, api_calls=_api_calls_early, duration=duration,
-                    child_timeout=child_timeout,
+                    task_index=task_index, api_calls=_api_calls, duration=duration,
+                    child_timeout=child_timeout, diagnostic_path=_diag,
                 )
-            # Not detaching (stuck/errored): signal the child to stop cleanly.
+            # Non-timeout: the child's execution RAISED — a genuine child error or
+            # failed admission/startup. Signal it to stop cleanly and report FAILED
+            # (a failed admission is NEVER turned into a detached task).
             try:
                 if hasattr(child, "interrupt"):
                     child.interrupt()

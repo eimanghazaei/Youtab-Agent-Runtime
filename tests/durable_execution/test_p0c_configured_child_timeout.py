@@ -1,16 +1,16 @@
-"""P0-C BASELINE CHARACTERIZATION — configured child timeout loses partial work.
+"""P0-C — configured child timeout (CORRECTED: now decoupled from child lifetime).
 
-NOTE: asserts the CURRENT (defective) behavior. The desired-invariant test
-(typed partial state returned, no summary fabrication) lands with the fix.
+NOTE: originally characterized the C-2.1c defect (timeout -> summary=None, no
+recoverable state). That defect is now FIXED: parent-wait expiry DETACHES the
+admitted child with a durable task reference. git history preserves the baseline.
 
 Durable-execution requirement: when a child hits a configured timeout, the parent
 must receive the latest checkpoint / last progress / changed files / child id and
 a recovery action — not merely "timed out" with no result.
 
-This reproduction proves the CURRENT behavior on origin/main (0.19.1): with a
-small injected child timeout, `_run_single_child` returns status="timeout",
-`summary=None`, and NO recoverable execution state (only a diagnostic log path).
-Uses an injected tiny timeout — does not wait 600 real seconds.
+With a small injected child timeout (does not wait 600 real seconds), the
+admitted child is DETACHED: `_run_single_child` returns status="running" +
+task_id + recovery_action, and the child is not interrupted.
 """
 
 import threading
@@ -66,43 +66,25 @@ class _HangingChild:
         self._hang.set()
 
 
-def test_configured_timeout_returns_summary_none_and_no_recoverable_state(
-    youtab_home, monkeypatch
-):
-    # Inject a tiny configured timeout (bypasses the 30s floor deterministically).
+def test_configured_timeout_detaches_with_durable_reference(youtab_home, monkeypatch):
+    """CORRECTED (was the C-2.1c defect characterization): a configured
+    child_timeout is a PARENT WAIT budget. When it elapses on an admitted child
+    that is still working (here 0 API calls yet), the child is DETACHED with a
+    durable task reference and recovery action — NOT killed, NOT a bare
+    summary=None with no recoverable state. git history preserves the baseline."""
     monkeypatch.setattr(dt, "_get_child_timeout", lambda: 0.2)
 
     child = _HangingChild()
-    try:
-        result = dt._run_single_child(0, "long enterprise task", child=child, parent_agent=None)
-    finally:
-        child.interrupt()
+    result = dt._run_single_child(0, "long enterprise task", child=child, parent_agent=None)
 
-    # DEFECT REPRODUCED: timeout yields no summary.
-    assert result["status"] == "timeout"
-    assert result["summary"] is None
-    assert result["timeout_seconds"] == 0.2
-    assert result["exit_reason"] == "timeout"
-
-    # The partial progress the child had ("partial work done") is discarded:
-    # it appears nowhere in the returned result.
-    assert "partial work done" not in str(result)
-
-    # No recoverable execution state is returned — only a diagnostic log path.
-    for missing in (
-        "checkpoint",
-        "last_progress",
-        "changed_files",
-        "artifacts",
-        "child_id",
-        "resume_token",
-        "recovery_action",
-    ):
-        assert missing not in result, (
-            f"unexpected recoverable field {missing!r} — if this now exists the "
-            f"defect is being fixed; invert this assertion"
-        )
-
-    # What IS returned is a diagnostic log, not resumable state.
-    assert result["timeout_phase"] == "before_first_llm_call"
-    assert "diagnostic_path" in result
+    # Detached, not killed; a durable task reference + recovery action are returned.
+    assert result["status"] == "running"
+    assert result["detached"] is True
+    assert result["task_id"]
+    assert result["recovery_action"] and "RunStore" in result["recovery_action"]
+    assert result["exit_reason"] == "wait_budget_detached"
+    # summary is None but ALWAYS paired with a durable reference (never bare).
+    assert result["summary"] is None and result["task_id"]
+    # The child was NOT interrupted by the parent wait timeout.
+    assert getattr(child, "_hang").is_set() is False
+    child.interrupt()  # cleanup only
