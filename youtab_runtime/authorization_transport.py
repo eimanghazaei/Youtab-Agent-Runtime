@@ -216,6 +216,8 @@ def accept_authorization(
     consumed and the provenance is returned for the receipt.
     """
     correlate_proposal(auth, principal=principal, db_path=db_path)
+    # correlate_proposal raised if these were None; narrow for the type checker.
+    assert auth.proposal_id is not None and auth.request_digest is not None
     reserve_and_consume_authorization(
         auth, expected_effect_digest, principal, workspace_id,
         production=production, now=now,
