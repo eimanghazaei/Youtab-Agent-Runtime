@@ -81,6 +81,13 @@ from .retrieval import (
 )
 from .router import MemoryRouter, MemoryRoutingDecision, MemoryWriteIntent, RouteOwner
 from .scope import MemoryScope, ScopeAdmission
+from .shadow import (
+    PreservedContext,
+    ShadowComparison,
+    ShadowConfig,
+    ShadowScenario,
+    compute_shadow,
+)
 from .simorgh_client import (
     AuthenticatedSimorghClient,
     MemoryUnavailable,
@@ -147,11 +154,15 @@ __all__ = [
     "OutboxStatus",
     "PlacementError",
     "PlacementVerifier",
+    "PreservedContext",
     "PromotionCandidate",
     "RetrievalConfig",
     "RetrievalOutcome",
     "RetrievalPipeline",
     "RetrievalResult",
+    "ShadowComparison",
+    "ShadowConfig",
+    "ShadowScenario",
     "SignedScopePlacement",
     "VerifiedPlacement",
     "ReferenceMemoryBus",
@@ -167,6 +178,7 @@ __all__ = [
     "TrustSource",
     "account",
     "allocate",
+    "compute_shadow",
     "consume_for_live",
     "default_keystore",
     "degraded_result",
