@@ -193,7 +193,7 @@ def resolve_within_grant(
         raise GrantBindingError("tenant/principal/workspace does not match the grant binding")
 
     # 2) permission check.
-    if operation not in ("read", "write", "create"):
+    if operation not in ("read", "write", "create", "delete", "move"):
         raise GrantScopeError(f"unknown operation {operation!r}")
     if operation not in grant.permissions:
         raise GrantScopeError(f"operation {operation!r} not permitted by grant")

@@ -27,6 +27,7 @@ claimed. Pure-stdlib on top of the ledger; no new runtime dependency.
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Optional
@@ -60,6 +61,8 @@ __all__ = [
     "settle_committed",
     "settle_unknown",
     "open_within_grant",
+    "unlink_within_grant",
+    "move_within_grant",
 ]
 
 _OP_TO_ACTION = {"read": "fs.read", "write": "fs.write", "create": "fs.create"}
@@ -343,3 +346,103 @@ def open_within_grant(
         os.close(fd)
         raise
     return fd
+
+
+def unlink_within_grant(
+    grant: FolderGrant,
+    requested_path: str,
+    *,
+    principal: Principal,
+    workspace_id: str,
+    now: Optional[float] = None,
+    _pre_op_hook: Optional[Callable[[], None]] = None,
+) -> None:
+    """Delete a single file within the grant with the same handle-based containment
+    as :func:`open_within_grant`.
+
+    Resolve fresh → validate no ancestor is a reparse point → open the target with
+    ``O_NOFOLLOW`` and confirm the opened handle's final path is inside the grant
+    root (a symlinked leaf is refused by ``O_NOFOLLOW``; a junctioned parent by the
+    ancestor check) → refuse a directory → re-validate ancestors → ``os.unlink``.
+    Fails closed on any escape/reparse. ``_pre_op_hook`` is test-only (simulates an
+    attacker swap between validation and the delete).
+    """
+    safe_path = resolve_within_grant(
+        grant, requested_path, operation="delete",
+        tenant_id=principal.tenant, principal_id=principal.user,
+        workspace_id=workspace_id, now=now,
+    )
+    root_real = grant.root_real()
+    assert_no_reparse_ancestors(root_real, safe_path)
+
+    if _pre_op_hook is not None:  # test-only injection point
+        _pre_op_hook()
+
+    # Reject a directory up front: on Windows ``os.open`` on a directory raises
+    # PermissionError (masking the intent), while on POSIX it succeeds and the
+    # post-open ``S_ISDIR`` check below is what refuses it.
+    if os.path.isdir(safe_path) and not os.path.islink(safe_path):
+        raise GrantScopeError("refusing to unlink a directory")
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    binary = getattr(os, "O_BINARY", 0)
+    fd = os.open(safe_path, os.O_RDONLY | nofollow | binary)
+    try:
+        assert_no_reparse_ancestors(root_real, safe_path)
+        final_from_handle = _final_path_from_handle(fd)
+        if final_from_handle is not None:
+            _assert_final_path_within(root_real, final_from_handle)
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise GrantScopeError("refusing to unlink a directory")
+    finally:
+        os.close(fd)
+    # Re-validate ancestors immediately before the unlink (a parent swapped in
+    # after the handle was closed is caught here) and delete by the safe path.
+    assert_no_reparse_ancestors(root_real, safe_path)
+    os.unlink(safe_path)
+
+
+def move_within_grant(
+    src_grant: FolderGrant,
+    dst_grant: FolderGrant,
+    src_path: str,
+    dst_path: str,
+    *,
+    principal: Principal,
+    workspace_id: str,
+    now: Optional[float] = None,
+    _pre_op_hook: Optional[Callable[[], None]] = None,
+) -> None:
+    """Move/rename ``src_path`` (in ``src_grant``) to ``dst_path`` (in ``dst_grant``).
+
+    Both endpoints are grant-resolved and their ancestor chains validated for
+    reparse points; the destination's PARENT chain is validated (the leaf need not
+    exist yet). ``src_grant`` and ``dst_grant`` may be the same grant (in-grant
+    rename) or two grants for the same principal+workspace (cross-grant move) — a
+    destination-parent junction swapped in during the window is caught by the
+    post-hook re-validation and fails closed before ``os.replace``.
+    """
+    src_safe = resolve_within_grant(
+        src_grant, src_path, operation="move",
+        tenant_id=principal.tenant, principal_id=principal.user,
+        workspace_id=workspace_id, now=now,
+    )
+    dst_safe = resolve_within_grant(
+        dst_grant, dst_path, operation="move",
+        tenant_id=principal.tenant, principal_id=principal.user,
+        workspace_id=workspace_id, now=now,
+    )
+    src_root = src_grant.root_real()
+    dst_root = dst_grant.root_real()
+    dst_parent = os.path.dirname(dst_safe)
+    assert_no_reparse_ancestors(src_root, src_safe)
+    assert_no_reparse_ancestors(dst_root, dst_parent)
+
+    if _pre_op_hook is not None:  # test-only injection point
+        _pre_op_hook()
+
+    # Re-validate both chains at the operation boundary (defeats a parent swapped
+    # in after the first check), then perform the atomic replace.
+    assert_no_reparse_ancestors(src_root, src_safe)
+    assert_no_reparse_ancestors(dst_root, dst_parent)
+    os.replace(src_safe, dst_safe)
