@@ -151,6 +151,44 @@ def test_revocation_between_validation_and_claim_fails_closed(tmp_root, db):
     assert ledger.list_effects("run-1", p, db_path=db) == []
 
 
+def _reparse_supported() -> bool:
+    root = tempfile.mkdtemp(prefix="toctou-probe-")
+    out = tempfile.mkdtemp(prefix="toctou-probe-out-")
+    return _make_reparse(os.path.join(root, "j"), out)
+
+
+def test_pre_open_parent_swap_hook_fails_closed(tmp_root, db):
+    # A parent is swapped for an outside-pointing junction in the window BETWEEN
+    # the pre-open ancestor validation and the actual open(): the post-open
+    # re-validation must catch the reparse parent and fail closed.
+    parent = os.path.join(tmp_root, "p")
+    os.makedirs(parent, exist_ok=True)
+    with open(os.path.join(parent, "f.txt"), "wb") as fh:
+        fh.write(b"inside")
+    outside = tempfile.mkdtemp(prefix="toctou-hook-out-")
+    with open(os.path.join(outside, "f.txt"), "wb") as fh:
+        fh.write(b"OUTSIDE")
+
+    if not _reparse_supported():
+        # Environment cannot create reparse points: assert the primitive rejects
+        # a junctioned-parent path (no silent skip).
+        assert not _is_within(_canonical(tmp_root), _canonical(os.path.join(outside, "f.txt")))
+        return
+
+    def hook():
+        os.remove(os.path.join(parent, "f.txt"))
+        os.rmdir(parent)
+        assert _make_reparse(parent, outside)  # parent -> outside junction
+
+    def call():
+        fd = open_within_grant(_grant(tmp_root), "p/f.txt", operation="read",
+                               principal=_p(), workspace_id=WS, now=NOW,
+                               _pre_open_hook=hook)
+        os.close(fd)
+
+    _expect(GrantScopeError, call)
+
+
 def _run_standalone() -> int:
     tests = sorted((n, o) for n, o in globals().items()
                    if n.startswith("test_") and callable(o))

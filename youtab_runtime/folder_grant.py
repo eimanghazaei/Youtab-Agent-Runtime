@@ -14,6 +14,7 @@ effect-ledger receipt linkage build on top of the primitives here.
 from __future__ import annotations
 
 import os
+import stat
 import time
 from dataclasses import dataclass, field
 from typing import FrozenSet, Optional
@@ -90,6 +91,46 @@ class FolderGrant:
 
     def root_real(self) -> str:
         return _canonical(self.canonical_root)
+
+
+def _is_reparse(path: str) -> bool:
+    """True if ``path`` itself is a symlink/junction/reparse point (not followed).
+
+    On Windows checks the reparse-point file attribute (catches junctions, which
+    ``S_ISLNK`` does not); on POSIX checks for a symlink. A missing component is
+    not a reparse point.
+    """
+    try:
+        st = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    attrs = getattr(st, "st_file_attributes", 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attrs & reparse)
+
+
+def assert_no_reparse_ancestors(root_real: str, target_abs: str) -> None:
+    """Fail closed if any component from ``root_real`` down to ``target_abs`` is a
+    reparse point (symlink/junction). Every parent is validated, not just the
+    final component — an ``O_NOFOLLOW`` on the leaf does not cover a junctioned
+    parent on Windows.
+    """
+    root_real = os.path.normcase(root_real)
+    target_norm = os.path.normcase(os.path.abspath(target_abs))
+    if target_norm != root_real and not target_norm.startswith(root_real + os.sep):
+        raise GrantScopeError("target is not lexically within the grant root")
+    rel = os.path.relpath(target_norm, root_real)
+    if rel == os.curdir:
+        return
+    cur = root_real
+    for part in rel.split(os.sep):
+        if part in ("", os.curdir, os.pardir):
+            raise GrantScopeError("illegal path component")
+        cur = os.path.join(cur, part)
+        if _is_reparse(cur):
+            raise GrantScopeError("reparse point in path is not permitted")
 
 
 def _validate_grant(grant: FolderGrant, *, now: float) -> None:
