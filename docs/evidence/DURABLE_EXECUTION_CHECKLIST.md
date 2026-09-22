@@ -65,3 +65,22 @@ Verdict: `DURABLE EXECUTION IMPLEMENTED_NOT_VERIFIED` (until restart/crash/recon
 | 3-C | Lane-1 effect/lease adapter + contract tests | TODO (IMPLEMENTED_NOT_VERIFIED) | EffectLedger Protocol + AbsentEffectLedger fail-closed shipped |
 
 Gates on `687f33ca`: ruff clean · ty clean · git diff --check clean · 27/27 durable_execution tests pass. Author Eiman, 0-attribution. No push.
+
+## Phase 3 progress (Codex #5/#6/#7 cycle)
+| item | status | commit | evidence |
+|---|---|---|---|
+| P0-A storage decision + inventory | DONE | 07b8f083 | DURABLE_EXECUTION_STORAGE_DECISION.md |
+| P0-B scoped idempotency + typed RunStore interface | DONE | a40fb392 | 13 p3a tests |
+| v1->v2 migration on POPULATED db | DONE | 50a420e7 | test_p3a2_migration.py 3/3 |
+| real API route map | DONE | 50a420e7 | DURABLE_EXECUTION_ROUTE_MAP.md |
+| durable /v1/runs coordinator + HTTP->RunStore->worker proof | DONE | e8e4feb9 | test_p3c_http_wiring.py 5/5 (short-wait RUNNING, reconnect, once, restart, x-workspace deny, cancel, from_seq) |
+| api_server in-place handler swap (delegate existing routes) | OPEN | — | next commit; shipped route still in-memory until then |
+| delegate_tool parent-wait decoupling (real path) | OPEN | — | coordinator.wait ready |
+| 30-minute wall-clock proof on wired path | OPEN | — | starts after api_server swap |
+| Web/Electron continuity (tui_gateway/PTY bridge, IR-2) | OPEN | — | route map documents current transports |
+| Lane-1 effect-ledger adapter | OPEN (fail-closed) | — | AbsentEffectLedger |
+| crash/adversarial matrix on wired path (P0-F) | OPEN | — | store-level covered; HTTP-level partial |
+| Windows Job Object supervision (P0-G) | OPEN | — | orphan baseline P0-G green |
+| PostgreSQL backend | OPEN (stub) | — | PostgresRunStore raises |
+
+Suite on e8e4feb9: 38/38 durable_execution; ruff/ty/whitespace clean. Author Eiman, 0-attribution. No push.
