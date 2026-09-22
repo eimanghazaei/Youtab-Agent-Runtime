@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from youtab_runtime import effect_ledger as _ledger
+from youtab_runtime.enterprise import recovery as _recovery
 from youtab_runtime.enterprise import reference_providers as providers
 from youtab_runtime.enterprise.authority import AuthorityError, RuntimeIdempotencyPolicy
 from youtab_runtime.enterprise.connector import ConnectorRequest, Receipt
@@ -224,27 +225,48 @@ class Lane1GovernedConnector:
         elif existing is not None:
             authorization_id = str(existing.detail.get("authorization_id", "none"))
 
+        consumed_now = existing is None and authorization_id != "none"
         lease = self._authority.acquire_worker_lease(
             operation_id=cap.operation_id, workspace=ws,
             authorization_id=authorization_id,
         )
-        _ledger.begin_effect(
-            req.run_id, req.principal, action, scope,
-            correlation_id=req.correlation_id,
-            detail={
-                "operation_id": cap.operation_id, "workspace": ws.workspace,
-                "authorization_id": authorization_id, "request_digest": request_digest,
-                "provenance": cap.provenance.value, "mutating": True,
-                "capability_version": cap.capability_version,
-                "provider": cap.provider, "provider_idempotency_key": provider_key,
-            },
-            db_path=self._db_path,
-        )
-        won, record = _ledger.try_claim(
-            effect_id, req.principal,
-            detail=self._authority.lease_detail(lease.lease_token),
-            db_path=self._db_path,
-        )
+        # If effect creation/reservation fails AFTER a fresh single-use consume,
+        # the authorization is already spent but no effect exists. Record a
+        # deterministic recovery row (never silently lose it) and fail closed —
+        # the worker has not run, so nothing external executed and a retry cannot
+        # double-execute (it re-presents a now-consumed authorization → refused).
+        try:
+            _ledger.begin_effect(
+                req.run_id, req.principal, action, scope,
+                correlation_id=req.correlation_id,
+                detail={
+                    "operation_id": cap.operation_id, "workspace": ws.workspace,
+                    "authorization_id": authorization_id, "request_digest": request_digest,
+                    "provenance": cap.provenance.value, "mutating": True,
+                    "capability_version": cap.capability_version,
+                    "provider": cap.provider, "provider_idempotency_key": provider_key,
+                },
+                db_path=self._db_path,
+            )
+            won, record = _ledger.try_claim(
+                effect_id, req.principal,
+                detail=self._authority.lease_detail(lease.lease_token),
+                db_path=self._db_path,
+            )
+        except Exception as exc:  # noqa: BLE001 - re-raised fail-closed below
+            if consumed_now:
+                _recovery.record_orphaned_authorization(
+                    authorization_id, effect_id,
+                    self._authority.effect_digest_for(
+                        cap.capability_id, ws.workspace, request_digest
+                    ),
+                    db_path=self._db_path,
+                )
+            raise Lane1GovernedConnectorError(
+                f"{_recovery.ORPHAN_REASON}: effect not created after consume "
+                f"({type(exc).__name__})" if consumed_now
+                else f"effect claim failed: {exc}"
+            ) from exc
         if not won:
             d = record.detail
             return self._receipt(
