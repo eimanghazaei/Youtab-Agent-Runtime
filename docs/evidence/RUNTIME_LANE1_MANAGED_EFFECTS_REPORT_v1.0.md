@@ -1,7 +1,17 @@
 # Runtime Lane 1 — Managed Filesystem Effects — Delivery Report v1.0
 
-**Verdict:** `LANE 1 READY FOR MASTER INTEGRATION` (local managed file execution),
-with the explicit, bounded limitations recorded in §8. Nothing pushed.
+> **v1.1 correction (this revision):** the classification below is corrected to
+> `LANE 1 LOCAL MANAGED FILE EXECUTION VERIFIED_NOT_REVIEWED`; the overall product
+> is **NO-GO**. See §10 (v1.1 corrections) for the supported-Python (3.12)
+> qualification, the corrected pre-execution-rejection vs UNKNOWN state table, the
+> Lane-1/Lane-2/Lane-3 delta + conflict analysis, and the honest limitation list.
+> The independent verifier checklist is `docs/evidence/RUNTIME_LANE1_VERIFIER_CHECKLIST_v1.0.md`.
+
+**Verdict:** `LANE 1 LOCAL MANAGED FILE EXECUTION VERIFIED_NOT_REVIEWED` for the
+local backend. **Overall product: NO-GO** (LIVE Simorgh/Gateway issuance absent;
+remote/container authority absent; V4A ADD/UPDATE-hunks + multi-op unsupported;
+`search_files` not grant-routed; no integrated Lane1+Lane2+Lane3 exact-SHA suite).
+Nothing pushed.
 
 ## 1. Exact-SHA manifest
 
@@ -100,4 +110,73 @@ Note: full-repo mypy chases imports into pre-existing unrelated files (e.g. a sy
 
 ## 9. Verdict
 
-**`LANE 1 READY FOR MASTER INTEGRATION`** for local managed filesystem execution: the registered `read_file`/`write_file`/`patch` tools are governed through the real `tool_executor` seam with signed-authorization, grant, workspace, idempotency, lease, receipt and reconciliation enforcement, proven end-to-end (in-process, real-middleware and cross-process) with a full adversarial matrix. Remote backends and LIVE Simorgh issuance remain explicitly fail-closed pending an approved cross-repo SHA.
+**`LANE 1 LOCAL MANAGED FILE EXECUTION VERIFIED_NOT_REVIEWED`** for the local backend: the registered `read_file`/`write_file`/`patch` tools are governed through the real `tool_executor` seam with signed-authorization, grant, workspace, idempotency, lease, receipt and reconciliation enforcement, proven end-to-end (in-process, real-middleware and cross-process) with a full adversarial matrix. **Overall product remains NO-GO** — see §8 and §10. Remote backends and LIVE Simorgh issuance remain explicitly fail-closed pending an approved cross-repo SHA; no integrated Lane1+Lane2+Lane3 exact-SHA suite exists yet.
+
+---
+
+## 10. v1.1 corrections (independent-review preparation)
+
+### 10.1 Supported-Python (3.12) qualification
+
+Environment facts (mechanically recorded):
+- `py -3 --version` → **Python 3.14.5**, executable `C:\Users\eiman\AppData\Local\Python\pythoncore-3.14-64\python.exe` — **outside** `requires-python = ">=3.11,<3.14"`, so the 3.14 run in §7 is **diagnostic only**.
+- `uv` → **not available** in this environment (`command not found`), so the exact `uv sync --frozen` env **cannot be created here**.
+- `uv.lock` present, sha256 `0bad12260bbd349f7e640bc8c9911ec52049f135491d0c7a3c747327e4b10d27`.
+- **`py -3.12` → Python 3.12.10** (within `requires-python`).
+
+Supported-Python run (best available, honestly labelled — a pip-installed 3.12 venv, **not** `uv sync --frozen`, because uv is unavailable): interpreter 3.12.10; pytest 9.1.1, cryptography 50.0.1, pydantic 2.13.5 (+ pyyaml/psutil/python-dotenv/requests/ruff/mypy for the tool-importing tests).
+- `py -3.12 -m pytest <22 Lane-1 files> --collect-only -q` → **266 collected**.
+- `py -3.12 -m pytest <22 Lane-1 files> -p no:cacheprovider -q` → **266 passed / 0 failed / 0 skipped** (exit 0).
+- `py -3.12 -m py_compile <13 runtime modules>` → OK (proves no 3.14-only syntax).
+- `py -3.12 -m ruff check …` → clean · `py -3.12 -m mypy --ignore-missing-imports --follow-imports=skip …` → 0 issues.
+
+Residual: the **lockfile-frozen** (`uv sync --frozen`) supported-Python run must be executed by Master/CI in an environment with `uv`; this environment could not create it.
+
+### 10.2 Corrected pre-execution rejection vs UNKNOWN state table
+
+Pre-execution validation (operation shape, source+destination grant containment, tenant/principal/workspace binding, authorization signature/expiry/digest, content/patch/src/dst digest, backend support, traversal/junction at the boundary) now happens **before** any `begin_effect`/claim/host-IO. Every pre-execution rejection produces **zero filesystem mutation and zero effect-ledger row** (a proposal/rejection audit row may exist separately in `pending_proposals`; it is never an effect). `UNKNOWN` is reserved for a failure **during the mutation phase** (after claim + single-use consume), where the external outcome is indeterminate.
+
+| Case | Classification | Effect-ledger row |
+|---|---|---|
+| destination outside grant (move) | **pre-execution reject** | none |
+| traversal | pre-execution reject | none |
+| real junction/reparse escape | pre-execution reject | none |
+| missing / expired / wrong-workspace / wrong-tenant / wrong-principal auth | pre-execution reject | none (claim's consume precedes `begin_effect`) |
+| changed content / patch not applicable | pre-execution reject | none |
+| changed source/destination after auth | pre-execution reject | none |
+| unsupported remote backend | pre-execution reject | none |
+| unsupported V4A shape (ADD/UPDATE-hunks/multi-op) | pre-execution reject | none |
+| **crash during the actual mutation (post-claim host-IO raises)** | **UNKNOWN → reconciliation** | one, non-terminal `unknown` |
+
+Proven in `test_managed_fs_production_matrix.py` (`test_move_destination_outside_grant_fails_closed` now asserts **zero** effect rows; `test_crash_after_effect_left_unknown` injects a mutation-phase host-IO failure via `_host_write` and asserts exactly one `unknown` effect, never committed, never blind-replayed).
+
+### 10.3 Positive filesystem-result + receipt assertions
+
+Through the real middleware: write → exact bytes persisted; patch replace → exact resulting bytes; delete → target absent; move → source absent + destination present with exact bytes; receipt carries operation, canonical target path, workspace, authorization id/key/issuer and final state `committed`; the canonical ledger record has the correct state + a bound target-scope digest and is **unreadable to a foreign principal or a foreign workspace** (`test_receipt_fields_and_foreign_principal_unreadable`); replay performs no second mutation.
+
+**Precise idempotency claim:** ledger/idempotency-enforced **at-most-once execution** for the supported local backend (single-use authorization id + canonical effect claim), with **reconciliation** for indeterminate (`unknown`) outcomes — not a global exactly-once guarantee.
+
+### 10.4 Lane-1 / Lane-2 / Lane-3 / main delta + read-only conflict analysis
+
+All SHAs full 40-char. Lane-1 HEAD at analysis time = `f5895a799a1f42c0c9f768cba9af682a79779463` (the report commit is the branch HEAD after this file lands).
+
+- Lane-2 final `1ed19f0914cce6d074aae6cf378d81f05bc6d283`; Lane-2-consumed Lane-1 base `ca89219ae0925767f306ac9874c540813e0fd34e`.
+- `git merge-base(Lane1, Lane2)` = `ca89219ae0925767f306ac9874c540813e0fd34e`.
+- Lane-1 delta `ca89219ae..Lane1` = **32 files**; Lane-2 delta `ca89219ae..Lane2` = **31 files**.
+- **Overlapping files (Lane1 ∩ Lane2) = 0.** `git merge-tree ca89219ae Lane1 Lane2` conflict markers = **0** → disjoint, conflict-free.
+- Lane-3 `d877b373c`: `git merge-base(Lane1, Lane3)` = `c92069a5a` (shared PX base); overlap Lane1 ∩ Lane3 = **0**; `git merge-tree c92069a5a Lane1 Lane3` conflicts = **0**.
+- `origin/main` `c7650a1b920224283ba3a59ca054d6625e07a5f3`: `git merge-base(Lane1, main)` = **NONE** (no common ancestor reachable in this local object DB) → main conflict analysis **could not be computed here**; Master must run it against a full-history main.
+- **Recommended additive integration order:** Lane-1 → Lane-2 → Lane-3. Rationale: file-disjoint and conflict-free at the shared base, so order is not conflict-driven; Lane-1 first because it establishes the managed-fs governance the generic connector (Lane-2) can reuse, then Lane-3 packaging. No merge/cherry-pick performed — read-only analysis only.
+
+### 10.5 Full-SHA changed-file inventory
+
+38 files changed `c92069a5a..HEAD` (see §2 for the module breakdown): 11 `youtab_runtime/` modules, `agent/tool_executor.py`, 6 `tools/`+`tools/environments/` files, `docs/architecture/ADR-0005…`, `docs/contracts/EFFECT_AUTHORIZATION_COMPAT_v1.json`, this report, and 19 test files.
+
+### 10.6 Remaining unsupported / NO-GO matrix (not hidden)
+
+1. LIVE Simorgh/Gateway signed-`EffectAuthorization` issuance — **absent, no approved SHA**; production fail-closed. Runtime receiver done + proven with an ephemeral production-mode key; no Runtime signer.
+2. Remote/container/SSH/modal filesystem authority — **absent**; fail-closed (`MANAGED_REMOTE_FILESYSTEM_AUTHORITY_UNAVAILABLE`); host-handle containment claimed local-only.
+3. `patch` V4A `ADD`/`UPDATE`-hunks and multi-op — **unsupported** in managed mode (fail-closed; use `write_file`/replace-mode `patch`).
+4. `search_files` — **not grant-routed** (read at the authority gate).
+5. **No integrated Lane1+Lane2+Lane3 exact-SHA suite** exists.
+6. Lockfile-frozen (`uv sync --frozen`) supported-Python run pending an env with `uv`.
