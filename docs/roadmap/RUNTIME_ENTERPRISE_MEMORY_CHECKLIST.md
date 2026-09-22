@@ -146,7 +146,7 @@ The genuine base gaps that are memory/continuity and do NOT overlap Lane effect/
 | 3.5 | Offline cache/outbox/reconciliation | NOT STARTED | delivery_ledger reusable; general reconcile unimplemented |
 | 3.6 | Hybrid retrieval pipeline (lexical+vector+graph, rerank, budget) | NOT STARTED | holographic FTS5+HRR reusable |
 | 3.7 | Token-budget policy (model-aware, backward-compat) | NOT STARTED | wraps char-limit capsule |
-| 4 | Long-running resume token / checkpoint capsule | NOT STARTED | references checkpoint_manager + state_meta; NOT effect_ledger (Lane) |
+| 4 | Long-running resume token / checkpoint capsule | **IMPLEMENTED (tested)** | `youtab_runtime/continuity/checkpoint.py`; hash-chained TaskCheckpoint + CheckpointChain (tamper/stale/scope-cross detection, safe-resume-point, model-neutral content-addressing); references checkpoint_manager + state_meta + effect_refs, does NOT reimplement Lane effect_ledger. Persistence wiring to state_meta = remaining. |
 | 5 | Multi-tenant security proofs | PARTIAL (scope isolation unit-proven) | needs default-deny at persistence + adversarial |
 | 6 | CRM/ERP/SAP/CAD scenarios | NOT STARTED | reference providers are Lane-only |
 | 7 | Adversarial/scale/eval | NOT STARTED | |
