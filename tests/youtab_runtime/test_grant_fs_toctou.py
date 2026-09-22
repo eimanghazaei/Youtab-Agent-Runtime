@@ -18,11 +18,13 @@ _ROOT = os.path.abspath(os.path.join(_HERE, "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
+from datetime import UTC, datetime  # noqa: E402
+
 from youtab_runtime.approval import (  # noqa: E402
     compute_effect_digest,
     content_digest,
-    issue_approval,
 )
+from youtab_runtime.effect_authorization import TestEffectAuthority  # noqa: E402
 from youtab_runtime.folder_grant import (  # noqa: E402
     FolderGrant,
     GrantRevokedError,
@@ -36,6 +38,8 @@ from youtab_runtime.run_journal import Principal  # noqa: E402
 
 WS = "ws-1"
 NOW = 1000.0
+AUTH = TestEffectAuthority()
+CMD = "cmd-00000001"
 
 
 def _p():
@@ -134,16 +138,20 @@ def test_create_boundary_rejects_parent_swapped_to_junction(tmp_root, db):
 def test_revocation_between_validation_and_claim_fails_closed(tmp_root, db):
     p = _p()
     g = _grant(tmp_root)
-    # Approval is valid and would authorize the effect...
+    # A signed authorization is valid and would authorize the effect...
     safe = resolve_within_grant(g, "f.txt", operation="write", tenant_id="t",
                                 principal_id="u", workspace_id=WS, now=NOW)
     ed = compute_effect_digest("write", safe, WS, content_digest(b"data"))
-    issue_approval("ap-1", ed, p, WS, expires_at=NOW + 100, db_path=db)
+    az = AUTH.mint(authorization_id="az-revocation-000001", tenant_id="t", user_id="u",
+                   workspace_id=WS, command_id=CMD, capability="fs", operation="write",
+                   effect_digest=ed, issued_at=datetime.fromtimestamp(NOW, UTC),
+                   expires_at=datetime.fromtimestamp(NOW + 100, UTC))
     # ...but the grant is revoked in the window before the effect is claimed.
     revoked = {"v": True}
     _expect(GrantRevokedError, lambda: claim_granted_fs_effect(
         g, "f.txt", operation="write", run_id="run-1", principal=p,
-        workspace_id=WS, approval_id="ap-1", owner_token="w1", content=b"data",
+        workspace_id=WS, authorization=az, owner_token="w1", content=b"data",
+        production=False, test_authority_keys=AUTH.keyring(),
         revocation_check=lambda gid: revoked["v"], db_path=db, now=NOW,
     ))
     # Fail-closed: no effect registered, and the single-use approval was NOT spent.
