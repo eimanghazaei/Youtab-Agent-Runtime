@@ -8,6 +8,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { spawnSync } from "node:child_process"
 import { createRequire } from "node:module"
+import { pathToFileURL } from "node:url"
 
 const require = createRequire(import.meta.url)
 
@@ -96,7 +97,7 @@ async function enforceSidecar() {
   // Recompute the bundle digest and require it to equal BOTH the committed
   // digest file AND the embedded Electron trust anchor.
   const { rootDigestFromBundle, parseTrustedDigest } = await import(
-    path.resolve("packaging/backend-sidecar/root-digest.mjs")
+    pathToFileURL(path.resolve("packaging/backend-sidecar/root-digest.mjs")).href
   )
   const committed = parseTrustedDigest(fs.readFileSync(path.join(sidecarOutDir, "sidecar-root-digest.txt"), "utf8"))
   if (!committed) abort("sidecar-root-digest.txt is malformed")
@@ -111,10 +112,24 @@ async function enforceSidecar() {
   if (anchor !== actual) abort(`Electron trust anchor ${anchor} != bundle digest ${actual}`)
 
   console.log(`[run-electron-builder] sidecar integrity OK — root digest ${actual} matches committed + trust anchor`)
-  args.push(
-    "-c.extraResources.2.from=build/backend-sidecar/dist/youtab-backend",
-    "-c.extraResources.2.to=backend-sidecar"
-  )
+
+  // Append the sidecar to extraResources by writing a COMPLETE merged config
+  // file and pointing electron-builder at it. (CLI array-index overrides like
+  // `-c.extraResources.2.from` corrupt the array into an object and fail schema
+  // validation on electron-builder 26.x.)
+  const pkg = require(path.resolve("package.json"))
+  const baseBuild = pkg.build || {}
+  const mergedBuild = {
+    ...baseBuild,
+    extraResources: [
+      ...(Array.isArray(baseBuild.extraResources) ? baseBuild.extraResources : []),
+      { from: "build/backend-sidecar/dist/youtab-backend", to: "backend-sidecar" }
+    ]
+  }
+  const cfgPath = path.resolve("release/.builder-config-with-sidecar.json")
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true })
+  fs.writeFileSync(cfgPath, JSON.stringify(mergedBuild, null, 2))
+  args.push("-c", cfgPath)
 }
 
 if (allowNoSidecar) {
