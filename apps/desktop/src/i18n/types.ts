@@ -246,6 +246,8 @@ export interface Translations {
     openKeybinds: string
     layoutEditor: string
     layoutEditorTitle: string
+    switchToDayMode: string
+    switchToNightMode: string
   }
 
   keybinds: {

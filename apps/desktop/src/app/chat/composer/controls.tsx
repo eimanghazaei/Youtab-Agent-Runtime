@@ -83,7 +83,6 @@ export function ComposerControls({
       <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       <AutoSpeakButton active={autoSpeak} disabled={disabled} onToggle={onToggleAutoSpeak} />
-      <WakeWordButton disabled={disabled} />
       {busyAction === 'steer' ? (
         <Tip label={<TipKeybindLabel actionId="composer.queue" text={c.queueMessage} />}>
           <Button

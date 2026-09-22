@@ -203,7 +203,9 @@ export const en: Translations = {
     openStarmap: 'Open memory graph',
     openKeybinds: 'Keyboard shortcuts',
     layoutEditor: 'Layout editor',
-    layoutEditorTitle: 'Layout editor — ⌘-click resets the layout'
+    layoutEditorTitle: 'Layout editor — ⌘-click resets the layout',
+    switchToDayMode: 'Switch to day mode',
+    switchToNightMode: 'Switch to night mode'
   },
 
   keybinds: {
@@ -1228,7 +1230,7 @@ export const en: Translations = {
     nav: {
       newChat: { title: 'New session', detail: 'Start a fresh session' },
       settings: { title: 'Settings', detail: 'Configure Youtab desktop' },
-      skills: { title: 'Capabilities', detail: 'Skills, tools, and MCP servers' },
+      skills: { title: 'Connections', detail: 'Skills, tools, and MCP servers' },
       messaging: { title: 'Messaging', detail: 'Set up Telegram, Slack, Discord, and more' },
       artifacts: { title: 'Artifacts', detail: 'Browse generated outputs' }
     },
@@ -1814,7 +1816,7 @@ export const en: Translations = {
   sidebar: {
     nav: {
       'new-session': 'New session',
-      skills: 'Capabilities',
+      skills: 'Connections',
       messaging: 'Messaging',
       artifacts: 'Artifacts'
     },
