@@ -37,8 +37,16 @@ __all__ = [
     "response_schema_for",
     "execute",
     "PROVENANCE_REFERENCE",
+    "ENVIRONMENT",
 ]
 
+#: Consumer-facing environment label. Anything produced here is a REFERENCE
+#: environment result — NEVER a LIVE vendor execution. A consumer/UI must display
+#: "Reference environment" and must not present it as real CRM/ERP/SAP/CAD vendor
+#: data. These providers never mint approval, effect authority or receipts — the
+#: real Runtime approval/worker/ledger/receipt path does — and must not evolve
+#: into internal CRM/ERP/SAP products or a CAD/FEA framework.
+ENVIRONMENT = "reference"
 PROVENANCE_REFERENCE = "REFERENCE"
 
 
@@ -115,12 +123,15 @@ OPERATIONS.update(
              "passed": "bool", "solver": "str", "solver_version": "str",
              "provenance": "str"},
         ),
+        # Bounded FEA execution is a governed EFFECT (commit class): it runs the
+        # maintained-library (numpy) adapter, is approval-gated, records one
+        # effect + receipt, and is reconcilable.
         "cad.fea.run": (
-            "read",
+            "commit",
             {"model": "dict"},
-            {"tip_displacement": "float", "analytical_tip_displacement": "float",
-             "relative_error": "float", "max_axial_stress": "float",
-             "elements": "int", "converged": "bool", "solver": "str",
+            {"tip_displacement": "float", "max_axial_stress": "float",
+             "elements": "int", "converged": "bool", "result_checksum": "str",
+             "backend": "str", "numpy_version": "str", "solver": "str",
              "solver_version": "str", "provenance": "str"},
         ),
         "cad.effect.reconcile": (
@@ -189,7 +200,13 @@ def execute(
         out["provenance"] = provenance
         return out
     if operation_id == "cad.fea.run":
-        out = dict(cad.fea_run(payload["model"]))
+        # Bounded FEA via the maintained-library (numpy) adapter, cross-checked
+        # against the deterministic hand-written oracle within a documented
+        # tolerance. cad_lib raises CadError if the two backends diverge.
+        from youtab_runtime.enterprise import cad_lib
+
+        cad_lib.cross_check_against_reference(payload["model"])
+        out = dict(cad_lib.fea_run_numpy(payload["model"]))
         out["provenance"] = provenance
         return out
 

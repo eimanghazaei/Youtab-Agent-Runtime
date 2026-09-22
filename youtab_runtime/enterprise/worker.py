@@ -23,7 +23,7 @@ import json
 import sys
 import time
 
-from youtab_runtime.enterprise import providers
+from youtab_runtime.enterprise import reference_providers as providers
 
 
 def _handle(req: dict) -> dict:
