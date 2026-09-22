@@ -33,7 +33,7 @@ from typing import Any, Mapping, Optional
 
 from youtab_runtime import effect_ledger as _ledger
 from youtab_runtime.enterprise import reference_providers as providers
-from youtab_runtime.enterprise.authority import RuntimeIdempotencyPolicy
+from youtab_runtime.enterprise.authority import AuthorityError, RuntimeIdempotencyPolicy
 from youtab_runtime.enterprise.connector import ConnectorRequest, Receipt
 from youtab_runtime.enterprise.lane1_adapter import Lane1AuthorityAdapter
 from youtab_runtime.enterprise.manifest import (
@@ -157,7 +157,14 @@ class Lane1GovernedConnector:
         )
 
     # -- public API ------------------------------------------------------- #
-    def execute(self, req: ConnectorRequest) -> Receipt:
+    def execute(self, req: ConnectorRequest, *, authorization=None) -> Receipt:
+        """Execute one governed operation.
+
+        ``authorization`` is an externally-signed
+        :class:`~youtab_runtime.effect_authorization.EffectAuthorization`,
+        required for commit-class operations. The Runtime only verifies and
+        single-use-consumes it — it never mints authority.
+        """
         cap, ws, request_digest = self._prepare(req)
         op_class = providers.operation_class(cap.operation_id)
         if op_class == "reconcile":
@@ -165,7 +172,7 @@ class Lane1GovernedConnector:
 
         provider_key = self._idem.derive_provider_key(
             cap, request_digest=request_digest, workspace_canonical=ws.workspace,
-            approval_id=req.approval_id or "none",
+            approval_id=(authorization.authorization_id if authorization else "none"),
         )
 
         if op_class in ("read", "preview"):
@@ -181,33 +188,39 @@ class Lane1GovernedConnector:
         action = cap.operation_id
         effect_id = _ledger.compute_effect_id(req.run_id, req.principal, action, scope)
 
-        # Approval is consumed ONLY when creating the effect (retry-safe).
-        approval_id = "none"
+        # A signed authorization is verified + single-use consumed ONLY when
+        # creating the effect (retry-safe). The Runtime never self-approves.
+        authorization_id = "none"
         existing = _ledger.get_effect(effect_id, req.principal, db_path=self._db_path)
         if existing is None and cap.approval_required:
-            if not req.approval_id:
+            if authorization is None:
                 raise Lane1GovernedConnectorError(
-                    f"operation {cap.operation_id!r} requires approval"
+                    f"operation {cap.operation_id!r} requires a signed authorization"
                 )
-            grant = self._authority.verify_approval(
-                approval_id=req.approval_id, operation_id=cap.operation_id,
-                request_digest=request_digest, delegation=req.delegation,
-                principal_tenant=req.principal.tenant,
-                principal_user=req.principal.user, workspace=ws,
-            )
-            approval_id = grant.approval_id
+            try:
+                authorization_id = self._authority.consume_authorization(
+                    authorization, capability_id=cap.capability_id,
+                    operation_id=cap.operation_id, request_digest=request_digest,
+                    principal=req.principal, workspace=ws,
+                )
+            except AuthorityError as exc:
+                # Fail closed BEFORE any effect is created — never self-approve.
+                raise Lane1GovernedConnectorError(
+                    f"authorization refused: {exc}"
+                ) from exc
         elif existing is not None:
-            approval_id = str(existing.detail.get("approval_id", "none"))
+            authorization_id = str(existing.detail.get("authorization_id", "none"))
 
         lease = self._authority.acquire_worker_lease(
-            operation_id=cap.operation_id, workspace=ws, approval_id=approval_id
+            operation_id=cap.operation_id, workspace=ws,
+            authorization_id=authorization_id,
         )
         _ledger.begin_effect(
             req.run_id, req.principal, action, scope,
             correlation_id=req.correlation_id,
             detail={
                 "operation_id": cap.operation_id, "workspace": ws.workspace,
-                "approval_id": approval_id, "request_digest": request_digest,
+                "authorization_id": authorization_id, "request_digest": request_digest,
                 "provenance": cap.provenance.value, "mutating": True,
                 "capability_version": cap.capability_version,
                 "provider": cap.provider, "provider_idempotency_key": provider_key,
@@ -222,7 +235,7 @@ class Lane1GovernedConnector:
         if not won:
             d = record.detail
             return self._receipt(
-                cap, ws, req, request_digest, approval_id,
+                cap, ws, req, request_digest, authorization_id,
                 str(d.get("lease", {}).get("owner", "")), provider_key,
                 effect_id=effect_id, effect_state=record.state.value,
                 deduplicated=True, output=dict(d.get("output", {})),
@@ -258,7 +271,7 @@ class Lane1GovernedConnector:
             db_path=self._db_path,
         )
         return self._receipt(
-            cap, ws, req, request_digest, approval_id, lease.lease_token, provider_key,
+            cap, ws, req, request_digest, authorization_id, lease.lease_token, provider_key,
             effect_id=effect_id, effect_state=committed.state.value,
             deduplicated=False, output=output,
         )
@@ -288,12 +301,15 @@ class Lane1GovernedConnector:
             recorded_digest is not None
             and output.get("expected_digest") == recorded_digest
         )
-        # Only WITH evidence may an ambiguous effect be moved terminal.
-        if prior.state.value in ("unknown", "reconciliation_required"):
-            if evidence_matches:
-                self._authority.reconcile_to_terminal(
-                    prior.effect_id, req.principal, committed=True
-                )
+        # Only WITH verifiable evidence may an ambiguous effect be moved
+        # terminal; Lane-1 refuses forged/mismatched/stale evidence.
+        if prior.state.value in ("unknown", "reconciliation_required") and evidence_matches:
+            self._authority.reconcile_to_terminal(
+                prior.effect_id, req.principal,
+                operation_digest=prior.target_scope_digest,
+                workspace_id=ws.workspace, outcome="succeeded",
+                result_digest=str(recorded_digest), provenance="reference",
+            )
             # No evidence -> leave it ambiguous (never blind-terminal).
         reconciled = bool(evidence_matches and prior.state.value in
                           ("committed", "unknown", "reconciliation_required"))
