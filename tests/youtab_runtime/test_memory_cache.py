@@ -182,6 +182,137 @@ def test_put_latency_does_not_grow_with_store_size(tmp_path) -> None:
     assert late <= early * 3 + 0.005
 
 
+def _live_bytes(root) -> int:
+    total = 0
+    for dp, _dd, files in os.walk(str(root)):
+        for f in files:
+            if f.endswith(".rec"):
+                total += os.path.getsize(os.path.join(dp, f))
+    return total
+
+
+def _counter_matches(cache, root) -> bool:
+    return cache.size_bytes() == _live_bytes(root) == cache._total_bytes()  # type: ignore[attr-defined]
+
+
+def test_interrupted_atomic_write_does_not_miscount(tmp_path, monkeypatch) -> None:
+    cache = EncryptedScopedCache(str(tmp_path), _ks())
+    s = _scope()
+    cache.put(s, "k0", b"first")
+    before = cache.size_bytes()
+    # force the atomic write to fail mid-put: the size counter must NOT advance
+    monkeypatch.setattr(cache, "_atomic_write",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        cache.put(s, "k1", b"x" * 999)
+    assert cache.size_bytes() == before
+    assert _counter_matches(cache, tmp_path)  # counter == actual live bytes
+
+
+def test_ttl_expiry_updates_size_counter(tmp_path) -> None:
+    t = {"now": 100.0}
+    cache = EncryptedScopedCache(str(tmp_path), _ks(), clock=lambda: t["now"])
+    s = _scope()
+    cache.put(s, "keep", b"stay")
+    cache.put(s, "temp", b"gone", ttl_seconds=10)
+    assert _counter_matches(cache, tmp_path)
+    t["now"] = 200.0
+    assert cache.get(s, "temp") is None       # lazy expiry deletes on read
+    assert _counter_matches(cache, tmp_path)  # size reflects the removal
+    assert cache.get(s, "keep") == b"stay"
+
+
+def test_sweep_expired_reclaims_and_updates_size(tmp_path) -> None:
+    t = {"now": 100.0}
+    cache = EncryptedScopedCache(str(tmp_path), _ks(), clock=lambda: t["now"])
+    s = _scope()
+    for i in range(10):
+        cache.put(s, f"t{i}", b"x" * 100, ttl_seconds=5)
+    cache.put(s, "perm", b"y" * 100)
+    full = cache.size_bytes()
+    assert full > 0
+    t["now"] = 200.0
+    cache.sweep_expired()
+    assert cache.size_bytes() < full
+    assert _counter_matches(cache, tmp_path)
+    assert cache.get(s, "perm") == b"y" * 100
+
+
+def test_delete_and_tombstone_update_size(tmp_path) -> None:
+    cache = EncryptedScopedCache(str(tmp_path), _ks())
+    s = _scope()
+    cache.put(s, "a", b"aaa")
+    cache.put(s, "b", b"bbb")
+    cache.delete(s, "a")
+    assert _counter_matches(cache, tmp_path)
+    cache.tombstone(s, "b")
+    assert _counter_matches(cache, tmp_path)  # tombstone rec still counts, tracked
+    cache.purge_scope(s)
+    assert cache.size_bytes() == 0
+    assert _counter_matches(cache, tmp_path)
+
+
+def test_quarantine_updates_size(tmp_path) -> None:
+    cache = EncryptedScopedCache(str(tmp_path), _ks())
+    s = _scope()
+    cache.put(s, "k", b"payload")
+    before = cache.size_bytes()
+    path = cache._record_path(s, "k")  # type: ignore[attr-defined]
+    data = bytearray(open(path, "rb").read()); data[-10] ^= 0xFF
+    open(path, "wb").write(bytes(data))
+    assert cache.get(s, "k") is None  # tamper -> quarantine
+    assert cache.size_bytes() < before
+    assert _counter_matches(cache, tmp_path)
+
+
+def test_reopen_recomputes_size_and_enforces_bound(tmp_path) -> None:
+    cache = EncryptedScopedCache(str(tmp_path), _ks())
+    s = _scope()
+    for i in range(20):
+        cache.put(s, f"k{i}", b"x" * 200)
+    cache.delete(s, "k0")
+    size = cache.size_bytes()
+    reopened = EncryptedScopedCache(str(tmp_path), _ks(), max_bytes=size + 100)
+    assert reopened.size_bytes() == size == _live_bytes(tmp_path)
+    with pytest.raises(CacheFull):  # bound honored immediately after reopen
+        reopened.put(s, "big", b"z" * 500)
+
+
+def test_bound_never_exceeded_across_many_puts(tmp_path) -> None:
+    cache = EncryptedScopedCache(str(tmp_path), _ks(), max_bytes=20_000)
+    s = _scope()
+    stored = 0
+    for i in range(500):
+        try:
+            cache.put(s, f"k{i}", b"x" * 256)
+            stored += 1
+        except CacheFull:
+            pass
+        assert cache.size_bytes() <= 20_000            # invariant on every step
+        assert _live_bytes(tmp_path) <= 20_000
+    assert stored > 0 and stored < 500                 # some accepted, some refused
+
+
+def test_concurrency_is_unsupported_single_writer_contract(tmp_path) -> None:
+    # The size counter is per-INSTANCE and in-memory; the cache is a single-writer,
+    # single-instance contract. Two instances over the same directory do NOT share
+    # the counter, so the bound is only guaranteed per-instance. This test PROVES the
+    # limitation rather than claiming concurrent safety.
+    s = _scope()
+    a = EncryptedScopedCache(str(tmp_path), _ks())
+    a.put(s, "ka", b"x" * 300)
+    b = EncryptedScopedCache(str(tmp_path), _ks())  # second instance, same dir
+    a_view = a.size_bytes()
+    b.put(s, "kb", b"y" * 300)
+    # instance A's counter does NOT see B's write (stale) -> not concurrency-safe
+    assert a.size_bytes() == a_view
+    # actual live bytes exceed either single-instance view
+    assert _live_bytes(tmp_path) > a.size_bytes()
+    # a fresh reopen recomputes the true size from disk
+    fresh = EncryptedScopedCache(str(tmp_path), _ks())
+    assert fresh.size_bytes() == _live_bytes(tmp_path)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="DPAPI is Windows-only")
 def test_dpapi_keystore_roundtrip_on_windows(tmp_path) -> None:
     ks = DpapiKeyStore()

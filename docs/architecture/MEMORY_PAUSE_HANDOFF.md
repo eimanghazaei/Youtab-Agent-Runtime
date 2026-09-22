@@ -17,9 +17,10 @@ This is a **dependency pause**, not completion or abandonment.
 
 ### Qualification-closure update (Codex gaps 1–3 + perf gate)
 - Final `tests/youtab_runtime` in a PRIVATE temp = **659 passed / 0 failed, exit 0**; ruff + ty clean.
-- Gap 1: suite flake root cause = shared system-TEMP `youtab-test-home-*` (`tests/conftest.py:62`) +
-  concurrent Durable pytest; deterministic green in isolation; not a Memory-test defect (repo `conftest.py`
-  hardening is an OPEN repo/Integrator item). Run overlapping suites with a private per-session TEMP.
+- Gap 1: failure requires a shared system-TEMP `youtab-test-home-*` (`tests/conftest.py:62`); deterministic
+  GREEN in a fully private TEMP (26×3). The specific foreign deleter is UNCONFIRMED (no deletion trace) —
+  private-TEMP proves effective isolation, not attribution. Not a Memory-test defect; repo `conftest.py`
+  hardening is an OPEN repo/Integrator item. Run overlapping suites with a private per-session TEMP.
 - Gap 2: outbox `converged_through()` is a 0-indexed cursor position, not a count; 10000→10000 acks, zero loss.
 - Perf: cache PUT is now O(1) (`b9a4adf1`; 31→5.2ms @100, 125→5.1ms @600), correctness preserved.
 - Memory candidate: qualification GO; product/live NO-GO (R1–R9 open).

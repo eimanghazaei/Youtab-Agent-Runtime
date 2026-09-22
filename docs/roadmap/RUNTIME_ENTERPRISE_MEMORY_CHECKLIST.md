@@ -307,14 +307,18 @@ When R1–R4 real interfaces arrive, the doubles are swapped for live services.
 
 ### Codex qualification-closure (gaps 1–3 + performance gate)
 
-- **Gap 1 (suite failure) — ROOT CAUSE ESTABLISHED, not a Memory-test defect.** `tests/conftest.py:62`
-  creates the session `youtab-test-home-*` via `tempfile.mkdtemp` under the SHARED system TEMP; the
-  diagnostic's green-probe subprocess inherits `YOUTAB_AGENT_HOME` pointing at it. A concurrent pytest
-  session (the Durable suite) sharing that system TEMP is the deletion vector. Controlled reproduction
-  in a FULLY PRIVATE TEMP (`TMP/TEMP/TMPDIR` + `--basetemp` unique): `test_import_failure_diagnostics.py`
-  = **26 passed × 3, exit 0** (deterministic). Not in Memory's own tests → repo-wide `conftest.py` not
-  modified (out of Memory scope). Run discipline: private per-session TEMP for overlapping runs.
-  OPEN (repo/Integrator): harden `conftest.py` session-home to a private root. Memory gate: not blocked.
+- **Gap 1 (suite failure) — EFFECTIVE ISOLATION PROVEN; exact foreign deleter UNCONFIRMED.**
+  The failure signature is `FileNotFoundError` on a `youtab-test-home-*` dir inside the diagnostic's
+  green-probe subprocess. That dir is created by `tests/conftest.py:62` (`tempfile.mkdtemp` under the
+  SHARED system TEMP) and inherited via `YOUTAB_AGENT_HOME`. **PROVEN:** in a FULLY PRIVATE TEMP
+  (`TMP/TEMP/TMPDIR` + unique `--basetemp`), `test_import_failure_diagnostics.py` =
+  **26 passed × 3, exit 0** — deterministic, i.e. the failure requires a shared system TEMP.
+  **UNCONFIRMED:** *which* foreign process removed the directory — no deletion trace was captured, so
+  the "concurrent Durable-suite pytest deleted it" attribution is a HYPOTHESIS, not established. It is
+  not in Memory's own tests (they create no such dir), so repo-wide `conftest.py` is unchanged
+  (out of Memory scope). Immediate qualification method: private per-session TEMP. OPEN (repo/Integrator):
+  harden `conftest.py` session-home to a private root and, if the race must be pinned, add a deletion
+  trace. Memory gate: not blocked. (No repeated full-suite runs were used to chase the unobserved race.)
 - **Gap 2 (outbox 9999 vs 10000) — RESOLVED, zero loss.** `converged_through()` returns the MAX cursor
   (0-indexed position), NOT a count. Test proves 10000 accepted → exactly 10000 distinct ACKED, 0 pending,
   0 dead-letter, converged==10000 (cursors 1..N); same-id-different-scope fails closed. No lost/unacked record.
@@ -331,8 +335,41 @@ When R1–R4 real interfaces arrive, the doubles are swapped for live services.
   transaction batching kept as a SEPARATE decision (measurements do not show it blocks a required rate;
   none is specified).
 
+### Counter bounded-correctness pass (Codex follow-up) — no defect found
+Added targeted counter-adversarial cache tests: interrupted atomic write (no miscount), TTL-expiry
+size accounting, `sweep_expired` reclamation, delete/tombstone/purge accounting, corruption-quarantine
+accounting, close/reopen recompute + bound enforced, bound-never-exceeded across 500 puts, and the
+**concurrency LIMITATION** (per-instance in-memory counter → single-writer/single-instance contract;
+two instances over one dir do NOT share the counter — proven, not claimed safe). Each asserts
+`size_bytes() == live .rec bytes on disk == _total_bytes()` and `size ≤ max_bytes`.
+
+Targeted results on final code SHA `1a514e26` (private TEMP):
+| Command | Result | Exit |
+|---|---|---|
+| `pytest tests/youtab_runtime/test_memory_cache.py` | **22 passed** | 0 |
+| `pytest tests/youtab_runtime/test_outbox_sqlite.py` | **19 passed** | 0 |
+| `ruff check youtab_runtime/memory tests/…` | All checks passed | 0 |
+| `ty check youtab_runtime/memory` | All checks passed | 0 |
+| `git diff --check 1a514e26 -- youtab_runtime tests` | clean | 0 |
+
+Unverified concurrency behavior: multi-instance / multi-process concurrent writes to one cache dir are
+**UNSUPPORTED** (per-instance counter; bound guaranteed per-instance only). Tested as a stated limitation
++ fresh-reopen recompute, not claimed safe. A durable/shared counter would be needed for concurrency.
+
+### Integrator handoff
+- **Latest code SHA to integrate:** `<updated below at commit>` (carries the O(1) cache fix + all
+  counter/accounting/qualification tests). Frozen foundation `3e9a3dff` alone omits these.
+- **Commit range from `1a514e26`:** see the ledger appended at commit time.
+- **Import/contract notes:** all additions are under `youtab_runtime/memory/` + `youtab_runtime/continuity/`,
+  additive, zero changed-file overlap with Lanes/Durable; nothing imports `youtab_runtime.continuity`
+  except its own test (`a990839b` is a safely-excludable leaf). No product path imports the new memory
+  modules (inert). Public API via `youtab_runtime.memory.__all__`.
+- **Status:** Memory is **IMPLEMENTED_NOT_INTEGRATED**; live Gateway/Simorgh/Durable wiring is **OPEN**
+  (R1–R9). Hand off the code now; do not wait on R1–R9.
+
 ### Memory candidate GO / NO-GO
-- **Qualification (correctness + performance): GO** — all three gaps closed; 659 green in isolation; PUT O(1).
+- **Qualification (correctness + performance): GO** — three gaps closed; counter bounded-correctness pass
+  clean (22 cache / 19 outbox); 659 full-suite green in isolation; PUT O(1).
 - **Product / live integration: NO-GO** — not integrated; R1–R9 open; live wiring paused.
 
 ### Remaining dependencies (unchanged, R1–R9 in MEMORY_PAUSE_HANDOFF.md)
