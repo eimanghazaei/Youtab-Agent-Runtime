@@ -41,6 +41,16 @@ same trust root as the command envelope. Options (Gateway to choose, then we pin
 Until one is delivered, memory scope beyond tenant+principal remains admission-trusted,
 and no LIVE multi-tenant/workspace memory behavior may be enabled.
 
+## Machine-readable interface request (item 8)
+
+The exact typed token shape is `docs/architecture/gateway_signed_scope_placement.schema.json`
+(`youtab.scope-placement.v1`). It binds: `organization_id`, `workspace_id`, `agent_id`,
+`run_id`, `purpose`, `delegation_authority_ref`, `nonce`, `issued_at`/`expires_at`,
+`key_id`, `signature`, cross-checked against `command_id`/`trace_id`/`tenant_id`/`principal_id`.
+Runtime verification + fail-closed rules + required negative tests are in the schema's
+`x-runtime-requirements`. Admission-supplied but UNSIGNED values must never authorize
+retrieval or persistence on a server deployment.
+
 ## Acceptance
 
 - Runtime `MemoryScope.from_admission` consumes the signed placement and verifies it.
