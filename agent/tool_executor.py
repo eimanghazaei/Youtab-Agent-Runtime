@@ -548,11 +548,39 @@ def _run_agent_tool_execution_middleware(
             )
             return result
 
+        # Managed filesystem router (ADR-0005 positive path): in managed mode it
+        # OWNS the registered file tools — performing the grant-bound read / the
+        # Brain-authorized write itself (via grant-bound host-IO) and returning a
+        # canonical receipt, or refusing fail-closed. It returns None for non-file
+        # tools and for local-standalone, in which case the general authority gate
+        # below runs unchanged.
+        try:
+            from youtab_runtime.managed_fs_router import route_managed_file_tool
+        except Exception:
+            route_managed_file_tool = None
+        _fs_route = (
+            route_managed_file_tool(
+                agent, function_name, final_args, task_id=effective_task_id or ""
+            )
+            if route_managed_file_tool is not None
+            else None
+        )
+        if _fs_route is not None and not _fs_route.blocked:
+            # The router performed the authorized operation; return its result in
+            # place of the real tool handler (mirrors ``return execute(...)``).
+            _advance_start_order(_begin)
+            return _fs_route.result
+
         # Simorgh execution-authority gate — the LAST check before a real tool
         # runs. Fail-closed in managed mode (see enforce_managed_tool_authority);
         # inert in local-standalone. Runs after plugin/guardrail blocks so an
         # unauthorized managed invocation is refused even if nothing else blocked.
-        _authority_block = enforce_managed_tool_authority(agent, function_name, final_args)
+        # A managed file tool the router refused carries its reason here.
+        _authority_block = (
+            _fs_route.reason
+            if _fs_route is not None
+            else enforce_managed_tool_authority(agent, function_name, final_args)
+        )
         if _authority_block is not None:
             _advance_start_order()
             state["blocked"] = True
