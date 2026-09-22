@@ -14,13 +14,7 @@ export type SidecarLaunchAction = 'launch' | 'refuse' | 'skip'
 
 export interface SidecarLaunchDecision {
   action: SidecarLaunchAction
-  reason:
-    | 'verified'
-    | 'no-bundle'
-    | 'missing-sidecar'
-    | 'no-trusted-digest'
-    | 'digest-mismatch'
-    | 'compute-error'
+  reason: 'verified' | 'no-bundle' | 'missing-sidecar' | 'no-trusted-digest' | 'digest-mismatch' | 'compute-error'
   expected?: string | null
   actual?: string | null
   detail?: string

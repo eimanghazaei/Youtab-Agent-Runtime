@@ -36,7 +36,10 @@ test('dev mode resolves under the repo build output', () => {
   const r = resolveSidecarPaths({ isPackaged: false, repoRoot: '/repo', platform: 'linux' })
   assert.ok(r)
   assert.equal(r!.mode, 'dev')
-  assert.equal(r!.bundleDir, path.join('/repo', 'apps', 'desktop', 'build', 'backend-sidecar', 'dist', 'youtab-backend'))
+  assert.equal(
+    r!.bundleDir,
+    path.join('/repo', 'apps', 'desktop', 'build', 'backend-sidecar', 'dist', 'youtab-backend')
+  )
 })
 
 test('dev mode without repoRoot returns null', () => {

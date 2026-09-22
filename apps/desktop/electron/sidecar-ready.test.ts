@@ -61,6 +61,9 @@ test('waitForGatewayReady rejects on timeout', async () => {
 })
 
 test('ready timeout override is clamped to a sane floor', () => {
-  assert.equal(resolveGatewayReadyTimeoutMs({ YOUTAB_AGENT_SIDECAR_READY_TIMEOUT_MS: '1' } as any), MIN_GATEWAY_READY_TIMEOUT_MS)
+  assert.equal(
+    resolveGatewayReadyTimeoutMs({ YOUTAB_AGENT_SIDECAR_READY_TIMEOUT_MS: '1' } as any),
+    MIN_GATEWAY_READY_TIMEOUT_MS
+  )
   assert.equal(resolveGatewayReadyTimeoutMs({ YOUTAB_AGENT_SIDECAR_READY_TIMEOUT_MS: '120000' } as any), 120000)
 })

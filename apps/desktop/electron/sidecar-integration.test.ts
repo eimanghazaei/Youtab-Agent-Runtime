@@ -57,7 +57,10 @@ async function startBackend(extraEnv: Record<string, string> = {}, timeoutMs = 3
   let logs = ''
 
   return new Promise<RunningBackend>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`backend did not announce a port in ${timeoutMs}ms; logs:\n${logs}`)), timeoutMs)
+    const timer = setTimeout(
+      () => reject(new Error(`backend did not announce a port in ${timeoutMs}ms; logs:\n${logs}`)),
+      timeoutMs
+    )
     const onData = (chunk: Buffer) => {
       logs += chunk.toString()
       const m = logs.match(READY_RE)
@@ -156,7 +159,11 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
   test('2: real bundle digest matches the pinned trust anchor → launch', () => {
     const actual = rootDigestFromBundle(BUNDLE_DIR)
     assert.equal(actual, TRUSTED_SIDECAR_ROOT_DIGEST)
-    const d = decideSidecarLaunch({ bundlePresent: true, bundleDir: BUNDLE_DIR, trustedDigest: TRUSTED_SIDECAR_ROOT_DIGEST })
+    const d = decideSidecarLaunch({
+      bundlePresent: true,
+      bundleDir: BUNDLE_DIR,
+      trustedDigest: TRUSTED_SIDECAR_ROOT_DIGEST
+    })
     assert.equal(d.action, 'launch')
   }, 60_000)
 
@@ -165,7 +172,10 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
     const dir = path.join(bundleCopy!, 'youtab-backend')
     const trusted = rootDigestFromBundle(BUNDLE_DIR)
     // Flip one byte by appending to a real file in the copied tree.
-    appendFileSync(path.join(dir, process.platform === 'win32' ? 'youtab-backend.exe' : 'youtab-backend'), Buffer.from([0]))
+    appendFileSync(
+      path.join(dir, process.platform === 'win32' ? 'youtab-backend.exe' : 'youtab-backend'),
+      Buffer.from([0])
+    )
     const d = decideSidecarLaunch({ bundlePresent: true, bundleDir: dir, trustedDigest: trusted })
     assert.equal(d.action, 'refuse')
     assert.equal(d.reason, 'digest-mismatch')
@@ -174,7 +184,11 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
   // 4
   test('4: missing sidecar fails closed when an anchor is pinned', () => {
     const empty = mkTmp('sc-int-empty-')
-    const d = decideSidecarLaunch({ bundlePresent: false, bundleDir: path.join(empty, 'nope'), trustedDigest: TRUSTED_SIDECAR_ROOT_DIGEST })
+    const d = decideSidecarLaunch({
+      bundlePresent: false,
+      bundleDir: path.join(empty, 'nope'),
+      trustedDigest: TRUSTED_SIDECAR_ROOT_DIGEST
+    })
     assert.equal(d.action, 'refuse')
     assert.equal(d.reason, 'missing-sidecar')
   })
@@ -208,7 +222,11 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
     // Real argv of the spawned process must not contain the secret.
     let cmdline = ''
     if (process.platform === 'win32') {
-      cmdline = execFileSync('powershell', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter \"ProcessId=${b.proc.pid}\").CommandLine`], { encoding: 'utf8' })
+      cmdline = execFileSync(
+        'powershell',
+        ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter \"ProcessId=${b.proc.pid}\").CommandLine`],
+        { encoding: 'utf8' }
+      )
     }
     assert.ok(!cmdline.includes(secret), 'session token leaked into process argv')
     const res = await httpGet(`http://127.0.0.1:${b.port}/api/health`)

@@ -25,19 +25,34 @@ test('no bundle present but anchor pinned → refuse (release must ship the side
 })
 
 test('bundle present but no trusted anchor → refuse (fail closed)', () => {
-  const d = decideSidecarLaunch({ bundlePresent: true, bundleDir: '/b', trustedDigest: null, computeDigest: () => DIGEST })
+  const d = decideSidecarLaunch({
+    bundlePresent: true,
+    bundleDir: '/b',
+    trustedDigest: null,
+    computeDigest: () => DIGEST
+  })
   assert.equal(d.action, 'refuse')
   assert.equal(d.reason, 'no-trusted-digest')
 })
 
 test('matching digest → launch', () => {
-  const d = decideSidecarLaunch({ bundlePresent: true, bundleDir: '/b', trustedDigest: DIGEST, computeDigest: () => DIGEST })
+  const d = decideSidecarLaunch({
+    bundlePresent: true,
+    bundleDir: '/b',
+    trustedDigest: DIGEST,
+    computeDigest: () => DIGEST
+  })
   assert.equal(d.action, 'launch')
   assert.equal(d.actual, DIGEST)
 })
 
 test('mismatching digest → refuse (tamper)', () => {
-  const d = decideSidecarLaunch({ bundlePresent: true, bundleDir: '/b', trustedDigest: DIGEST, computeDigest: () => OTHER })
+  const d = decideSidecarLaunch({
+    bundlePresent: true,
+    bundleDir: '/b',
+    trustedDigest: DIGEST,
+    computeDigest: () => OTHER
+  })
   assert.equal(d.action, 'refuse')
   assert.equal(d.reason, 'digest-mismatch')
   assert.equal(d.expected, DIGEST)
@@ -58,7 +73,12 @@ test('digest computation throwing → refuse (cannot prove integrity)', () => {
 })
 
 test('malformed trusted anchor is treated as absent → refuse', () => {
-  const d = decideSidecarLaunch({ bundlePresent: true, bundleDir: '/b', trustedDigest: 'xyz', computeDigest: () => DIGEST })
+  const d = decideSidecarLaunch({
+    bundlePresent: true,
+    bundleDir: '/b',
+    trustedDigest: 'xyz',
+    computeDigest: () => DIGEST
+  })
   assert.equal(d.action, 'refuse')
   assert.equal(d.reason, 'no-trusted-digest')
 })

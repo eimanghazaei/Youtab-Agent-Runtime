@@ -53,7 +53,8 @@ function fakeChild() {
 }
 
 const READY_LINE =
-  JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { skin: 'youtab' } } }) + '\n'
+  JSON.stringify({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { skin: 'youtab' } } }) +
+  '\n'
 
 // 1 — shipped via extraResources → resolved via process.resourcesPath (packaged).
 test('acceptance 1: packaged sidecar resolves under process.resourcesPath (extraResources target)', () => {
@@ -75,7 +76,14 @@ test('acceptance 3: an ephemeral per-launch secret is handed to the sidecar via 
   const s1 = generateEphemeralSecret()
   const s2 = generateEphemeralSecret()
   assert.notEqual(s1, s2)
-  const d = buildSidecarLaunch({ executable: '/x', userDataDir: '/u', secret: s1, homeDir: '/h', env: {}, platform: 'linux' })
+  const d = buildSidecarLaunch({
+    executable: '/x',
+    userDataDir: '/u',
+    secret: s1,
+    homeDir: '/h',
+    env: {},
+    platform: 'linux'
+  })
   assert.equal(d.env[SIDECAR_SECRET_ENV], s1)
 })
 
@@ -117,22 +125,50 @@ test('acceptance 7: a tampered bundle is refused (digest binding)', () => {
 // 8 — no secret in argv or logs.
 test('acceptance 8: the secret never appears in argv and is redacted from logs', () => {
   const secret = generateEphemeralSecret()
-  const d = buildSidecarLaunch({ executable: '/x', userDataDir: '/u', secret, homeDir: '/h', env: {}, platform: 'linux' })
+  const d = buildSidecarLaunch({
+    executable: '/x',
+    userDataDir: '/u',
+    secret,
+    homeDir: '/h',
+    env: {},
+    platform: 'linux'
+  })
   assert.equal(secretInArgv(d.args, secret), false)
   assert.ok(!redactSecret(`spawn ${d.command} ${SIDECAR_SECRET_ENV}=${secret}`, secret).includes(secret))
 })
 
 // 9 — loopback bind only.
 test('acceptance 9: the launch descriptor is loopback-only (no external bind)', () => {
-  const d = buildSidecarLaunch({ executable: '/x', userDataDir: '/u', secret: 's', homeDir: '/h', env: {}, platform: 'linux' })
+  const d = buildSidecarLaunch({
+    executable: '/x',
+    userDataDir: '/u',
+    secret: 's',
+    homeDir: '/h',
+    env: {},
+    platform: 'linux'
+  })
   assert.equal(d.env[SIDECAR_BIND_ENV], LOOPBACK_HOST)
   assert.equal(isLoopbackOnly(d), true)
 })
 
 // 10 — USERPROFILE present for Path.home().
 test('acceptance 10: USERPROFILE (win) / HOME (posix) is set so Python Path.home() resolves', () => {
-  const win = buildSidecarLaunch({ executable: '/x', userDataDir: '/u', secret: 's', homeDir: 'C:\\Users\\u', env: {}, platform: 'win32' })
+  const win = buildSidecarLaunch({
+    executable: '/x',
+    userDataDir: '/u',
+    secret: 's',
+    homeDir: 'C:\\Users\\u',
+    env: {},
+    platform: 'win32'
+  })
   assert.equal(win.env.USERPROFILE, 'C:\\Users\\u')
-  const posix = buildSidecarLaunch({ executable: '/x', userDataDir: '/u', secret: 's', homeDir: '/home/u', env: {}, platform: 'linux' })
+  const posix = buildSidecarLaunch({
+    executable: '/x',
+    userDataDir: '/u',
+    secret: 's',
+    homeDir: '/home/u',
+    env: {},
+    platform: 'linux'
+  })
   assert.equal(posix.env.HOME, '/home/u')
 })

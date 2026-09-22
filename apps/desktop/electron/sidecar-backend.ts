@@ -62,10 +62,7 @@ export type SidecarBackend = SidecarCommandBackend | SidecarRefusedBackend
  *
  * @param backendArgs the already-built `serve …` argv (host/port/profile).
  */
-export function resolvePackagedSidecarBackend(
-  backendArgs: string[],
-  deps: SidecarBackendDeps
-): SidecarBackend | null {
+export function resolvePackagedSidecarBackend(backendArgs: string[], deps: SidecarBackendDeps): SidecarBackend | null {
   // Dev mode keeps the existing source/venv resolution. Only a packaged app
   // selects the bundled executable.
   if (!deps.isPackaged) {
