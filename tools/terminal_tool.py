@@ -3229,4 +3229,8 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    # ADR-0005 §5: arbitrary shell can mutate the filesystem; it is an external
+    # effect. decide_tool refuses to self-authorize it, so a managed run cannot
+    # run effectful shell (fail closed). Inert in local-standalone.
+    side_effect_class="process",
 )

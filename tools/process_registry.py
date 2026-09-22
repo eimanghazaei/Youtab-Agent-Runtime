@@ -2426,4 +2426,8 @@ registry.register(
     schema=PROCESS_SCHEMA,
     handler=_handle_process,
     emoji="⚙️",
+    # ADR-0005 §5: process control is an external effect; decide_tool refuses to
+    # self-authorize it so a managed run cannot drive processes (fail closed).
+    # Inert in local-standalone.
+    side_effect_class="process",
 )
