@@ -136,6 +136,11 @@
   :root {
     color-scheme: light;
 
+    /* Youtab "Ice Blue" — startup heading accent. The Web Platform ships no
+       dedicated ice-blue token, so this is the specified brand value. Constant
+       across themes/modes (it is a fixed brand accent, not a palette seed). */
+    --youtab-ice-blue: #a8e7ff;
+
     --theme-foreground: #17171a;
     --theme-primary: #0053fd;
     --theme-secondary: color-mix(in srgb, #0053fd 7%, #ffffff);
@@ -381,17 +386,20 @@
     --dt-user-bubble: var(--ui-chat-bubble-background);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
+    /* Match the Youtab Web Platform default sans stack
+       (web/src/index.css --theme-font-sans). Overwritten at runtime by
+       applyTheme() from the active skin's typography, but kept in sync here so
+       the pre-hydration frame renders in the same font. */
     --dt-font-sans:
-      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
-      'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+      system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif, 'Apple Color Emoji',
+      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-    /* Menlo/Monaco first — Apple's native monospace faces — so code/diff read
-       in the system mono on macOS, with SF Mono and bundled Courier Prime as
-       fallbacks. */
+    /* Match the Web Platform default mono stack (web/src/index.css
+       --theme-font-mono). */
     --dt-font-mono:
-      Menlo, Monaco, 'SF Mono', 'Courier Prime', monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-      'Noto Color Emoji', emoji;
+      ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace, 'Apple Color Emoji', 'Segoe UI Emoji',
+      'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
@@ -499,7 +507,8 @@
 
     /* Dark-only accent palette overrides. */
     --ui-red: #e75e78;
-    --ui-green: #55a583;
+    /* Web Platform emerald (#34d399) — its output/success accent. */
+    --ui-green: #34d399;
     --ui-cyan: #6f9ba6;
     --ui-diff-add-foreground: color-mix(in srgb, var(--ui-green) 62%, #fff);
     --ui-diff-remove-foreground: color-mix(in srgb, var(--ui-red) 62%, #fff);
