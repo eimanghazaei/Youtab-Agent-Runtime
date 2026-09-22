@@ -1,4 +1,4 @@
-import type { TestProjectConfiguration } from 'vitest/config';
+import type { TestProjectConfiguration } from 'vitest/config'
 import { defineConfig } from 'vitest/config'
 
 const reactUi: TestProjectConfiguration = {
@@ -20,7 +20,10 @@ const electronNative: TestProjectConfiguration = {
   test: {
     name: 'electron',
     environment: 'node',
-    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}']
+    // `e2e/**/*.unit.test.ts` covers pure, node-env E2E helpers (e.g. the
+    // Electron-path resolver) so they are gated even though `e2e/` Playwright
+    // specs run under Playwright, not vitest.
+    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts']
   }
 }
 

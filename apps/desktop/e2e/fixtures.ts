@@ -27,7 +27,8 @@ import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
-import { startMockServer, type MockServerOptions } from './mock-server'
+import { resolveElectronBinary } from './electron-path'
+import { type MockServerOptions, startMockServer } from './mock-server'
 import { installErrorBannerGuard } from './test'
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
@@ -284,36 +285,19 @@ function assertDistBuilt(): void {
  * As a fallback, use the node_modules/.bin/electron from the desktop package.
  */
 export function findElectron(): string {
-  // In dev mode, we use the `electron` binary directly (not the packaged app).
-  // The dev:electron script in package.json does exactly this: `electron .`
-  // after building. We replicate that here.
-  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
+  // Dev mode uses the `electron` binary directly (not the packaged app), like
+  // the `dev:electron` script. The resolution order lives in a pure, unit-tested
+  // helper; here we wire it to the real filesystem and PATH.
+  return resolveElectronBinary({
+    repoRoot: REPO_ROOT,
+    join: path.join,
+    exists: fs.existsSync,
+    whichElectron: () => {
+      const result = spawnSync('which', ['electron'], { encoding: 'utf8' })
 
-  // On Windows the launched binary is `electron.exe`; prefer it so we hand
-  // Playwright the real executable, not a shell/.cmd shim (which fails
-  // `_electron.launch` with "The system cannot find the path specified").
-  const localElectronExe = `${localElectron}.exe`
-
-  if (fs.existsSync(localElectronExe)) {
-    return localElectronExe
-  }
-
-  if (fs.existsSync(localElectron)) {
-    return localElectron
-  }
-
-  // Fall back to PATH (POSIX `which`).
-  const result = spawnSync('which', ['electron'], {
-    encoding: 'utf8',
+      return result.status === 0 ? result.stdout : null
+    },
   })
-
-  if (result.status === 0 && result.stdout.trim()) {
-    return result.stdout.trim()
-  }
-
-  throw new Error(
-    'Electron binary not found. Run "npm install" from the repo root to install devDependencies.',
-  )
 }
 
 /**
@@ -374,6 +358,8 @@ export interface MockBackendOptions {
   extraConfig?: string
   /** Override the mock model's context window for compression scenarios. */
   modelContextLength?: number
+  /** Options forwarded to the mock inference server. */
+  mockServer?: MockServerOptions
 }
 
 /**
@@ -383,9 +369,6 @@ export interface MockBackendOptions {
  *   3. Launch the desktop app
  *   4. Return handles for test interaction
  */
-export interface MockBackendOptions {
-  mockServer?: MockServerOptions
-}
 
 export async function setupMockBackend(options: MockBackendOptions = {}): Promise<MockBackendFixture> {
   // 1. Start mock server
