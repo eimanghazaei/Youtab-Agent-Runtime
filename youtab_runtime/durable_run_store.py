@@ -195,6 +195,8 @@ class RunStore(Protocol):
     between two authoritative stores — a deployment selects exactly one backend."""
 
     def create_run(self, identity: RunIdentity, *, initial_state: RunState = ...) -> Dict[str, Any]: ...
+    def admit(self, identity: RunIdentity, *, owner: str, initial_state: RunState = ...) -> Dict[str, Any]: ...
+    def is_stop_requested(self, run_id: str, *, now: Optional[float] = ...) -> bool: ...
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]: ...
     def transition(self, run_id: str, to_state: RunState, **kw: Any) -> Dict[str, Any]: ...
     def set_state(self, run_id: str, to_state: RunState, *, strict: bool = ..., **kw: Any) -> Optional[Dict[str, Any]]: ...
@@ -391,6 +393,79 @@ class SqliteRunStore:
             raise
         finally:
             conn.close()
+
+    def admit(self, identity: RunIdentity, *, owner: str,
+              initial_state: RunState = RunState.RUNNING) -> Dict[str, Any]:
+        """ATOMIC admission: in ONE transaction, create the durable run, stamp
+        fenced ownership (lease_owner/epoch) and set the admitted state. There is
+        no partially-admitted (created-but-ownerless) window: the transaction
+        either commits a fully owner-stamped run or leaves nothing. Idempotent by
+        the scoped key (same as create_run). This is the durable admission marker
+        that distinguishes an abandoned admission (owner-stamped, dead pid) from a
+        healthy unclaimed QUEUED entry (ownerless, never swept)."""
+        now = time.time()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            if identity.idempotency_key:
+                cur = conn.execute(
+                    "SELECT * FROM runs WHERE tenant_id=? AND workspace_id=? AND principal_id=? "
+                    "AND operation=? AND idempotency_key=?",
+                    (identity.tenant_id, identity.workspace_id, identity.principal_id,
+                     identity.operation, identity.idempotency_key),
+                )
+                existing = cur.fetchone()
+                if existing is not None:
+                    row = self._row_to_dict(cur, existing)
+                    conn.execute("COMMIT")
+                    if (identity.request_digest or None) != (row.get("request_digest") or None):
+                        raise IdempotencyConflict(
+                            f"scoped idempotency key {identity.idempotency_key!r} exists with a "
+                            f"different request_digest"
+                        )
+                    return row
+            conn.execute(
+                """INSERT INTO runs(run_id, task_id, tenant_id, organization_id, workspace_id,
+                        principal_id, agent_id, operation, parent_task_id, delegation_id,
+                        idempotency_key, request_digest, state, progress_seq, execution_deadline,
+                        lease_owner, lease_epoch, lease_expiry, heartbeat_at, attempts,
+                        created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,1,?,?,1,?,?)""",
+                (identity.run_id, identity.task_id, identity.tenant_id, identity.organization_id,
+                 identity.workspace_id, identity.principal_id, identity.agent_id, identity.operation,
+                 identity.parent_task_id, identity.delegation_id, identity.idempotency_key,
+                 identity.request_digest, initial_state.value, identity.execution_deadline,
+                 owner, now + 900.0, now, now, now),
+            )
+            self._append_event_locked(conn, identity.run_id, "accepted", {"state": "QUEUED"})
+            self._append_event_locked(conn, identity.run_id, "admitted",
+                                      {"owner": owner, "state": initial_state.value})
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (identity.run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    def is_stop_requested(self, run_id: str, *, now: Optional[float] = None) -> bool:
+        """Cooperative stop check for a worker before starting another effect.
+        Returns True if the run is cancelling/cancelled OR its persisted execution
+        deadline has passed. Independent of any parent wait."""
+        now = now if now is not None else time.time()
+        row = self.get_run(run_id)
+        if row is None:
+            return True
+        if RunState(row["state"]) in (RunState.CANCELLING, RunState.CANCELLED,
+                                      RunState.FAILED, RunState.SUCCEEDED):
+            return True
+        dl = row.get("execution_deadline")
+        return dl is not None and now >= float(dl)
 
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         conn = self._connect()
@@ -643,27 +718,23 @@ class SqliteRunStore:
             rows = conn.execute(q, params).fetchall()
             now = time.time()
             for run_id, owner, _state in rows:
-                reason = None
-                if not owner:
-                    # Admission aborted before claim (create_run succeeded, claim
-                    # never committed): an ownerless non-terminal run is abandoned
-                    # and recoverable — it is NOT and never was a running effectful
-                    # child. A recovery sweep only runs at startup/recovery, when
-                    # no admission is legitimately in progress.
-                    reason = "admission_incomplete_no_owner"
-                elif str(owner).startswith("pid:"):
-                    try:
-                        pid = int(str(owner).split(":", 1)[1])
-                    except (ValueError, IndexError):
-                        continue
-                    if is_alive(pid):
-                        continue
-                    reason = "owner_process_dead"
-                else:
+                # Only reconcile a run with a fenced owner whose PROCESS is dead.
+                # A healthy, unclaimed QUEUED run is legitimately ownerless and is
+                # NEVER swept — abandoned admission is instead prevented by the
+                # atomic owner-stamped admit() (a partially-admitted run either does
+                # not exist at all, or exists already owner-stamped and is caught by
+                # the dead-pid check here).
+                if not owner or not str(owner).startswith("pid:"):
+                    continue
+                try:
+                    pid = int(str(owner).split(":", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                if is_alive(pid):
                     continue
                 conn.execute("UPDATE runs SET state='UNKNOWN', updated_at=? WHERE run_id=?", (now, run_id))
                 self._append_event_locked(conn, run_id, "state.unknown",
-                                          {"reason": reason, "owner": owner})
+                                          {"reason": "owner_process_dead", "owner": owner})
                 reconciled.append(run_id)
             conn.execute("COMMIT")
             return reconciled

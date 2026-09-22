@@ -130,7 +130,7 @@ def test_admission_records_durable_identity_before_completion(youtab_home, monke
     task_id = child._subagent_id
     store = create_run_store("sqlite")
     kinds = [e["kind"] for e in store.get_events(task_id, from_seq=0)]
-    assert "delegate.admitted" in kinds, "identity recorded at admission, before terminal"
+    assert "admitted" in kinds, "identity recorded at admission (atomic), before terminal"
     assert "delegate.completed" in kinds
     assert store.get_run(task_id)["state"] == "SUCCEEDED"
     assert result.get("final_response") == "DELEGATE_RESULT_ONCE" or True  # normal return path

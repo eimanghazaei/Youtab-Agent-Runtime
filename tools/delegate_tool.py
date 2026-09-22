@@ -1973,20 +1973,17 @@ def _admit_durable_child(child_task_id, child):
     try:
         import os as _os
 
-        from youtab_runtime.durable_run_store import (
-            RunIdentity, RunState, create_run_store,
-        )
+        from youtab_runtime.durable_run_store import RunIdentity, create_run_store
 
         store = create_run_store("sqlite")
         if store.get_run(child_task_id) is None:
-            store.create_run(RunIdentity(
+            # Atomic admission: create + fenced ownership + RUNNING in one txn, so
+            # there is no created-but-ownerless window a parent crash could leave.
+            store.admit(RunIdentity(
                 task_id=child_task_id, run_id=child_task_id, tenant_id="local",
                 organization_id="local", workspace_id="local", principal_id="local",
                 agent_id=str(getattr(child, "model", None) or "agent"), operation="delegate",
-            ))
-        epoch = store.claim(child_task_id, owner=f"pid:{_os.getpid()}")
-        if epoch is not None:
-            store.set_state(child_task_id, RunState.RUNNING, strict=False, kind="delegate.admitted")
+            ), owner=f"pid:{_os.getpid()}")
         return store
     except Exception:
         logger.debug("durable admission record failed for %s", child_task_id, exc_info=True)

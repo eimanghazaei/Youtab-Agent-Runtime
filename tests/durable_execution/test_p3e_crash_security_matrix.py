@@ -44,36 +44,62 @@ def _ident(run_id="r", **kw):
     return RunIdentity(**base)
 
 
-# ---- Crash injection point 1: fail after create_run, before claim/RUNNING ---- #
-def test_crash_after_create_before_admission_is_recoverable_not_running(youtab_home):
+# ---- Healthy QUEUED must NOT be swept (Codex point 1) ---- #
+def test_healthy_unclaimed_queued_is_not_swept(youtab_home):
     store = DurableRunStore(db_path=Path(store_db(youtab_home)))
-    # Simulate the partial state: create_run committed, but claim/RUNNING never
-    # happened (admission aborted, e.g. DB error or parent death mid-admission).
-    row = store.create_run(_ident("c1"))
-    assert row["state"] == "QUEUED", "created but not admitted -> QUEUED, never RUNNING"
-    assert row["lease_owner"] is None
-    # It cannot be mistaken for a running effectful child.
-    assert store.get_run("c1")["state"] != "RUNNING"
-    # A recovery sweep reconciles the abandoned, ownerless run to UNKNOWN.
-    reconciled = store.reconcile_dead_owner(lambda pid: True)  # owner is None -> swept
-    assert "c1" in reconciled
-    assert store.get_run("c1")["state"] == "UNKNOWN"
+    row = store.create_run(_ident("q1"))  # legitimate queue entry, ownerless
+    assert row["state"] == "QUEUED" and row["lease_owner"] is None
+    reconciled = store.reconcile_dead_owner(lambda pid: False)
+    assert "q1" not in reconciled, "a healthy ownerless QUEUED entry is never swept"
+    assert store.get_run("q1")["state"] == "QUEUED"
 
 
-# ---- Crash injection point 2: parent death after commit, before gate release -- #
+# ---- Crash injection point 1: admission transaction fails -> no partial state ---- #
+def test_admission_is_atomic_no_partial_state(youtab_home, monkeypatch):
+    store = DurableRunStore(db_path=Path(store_db(youtab_home)))
+    import youtab_runtime.durable_run_store as drs
+    orig = drs.DurableRunStore._append_event_locked
+
+    def _boom(self, conn, run_id, kind, payload):
+        if kind == "admitted":
+            raise RuntimeError("injected DB failure during admission")
+        return orig(self, conn, run_id, kind, payload)
+
+    monkeypatch.setattr(drs.DurableRunStore, "_append_event_locked", _boom)
+    with pytest.raises(RuntimeError):
+        store.admit(_ident("c1"), owner="pid:999999")
+    # Atomic: the failed admission left NO run — nothing mistaken for a running
+    # effectful child, nothing partial to recover.
+    assert store.get_run("c1") is None
+
+
+# ---- Crash injection point 2: parent death after admission commit, before gate -- #
 def test_crash_after_admission_before_gate_reconciles_unknown_no_effect(youtab_home):
     store = DurableRunStore(db_path=Path(store_db(youtab_home)))
-    store.create_run(_ident("c2"))
-    store.claim("c2", owner="pid:999999")          # fenced ownership acquired
-    store.set_state("c2", RunState.RUNNING, strict=False, kind="delegate.admitted")
-    # Parent dies here, BEFORE releasing the start gate: the child never ran.
+    # Admission committed ATOMICALLY as RUNNING (owner-stamped): this is the real
+    # recorded state before parent death — NOT "never RUNNING".
+    row = store.admit(_ident("c2"), owner="pid:999999")
+    assert row["state"] == "RUNNING" and row["lease_owner"] == "pid:999999"
+    kinds_before = [e["kind"] for e in store.get_events("c2", from_seq=0)]
+    assert "accepted" in kinds_before and "admitted" in kinds_before
+    # Parent dies BEFORE releasing the start gate: the child never crossed the gate
+    # and produced no effect (no progress / completion events).
+    assert "delegate.completed" not in kinds_before and "progress" not in kinds_before
     reconciled = store.reconcile_dead_owner(lambda pid: False)
     assert "c2" in reconciled
     row = store.get_run("c2")
     assert row["state"] == "UNKNOWN", "discoverable + reconciled, not lost"
-    # Must NOT claim the child survived / completed / produced an effect.
+    # Never claim the child survived / completed / produced an effect.
     assert row["result_ref"] is None
     assert row["state"] not in ("SUCCEEDED", "RUNNING")
+
+
+# ---- Concurrent claim vs recovery (Codex point 1) ---- #
+def test_live_owner_is_not_reconciled_by_concurrent_recovery(youtab_home):
+    store = DurableRunStore(db_path=Path(store_db(youtab_home)))
+    store.admit(_ident("cr"), owner="pid:4242")
+    reconciled = store.reconcile_dead_owner(lambda pid: pid == 4242)  # 4242 alive
+    assert "cr" not in reconciled and store.get_run("cr")["state"] == "RUNNING"
 
 
 # ---- Concurrent claim / fenced takeover ---- #
@@ -135,6 +161,29 @@ def test_execution_deadline_is_actively_enforced(youtab_home):
     s.claim("dl2", owner="pid:1")
     s.transition("dl2", RunState.RUNNING)
     assert "dl2" not in s.enforce_execution_deadlines()
+
+
+def test_deadline_stops_worker_before_next_effect_cooperative(youtab_home):
+    """ENFORCEMENT on the execution path (cooperative half): a worker consults
+    is_stop_requested before each effect; once the persisted deadline passes it
+    performs NO further effect and the run reaches a terminal/cancelled state.
+    Forced termination of an UNRESPONSIVE owned worker is DEADLINE ENFORCEMENT
+    OPEN pending P4 (Windows Job Object / process-tree kill)."""
+    s = create_run_store("sqlite")
+    s.admit(_ident("dw", execution_deadline=time.time() + 0.4), owner="pid:1")
+    effects = []
+    for i in range(10):
+        if s.is_stop_requested("dw"):
+            break  # deadline reached -> no further effect
+        effects.append(i)  # a bounded "effect" per iteration
+        time.sleep(0.1)
+    # The worker stopped once the deadline passed — it did NOT run all 10 effects.
+    assert 0 < len(effects) < 10, f"worker must stop after deadline; ran {len(effects)}"
+    # After deadline, enforcement records the controlled stop; worker cooperates.
+    s.enforce_execution_deadlines()
+    assert s.is_stop_requested("dw") is True
+    s.set_state("dw", RunState.CANCELLED, strict=False)
+    assert s.get_run("dw")["state"] == "CANCELLED"
 
 
 # ---- Lane-1 effect reconciliation: BLOCKED / fail-closed ---- #
