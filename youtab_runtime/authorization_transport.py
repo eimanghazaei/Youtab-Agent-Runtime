@@ -49,6 +49,8 @@ __all__ = [
     "ProposalSupersededError",
     "AuthorizationProvenance",
     "record_proposal",
+    "correlate_proposal",
+    "mark_proposal_consumed",
     "accept_authorization",
 ]
 
@@ -131,26 +133,21 @@ def record_proposal(
         )
 
 
-def accept_authorization(
+def correlate_proposal(
     auth: EffectAuthorization,
     *,
     principal: Principal,
-    workspace_id: str,
-    expected_effect_digest: str,
-    production: bool,
-    now: float,
-    production_keys: Optional[Mapping[str, str]] = None,
-    test_keys: Optional[Mapping[str, str]] = None,
     db_path: Optional[Path] = None,
-) -> AuthorizationProvenance:
-    """Correlate, verify and single-use-consume an inbound signed authorization.
+) -> None:
+    """Correlate an authorization to a still-pending proposal — WITHOUT consuming
+    anything and WITHOUT verifying the signature (the effect claim does the crypto
+    + single-use authorization consume).
 
-    Fails closed on: an unsolicited authorization (no matching pending proposal, or
-    the authorization carries no proposal reference), a changed request digest, a
-    superseded/consumed proposal, and any key/issuer/workspace/principal/
-    effect-digest/expiry/single-use failure (delegated to
-    :func:`reserve_and_consume_authorization`). On success the proposal is marked
-    consumed and the provenance is returned for the receipt.
+    Fails closed on an unsolicited authorization (no proposal reference, or no
+    matching pending proposal for this command/tenant), a changed request digest,
+    or a superseded/consumed proposal. Use this when a downstream step (e.g.
+    ``grant_fs.claim_granted_fs_effect``) performs the cryptographic verify +
+    single-use consume, so the authorization is not consumed twice.
     """
     if not isinstance(principal, Principal):
         raise AuthorizationTransportError("principal must be a Principal instance")
@@ -159,8 +156,6 @@ def accept_authorization(
             "authorization carries no proposal reference (unsolicited)"
         )
     path = db_path or default_db_path()
-
-    # 1) correlate to a still-pending proposal for THIS command + request.
     with _immediate_txn(path) as conn:
         _ensure_table(conn)
         row = conn.execute(
@@ -182,24 +177,51 @@ def accept_authorization(
         if p_status != "pending":
             raise ProposalSupersededError("proposal already superseded or consumed")
 
-    # 2) full cryptographic + binding + single-use verification (fail closed).
-    reserve_and_consume_authorization(
-        auth, expected_effect_digest, principal, workspace_id,
-        production=production, now=now,
-        production_keys=production_keys, test_keys=test_keys, db_path=path,
-    )
 
-    # 3) mark the proposal consumed atomically — only the first consumer wins.
+def mark_proposal_consumed(
+    proposal_id: str, *, db_path: Optional[Path] = None
+) -> None:
+    """Atomically mark a pending proposal consumed — only the first caller wins.
+    Raises :class:`ProposalSupersededError` if it was not still pending."""
+    path = db_path or default_db_path()
     with _immediate_txn(path) as conn:
         _ensure_table(conn)
         cur = conn.execute(
             "UPDATE pending_proposals SET status='consumed' "
             "WHERE proposal_id=? AND status='pending'",
-            (auth.proposal_id,),
+            (proposal_id,),
         )
         if cur.rowcount != 1:
             raise ProposalSupersededError("proposal was consumed concurrently")
 
+
+def accept_authorization(
+    auth: EffectAuthorization,
+    *,
+    principal: Principal,
+    workspace_id: str,
+    expected_effect_digest: str,
+    production: bool,
+    now: float,
+    production_keys: Optional[Mapping[str, str]] = None,
+    test_keys: Optional[Mapping[str, str]] = None,
+    db_path: Optional[Path] = None,
+) -> AuthorizationProvenance:
+    """Correlate, verify and single-use-consume an inbound signed authorization in
+    one step (the all-in-one used where no separate effect-claim consumes it).
+
+    Fails closed on an unsolicited authorization, a changed request digest, a
+    superseded/consumed proposal, and any key/issuer/workspace/principal/
+    effect-digest/expiry/single-use failure. On success the proposal is marked
+    consumed and the provenance is returned for the receipt.
+    """
+    correlate_proposal(auth, principal=principal, db_path=db_path)
+    reserve_and_consume_authorization(
+        auth, expected_effect_digest, principal, workspace_id,
+        production=production, now=now,
+        production_keys=production_keys, test_keys=test_keys, db_path=db_path,
+    )
+    mark_proposal_consumed(auth.proposal_id, db_path=db_path)
     return AuthorizationProvenance(
         authorization_id=auth.authorization_id,
         proposal_id=auth.proposal_id,
