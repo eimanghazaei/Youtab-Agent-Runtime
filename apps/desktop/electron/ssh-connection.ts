@@ -133,7 +133,11 @@ function controlSocketPath(user, host, port, baseDir?, identity: any = {}) {
 
   const id = crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex').slice(0, 16)
 
-  return path.join(dir, `${id}.sock`)
+  // A ControlMaster socket path is a POSIX construct (ssh `-o ControlPath`);
+  // the feature is POSIX-only (Windows OpenSSH no-mux). Build it with the POSIX
+  // flavor so it is well-formed and deterministic regardless of the host the
+  // unit tests run on — on the POSIX host it actually runs, path.posix == path.
+  return path.posix.join(dir, `${id}.sock`)
 }
 
 function defaultControlDir() {
