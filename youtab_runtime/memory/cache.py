@@ -212,6 +212,15 @@ class EncryptedScopedCache:
         self._delete_path(self._record_path(scope, key))
 
     def tombstone(self, scope: MemoryScope, key: str) -> None:
+        """Write an erasure tombstone. Full-cache behaviour is explicit.
+
+        A tombstone is a written record, so it is subject to ``max_bytes`` exactly
+        like :meth:`put`. If it cannot fit, this raises :class:`CacheFull`, the
+        previous record and the size counter are left unchanged, and erasure is NOT
+        reported as successful. To free space and erase when the cache is full, use
+        :meth:`delete` or :meth:`purge_scope`, which only remove records.
+        """
+
         if not self._enabled:
             raise CacheDisabled("cache disabled")
         now = self._clock()
@@ -219,7 +228,9 @@ class EncryptedScopedCache:
                 "nonce": "", "ct": "", "aad_sha256": "", "key_id": "", "key_version": 0}
         data = json.dumps(rec).encode("utf-8")
         path = self._record_path(scope, key)
-        old_size = self._file_size(path)
+        old_size = self._file_size(path)  # O(1) stat
+        if self._bytes - old_size + len(data) > self._max_bytes:
+            raise CacheFull("cache size bound exceeded; tombstone not written (erasure not applied)")
         self._atomic_write(path, data)
         self._bytes += len(data) - old_size
 

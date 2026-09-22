@@ -139,3 +139,30 @@ def test_scope_mismatch_between_request_and_placement() -> None:
                         principal_id="user-alpha", agent_id="agent-01", run_id="run-1", purpose="default")
     r = pipe.retrieve(MemoryQuery(scope=other, text="x"), _placement(priv), _env())
     assert r.outcome is RetrievalOutcome.LIVE_MEMORY_UNAVAILABLE
+
+
+class _CountingTransport:
+    def __init__(self):
+        self.calls = 0
+
+    def send(self, *, idempotency_key, payload):
+        self.calls += 1
+        return MemoryBusResult().model_dump()
+
+
+def test_malformed_placement_signature_no_provider_query() -> None:
+    # PR#56 finding 2: a malformed-base64 placement signature must yield
+    # LIVE_MEMORY_UNAVAILABLE and make NO provider query.
+    from youtab_runtime.memory import ExactTokenCounter, PlacementVerifier, RetrievalConfig
+
+    priv, pub = _gw_keypair()
+    transport = _CountingTransport()
+    client = AuthenticatedSimorghClient(SimorghClientConfig(enabled=True), transport=transport)
+    verifier = PlacementVerifier({"gw-key-1": pub})
+    pipe = RetrievalPipeline(RetrievalConfig(enabled=True), client, verifier,
+                             ExactTokenCounter("words", lambda s: len(s.split())))
+    good = _placement(priv)
+    bad = good.model_copy(update={"signature": "!!!!not-valid-base64-but-long-enough-xxxxxxxx!!!!"})
+    r = pipe.retrieve(MemoryQuery(scope=_scope(), text="x"), bad, _env())
+    assert r.outcome is RetrievalOutcome.LIVE_MEMORY_UNAVAILABLE
+    assert transport.calls == 0  # provider was NOT queried

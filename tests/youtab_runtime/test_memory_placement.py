@@ -106,6 +106,23 @@ def test_command_trace_mismatch_rejected() -> None:
         v.verify(p, envelope=_env())
 
 
+def test_malformed_base64_signature_becomes_placement_error() -> None:
+    _priv, pub = _gw_keypair()
+    v = PlacementVerifier({"gw-key-1": pub})
+    # a signature that passes the model's length rule but is NOT valid base64
+    bad = _placement(_gw_keypair()[0])
+    forged = bad.model_copy(update={"signature": "!!!!not-valid-base64-but-long-enough-xxxxxxxx!!!!"})
+    with pytest.raises(PlacementError):
+        v.verify(forged, envelope=_env())
+
+
+def test_malformed_base64_key_in_registry_becomes_placement_error() -> None:
+    priv, _pub = _gw_keypair()
+    v = PlacementVerifier({"gw-key-1": "!!!not-base64!!!"})  # corrupt registry key
+    with pytest.raises(PlacementError):
+        v.verify(_placement(priv), envelope=_env())
+
+
 def test_verified_placement_cannot_be_hand_forged() -> None:
     # VerifiedPlacement requires verified=True literal; a caller cannot mint one
     # that bypasses the verifier by setting verified=False.

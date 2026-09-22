@@ -313,6 +313,81 @@ def test_concurrency_is_unsupported_single_writer_contract(tmp_path) -> None:
     assert fresh.size_bytes() == _live_bytes(tmp_path)
 
 
+def test_tombstone_new_key_when_full_fails_closed(tmp_path) -> None:
+    # PR#56 finding: tombstone() must enforce max_bytes. A tombstone for a NEW key
+    # in a full cache raises CacheFull; size stays within the bound; erasure not applied.
+    cache = EncryptedScopedCache(str(tmp_path), _ks(), max_bytes=1)
+    s = _scope()
+    with pytest.raises(CacheFull):
+        cache.tombstone(s, "new-key")
+    assert cache.size_bytes() <= 1
+    assert _live_bytes(tmp_path) <= 1
+
+
+def test_tombstone_preserves_previous_record_and_counter_when_full(tmp_path) -> None:
+    cache = EncryptedScopedCache(str(tmp_path), _ks(), max_bytes=400)
+    s = _scope()
+    cache.put(s, "keep", b"x" * 100)
+    before_size = cache.size_bytes()
+    before_val = cache.get(s, "keep")
+    with pytest.raises(CacheFull):
+        cache.tombstone(s, "unrelated-new-key")  # would exceed the tiny bound
+    assert cache.get(s, "keep") == before_val    # previous record preserved
+    assert cache.size_bytes() == before_size     # counter unchanged
+    assert _counter_matches(cache, tmp_path)
+
+
+def test_tombstone_replacing_existing_key_fits_and_shrinks(tmp_path) -> None:
+    cache = EncryptedScopedCache(str(tmp_path), _ks(), max_bytes=10_000)
+    s = _scope()
+    cache.put(s, "k", b"x" * 5000)
+    big = cache.size_bytes()
+    cache.tombstone(s, "k")  # replaces a large record with a tiny tombstone -> fits
+    assert cache.size_bytes() < big
+    assert cache.get(s, "k") is None
+    assert _counter_matches(cache, tmp_path)
+
+
+def test_tombstone_at_capacity_boundary(tmp_path) -> None:
+    # Size a bound so exactly one tombstone-for-a-new-key fits, then one more does not.
+    cache = EncryptedScopedCache(str(tmp_path), _ks(), max_bytes=10_000)
+    s = _scope()
+    cache.tombstone(s, "t1")            # fits (empty cache)
+    one = cache.size_bytes()
+    tight = EncryptedScopedCache(str(tmp_path), _ks(), max_bytes=one)  # exactly full
+    with pytest.raises(CacheFull):
+        tight.tombstone(s, "t2")        # a second new tombstone overflows
+    assert tight.size_bytes() <= one
+
+
+def test_tombstone_interrupted_write_does_not_miscount(tmp_path, monkeypatch) -> None:
+    cache = EncryptedScopedCache(str(tmp_path), _ks(), max_bytes=10_000)
+    s = _scope()
+    cache.put(s, "k", b"payload")
+    before = cache.size_bytes()
+    monkeypatch.setattr(cache, "_atomic_write",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        cache.tombstone(s, "k2")
+    assert cache.size_bytes() == before
+    assert _counter_matches(cache, tmp_path)
+
+
+def test_delete_and_purge_still_erase_when_full(tmp_path) -> None:
+    # Erasure that FREES space must work even at capacity (delete/purge remove files).
+    cache = EncryptedScopedCache(str(tmp_path), _ks(), max_bytes=2_000)
+    s = _scope()
+    cache.put(s, "a", b"x" * 400)
+    cache.put(s, "b", b"y" * 400)
+    # cache is near/at bound; delete and purge must still succeed
+    cache.delete(s, "a")
+    assert cache.get(s, "a") is None
+    cache.purge_scope(s)
+    assert cache.get(s, "b") is None
+    assert cache.size_bytes() == 0
+    assert _counter_matches(cache, tmp_path)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="DPAPI is Windows-only")
 def test_dpapi_keystore_roundtrip_on_windows(tmp_path) -> None:
     ks = DpapiKeyStore()

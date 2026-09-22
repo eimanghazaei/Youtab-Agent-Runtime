@@ -13,6 +13,7 @@ may build a live-authorized :class:`MemoryScope`. Gateway is NOT modified here.
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 from datetime import UTC, datetime
 from typing import Literal
@@ -113,7 +114,9 @@ class PlacementVerifier:
         try:
             pub = Ed25519PublicKey.from_public_bytes(base64.b64decode(key_b64, validate=True))
             pub.verify(base64.b64decode(placement.signature, validate=True), placement.canonical_payload())
-        except (ValueError, InvalidSignature) as exc:
+        except (ValueError, binascii.Error, InvalidSignature) as exc:
+            # binascii.Error (malformed base64 key/signature) subclasses ValueError,
+            # but list it explicitly so it can never escape as a raw decode error.
             raise PlacementError("invalid placement signature") from exc
         replay_key = (placement.tenant_id, placement.nonce)
         if replay_key in self._seen:
