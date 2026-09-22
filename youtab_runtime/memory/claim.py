@@ -60,6 +60,17 @@ class ClaimStatus(StrEnum):
     VALIDATED = "validated"
     SUPERSEDED = "superseded"
     REJECTED = "rejected"
+    TOMBSTONED = "tombstoned"  # erased; derived/cache projections must be removed
+
+
+class TrustSource(StrEnum):
+    """Where a claim's assertion originates (provenance dimension, transport-only)."""
+
+    USER_DECLARED = "user_declared"
+    OBSERVED = "observed"
+    AI_INFERRED = "ai_inferred"
+    SOURCE_SYSTEM = "source_system"
+    ADMIN_VALIDATED = "admin_validated"
 
 
 class Classification(StrEnum):
@@ -72,11 +83,13 @@ class Classification(StrEnum):
 
 _VALID_TRANSITIONS: dict[ClaimStatus, frozenset[ClaimStatus]] = {
     ClaimStatus.PENDING: frozenset(
-        {ClaimStatus.VALIDATED, ClaimStatus.REJECTED, ClaimStatus.SUPERSEDED}
+        {ClaimStatus.VALIDATED, ClaimStatus.REJECTED, ClaimStatus.SUPERSEDED,
+         ClaimStatus.TOMBSTONED}
     ),
-    ClaimStatus.VALIDATED: frozenset({ClaimStatus.SUPERSEDED}),
-    ClaimStatus.SUPERSEDED: frozenset(),
-    ClaimStatus.REJECTED: frozenset(),
+    ClaimStatus.VALIDATED: frozenset({ClaimStatus.SUPERSEDED, ClaimStatus.TOMBSTONED}),
+    ClaimStatus.SUPERSEDED: frozenset({ClaimStatus.TOMBSTONED}),
+    ClaimStatus.REJECTED: frozenset({ClaimStatus.TOMBSTONED}),
+    ClaimStatus.TOMBSTONED: frozenset(),
 }
 
 
@@ -101,6 +114,7 @@ class MemoryClaim(BaseModel):
     source_type: str = Field(min_length=1, max_length=64)
     source_ref: str | None = Field(default=None, max_length=1024)
     trust_level: TrustLevel
+    trust_source: TrustSource | None = None
     status: ClaimStatus = ClaimStatus.PENDING
     valid_from: datetime
     valid_until: datetime | None = None
@@ -148,6 +162,7 @@ class MemoryClaim(BaseModel):
         content: str,
         source_type: str,
         trust_level: TrustLevel,
+        trust_source: TrustSource | None = None,
         classification: Classification = Classification.INTERNAL,
         source_ref: str | None = None,
         provenance: tuple[str, ...] = (),
@@ -166,6 +181,7 @@ class MemoryClaim(BaseModel):
             source_type=source_type,
             source_ref=source_ref,
             trust_level=trust_level,
+            trust_source=trust_source,
             status=ClaimStatus.PENDING,
             valid_from=current,
             provenance=provenance,
@@ -176,7 +192,12 @@ class MemoryClaim(BaseModel):
         )
 
     def is_retrievable_for_production(self) -> bool:
-        """Only validated, live, non-superseded claims feed production retrieval."""
+        """Only validated, live, non-superseded, non-tombstoned claims retrieve."""
+
+        return self.status is ClaimStatus.VALIDATED
+
+    def enters_validated_projection(self) -> bool:
+        """Whether this claim may enter the validated retrieval projection."""
 
         return self.status is ClaimStatus.VALIDATED
 
@@ -192,6 +213,10 @@ class MemoryClaim(BaseModel):
         allowed = _VALID_TRANSITIONS[self.status]
         if status not in allowed:
             raise ValueError(f"illegal status transition {self.status} -> {status}")
+        # The Runtime cannot self-validate an AI-inferred claim: promotion to
+        # VALIDATED for an AI_INFERRED source is Simorgh's governed step only.
+        if status is ClaimStatus.VALIDATED and self.trust_source is TrustSource.AI_INFERRED:
+            raise ValueError("runtime cannot self-validate an AI_INFERRED claim")
         current = (now or datetime.now(UTC)).astimezone(UTC)
         return self.model_copy(
             update={

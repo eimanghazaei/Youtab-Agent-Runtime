@@ -56,6 +56,7 @@ from .claim import (
     MemoryClaim,
     MemoryType,
     TrustLevel,
+    TrustSource,
 )
 from .outbox import (
     MemoryOutbox,
@@ -143,6 +144,7 @@ __all__ = [
     "SqliteOutbox",
     "TaskClass",
     "TrustLevel",
+    "TrustSource",
     "account",
     "allocate",
     "consume_for_live",
