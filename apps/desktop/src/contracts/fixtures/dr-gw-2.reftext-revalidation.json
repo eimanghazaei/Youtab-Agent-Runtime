@@ -1,0 +1,17 @@
+{
+  "id": "DR-GW-2",
+  "title": "Gateway refText re-validation contract",
+  "status": "PENDING_INTEGRATION",
+  "ownerSession": "Gateway",
+  "contractLabel": "CONTRACT — pending exact-SHA integration. NOT live data.",
+  "note": "This fixture is the machine-readable contract the sibling Gateway session must satisfy. Passing conformance here proves ONLY Frontend shape-compatibility; it does NOT mark the Gateway VERIFIED.",
+  "contract": {
+    "requirement": "At submit, the Gateway MUST re-resolve any server-issued refText / '@file:' reference against the AUTHENTICATED workspace. The client-supplied refText is a reference only, never authority.",
+    "referenceSyntax": "@file:<file_id>",
+    "clientRefTextIsAuthority": false,
+    "revalidatedAt": "submit",
+    "revalidationScope": "authenticated-workspace",
+    "onResolveFailure": ["workspace_denied", "quarantined", "unsupported_type"],
+    "rationale": "The client cannot be trusted to bind a reference to a file; the server re-resolves ownership + scan state in the caller's workspace so a stale or forged refText cannot smuggle another workspace's file."
+  }
+}

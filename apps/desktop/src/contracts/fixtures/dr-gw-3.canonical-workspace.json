@@ -1,0 +1,25 @@
+{
+  "id": "DR-GW-3",
+  "title": "Gateway canonical workspace identity contract",
+  "status": "PENDING_INTEGRATION",
+  "ownerSession": "Gateway",
+  "contractLabel": "CONTRACT — pending exact-SHA integration. NOT live data.",
+  "note": "This fixture is the machine-readable contract the sibling Gateway session must satisfy. Passing conformance here proves ONLY Frontend shape-compatibility; it does NOT mark the Gateway VERIFIED.",
+  "contract": {
+    "route": "/api/status",
+    "method": "GET",
+    "workspaceIdentity": "server-derived, immutable, canonical",
+    "surface": {
+      "features": {
+        "file_ingress": true,
+        "workspace_authority": true
+      },
+      "workspace": {
+        "id": "<server-derived canonical workspace id>"
+      },
+      "file_capability_schema": 1
+    },
+    "supportedFileCapabilitySchema": 1,
+    "rationale": "Workspace identity and capability schema are derived and pinned by the server; the client reads them from GET /api/status and never asserts its own workspace id."
+  }
+}

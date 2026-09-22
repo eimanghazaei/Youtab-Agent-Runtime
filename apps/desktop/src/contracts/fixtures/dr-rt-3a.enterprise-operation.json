@@ -1,0 +1,46 @@
+{
+  "id": "DR-RT-3a",
+  "title": "Runtime enterprise operation manifest contract",
+  "status": "PENDING_INTEGRATION",
+  "ownerSession": "Runtime",
+  "contractLabel": "CONTRACT — pending exact-SHA integration. NOT live data.",
+  "note": "This fixture mirrors the Frontend typed manifest contract EXACTLY (src/app/enterprise/operation-manifest.ts). Passing conformance proves ONLY Frontend shape-compatibility; it does NOT mark the Runtime VERIFIED.",
+  "contract": {
+    "OperationDomain": ["crm", "erp", "sap", "cad"],
+    "RiskLevel": ["low", "medium", "high"],
+    "OperationParam": {
+      "key": "string",
+      "label": "string",
+      "type": ["string", "number", "boolean", "enum"],
+      "required": "boolean",
+      "options": "string[] (optional, present when type === 'enum')"
+    },
+    "OperationManifest": {
+      "id": "string",
+      "domain": "OperationDomain",
+      "title": "string",
+      "description": "string",
+      "params": "OperationParam[]",
+      "risk": "RiskLevel",
+      "requiresApproval": "boolean"
+    },
+    "OperationPhase": [
+      "idle",
+      "preview",
+      "approval_required",
+      "approved",
+      "executing",
+      "effect_complete",
+      "reconciled",
+      "reconcile_failed",
+      "denied",
+      "failed"
+    ],
+    "OperationReceipt": {
+      "effectId": "string | null (non-null only when source === 'runtime')",
+      "status": "OperationPhase",
+      "detail": "string | null",
+      "source": ["reference", "runtime"]
+    }
+  }
+}

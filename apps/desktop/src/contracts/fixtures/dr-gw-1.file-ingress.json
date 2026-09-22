@@ -1,0 +1,24 @@
+{
+  "id": "DR-GW-1",
+  "title": "Gateway file-ingress contract",
+  "status": "PENDING_INTEGRATION",
+  "ownerSession": "Gateway",
+  "contractLabel": "CONTRACT — pending exact-SHA integration. NOT live data.",
+  "note": "This fixture is the machine-readable contract the sibling Gateway session must satisfy. Passing conformance here proves ONLY that the Frontend consumer is shape-compatible; it does NOT mark the Gateway VERIFIED.",
+  "contract": {
+    "route": "/api/files",
+    "method": "POST",
+    "requestEncoding": "multipart/form-data",
+    "responseCasing": "snake_case",
+    "serverIssuedField": "file_id",
+    "scanStates": ["scanning", "clean", "quarantined", "rejected"],
+    "errorCodes": [
+      "file_too_large",
+      "quota_exceeded",
+      "unsupported_type",
+      "scanner_unavailable",
+      "workspace_denied",
+      "quarantined"
+    ]
+  }
+}

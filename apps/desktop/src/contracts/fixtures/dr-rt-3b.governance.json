@@ -1,0 +1,39 @@
+{
+  "id": "DR-RT-3b",
+  "title": "Runtime governance model contract",
+  "status": "PENDING_INTEGRATION",
+  "ownerSession": "Runtime",
+  "contractLabel": "CONTRACT — pending exact-SHA integration. NOT live data.",
+  "note": "This fixture mirrors the Frontend typed governance contract EXACTLY (src/app/governance/governance-model.ts). Passing conformance proves ONLY Frontend shape-compatibility; it does NOT mark the Runtime VERIFIED.",
+  "contract": {
+    "GovernancePhase": [
+      "approval_required",
+      "approved",
+      "denied",
+      "expired",
+      "payload_modified",
+      "replay_rejected",
+      "revoked_delegation",
+      "workspace_mismatch",
+      "effect_complete",
+      "reconcile_succeeded",
+      "reconcile_failed"
+    ],
+    "GovernanceRequest": {
+      "id": "string",
+      "action": "string",
+      "workspaceId": "string",
+      "payloadHash": "string (MUST be secret-free and local-path-free)",
+      "requiresApproval": "boolean",
+      "delegationId": "string | null"
+    },
+    "GovernanceReceipt": {
+      "requestId": "string",
+      "phase": "GovernancePhase",
+      "effectId": "string | null (non-null only when source === 'runtime')",
+      "receiptId": "string | null (non-null only when source === 'runtime')",
+      "source": ["reference", "runtime"],
+      "detail": "string | null"
+    }
+  }
+}

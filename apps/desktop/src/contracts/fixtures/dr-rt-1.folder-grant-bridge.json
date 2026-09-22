@@ -1,0 +1,41 @@
+{
+  "id": "DR-RT-1",
+  "title": "Runtime folder-grant desktop bridge contract",
+  "status": "PENDING_INTEGRATION",
+  "ownerSession": "Runtime",
+  "contractLabel": "CONTRACT — pending exact-SHA integration. NOT live data.",
+  "note": "This fixture is the machine-readable contract the sibling Runtime session must satisfy. Passing conformance here proves ONLY Frontend shape-compatibility; it does NOT mark the Runtime VERIFIED.",
+  "contract": {
+    "bridge": "window.youtabDesktop.folderGrants",
+    "verbs": {
+      "request": {
+        "args": ["root", "{ readOnly }"],
+        "returns": {
+          "grantId": "string",
+          "safeLabel": "string",
+          "permission": "read-only",
+          "status": "string"
+        }
+      },
+      "list": { "args": [], "returns": "grant[]" },
+      "revoke": { "args": ["grantId"], "returns": "void" },
+      "read": { "args": ["grantId", "relPath"], "returns": "bytes" },
+      "write": {
+        "args": ["grantId", "relPath", "bytes", "{ requireApproval }"],
+        "returns": "receipt"
+      }
+    },
+    "enforcement": {
+      "location": "server-side",
+      "guarantees": [
+        "traversal escape blocked",
+        "symlink escape blocked",
+        "revoke honored",
+        "workspace isolation",
+        "user isolation",
+        "no absolute path in external payloads"
+      ]
+    },
+    "rationale": "The renderer bridge is a thin reference-passing surface; all path-safety and isolation enforcement is authoritative on the server, never in the client."
+  }
+}
