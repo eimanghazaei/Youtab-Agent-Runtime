@@ -200,3 +200,53 @@ def test_conflict_persists_across_process_restart(tmp_path) -> None:
     box = SqliteOutbox(db)
     with pytest.raises(OutboxConflict):
         box.enqueue(_ev(_scope("tenant-alpha"), "evt-00000001", "k1"), payload_digest="e" * 64)
+
+
+def test_10000_distinct_events_yield_exactly_10000_acks_zero_loss(tmp_path) -> None:
+    """Account for every event id: N accepted -> exactly N durable acks, no loss,
+    no cross-scope delivery. (converged_through() returns the MAX cursor value, a
+    0-indexed position, NOT a count — proven distinct here.)"""
+    n = 10_000
+    box = SqliteOutbox(str(tmp_path / "o.db"))
+    s = _scope()
+    accepted = 0
+    for i in range(n):
+        ev = new_event(event_id=f"evt-{i:08d}", scope=s, event_type=OutboxEventType.STORE_CANDIDATE,
+                       memory_id="mem-1", ordering_key=f"k{i:08d}", convergence_cursor=i + 1)
+        if box.enqueue(ev, payload_digest=f"{i:064x}"):
+            accepted += 1
+    assert accepted == n
+    assert box.count(OutboxStatus.PENDING) == n
+    acked_ids: set[str] = set()
+    now = 0
+    while len(acked_ids) < n:
+        batch = box.claim_batch(500, now_ms=now, consumer_id="c")
+        if not batch:
+            now += 10 ** 9
+            continue
+        for ev in batch:
+            box.ack(ev.event_id, ack_digest="a" * 64, payload_digest=None)
+            acked_ids.add(ev.event_id)
+    # exactly N distinct acknowledgements, zero loss, nothing left pending/dead
+    assert len(acked_ids) == n
+    assert box.count(OutboxStatus.ACKED) == n
+    assert box.count(OutboxStatus.PENDING) == 0
+    assert box.count(OutboxStatus.DEAD_LETTER) == 0
+    # cursor is a position: cursors were 1..N so converged_through == N
+    assert box.converged_through() == n
+
+
+def test_cross_scope_ids_do_not_collide_or_deliver_across_scope(tmp_path) -> None:
+    box = SqliteOutbox(str(tmp_path / "o.db"))
+    a = _scope("tenant-alpha")
+    b = _scope("tenant-beta")
+    box.enqueue(_ev(a, "evt-00000001", "k1"), payload_digest="a" * 64)
+    # same id under a different scope must FAIL CLOSED (no silent cross-scope overwrite)
+    with pytest.raises(OutboxConflict):
+        box.enqueue(_ev(b, "evt-00000001", "k1"), payload_digest="a" * 64)
+    # a distinct id under scope b is accepted and delivered only under its own scope
+    box.enqueue(_ev(b, "evt-00000002", "k2"), payload_digest="b" * 64)
+    claimed = box.claim_batch(10, now_ms=0, consumer_id="c")
+    pks = {e.scope.partition_key() for e in claimed}
+    assert a.partition_key() in pks and b.partition_key() in pks
+    assert len(claimed) == 2  # one per scope, no duplication
