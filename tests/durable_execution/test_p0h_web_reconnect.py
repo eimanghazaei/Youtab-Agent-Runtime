@@ -1,24 +1,13 @@
-"""P0-H BASELINE CHARACTERIZATION — Web/Electron reconnect over the REAL HTTP path.
+"""P0-H — Web/Electron reconnect over the REAL shipped /v1/runs HTTP handlers.
 
-Stronger than P0-A (which was component-level): this drives the real aiohttp
-handlers `_handle_get_run` / `_handle_run_events` over a real TestServer/TestClient.
+HISTORY: this test originally CHARACTERIZED the defect (reconnect -> 404, restart
+loss) on the in-memory `/v1/runs`. That defect is now FIXED on the shipped path:
+`_set_run_status` write-through to the canonical RunStore and `_handle_run_events`
+durable replay give reconnect-from-sequence and restart recovery. The git history
+preserves the original baseline; this file now asserts the CORRECTED behavior.
 
-Defects proven:
-- [C-WEB-2] `/v1/runs` SSE is single-consumer with NO reconnect-from-last-sequence:
-  `_handle_run_events` pops the stream queue in its `finally`
-  (`api_server.py:6541`), so a second subscription returns 404 — a reconnecting
-  client loses all further events and cannot resume from a cursor / Last-Event-ID.
-- [C-WEB-1] restart loss at the transport level: a fresh backend (new adapter)
-  returns 404 for the same run id — no durable task/event survival.
-
-Backend-contract ownership: this session may implement the backend durable
-task/event/reconnect contract. It must NOT edit frontend/Electron UI files — the
-UI is a separate consumer handoff (see the typed consumer contract in
-docs/evidence/DURABLE_EXECUTION_LANE_INTERFACE_REQUESTS.md).
+Drives the real `_handle_get_run` / `_handle_run_events` handlers.
 """
-
-import asyncio
-import time
 
 import pytest
 from aiohttp import web
@@ -26,6 +15,14 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
+
+
+@pytest.fixture
+def youtab_home(tmp_path, monkeypatch):
+    home = tmp_path / ".youtab-agent-runtime"
+    home.mkdir()
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(home))
+    return home
 
 
 def _app(adapter):
@@ -36,53 +33,45 @@ def _app(adapter):
 
 
 @pytest.mark.asyncio
-async def test_no_reconnect_from_sequence_and_restart_loss():
+async def test_reconnect_from_sequence_and_restart_recovery(youtab_home):
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
     run_id = "run_p0h"
 
-    # Seed an accepted run + a live event stream (as a running turn would).
+    # A run progresses through states (each mirrored durably to the RunStore).
+    adapter._set_run_status(run_id, "queued", session_id="s")
     adapter._set_run_status(run_id, "running")
-    q: "asyncio.Queue" = asyncio.Queue()
-    adapter._run_streams[run_id] = q
-    adapter._run_streams_created[run_id] = time.time()
-    await q.put({"type": "message.delta", "seq": 1, "text": "hello"})
-    await q.put({"type": "message.delta", "seq": 2, "text": "world"})
-    await q.put(None)  # terminal sentinel -> server closes the stream
+    adapter._set_run_status(run_id, "completed", output="ENTERPRISE_RESULT")
 
     server = TestServer(_app(adapter))
     client = TestClient(server)
     await client.start_server()
     try:
-        # Durable-id status retrieval works while in-memory.
-        r = await client.get(f"/v1/runs/{run_id}")
-        assert r.status == 200
-        body = await r.json()
-        assert body["status"] == "running"
+        # Reconnect / replay from the durable event timeline (not a 404).
+        ev = await client.get(f"/v1/runs/{run_id}/events?from_seq=0")
+        assert ev.status == 200
+        text = await ev.text()
+        assert "status.completed" in text and "id:" in text
 
-        # First (only) consumer drains the SSE stream to completion.
-        r1 = await client.get(f"/v1/runs/{run_id}/events")
-        assert r1.status == 200
-        text = await r1.text()
-        assert '"seq": 1' in text and '"seq": 2' in text
+        # Reconnect-from-sequence: a later cursor returns only later events.
+        # (seq 1 = accepted/queued; ask from_seq=1 to skip it.)
+        ev2 = await client.get(f"/v1/runs/{run_id}/events?from_seq=1")
+        assert "status.completed" in (await ev2.text())
 
-        # RECONNECT: the stream queue was popped in the handler's finally, so a
-        # second subscription cannot resume — it 404s. No Last-Event-ID / cursor.
-        r2 = await client.get(f"/v1/runs/{run_id}/events")
-        assert r2.status == 404, (
-            "DEFECT [C-WEB-2]: reconnect returns 404 — no reconnect-from-sequence"
-        )
-
-        # RESTART: a fresh backend has no knowledge of the run id.
-        fresh = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
-        fresh_server = TestServer(_app(fresh))
-        fresh_client = TestClient(fresh_server)
-        await fresh_client.start_server()
+        # RESTART: a brand-new adapter on the same YOUTAB_AGENT_HOME recovers it.
+        after = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
+        server2 = TestServer(_app(after))
+        client2 = TestClient(server2)
+        await client2.start_server()
         try:
-            r3 = await fresh_client.get(f"/v1/runs/{run_id}")
-            assert r3.status == 404, (
-                "DEFECT [C-WEB-1]: accepted run is lost after backend restart"
-            )
+            r = await client2.get(f"/v1/runs/{run_id}")
+            assert r.status == 200, "accepted run must survive backend restart"
+            body = await r.json()
+            assert body.get("recovered_from_store") is True
+            assert body["status"] == "completed"
+            # Events still replayable after restart.
+            ev3 = await client2.get(f"/v1/runs/{run_id}/events?from_seq=0")
+            assert ev3.status == 200 and "status.completed" in (await ev3.text())
         finally:
-            await fresh_client.close()
+            await client2.close()
     finally:
         await client.close()

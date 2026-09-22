@@ -430,6 +430,56 @@ class SqliteRunStore:
         finally:
             conn.close()
 
+    def set_state(self, run_id: str, to_state: RunState, *, result_ref: Optional[str] = None,
+                  error_ref: Optional[str] = None, kind: Optional[str] = None,
+                  payload: Optional[dict] = None, strict: bool = True) -> Optional[Dict[str, Any]]:
+        """Durably record a state for a run.
+
+        ``strict=True`` enforces the validated transition table (raises
+        InvalidTransition). ``strict=False`` is the ADAPTER mirror for an already-
+        dispatched external run (e.g. api_server's own status flow): it skips the
+        transition table BUT still refuses to overwrite a terminal state
+        (terminal immutability is preserved) and is a no-op when the state is
+        unchanged. Returns the row, or None if the run does not exist."""
+        if strict:
+            return self.transition(run_id, to_state, kind=kind, payload=payload,
+                                   result_ref=result_ref, error_ref=error_ref)
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,))
+            r = cur.fetchone()
+            if r is None:
+                conn.execute("ROLLBACK")
+                return None
+            cur_state = RunState(r[0])
+            if cur_state in TERMINAL_STATES:
+                conn.execute("ROLLBACK")
+                return self.get_run(run_id)  # immutable — ignore late external writes
+            if cur_state == to_state:
+                conn.execute("ROLLBACK")
+                return self.get_run(run_id)
+            now = time.time()
+            conn.execute(
+                "UPDATE runs SET state=?, updated_at=?, "
+                "result_ref=COALESCE(?, result_ref), error_ref=COALESCE(?, error_ref) WHERE run_id=?",
+                (to_state.value, now, result_ref, error_ref, run_id),
+            )
+            self._append_event_locked(conn, run_id, kind or f"state.{to_state.value.lower()}",
+                                      {**(payload or {}), "state": to_state.value, "adapter": True})
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            conn.close()
+
     def record_progress(self, run_id: str, *, step: Optional[str] = None,
                         checkpoint_ref: Optional[str] = None, metric: Optional[dict] = None) -> int:
         """Advance durable progress (distinct from liveness heartbeat). Returns the

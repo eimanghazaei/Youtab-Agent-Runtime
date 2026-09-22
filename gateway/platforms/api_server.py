@@ -1235,6 +1235,15 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        # Canonical durable run authority (single source of truth for run state,
+        # events and result). The in-memory dicts below are now only a LIVE SSE
+        # fan-out cache; get/events/result/restart are served from this store so
+        # a client disconnect, HTTP timeout or backend restart never loses a run.
+        try:
+            from youtab_runtime.durable_run_store import create_run_store
+            self._run_store = create_run_store("sqlite")
+        except Exception:  # durable store must never block gateway startup
+            self._run_store = None
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -1843,6 +1852,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
             ("POST", "/v1/runs", self._handle_runs),
             ("GET", "/v1/runs/{run_id}", self._handle_get_run),
+            ("GET", "/v1/runs/{run_id}/result", self._handle_run_result),
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
             ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
             ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
@@ -5985,7 +5995,54 @@ class APIServerAdapter(BasePlatformAdapter):
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
         self._run_statuses[run_id] = current
+        self._mirror_run_state(run_id, status, current)
         return current
+
+    # Map api_server's status vocabulary onto the canonical RunState.
+    _RUN_STATE_MAP = {
+        "queued": "QUEUED", "running": "RUNNING",
+        "waiting_for_approval": "WAITING_APPROVAL", "waiting_approval": "WAITING_APPROVAL",
+        "paused": "PAUSED", "stalled": "STALLED", "cancelling": "CANCELLING",
+        "stopping": "CANCELLING",
+        "cancelled": "CANCELLED", "canceled": "CANCELLED",
+        "completed": "SUCCEEDED", "succeeded": "SUCCEEDED", "done": "SUCCEEDED",
+        "failed": "FAILED", "error": "FAILED",
+    }
+
+    def _mirror_run_state(self, run_id: str, status: str, current: Dict[str, Any]) -> None:
+        """Write-through the run's state to the canonical durable RunStore.
+
+        Best-effort (never breaks the API): the store is authoritative for
+        get/events/result/restart, the in-memory dict is only a live cache."""
+        store = getattr(self, "_run_store", None)
+        if store is None:
+            return
+        from youtab_runtime.durable_run_store import RunIdentity, RunState
+        mapped = self._RUN_STATE_MAP.get(str(status).lower())
+        if mapped is None:
+            return
+        to_state = RunState(mapped)
+        result_ref = current.get("output")
+        error_ref = current.get("error")
+        try:
+            if store.get_run(run_id) is None:
+                # Shipped /v1/runs is single-operator today; scope is degenerate
+                # but present so the store's tenant/workspace/principal binding is
+                # ready for a signed multi-tenant identity later.
+                scope = current.get("session_id") or "local"
+                store.create_run(RunIdentity(
+                    task_id=run_id, run_id=run_id, tenant_id="local",
+                    organization_id="local", workspace_id="local",
+                    principal_id=str(scope), agent_id=str(current.get("model") or "agent"),
+                ))
+            store.set_state(
+                run_id, to_state, strict=False,
+                result_ref=(str(result_ref) if result_ref else None),
+                error_ref=(str(error_ref) if error_ref else None),
+                kind=f"status.{str(status).lower()}",
+            )
+        except Exception:
+            logger.debug("durable run-state mirror failed for %s", run_id, exc_info=True)
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
@@ -6486,11 +6543,63 @@ class APIServerAdapter(BasePlatformAdapter):
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
         if status is None:
+            # In-memory cache miss (e.g. after a backend restart): reconstruct
+            # from the durable RunStore so accepted runs survive restart.
+            status = self._run_status_from_store(run_id)
+        if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
         return web.json_response(status)
+
+    _STATE_TO_STATUS = {
+        "QUEUED": "queued", "CLAIMED": "running", "RUNNING": "running",
+        "WAITING_APPROVAL": "waiting_for_approval", "WAITING_CHILD": "running",
+        "PAUSING": "running", "PAUSED": "paused", "STALLED": "stalled",
+        "CANCELLING": "cancelling", "SUCCEEDED": "completed", "FAILED": "failed",
+        "CANCELLED": "cancelled", "UNKNOWN": "unknown",
+        "RECONCILIATION_REQUIRED": "reconciliation_required",
+    }
+
+    def _run_status_from_store(self, run_id: str) -> Optional[Dict[str, Any]]:
+        store = getattr(self, "_run_store", None)
+        if store is None:
+            return None
+        try:
+            row = store.get_run(run_id)
+        except Exception:
+            return None
+        if row is None:
+            return None
+        return {
+            "object": "youtab.run", "run_id": run_id,
+            "status": self._STATE_TO_STATUS.get(row["state"], row["state"].lower()),
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "session_id": row.get("principal_id"),
+            "output": row.get("result_ref"), "error": row.get("error_ref"),
+            "recovered_from_store": True,
+        }
+
+    async def _handle_run_result(self, request: "web.Request") -> "web.Response":
+        """GET /v1/runs/{run_id}/result — durable terminal result by run id.
+
+        Served from the canonical RunStore so the result survives client
+        disconnect and backend restart."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id) or self._run_status_from_store(run_id)
+        if status is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+        state = str(status.get("status", "")).lower()
+        terminal = state in ("completed", "succeeded", "failed", "error", "cancelled", "canceled")
+        return web.json_response({
+            "object": "youtab.run.result", "run_id": run_id, "status": status.get("status"),
+            "terminal": terminal, "output": status.get("output"), "error": status.get("error"),
+        })
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -6500,16 +6609,30 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = request.match_info["run_id"]
 
-        # Allow subscribing slightly before the run is registered (race condition window)
+        # Reconnect cursor: Last-Event-ID header wins, else ?from_seq=.
+        try:
+            from_seq = int(request.headers.get("Last-Event-ID", request.query.get("from_seq", 0)) or 0)
+        except (TypeError, ValueError):
+            from_seq = 0
+
+        store = getattr(self, "_run_store", None)
+        durable_known = False
+        if store is not None:
+            try:
+                durable_known = store.get_run(run_id) is not None
+            except Exception:
+                durable_known = False
+
+        # Allow subscribing slightly before the run is registered (race window).
         for _ in range(20):
             if run_id in self._run_streams:
                 break
             await asyncio.sleep(0.05)
-        else:
+        live = run_id in self._run_streams
+        # A run known to the durable store (completed, or after a backend restart)
+        # must be replayable even without a live queue — never a false 404.
+        if not live and not durable_known:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
-
-        q = self._run_streams[run_id]
-        self._run_stream_subscribers.add(run_id)
 
         response = web.StreamResponse(
             status=200,
@@ -6521,7 +6644,25 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         await response.prepare(request)
 
+        # 1) Durable replay from the cursor (reconnect-from-sequence + restart).
+        last_seq = from_seq
+        if store is not None and durable_known:
+            try:
+                for e in store.get_events(run_id, from_seq=from_seq):
+                    last_seq = e["seq"]
+                    body = json.dumps({"seq": e["seq"], "kind": e["kind"], **e.get("payload", {})})
+                    await response.write(f"id: {e['seq']}\ndata: {body}\n\n".encode())
+            except Exception as exc:
+                logger.debug("[api_server] durable replay failed for %s: %s", run_id, exc)
+
         try:
+            if not live:
+                # Terminal / restart-recovered: durable replay is complete.
+                await response.write(b": stream closed\n\n")
+                return response
+            q = self._run_streams[run_id]
+            self._run_stream_subscribers.add(run_id)
+            # 2) Tail the live fan-out queue.
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
@@ -6647,6 +6788,16 @@ class APIServerAdapter(BasePlatformAdapter):
 
         self._set_run_status(run_id, "stopping", last_event="run.stopping")
         self._stopping_run_ids.add(run_id)
+        # Persist the explicit authorized cancellation intent in the durable
+        # authority (only an explicit stop, deadline, safety or terminal failure
+        # may stop a run — a disconnect/timeout never reaches here).
+        _store = getattr(self, "_run_store", None)
+        if _store is not None:
+            try:
+                _store.request_cancel(run_id, reason="client stop via /v1/runs/stop",
+                                      by="api_client")
+            except Exception:
+                logger.debug("durable cancel intent record failed for %s", run_id, exc_info=True)
 
         if agent is not None:
             try:
