@@ -23,7 +23,7 @@ const SYSTEM_MONO = 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, 
 
 export const DEFAULT_TYPOGRAPHY: DesktopThemeTypography = { fontSans: SYSTEM_SANS, fontMono: SYSTEM_MONO }
 
-const YOUTAB_BLUE = '#0053FD'
+const YOUTAB_EMERALD = '#34D399' // day-mode accent (matches the web emerald seed)
 const PSYCHE_WARM = '#FFE6CB'
 
 // Youtab Web Platform "Youtab Teal" (LENS_0) default palette — the visual
@@ -34,9 +34,6 @@ const WEB_CREAM_15 = 'color-mix(in srgb, #FFE6CB 15%, transparent)' // web --col
 const WEB_CREAM_18 = 'color-mix(in srgb, #FFE6CB 18%, transparent)'
 const WEB_DESTRUCTIVE = '#FB2C36' // web --color-destructive
 
-const youtabTint = (pct: number) => `color-mix(in srgb, ${YOUTAB_BLUE} ${pct}%, #FFFFFF)`
-const youtabTintTransparent = (pct: number) => `color-mix(in srgb, ${YOUTAB_BLUE} ${pct}%, transparent)`
-
 /**
  * Youtab — canonical Youtab desktop identity. The palette keeps the current
  * glass geometry neutral, then lets the old bb/gui blue and psyche cream
@@ -46,35 +43,35 @@ export const youtabTheme: DesktopTheme = {
   name: 'youtab',
   label: 'Youtab',
   description: 'Glass neutrals with Youtab blue accents',
-  // LIGHT variant — mirrors the web "Youtab Blue" light preset
-  // (web bg #E8F2FD / #0053FD accents), kept legible for a dense desktop UI
-  // with a dark navy body foreground.
+  // LIGHT variant — clean WHITE canvas + near-BLACK text (Day mode). The emerald
+  // Youtab accent keeps chrome alive; borders are a soft neutral grey. This is
+  // the deliberate white/black day theme paired with the Sun/Moon quick toggle.
   colors: {
-    background: '#E8F2FD',
-    foreground: '#0A1F3C',
+    background: '#FFFFFF',
+    foreground: '#0A0A0A',
     card: '#FFFFFF',
-    cardForeground: '#0A1F3C',
-    muted: youtabTint(5),
-    mutedForeground: '#55617A',
+    cardForeground: '#0A0A0A',
+    muted: '#F0F0EE',
+    mutedForeground: '#5A5A57',
     popover: '#FFFFFF',
-    popoverForeground: '#0A1F3C',
-    primary: YOUTAB_BLUE,
-    primaryForeground: '#F5FAFF',
-    secondary: youtabTint(7),
-    secondaryForeground: '#1B2A45',
-    accent: youtabTint(10),
-    accentForeground: '#17253E',
-    border: youtabTintTransparent(22),
-    input: youtabTintTransparent(30),
-    ring: YOUTAB_BLUE,
-    midground: YOUTAB_BLUE,
-    composerRing: YOUTAB_BLUE,
+    popoverForeground: '#0A0A0A',
+    primary: YOUTAB_EMERALD,
+    primaryForeground: '#04231A',
+    secondary: '#F0F0EE',
+    secondaryForeground: '#1A1A18',
+    accent: YOUTAB_EMERALD,
+    accentForeground: '#04231A',
+    border: '#E2E2DE',
+    input: '#E2E2DE',
+    ring: YOUTAB_EMERALD,
+    midground: '#0A0A0A',
+    composerRing: YOUTAB_EMERALD,
     destructive: '#C72E4D',
     destructiveForeground: '#FFFFFF',
-    sidebarBackground: '#DCEBFB',
-    sidebarBorder: youtabTintTransparent(18),
-    userBubble: youtabTint(6),
-    userBubbleBorder: youtabTintTransparent(24)
+    sidebarBackground: '#F7F7F6',
+    sidebarBorder: '#E2E2DE',
+    userBubble: '#F0F0EE',
+    userBubbleBorder: '#E2E2DE'
   },
   // DARK variant (desktop default) — the web "Youtab Teal" (LENS_0) palette:
   // deep teal canvas, cream primary/text, cream-alpha borders. Every derived

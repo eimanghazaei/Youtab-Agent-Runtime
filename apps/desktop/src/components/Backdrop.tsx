@@ -12,7 +12,7 @@ export function Backdrop() {
   }
 
   return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 z-2 opacity-10">
+    <div aria-hidden className="youtab-backdrop pointer-events-none absolute inset-0 z-2 opacity-10">
       <img
         alt=""
         className="h-full w-full object-cover object-center"
