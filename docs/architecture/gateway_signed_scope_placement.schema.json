@@ -6,12 +6,14 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "command_id", "trace_id", "tenant_id", "principal_id",
+    "schema_version", "algorithm", "issuer", "command_id", "trace_id", "tenant_id", "principal_id",
     "organization_id", "workspace_id", "agent_id", "run_id", "purpose",
     "delegation_authority_ref", "nonce", "issued_at", "expires_at", "key_id", "signature"
   ],
   "properties": {
     "schema_version": { "const": "youtab.scope-placement.v1" },
+    "algorithm": { "enum": ["ed25519"],
+      "description": "Signature algorithm; Runtime enforces an allowlist (ed25519 only)." },
     "command_id": { "type": "string", "minLength": 8, "maxLength": 128,
       "description": "Binds this placement to the BrainCommandEnvelope it accompanies." },
     "trace_id": { "type": "string", "minLength": 8, "maxLength": 128 },
@@ -38,12 +40,17 @@
       "description": "Ed25519 signature over the canonical payload (excluding signature), verifiable with the Gateway public key. Same discipline as BrainCommandEnvelope.verify()." }
   },
   "x-runtime-requirements": {
-    "verification": "Runtime verifies signature with a Gateway public key, checks issued_at<=now<expires_at, cross-checks tenant_id/principal_id against the BrainCommandEnvelope, and records the nonce for replay protection — before any scope is trusted.",
-    "fail_closed": "If the token is absent, malformed, expired, cross-tenant-mismatched, replayed, or signed by an unknown key, the Runtime refuses LIVE retrieval/persistence for org/workspace/agent/run scope. Admission-supplied unsigned values are for local single-principal operation only and never authorize server retrieval/persistence.",
-    "negative_tests_required": [
-      "forged signature", "mismatched tenant_id/principal_id", "expired token",
-      "replayed nonce", "unknown key_id", "cross-workspace", "cross-run"
+    "canonical_serialization": "JSON of all fields EXCEPT signature, ensure_ascii=false, sort_keys=true, separators (',',':') — identical to BrainCommandEnvelope.canonical_payload().",
+    "algorithm_allowlist": ["ed25519"],
+    "verification": "PlacementVerifier.verify (youtab_runtime/memory/placement.py) checks algorithm allowlist, issuer, issued_at<=now<expires_at, cross-checks command_id/trace_id/tenant_id/principal_id against the BrainCommandEnvelope, verifies the Ed25519 signature with the Gateway public key for key_id, and rejects a replayed (tenant_id, nonce). Only then does it emit a VerifiedPlacement.",
+    "verification_result_type": "VerifiedPlacement (verified=True literal). JSON-schema validation alone is NOT authorization; only a VerifiedPlacement may build a live MemoryScope. Runtime code must consume VerifiedPlacement, never a raw SignedScopePlacement.",
+    "fail_closed": "If the token is absent, malformed, wrong-algorithm, wrong-issuer, expired, cross-tenant/principal/command/trace mismatched, replayed, or signed by an unknown key, verification raises PlacementError and the Runtime refuses LIVE retrieval/persistence. Admission-supplied unsigned values are for local single-principal operation only and never authorize server retrieval/persistence.",
+    "replay_cache": "Runtime keeps a (tenant_id, nonce) replay cache; a durable cross-process cache is required for a live deployment.",
+    "key_rotation_revocation": "key_id selects the Gateway public key; rotation adds a new key_id, revocation removes it from the Runtime key map (unknown key_id -> refused).",
+    "negative_tests_present": [
+      "forged/wrong-key signature", "mismatched tenant/principal", "expired token",
+      "replayed nonce", "unknown key_id", "command/trace mismatch", "non-forgeable VerifiedPlacement"
     ],
-    "consumer": "youtab_runtime.memory.scope.MemoryScope.from_admission (to be extended to consume a verified placement instead of a raw ScopeAdmission when this ships)."
+    "consumer": "youtab_runtime.memory.placement.PlacementVerifier -> VerifiedPlacement -> MemoryScope; retrieval pipeline requires request.scope == verified.scope."
   }
 }

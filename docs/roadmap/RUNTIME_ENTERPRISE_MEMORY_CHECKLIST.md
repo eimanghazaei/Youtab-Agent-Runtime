@@ -218,6 +218,37 @@ Round-2 qualification (Python 3.12.10, pinned tools): new-module tests all green
 2200-limit: **NOT declared solved.** The token-budget wrapper is implemented and proven inert;
 it is NOT yet wired into `agent_init`/`system_prompt` (that is item 12-F, gated on ADR ratification).
 
+## Round 3 — production foundation slices (12-B … 12-F), all default-disabled
+
+Frozen prior checkpoint: `7eb4a20e…`. OQ-1 implemented as: records ALWAYS scoped by the full
+7-tuple; local = one active principal per install; server = multi-tenant default-deny; no global
+namespace. No LIVE Simorgh wiring; Gateway/Durable/Frontend/effect-ledger files untouched.
+
+| Slice | Module | Tests | Notes |
+|---|---|---|---|
+| 12-B encrypted scoped cache | `memory/cache.py` + `memory/keystore.py` | 12 (incl. Windows DPAPI) | AES-256-GCM, per-record nonce, scope+schema AAD, DPAPI/Provisioned key store, atomic write, TTL, tombstone/erasure, quarantine, bounded size, KEK rotation, fail-closed/disabled-no-keystore |
+| 12-C SQLite persistent outbox | `memory/outbox_sqlite.py` | 13 (2 real subprocess) | WAL, transactional fenced claim, cross-process producer→consumer durability, crash-after-send redelivery, poison→dead-letter, expired authority, digest mismatch, two-consumer single-claim |
+| 12-D MemoryClaim lifecycle | `memory/claim.py` | 9 | TOMBSTONED + TrustSource; Runtime cannot self-validate AI_INFERRED; supersession preserves provenance; negative: copied provenance, foreign scope, invalid/replayed transition, stale superseded |
+| 12-E retrieval pipeline (DISABLED) + placement verifier | `memory/retrieval.py` + `memory/placement.py` | 14 | LIVE_MEMORY_UNAVAILABLE when disabled/placement-invalid; VerifiedPlacement (not JSON) authorizes; bounded injection; large artifacts referenced; no fallback |
+| 12-F shadow token budgeting | `memory/shadow.py` | 13 (10 scenarios) | parallel shadow prompt, never sent; preserves goals/decisions/tasks/approvals/artifacts/safety; redacted metrics only; huge corpus stays bounded |
+
+### Disabled feature flags (exact)
+- `SimorghClientConfig.enabled = False` (Simorgh client)
+- `RetrievalConfig.enabled = False` (retrieval pipeline)
+- `ShadowConfig.token_budgeted_injection_enabled = False` (token-budgeted injection)
+- `default_keystore()` returns None off-Windows → `EncryptedScopedCache` opens DISABLED (no plaintext)
+
+### Blockers to LIVE
+- Gateway: signed `youtab.scope-placement.v1` (schema + verifier present; needs Gateway to sign). LIVE stays off until then.
+- Durable Execution: owns checkpoint persistence/lease/journal; `a990839b` remains EXCLUDED pending their adoption.
+- ADR-0006: PROPOSED; live wiring waits on exact-content ratification.
+
+### Test-run isolation (required)
+Every pytest invocation that may overlap another session MUST use a unique `--basetemp`
+(see `TEST_INTERFERENCE_ANALYSIS.md`). Round-3 runs used `--basetemp=…/ytb-*-$$`.
+
+Storage limits 2200/1375: **UNCHANGED.** Production prompt behavior: **UNCHANGED.**
+
 ## Owner authorization (recorded)
 
 - Base = current remote default (`main` @ `c7650a1b9`). Lane/Frontend/evidence branches NOT used as base and untouched.
