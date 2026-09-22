@@ -268,6 +268,21 @@ class SqliteRunStore:
                     updated_at REAL NOT NULL
                 )"""
             )
+            # --- migrations (idempotent, crash-safe inside this transaction) --- #
+            # v1 -> v2: a pre-existing runs table may lack the `operation` column
+            # and may carry the OLD global unique index on idempotency_key alone.
+            # Preserve existing rows/events/results; add the column; replace the
+            # index with the scoped one. CREATE ... IF NOT EXISTS never REPLACES a
+            # same-named index, so the old global index must be dropped explicitly.
+            existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
+            if "operation" not in existing_cols:
+                conn.execute("ALTER TABLE runs ADD COLUMN operation TEXT NOT NULL DEFAULT 'run'")
+            old_idx = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_runs_idempotency'"
+            ).fetchone()
+            if old_idx and old_idx[0] and "tenant_id" not in old_idx[0]:
+                conn.execute("DROP INDEX ux_runs_idempotency")
+
             # Idempotency is SCOPED, never global: the same key in a different
             # tenant/workspace/principal/operation is an independent task, and a
             # scoped lookup cannot leak a foreign tenant's task existence.
