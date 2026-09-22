@@ -20,15 +20,41 @@
  * Prerequisite: `npm run build` must have been run so that `dist/` exists.
  */
 
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
+import { boundedClose } from '../electron/bounded-close'
 import { startMockServer, type MockServerOptions } from './mock-server'
 import { installErrorBannerGuard } from './test'
+
+// Ownership-safe teardown: try a graceful app.close(), and only if it wedges
+// past the deadline terminate the process tree of the exact pid we launched
+// (never a name-based sweep that could hit an unrelated Electron/backend). This
+// stops a hung teardown from stalling the serial suite without masking product
+// failures. See electron/bounded-close.ts (+ its unit tests).
+function forceKillOwnedTree(pid: number): void {
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+    } else {
+      process.kill(-pid, 'SIGKILL')
+    }
+  } catch {
+    // already gone
+  }
+}
+
+async function closeDesktopApp(app: ElectronApplication): Promise<void> {
+  await boundedClose({
+    close: () => app.close(),
+    pid: app.process()?.pid,
+    killTree: forceKillOwnedTree,
+  })
+}
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
@@ -406,7 +432,7 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
     mockUrl: mock.url,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await closeDesktopApp(app)
       await mock.close()
       sandbox.cleanup()
     },
@@ -436,7 +462,7 @@ export async function setupNoProvider(): Promise<NoProviderFixture> {
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await closeDesktopApp(app)
       sandbox.cleanup()
     },
   }
@@ -497,7 +523,7 @@ providers:
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await closeDesktopApp(app)
       sandbox.cleanup()
     },
   }
@@ -583,7 +609,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await closeDesktopApp(app)
       sandbox.cleanup()
     },
   }
