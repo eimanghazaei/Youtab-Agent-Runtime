@@ -29,15 +29,16 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
 from youtab_runtime import effect_ledger as _ledger
 from youtab_runtime.approval import (
     ApprovalConsumedError,
     compute_effect_digest,
-    consume_approval,
     content_digest,
+    reserve_and_consume_authorization,
 )
+from youtab_runtime.effect_authorization import EffectAuthorization
 from youtab_runtime.folder_grant import (
     FolderGrant,
     GrantRevokedError,
@@ -46,7 +47,12 @@ from youtab_runtime.folder_grant import (
     resolve_within_grant,
 )
 from youtab_runtime.run_journal import Principal
-from youtab_runtime.worker_lease import assert_lease_holder, lease_detail
+from youtab_runtime.worker_lease import (
+    WorkspaceMismatchError,
+    assert_lease_holder,
+    assert_workspace,
+    lease_detail,
+)
 
 __all__ = [
     "GrantedFsEffect",
@@ -76,13 +82,13 @@ class GrantedFsEffect:
     owner_token: str
 
 
-def _target_scope(workspace_id: str, safe_path: str, content_sha256: str, approval_id: str) -> dict:
+def _target_scope(workspace_id: str, safe_path: str, content_sha256: str) -> dict:
     # Dict scope → the ledger canonicalizes it deterministically and folds
-    # workspace + content digest + approval binding into the effect id.
-    return {
-        "ws": workspace_id, "path": safe_path,
-        "content": content_sha256, "approval": approval_id,
-    }
+    # workspace + canonical path + content digest into the effect id. The
+    # authorization is bound to this same (op, path, ws, content) digest, so the
+    # binding is captured WITHOUT folding the single-use nonce (which must not
+    # change the effect identity, or a re-authorized retry would not dedup).
+    return {"ws": workspace_id, "path": safe_path, "content": content_sha256}
 
 
 def claim_granted_fs_effect(
@@ -93,18 +99,23 @@ def claim_granted_fs_effect(
     run_id: str,
     principal: Principal,
     workspace_id: str,
-    approval_id: str,
+    authorization: EffectAuthorization,
     owner_token: str,
     content: Optional[bytes] = None,
+    production: bool = True,
+    authority_public_keys: Optional[Mapping[str, str]] = None,
+    test_authority_keys: Optional[Mapping[str, str]] = None,
     lease_ttl_seconds: float = 300.0,
     revocation_check: Optional[Callable[[str], bool]] = None,
     db_path: Optional[Path] = None,
     now: Optional[float] = None,
 ) -> GrantedFsEffect:
-    """Authorize, approval-bind, register and atomically claim a grant-bound fs
-    effect under a worker lease. Perform the real op only when ``won`` is True,
-    then call :func:`settle_committed` / :func:`settle_unknown` with the same
-    ``owner_token``.
+    """Authorize (signed), register and atomically claim a grant-bound fs effect
+    under a worker lease. Perform the real op only when ``won`` is True, then call
+    :func:`settle_committed` / :func:`settle_unknown` with the same ``owner_token``.
+
+    ``authorization`` is a signed :class:`EffectAuthorization` from an external
+    authority; the Runtime verifies + single-use-consumes it, never mints it.
     """
     import time as _time
 
@@ -121,38 +132,42 @@ def claim_granted_fs_effect(
         workspace_id=workspace_id, now=now,
     )
 
-    # 2) compute the effect identity (folds op + path + ws + content + approval)
+    # 2) compute the effect identity (folds op + path + ws + content + authorization)
     cdigest = content_digest(content)
     edigest = compute_effect_digest(operation, safe_path, workspace_id, cdigest)
     action = _OP_TO_ACTION[operation]
-    scope = _target_scope(workspace_id, safe_path, cdigest, approval_id)
+    scope = _target_scope(workspace_id, safe_path, cdigest)
     effect_id = _ledger.compute_effect_id(run_id, principal, action, scope)
 
-    # 3) approval authorizes CREATION of the effect, exactly once. A genuine
-    #    retry/restart finds the effect already registered and does NOT re-spend
-    #    the approval; a first attempt must consume a valid, unexpired,
-    #    digest-bound, single-use approval or fail closed.
+    # 3) a signed authorization authorizes CREATION of the effect, exactly once.
+    #    A genuine retry/restart finds the effect already registered and does NOT
+    #    re-verify/re-consume; a first attempt must verify + single-use-consume a
+    #    valid authorization or fail closed.
     if _ledger.get_effect(effect_id, principal, db_path=db_path) is None:
         # TOCTOU: revocation may have happened between resolution and effect.
-        # Checked before spending the single-use approval.
+        # Checked before spending the single-use authorization.
         if revocation_check is not None and revocation_check(grant.grant_id):
             raise GrantRevokedError("grant revoked before effect claim")
         try:
-            consume_approval(
-                approval_id, edigest, principal, workspace_id,
-                now=now, db_path=db_path,
+            reserve_and_consume_authorization(
+                authorization, edigest, principal, workspace_id,
+                production=production, now=now,
+                production_keys=authority_public_keys, test_keys=test_authority_keys,
+                db_path=db_path,
             )
         except ApprovalConsumedError:
             # Only acceptable if a concurrent creator already registered THIS
-            # effect with the same one-time approval; otherwise the approval is
-            # spent for a different effect -> fail closed.
+            # effect with the same one-time authorization; otherwise it is spent
+            # for a different effect -> fail closed.
             if _ledger.get_effect(effect_id, principal, db_path=db_path) is None:
                 raise
 
-    # 4) register (idempotent) + atomically claim under a lease
+    # 4) register (idempotent) + atomically claim under a lease. Workspace is
+    #    stored on the effect so receipt/settle/reconcile can bind it (item 2).
     record = _ledger.begin_effect(
         run_id, principal, action, scope,
-        correlation_id=grant.grant_id, db_path=db_path,
+        correlation_id=grant.grant_id, detail={"workspace": workspace_id},
+        db_path=db_path,
     )
     won, record = _ledger.try_claim(
         record.effect_id, principal,
@@ -166,19 +181,23 @@ def claim_granted_fs_effect(
 
 
 def settle_committed(
-    effect: GrantedFsEffect, principal: Principal, *, db_path: Optional[Path] = None
+    effect: GrantedFsEffect, principal: Principal, *, workspace_id: str,
+    db_path: Optional[Path] = None,
 ) -> str:
     """Record the receipt for a proven side effect (at-most-once). Only the lease
-    holder may settle."""
+    holder in the bound workspace may settle."""
+    assert_workspace(effect.effect_id, principal, workspace_id, db_path=db_path)
     assert_lease_holder(effect.effect_id, principal, effect.owner_token, db_path=db_path)
     return _ledger.mark_committed(effect.effect_id, principal, db_path=db_path).state.value
 
 
 def settle_unknown(
-    effect: GrantedFsEffect, principal: Principal, *, db_path: Optional[Path] = None
+    effect: GrantedFsEffect, principal: Principal, *, workspace_id: str,
+    db_path: Optional[Path] = None,
 ) -> str:
     """Record an unproven outcome — never blind-retried; left for reconciliation.
-    Only the lease holder may settle."""
+    Only the lease holder in the bound workspace may settle."""
+    assert_workspace(effect.effect_id, principal, workspace_id, db_path=db_path)
     assert_lease_holder(effect.effect_id, principal, effect.owner_token, db_path=db_path)
     return _ledger.mark_unknown(effect.effect_id, principal, db_path=db_path).state.value
 
