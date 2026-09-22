@@ -79,7 +79,7 @@ class EffectAuthorization(BaseModel):
     workspace_id: str = Field(min_length=1, max_length=128)
     command_id: str = Field(min_length=8, max_length=128)  # grant this descends from
     capability: str = Field(min_length=1, max_length=128)
-    operation: Literal["read", "write", "create"]
+    operation: Literal["read", "write", "create", "delete", "move"]
     effect_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     # Correlation back to the EffectProposal this authorization answers (item 5).
     # Optional so a direct grant-bound authorization (no proposal round-trip) still
@@ -188,7 +188,7 @@ class TestEffectAuthority:
         workspace_id: str,
         command_id: str,
         capability: str,
-        operation: Literal["read", "write", "create"],
+        operation: Literal["read", "write", "create", "delete", "move"],
         effect_digest: str,
         issued_at: datetime,
         expires_at: datetime,

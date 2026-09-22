@@ -1,45 +1,45 @@
 """Managed filesystem router — the production positive path at the tool_executor
 authority seam.
 
-When a managed agent invokes a registered file tool (`read_file`, `write_file`),
-this router OWNS the outcome, implementing ADR-0005's two-stage state machine on
-the actual production callsite (not a parallel test API):
+When a managed agent invokes a registered file tool (``read_file``,
+``write_file``, ``patch``), this router OWNS the outcome, implementing ADR-0005's
+two-stage state machine on the actual production callsite (not a parallel API):
 
   1. verify the admitted command identity (tenant / principal / workspace from the
      sealed grant, never from caller args);
   2. classify the tool + normalized operation;
   3. resolve the request within a workspace-bound Folder Grant and compute the
      canonical effect digest;
-  4. **read** → require grant read permission and perform a grant-bound,
-     handle-verified host-IO read;
-  5. **write** (external effect) → if no signed authorization is attached, record
-     the `EffectProposal` and perform ZERO side effect (the runtime never
-     self-authorizes); if a signed `EffectAuthorization` is attached, correlate it
-     to the proposal, verify + single-use-consume it, claim the canonical effect
-     under a worker lease, perform the TOCTOU-safe host-IO write, and settle a
+  4. **read** → grant read permission + a grant-bound, handle-verified host-IO read;
+  5. **effectful** (write / patch-replace / V4A add / delete / move) → if no signed
+     authorization is attached, record the ``EffectProposal`` and perform ZERO side
+     effect; if a signed ``EffectAuthorization`` is attached, correlate it to the
+     proposal, verify + single-use-consume it, claim the canonical effect under a
+     worker lease, perform the TOCTOU-safe host-IO operation, and settle a
      workspace-bound receipt.
 
-Backend dispatch is explicit: the strong host-`os.open` guarantees apply to the
+Backend dispatch is explicit: the strong host-``os.open`` guarantees apply to the
 **local** host filesystem only. For a remote / container / SSH / modal backend the
 runtime cannot enforce containment host-side, so managed file operations fail
-closed with `MANAGED_REMOTE_FILESYSTEM_AUTHORITY_UNAVAILABLE` until a sandbox-side
-enforcement adapter exists (`youtab_runtime.managed_remote_executor`).
+closed with ``MANAGED_REMOTE_FILESYSTEM_AUTHORITY_UNAVAILABLE`` until a
+sandbox-side enforcement adapter exists.
 
-Everything is read from per-run state the worker attaches to the agent
-(`_admitted_command`, `_managed_workspace_root`, `_effect_authorizations`, …).
-Absent state fails closed, so this changes no production behaviour until the
-managed workspace root + signed authorizations are supplied — a Runtime signer is
-never introduced.
+Scope notes: ``delete`` and ``move`` are not registered tools — they are issued
+through ``patch`` V4A headers, so they are governed here as single V4A operations.
+V4A ``UPDATE`` (hunk application) and multi-operation V4A patches are fail-closed in
+managed mode (the model can use ``write_file`` or a replace-mode ``patch``); a
+managed operation is NEVER allowed to fall back to the ungated shell backend.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence, Tuple
 
 from youtab_runtime import authorization_transport as _tx
 from youtab_runtime import grant_fs
@@ -65,12 +65,14 @@ __all__ = ["RouteOutcome", "route_managed_file_tool"]
 WORKSPACE_UNSCOPED = "-"
 _MAX_READ_BYTES = 8 * 1024 * 1024
 
-# The registered file tools this router owns, and their normalized operation.
-# delete/move are not registered tools (they occur only inside `patch` V4A), and
-# `patch`/`search_files` are intentionally NOT routed yet — a managed `patch`
-# therefore stays fail-closed at the authority gate (classified "write"), and
-# `search_files` stays a read at the gate; both are recorded follow-ups.
-_FILE_TOOL_OP = {"read_file": "read", "write_file": "write"}
+# Registered file tools this router owns, and their normalized operation.
+# ``search_files`` is intentionally NOT routed yet (a read at the gate); ``patch``
+# decomposes into governed write/delete/move effects.
+_FILE_TOOL_OP = {"read_file": "read", "write_file": "write", "patch": "patch"}
+
+
+class _PatchError(Exception):
+    """A managed patch could not be applied within the governed host-IO path."""
 
 
 @dataclass(frozen=True)
@@ -88,15 +90,28 @@ class RouteOutcome:
     effect_id: Optional[str] = None
 
 
+@dataclass
+class _Ctx:
+    agent: Any
+    admitted: AdmittedCommand
+    principal: Principal
+    workspace_id: str
+    workspace_root: str
+    db_path: Optional[Path]
+    production: bool
+    prod_keys: Optional[Mapping[str, str]]
+    test_keys: Optional[Mapping[str, str]]
+    now: float
+    task_id: str
+
+
 def _blocked(reason: str) -> RouteOutcome:
     return RouteOutcome(blocked=True, reason=reason)
 
 
 def _handled(result: dict, effect_id: Optional[str] = None) -> RouteOutcome:
     return RouteOutcome(
-        blocked=False,
-        result=json.dumps(result, ensure_ascii=False),
-        effect_id=effect_id,
+        blocked=False, result=json.dumps(result, ensure_ascii=False), effect_id=effect_id
     )
 
 
@@ -109,27 +124,21 @@ def _is_local_backend(agent, task_id: str) -> bool:
 
         return _terminal_env_type_for_task(task_id) == "local"
     except Exception:
-        # Unknown backend → not provably local → fail closed (treat as remote).
-        return False
+        return False  # unknown backend → not provably local → fail closed
 
 
-def _grant_for(admitted: AdmittedCommand, workspace_root, workspace_id: str,
-               operation: str) -> FolderGrant:
+def _grant(ctx: _Ctx, permissions: set) -> FolderGrant:
     return FolderGrant(
-        grant_id=admitted.envelope.command_id,
-        tenant_id=admitted.envelope.tenant_id,
-        principal_id=admitted.envelope.user_id,
-        workspace_id=workspace_id,
-        canonical_root=str(workspace_root),
-        permissions=frozenset({operation}),
+        grant_id=ctx.admitted.envelope.command_id,
+        tenant_id=ctx.admitted.envelope.tenant_id,
+        principal_id=ctx.admitted.envelope.user_id,
+        workspace_id=ctx.workspace_id,
+        canonical_root=str(ctx.workspace_root),
+        permissions=frozenset(permissions),
     )
 
 
-def _find_authorization(
-    authorizations: Optional[Any], effect_digest: str
-) -> Optional[EffectAuthorization]:
-    """Find an attached signed authorization whose effect digest matches. Accepts a
-    mapping keyed by effect_digest or a sequence of EffectAuthorization."""
+def _find_authorization(authorizations: Optional[Any], effect_digest: str) -> Optional[EffectAuthorization]:
     if authorizations is None:
         return None
     if isinstance(authorizations, Mapping):
@@ -142,25 +151,10 @@ def _find_authorization(
     return None
 
 
-def _build_proposal(env, function_name: str, final_args: dict) -> EffectProposal:
-    import hashlib
-
-    args = json.dumps(
-        final_args if isinstance(final_args, dict) else {},
-        sort_keys=True, separators=(",", ":"), default=str,
-    ).encode("utf-8")
-    digest = hashlib.sha256(args).hexdigest()
-    return EffectProposal(
-        proposal_id=f"proposal-{digest[:24]}",
-        command_id=env.command_id,
-        task_id=env.task_id,
-        tenant_id=env.tenant_id,
-        trace_id=env.trace_id,
-        effect_class="write",
-        tool_name=function_name,
-        arguments_digest=digest,
-        reason="external filesystem effect requires Youtab Brain authorization",
-    )
+def _proposal_ref(descriptor: dict) -> Tuple[str, str]:
+    args = json.dumps(descriptor, sort_keys=True, separators=(",", ":"), default=str).encode()
+    rd = hashlib.sha256(args).hexdigest()
+    return f"proposal-{rd[:24]}", rd
 
 
 def _read_result(safe_path: str, data: bytes, final_args: dict) -> dict:
@@ -177,17 +171,281 @@ def _read_result(safe_path: str, data: bytes, final_args: dict) -> dict:
     window = lines[offset - 1: offset - 1 + max(0, limit)]
     numbered = "\n".join(f"{offset + i}|{ln}" for i, ln in enumerate(window))
     return {
-        "status": "ok",
-        "operation": "read",
-        "resolved_path": safe_path,
-        "content": numbered,
-        "backend": "local-managed",
+        "status": "ok", "operation": "read", "resolved_path": safe_path,
+        "content": numbered, "backend": "local-managed",
     }
 
 
+def _govern(
+    ctx: _Ctx, *, grant: FolderGrant, requested_path: str, operation: str,
+    digest_bytes: bytes, descriptor: dict,
+) -> Tuple[Optional[RouteOutcome], Optional[grant_fs.GrantedFsEffect], Optional[EffectAuthorization]]:
+    """Compute effect identity, require + correlate + single-use-consume a signed
+    authorization, and atomically claim the canonical effect under a lease.
+
+    Returns ``(outcome, None, None)`` when the caller must stop (proposal emitted /
+    blocked / idempotent no-op), or ``(None, effect, auth)`` when the caller must
+    perform the host-IO and then settle. No side effect occurs here.
+    """
+    try:
+        safe_path = resolve_within_grant(
+            grant, requested_path, operation=operation,
+            tenant_id=ctx.principal.tenant, principal_id=ctx.principal.user,
+            workspace_id=ctx.workspace_id, now=ctx.now,
+        )
+    except FolderGrantError as exc:
+        return _blocked(f"managed {operation} refused: {type(exc).__name__}"), None, None
+
+    effect_digest = compute_effect_digest(
+        operation, safe_path, ctx.workspace_id, content_digest(digest_bytes)
+    )
+    auth = _find_authorization(getattr(ctx.agent, "_effect_authorizations", None), effect_digest)
+    if auth is None:
+        proposal_id, request_digest = _proposal_ref(descriptor)
+        env = ctx.admitted.envelope
+        proposal = EffectProposal(
+            proposal_id=proposal_id, command_id=env.command_id, task_id=env.task_id,
+            tenant_id=ctx.principal.tenant, trace_id=env.trace_id, effect_class="write",
+            tool_name=f"fs:{operation}:{safe_path}"[:128], arguments_digest=request_digest,
+            reason="external filesystem effect requires Youtab Brain authorization",
+        )
+        _tx.record_proposal(
+            proposal, authorization_epoch=int(getattr(env, "authorization_epoch", 1)),
+            db_path=ctx.db_path,
+        )
+        return _blocked(
+            "external filesystem effect requires a Brain-signed EffectAuthorization "
+            "(proposal emitted; zero side effect)"
+        ), None, None
+
+    try:
+        _tx.correlate_proposal(auth, principal=ctx.principal, db_path=ctx.db_path)
+    except _tx.AuthorizationTransportError as exc:
+        return _blocked(f"authorization correlation failed: {type(exc).__name__}"), None, None
+
+    owner_token = str(
+        getattr(ctx.agent, "_managed_lease_token", None)
+        or f"lease-{ctx.admitted.envelope.command_id}"
+    )
+    try:
+        effect = grant_fs.claim_granted_fs_effect(
+            grant, requested_path, operation=operation, run_id=ctx.task_id,
+            principal=ctx.principal, workspace_id=ctx.workspace_id, authorization=auth,
+            owner_token=owner_token, content=digest_bytes, production=ctx.production,
+            authority_public_keys=ctx.prod_keys, test_authority_keys=ctx.test_keys,
+            db_path=ctx.db_path, now=ctx.now,
+        )
+    except (ApprovalError, EffectAuthorizationError, FolderGrantError) as exc:
+        return _blocked(f"authorization rejected: {type(exc).__name__}"), None, None
+
+    if not effect.won:
+        return _handled({
+            "status": "noop", "operation": operation, "resolved_path": effect.safe_path,
+            "state": effect.state, "detail": "effect already claimed; idempotent no-op (no re-execute)",
+        }, effect_id=effect.effect_id), None, None
+
+    return None, effect, auth
+
+
+def _finish(ctx: _Ctx, effect, auth, extra: dict) -> RouteOutcome:
+    state = grant_fs.settle_committed(
+        effect, ctx.principal, workspace_id=ctx.workspace_id, db_path=ctx.db_path
+    )
+    if auth.proposal_id:
+        _tx.mark_proposal_consumed(auth.proposal_id, db_path=ctx.db_path)
+    body = {
+        "status": "ok", "resolved_path": effect.safe_path, "backend": "local-managed",
+        "receipt": {
+            "effect_id": effect.effect_id, "state": state, "workspace_id": ctx.workspace_id,
+            "authorization_id": auth.authorization_id, "key_id": auth.key_id,
+            "issuer": auth.issuer,
+        },
+    }
+    body.update(extra)
+    return _handled(body, effect_id=effect.effect_id)
+
+
+def _unknown(ctx: _Ctx, effect, exc: Exception, operation: str) -> RouteOutcome:
+    grant_fs.settle_unknown(effect, ctx.principal, workspace_id=ctx.workspace_id, db_path=ctx.db_path)
+    return _blocked(
+        f"managed {operation} failed after claim (left for reconciliation): {type(exc).__name__}"
+    )
+
+
+# ── operation routers ────────────────────────────────────────────────────────
+
+
+def _route_read(ctx: _Ctx, final_args: dict) -> RouteOutcome:
+    requested_path = str(final_args["path"])
+    grant = _grant(ctx, {"read"})
+    try:
+        fd = grant_fs.open_within_grant(
+            grant, requested_path, operation="read",
+            principal=ctx.principal, workspace_id=ctx.workspace_id, now=ctx.now,
+        )
+    except FolderGrantError as exc:
+        return _blocked(f"managed read refused: {type(exc).__name__}")
+    try:
+        data = os.read(fd, _MAX_READ_BYTES)
+    finally:
+        os.close(fd)
+    return _handled(_read_result(requested_path, data, final_args))
+
+
+def _route_write(ctx: _Ctx, final_args: dict) -> RouteOutcome:
+    requested_path = str(final_args["path"])
+    content = str(final_args.get("content", "")).encode("utf-8")
+    grant = _grant(ctx, {"write"})
+    outcome, effect, auth = _govern(
+        ctx, grant=grant, requested_path=requested_path, operation="write",
+        digest_bytes=content, descriptor=dict(final_args),
+    )
+    if outcome is not None:
+        return outcome
+    written = _host_write(ctx, grant, requested_path, content)
+    if isinstance(written, RouteOutcome):
+        return _unknown(ctx, effect, OSError(written.reason or ""), "write")
+    return _finish(ctx, effect, auth, {"operation": "write", "bytes_written": written})
+
+
+def _host_write(ctx: _Ctx, grant, requested_path, content) -> Any:
+    try:
+        fd = grant_fs.open_within_grant(
+            grant, requested_path, operation="write",
+            principal=ctx.principal, workspace_id=ctx.workspace_id, now=ctx.now,
+        )
+        try:
+            os.ftruncate(fd, 0)
+            return os.write(fd, content)
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        return _blocked(str(exc))
+
+
+def _route_patch(ctx: _Ctx, final_args: dict) -> RouteOutcome:
+    mode = str(final_args.get("mode", "replace"))
+    if mode == "replace":
+        return _route_patch_replace(ctx, final_args)
+    if mode == "patch":
+        return _route_patch_v4a(ctx, final_args)
+    return _blocked(f"unsupported managed patch mode {mode!r}")
+
+
+def _route_patch_replace(ctx: _Ctx, final_args: dict) -> RouteOutcome:
+    requested_path = str(final_args.get("path") or "")
+    if not requested_path:
+        return _blocked("managed patch requires a 'path'")
+    old = str(final_args.get("old_string", ""))
+    new = str(final_args.get("new_string", ""))
+    replace_all = bool(final_args.get("replace_all", False))
+    # The effect is bound to the PATCH request digest (ADR-0005 §2 "patch digest"),
+    # not the resulting content (which is derived at execution from the file + patch).
+    patch_payload = json.dumps(
+        {"mode": "replace", "old": old, "new": new, "replace_all": replace_all},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    grant = _grant(ctx, {"read", "write"})
+    outcome, effect, auth = _govern(
+        ctx, grant=grant, requested_path=requested_path, operation="write",
+        digest_bytes=patch_payload, descriptor=dict(final_args),
+    )
+    if outcome is not None:
+        return outcome
+    # Grant-bound read → apply the replacement → grant-bound write of the result.
+    try:
+        fd = grant_fs.open_within_grant(
+            grant, requested_path, operation="read",
+            principal=ctx.principal, workspace_id=ctx.workspace_id, now=ctx.now,
+        )
+        try:
+            current = os.read(fd, _MAX_READ_BYTES).decode("utf-8", errors="replace")
+        finally:
+            os.close(fd)
+        new_text = _apply_replace(current, old, new, replace_all)
+    except (_PatchError, OSError) as exc:
+        return _unknown(ctx, effect, exc, "patch")
+    written = _host_write(ctx, grant, requested_path, new_text.encode("utf-8"))
+    if isinstance(written, RouteOutcome):
+        return _unknown(ctx, effect, OSError(written.reason or ""), "patch")
+    return _finish(ctx, effect, auth, {"operation": "patch", "bytes_written": written})
+
+
+def _apply_replace(text: str, old: str, new: str, replace_all: bool) -> str:
+    if old == "":
+        raise _PatchError("empty old_string")
+    count = text.count(old)
+    if count == 0:
+        raise _PatchError("old_string not found")
+    if count > 1 and not replace_all:
+        raise _PatchError("old_string is ambiguous (multiple matches); set replace_all")
+    return text.replace(old, new) if replace_all else text.replace(old, new, 1)
+
+
+def _route_patch_v4a(ctx: _Ctx, final_args: dict) -> RouteOutcome:
+    from tools.patch_parser import OperationType, parse_v4a_patch
+
+    patch_text = str(final_args.get("patch") or "")
+    ops, err = parse_v4a_patch(patch_text)
+    if err:
+        return _blocked(f"managed V4A patch parse error: {err}")
+    if len(ops) != 1:
+        return _blocked(
+            "managed V4A patch must contain exactly one ADD / DELETE / MOVE "
+            "operation (multi-operation patches are not governed in managed mode)"
+        )
+    op = ops[0]
+    if op.operation == OperationType.DELETE:
+        grant = _grant(ctx, {"delete"})
+        descriptor = {"tool": "patch", "op": "delete", "path": op.file_path}
+        outcome, effect, auth = _govern(
+            ctx, grant=grant, requested_path=op.file_path, operation="delete",
+            digest_bytes=b"", descriptor=descriptor,
+        )
+        if outcome is not None:
+            return outcome
+        try:
+            grant_fs.unlink_within_grant(
+                grant, op.file_path, principal=ctx.principal,
+                workspace_id=ctx.workspace_id, now=ctx.now,
+            )
+        except (FolderGrantError, OSError) as exc:
+            return _unknown(ctx, effect, exc, "delete")
+        return _finish(ctx, effect, auth, {"operation": "delete"})
+
+    if op.operation == OperationType.MOVE:
+        if not op.new_path:
+            return _blocked("managed V4A move requires a destination path")
+        grant = _grant(ctx, {"move"})
+        descriptor = {"tool": "patch", "op": "move", "src": op.file_path, "dst": op.new_path}
+        move_ident = json.dumps(
+            {"src": op.file_path, "dst": op.new_path}, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        outcome, effect, auth = _govern(
+            ctx, grant=grant, requested_path=op.file_path, operation="move",
+            digest_bytes=move_ident, descriptor=descriptor,
+        )
+        if outcome is not None:
+            return outcome
+        try:
+            grant_fs.move_within_grant(
+                grant, grant, op.file_path, op.new_path, principal=ctx.principal,
+                workspace_id=ctx.workspace_id, now=ctx.now,
+            )
+        except (FolderGrantError, OSError) as exc:
+            return _unknown(ctx, effect, exc, "move")
+        return _finish(ctx, effect, auth, {"operation": "move", "destination": op.new_path})
+
+    # ADD (content lives in hunks and duplicates write_file) and UPDATE (hunk
+    # application) are not reproduced in the governed host-IO path.
+    return _blocked(
+        "managed V4A ADD/UPDATE patches are not supported; use write_file or a "
+        "replace-mode patch"
+    )
+
+
 def route_managed_file_tool(
-    agent, function_name: str, final_args: Any, *, task_id: str,
-    now: Optional[float] = None,
+    agent, function_name: str, final_args: Any, *, task_id: str, now: Optional[float] = None,
 ) -> Optional[RouteOutcome]:
     """Route a managed file-tool call. Returns ``None`` when it does not apply
     (non-file tool, or not a managed run) so the normal authority gate runs;
@@ -197,7 +455,7 @@ def route_managed_file_tool(
         return None
     try:
         from youtab_runtime import managed_execution as mx
-    except Exception:  # authority core unavailable → do not gate standalone
+    except Exception:
         return None
     if mx.current_trust_mode() is not mx.TrustMode.MANAGED:
         return None
@@ -214,8 +472,6 @@ def route_managed_file_tool(
     workspace_id = getattr(env, "workspace_id", WORKSPACE_UNSCOPED) or WORKSPACE_UNSCOPED
     now = time.time() if now is None else now
 
-    # Backend dispatch: remote/container backends fail closed (no host-side
-    # containment) until a sandbox-side enforcement adapter exists.
     if not _is_local_backend(agent, task_id):
         return _blocked(MANAGED_REMOTE_FILESYSTEM_AUTHORITY_UNAVAILABLE)
 
@@ -225,127 +481,21 @@ def route_managed_file_tool(
             "managed workspace root is not bound for this run; refusing local "
             "filesystem operation (fail closed)"
         )
-
-    if not isinstance(final_args, dict) or not final_args.get("path"):
+    if not isinstance(final_args, dict) or (operation != "patch" and not final_args.get("path")):
         return _blocked("managed filesystem operation requires a 'path' argument")
-    requested_path = str(final_args["path"])
 
     db_path = getattr(agent, "_managed_effects_db", None)
-    if db_path is not None:
-        db_path = Path(db_path)
+    ctx = _Ctx(
+        agent=agent, admitted=admitted, principal=principal, workspace_id=workspace_id,
+        workspace_root=workspace_root, db_path=Path(db_path) if db_path is not None else None,
+        production=bool(getattr(agent, "_managed_authority_production", True)),
+        prod_keys=getattr(agent, "_managed_authority_public_keys", None),
+        test_keys=getattr(agent, "_managed_test_authority_keys", None),
+        now=now, task_id=task_id,
+    )
 
-    # ── READ: grant read permission + grant-bound host-IO read ────────────────
     if operation == "read":
-        grant = _grant_for(admitted, workspace_root, workspace_id, "read")
-        try:
-            fd = grant_fs.open_within_grant(
-                grant, requested_path, operation="read",
-                principal=principal, workspace_id=workspace_id, now=now,
-            )
-        except FolderGrantError as exc:
-            return _blocked(f"managed read refused: {type(exc).__name__}")
-        try:
-            data = os.read(fd, _MAX_READ_BYTES)
-        finally:
-            os.close(fd)
-        return _handled(_read_result(requested_path, data, final_args))
-
-    # ── WRITE: external effect — proposal unless a signed authorization exists ─
-    content = str(final_args.get("content", "")).encode("utf-8")
-    grant = _grant_for(admitted, workspace_root, workspace_id, "write")
-    try:
-        safe_path = resolve_within_grant(
-            grant, requested_path, operation="write",
-            tenant_id=principal.tenant, principal_id=principal.user,
-            workspace_id=workspace_id, now=now,
-        )
-    except FolderGrantError as exc:
-        return _blocked(f"managed write refused: {type(exc).__name__}")
-
-    effect_digest = compute_effect_digest(
-        "write", safe_path, workspace_id, content_digest(content)
-    )
-    authorization = _find_authorization(
-        getattr(agent, "_effect_authorizations", None), effect_digest
-    )
-    if authorization is None:
-        # Runtime never self-authorizes: record the proposal, do nothing else.
-        proposal = _build_proposal(env, function_name, final_args)
-        _tx.record_proposal(
-            proposal, authorization_epoch=int(getattr(env, "authorization_epoch", 1)),
-            db_path=db_path,
-        )
-        return _blocked(
-            "external filesystem effect requires a Brain-signed EffectAuthorization "
-            "(proposal emitted; zero side effect)"
-        )
-
-    production = bool(getattr(agent, "_managed_authority_production", True))
-    prod_keys = getattr(agent, "_managed_authority_public_keys", None)
-    test_keys = getattr(agent, "_managed_test_authority_keys", None)
-
-    # 1) correlate the authorization to its pending proposal (no consume here).
-    try:
-        _tx.correlate_proposal(authorization, principal=principal, db_path=db_path)
-    except _tx.AuthorizationTransportError as exc:
-        return _blocked(f"authorization correlation failed: {type(exc).__name__}")
-
-    # 2) verify + single-use-consume + claim the canonical effect under a lease.
-    owner_token = str(getattr(agent, "_managed_lease_token", None) or f"lease-{env.command_id}")
-    try:
-        effect = grant_fs.claim_granted_fs_effect(
-            grant, requested_path, operation="write", run_id=task_id,
-            principal=principal, workspace_id=workspace_id, authorization=authorization,
-            owner_token=owner_token, content=content, production=production,
-            authority_public_keys=prod_keys, test_authority_keys=test_keys,
-            db_path=db_path, now=now,
-        )
-    except (ApprovalError, EffectAuthorizationError, FolderGrantError) as exc:
-        return _blocked(f"authorization rejected: {type(exc).__name__}")
-
-    if not effect.won:
-        # Replay / already-in-progress: at-most-once — no second write.
-        return _handled({
-            "status": "noop",
-            "operation": "write",
-            "resolved_path": effect.safe_path,
-            "state": effect.state,
-            "detail": "effect already claimed; idempotent no-op (no re-write)",
-        }, effect_id=effect.effect_id)
-
-    # 3) perform the TOCTOU-safe host-IO write, then settle a workspace-bound receipt.
-    try:
-        fd = grant_fs.open_within_grant(
-            grant, requested_path, operation="write",
-            principal=principal, workspace_id=workspace_id, now=now,
-        )
-        try:
-            os.ftruncate(fd, 0)
-            written = os.write(fd, content)
-        finally:
-            os.close(fd)
-    except OSError as exc:
-        # The effect was claimed but the write did not prove out → mark UNKNOWN
-        # for reconciliation rather than committing an unproven side effect.
-        grant_fs.settle_unknown(effect, principal, workspace_id=workspace_id, db_path=db_path)
-        return _blocked(f"managed write failed after claim (left for reconciliation): {type(exc).__name__}")
-
-    state = grant_fs.settle_committed(
-        effect, principal, workspace_id=workspace_id, db_path=db_path
-    )
-    _tx.mark_proposal_consumed(authorization.proposal_id, db_path=db_path) if authorization.proposal_id else None
-    return _handled({
-        "status": "ok",
-        "operation": "write",
-        "resolved_path": effect.safe_path,
-        "bytes_written": written,
-        "backend": "local-managed",
-        "receipt": {
-            "effect_id": effect.effect_id,
-            "state": state,
-            "workspace_id": workspace_id,
-            "authorization_id": authorization.authorization_id,
-            "key_id": authorization.key_id,
-            "issuer": authorization.issuer,
-        },
-    }, effect_id=effect.effect_id)
+        return _route_read(ctx, final_args)
+    if operation == "write":
+        return _route_write(ctx, final_args)
+    return _route_patch(ctx, final_args)

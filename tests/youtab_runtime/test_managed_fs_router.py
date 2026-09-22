@@ -186,3 +186,138 @@ def test_non_file_tool_returns_none(tmp_path, monkeypatch):
     agent = _agent(tmp_path, admitted)
     assert router.route_managed_file_tool(agent, "terminal", {"cmd": "ls"},
                                           task_id="task-00000001") is None
+
+
+# ── patch / delete / move operation matrix (ADR-0005) ────────────────────────
+
+
+def _mint_op_auth(agent, admitted, *, operation, requested_path, digest_bytes,
+                  descriptor, authorization_id, perms):
+    env = admitted.envelope
+    grant = FolderGrant(
+        grant_id=env.command_id, tenant_id=env.tenant_id, principal_id=env.user_id,
+        workspace_id=WS, canonical_root=agent._managed_workspace_root,
+        permissions=frozenset(perms),
+    )
+    safe = resolve_within_grant(grant, requested_path, operation=operation,
+                                tenant_id=env.tenant_id, principal_id=env.user_id,
+                                workspace_id=WS)
+    edigest = compute_effect_digest(operation, safe, WS, content_digest(digest_bytes))
+    rd = hashlib.sha256(
+        json.dumps(descriptor, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
+    signer = TestEffectAuthority()
+    now = datetime.now(UTC)
+    auth = signer.mint(
+        authorization_id=authorization_id, tenant_id=env.tenant_id, user_id=env.user_id,
+        workspace_id=WS, command_id=env.command_id, capability="fs.effect",
+        operation=operation, effect_digest=edigest,
+        issued_at=now - timedelta(minutes=1), expires_at=now + timedelta(hours=1),
+        proposal_id=f"proposal-{rd[:24]}", request_digest=rd,
+    )
+    agent._managed_test_authority_keys = signer.keyring()
+    return auth
+
+
+def _principal(admitted):
+    return Principal(admitted.envelope.tenant_id, admitted.envelope.user_id)
+
+
+def test_patch_replace_authorized(tmp_path, monkeypatch):
+    _managed(monkeypatch)
+    admitted = _admitted("nonce-router-00000000000patch1")
+    agent = _agent(tmp_path, admitted)
+    (tmp_path / "workspace" / "f.txt").write_bytes(b"hello world")
+    final_args = {"mode": "replace", "path": "f.txt", "old_string": "world", "new_string": "there"}
+    patch_payload = json.dumps(
+        {"mode": "replace", "old": "world", "new": "there", "replace_all": False},
+        sort_keys=True, separators=(",", ":"),
+    ).encode()
+    router.route_managed_file_tool(agent, "patch", dict(final_args), task_id="task-00000001")
+    auth = _mint_op_auth(agent, admitted, operation="write", requested_path="f.txt",
+                         digest_bytes=patch_payload, descriptor=final_args,
+                         authorization_id="authz-patch-repl-01", perms={"read", "write"})
+    agent._effect_authorizations = [auth]
+    outcome = router.route_managed_file_tool(agent, "patch", dict(final_args), task_id="task-00000001")
+    assert outcome.blocked is False
+    body = json.loads(outcome.result)
+    assert body["operation"] == "patch"
+    assert (tmp_path / "workspace" / "f.txt").read_bytes() == b"hello there"
+    rec = get_effect_in_workspace(outcome.effect_id, _principal(admitted), WS,
+                                  db_path=agent._managed_effects_db)
+    assert rec is not None and rec.state.value == "committed"
+
+
+def test_patch_replace_no_auth_blocked_no_change(tmp_path, monkeypatch):
+    _managed(monkeypatch)
+    admitted = _admitted("nonce-router-00000000000patch2")
+    agent = _agent(tmp_path, admitted)
+    (tmp_path / "workspace" / "f.txt").write_bytes(b"orig")
+    outcome = router.route_managed_file_tool(
+        agent, "patch",
+        {"mode": "replace", "path": "f.txt", "old_string": "orig", "new_string": "new"},
+        task_id="task-00000001")
+    assert outcome.blocked is True
+    assert (tmp_path / "workspace" / "f.txt").read_bytes() == b"orig"
+
+
+def test_v4a_delete_authorized(tmp_path, monkeypatch):
+    _managed(monkeypatch)
+    admitted = _admitted("nonce-router-0000000000delete1")
+    agent = _agent(tmp_path, admitted)
+    (tmp_path / "workspace" / "gone.txt").write_bytes(b"bye")
+    final_args = {"mode": "patch", "patch": "*** Begin Patch\n*** Delete File: gone.txt\n*** End Patch"}
+    router.route_managed_file_tool(agent, "patch", dict(final_args), task_id="task-00000001")
+    auth = _mint_op_auth(agent, admitted, operation="delete", requested_path="gone.txt",
+                         digest_bytes=b"", descriptor={"tool": "patch", "op": "delete", "path": "gone.txt"},
+                         authorization_id="authz-delete-000001", perms={"delete"})
+    agent._effect_authorizations = [auth]
+    outcome = router.route_managed_file_tool(agent, "patch", dict(final_args), task_id="task-00000001")
+    assert outcome.blocked is False
+    assert json.loads(outcome.result)["operation"] == "delete"
+    assert not (tmp_path / "workspace" / "gone.txt").exists()
+    rec = get_effect_in_workspace(outcome.effect_id, _principal(admitted), WS,
+                                  db_path=agent._managed_effects_db)
+    assert rec is not None and rec.state.value == "committed"
+
+
+def test_v4a_move_authorized(tmp_path, monkeypatch):
+    _managed(monkeypatch)
+    admitted = _admitted("nonce-router-00000000000move1")
+    agent = _agent(tmp_path, admitted)
+    (tmp_path / "workspace" / "a.txt").write_bytes(b"data")
+    final_args = {"mode": "patch", "patch": "*** Begin Patch\n*** Move File: a.txt -> b.txt\n*** End Patch"}
+    router.route_managed_file_tool(agent, "patch", dict(final_args), task_id="task-00000001")
+    move_ident = json.dumps({"src": "a.txt", "dst": "b.txt"}, sort_keys=True, separators=(",", ":")).encode()
+    auth = _mint_op_auth(agent, admitted, operation="move", requested_path="a.txt",
+                         digest_bytes=move_ident,
+                         descriptor={"tool": "patch", "op": "move", "src": "a.txt", "dst": "b.txt"},
+                         authorization_id="authz-move-00000001", perms={"move"})
+    agent._effect_authorizations = [auth]
+    outcome = router.route_managed_file_tool(agent, "patch", dict(final_args), task_id="task-00000001")
+    assert outcome.blocked is False
+    assert json.loads(outcome.result)["operation"] == "move"
+    assert not (tmp_path / "workspace" / "a.txt").exists()
+    assert (tmp_path / "workspace" / "b.txt").read_bytes() == b"data"
+
+
+def test_v4a_multi_op_blocked_no_change(tmp_path, monkeypatch):
+    _managed(monkeypatch)
+    admitted = _admitted("nonce-router-0000000000multi1")
+    agent = _agent(tmp_path, admitted)
+    (tmp_path / "workspace" / "a.txt").write_bytes(b"a")
+    patch_text = "*** Begin Patch\n*** Delete File: a.txt\n*** Delete File: b.txt\n*** End Patch"
+    outcome = router.route_managed_file_tool(agent, "patch", {"mode": "patch", "patch": patch_text},
+                                             task_id="task-00000001")
+    assert outcome.blocked is True and "exactly one" in outcome.reason.lower()
+    assert (tmp_path / "workspace" / "a.txt").read_bytes() == b"a"  # untouched
+
+
+def test_v4a_update_hunk_blocked(tmp_path, monkeypatch):
+    _managed(monkeypatch)
+    admitted = _admitted("nonce-router-000000000update1")
+    agent = _agent(tmp_path, admitted)
+    patch_text = "*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch"
+    outcome = router.route_managed_file_tool(agent, "patch", {"mode": "patch", "patch": patch_text},
+                                             task_id="task-00000001")
+    assert outcome.blocked is True

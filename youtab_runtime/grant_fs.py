@@ -65,7 +65,10 @@ __all__ = [
     "move_within_grant",
 ]
 
-_OP_TO_ACTION = {"read": "fs.read", "write": "fs.write", "create": "fs.create"}
+_OP_TO_ACTION = {
+    "read": "fs.read", "write": "fs.write", "create": "fs.create",
+    "delete": "fs.delete", "move": "fs.move",
+}
 
 
 @dataclass(frozen=True)
