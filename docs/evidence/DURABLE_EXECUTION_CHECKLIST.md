@@ -10,7 +10,7 @@ One live checklist for this stream. Updated in place; no versioned reports/bundl
 - Run recipe: `TZ=UTC PYTHONHASHSEED=0 LANG=C.UTF-8 ./.venv/Scripts/python.exe -m pytest <file> -p no:cacheprovider`.
 
 ## Claim-ID inventory (30) → see ledger R2.2 for full classification
-- REPRODUCED_CONFIRMED 0 · PRESENT_NOT_YET_REPRODUCED 11 · ALREADY_FIXED_ON_BASE 6 · REPORT_CLAIM_DISPROVED 4 · UPSTREAM_ONLY 0 · NOT_APPLICABLE_TO_RUNTIME_REPO 4 · INCONCLUSIVE_ENV_UNAVAILABLE 1 · DEFERRED_TO_NAMED_OWNER 4.
+- (R3, post P0-A…H) REPRODUCED_CONFIRMED 8 · PRESENT_NOT_YET_REPRODUCED 3 · ALREADY_FIXED_ON_BASE 6 · REPORT_CLAIM_DISPROVED 4 · UPSTREAM_ONLY 0 · NOT_APPLICABLE_TO_RUNTIME_REPO 4 · INCONCLUSIVE_ENV_UNAVAILABLE 1 · DEFERRED_TO_NAMED_OWNER 4 = 30.
 
 ## Phase 2 reproduction status (deterministic; failing repro REQUIRED before any prod edit)
 | id | target claim | status | repro path | result |
@@ -19,10 +19,10 @@ One live checklist for this stream. Updated in place; no versioned reports/bundl
 | P0-B | async delegation restart/resume [C-2.1d] | DONE | tests/durable_execution/test_p0b_async_delegation_restart.py | 2/2 pass — dead-owner 'running'->'unknown' (status recovered, NOT resumed); live owner untouched |
 | P0-C | configured child timeout → summary=None [C-2.1c] | DONE | tests/durable_execution/test_p0c_configured_child_timeout.py | 1/1 pass — injected 0.2s timeout -> status timeout, summary None, partial discarded, no recoverable state (only diagnostic log) |
 | P0-D | Kanban false health (liveness≠progress) [C-2.2b] + PID/breaker [C-2.2c] | DONE | tests/durable_execution/test_p0d_kanban_false_health.py | 2/2 pass — heartbeat advances last_heartbeat_at only (no step/checkpoint marker); breaker trips to 'blocked' at limit 2 |
-| P0-E | effect-then-die (via read-only Lane effect-ledger boundary) [C-2.2d] | TODO | — | — |
-| P0-F | multiplex hooks: secondary security hook not invoked [C-3.4] | TODO | — | — |
-| P0-G | Windows MCP lifecycle: orphan/shared-loop [C-3.2b/c] | TODO | — | — |
-| P0-H | Web/Electron reconnect from last acked sequence [C-WEB-2] | TODO | — | — |
+| P0-E | effect-then-die [C-2.2d] | DONE (characterization) | tests/durable_execution/test_p0e_effect_then_die.py | 2 pass — effect ledger ABSENT on base; retry re-execution window; typed boundary IR-1 |
+| P0-F | multiplex hooks [C-3.4] | DONE (characterization) | tests/durable_execution/test_p0f_multiplex_hooks.py | 1 pass — secondary-profile security hook inert & silent; SEPARATE commit pending fix |
+| P0-G | Windows MCP lifecycle [C-3.2b] | DONE (characterization) | tests/durable_execution/test_p0g_windows_mcp_orphan.py | 3 pass — real Windows child→grandchild orphan; killpg/watchdog POSIX-only. C-3.2c shared-loop still PRESENT_NOT_YET_REPRODUCED |
+| P0-H | Web/Electron reconnect [C-WEB-1/2] | DONE (real HTTP E2E) | tests/durable_execution/test_p0h_web_reconnect.py | 1 pass — reconnect 404 (no seq cursor); restart 404 (lost); consumer contract IR-2 |
 
 ## Ownership mapping (no duplicate ledgers)
 - Durable Execution OWNS: durable task/run identity, task event sequence, execution checkpoints, restart/resume, parent/child lifecycle, progress watchdog, cancellation, reconnect + late-result delivery.

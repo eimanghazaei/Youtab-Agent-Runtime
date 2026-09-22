@@ -150,3 +150,58 @@ Lane frozen SHAs (all reachable read-only in this repo): Lane 1 `4edbbe78e463370
 
 ### R2.7 Progress-vs-heartbeat (design note, pre-implementation)
 Do not add a heartbeat field yet. First determine whether existing `task_events` (monotonic AUTOINCREMENT id) + a checkpoint digest can serve as the monotonic progress marker. Final design must SEPARATE: worker liveness heartbeat · lease renewal · progress sequence · checkpoint digest · current step · no-progress duration. A live heartbeat without progress must produce a visible STALLED/BLOCKED recovery state — never an immediate destructive kill.
+
+---
+
+## Revision 3 — Post P0-A…H reproduction (additive)
+
+**Verdict:** `PHASE 0/1 AUDIT COMPLETE_NOT_REVIEWED` · `P0-A…H DEFECTS REPRODUCED` · `PRODUCTION FIXES NOT STARTED` · `DURABLE EXECUTION PRODUCT NO-GO`.
+
+All P0 tests are **BASELINE CHARACTERIZATION** (assert the CURRENT behavior). Per Owner: before any fix is called done, the desired production invariant must fail on base and pass on the candidate SHA. No xfail/skip/retry.
+
+### R3.1 Updated 8-category classification (all 30 rows reconciled)
+
+| Category | Count | Claim IDs |
+|---|---|---|
+| REPRODUCED_CONFIRMED | 8 | C-WEB-1 (P0-A component + P0-H transport), C-WEB-2 (P0-H), C-2.1c (P0-C), C-2.1d (P0-B), C-2.2b (P0-D), C-2.2d (P0-E), C-3.4 (P0-F), C-3.2b (P0-G Windows orphan) |
+| PRESENT_NOT_YET_REPRODUCED | 3 | C-2.3, C-3.2c (MCP shared-loop starvation — theoretical), IC-1 |
+| ALREADY_FIXED_ON_BASE | 6 | C-2.1b, C-2.2c (also proven by P0-D breaker), C-3.1, C-3.2a, C-3.3, C-LIC-1 |
+| REPORT_CLAIM_DISPROVED | 4 | C-VER-1, C-2.1a, C-2.2a, C-2.4 |
+| UPSTREAM_ONLY | 0 | — |
+| NOT_APPLICABLE_TO_RUNTIME_REPO | 4 | C-4.1, C-4.2, C-6.1, C-6.3 |
+| INCONCLUSIVE_ENV_UNAVAILABLE | 1 | C-LIC-2 (packaged artifact) |
+| DEFERRED_TO_NAMED_OWNER | 4 | C-2.5, C-5.1, IC-2, IC-3 |
+| **TOTAL** | **30** | |
+
+Note: C-WEB-1 has BOTH a source-level/component reproduction (P0-A) and a real transport reproduction (P0-H); counted once.
+
+### R3.2 P0 reproduction results (env: worktree `.venv`, py 3.12.10, `TZ=UTC PYTHONHASHSEED=0`)
+| id | file | result |
+|---|---|---|
+| P0-A | tests/durable_execution/test_p0a_interactive_run_loss.py | 3 pass — SOURCE-LEVEL/COMPONENT |
+| P0-B | tests/durable_execution/test_p0b_async_delegation_restart.py | 2 pass — dead-owner→unknown, no resume, no duplicate child, one durable row |
+| P0-C | tests/durable_execution/test_p0c_configured_child_timeout.py | 1 pass — timeout→summary=None, no recoverable state |
+| P0-D | tests/durable_execution/test_p0d_kanban_false_health.py | 2 pass — heartbeat liveness-only; breaker blocks at 2 |
+| P0-E | tests/durable_execution/test_p0e_effect_then_die.py | 2 pass — effect ledger absent on base; retry re-execution window |
+| P0-F | tests/durable_execution/test_p0f_multiplex_hooks.py | 1 pass — secondary-profile security hook inert (silent) |
+| P0-G | tests/durable_execution/test_p0g_windows_mcp_orphan.py | 3 pass — real Windows child→grandchild orphan; killpg/watchdog POSIX-only |
+| P0-H | tests/durable_execution/test_p0h_web_reconnect.py | 1 pass — real aiohttp E2E: reconnect 404 (no seq cursor); restart 404 (lost) |
+| ENV | tests/durable_execution/test_env_sqlite_delete_mode_qual.py | 2 pass — claim fencing correct under DELETE mode |
+Aggregate: **17 passed in ~11s**.
+
+### R3.3 Authoritative environment evidence (complete)
+- Worktree `.venv`: `/f/Youtab_AI_COS_Platform/_wt/rt-durable-execution/.venv`, Python **3.12.10**.
+- CI pin: `.github/workflows/youtab-ci.yml:95` `python -m pip install 'uv==0.8.17'`; `:36` and `:191` `python-version: "3.12"`.
+- uv executable SHA-256 (bootstrap, scratch): `7cfa09dd56e0ab2977cba654cf51eb025e43234d0a5b3c242fb8d06d180bc14b`; `uv 0.8.17 (10960bc13 2025-09-10)`.
+- `uv.lock` SHA-256: `0e0deb7e3a8206be248e67c3a8e22f5f0851e4bc6f0a458291cfbfd59c52a032`.
+- `uv sync --frozen --extra dev` → exit 0; then `--extra dev --extra messaging` (aiohttp 3.14.1 for real HTTP E2E) → exit 0. Installed distributions: **84** (dev) → +6 (messaging).
+- Disk free bytes: before dev-sync `13,502,296,064` → after `13,404,512,256`; after messaging `13,384,314,880` (root worktree venv untouched; `UV_CACHE_DIR` on C:).
+
+### R3.4 SQLite WAL advisory — qualified
+- Linked SQLite **3.49.1** (vulnerable to WAL-reset bug per `youtab_state.is_sqlite_wal_reset_vulnerable`); fixed in 3.51.3+/3.50.7/3.44.6.
+- `youtab_state.apply_wal_with_fallback` selects `journal_mode=DELETE` for fresh DBs on vulnerable builds (keeps WAL only if already-WAL under concurrent openers) — a corruption safeguard, NOT changed by this stream.
+- CI: uses `setup-python` 3.12 runner sqlite; the same version-gated safeguard fires deterministically from the linked version. (Exact CI runner sqlite version not asserted here — behavior is a pure function of the linked version, which the safeguard reads.)
+- Concurrency correctness under DELETE mode: `test_env_sqlite_delete_mode_qual.py` proves 6 concurrent `claim_task` racers → **exactly one winner** (fencing intact). DELETE mode changes throughput (writers exclusive; no concurrent readers mid-write), not claim/lease correctness. Global DB mode is NOT changed by this stream (separate decision).
+
+### R3.5 Typed interface requests
+See `DURABLE_EXECUTION_LANE_INTERFACE_REQUESTS.md`: IR-1 canonical effect ledger (Lane 1/2, absent on base), IR-2 Web/Electron durable task consumer contract (backend here; UI = Frontend session), IR-3 worker lease/reconciliation (Lane 1/2).

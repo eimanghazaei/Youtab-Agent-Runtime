@@ -1,4 +1,8 @@
-"""P0-A reproduction — interactive task loss on the /v1/runs surface.
+"""P0-A BASELINE CHARACTERIZATION (SOURCE-LEVEL / COMPONENT) — interactive task loss on /v1/runs.
+
+NOTE: this asserts the CURRENT (defective) behavior at the component level
+(adapter reinstantiation models a process restart). A full transport/process
+restart E2E is P0-H. Do NOT claim Web/Electron durability from this alone.
 
 Durable-execution requirement: an accepted task must survive a backend restart;
 its status, events and final result must remain retrievable by a durable id.

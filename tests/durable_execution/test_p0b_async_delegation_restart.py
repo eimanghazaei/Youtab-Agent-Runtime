@@ -1,4 +1,7 @@
-"""P0-B reproduction — async delegation across a Runtime restart.
+"""P0-B BASELINE CHARACTERIZATION — async delegation across a Runtime restart.
+
+NOTE: asserts the CURRENT behavior (durable identity / recoverable status, no
+execution resume, no duplicate child). Desired-invariant (true resume) is future.
 
 Durable-execution requirement: after parent disconnect + Runtime restart, an
 accepted delegation should either RESUME execution from its last checkpoint or be
@@ -78,6 +81,22 @@ def test_restart_marks_running_delegation_unknown_not_resumed(temp_home, monkeyp
     # Prove NON-resume explicitly: the outcome is never 'completed'/'succeeded'
     # and no continuation result exists. Identity survived; execution did not.
     assert result["status"] not in ("completed", "succeeded")
+
+    # Recovery must NOT dispatch a duplicate child (no second registry, no respawn).
+    assert ad.active_count() == 0, "recovery must not spawn a new child"
+    conn = ad._connect()
+    try:
+        row_count = conn.execute(
+            "SELECT COUNT(*) FROM async_delegations WHERE delegation_id LIKE 'deleg_p0b_running%'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert row_count == 1, "exactly one durable row; no duplicate delegation created"
+
+    # A late real child result is unreconstructable (owner process is gone): only
+    # the 'unknown' status is recoverable/deliverable — the late completion is
+    # effectively discarded, not silently accepted as success.
+    assert result["summary"] is None
 
 
 def test_live_owner_delegation_is_not_reaped(temp_home, monkeypatch):

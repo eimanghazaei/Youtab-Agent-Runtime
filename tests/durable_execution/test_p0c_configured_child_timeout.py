@@ -1,4 +1,7 @@
-"""P0-C reproduction — configured child timeout loses partial work.
+"""P0-C BASELINE CHARACTERIZATION — configured child timeout loses partial work.
+
+NOTE: asserts the CURRENT (defective) behavior. The desired-invariant test
+(typed partial state returned, no summary fabrication) lands with the fix.
 
 Durable-execution requirement: when a child hits a configured timeout, the parent
 must receive the latest checkpoint / last progress / changed files / child id and

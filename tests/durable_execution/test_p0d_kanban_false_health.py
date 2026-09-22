@@ -1,4 +1,7 @@
-"""P0-D reproduction — Kanban false health (liveness != progress) + breaker.
+"""P0-D BASELINE CHARACTERIZATION — Kanban false health (liveness != progress) + breaker.
+
+NOTE: the false-health test asserts the CURRENT (defective) behavior; the
+breaker test asserts EXISTING correct behavior (ALREADY_FIXED_ON_BASE).
 
 Durable-execution requirement: a live heartbeat without progress must eventually
 produce a visible STALLED/BLOCKED state. Heartbeat (liveness) must be separable
