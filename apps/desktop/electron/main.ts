@@ -34,7 +34,6 @@ import nodePty from 'node-pty'
 import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
-import { resolvePackagedSidecarBackend } from './sidecar-backend'
 import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, normalizeYoutabHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForYoutabReady } from './backend-health'
@@ -174,6 +173,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { resolvePackagedSidecarBackend } from './sidecar-backend'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -3853,7 +3853,9 @@ function resolveYoutabBackend(backendArgs) {
         `[sidecar] refusing bundled backend: ${sidecarBackend.sidecarRefusal.reason} — ${sidecarBackend.sidecarRefusal.detail || ''}`
       )
     } else {
-      rememberLog(`[sidecar] using bundled backend at ${sidecarBackend.command} (digest ${sidecarBackend.sidecarDigest})`)
+      rememberLog(
+        `[sidecar] using bundled backend at ${sidecarBackend.command} (digest ${sidecarBackend.sidecarDigest})`
+      )
     }
 
     return sidecarBackend
