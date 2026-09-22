@@ -83,7 +83,10 @@ const manifestFiles = manifestEntriesFromBundle(bundleRoot)
 const total = manifestFiles.reduce((n, f) => n + f.bytes, 0)
 const rootDigest = rootDigestFromEntries(manifestFiles)
 const manifest = {
-  schema: 'youtab.backend_sidecar_manifest/v1', name: NAME, entry: 'tui_gateway.entry',
+  // `entry` is the real frozen module: youtab_agent_cli.main (the same `serve`
+  // backend Electron runs in dev), launched via the sidecar_main.py wrapper.
+  schema: 'youtab.backend_sidecar_manifest/v1', name: NAME,
+  entry: 'youtab_agent_cli.main', entry_launcher: 'apps/desktop/packaging/backend-sidecar/sidecar_main.py',
   build: { python: pyVersion, uv: uvVersion, pyinstaller: piVersion, lockfile: 'uv.lock', frozen: true },
   platform: process.platform, arch: process.arch, generated_utc: new Date().toISOString(),
   executable: relative(bundleRoot, exe).split('\\').join('/'), file_count: manifestFiles.length,
