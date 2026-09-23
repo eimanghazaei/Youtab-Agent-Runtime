@@ -26,23 +26,33 @@ The api_server (`/v1/runs`) binds aiohttp on container :8090 (verified `Server: 
 `POST /v1/runs {"input":"hello","model":"main"}` (Bearer API_SERVER_KEY):
 → `HTTP 202`, `Server: aiohttp/3.14.1`, body `{"run_id":"run_d5854cc6347548a0aa0ac507efcff305","status":"started"}`.
 
-## 2. Persisted status/result in PostgreSQL — PASS
-State progression (durable), via `GET /v1/runs/{id}/events?from_seq=0`:
-`seq1 accepted(QUEUED) → seq2 status.running(RUNNING) → seq3 status.failed(FAILED)`.
-`GET /v1/runs/{id}/result` → `{"terminal":true,"status":"failed","error":"HTTP 401: Missing Authentication header"}`.
-Physical PG row (`psql`): `run_d5854cc6347548a0aa0ac507efcff305|FAILED|`.
-NOTE: the FAILED terminal is because the agent's provider call did not reach the
-mock (the `main` route did not use OPENAI_BASE_URL — provider-config, not a
-durability fault). The durable STATUS/terminal was persisted correctly through the
-running service. The "completed-with-output" result-payload path is proven at the
-component level (test_p5_http_on_postgres.py, completing mock agent → SUCCEEDED +
-result_ref in PG); wiring a completing provider through the running service needs a
-config-file provider (OPEN, provider-side).
+## 2. SUCCEEDED with nonempty result, persisted in PostgreSQL — PASS
+A completing provider is now wired through the RUNNING service via a config file at
+`/opt/data/config.yaml` (the service's `YOUTAB_AGENT_HOME=/opt/data`), pointing at an
+OpenAI-compatible mock that returns a valid streaming SSE completion
+(`text/event-stream`, `chat.completion.chunk` frames + `data: [DONE]`, content
+`CUSTOMER_TASK_OK_42`). Raw evidence: `RUNNING_SERVICE_SUCCEEDED_RAW.txt`.
+- `POST /v1/runs {"input":"do the customer task"}` → run_id `run_795e0e80d51b4f0d8d5b17375958ceb3`.
+- `GET /v1/runs/{id}/result` → `{"terminal":true,"status":"completed","output":"CUSTOMER_TASK_OK_42","error":null}`.
+- Durable events `GET /v1/runs/{id}/events?from_seq=0`:
+  `seq1 accepted(QUEUED) → seq2 status.running(RUNNING) → seq3 progress → seq4 status.completed(SUCCEEDED)`.
+- Physical PG row (`psql`): `run_795e0e80d51b4f0d8d5b17375958ceb3|SUCCEEDED|CUSTOMER_TASK_OK_42`
+  (state SUCCEEDED, `result_ref` carries the nonempty output).
+This is one synthetic task against a mock provider — it proves the durable
+execution + result-payload path end-to-end through the live service, not a real
+customer workload. Product remains NO-GO.
+
+(Earlier FAILED-terminal observation retained for the record: before the config
+file was mounted, the `main` route ignored `OPENAI_BASE_URL` env and the provider
+call failed 401 — durable STATUS/terminal was still persisted correctly; that was
+provider-config, not a durability fault.)
 
 ## 3. Recovery after a service restart — PASS
 `docker restart de-p5-gw` (fresh process; in-memory dicts empty) → `GET /v1/runs/{id}`:
-`{"status":"failed","recovered_from_store":true,...}`; events replay = 3 durable events.
-The run was recovered from PostgreSQL by the running service.
+`{"status":"completed","output":"CUSTOMER_TASK_OK_42","recovered_from_store":true,...}`;
+`GET /v1/runs/{id}/result` → SUCCEEDED with output intact; events replay = 4 durable
+events (seq1..seq4 ending status.completed/SUCCEEDED). The SUCCEEDED run with its
+nonempty result was recovered from PostgreSQL by the restarted service.
 
 ## 4. PostgreSQL unavailable → fail-closed (OBSERVED, not inferred) — PASS
 `docker stop de-p5-pg2` then `docker restart de-p5-gw`:
@@ -55,8 +65,16 @@ The run was recovered from PostgreSQL by the running service.
 - (s6 keeps the container process up for other supervised services, but the
   durable-execution ingress — the api_server /v1/runs endpoint — is down.)
 
+## Provider config (how the running service reached the mock)
+The service reads `YOUTAB_AGENT_HOME=/opt/data`, so its config is `/opt/data/config.yaml`
+(NOT `.youtab-agent-runtime/config.yaml`, and `OPENAI_BASE_URL` env alone is NOT
+honored by the `main` route). Config mounted (secrets redacted):
+`model.default: mock-model`, `custom_providers.mock.{base_url: http://de-p5-mock:8080/v1,
+api_key: <REDACTED>}`. The mock MUST return streaming SSE (a plain JSON completion is
+rejected with "Provider returned an empty stream ... malformed SSE").
+
 ## Verdict
-Running-service admission + durable status persistence + restart recovery +
-PG-down fail-closed: PASS on the real image. OPEN: a completing provider through
-the running service (config-file provider) and the Master-adopted deployment
-contract. Product NO-GO.
+Running-service admission + durable status persistence + **SUCCEEDED run with
+nonempty result** + restart recovery (of the SUCCEEDED run) + PG-down fail-closed:
+PASS on the real image, one synthetic mock task. OPEN: the Master-adopted
+deployment contract and a real customer workload. Product NO-GO.

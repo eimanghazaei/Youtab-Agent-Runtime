@@ -35,6 +35,14 @@ services:
 
   youtab-agent-runtime:
     environment:
+      # --- Durable-execution API ingress (/v1/runs). OFF unless KEY+HOST are set. ---
+      # API_SERVER_KEY is a secret read from the HOST env (never embedded here).
+      # Bind inside the container only; publish the port to a trusted network via the
+      # `ports`/reverse-proxy in your shared docker-compose.yml, not to 0.0.0.0 on a
+      # public host. Pair with terminal.backend: docker for a sandboxed backend.
+      - API_SERVER_KEY=${API_SERVER_KEY:?set API_SERVER_KEY (durable /v1/runs ingress secret)}
+      - API_SERVER_HOST=${API_SERVER_HOST:-127.0.0.1}
+      - API_SERVER_PORT=${API_SERVER_PORT:-8642}
       # Require the PostgreSQL durable RunStore backend (fail-closed in server mode).
       - YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND=postgres
       # libpq KEYWORD conninfo (NOT a URL) so a password with URI-special chars
@@ -47,6 +55,16 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    # Liveness/readiness on the durable ingress. With backend=postgres and PG
+    # unreachable the api_server never binds, so /health does not answer and this
+    # probe fails (the intended fail-closed signal). Uses the OBSERVED route
+    # /health (no /api/health, no /healthz). Adjust the port to API_SERVER_PORT.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('API_SERVER_PORT','8642'), timeout=3); sys.exit(0)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   youtab-durable-pgdata:

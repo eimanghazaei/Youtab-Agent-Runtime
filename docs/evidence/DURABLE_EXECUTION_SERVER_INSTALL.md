@@ -58,7 +58,23 @@ percent-encoded URL, and FAILS raw-unencoded in a URL DSN.
 The shipped server runs `gateway run` (docker-compose `command: ["gateway","run"]`);
 the api_server constructs the run store via `create_run_store()` (env-driven) at
 startup. To run the server on PostgreSQL: set the two env vars above before
-`gateway run`.
+`gateway run`. The api_server (`/v1/runs`) is off unless `API_SERVER_KEY` and
+`API_SERVER_HOST` are set (existing product contract).
+
+## API health behavior (OBSERVED on the running image)
+The api_server exposes health at **`GET /health`**, `GET /health/detailed` and the
+alias `GET /v1/health` (registered in `gateway/platforms/api_server.py`). There is
+**no** `/api/health`, `/healthz`, `/readyz` or `/livez` route (all 404).
+- `GET /health` → `200 {"status":"ok","platform":"youtab-agent-runtime","version":"0.19.1"}`,
+  no auth required. Use this as the container liveness/readiness probe.
+- `GET /health/detailed` requires `Authorization: Bearer <API_SERVER_KEY>`
+  (401 `gateway_auth_failed` without it).
+- Fail-closed signal: with `BACKEND=postgres` and PostgreSQL unreachable, the run
+  store raises at api_server startup, so **the aiohttp listener never binds** —
+  `/health` itself is unreachable (connection refused / HTTP 000), not a 200 with a
+  degraded body. The absence of a bound `/health` is the health-probe failure. The
+  container's other s6-supervised processes may stay up, but the durable-execution
+  ingress is down (proved in RUNNING_SERVICE_PROOF.md §4).
 
 ## Verdict
 **PostgreSQL component VERIFIED; production deployment path OPEN.** The dependency
