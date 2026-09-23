@@ -1064,6 +1064,7 @@ def test_durable_route_approve_decides_via_cas(managed_durable):
     client, db_path = managed_durable
     run_id = _durable_run(client)
     _worker_requests_approval_db(db_path, run_id, "ap1")
+    _tick()  # server-owned producer ingest opens the durable approval FIRST
     _, gh = _mint_grant()
     r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
     assert r.status_code == 200, r.text
@@ -1080,6 +1081,7 @@ def test_durable_route_deny_is_terminal(managed_durable):
     client, db_path = managed_durable
     run_id = _durable_run(client)
     _worker_requests_approval_db(db_path, run_id, "ap1")
+    _tick()  # producer ingest opens the durable approval before the decision
     _, gh = _mint_grant()
     r = _approve(client, run_id, "ap1", "deny", grant_header=gh)
     assert r.status_code == 200, r.text
@@ -1094,6 +1096,7 @@ def test_durable_route_duplicate_returns_original(managed_durable):
     client, db_path = managed_durable
     run_id = _durable_run(client)
     _worker_requests_approval_db(db_path, run_id, "ap1")
+    _tick()  # producer ingest opens the durable approval before the decision
     _, g1 = _mint_grant()
     assert _approve(client, run_id, "ap1", "approve", grant_header=g1).status_code == 200
     _, g2 = _mint_grant()
@@ -1118,6 +1121,7 @@ def test_durable_route_wrong_id_409(managed_durable):
     client, db_path = managed_durable
     run_id = _durable_run(client)
     _worker_requests_approval_db(db_path, run_id, "expected")
+    _tick()  # durable opens "expected"; a decision for "wrong" must still be refused
     _, gh = _mint_grant()
     r = _approve(client, run_id, "wrong", "approve", grant_header=gh)
     assert r.status_code == 409
@@ -1225,6 +1229,7 @@ def test_decision_projection_repaired_on_retry(managed_durable, monkeypatch):
     client, db_path = managed_durable
     run_id = _durable_run(client)
     _worker_requests_approval_db(db_path, run_id, "ap1")
+    _tick()  # producer ingest opens the durable approval before the decision
 
     # Inject a ONE-TIME failure of the kanban decision projection write, AFTER the
     # durable decision has committed, to model a crash between the two writes.
@@ -1395,3 +1400,69 @@ def test_rebuild_kanban_approval_projection_from_runstore(managed_durable):
         assert _rt.rebuild_kanban_approval_projection(conn, run_id) == 0
     finally:
         conn.close()
+
+
+def test_direct_post_before_ingest_cannot_self_open(managed_durable):
+    """Re-review blocker 2: a direct POST /approve BEFORE any producer/tick ingest must
+    NOT open the approval itself and decide — it can only decide an already-open durable
+    approval. So a no-tick/no-poll direct POST is refused and the run is untouched."""
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)  # dispatcher frozen — no ingest has run
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    assert dip.get_ingress_authority().get_run(run_id)["state"] == "QUEUED"
+    _, gh = _mint_grant()
+    r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
+    assert r.status_code == 409
+    assert r.json()["detail"]["error"] == "no_such_open_approval"
+    # the refused POST did NOT open the durable approval (no self-open bypass)
+    assert dip.get_ingress_authority().get_run(run_id)["state"] == "QUEUED"
+    approved = [e for e in dip.get_ingress_authority().get_events(run_id)
+                if e["kind"] in ("approval_request", "approval_approved")]
+    assert approved == []
+    # only after the producer ingest (tick) can the decision be made
+    _tick()
+    _, gh2 = _mint_grant()
+    r2 = _approve(client, run_id, "ap1", "approve", grant_header=gh2)
+    assert r2.status_code == 200 and r2.json()["state"] == "RUNNING"
+
+
+def test_direct_post_replay_after_decision_returns_original(managed_durable):
+    """Idempotent replay is preserved with decide-only: a duplicate POST after a real
+    decision returns the ORIGINAL decision, not 409."""
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    _tick()
+    _, g1 = _mint_grant()
+    assert _approve(client, run_id, "ap1", "approve", grant_header=g1).status_code == 200
+    _, g2 = _mint_grant()
+    r = _approve(client, run_id, "ap1", "approve", grant_header=g2)
+    assert r.status_code == 200 and r.json()["already_decided"] is True
+    assert r.json()["decision"] == "approve"
+
+
+def test_tick_ingest_no_starvation_old_active_behind_many(managed_durable):
+    """Re-review blocker 3: an OLD active approval must not starve behind >200 newer /
+    terminal tasks. The tick scans active runs OLDEST-FIRST, so the old pending approval
+    is ingested regardless of how many newer/terminal tasks exist."""
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    old_run = _durable_run(client)                 # the OLDEST run
+    _worker_requests_approval_db(db_path, old_run, "ap1")
+    # pile up >200 NEWER kanban tasks: a mix of terminal (done) and active, none of
+    # which is the target — they must not push the old pending approval past the scan.
+    conn = kb.connect(db_path=db_path)
+    try:
+        for i in range(240):
+            tid, _ = kb.create_task_ex(conn, title=f"filler-{i}", tenant=TENANT,
+                                       created_by=USER)
+            if i % 2 == 0:
+                kb.complete_task(conn, tid, result="x", summary="done")  # terminal
+    finally:
+        conn.close()
+    # one server-owned tick: the old active approval is ingested despite the pile-up
+    _tick()
+    assert dip.get_ingress_authority().get_run(old_run)["state"] == "WAITING_APPROVAL"

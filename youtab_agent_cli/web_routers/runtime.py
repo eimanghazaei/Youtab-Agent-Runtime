@@ -2070,26 +2070,36 @@ def ingest_worker_approval_request(conn, run_id: str, *, approval_id: str) -> st
     return result
 
 
-# Bound the per-tick approval-ingest scan (active runs only). Opt-in + managed-only.
-_APPROVAL_INGEST_TICK_CAP = 200
+# Per-tick approval-ingest scan cap. This scan is only the transitional BRIDGE for a
+# worker that signals over kanban transport; the real producer-first path is the keyed
+# boundary ``ingest_worker_approval_request(run_id, approval_id)`` called directly for
+# ONE run (no scan). The scan is ACTIVE-ONLY (terminal excluded in SQL) and ordered
+# OLDEST-FIRST so an old active approval can never starve behind newer or terminal
+# tasks; the cap is a generous defensive bound on the active set, not a starvation gate.
+_APPROVAL_INGEST_TICK_CAP = 2000
+_TERMINAL_KANBAN_STATUSES = frozenset({"done", "archived"})
 
 
 def _ingest_pending_approval_requests(conn) -> int:
     """Server-owned, poll-INDEPENDENT ingest (D2 P1): on each dispatcher tick, persist
     every worker-signalled pending approval into the fenced RunStore BEFORE any client
-    poll can publish it, then derive kanban from durable. Bounded and best-effort;
-    returns the count accepted. A no-op when durable ingress is off. This is the live
-    production caller of the ingest boundary — NOT a GET-time reconciliation."""
+    poll can publish it, then derive kanban from durable. A no-op when durable ingress
+    is off. This is the live production caller of the ingest boundary — NOT a GET-time
+    reconciliation. Scans ACTIVE runs OLDEST-FIRST (no starvation); returns the count
+    accepted."""
     _dip = _durable_ingress_active()
     if _dip is None:
         return 0
     try:
-        tasks = kb.list_tasks(conn, include_archived=False, order_by="created-desc")
+        # include_archived=False drops 'archived' in SQL; 'created' is oldest-first so
+        # the oldest active approval is ingested before any newer task.
+        tasks = kb.list_tasks(conn, include_archived=False, order_by="created",
+                              limit=_APPROVAL_INGEST_TICK_CAP)
     except Exception:  # a tick failure must never crash the loop
         return 0
     accepted = 0
-    for t in tasks[:_APPROVAL_INGEST_TICK_CAP]:
-        if t.status in ("done", "archived"):
+    for t in tasks:
+        if t.status in _TERMINAL_KANBAN_STATUSES:
             continue
         try:
             aid = _open_approval_id(kb.list_events(conn, t.id))
@@ -2939,19 +2949,14 @@ async def runtime_approve_run(
                                             identity.user, events)
                     return {"run_id": run_id, "approval_id": approval_id,
                             "already_decided": True, "decision": _prior}
-                # A worker must have requested THIS approval over the transport.
-                open_a = any(
-                    e.kind == _rc.APPROVAL_REQUEST
-                    and (e.payload or {}).get("approval_id") == approval_id
-                    for e in events
-                )
-                if not open_a:
-                    raise HTTPException(status_code=409,
-                                        detail={"error": "no_such_open_approval"})
-                # Project the worker's request into a durable open approval, then
-                # decide via the id-bound, single-use, scope-checked fenced CAS.
+                # DECIDE ONLY: the route does NOT open the approval — the independent
+                # producer ingest (worker->server / the server-owned tick boundary)
+                # must have durably opened it FIRST. A direct POST before that ingest
+                # cannot self-open and bypass the producer: an approval that is not
+                # already durably WAITING_APPROVAL (id-bound, scope-matched) is refused
+                # by the CAS with ApprovalNotOpen -> 409. This is the id-bound,
+                # single-use, scope-checked fenced decision.
                 try:
-                    _dip.open_managed_approval(run_id, approval_id=approval_id)
                     _newrow = _dip.decide_managed_approval(
                         run_id, approval_id=approval_id, decision=decision,
                         tenant_id=identity.tenant, workspace_id=identity.workspace,
@@ -2960,14 +2965,12 @@ async def runtime_approve_run(
                 except _dip.ApprovalScopeMismatch:
                     raise HTTPException(status_code=403,
                                         detail={"error": "approval_scope_mismatch"})
-                except _dip.InvalidTransition:
-                    # The durable run is no longer in an approvable state (terminal
-                    # or otherwise past RUNNING) for a NOT-yet-decided approval id.
-                    raise HTTPException(status_code=409, detail={"error": "run_terminal"})
-                except (_dip.ApprovalNotOpen, _dip.ApprovalAlreadyOpen):
-                    # Lost a concurrent race, or a stale/wrong id: the durable store
-                    # is authoritative — return the original decision if one landed,
-                    # else refuse (never a double decision).
+                except (_dip.ApprovalNotOpen, _dip.ApprovalAlreadyOpen,
+                        _dip.InvalidTransition):
+                    # Not durably open for THIS id (not yet ingested, wrong/stale id,
+                    # or terminal), or a lost concurrent race: the durable store is
+                    # authoritative — return the original decision if one landed, else
+                    # refuse. Never opens the approval, never a double decision.
                     _prior = _dip.prior_approval_decision(run_id, approval_id)
                     if _prior is not None:
                         _ensure_kanban_decision(conn, task.id, approval_id, _prior,
