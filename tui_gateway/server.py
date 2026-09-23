@@ -7431,7 +7431,7 @@ def _handle_busy_submit(
         _enqueue_prompt(session, text, transport)
         session["last_active"] = time.time()
 
-    if mode != "queue":
+    if mode == "interrupt":
         _interrupt_busy_session(sid, session, agent)
     return _ok(rid, {"status": "queued"})
 

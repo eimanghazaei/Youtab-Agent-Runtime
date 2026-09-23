@@ -131,6 +131,8 @@ def test_busy_steer_mode_injects_when_accepted(monkeypatch):
 def test_busy_steer_queues_when_turn_completed_before_acceptance(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
     agent = _steer_agent()
+    interrupts = []
+    agent.interrupt = lambda: interrupts.append("interrupt")
     session = _session(agent=agent, running=True)
     old_turn = {"user": "A"}
     session["inflight_turn"] = old_turn
@@ -142,6 +144,7 @@ def test_busy_steer_queues_when_turn_completed_before_acceptance(monkeypatch):
     assert server._handle_busy_submit("r1", "sid", session, "B", "ws-1")["result"] == {"status": "queued"}
     assert session["queued_prompt"]["text"] == "B"
     assert agent._pending_steer is None
+    assert interrupts == []
 
 
 def test_busy_steer_completion_during_acceptance_queues_once(monkeypatch):
