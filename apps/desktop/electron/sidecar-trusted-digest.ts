@@ -13,9 +13,12 @@
 // rather than trusting it. Packaged builds do not accept a process-environment
 // replacement for this compiled trust anchor.
 
-// This source includes a later persistence correction than the last packaged
-// sidecar. Rebuild the native sidecar from the final integrated source and pin
-// its target-specific digest before packaging. Null refuses an unverified
-// shipped sidecar.
+// Per-release attestation of ONE frozen Windows x64 bundle (the PyInstaller
+// onedir freeze is not bit-reproducible, so rebuild and re-pin per release).
+//   source: release/runtime-desktop-rc-prep 2ec3ad23a959f1936435e0a87df2e1a8a86575ce
+//   (includes the no-SessionDB turn-ack correction and native-target guards)
+//   build: win32/x64 (PE32+ AMD64), python 3.12.10, uv 0.8.17, pyinstaller 6.22.3
+// This anchor is valid only for a win32-x64 package; other targets need their
+// own native sidecar and anchor.
 export const TRUSTED_SIDECAR_ROOT_DIGEST: string | null =
-  null
+  '45641867bacbf7e0ac3dd009c1032447810217691a50d3cff180ca82b6fd502b'

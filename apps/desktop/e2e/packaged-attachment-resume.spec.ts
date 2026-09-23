@@ -549,4 +549,63 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       .toContain(CAPTION)
     await page2.screenshot({ path: testInfo.outputPath('packaged-fault-recovery.png') })
   })
+
+  // R6: SessionDB unavailable in the REAL bundled backend. `_get_db()` degrades
+  // to None and the gateway keeps serving, so `_persist_session` returns None for
+  // a nonempty turn. That is not a durable commit: the turn must close as a
+  // recoverable error and keep its on-disk crash marker instead of acknowledging
+  // success and retiring the only durable trace of the prompt.
+  test('SessionDB unavailable: a completed turn is not acknowledged as durable and keeps its marker', async ({}, testInfo) => {
+    test.skip(!packagedBinaryExists(), 'requires the packaged binary — run npm run dist:win first')
+    test.slow()
+    test.setTimeout(600_000)
+
+    mock = await startMockServer()
+    sandbox = createSandbox('packaged-no-sessiondb')
+    writeMockProviderConfig(sandbox.youtabHome, mock.url)
+    writeEnvFile(sandbox.youtabHome)
+    // A directory at the database path makes SQLite fail to open state.db.
+    const dbPath = path.join(sandbox.youtabHome, 'state.db')
+    fs.mkdirSync(dbPath, { recursive: true })
+
+    ;({ app } = await launchPackagedAppRealBackend(sandbox))
+    const page1 = await app.firstWindow()
+    await waitForAppReady({ page: page1, app } as never, 240_000)
+    await expect
+      .poll(() => backendProcessPaths().some(p => /win-unpacked[\\/]+resources[\\/]+backend-sidecar/i.test(p)), {
+        timeout: 60_000,
+        message: 'the running backend must be the packaged bundled sidecar',
+      })
+      .toBe(true)
+
+    const composer = await focusComposer(page1)
+    await composer.type(CAPTION, { delay: 10 })
+    await page1.keyboard.press('Enter')
+    await expect
+      .poll(() => mock!.receivedPrompts.some(p => p.includes(CAPTION)), { timeout: 180_000, message: 'the bundled backend must run the turn' })
+      .toBe(true)
+    await expect
+      .poll(() => page1.getByRole('button', { name: 'Stop' }).count(), { timeout: 180_000 })
+      .toBe(0)
+
+    await expect
+      .poll(() => page1.evaluate(() => document.body.innerText), {
+        timeout: 60_000,
+        message: 'the undurable turn must surface the recoverable save failure',
+      })
+      .toContain('could not be saved to the session store')
+    await expect
+      .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), {
+        timeout: 30_000,
+        message: 'an unsaved turn must keep its crash-recovery marker',
+      })
+      .toBe(true)
+    expect(fs.statSync(dbPath).isDirectory(), 'the SessionDB must have stayed unavailable').toBe(true)
+    await page1.screenshot({ path: testInfo.outputPath('packaged-no-sessiondb.png') })
+
+    await closePackagedApp(app)
+    app = null
+    await expect.poll(() => bundledBackendProcessCount(), { timeout: 20_000 }).toBe(0)
+    expect(crashMarkerHasEntry(sandbox.youtabHome), 'the marker must survive process close').toBe(true)
+  })
 })
