@@ -46,6 +46,7 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
+import { openBackendStdioLog } from './backend-stdio-log'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
 import { readImagePngFromClipboardViaRenderer, writeImagePngToClipboardViaRenderer } from './clipboard-image'
@@ -175,7 +176,6 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { canUseDeveloperSourceOverride, resolvePackagedSidecarBackend } from './sidecar-backend'
-import { openBackendStdioLog } from './backend-stdio-log'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
