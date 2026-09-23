@@ -16,17 +16,35 @@
 // and safe to bundle into the Electron main process.
 import { createHash } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readdirSync, readSync, realpathSync } from 'node:fs'
-import { isAbsolute, join, relative, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, sep, win32 } from 'node:path'
 
 function inside(root, target) {
   const rel = relative(root, target)
   return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
 }
 
+function linkTextStaysInRoot(rootReal, path, linkText) {
+  const parent = relative(rootReal, dirname(path))
+  let depth = parent ? parent.split(/[\\/]/).length : 0
+  for (const part of linkText.split(/[\\/]/)) {
+    if (!part || part === '.') continue
+    depth += part === '..' ? -1 : 1
+    if (depth < 0) return false
+  }
+  return true
+}
+
 function inspectLink(path, rootReal) {
   const before = lstatSync(path)
   if (!before.isSymbolicLink()) throw new Error(`bundle entry changed type: ${path}`)
   const linkText = readlinkSync(path)
+  // A bundle is relocated into an installer and then the customer's machine.
+  // Absolute and drive-relative links may resolve in the build tree but break
+  // or escape after relocation, so only relative link text is admissible.
+  if (isAbsolute(linkText) || win32.isAbsolute(linkText) || /^[A-Za-z]:/.test(linkText) ||
+      !linkTextStaysInRoot(rootReal, path, linkText)) {
+    throw new Error(`bundle symlink text is not portable within root: ${path}`)
+  }
   const target = realpathSync(path)
   if (!inside(rootReal, target)) throw new Error(`bundle symlink escapes root: ${path}`)
   const targetStat = lstatSync(target)

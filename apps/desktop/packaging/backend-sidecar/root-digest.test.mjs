@@ -1,9 +1,9 @@
 // Determinism/tamper tests for the canonical sidecar root-digest algorithm.
 // Run: npx vitest run --project electron packaging/backend-sidecar/root-digest.test.mjs
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join, relative } from 'node:path'
 import { afterEach, test } from 'vitest'
 
 import { collectBundleTree, manifestEntriesFromBundle, parseTrustedDigest, rootDigestFromBundle, rootDigestFromEntries, sha256String, validateBundleTree } from './root-digest.mjs'
@@ -71,8 +71,8 @@ test('parseTrustedDigest accepts 64-hex, rejects junk', () => {
 test('in-bundle symlink target is bound into digest without following directory aliases', () => {
   const root = fixture({ 'a.txt': 'same', 'b.txt': 'same', 'dir/c.txt': 'content' })
   try {
-    symlinkSync(join(root, 'a.txt'), join(root, 'alias.txt'))
-    symlinkSync(join(root, 'dir'), join(root, 'dir-alias'), 'dir')
+    symlinkSync('a.txt', join(root, 'alias.txt'))
+    symlinkSync('dir', join(root, 'dir-alias'), 'dir')
   } catch (error) {
     if (error.code === 'EPERM') return
     throw error
@@ -82,7 +82,7 @@ test('in-bundle symlink target is bound into digest without following directory 
   assert.equal(entries.filter(entry => entry.type === 'symlink').length, 2)
   assert.equal(entries.length, 5)
   rmSync(join(root, 'alias.txt'))
-  symlinkSync(join(root, 'b.txt'), join(root, 'alias.txt'))
+  symlinkSync('b.txt', join(root, 'alias.txt'))
   assert.notEqual(rootDigestFromBundle(root), before)
 })
 
@@ -90,22 +90,22 @@ test('digest rejects escaping and cyclic directory symlinks', () => {
   const outside = fixture({ 'file.txt': 'outside' })
   const root = fixture({ 'nested/file.txt': 'inside' })
   try {
-    symlinkSync(outside, join(root, 'escape'), 'dir')
+    symlinkSync(relative(root, outside), join(root, 'escape'), 'dir')
   } catch (error) {
     if (error.code === 'EPERM') return
     throw error
   }
   assert.throws(() => rootDigestFromBundle(root), /escapes root/)
   rmSync(join(root, 'escape'))
-  symlinkSync(root, join(root, 'nested', 'back'), 'dir')
+  symlinkSync('..', join(root, 'nested', 'back'), 'dir')
   assert.throws(() => rootDigestFromBundle(root), /cyclic bundle directory symlink/)
 })
 
 test('digest rejects a directory alias cycle across siblings', () => {
   const root = fixture({ 'a/one.txt': 'one', 'b/two.txt': 'two' })
   try {
-    symlinkSync(join(root, 'b'), join(root, 'a', 'to-b'), 'dir')
-    symlinkSync(join(root, 'a'), join(root, 'b', 'to-a'), 'dir')
+    symlinkSync('../b', join(root, 'a', 'to-b'), 'dir')
+    symlinkSync('../a', join(root, 'b', 'to-a'), 'dir')
   } catch (error) {
     if (error.code === 'EPERM') return
     throw error
@@ -116,7 +116,7 @@ test('digest rejects a directory alias cycle across siblings', () => {
 test('tree validation rejects a symlink replaced by an unscanned regular file', () => {
   const root = fixture({ 'target.txt': 'safe' })
   try {
-    symlinkSync(join(root, 'target.txt'), join(root, 'alias.txt'))
+    symlinkSync('target.txt', join(root, 'alias.txt'))
   } catch (error) {
     if (error.code === 'EPERM') return
     throw error
@@ -132,10 +132,49 @@ test('digest separates a symlink from a regular file with matching metadata byte
   const fileDigest = rootDigestFromBundle(root)
   rmSync(join(root, 'alias.txt'))
   try {
-    symlinkSync(join(root, 'target.txt'), join(root, 'alias.txt'))
+    symlinkSync('target.txt', join(root, 'alias.txt'))
   } catch (error) {
     if (error.code === 'EPERM') return
     throw error
   }
   assert.notEqual(rootDigestFromBundle(root), fileDigest)
+})
+
+test('relative symlinks keep the same digest after moving the whole bundle', () => {
+  const root = fixture({ 'lib/data.txt': 'data', 'lib/sub/other.txt': 'other' })
+  try {
+    symlinkSync('lib/data.txt', join(root, 'data-alias.txt'))
+    symlinkSync('lib', join(root, 'lib-alias'), 'dir')
+  } catch (error) {
+    if (error.code === 'EPERM') return
+    throw error
+  }
+  const before = rootDigestFromBundle(root)
+  const holder = mkdtempSync(join(tmpdir(), 'rd-move-'))
+  dirs.push(holder)
+  const moved = join(holder, 'relocated-bundle')
+  renameSync(root, moved)
+  assert.equal(rootDigestFromBundle(moved), before)
+})
+
+test('absolute symlink resolving inside the build tree is rejected before packaging', () => {
+  const root = fixture({ 'target.txt': 'safe' })
+  try {
+    symlinkSync(join(root, 'target.txt'), join(root, 'absolute-alias.txt'))
+  } catch (error) {
+    if (error.code === 'EPERM') return
+    throw error
+  }
+  assert.throws(() => rootDigestFromBundle(root), /symlink text is not portable/)
+})
+
+test('relative symlink that leaves and reenters the build root is rejected', () => {
+  const root = fixture({ 'target.txt': 'safe' })
+  try {
+    symlinkSync(`../${basename(root)}/target.txt`, join(root, 'nonportable.txt'))
+  } catch (error) {
+    if (error.code === 'EPERM') return
+    throw error
+  }
+  assert.throws(() => rootDigestFromBundle(root), /symlink text is not portable/)
 })
