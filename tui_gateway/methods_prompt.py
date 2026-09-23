@@ -238,7 +238,13 @@ def _(rid, params: dict) -> dict:
     # resumes with full context (the agent won't persist the seed itself).
     _persist_branch_seed(session)
     # The prompt is accepted: make it durable before waiting on the agent build.
-    _record_accepted_turn(session, text)
+    try:
+        _record_accepted_turn(session, text)
+    except Exception:
+        with session["history_lock"]:
+            session["running"] = False
+            _clear_inflight_turn(session)
+        return _err(rid, 5030, "Prompt was not accepted: durable write failed; retry")
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:

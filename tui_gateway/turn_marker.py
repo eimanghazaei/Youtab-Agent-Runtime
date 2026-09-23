@@ -14,8 +14,9 @@ profile sessions keep their state in their own profile directory) and the
 file is bounded: writes prune entries older than ``_MAX_AGE_SECS`` and cap
 the total count, so an unlucky streak of crashes can't grow it unboundedly.
 
-Every function is best-effort by design — marker bookkeeping must never
-break a turn — so I/O errors degrade to "no marker" instead of raising.
+Marker writes for an already running turn remain best-effort. The initial
+acceptance write can request strict failure reporting so prompt.submit never
+acknowledges a first prompt that has no durable recovery record.
 """
 
 from __future__ import annotations
@@ -46,17 +47,23 @@ def _marker_path(home: Path | str) -> Path:
     return Path(home) / _MARKER_DIR / _MARKER_FILE
 
 
-def _load(path: Path) -> dict[str, dict]:
+def _load(path: Path, *, strict: bool = False) -> dict[str, dict]:
     try:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return {}
     except Exception:
+        if strict:
+            raise
         logger.debug("unreadable turn-marker file %s; starting fresh", path, exc_info=True)
         return {}
     if not isinstance(data, dict):
+        if strict:
+            raise ValueError(f"invalid turn-marker file: {path}")
         return {}
+    if strict and any(not isinstance(entry, dict) for entry in data.values()):
+        raise ValueError(f"invalid turn-marker entries: {path}")
     return {k: v for k, v in data.items() if isinstance(v, dict)}
 
 
@@ -66,14 +73,7 @@ def _prune(entries: dict[str, dict], now: float) -> dict[str, dict]:
         for key, entry in entries.items()
         if now - float(entry.get("started_at") or 0) <= _MAX_AGE_SECS
     }
-    if len(fresh) <= _MAX_ENTRIES:
-        return fresh
-    newest = sorted(
-        fresh.items(),
-        key=lambda item: float(item[1].get("started_at") or 0),
-        reverse=True,
-    )[:_MAX_ENTRIES]
-    return dict(newest)
+    return fresh
 
 
 def _store(path: Path, entries: dict[str, dict]) -> None:
@@ -101,6 +101,7 @@ def record_turn_start(
     *,
     attempts: int = 0,
     pending: dict[str, Any] | None = None,
+    strict: bool = False,
 ) -> None:
     """Persist the marker for a turn that is about to run.
 
@@ -114,7 +115,14 @@ def record_turn_start(
     (without ``pending``) drops it.
     """
     if not session_key or not prompt:
+        if strict:
+            raise ValueError("a durable turn marker requires a session and prompt")
         return
+    if strict and (
+        len(prompt) > _MAX_PROMPT_CHARS
+        or (isinstance(pending, dict) and len(str(pending.get("text") or "")) > _MAX_PROMPT_CHARS)
+    ):
+        raise ValueError("prompt exceeds durable turn-marker capacity")
     now = time.time()
     entry: dict[str, Any] = {
         "attempts": max(0, int(attempts)),
@@ -129,10 +137,14 @@ def record_turn_start(
     try:
         with _lock:
             path = _marker_path(home)
-            entries = _prune(_load(path), now)
+            entries = _prune(_load(path, strict=strict), now)
+            if session_key not in entries and len(entries) >= _MAX_ENTRIES:
+                raise RuntimeError("durable turn-marker capacity reached")
             entries[session_key] = entry
             _store(path, entries)
     except Exception:
+        if strict:
+            raise
         logger.debug("failed to record turn marker for %s", session_key, exc_info=True)
 
 

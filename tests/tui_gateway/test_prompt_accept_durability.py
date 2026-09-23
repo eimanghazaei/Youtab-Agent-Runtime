@@ -215,7 +215,7 @@ def test_agent_build_delay_seam_is_inert_unless_armed(monkeypatch):
     assert slept == [120.0]
 
 
-def test_marker_write_failure_never_refuses_an_accepted_prompt(tmp_path, monkeypatch):
+def test_marker_write_failure_refuses_prompt_before_agent_or_ack(tmp_path, monkeypatch):
     def _broken(*_args, **_kwargs):
         raise OSError("disk unavailable")
 
@@ -224,9 +224,75 @@ def test_marker_write_failure_never_refuses_an_accepted_prompt(tmp_path, monkeyp
 
     resp = _submit(monkeypatch, session, "sid-broken-marker", "hello")
 
-    assert resp["result"] == {"status": "streaming"}
-    assert session["running"] is True
-    assert len(_HeldThread.started) == 1
+    assert resp["error"]["code"] == 5030
+    assert "not accepted" in resp["error"]["message"]
+    assert session["running"] is False
+    assert session.get("inflight_turn") is None
+    assert _HeldThread.started == []
+    assert read_turn_marker(tmp_path, session["session_key"]) is None
+
+    monkeypatch.setattr(gw, "record_turn_start", record_turn_start)
+    retry = _submit(monkeypatch, session, "sid-broken-marker", "hello")
+    assert retry["result"] == {"status": "streaming"}
+    assert read_turn_marker(tmp_path, session["session_key"])["pending"]["text"] == "hello"
+
+
+def test_marker_store_io_failure_is_reported_at_prompt_acceptance(tmp_path, monkeypatch):
+    from tui_gateway import turn_marker
+
+    def _broken_store(*_args, **_kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(turn_marker, "_store", _broken_store)
+    session = _session(tmp_path)
+
+    resp = _submit(monkeypatch, session, "sid-io-failure", "hello")
+
+    assert resp["error"]["code"] == 5030
+    assert session["running"] is False
+    assert _HeldThread.started == []
+
+
+def test_unreadable_marker_file_refuses_new_prompt_without_overwrite(tmp_path, monkeypatch):
+    path = tmp_path / "desktop" / "interrupted_turns.json"
+    path.parent.mkdir()
+    path.write_text("{broken", encoding="utf-8")
+    session = _session(tmp_path)
+
+    resp = _submit(monkeypatch, session, "sid-corrupt-marker", "hello")
+
+    assert resp["error"]["code"] == 5030
+    assert path.read_text(encoding="utf-8") == "{broken"
+    assert session["running"] is False
+    assert _HeldThread.started == []
+
+
+def test_full_marker_journal_refuses_new_prompt_without_evicting_one(tmp_path, monkeypatch):
+    from tui_gateway import turn_marker
+
+    monkeypatch.setattr(turn_marker, "_MAX_ENTRIES", 1)
+    record_turn_start(tmp_path, "existing", "keep this prompt", strict=True)
+    session = _session(tmp_path)
+
+    resp = _submit(monkeypatch, session, "sid-full-marker", "new prompt")
+
+    assert resp["error"]["code"] == 5030
+    assert read_turn_marker(tmp_path, "existing")["prompt"] == "keep this prompt"
+    assert read_turn_marker(tmp_path, session["session_key"]) is None
+    assert session["running"] is False
+
+
+def test_oversize_prompt_is_not_acknowledged_with_truncated_recovery(tmp_path, monkeypatch):
+    from tui_gateway import turn_marker
+
+    monkeypatch.setattr(turn_marker, "_MAX_PROMPT_CHARS", 3)
+    session = _session(tmp_path)
+
+    resp = _submit(monkeypatch, session, "sid-oversize", "hello")
+
+    assert resp["error"]["code"] == 5030
+    assert read_turn_marker(tmp_path, session["session_key"]) is None
+    assert session["running"] is False
 
 
 def test_image_upload_does_not_wait_for_the_agent_build(tmp_path, monkeypatch):

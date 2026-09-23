@@ -6978,10 +6978,11 @@ def _record_accepted_turn(session: dict, text: Any) -> None:
             prompt,
             attempts=attempts,
             pending={"text": text, "images": images},
+            strict=True,
         )
     except Exception:
-        # Durability is best effort here; it must never refuse an accepted prompt.
-        logger.warning("could not record accepted turn for %s", key, exc_info=True)
+        logger.error("could not durably accept turn for %s", key, exc_info=True)
+        raise
 
 
 def pending_recovery_session_ids(home: Path | str) -> list[str]:

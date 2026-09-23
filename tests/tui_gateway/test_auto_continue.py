@@ -152,9 +152,8 @@ def test_concluded_turn_clears_marker(emits, turn_env, marker_home):
     assert read_turn_marker(marker_home, "session-key") is None
 
 
-def test_handled_failure_still_clears_marker(emits, turn_env, marker_home):
-    """An exception is a CONCLUDED turn (terminal frame + retained snapshot own
-    recovery) — only a process death may leave the marker behind."""
+def test_uncommitted_failure_keeps_marker_for_recovery(emits, turn_env, marker_home):
+    """A terminal error frame without a durable turn commit leaves recovery armed."""
 
     def _boom(message, **kwargs):
         raise RuntimeError("provider exploded")
@@ -166,7 +165,7 @@ def test_handled_failure_still_clears_marker(emits, turn_env, marker_home):
 
     server._run_prompt_submit("rid", "sid", session, "do the thing")
 
-    assert read_turn_marker(marker_home, "session-key") is None
+    assert read_turn_marker(marker_home, "session-key") is not None
 
 
 def test_continuation_turn_records_attempt_and_original_prompt(
