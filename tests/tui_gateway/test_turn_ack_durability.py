@@ -37,7 +37,8 @@ def _agent(*, persist_raises: bool):
     agent = MagicMock()
     agent._session_messages = [{"role": "user", "content": "hello"}]
     agent._persist_session = MagicMock(
-        side_effect=RuntimeError("disk full") if persist_raises else None
+        side_effect=RuntimeError("disk full") if persist_raises else None,
+        return_value=True,
     )
     return agent
 
@@ -105,6 +106,35 @@ def test_persist_returns_false_downgrades_keeps_marker(tmp_path):
     assert not clear_marker.called
 
 
+def test_persist_returns_none_with_snapshot_keeps_recovery_marker(tmp_path):
+    """SessionDB initialization/unavailability returns None from the real
+    persistence funnel. A nonempty turn snapshot has no durable commit in that
+    case, so success must not be acknowledged or its recovery marker removed."""
+    session = _session(tmp_path)
+    from run_agent import AIAgent
+
+    agent = AIAgent.__new__(AIAgent)
+    agent._session_db = None
+    agent._session_persist_lock = None
+    agent._persist_disabled = False
+    agent.session_id = None
+    agent._save_session_log = lambda _messages: None
+    agent._drop_trailing_empty_response_scaffolding = lambda _messages: None
+    agent._session_messages = [{"role": "user", "content": "hello"}]
+    assert agent._persist_session(agent._session_messages) is None
+    payload = {"text": "hi", "status": "complete"}
+    with patch.object(gw, "clear_turn_marker") as clear_marker:
+        status, retained, committed = gw._finalize_turn_ack(
+            session, agent, "sess-key-001", "complete", payload,
+            {"final_response": "hi"}, "hi",
+        )
+    assert status == "error"
+    assert retained is True
+    assert committed is False
+    assert payload["recoverable"] is True
+    assert not clear_marker.called
+
+
 def test_persist_returns_true_commits_and_retires_marker(tmp_path):
     """A truthful full-commit report (True) acks + retires the marker."""
     session = _session(tmp_path)
@@ -159,7 +189,7 @@ def test_retry_after_failure_commits_once_and_then_acks(tmp_path):
     session = _session(tmp_path)
     agent = MagicMock()
     agent._session_messages = [{"role": "user", "content": "hello"}]
-    agent._persist_session = MagicMock(side_effect=[RuntimeError("transient"), None])
+    agent._persist_session = MagicMock(side_effect=[RuntimeError("transient"), True])
     with patch.object(gw, "clear_turn_marker") as clear_marker:
         _, _, committed1 = gw._finalize_turn_ack(
             session, agent, "sess-key-001", "complete", {"text": "hi", "status": "complete"},

@@ -6962,26 +6962,26 @@ def _finalize_turn_ack(
     the marker only when this reports a durable commit.
 
     Returns ``(final_status, turn_error_retained, committed)`` — ``committed`` is
-    True when the transcript is durable (nothing to persist, or the commit
-    succeeded) and False when a real ``_persist_session`` commit failed.
+    True when there is no snapshot to persist or the session-DB flush explicitly
+    reports success. A nonempty snapshot with no session DB returns None and is
+    not durable, just like a failed write.
     """
     committed = True  # nothing to persist counts as durable
     persist_failed_detail: Optional[str] = None
     if agent is not None and hasattr(agent, "_persist_session"):
         snapshot = getattr(agent, "_session_messages", None)
         if snapshot:
-            # A commit fails EITHER by raising OR by returning False — the DB
-            # flush swallows a per-row write error (to keep the turn alive) and
-            # reports it via the return value, so relying on "did not raise"
-            # would falsely ack a silent partial write as durable and retire the
-            # recovery marker. Treat both the same: not durably committed.
+            # Only an explicit True proves the session-DB flush completed. It
+            # returns False on a swallowed per-row error and None when the DB is
+            # unavailable or persistence is disabled; neither is a durable
+            # transcript commit for a nonempty turn snapshot.
             persist_exc: Optional[Exception] = None
             try:
                 flushed = agent._persist_session(snapshot)
             except Exception as exc:  # noqa: BLE001
                 flushed = False
                 persist_exc = exc
-            if flushed is False:
+            if flushed is not True:
                 committed = False
                 if status != "error":
                     _detail = (

@@ -1886,9 +1886,10 @@ class AIAgent:
             self._session_messages = messages
             self._save_session_log(messages)
             # The DB flush reports durability: True = every un-flushed message
-            # committed, False = at least one row could not be written (it
-            # swallows the per-row error to keep the turn alive), None = nothing
-            # to persist / no session DB. Propagate it so the turn-ack boundary
+            # committed (including when no new rows need writing), False = at
+            # least one row could not be written (the flush swallows the per-row
+            # error to keep the turn alive), None = no session DB / disabled
+            # persistence. Propagate it so the turn-ack boundary
             # (_finalize_turn_ack) can tell a durable commit from a silent
             # partial write and keep the crash-recovery marker when the
             # transcript did NOT durably land.
