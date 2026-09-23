@@ -1,0 +1,166 @@
+{
+  "config": "cold",
+  "reps": 1,
+  "runs": [
+    {
+      "tag": "cold-1",
+      "t_wall_start": 1788966175.3582916,
+      "grant_root_run_id": "run-b03e129e54ee",
+      "grant_nonce": "grant-e6ddc7b1b8ce4b74a9ef158c66fc2d1f7d9ba3bd",
+      "create_status": 200,
+      "create_ms": 1579.0,
+      "run_id": "t_0d771a43",
+      "terminal": true,
+      "status": "completed",
+      "e2e_ms": 221782.0,
+      "event_first_offset_s": {
+        "created": 1.579,
+        "runtime_execution_mode": 1.579,
+        "runtime_engine_selection": 1.579,
+        "runtime_limits": 1.579,
+        "runtime_execution_grant": 1.579,
+        "runtime_capability_manifest": 1.579,
+        "claimed": 1.579,
+        "spawned": 1.579,
+        "heartbeat": 9.891,
+        "completed": 221.782
+      },
+      "kind_counts": {
+        "claimed": 1,
+        "completed": 1,
+        "created": 1,
+        "heartbeat": 4,
+        "runtime_capability_manifest": 1,
+        "runtime_engine_selection": 1,
+        "runtime_execution_grant": 1,
+        "runtime_execution_mode": 1,
+        "runtime_limits": 1,
+        "spawned": 1
+      },
+      "pids": [
+        47976
+      ],
+      "t_wall_end": 1788966397.1298313,
+      "stages": {
+        "queue_wait_ms": 413.3,
+        "worker_startup_ms": 2938.7,
+        "prompt_construct_ms": 640.0,
+        "model_call_ms": [
+          171846.9,
+          39555.5
+        ],
+        "model_call_cold": [
+          true,
+          false
+        ],
+        "model_ttft_ms": [
+          166074.4,
+          30528.6
+        ],
+        "tool_call_ms": [
+          0.0,
+          47.0
+        ],
+        "tool_names": [
+          "kanban_show",
+          "kanban_complete"
+        ],
+        "n_model_calls": 2,
+        "generation_ms": [
+          5772.5,
+          9026.9
+        ]
+      }
+    }
+  ],
+  "pool_proof": null,
+  "aggregate": {
+    "reps": 1,
+    "completed": 1,
+    "failed_or_timeout": 0,
+    "e2e_ms": {
+      "n": 1,
+      "raw": [
+        221782.0
+      ],
+      "p50": 221782.0,
+      "p95": 221782.0
+    },
+    "worker_startup_ms": {
+      "n": 1,
+      "raw": [
+        2938.7
+      ],
+      "p50": 2938.7,
+      "p95": 2938.7
+    },
+    "queue_wait_ms": {
+      "n": 1,
+      "raw": [
+        413.3
+      ],
+      "p50": 413.3,
+      "p95": 413.3
+    },
+    "prompt_construct_ms": {
+      "n": 1,
+      "raw": [
+        640.0
+      ],
+      "p50": 640.0,
+      "p95": 640.0
+    },
+    "model_ttft_ms": {
+      "n": 2,
+      "raw": [
+        166074.4,
+        30528.6
+      ],
+      "p50": 98301.5,
+      "p95": 159297.1
+    },
+    "model_call_ms": {
+      "n": 2,
+      "raw": [
+        171846.9,
+        39555.5
+      ],
+      "p50": 105701.2,
+      "p95": 165232.3
+    },
+    "model_call_cold_ms": {
+      "n": 1,
+      "raw": [
+        171846.9
+      ],
+      "p50": 171846.9,
+      "p95": 171846.9
+    },
+    "model_call_warm_ms": {
+      "n": 1,
+      "raw": [
+        39555.5
+      ],
+      "p50": 39555.5,
+      "p95": 39555.5
+    },
+    "generation_ms": {
+      "n": 2,
+      "raw": [
+        5772.5,
+        9026.9
+      ],
+      "p50": 7399.7,
+      "p95": 8864.2
+    },
+    "tool_call_ms": {
+      "n": 2,
+      "raw": [
+        0.0,
+        47.0
+      ],
+      "p50": 23.5,
+      "p95": 44.6
+    }
+  }
+}

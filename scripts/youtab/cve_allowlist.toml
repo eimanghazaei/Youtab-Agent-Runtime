@@ -1,0 +1,41 @@
+# CVE allowlist for scripts/youtab/cve_audit.py  (A06 / supply chain)
+#
+# Every entry here is an EXPLICIT, TIME-BOXED exception to the CVE gate. An entry
+# suppresses a matching pip-audit finding ONLY until its `expires` date; after
+# that the finding blocks again and the expired entry is reported. This is the
+# whole point: a triaged CVE stays visible and dated, it never becomes silent.
+#
+# Add an entry ONLY for a vulnerability that is genuinely accepted or currently
+# unfixable in this environment. The correct fix for a fixable CVE is to bump the
+# pin and regenerate uv.lock — NOT to add it here.
+#
+# Schema (repeat the [[ignore]] table per exception):
+#   reason  = "why this is accepted / who owns the real fix"   (required)
+#   expires = 2026-12-03                                        (required, YYYY-MM-DD)
+#   id      = "CVE-…" | "GHSA-…" | "PYSEC-…"   (matches the vuln id OR any alias)
+#   package = "name"                            (coarse: covers ALL CVEs of a dist)
+# At least one of `id` / `package` must be set.
+#
+# ---------------------------------------------------------------------------
+# CURRENT STATE (WAVE-28, pip-audit run 2026-09-04 against the regenerated
+# uv.lock / installed env):
+#
+#   Applicable Critical vulnerabilities: 0
+#   Applicable High vulnerabilities:     0
+#   Applicable Medium vulnerabilities:   0
+#   Ignored advisories:                  0
+#
+# WAVE-28 closed every previously-open A06 finding at the source by bumping the
+# pin and regenerating uv.lock — no advisory is suppressed here:
+#   * cryptography 48.0.1 -> 50.0.0   (CVE-2026-69247/69248/69249)
+#   * h2           4.3.0  -> 4.4.1    (CVE-2026-71554, via [tool.uv] constraint)
+#   * mcp          1.26.0 -> 1.28.1   (CVE-2026-52869/52870/59950)
+#   * pillow       12.2.0 -> 12.3.0   (CVE-2026-54058..59205, 20 advisories)
+#   * pytest       9.0.2  -> 9.0.3    (CVE-2025-71176; was a build/test-only exception)
+#   * setuptools   81.0.0 -> 83.0.0   (CVE-2026-59890; was a build-time-only exception)
+#
+# This allowlist is intentionally EMPTY. The gate is now blocking (no
+# continue-on-error in CI): any new applicable advisory fails the build until it
+# is fixed at the source, or — only if genuinely unfixable — added here with a
+# reason and an expiry, narrowly and with Owner approval.
+# ---------------------------------------------------------------------------

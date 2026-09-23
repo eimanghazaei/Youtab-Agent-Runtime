@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from tools.path_security import is_windows_reserved_device_path
+
 
 def _youtab_home_path() -> Path:
     """Resolve the active YOUTAB_AGENT_HOME (profile-aware) without circular imports."""
@@ -99,7 +101,19 @@ def get_safe_write_roots() -> set[str]:
 
 
 def _classify_write_denial(path: str) -> Optional[str]:
-    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
+    """Return ``'device'``, ``'credential'``, ``'safe_root'``, or ``None`` if
+    writes are allowed."""
+    # Windows reserved device names (CON, NUL, COM1, \\.\PhysicalDrive0, ...)
+    # resolve to a device in every directory: opening one for write hangs,
+    # silently discards data, or -- via the device namespace -- reaches raw
+    # hardware.  Checked on the caller-supplied path before any realpath()
+    # resolution (which would rewrite "CON" into "<cwd>\CON" and could mask the
+    # namespace prefixes).  Enforcement is gated on Windows, where the OS
+    # actually resolves these; the predicate is platform-independent so the rule
+    # stays unit-testable on any host.
+    if os.name == "nt" and is_windows_reserved_device_path(str(path)):
+        return "device"
+
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
@@ -168,6 +182,13 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
     denial = _classify_write_denial(path)
     if denial is None:
         return None
+    if denial == "device":
+        return (
+            f"{verb} denied: '{path}' names a Windows reserved device "
+            f"(CON, PRN, AUX, NUL, COM1-9, LPT1-9, or a \\\\.\\ / \\\\?\\ device "
+            f"path). Writing to it would hang, discard the data, or reach raw "
+            f"hardware. Choose an ordinary file name."
+        )
     if denial == "safe_root":
         roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
         return (

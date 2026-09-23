@@ -20,15 +20,41 @@
  * Prerequisite: `npm run build` must have been run so that `dist/` exists.
  */
 
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
 
 import { _electron, type ElectronApplication, type Page } from '@playwright/test'
 
+import { boundedClose } from '../electron/bounded-close'
 import { startMockServer, type MockServerOptions } from './mock-server'
 import { installErrorBannerGuard } from './test'
+
+// Ownership-safe teardown: try a graceful app.close(), and only if it wedges
+// past the deadline terminate the process tree of the exact pid we launched
+// (never a name-based sweep that could hit an unrelated Electron/backend). This
+// stops a hung teardown from stalling the serial suite without masking product
+// failures. See electron/bounded-close.ts (+ its unit tests).
+function forceKillOwnedTree(pid: number): void {
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+    } else {
+      process.kill(-pid, 'SIGKILL')
+    }
+  } catch {
+    // already gone
+  }
+}
+
+async function closeDesktopApp(app: ElectronApplication): Promise<void> {
+  await boundedClose({
+    close: () => app.close(),
+    pid: app.process()?.pid,
+    killTree: forceKillOwnedTree,
+  })
+}
 
 const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const REPO_ROOT = path.resolve(DESKTOP_ROOT, '..', '..')
@@ -287,7 +313,9 @@ export function findElectron(): string {
   // In dev mode, we use the `electron` binary directly (not the packaged app).
   // The dev:electron script in package.json does exactly this: `electron .`
   // after building. We replicate that here.
-  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
+  // The Electron binary is `electron.exe` on Windows and `electron` elsewhere.
+  const electronExe = process.platform === 'win32' ? 'electron.exe' : 'electron'
+  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', electronExe)
 
   if (fs.existsSync(localElectron)) {
     return localElectron
@@ -404,7 +432,7 @@ export async function setupMockBackend(options: MockBackendOptions = {}): Promis
     mockUrl: mock.url,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await closeDesktopApp(app)
       await mock.close()
       sandbox.cleanup()
     },
@@ -434,7 +462,7 @@ export async function setupNoProvider(): Promise<NoProviderFixture> {
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await closeDesktopApp(app)
       sandbox.cleanup()
     },
   }
@@ -495,7 +523,7 @@ providers:
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await closeDesktopApp(app)
       sandbox.cleanup()
     },
   }
@@ -544,6 +572,46 @@ export interface PackagedAppFixture {
  *
  * Skips if the packaged binary doesn't exist — run `npm run pack` first.
  */
+/**
+ * Launch the *packaged* Electron binary with its REAL bundled backend (the
+ * frozen youtab-backend sidecar under the app's resources) — NO BOOT_FAKE, no
+ * dev renderer, no dev-checkout backend. The dev-checkout root override is
+ * stripped so resolveYoutabBackend takes the packaged-sidecar branch and the
+ * integrity gate runs over the shipped bundle. Takes an existing (disposable)
+ * sandbox so the same profile can be preserved across a close+relaunch.
+ */
+export async function launchPackagedAppRealBackend(
+  sandbox: Sandbox,
+  extraEnv: Record<string, string> = {},
+): Promise<{ app: ElectronApplication; page: Page }> {
+  if (!packagedBinaryExists()) {
+    throw new Error(`Built app binary not found: ${PACKAGED_BINARY_PATH}. Run 'npm run dist:win' first.`)
+  }
+
+  const env = buildAppEnv(sandbox, extraEnv)
+  // Use the packaged binary's OWN bundled renderer + bundled sidecar backend,
+  // not the dev checkout: without the root override, main.ts resolves the
+  // packaged sidecar (IS_PACKAGED) instead of a dev venv/source.
+  delete (env as Record<string, string | undefined>).YOUTAB_AGENT_DESKTOP_DEV_SERVER
+  delete (env as Record<string, string | undefined>).YOUTAB_AGENT_DESKTOP_YOUTAB
+  delete (env as Record<string, string | undefined>).YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT
+
+  const app = await _electron.launch({
+    executablePath: PACKAGED_BINARY_PATH,
+    args: ['--disable-gpu', '--no-sandbox'],
+    env,
+  })
+  const page = await app.firstWindow()
+  installErrorBannerGuard(page)
+  return { app, page }
+}
+
+/** Close a packaged app launched by launchPackagedAppRealBackend, killing its
+ * process tree (and thus the bundled sidecar) if a graceful close stalls. */
+export async function closePackagedApp(app: ElectronApplication): Promise<void> {
+  await closeDesktopApp(app)
+}
+
 export async function setupPackagedApp(): Promise<PackagedAppFixture> {
   if (!packagedBinaryExists()) {
     throw new Error(
@@ -581,7 +649,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
     page,
     sandbox,
     cleanup: async () => {
-      await app.close().catch(() => undefined)
+      await closeDesktopApp(app)
       sandbox.cleanup()
     },
   }

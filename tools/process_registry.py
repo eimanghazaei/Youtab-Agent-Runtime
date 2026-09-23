@@ -58,6 +58,12 @@ CHECKPOINT_PATH = get_youtab_home() / "processes.json"
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
 FINISHED_TTL_SECONDS = 1800     # Keep finished processes for 30 minutes
 MAX_PROCESSES = 64              # Max concurrent tracked processes (LRU pruning)
+# Fallback poll cap for wait(): the loop blocks on the per-session completion
+# Event and only re-checks this often if the Event is never set. A correct
+# event-driven wake returns near-instantly regardless of this value; it is a
+# module constant so tests can raise it to distinguish a real event-wake from a
+# regression to poll-tick latency without depending on razor-thin wall clocks.
+WAIT_POLL_INTERVAL_SECONDS = 1.0
 MAX_ACTIVE_PROCESS_AGE = 86400  # 24h default — see session_reset.bg_process_max_age_hours (#29177)
 
 # Watch pattern rate limiting — PER SESSION.
@@ -1553,7 +1559,8 @@ class ProcessRegistry:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            session._completion_event.wait(timeout=min(1.0, remaining))
+            session._completion_event.wait(
+                timeout=min(WAIT_POLL_INTERVAL_SECONDS, remaining))
 
         result = {
             "status": "timeout",
@@ -2419,4 +2426,8 @@ registry.register(
     schema=PROCESS_SCHEMA,
     handler=_handle_process,
     emoji="⚙️",
+    # ADR-0005 §5: process control is an external effect; decide_tool refuses to
+    # self-authorize it so a managed run cannot drive processes (fail closed).
+    # Inert in local-standalone.
+    side_effect_class="process",
 )

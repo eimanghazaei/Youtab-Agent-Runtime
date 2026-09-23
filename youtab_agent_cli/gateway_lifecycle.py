@@ -392,6 +392,20 @@ class LifecycleRegistry:
         with self._lock:
             return self._jobs.get(job_id)
 
+    def record_pid(self, job: LifecycleJob, pid: Optional[int]) -> None:
+        """Publish the child's pid SYNCHRONOUSLY under the admission lock.
+
+        The pid is known the instant the child is spawned, but ``run_job`` only
+        assigns ``job.pid`` on the background thread. A second caller reusing an
+        in-flight job (``admit`` -> single-flight branch) could otherwise observe
+        ``job.pid is None`` before that thread runs — the concurrency defect where
+        an enable/restart reuse returned ``restart_pid: null``. Recording it here,
+        before the response is built and before the job thread starts, closes that
+        publish-ordering window for both the creating and the reusing caller.
+        """
+        with self._lock:
+            job.pid = pid
+
     def finish(
         self,
         job: LifecycleJob,

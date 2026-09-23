@@ -822,6 +822,34 @@ def _install_ssrf_guard_on_client(client: Any) -> None:
     )
 
 
+def _audited_ambient_if_in_run(adapter: str, is_async: bool, kwargs: dict) -> Any:
+    """Return an OBSERVE-mode audited client bound to the ambient egress context
+    when a run is active, else ``None``.
+
+    WAVE-27: within an agent run, route this SSRF-safe client through the audited
+    egress boundary so the request is journalled (observe mode = SSRF enforcement
+    unchanged, allow/deny still decided at connect — behaviour-preserving). Out of
+    a run (CLI/dashboard/platform infra) return ``None`` so the caller builds the
+    plain SSRF-safe client and high-volume infra traffic does not flood the system
+    journal; construction is still SSRF-guarded and bound by the CI egress lint
+    gate. Any wiring error falls back to the plain client (never breaks egress).
+    """
+    try:
+        from youtab_runtime.egress_context import in_run_context
+
+        if not in_run_context():
+            return None
+        if is_async:
+            from youtab_runtime.egress_guard_http import audited_async_client_ambient
+
+            return audited_async_client_ambient(adapter, enforce=False, **kwargs)
+        from youtab_runtime.egress_guard_http import audited_client_ambient
+
+        return audited_client_ambient(adapter, enforce=False, **kwargs)
+    except Exception:
+        return None
+
+
 def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     """Create an ``httpx.AsyncClient`` with connect-time SSRF validation.
 
@@ -830,7 +858,14 @@ def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
     SNI, and certificate verification.  If httpx routes through a proxy, final
     target resolution is delegated to that configured proxy; treat the proxy as
     a trusted egress boundary.
+
+    WAVE-27: inside an agent run this returns an audited (observe-mode) client so
+    the request passes through the shared egress audit boundary; SSRF enforcement
+    is identical either way.
     """
+    audited = _audited_ambient_if_in_run("ssrf_safe_async_client", True, kwargs)
+    if audited is not None:
+        return audited
     import httpx
 
     client = httpx.AsyncClient(**kwargs)
@@ -839,7 +874,13 @@ def create_ssrf_safe_async_client(**kwargs: Any) -> Any:
 
 
 def create_ssrf_safe_client(**kwargs: Any) -> Any:
-    """Create an ``httpx.Client`` with connect-time SSRF validation."""
+    """Create an ``httpx.Client`` with connect-time SSRF validation.
+
+    WAVE-27: inside an agent run this returns an audited (observe-mode) client
+    (see :func:`create_ssrf_safe_async_client`)."""
+    audited = _audited_ambient_if_in_run("ssrf_safe_client", False, kwargs)
+    if audited is not None:
+        return audited
     import httpx
 
     client = httpx.Client(**kwargs)

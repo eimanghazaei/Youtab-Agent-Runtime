@@ -1,0 +1,64 @@
+// Determinism/tamper tests for the canonical sidecar root-digest algorithm.
+// Run: npx vitest run --project electron packaging/backend-sidecar/root-digest.test.mjs
+import assert from 'node:assert/strict'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, test } from 'vitest'
+
+import { manifestEntriesFromBundle, parseTrustedDigest, rootDigestFromBundle, rootDigestFromEntries } from './root-digest.mjs'
+
+const dirs = []
+function fixture(files) {
+  const root = mkdtempSync(join(tmpdir(), 'rd-fx-'))
+  dirs.push(root)
+  for (const [rel, content] of Object.entries(files)) {
+    const p = join(root, rel)
+    mkdirSync(join(p, '..'), { recursive: true })
+    writeFileSync(p, content)
+  }
+  return root
+}
+afterEach(() => {
+  while (dirs.length) rmSync(dirs.pop(), { recursive: true, force: true })
+})
+
+test('digest is deterministic across two identical trees', () => {
+  // Binary-ish content built at runtime so the source stays pure ASCII text.
+  const files = { 'a.txt': 'alpha', 'sub/b.txt': 'beta', 'sub/c.bin': String.fromCharCode(0, 1, 2) }
+  const d1 = rootDigestFromBundle(fixture(files))
+  const d2 = rootDigestFromBundle(fixture(files))
+  assert.match(d1, /^[0-9a-f]{64}$/)
+  assert.equal(d1, d2)
+})
+
+test('digest changes when any file content changes (tamper detection)', () => {
+  const base = rootDigestFromBundle(fixture({ 'a.txt': 'alpha', 'b.txt': 'beta' }))
+  const tampered = rootDigestFromBundle(fixture({ 'a.txt': 'alpha', 'b.txt': 'BETA' }))
+  assert.notEqual(base, tampered)
+})
+
+test('digest changes when a file is added or removed', () => {
+  const two = rootDigestFromBundle(fixture({ 'a.txt': 'x', 'b.txt': 'y' }))
+  const three = rootDigestFromBundle(fixture({ 'a.txt': 'x', 'b.txt': 'y', 'c.txt': 'z' }))
+  assert.notEqual(two, three)
+})
+
+test('digest is independent of filesystem enumeration order (sorted)', () => {
+  const forward = rootDigestFromBundle(fixture({ 'a.txt': '1', 'm.txt': '2', 'z.txt': '3' }))
+  const reverse = rootDigestFromBundle(fixture({ 'z.txt': '3', 'm.txt': '2', 'a.txt': '1' }))
+  assert.equal(forward, reverse)
+})
+
+test('rootDigestFromEntries matches rootDigestFromBundle for the same tree', () => {
+  const root = fixture({ 'a.txt': 'alpha', 'sub/b.txt': 'beta' })
+  assert.equal(rootDigestFromEntries(manifestEntriesFromBundle(root)), rootDigestFromBundle(root))
+})
+
+test('parseTrustedDigest accepts 64-hex, rejects junk', () => {
+  const good = 'a'.repeat(64)
+  assert.equal(parseTrustedDigest(`${good}\n`), good)
+  assert.equal(parseTrustedDigest('not-a-digest'), null)
+  assert.equal(parseTrustedDigest(''), null)
+  assert.equal(parseTrustedDigest(null), null)
+})

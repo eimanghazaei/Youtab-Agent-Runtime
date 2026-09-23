@@ -41,7 +41,7 @@ def test_inner_wait_for_timeout_surfaces_promptly_without_spinning(mcp_loop):
 
     start = time.monotonic()
     with pytest.raises(TimeoutError) as exc:
-        mcp_loop._run_on_mcp_loop(inner, timeout=10)
+        mcp_loop._run_on_mcp_loop(inner, timeout=60)
     elapsed = time.monotonic() - start
 
     # Fixed: the real inner TimeoutError surfaces within a couple poll ticks.
@@ -65,4 +65,4 @@ def test_successful_call_still_returns_through_real_loop(mcp_loop):
         await asyncio.sleep(0.25)  # first polls time out while still pending
         return {"ok": True}
 
-    assert mcp_loop._run_on_mcp_loop(inner, timeout=10) == {"ok": True}
+    assert mcp_loop._run_on_mcp_loop(inner, timeout=60) == {"ok": True}

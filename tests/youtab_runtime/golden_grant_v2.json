@@ -1,0 +1,52 @@
+{
+  "_comment": "TEST-ONLY canonical v2 execution-grant golden vector. See docs/architecture/CANONICAL-SIGNATURE-GRANT.md §4.3. Ed25519 seed = 32 bytes 0x01.",
+  "ed25519_public_key_b64": "iojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+  "canonical_sha256": "7e1ce8c8d98969a171f496cc8f95a0c15843510fb4b1049809b005b75606dea9",
+  "grant": {
+    "schema_version": "youtab.agent-command.v2",
+    "issuer": "youtab-one-brain",
+    "audience": "youtab-agent-runtime",
+    "protocol_version": "youtab.runtime-sig.v2",
+    "command_id": "cmd-0123456789abcdef",
+    "task_id": "task-0123456789abcdef",
+    "root_run_id": "run-0123456789abcdef",
+    "parent_task_id": null,
+    "attempt": 1,
+    "tenant_id": "tenant-alpha",
+    "workspace_id": "ws-default",
+    "user_id": "user-eiman",
+    "membership_generation": 7,
+    "authorization_epoch": 3,
+    "agent_id": "agent-default",
+    "engine_id": "engine-local",
+    "trace_id": "trace-0123456789abcdef",
+    "nonce": "grant-0123456789abcdef0123456789abcdef",
+    "objective": "Say hello to the world.",
+    "allowed_toolsets": [
+      "read_file",
+      "web_search"
+    ],
+    "allowed_memory_scopes": [
+      "tenant-alpha/agent-default"
+    ],
+    "allowed_artifact_scopes": [
+      "tenant-alpha/ws-default/artifacts"
+    ],
+    "effect_proposal_scopes": [
+      "net.http"
+    ],
+    "reasoning": {
+      "max_iterations": 12,
+      "max_spawn_depth": 2,
+      "max_concurrent_agents": 4,
+      "max_total_tokens": 200000,
+      "max_cost_micros": 10000000,
+      "max_retries": 1,
+      "deadline_at": "2026-09-07T12:25:00Z"
+    },
+    "issued_at": "2026-09-07T12:00:00Z",
+    "expires_at": "2026-09-07T12:30:00Z",
+    "key_id": "brain-ed25519-2026a",
+    "signature": "n02NH3hhhfLNtIUWwJlsEOn5ECpcAtfcQ/kv8aq1ibPpp2MiWsaqKa2/H6Snpia6Wsnzn+gkW4IyiaIIfYv4Dg=="
+  }
+}

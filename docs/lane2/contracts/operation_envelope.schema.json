@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://youtab.io/contracts/operation_envelope.schema.json",
+  "title": "Generic enterprise operation request/output envelope",
+  "description": "The generic boundary envelope for one enterprise operation invocation. request_digest is the canonical digest bound into approvals, effects and receipts (see reference_providers.request_digest_of). The optional result carries the deterministic provider output.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "operation_id",
+    "workspace",
+    "business_key",
+    "payload",
+    "request_digest",
+    "provenance"
+  ],
+  "properties": {
+    "operation_id": {
+      "description": "Typed operation id, e.g. crm.contact.update.commit.",
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace": { "type": "string", "minLength": 1 },
+    "business_key": { "type": "string", "minLength": 1 },
+    "payload": {
+      "description": "Operation-specific request payload validated against the capability request schema.",
+      "type": "object"
+    },
+    "request_digest": {
+      "description": "Canonical sha256 (64 lowercase hex) over {operation_id, workspace, business_key, payload}.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "provenance": {
+      "type": "string",
+      "enum": ["LIVE", "REFERENCE"]
+    },
+    "result": {
+      "description": "Optional deterministic operation output produced by the provider.",
+      "type": "object"
+    }
+  }
+}

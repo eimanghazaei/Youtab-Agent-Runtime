@@ -1,0 +1,65 @@
+# CodeQL dataflow SAST (WAVE-27, advisory).
+#
+# The existing `python-security` gate runs ruff's flake8-bandit S-rules
+# (scripts/youtab/sast_gate.py) — a fast, single-file, pattern-based linter. It
+# does NOT do interprocedural taint tracking, so a source→sink flow that crosses
+# functions or modules (untrusted input reaching a subprocess/eval/SQL/SSRF sink)
+# is invisible to it. CodeQL closes that gap with real dataflow analysis over the
+# whole Python and JavaScript trees.
+#
+# ADVISORY, not required: this is a NEW workflow in its own file, deliberately
+# NOT added to the `main-required-gates` ruleset and NOT a job in youtab-ci.yml,
+# so it never blocks a PR and does not change the set of check contexts the
+# wake-word promotion gate mirrors (that gate reads youtab-ci.yml only). Making
+# it a required status is a separate Owner decision once it has run clean.
+#
+# Every third-party action is pinned to a 40-hex commit SHA, matching
+# scripts/youtab/dependency_gate.py, which scans EVERY file under
+# .github/workflows/ (this one included) and fails the required python-security
+# job on any un-pinned `uses:`. The checkout/setup SHAs are the exact ones
+# youtab-ci.yml already uses; the codeql-action SHA is github/codeql-action tag
+# v3 (6f5948dfacef28e207b48d0905cf90c03365536d).
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so a newly-published advisory is caught even with no code change.
+    - cron: "27 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: CodeQL analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+      # continue-on-error: the SARIF upload step reports alerts into the
+      # repository's Code Scanning view, which requires GitHub code scanning /
+      # Advanced Security to be ENABLED on the repo — an Owner/org setting. Until
+      # then the upload returns "Resource not accessible by integration" and the
+      # analysis (which runs fine) would otherwise mark this advisory workflow
+      # red. Kept non-fatal so it never masquerades as a required failure;
+      # enabling code scanning surfaces the alerts (PENDING_OWNER_ACTION).
+      - name: Perform CodeQL analysis
+        continue-on-error: true
+        uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        with:
+          category: "/language:${{ matrix.language }}"

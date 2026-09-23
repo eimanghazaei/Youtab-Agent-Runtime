@@ -15,16 +15,85 @@ Import chain (circular-import safe):
 """
 
 import ast
+import hashlib
 import importlib
 import json
 import logging
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def schema_hash(schema: dict) -> str:
+    """Stable short hash of a tool schema (WAVE-30H R11 extensible registry).
+
+    Canonical JSON (sorted keys, compact) → sha256 → first 16 hex chars. Used to
+    freeze a per-run tool manifest and detect a tool's schema changing across
+    versions. Deterministic and independent of dict insertion order.
+    """
+    canonical = json.dumps(schema or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+
+
+# Stable alias so ToolEntry.__init__ can compute the hash without being shadowed
+# by its own ``schema_hash`` keyword parameter.
+_compute_schema_hash = schema_hash
+
+
+# Declared side-effect class for a tool — advisory metadata for audit and for
+# the managed authority gate (effect-bearing tools require Effect-Gate
+# authorization). NOT a capability ceiling.
+_SIDE_EFFECT_CLASSES = frozenset(
+    {"none", "read", "write", "network", "process", "credential", "memory_write"}
+)
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """Declarative, extensible descriptor for registering a tool (WAVE-30H R11).
+
+    A capability-preserving superset of the positional ``register()`` arguments:
+    it adds versioning, a schema hash, capability categories, platform tags, a
+    side-effect class, an approval requirement, a timeout and free-form
+    provenance — all ADDITIVE metadata that never gates routing. Registering ANY
+    tool (built-in, plugin, MCP, device-local, or a computer_use-class tool) is a
+    single ``register_spec()`` call; no core tool list or routing switch is
+    edited, and there is NO fixed tool-count ceiling.
+    """
+
+    name: str
+    toolset: str
+    schema: dict
+    handler: Callable
+    check_fn: Optional[Callable] = None
+    requires_env: Sequence[str] = ()
+    is_async: bool = False
+    description: str = ""
+    emoji: str = ""
+    max_result_size_chars: Optional[float] = None
+    dynamic_schema_overrides: Optional[Callable] = None
+    override: bool = False
+    # --- extensible metadata (all optional, additive) ---
+    version: str = "1.0.0"
+    capabilities: Tuple[str, ...] = ()
+    platforms: Tuple[str, ...] = ()  # empty = all platforms
+    side_effect_class: str = "none"
+    requires_approval: bool = False
+    timeout_seconds: Optional[float] = None
+    provenance: str = "builtin"  # builtin | plugin | mcp | device-local | dynamic
+    schema_hash: Optional[str] = None  # computed at register time if absent
+
+    def __post_init__(self) -> None:
+        if self.side_effect_class not in _SIDE_EFFECT_CLASSES:
+            raise ValueError(
+                f"unknown side_effect_class {self.side_effect_class!r}; "
+                f"expected one of {sorted(_SIDE_EFFECT_CLASSES)}"
+            )
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -164,11 +233,17 @@ class ToolEntry:
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
+        # WAVE-30H R11 extensible metadata (additive; never gates routing).
+        "version", "schema_hash", "capabilities", "platforms",
+        "side_effect_class", "requires_approval", "timeout_seconds", "provenance",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 version="1.0.0", schema_hash=None, capabilities=(),
+                 platforms=(), side_effect_class="none", requires_approval=False,
+                 timeout_seconds=None, provenance="builtin"):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -179,6 +254,16 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
+        # Extensible metadata. schema_hash is computed from the schema when not
+        # supplied so every entry has a stable identity for the run manifest.
+        self.version = version
+        self.schema_hash = schema_hash or _compute_schema_hash(schema)
+        self.capabilities = tuple(capabilities or ())
+        self.platforms = tuple(platforms or ())
+        self.side_effect_class = side_effect_class
+        self.requires_approval = bool(requires_approval)
+        self.timeout_seconds = timeout_seconds
+        self.provenance = provenance
         # Optional zero-arg callable returning a dict of schema overrides
         # applied at get_definitions() time. Use for fields that depend on
         # runtime config (e.g. delegate_task's description must reflect the
@@ -285,6 +370,19 @@ def invalidate_check_fn_cache() -> None:
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+
+
+def _check_fn_strict(fn: Callable) -> bool:
+    """Evaluate ``check_fn`` with NO cache and NO anti-flap grace — the honest,
+    current verdict. The TTL cache + 60s failure grace in ``_check_fn_cached``
+    exist to smooth DISCOVERY (so a flaky probe does not strip a tool from the
+    catalogue mid-session); they must NOT let a tool whose dependency is actually
+    gone be EXECUTED. This is the invocation-time probe (WAVE-30H Phase-C / C9):
+    an exception or False means unavailable, full stop."""
+    try:
+        return bool(fn())
+    except Exception:
+        return False
 
 
 class ToolRegistry:
@@ -449,6 +547,14 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
+        version: str = "1.0.0",
+        schema_hash: str | None = None,
+        capabilities: Sequence[str] = (),
+        platforms: Sequence[str] = (),
+        side_effect_class: str = "none",
+        requires_approval: bool = False,
+        timeout_seconds: float | None = None,
+        provenance: str = "builtin",
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -457,6 +563,10 @@ class ToolRegistry:
         default browser tool for a headed-Chrome CDP backend). Without it,
         registrations that would shadow an existing tool from a different
         toolset are rejected to prevent accidental overwrites.
+
+        The trailing metadata (``version`` .. ``provenance``, WAVE-30H R11) is
+        ADDITIVE and never gates routing; it feeds the per-run tool manifest and
+        the discovery index. Existing callers are unaffected (all default).
         """
         with self._lock:
             existing = self._tools.get(name)
@@ -508,6 +618,14 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                version=version,
+                schema_hash=schema_hash,
+                capabilities=capabilities,
+                platforms=platforms,
+                side_effect_class=side_effect_class,
+                requires_approval=requires_approval,
+                timeout_seconds=timeout_seconds,
+                provenance=provenance,
             )
             # Availability is now derived per-tool (_toolset_has_exposable_tools),
             # so this map no longer gates a toolset. It is still consumed by
@@ -518,6 +636,38 @@ class ToolRegistry:
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
+
+    def register_spec(self, spec: ToolSpec) -> None:
+        """Register a tool from a declarative :class:`ToolSpec` (WAVE-30H R11).
+
+        The single extensible entry point: a new built-in, plugin, MCP,
+        device-local or ``computer_use``-class tool is added by ONE call here,
+        with zero edits to any core tool list or routing switch. The schema hash
+        is computed if the spec omits it, so every registered tool has a stable
+        manifest identity.
+        """
+        self.register(
+            name=spec.name,
+            toolset=spec.toolset,
+            schema=spec.schema,
+            handler=spec.handler,
+            check_fn=spec.check_fn,
+            requires_env=list(spec.requires_env),
+            is_async=spec.is_async,
+            description=spec.description,
+            emoji=spec.emoji,
+            max_result_size_chars=spec.max_result_size_chars,
+            dynamic_schema_overrides=spec.dynamic_schema_overrides,
+            override=spec.override,
+            version=spec.version,
+            schema_hash=spec.schema_hash or schema_hash(spec.schema),
+            capabilities=spec.capabilities,
+            platforms=spec.platforms,
+            side_effect_class=spec.side_effect_class,
+            requires_approval=spec.requires_approval,
+            timeout_seconds=spec.timeout_seconds,
+            provenance=spec.provenance,
+        )
 
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.
@@ -723,6 +873,160 @@ class ToolRegistry:
     def get_all_tool_names(self) -> List[str]:
         """Return sorted list of all registered tool names."""
         return sorted(entry.name for entry in self._snapshot_entries())
+
+    def available_strict(self, name: str) -> bool:
+        """Invocation-time availability: the tool exists AND its ``check_fn``
+        passes RIGHT NOW (no discovery cache, no anti-flap grace). A tool with no
+        ``check_fn`` is always available. Used to fail closed before executing a
+        tool whose dependency vanished while it was still inside the discovery
+        grace window (WAVE-30H Phase-C / C9) — capability-preserving: it blocks
+        only a genuinely-unavailable tool, it never hides an available one."""
+        entry = self.get_entry(name)
+        if entry is None:
+            return False
+        if entry.check_fn is None:
+            return True
+        return _check_fn_strict(entry.check_fn)
+
+    def describe_index(
+        self, authorized_names: Optional[Set[str]] = None
+    ) -> List[dict]:
+        """Compact, truthful discovery index of EVERY registered tool (R11).
+
+        The capability-preserving hybrid's index: it lists the EXISTENCE and
+        capability of every registered tool — never hiding a tool behind
+        progressive schema loading — with honest ``available`` (operational,
+        i.e. ``check_fn`` passes) and ``authorized`` (within the Simorgh grant's
+        envelope, when one is supplied) flags. An unavailable or unauthorized
+        tool is still listed (its existence is visible) but is NOT advertised as
+        callable via ``available``/``authorized`` — so "undocumented hidden" and
+        "unavailable falsely advertised as callable" both stay at zero. There is
+        no fixed count: the index is exactly as long as the registry is.
+        """
+        check_results: Dict[Callable, bool] = {}
+        out: List[dict] = []
+        for entry in self._snapshot_entries():
+            if entry.check_fn is not None:
+                if entry.check_fn not in check_results:
+                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                available = check_results[entry.check_fn]
+            else:
+                available = True
+            authorized = True if authorized_names is None else entry.name in authorized_names
+            out.append(
+                {
+                    "name": entry.name,
+                    "toolset": entry.toolset,
+                    "description": (entry.description or "")[:200],
+                    "capabilities": list(entry.capabilities),
+                    "side_effect_class": entry.side_effect_class,
+                    "version": entry.version,
+                    "provenance": entry.provenance,
+                    "available": available,
+                    "authorized": authorized,
+                }
+            )
+        return sorted(out, key=lambda d: d["name"])
+
+    def tool_manifest(
+        self, tool_names: Optional[Set[str]] = None
+    ) -> List[dict]:
+        """Freeze a per-run tool manifest for audit + benchmark reproducibility.
+
+        Names, versions and schema hashes of the tools in scope — the exact set
+        the run may use (when ``tool_names`` is given) or every registered tool
+        (when omitted). This is a SNAPSHOT for provenance, never a global
+        ceiling: adding a tool grows the manifest; nothing is capped.
+        """
+        entries = {e.name: e for e in self._snapshot_entries()}
+        names = sorted(tool_names) if tool_names is not None else sorted(entries)
+        manifest: List[dict] = []
+        for name in names:
+            entry = entries.get(name)
+            if entry is None:
+                continue
+            manifest.append(
+                {
+                    "name": entry.name,
+                    "version": entry.version,
+                    "schema_hash": entry.schema_hash,
+                    "toolset": entry.toolset,
+                    "side_effect_class": entry.side_effect_class,
+                    "provenance": entry.provenance,
+                    "capabilities": list(entry.capabilities),
+                }
+            )
+        return manifest
+
+    def capability_manifest_pairs(
+        self,
+        allowed_toolsets: Set[str],
+        *,
+        acl_tool_names: Optional[Set[str]] = None,
+        exclude_toolsets: Set[str] = frozenset(),
+        require_available: bool = True,
+        context_available_toolsets: Set[str] = frozenset(),
+    ) -> List[Tuple[str, str]]:
+        """Freeze the ``(tool_name, schema_hash)`` pairs a grant may actually use.
+
+        WAVE-30H correction 2. This is the snapshot that gets bound into the
+        admitted execution context so the ``"*"`` full-envelope authorizes exactly
+        the tools that were registered, authorized and operational AT ADMISSION —
+        never a tool registered later. A tool is included only when ALL hold:
+
+        * its toolset is authorized by the grant — ``"*"`` in ``allowed_toolsets``
+          means the full entitled envelope, otherwise the toolset must be listed;
+        * its toolset is NOT in ``exclude_toolsets`` (authority-bearing toolsets
+          are never swept in by ``"*"``; they stay deny-by-default);
+        * it is within the agent ACL (``acl_tool_names``) when one is supplied;
+        * it is operational (``check_fn`` passes) when ``require_available`` —
+          EXCEPT for toolsets in ``context_available_toolsets`` (see below).
+
+        ``context_available_toolsets`` (WAVE-30H Gate-2 Phase-B fix) names toolsets
+        whose ``check_fn`` is an EXECUTION-CONTEXT gate — availability that is a
+        property of the RUN's execution context, not of a dependency/credential —
+        which the freezing (ingress) process cannot satisfy but the dispatched
+        worker WILL. The canonical case: the kanban task-lifecycle toolset
+        (``kanban_complete``/``kanban_block``/``kanban_heartbeat``) whose
+        ``_check_kanban_mode`` is gated on the worker-only ``YOUTAB_AGENT_KANBAN_TASK``
+        env. If such a tool were filtered out here, a managed kanban run could
+        never be authorized to call its own completion tool (the worker re-admits
+        this frozen manifest). Deferring the context gate is NOT bypassing
+        availability: the invocation-time strict gate (:meth:`available_strict`,
+        WAVE-30H Phase-C / C9) re-evaluates the SAME ``check_fn`` in the worker's
+        real context and fails closed if it is not genuinely operational there
+        (e.g. the run is not actually a kanban worker). Inclusion here stays fully
+        gated by the grant's ``allowed_toolsets`` and ``exclude_toolsets`` and the
+        agent ACL — it is per-grant, never a global authorization, and the worker
+        still cannot exceed the frozen set.
+
+        Returns a sorted, de-duplicated list. No fixed ceiling: the manifest is
+        exactly as long as the authorized, available registry is.
+        """
+        wildcard = "*" in allowed_toolsets
+        check_results: Dict[Callable, bool] = {}
+        pairs: Set[Tuple[str, str]] = set()
+        for entry in self._snapshot_entries():
+            if entry.toolset in exclude_toolsets:
+                continue
+            if not wildcard and entry.toolset not in allowed_toolsets:
+                continue
+            if acl_tool_names is not None and entry.name not in acl_tool_names:
+                continue
+            # Operational availability check — skipped only for toolsets whose
+            # availability is an execution-context gate the dispatched worker
+            # satisfies (re-checked strictly at invocation by available_strict).
+            if (
+                require_available
+                and entry.check_fn is not None
+                and entry.toolset not in context_available_toolsets
+            ):
+                if entry.check_fn not in check_results:
+                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                if not check_results[entry.check_fn]:
+                    continue
+            pairs.add((entry.name, entry.schema_hash))
+        return sorted(pairs)
 
     def get_schema(self, name: str) -> Optional[dict]:
         """Return a tool's raw schema dict, bypassing check_fn filtering.

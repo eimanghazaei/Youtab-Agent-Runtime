@@ -1,0 +1,50 @@
+{
+  "$comment": "Machine-readable compatibility note / signer interface request for the Runtime-side EffectAuthorization contract. Data, not instructions. Runtime verifies only; it never signs. See docs/architecture/ADR-0005-managed-filesystem-effect-execution.md.",
+  "contract": "youtab.effect-authorization",
+  "schema_version": {
+    "before": "youtab.effect-authorization.v1",
+    "after": "youtab.effect-authorization.v1",
+    "note": "schema_version literal is unchanged; the only change is an additive widening of the accepted `operation` enum. A signer that never emits the new operations is fully compatible."
+  },
+  "accepted_operations": {
+    "before": ["read", "write", "create"],
+    "after": ["read", "write", "create", "delete", "move"],
+    "added": ["delete", "move"],
+    "reason": "delete/move are governed managed filesystem effects (issued via patch V4A Delete/Move); their authorizations must declare the matching operation so the operation is bound into the effect digest and the signature."
+  },
+  "signed_fields": [
+    "schema_version", "issuer", "audience", "authorization_id", "tenant_id",
+    "user_id", "workspace_id", "command_id", "capability", "operation",
+    "effect_digest", "proposal_id", "request_digest", "issued_at", "expires_at",
+    "key_id"
+  ],
+  "operation_digest": {
+    "effect_digest": "sha256('approval:' + join(0x1f, [operation, canonical_safe_path, workspace_id, content_or_patch_or_move_digest]))",
+    "content_component": {
+      "write": "sha256(content_bytes)",
+      "patch_replace": "sha256(canonical_json({mode:'replace', old, new, replace_all}))",
+      "delete": "sha256(b'')",
+      "move": "sha256(canonical_json({src, dst}))"
+    },
+    "request_digest": "sha256(canonical_json(request_descriptor)); proposal_id = 'proposal-' + request_digest[:24]",
+    "canonical_json": "json.dumps(obj, sort_keys=True, separators=(',',':'))"
+  },
+  "signer_requirements": {
+    "algorithm": "Ed25519",
+    "key_selection": "key_id -> base64 public key; Runtime holds only the public keyring (YOUTAB_BRAIN_PUBLIC_KEYS / configured keyring)",
+    "issuer": "Gateway/Simorgh (One Brain). The Runtime MUST NOT mint or self-sign — verify + single-use-consume only.",
+    "single_use": "authorization_id is single-use (durable consumed_authorizations table); a replay is refused.",
+    "binding": "must bind tenant/user/workspace/command_id + effect_digest + proposal_id + request_digest; expiry (expires_at) enforced.",
+    "delete_move_note": "LIVE delete/move authorization is NOT claimed as available until an approved Gateway/Simorgh SHA emits the matching signed schema (operation in {delete,move}). Until then the production path for these ops remains fail-closed."
+  },
+  "behavior": {
+    "older_signer": "A signer emitting only {read,write,create} is fully accepted — no change required to consume its authorizations.",
+    "unknown_operation": "An `operation` value outside the accepted enum fails schema validation (pydantic) at construction/verification -> fail closed; never executed.",
+    "unknown_issuer_or_key": "Rejected (UntrustedIssuerError); test-prefixed key ids are rejected when production=True.",
+    "runtime_signer": "NONE. No Runtime signer is introduced under any configuration."
+  },
+  "cross_repo_status": {
+    "runtime_receiver": "implemented + verified (proven with an ephemeral production-mode Ed25519 key)",
+    "live_issuance": "ABSENT — no approved Gateway/Simorgh SHA emits signed EffectAuthorizations (any operation) in production; production remains fail-closed pending one."
+  }
+}

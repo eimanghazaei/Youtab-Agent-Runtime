@@ -250,7 +250,7 @@ export function themeToneHex(tone: string): string {
 // ── Defaults ─────────────────────────────────────────────────────────
 
 const BRAND: ThemeBrand = {
-  name: 'Youtab Agent Runtime',
+  name: 'Youtab RunTime',
   icon: '⚕',
   prompt: '❯',
   welcome: 'Type your message or /help for commands.',
@@ -368,50 +368,42 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
 }
 
 export const DARK_SEEDS: ThemeSeeds = {
-  accent: '#FFBF00',
-  // The classic Youtab navy surfaces are IDENTITY, not derivation drift —
-  // keep them as explicit fill seeds (the ladder derives them for skins
-  // that don't care).
-  activeRow: '#333355',
+  accent: '#33B8FF',
+  // Ocean Blue surfaces keep the default Youtab identity coherent even before
+  // a resolved skin reaches the TUI.
+  activeRow: '#164F73',
   bg: '#101014',
-  border: '#CD7F32',
+  border: '#0067C5',
   error: '#ef5350',
   ok: '#4caf50',
-  primary: '#FFD700',
-  prompt: '#FFF8DC',
-  selection: '#3a3a55',
-  shellDollar: '#4dabf7',
+  primary: '#0096FF',
+  prompt: '#D8F3FF',
+  selection: '#185D86',
+  shellDollar: '#72D4FF',
   statusBad: '#FF8C00',
   statusCritical: '#FF6B6B',
   statusGood: '#8FBC8F',
-  statusWarn: '#FFD700',
-  surface: '#1a1a2e',
-  text: '#FFF8DC',
+  statusWarn: '#33B8FF',
+  surface: '#10263A',
+  text: '#D8F3FF',
   warn: '#ffa726'
 }
 
-// Light-terminal seeds: darker golds/ambers that stay legible on white.
-// The classic light-mode Youtab look was never hand-authored: for years the
-// TUI emitted the DARK golds and hosts with xterm's minimumContrastRatio
-// (Cursor defaults to 4.5) lifted them against white — hue and saturation
-// kept, luminance clamped. These seeds are those exact lifts
-// (liftForContrast(dark, '#ffffff', 4.5)), so hosts WITHOUT a contrast pass
-// render the same thing Cursor always showed. Text/prompt stay ink — body
-// copy historically rendered in the terminal's default near-black fg.
+// Light-terminal Ocean Blue seeds tuned for readable branding on white.
 export const LIGHT_SEEDS: ThemeSeeds = {
-  accent: '#956E00',
+  accent: '#0077D8',
   bg: '#ffffff',
-  border: '#A56628',
+  border: '#0067C5',
   error: '#C14240',
   ok: '#367E39',
-  primary: '#867000',
-  prompt: '#2B2014',
-  shellDollar: '#377BB3',
+  primary: '#0067C5',
+  prompt: '#12324A',
+  shellDollar: '#0067C5',
   statusBad: '#A65A00',
   statusCritical: '#B94D4D',
-  statusGood: '#5C7A5C',
-  statusWarn: '#867000',
-  text: '#3D2F13',
+  statusGood: '#367E39',
+  statusWarn: '#0067C5',
+  text: '#12324A',
   warn: '#956115'
 }
 

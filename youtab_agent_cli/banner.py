@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import time
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlparse
 from youtab_constants import get_youtab_home
@@ -30,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ANSI building blocks for conversation display
 # =========================================================================
 
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold
+_OCEAN_BLUE = "\033[1;38;2;0;150;255m"  # True-color #0096FF bold
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
@@ -67,34 +68,107 @@ def _skin_color(key: str, fallback: str) -> str:
 
 from youtab_agent_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
 
-YOUTAB_AGENT_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#FFBF00]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#FFBF00]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#CD7F32]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#CD7F32]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]"""
+# Text-only fallback for narrow terminals or an unreadable image asset.
+# The normal banner is rendered from the exact repository PNG below.
+YOUTAB_RUNTIME_LOGO = "[bold #0096FF]Youtab RunTime[/]"
+YOUTAB_LOGO_HERO = ""
+YOUTAB_LOGO_ASSET = Path(__file__).with_name("assets") / "Youtab_AI_COS.PNG"
 
-YOUTAB_AGENT_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#CD7F32]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
-[#FFBF00]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
-[#FFBF00]⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFBF00]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFBF00]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
+
+@lru_cache(maxsize=8)
+def _render_youtab_logo(columns: int):
+    """Render the exact Youtab PNG as true-color terminal half-blocks."""
+    from PIL import Image
+    from rich.text import Text
+
+    with Image.open(YOUTAB_LOGO_ASSET) as source:
+        image = source.convert("RGBA")
+
+    # Crop transparent/black padding while retaining the logo's blue glow.
+    content_box = image.convert("RGB").getbbox() or image.getchannel("A").getbbox()
+    if content_box:
+        image = image.crop(content_box)
+
+    # Fit within 72 columns and 14 terminal rows. The source asset is square,
+    # so a width-only resize would push the useful banner content off-screen.
+    max_width = max(24, min(int(columns), 72))
+    scale = min(max_width / max(image.width, 1), 28 / max(image.height, 1))
+    target_width = max(12, round(image.width * scale))
+    target_height = max(2, round(image.height * scale))
+    if target_height % 2:
+        target_height += 1
+    image = image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+
+    rendered = Text()
+    for y in range(0, image.height, 2):
+        for x in range(image.width):
+            top = image.getpixel((x, y))
+            bottom = image.getpixel((x, y + 1))
+            top_visible = top[3] >= 24
+            bottom_visible = bottom[3] >= 24
+
+            if top_visible and bottom_visible:
+                style = (
+                    f"#{top[0]:02x}{top[1]:02x}{top[2]:02x} "
+                    f"on #{bottom[0]:02x}{bottom[1]:02x}{bottom[2]:02x}"
+                )
+                rendered.append("▀", style=style)
+            elif top_visible:
+                rendered.append(
+                    "▀",
+                    style=f"#{top[0]:02x}{top[1]:02x}{top[2]:02x}",
+                )
+            elif bottom_visible:
+                rendered.append(
+                    "▄",
+                    style=f"#{bottom[0]:02x}{bottom[1]:02x}{bottom[2]:02x}",
+                )
+            else:
+                rendered.append(" ")
+        if y + 2 < image.height:
+            rendered.append("\n")
+
+    return rendered
+
+
+def _print_youtab_logo(console: "Console", term_width: int) -> bool:
+    """Print the repository-owned Youtab logo; return False on safe fallback."""
+    try:
+        console.print(
+            _render_youtab_logo(min(term_width - 8, 72)),
+            justify="center",
+        )
+        return True
+    except Exception:
+        logger.debug("Could not render Youtab banner logo", exc_info=True)
+        return False
 
 
 
 # =========================================================================
 # Skills scanning
 # =========================================================================
+
+# Skill groups that power the agent but are implementation details, not
+# user-facing capabilities for the startup banner. Filtering affects display
+# only; discovery, loading, and execution remain unchanged.
+_BANNER_HIDDEN_SKILL_CATEGORIES = frozenset({
+    "autonomous-ai-agents",
+    "email",
+    "software-development",
+})
+
+
+def _get_banner_visible_skills(
+    skills_by_category: Dict[str, List[str]],
+) -> Dict[str, List[str]]:
+    """Remove internal skill groups from startup-banner presentation only."""
+    return {
+        category: skills
+        for category, skills in skills_by_category.items()
+        if category.casefold() not in _BANNER_HIDDEN_SKILL_CATEGORIES
+    }
+
 
 def get_available_skills() -> Dict[str, List[str]]:
     """Return skills grouped by category, filtered by platform and disabled state.
@@ -487,7 +561,7 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
 
 def format_banner_version_label() -> str:
     """Return the version label shown in the startup banner title."""
-    base = f"Youtab Agent Runtime v{VERSION} ({RELEASE_DATE})"
+    base = f"Youtab RunTime v{VERSION} ({RELEASE_DATE})"
     state = get_git_banner_state()
     if not state:
         return base
@@ -566,7 +640,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
                          get_toolset_for_tool=None,
                          context_length: int = None,
                          provider: str = None):
-    """Build and print a welcome banner with caduceus on left and info on right.
+    """Build and print a welcome banner with the Youtab mark on the left.
 
     Args:
         console: Rich Console instance.
@@ -622,20 +696,24 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     layout_table.add_column("right", justify="left")
 
     # Resolve skin colors once for the entire banner
-    accent = _skin_color("banner_accent", "#FFBF00")
-    dim = _skin_color("banner_dim", "#B8860B")
-    text = _skin_color("banner_text", "#FFF8DC")
+    accent = _skin_color("banner_accent", "#0096FF")
+    dim = _skin_color("banner_dim", "#5F91B8")
+    text = _skin_color("banner_text", "#D8F3FF")
     session_color = _skin_color("session_border", "#8B8682")
 
-    # Use skin's custom caduceus art if provided
+    # Custom skins may still provide their own hero. The default skin uses the
+    # repository PNG rendered above the panel, so no guessed Unicode mark is
+    # substituted for the official artwork.
     try:
         from youtab_agent_cli.skin_engine import get_active_skin
         _bskin = get_active_skin()
-        _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else YOUTAB_AGENT_CADUCEUS
+        _hero = _bskin.banner_hero if hasattr(_bskin, "banner_hero") else ""
     except Exception:
         _bskin = None
-        _hero = YOUTAB_AGENT_CADUCEUS
-    left_lines = ["", _hero, ""]
+        _hero = ""
+    left_lines = [""]
+    if _hero:
+        left_lines.extend([_hero, ""])
     if (provider or "").strip().lower() == "moa":
         # MoA virtual provider: ``model`` is a preset name. Show the preset and
         # its aggregator so the banner is meaningful instead of a bare slug.
@@ -779,7 +857,7 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     # the on-disk catalog here is misleading. Reflect the real state instead.
     _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
     if _skills_enabled:
-        skills_by_category = get_available_skills()
+        skills_by_category = _get_banner_visible_skills(get_available_skills())
         total_skills = sum(len(s) for s in skills_by_category.values())
     else:
         skills_by_category = {}
@@ -873,8 +951,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)
 
-    title_color = _skin_color("banner_title", "#FFD700")
-    border_color = _skin_color("banner_border", "#CD7F32")
+    title_color = _skin_color("banner_title", "#0096FF")
+    border_color = _skin_color("banner_border", "#0067C5")
     version_label = format_banner_version_label()
     release_info = get_latest_release_tag()
     if release_info:
@@ -891,8 +969,16 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     console.print()
     term_width = shutil.get_terminal_size().columns
-    if term_width >= 95:
-        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else YOUTAB_AGENT_AGENT_LOGO
-        console.print(_logo)
+    _custom_logo = (
+        _bskin.banner_logo
+        if _bskin and hasattr(_bskin, "banner_logo") and _bskin.banner_logo
+        else ""
+    )
+    if term_width >= 95 and _custom_logo:
+        console.print(_custom_logo)
+        console.print()
+    elif term_width >= 60:
+        if not _print_youtab_logo(console, term_width):
+            console.print(YOUTAB_RUNTIME_LOGO, justify="center")
         console.print()
     console.print(outer_panel)

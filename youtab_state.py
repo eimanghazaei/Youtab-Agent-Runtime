@@ -500,7 +500,7 @@ def _enforce_macos_synchroyoutab_full(conn: sqlite3.Connection) -> None:
     if sys.platform != "darwin":
         return
     try:
-        conn.execute("PRAGMA synchroyoutab=FULL")
+        conn.execute("PRAGMA synchronous=FULL")
     except sqlite3.OperationalError:
         pass
 

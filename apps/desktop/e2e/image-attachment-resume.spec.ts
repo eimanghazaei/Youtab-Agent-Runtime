@@ -27,9 +27,13 @@ import { type MockServer, startMockServer } from './mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
-// A seeded session has no generated title, so every label falls back to the
-// session preview — the first 60 characters of the first user message.
-const SESSION_TITLE = 'E2E attached image session'
+// Seed WITHOUT a title: a title passed to session.create is held as
+// pending_title and, once the first turn completes, promoted to the durable
+// `title` column (tui_gateway/server.py `set_session_title`). Since the
+// attachment turn must complete for the image to persist, any seed title would
+// durably win the sidebar label over the preview — masking this test's real
+// subject. With no title, every label falls back to the session preview (the
+// first 60 chars of the first user message), which must lead with the caption.
 const CAPTION = 'E2E attached image must survive a relaunch'
 const IMAGE_DIR = 'Application Support/e2e shots'
 const IMAGE_NAME = 'e2e capture.png'
@@ -67,7 +71,6 @@ async function setupSeededDesktop(): Promise<SeededFixture> {
 
   try {
     await builder.createSession({
-      title: SESSION_TITLE,
       turns: [{ images: [writeImage(sandbox)], text: CAPTION }],
     })
   } finally {

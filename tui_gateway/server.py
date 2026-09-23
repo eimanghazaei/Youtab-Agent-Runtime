@@ -6930,6 +6930,102 @@ def _retire_turn_marker(session: dict, *keys: str) -> None:
             clear_turn_marker(home, key)
 
 
+
+
+def _finalize_turn_ack(
+    session: dict,
+    agent: Any,
+    marker_key: str,
+    status: str,
+    payload: dict,
+    result: Any,
+    raw: Any,
+) -> tuple[str, bool, bool]:
+    """Commit the session transcript BEFORE the client-observable completion ack,
+    then settle recovery state — enforcing durable-commit-happens-before-ack for
+    BOTH success and failure.
+
+    The desktop finalizes / goes idle on the ``message.complete`` frame the caller
+    emits right after this returns, so the turn must be durable first. We force a
+    synchronous, idempotent commit via the same marker-deduped ``_persist_session``
+    path the WS-disconnect flush uses (commit exactly once on retry, no duplicate
+    rows, no second store — transcript stays in the session DB). If a would-be-
+    SUCCESSFUL turn cannot be durably committed we do NOT acknowledge success:
+    it is downgraded to a RECOVERABLE error and a truthful failure is surfaced.
+
+    Crash-marker ownership follows DURABILITY, not turn outcome: the on-disk
+    crash-recovery marker (the durable carrier that survives a process death —
+    the in-memory retained ``inflight_turn`` does NOT) is retired ONLY when the
+    transcript was actually committed. If the commit FAILED for ANY status
+    (success OR already-error), the marker is preserved so ``session.resume``
+    re-runs the turn on relaunch; the caller's ``finally`` must likewise retire
+    the marker only when this reports a durable commit.
+
+    Returns ``(final_status, turn_error_retained, committed)`` — ``committed`` is
+    True when the transcript is durable (nothing to persist, or the commit
+    succeeded) and False when a real ``_persist_session`` commit failed.
+    """
+    committed = True  # nothing to persist counts as durable
+    persist_failed_detail: Optional[str] = None
+    if agent is not None and hasattr(agent, "_persist_session"):
+        snapshot = getattr(agent, "_session_messages", None)
+        if snapshot:
+            # A commit fails EITHER by raising OR by returning False — the DB
+            # flush swallows a per-row write error (to keep the turn alive) and
+            # reports it via the return value, so relying on "did not raise"
+            # would falsely ack a silent partial write as durable and retire the
+            # recovery marker. Treat both the same: not durably committed.
+            persist_exc: Optional[Exception] = None
+            try:
+                flushed = agent._persist_session(snapshot)
+            except Exception as exc:  # noqa: BLE001
+                flushed = False
+                persist_exc = exc
+            if flushed is False:
+                committed = False
+                if status != "error":
+                    _detail = (
+                        f"({type(persist_exc).__name__})" if persist_exc is not None
+                        else "(session store write failed)"
+                    )
+                    persist_failed_detail = (
+                        "The turn completed but could not be saved to the session "
+                        f"store; it is preserved for retry on reconnect. {_detail}"
+                    )
+                    status = "error"
+                    payload["status"] = "error"
+
+    turn_error_retained = False
+    with session["history_lock"]:
+        if status == "error":
+            # Returned-error result (provider 4xx, budget, etc.) OR a
+            # would-be-success turn that failed to durably persist: retain the
+            # turn for resume replay instead of clearing it. (This in-memory
+            # snapshot serves a live reconnect; a process death is covered by the
+            # durable marker preserved below when ``committed`` is False.)
+            _fail_inflight_turn(
+                session,
+                persist_failed_detail
+                or (result.get("error") if isinstance(result, dict) else raw),
+            )
+            turn_error_retained = True
+        else:
+            _clear_inflight_turn(session)
+    if status == "error":
+        payload["error"] = str(
+            persist_failed_detail
+            or (result.get("error") if isinstance(result, dict) else "")
+            or raw
+        )
+        payload["recoverable"] = True
+    # Retire the crash-recovery marker ONLY once the transcript is durable —
+    # never on a failed commit (success OR error), or the turn would have no
+    # recovery path after a process death.
+    if committed:
+        _retire_turn_marker(session, marker_key)
+    return status, turn_error_retained, committed
+
+
 def _auto_continue_note(prompt: str) -> str:
     # Same opening as the messaging gateway's recovery notes so transcript
     # tooling recognizes both. The original prompt is embedded because a hard
@@ -7252,7 +7348,14 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
         rendered = ""
     if rendered:
         payload["rendered"] = rendered
-    _retire_turn_marker(session)
+    # Do NOT retire the crash-recovery marker here. This frame closes a turn
+    # that died by EXCEPTION (e.g. a transcript-commit failure), so the turn
+    # was never durably committed. Marker ownership follows durability, not the
+    # emission of a terminal frame: the caller's ``finally`` retires the marker
+    # only when ``turn_durably_committed`` is set (never on this path), so a
+    # process death after this frame still auto-continues from the marker on
+    # ``session.resume``. Retiring here unconditionally previously deleted the
+    # only recovery carrier for an uncommitted, crash-closed turn.
     _emit("message.complete", sid, payload)
 
 
@@ -8994,6 +9097,12 @@ def _run_prompt_submit(
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
         turn_error_retained = False
+        # True once the turn's transcript was DURABLY committed (set by
+        # _finalize_turn_ack). Stays False on the exception path and on a failed
+        # commit, so the finally preserves the on-disk crash-recovery marker for
+        # session.resume — the marker must never be retired for an uncommitted
+        # turn, or a process death after ack would lose it with no recovery path.
+        turn_durably_committed = False
         # Durable crash marker: written before the turn runs, retired the
         # moment its outcome reaches the client (see _retire_turn_marker).
         # Any concluded turn — success, handled error, interrupt — retires
@@ -9404,25 +9513,13 @@ def _run_prompt_submit(
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
-            with session["history_lock"]:
-                if status == "error":
-                    # Returned-error result (provider 4xx, budget, etc.): retain
-                    # the failed turn for resume replay instead of clearing it.
-                    # If this terminal frame is lost to a disconnect, resume's
-                    # inflight payload is the only carrier of the failure.
-                    _fail_inflight_turn(
-                        session,
-                        result.get("error") if isinstance(result, dict) else raw,
-                    )
-                    turn_error_retained = True
-                else:
-                    _clear_inflight_turn(session)
-            if status == "error":
-                payload["error"] = str(
-                    (result.get("error") if isinstance(result, dict) else "") or raw
-                )
-                payload["recoverable"] = True
-            _retire_turn_marker(session, marker_key)
+            # Durability happens-before the client-observable completion ack (for
+            # BOTH success and failure): commit the transcript, settle recovery
+            # state, and possibly downgrade a would-be-success turn that could not
+            # be persisted to a recoverable error — see _finalize_turn_ack.
+            status, turn_error_retained, turn_durably_committed = _finalize_turn_ack(
+                session, agent, marker_key, status, payload, result, raw
+            )
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -9636,9 +9733,17 @@ def _run_prompt_submit(
                 session["last_active"] = time.time()
                 if not turn_error_retained:
                     _clear_inflight_turn(session)
-            # Backstop for turns that never reached a terminal frame (the
-            # frame paths retire the marker as they emit).
-            _retire_turn_marker(session, marker_key)
+            # Retire the crash-recovery marker ONLY when the turn's transcript
+            # was durably committed. A concluded-but-uncommitted turn — a failed
+            # _persist_session commit (success OR error, via _finalize_turn_ack)
+            # or the exception path below, which never committed — MUST keep the
+            # marker so session.resume re-runs it on relaunch. Retiring here
+            # unconditionally previously defeated that: the desktop had acked the
+            # turn complete, so a prompt close after a failed commit lost it with
+            # no recovery path. The frame paths already retired the marker when
+            # they committed, so this is an idempotent backstop for that case.
+            if turn_durably_committed:
+                _retire_turn_marker(session, marker_key)
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, agent)
 

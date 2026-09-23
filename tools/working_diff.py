@@ -35,6 +35,13 @@ def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
     proc = subprocess.run(
         ["git", "-c", "core.quotePath=false", *args],
         cwd=cwd, capture_output=True, text=True, timeout=timeout,
+        # Decode git's output as UTF-8. `core.quotePath=false` makes git emit
+        # non-ASCII paths (e.g. Persian filenames, emoji) literally, and diff
+        # bodies carry arbitrary UTF-8. Without this, text=True decodes with the
+        # locale codec — cp1252 on Windows — and raises UnicodeDecodeError
+        # (#52649); errors="replace" keeps the reader robust to genuinely
+        # non-UTF-8 bytes in a diff body.
+        encoding="utf-8", errors="replace",
     )
     return proc.returncode, proc.stdout
 

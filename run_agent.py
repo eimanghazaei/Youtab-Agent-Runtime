@@ -211,6 +211,7 @@ from agent.tool_dispatch_helpers import (
     _paths_overlap,  # noqa: F401  # re-exported for tests that `from run_agent import _paths_overlap`
     _is_multimodal_tool_result,
     _multimodal_text_summary,
+    _persist_list_content_to_text,
     _append_subdir_hint_to_multimodal,  # noqa: F401  # re-exported for tests that `from run_agent import _append_subdir_hint_to_multimodal`
     _extract_file_mutation_targets,
     _extract_landed_file_mutation_paths,
@@ -274,6 +275,47 @@ _MAX_TOOL_WORKERS = 8
 # every top-level ``_``-prefixed key before the request leaves the process, so
 # this never reaches a strict OpenAI-compatible gateway.
 _DB_PERSISTED_MARKER = "_db_persisted"
+
+
+def _maybe_inject_persist_fault(role: Optional[str] = None) -> None:
+    """TEST-ONLY durable session-transcript write fault seam (inert in prod).
+
+    ``_flush_messages_to_session_db_unlocked`` is the single chokepoint every
+    ``_persist_session`` routes message writes through, so it is the *real*
+    place to fault durable persistence — faulting only the gateway finalizer
+    would miss the incremental mid-turn flushes that already made the transcript
+    durable. Armed by ``YOUTAB_AGENT_TEST_PERSIST_FAULT``:
+
+      * ``assistant`` — raise at the point the loop is about to write an
+        ASSISTANT row (call this with ``role`` per message, from inside the
+        append loop). Because ``SessionDB.append_message`` commits per row
+        (``_execute_write`` = one ``BEGIN IMMEDIATE`` + ``commit`` each), the
+        user/tool rows earlier in the same flush are already durable when this
+        raises — so the inbound user turn stays durable (session sidebar-visible
+        and resumable) while the turn's COMPLETION never lands. This is
+        deterministic regardless of whether the user and assistant rows share a
+        flush batch. Models a process death while the completion is persisted;
+        ``session.resume`` must then auto-continue the turn on relaunch and
+        commit it exactly once.
+      * ``all`` — raise before ANY row is written (nothing durable), for the
+        total-loss case. Call with ``role=None`` (pre-loop) to trip it.
+
+    The session ROW is created by ``_ensure_db_session`` on a separate path
+    that runs *before* any flush, so an armed fault never prevents the session
+    from being created. Unset / empty / ``0`` is fully inert.
+    """
+    mode = (os.environ.get("YOUTAB_AGENT_TEST_PERSIST_FAULT") or "").strip().lower()
+    if not mode or mode == "0":
+        return
+    if mode == "all":
+        raise RuntimeError(
+            "injected transcript-write fault (YOUTAB_AGENT_TEST_PERSIST_FAULT=all)"
+        )
+    if mode == "assistant" and role == "assistant":
+        raise RuntimeError(
+            "injected transcript-write fault "
+            "(YOUTAB_AGENT_TEST_PERSIST_FAULT=assistant): completion row not persisted"
+        )
 
 
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
@@ -1839,24 +1881,31 @@ class AIAgent:
 
         persist_lock = getattr(self, "_session_persist_lock", None)
 
-        def _persist_and_drain() -> None:
+        def _persist_and_drain() -> Optional[bool]:
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._save_session_log(messages)
-            self._flush_messages_to_session_db(messages, conversation_history)
+            # The DB flush reports durability: True = every un-flushed message
+            # committed, False = at least one row could not be written (it
+            # swallows the per-row error to keep the turn alive), None = nothing
+            # to persist / no session DB. Propagate it so the turn-ack boundary
+            # (_finalize_turn_ack) can tell a durable commit from a silent
+            # partial write and keep the crash-recovery marker when the
+            # transcript did NOT durably land.
+            flushed = self._flush_messages_to_session_db(messages, conversation_history)
             # Drain async token-accounting deltas at every persist point (turn
             # finalize + error exits) so a crash after this line loses at most
             # the in-flight API call's delta. Cheap no-op when nothing queued.
             if self._session_db is not None:
                 self._session_db.flush_token_counts()
             note_turn_persisted(self)
+            return flushed
 
         if persist_lock is None:
-            _persist_and_drain()
-            return
+            return _persist_and_drain()
 
         with persist_lock:
-            _persist_and_drain()
+            return _persist_and_drain()
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -1976,6 +2025,12 @@ class AIAgent:
             # Retry row creation if the earlier attempt failed transiently.
             if not self._session_db_created:
                 self._ensure_db_session()
+            # TEST-ONLY durable-write fault seam (inert in prod). Placed AFTER
+            # the row is ensured so an armed fault fails only message durability,
+            # never session creation. Pre-loop call trips only the ``all`` mode
+            # (total loss); the ``assistant`` mode fires per-row inside the
+            # append loop, after earlier rows have already committed.
+            _maybe_inject_persist_fault()
             # Positional flushing used to slice at
             # max(len(conversation_history), _last_flushed_db_idx). That
             # assumes the live `messages` list is the original history plus a
@@ -2134,14 +2189,9 @@ class AIAgent:
                 if _is_multimodal_tool_result(content):
                     content = _multimodal_text_summary(content)
                 elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
-                    _txt = []
-                    for p in content:
-                        if isinstance(p, dict) and p.get("type") == "text":
-                            _txt.append(str(p.get("text", "")))
-                        elif isinstance(p, dict) and p.get("type") in {"image", "image_url", "input_image"}:
-                            _txt.append("[screenshot]")
-                    content = "\n".join(_txt) if _txt else None
+                    # List of OpenAI-style content parts: strip images, keep text
+                    # (see _persist_list_content_to_text for the @image:-ref rule).
+                    content = _persist_list_content_to_text(content)
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [
@@ -2150,6 +2200,12 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                # TEST-ONLY (inert in prod): in the ``assistant`` fault mode,
+                # raise just before writing the assistant/completion row. Earlier
+                # user/tool rows in this flush already committed (append_message
+                # commits per row), so the user turn stays durable while the
+                # completion is lost — deterministic recovery scenario.
+                _maybe_inject_persist_fault(role)
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,

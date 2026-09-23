@@ -6327,6 +6327,12 @@ class APIServerAdapter(BasePlatformAdapter):
                                         clear_session_vars(session_tokens)
                                     except Exception:
                                         pass
+                        # WAVE-26 note: this is the secondary, non-durable /v1/runs
+                        # plane. Authoritative unknown-safe per-run usage is exposed
+                        # on the DURABLE runtime plane via _journal_usage_rollup
+                        # (web_routers/runtime.py), which the benchmark reads. This
+                        # projection keeps its existing shape to avoid changing the
+                        # in-process plane's contract.
                         u = {
                             "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                             "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

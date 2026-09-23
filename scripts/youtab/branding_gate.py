@@ -98,7 +98,7 @@ def _read_image_text(path: Path, engine: str, reader: object) -> str | None:
             out = Path(temp) / "result"
             done = subprocess.run(
                 ["tesseract", str(path), str(out)],
-                capture_output=True, text=True, check=False, timeout=60,
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False, timeout=60,
             )
             if done.returncode != 0:
                 return None

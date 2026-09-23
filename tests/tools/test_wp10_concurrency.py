@@ -126,3 +126,44 @@ def test_concurrent_imports_of_one_speaker_raise_only_refusals(tmp_path, sharing
     for thread in threads:
         thread.join(180)
     assert not unexpected, unexpected
+
+
+# ── deterministic guards for the Windows shared-read sharing-violation race ──
+# The test above relies on thread scheduling to collide two imports on one shared
+# target; these force the exact transient error the loser's hash-read hits when a
+# peer's os.replace holds the target, proving _sha256_resilient rides it out and
+# still fails loud when it never clears (no masking). os.name is patched to "nt"
+# so the retry path is exercised on any platform.
+
+
+def test_sha256_resilient_recovers_from_transient_sharing_violation(tmp_path, monkeypatch):
+    monkeypatch.setattr(imp.os, "name", "nt")
+    target = tmp_path / "shared.wav"
+    target.write_bytes(b"the-recording-bytes")
+    real_sha = imp.freeze_manifest.sha256_file
+    calls = {"n": 0}
+
+    def flaky(path):
+        calls["n"] += 1
+        if calls["n"] < 3:  # a peer's os.replace holds the handle for the first reads
+            raise PermissionError(13, "Permission denied")  # open() sets winerror=None
+        return real_sha(path)
+
+    monkeypatch.setattr(imp.freeze_manifest, "sha256_file", flaky)
+    # Rides out the transient violation and returns the true digest.
+    assert imp._sha256_resilient(target) == real_sha(target)
+    assert calls["n"] >= 3
+
+
+def test_sha256_resilient_reraises_when_violation_never_clears(tmp_path, monkeypatch):
+    monkeypatch.setattr(imp.os, "name", "nt")
+    target = tmp_path / "stuck.wav"
+    target.write_bytes(b"x")
+
+    def always_locked(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(imp.freeze_manifest, "sha256_file", always_locked)
+    # A genuinely stuck handle still surfaces after the bounded window — no masking.
+    with pytest.raises(PermissionError):
+        imp._sha256_resilient(target)

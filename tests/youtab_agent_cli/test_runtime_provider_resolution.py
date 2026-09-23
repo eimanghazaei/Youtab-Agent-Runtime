@@ -16,8 +16,16 @@ def test_configured_api_key_provider_without_key_fails_closed(monkeypatch):
         lambda: {"provider": "deepseek", "default": "deepseek-v4-pro"},
     )
     monkeypatch.setattr(rp, "load_pool", lambda _provider: SimpleNamespace(has_credentials=lambda: False))
+    # runtime_provider imports resolve_api_key_provider_credentials by name
+    # (``from ...auth import resolve_api_key_provider_credentials``), so the
+    # effective binding is ``rp.resolve_api_key_provider_credentials`` — patch
+    # THAT, not the auth-module attribute. Patching the auth module leaves rp's
+    # bound name untouched, so the real resolver runs and picks up any deepseek
+    # credential present in the ambient .env / config, defeating the fail-closed
+    # assertion (this is why the test was non-hermetic).
     monkeypatch.setattr(
-        "youtab_agent_cli.auth.resolve_api_key_provider_credentials",
+        rp,
+        "resolve_api_key_provider_credentials",
         lambda _provider: {
             "provider": "deepseek",
             "api_key": "",

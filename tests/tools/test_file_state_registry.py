@@ -23,6 +23,8 @@ import threading
 import time
 import unittest
 
+import pytest
+
 from tools import file_state
 from tools.file_tools import (
     read_file_tool,
@@ -31,11 +33,25 @@ from tools.file_tools import (
 )
 
 
-def _tmp_file(content: str = "initial\n") -> str:
-    fd, path = tempfile.mkstemp(prefix="youtab_file_state_test_", suffix=".txt")
+def _tmp_file(dir_: str, content: str = "initial\n") -> str:
+    # Create the temp file UNDER a pytest-owned directory (``dir_``) rather than
+    # the shared system temp. The raw ``tempfile.mkstemp()`` default landed in
+    # the process-wide %TEMP%, which under Windows system-temp churn (antivirus,
+    # cleaners, parallel CI jobs) occasionally raised a transient
+    # FileNotFoundError as the base dir was swept mid-test. A pytest tmp dir has
+    # its lifetime owned by pytest, so it is stable for the whole test.
+    fd, path = tempfile.mkstemp(
+        dir=dir_, prefix="youtab_file_state_test_", suffix=".txt"
+    )
     with os.fdopen(fd, "w") as f:
         f.write(content)
     return path
+
+
+@pytest.fixture(autouse=True)
+def _inject_tmp_path(request, tmp_path):
+    """Give the unittest.TestCase instances a pytest-owned temp directory."""
+    request.instance._tmp_base = str(tmp_path)
 
 
 class FileStateRegistryUnitTests(unittest.TestCase):
@@ -54,7 +70,7 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         file_state.get_registry().clear()
 
     def _mk(self, content: str = "x\n") -> str:
-        p = _tmp_file(content)
+        p = _tmp_file(self._tmp_base, content)
         self._tmpfiles.append(p)
         return p
 
@@ -149,7 +165,11 @@ class FileToolsIntegrationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         file_state.get_registry().clear()
-        self._tmpdir = tempfile.mkdtemp(prefix="youtab_file_state_int_")
+        # Nest under the pytest-owned tmp dir (see _inject_tmp_path) so the base
+        # directory's lifetime is owned by pytest, not the churning system temp.
+        self._tmpdir = tempfile.mkdtemp(
+            dir=self._tmp_base, prefix="youtab_file_state_int_"
+        )
 
     def tearDown(self) -> None:
         import shutil

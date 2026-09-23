@@ -20,7 +20,7 @@ const electronNative: TestProjectConfiguration = {
   test: {
     name: 'electron',
     environment: 'node',
-    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}']
+    include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'packaging/**/*.test.mjs']
   }
 }
 

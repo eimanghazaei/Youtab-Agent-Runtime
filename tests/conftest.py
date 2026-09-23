@@ -399,6 +399,28 @@ _YOUTAB_AGENT_BEHAVIORAL_VARS = frozenset({
 
 
 @pytest.fixture(autouse=True)
+def _fresh_dashboard_auth_registry(monkeypatch):
+    """Inject a FRESH dashboard-auth registry per test (Contract A isolation).
+
+    The complete dashboard-auth authorization state lives in one AuthRegistry the
+    real app FREEZES in lifespan startup (immutable-after-startup, with NO runtime
+    reset). A test that runs the app lifespan — e.g.
+    ``with TestClient(web_server.app)`` — would otherwise leave the shared default
+    registry FROZEN and poison the next test. Rather than a shipped reset, each
+    test gets a brand-new instance: we rebind the module-level default. The
+    package's delegating functions resolve the default at call time, so the
+    injection is total. ``monkeypatch`` restores the original after the test.
+    """
+    try:
+        from youtab_agent_cli.dashboard_auth import lifecycle
+        monkeypatch.setattr(lifecycle, "_default", lifecycle.AuthRegistry())
+    except Exception:
+        # dashboard-auth not importable in this slice — nothing to inject.
+        pass
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_environment(tmp_path, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 

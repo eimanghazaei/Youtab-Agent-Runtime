@@ -1446,6 +1446,16 @@ _DESC_TASK_ID_DEFAULT = (
     "(the task the dispatcher spawned you to work on)."
 )
 
+# WAVE-30F (F1): the full board-resolution rule is server-side behaviour the model
+# never computes (it has no env/symlink visibility), so it only needs to appear
+# ONCE in the tool array — on ``kanban_show``, the authoritative carrier of the
+# full rule. The other 11 board-bearing kanban tools carry a short stub with the
+# same actionable semantics — omit → active board, pass a slug → override —
+# eliminating the 350-char blob's 11 redundant wire copies (~594 est tok) with no
+# loss of any parameter, optionality, or validation. This is true duplication
+# removal, NOT tool hiding: every tool keeps its ``board`` parameter, fully visible
+# and unchanged. (The task-id default is left as-is — its dedup saving is
+# negligible and not worth the churn.)
 _DESC_BOARD = (
     "Kanban board slug to target. When omitted, the call resolves the "
     "active board the usual way: YOUTAB_AGENT_KANBAN_DB env → "
@@ -1454,15 +1464,21 @@ _DESC_BOARD = (
     "a Telegram routing layer) needs to override the env-pinned active "
     "board for this one call."
 )
+_DESC_BOARD_SHORT = (
+    "Board slug; omit to target the active board, pass a slug to override "
+    "it for this call (see kanban_show for the full resolution order)."
+)
 
 
-def _board_schema_prop() -> dict[str, str]:
+def _board_schema_prop(full: bool = False) -> dict[str, str]:
     """Schema fragment for the optional ``board`` parameter.
 
-    Centralised so a future tweak to the description / validation hint
-    only has to land in one place.
+    ``full=True`` emits the complete resolution rule (used once, on
+    ``kanban_show``); every other call site uses the short stub so the 350-char
+    rule is not re-serialized on the wire for all 13 tools. Centralised so a future
+    tweak lands in one place. The parameter itself is identical in every tool.
     """
-    return {"type": "string", "description": _DESC_BOARD}
+    return {"type": "string", "description": _DESC_BOARD if full else _DESC_BOARD_SHORT}
 
 KANBAN_SHOW_SCHEMA = {
     "name": "kanban_show",
@@ -1481,7 +1497,8 @@ KANBAN_SHOW_SCHEMA = {
                 "type": "string",
                 "description": _DESC_TASK_ID_DEFAULT,
             },
-            "board": _board_schema_prop(),
+            # kanban_show is the one authoritative carrier of the full board rule.
+            "board": _board_schema_prop(full=True),
         },
         "required": [],
     },

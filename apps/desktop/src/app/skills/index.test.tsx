@@ -8,6 +8,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { queryClient } from '@/lib/query-client'
 import type * as YoutabApi from '@/youtab'
 
+// Import the view statically so its (heavy) module graph is transformed and
+// evaluated during collection, not lazily inside the first timed test body.
+// Under the full concurrent suite the lazy `await import()` transform could
+// exceed the 15s per-test timeout on this large module; paying it at collection
+// keeps each test body to render+assert without touching the official timeout.
+import { SkillsView } from './index'
+
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const setSkillEnabled = vi.fn()
@@ -59,7 +66,6 @@ function toolset(overrides: Record<string, unknown> = {}) {
 }
 
 async function renderSkills() {
-  const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(

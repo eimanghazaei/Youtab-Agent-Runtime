@@ -1548,99 +1548,109 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
 
 def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
                     auth) -> tuple:
-    """Create a PR to a GitHub repo with the skill. Returns (success, message)."""
+    """Create a PR to a GitHub repo with the skill. Returns (success, message).
+
+    Every request goes through the SSRF-pinning client so the GitHub host is
+    resolved and validated by IP at connect time (private/loopback/link-local/
+    cloud-metadata destinations are refused). ``follow_redirects`` is left at the
+    httpx default of ``False`` on purpose: these calls carry a write-scoped
+    ``Authorization`` token, so a 3xx must never be transparently replayed
+    against a redirected (possibly cross-origin) destination.
+    """
     import httpx
+    from tools.url_safety import create_ssrf_safe_client, SSRFConnectionBlocked
 
     headers = auth.get_headers()
 
-    # 1. Fork the repo
-    try:
-        resp = httpx.post(
-            f"https://api.github.com/repos/{target_repo}/forks",
-            headers=headers, timeout=30,
-        )
-        if resp.status_code in {200, 202}:
-            fork = resp.json()
-            fork_repo = fork["full_name"]
-        elif resp.status_code == 403:
-            return False, "GitHub token lacks permission to fork repos"
-        else:
-            return False, f"Failed to fork {target_repo}: {resp.status_code}"
-    except httpx.HTTPError as e:
-        return False, f"Network error forking repo: {e}"
-
-    # 2. Get default branch
-    try:
-        resp = httpx.get(
-            f"https://api.github.com/repos/{target_repo}",
-            headers=headers, timeout=15,
-        )
-        default_branch = resp.json().get("default_branch", "main")
-    except Exception:
-        default_branch = "main"
-
-    # 3. Get the base tree SHA
-    try:
-        resp = httpx.get(
-            f"https://api.github.com/repos/{fork_repo}/git/refs/heads/{default_branch}",
-            headers=headers, timeout=15,
-        )
-        base_sha = resp.json()["object"]["sha"]
-    except Exception as e:
-        return False, f"Failed to get base branch: {e}"
-
-    # 4. Create a new branch
-    branch_name = f"add-skill-{skill_name}"
-    try:
-        httpx.post(
-            f"https://api.github.com/repos/{fork_repo}/git/refs",
-            headers=headers, timeout=15,
-            json={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
-        )
-    except Exception as e:
-        return False, f"Failed to create branch: {e}"
-
-    # 5. Upload skill files
-    for f in skill_path.rglob("*"):
-        if not f.is_file():
-            continue
-        rel = str(f.relative_to(skill_path))
-        upload_path = f"skills/{skill_name}/{rel}"
+    with create_ssrf_safe_client() as client:
+        # 1. Fork the repo
         try:
-            import base64
-            content_b64 = base64.b64encode(f.read_bytes()).decode()
-            httpx.put(
-                f"https://api.github.com/repos/{fork_repo}/contents/{upload_path}",
+            resp = client.post(
+                f"https://api.github.com/repos/{target_repo}/forks",
+                headers=headers, timeout=30,
+            )
+            if resp.status_code in {200, 202}:
+                fork = resp.json()
+                fork_repo = fork["full_name"]
+            elif resp.status_code == 403:
+                return False, "GitHub token lacks permission to fork repos"
+            else:
+                return False, f"Failed to fork {target_repo}: {resp.status_code}"
+        except (httpx.HTTPError, SSRFConnectionBlocked) as e:
+            return False, f"Network error forking repo: {e}"
+
+        # 2. Get default branch
+        try:
+            resp = client.get(
+                f"https://api.github.com/repos/{target_repo}",
                 headers=headers, timeout=15,
-                json={
-                    "message": f"Add {skill_name} skill: {rel}",
-                    "content": content_b64,
-                    "branch": branch_name,
-                },
+            )
+            default_branch = resp.json().get("default_branch", "main")
+        except Exception:
+            default_branch = "main"
+
+        # 3. Get the base tree SHA
+        try:
+            resp = client.get(
+                f"https://api.github.com/repos/{fork_repo}/git/refs/heads/{default_branch}",
+                headers=headers, timeout=15,
+            )
+            base_sha = resp.json()["object"]["sha"]
+        except Exception as e:
+            return False, f"Failed to get base branch: {e}"
+
+        # 4. Create a new branch
+        branch_name = f"add-skill-{skill_name}"
+        try:
+            client.post(
+                f"https://api.github.com/repos/{fork_repo}/git/refs",
+                headers=headers, timeout=15,
+                json={"ref": f"refs/heads/{branch_name}", "sha": base_sha},
             )
         except Exception as e:
-            return False, f"Failed to upload {rel}: {e}"
+            return False, f"Failed to create branch: {e}"
 
-    # 6. Create PR
-    try:
-        resp = httpx.post(
-            f"https://api.github.com/repos/{target_repo}/pulls",
-            headers=headers, timeout=15,
-            json={
-                "title": f"Add skill: {skill_name}",
-                "body": f"Submitting the `{skill_name}` skill via Youtab Skills Hub.\n\n"
-                        f"This skill was scanned by the Youtab Skills Guard before submission.",
-                "head": f"{fork_repo.split('/')[0]}:{branch_name}",
-                "base": default_branch,
-            },
-        )
-        if resp.status_code == 201:
-            pr_url = resp.json().get("html_url", "")
-            return True, f"PR created: {pr_url}"
-        else:
-            return False, f"Failed to create PR: {resp.status_code} {resp.text[:200]}"
-    except httpx.HTTPError as e:
-        return False, f"Network error creating PR: {e}"
+        # 5. Upload skill files
+        for f in skill_path.rglob("*"):
+            if not f.is_file():
+                continue
+            rel = str(f.relative_to(skill_path))
+            upload_path = f"skills/{skill_name}/{rel}"
+            try:
+                import base64
+                content_b64 = base64.b64encode(f.read_bytes()).decode()
+                client.put(
+                    f"https://api.github.com/repos/{fork_repo}/contents/{upload_path}",
+                    headers=headers, timeout=15,
+                    json={
+                        "message": f"Add {skill_name} skill: {rel}",
+                        "content": content_b64,
+                        "branch": branch_name,
+                    },
+                )
+            except Exception as e:
+                return False, f"Failed to upload {rel}: {e}"
+
+        # 6. Create PR
+        try:
+            resp = client.post(
+                f"https://api.github.com/repos/{target_repo}/pulls",
+                headers=headers, timeout=15,
+                json={
+                    "title": f"Add skill: {skill_name}",
+                    "body": f"Submitting the `{skill_name}` skill via Youtab Skills Hub.\n\n"
+                            f"This skill was scanned by the Youtab Skills Guard before submission.",
+                    "head": f"{fork_repo.split('/')[0]}:{branch_name}",
+                    "base": default_branch,
+                },
+            )
+            if resp.status_code == 201:
+                pr_url = resp.json().get("html_url", "")
+                return True, f"PR created: {pr_url}"
+            else:
+                return False, f"Failed to create PR: {resp.status_code} {resp.text[:200]}"
+        except (httpx.HTTPError, SSRFConnectionBlocked) as e:
+            return False, f"Network error creating PR: {e}"
 
 
 def do_snapshot_export(output_path: str, console: Optional[Console] = None) -> None:

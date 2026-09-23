@@ -11,6 +11,7 @@ import statistics
 import time
 
 import pytest
+from tests import _wincompat
 
 # ---------------------------------------------------------------------------
 # Backend fixtures
@@ -72,6 +73,7 @@ def _report(label: str, durations: list[float]):
 class TestLocalPerf:
     """Local baseline — no file sync, no network. Sets the floor."""
 
+    @_wincompat.requires_posix
     def test_echo_latency(self, local_env):
         durations = _time_executions(local_env, "echo hello", n=20)
         med = _report("local echo", durations)

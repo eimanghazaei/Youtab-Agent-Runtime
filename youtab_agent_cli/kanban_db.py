@@ -811,6 +811,40 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
     return entries
 
 
+_WINDOWS_TRANSIENT_FS_ERRORS = frozenset((5, 32))  # ACCESS_DENIED, SHARING_VIOLATION
+
+
+def _windows_resilient_fs_op(op):
+    """Run a filesystem rename/rmtree, riding out the transient Windows lock.
+
+    On POSIX this simply calls ``op()`` once — an open file descriptor never
+    blocks a rename or unlink, so there is nothing to retry. On Windows a file
+    that was *just* closed can stay briefly unshareable while the OS releases
+    the handle (notably SQLite's WAL/-shm sidecars after the last connection
+    closes), so ``rename``/``rmtree`` can bounce with ``ERROR_ACCESS_DENIED``
+    (WinError 5) or ``ERROR_SHARING_VIOLATION`` (WinError 32). This retries ONLY
+    those two winerror codes a bounded number of times with a short capped
+    backoff; every other error is raised immediately, and a still-held handle
+    (a genuine leak) surfaces once the attempts are exhausted rather than being
+    masked. It does not weaken the "no open handle at remove time" contract —
+    it only tolerates the OS's release latency for a handle already closed.
+    """
+    if os.name != "nt":
+        op()
+        return
+    backoff = 0.002
+    for attempt in range(12):
+        try:
+            op()
+            return
+        except (PermissionError, OSError) as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in _WINDOWS_TRANSIENT_FS_ERRORS or attempt == 11:
+                raise
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 0.15)
+
+
 def remove_board(slug: str, *, archive: bool = True) -> dict:
     """Remove or archive a board.
 
@@ -851,11 +885,10 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         while target.exists():
             target = archive_root / f"{normed}-{ts}-{suffix}"
             suffix += 1
-        d.rename(target)
+        _windows_resilient_fs_op(lambda: d.rename(target))
         return {"slug": normed, "action": "archived", "new_path": str(target)}
     else:
-        import shutil
-        shutil.rmtree(d)
+        _windows_resilient_fs_op(lambda: shutil.rmtree(d))
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
@@ -895,6 +928,8 @@ class Task:
     # (Pre-rename column: ``spawn_failures``.)
     consecutive_failures: int = 0
     worker_pid: Optional[int] = None
+    # R7: the worker's (pid+start-time) incarnation token recorded at spawn.
+    worker_incarnation: Optional[str] = None
     # Short excerpt of the last failure's error text (any outcome, not
     # just spawn). Pre-rename column: ``last_spawn_error``.
     last_failure_error: Optional[str] = None
@@ -942,6 +977,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Authoritative gateway per-request correlation id (canonical v1 signed field).
+    # This is the dedicated column; ``session_id`` above remains the legacy
+    # overload (set to the same value for now) to be retired in a later slice.
+    correlation_id: Optional[str] = None
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
     # blocks. Set by ``block_task``; preserved across unblock so a re-block for
     # the same kind is recognisable as an unblock↔re-block loop.
@@ -991,6 +1030,9 @@ class Task:
                 else (row["spawn_failures"] if "spawn_failures" in keys else 0)
             ),
             worker_pid=row["worker_pid"] if "worker_pid" in keys else None,
+            worker_incarnation=(
+                row["worker_incarnation"] if "worker_incarnation" in keys else None
+            ),
             last_failure_error=(
                 row["last_failure_error"] if "last_failure_error" in keys
                 # Same belt-and-suspenders fallback as consecutive_failures above.
@@ -1029,6 +1071,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            correlation_id=(
+                row["correlation_id"] if "correlation_id" in keys else None
             ),
             block_kind=(
                 row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
@@ -1208,6 +1253,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- Authoritative gateway per-request correlation id (canonical v1 signed
+    -- field 8). This is the dedicated correlation column; ``session_id`` above
+    -- remains the legacy overload carrying the same value for now and will be
+    -- retired in a later slice. Indexed for per-correlation lookups.
+    correlation_id       TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -2139,7 +2189,7 @@ def connect(
             with _INIT_LOCK:
                 from youtab_state import apply_wal_with_fallback
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-                conn.execute("PRAGMA synchroyoutab=FULL")
+                conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.execute("PRAGMA secure_delete=ON")
@@ -2179,7 +2229,7 @@ def connect(
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
-                conn.execute("PRAGMA synchroyoutab=FULL")
+                conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 # Zero freed pages so a later torn write cannot expose stale
@@ -2323,6 +2373,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             )
     if "worker_pid" not in cols:
         _add_column_if_missing(conn, "tasks", "worker_pid", "worker_pid INTEGER")
+    if "worker_incarnation" not in cols:
+        # WAVE-30H R7: the spawned worker's (pid+start-time) incarnation token, so
+        # a recycled PID is never mistaken for the live worker nor killed as it.
+        _add_column_if_missing(
+            conn, "tasks", "worker_incarnation", "worker_incarnation TEXT"
+        )
     if "last_failure_error" not in cols:
         added = _add_column_if_missing(
             conn, "tasks", "last_failure_error", "last_failure_error TEXT"
@@ -2397,6 +2453,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "correlation_id" not in cols:
+        # Authoritative gateway per-request correlation id (canonical v1 signed
+        # field). Additive + reversible: legacy rows get NULL; a downgrade simply
+        # stops reading the column. ``session_id`` keeps the legacy overload.
+        _add_column_if_missing(
+            conn, "tasks", "correlation_id", "correlation_id TEXT"
+        )
+
     if "block_kind" not in cols:
         # Typed block reason (VALID_BLOCK_KINDS) or NULL for legacy/un-typed
         # blocks. Existing blocked rows get NULL, which is treated as a
@@ -2426,6 +2490,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_correlation_id ON tasks(correlation_id)"
     )
 
     # task_events gained a run_id column; back-fill it as NULL for
@@ -2817,7 +2884,20 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
-def create_task(
+def create_task(conn: sqlite3.Connection, **kwargs) -> str:
+    """Backward-compatible wrapper: create a task and return only its id.
+
+    Existing callers depend on the ``str`` return. Callers that must know
+    whether the run was NEWLY created vs. returned via an ``idempotency_key``
+    hit (e.g. the runtime create handler, which must append create-time
+    mode/engine events exactly once) should call :func:`create_task_ex`, which
+    returns ``(task_id, created)``.
+    """
+    task_id, _created = create_task_ex(conn, **kwargs)
+    return task_id
+
+
+def create_task_ex(
     conn: sqlite3.Connection,
     *,
     title: str,
@@ -2841,13 +2921,29 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    correlation_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
-) -> str:
+    on_created=None,
+    task_id: Optional[str] = None,
+) -> tuple[str, bool]:
     """Create a new task and optionally link it under parent tasks.
 
-    Returns the new task id.  Status is ``ready`` when there are no
+    Returns ``(task_id, created)`` where ``created`` is ``True`` when a new row
+    was inserted and ``False`` when an existing row was returned via an
+    ``idempotency_key`` hit. This lets callers perform create-once side effects
+    (e.g. appending create-time events) without duplicating them on idempotent
+    retries.
+
+    ``task_id`` lets an authority that has ALREADY allocated the canonical run id
+    (the durable RunStore ingress) pin the kanban row to that exact id, so the
+    kanban task is a same-id execution-transport projection of the one durable
+    run — never a second id. When supplied it is used verbatim (no server-side
+    generation and no id-collision retry: the durable authority guarantees
+    uniqueness); an id collision then surfaces as an IntegrityError. Callers that
+    also delegate idempotency to the durable authority pass ``idempotency_key=None``
+    here so kanban performs no second dedup. Status is ``ready`` when there are no
     parents (or all parents already ``done``), otherwise ``todo``.
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
@@ -3036,20 +3132,35 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
+    # Idempotency FAST PATH — return the existing task instead of creating a
+    # duplicate. Done BEFORE entering write_txn to keep the common (already
+    # exists) case cheap and to avoid taking a write lock just to look up.
+    # This lookup is racy on its own (two concurrent same-key creators can both
+    # miss it), so it is NOT authoritative: the write_txn below re-checks under
+    # the BEGIN IMMEDIATE lock before inserting (see ``_existing_idempotent``).
+    #
+    # SECURITY: the lookup is scoped to the SAME (tenant, created_by) that owns
+    # the run — the exact ownership boundary the runtime surface enforces on
+    # every read (see web_routers/runtime.py::_load_owned_task). An
+    # Idempotency-Key is caller-controlled, so without this scope a different
+    # tenant/user submitting a colliding key would be handed back another
+    # owner's run (disclosing its tenant/correlation id and suppressing their
+    # own create). Scoped, a colliding key from a different owner simply creates
+    # their own run. ``IS`` gives correct NULL-matches-NULL semantics.
+    def _existing_idempotent() -> Optional[str]:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
+            "AND tenant IS ? AND created_by IS ? "
             "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
+            (idempotency_key, tenant, created_by),
         ).fetchone()
-        if row:
-            return row["id"]
+        return row["id"] if row else None
+
+    if idempotency_key:
+        existing = _existing_idempotent()
+        if existing is not None:
+            return existing, False
 
     now = int(time.time())
 
@@ -3073,11 +3184,29 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
-    # Retry once on the extremely unlikely id collision.
+    # Retry once on the extremely unlikely id collision. When the caller pins an
+    # explicit id (the durable ingress passing its canonical run id), use it
+    # verbatim and do NOT retry: the durable authority already guaranteed
+    # uniqueness, so a collision is a real error, not a birthday-paradox miss.
+    _caller_task_id = task_id
     for attempt in range(2):
-        task_id = _new_task_id()
+        task_id = _caller_task_id or _new_task_id()
         try:
             with write_txn(conn):
+                # AUTHORITATIVE idempotency re-check under the write lock. The
+                # ``idx_tasks_idempotency`` index is non-unique, so the pre-lock
+                # fast path is racy: two concurrent same-key creators can both
+                # miss it. ``write_txn`` opens BEGIN IMMEDIATE, which serialises
+                # writers — so the loser reaches this point only AFTER the winner
+                # has committed its INSERT, and now observes the existing row.
+                # Returning here (no writes performed) commits an empty
+                # transaction and yields the winner's run with created=False, so
+                # exactly one row per key is ever inserted.
+                if idempotency_key:
+                    existing = _existing_idempotent()
+                    if existing is not None:
+                        return existing, False
+
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -3136,8 +3265,8 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, correlation_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3162,6 +3291,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        correlation_id,
                     ),
                 )
                 for pid in parents:
@@ -3189,9 +3319,20 @@ def create_task(
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
-            return task_id
+                # WAVE-30H #race: run create-once side effects (e.g. persisting the
+                # effective binding + grant + mode events) INSIDE this same
+                # BEGIN IMMEDIATE transaction, so the row and its binding commit
+                # atomically. Under SQLite snapshot isolation the dispatcher's
+                # connection cannot see the row until commit — closing the window
+                # where a worker could be spawned for a task with no binding yet. The
+                # hook MUST use _append_event directly (no nested write_txn). A hook
+                # exception rolls back the whole insert (no orphan task), which is the
+                # correct fail-closed outcome.
+                if on_created is not None:
+                    on_created(conn, task_id)
+            return task_id, True
         except sqlite3.IntegrityError:
-            if attempt == 1:
+            if attempt == 1 or _caller_task_id is not None:
                 raise
             # Retry with a fresh id.
             continue
@@ -3592,7 +3733,17 @@ def _safe_attachment_name(raw: str) -> str:
     name = name.lstrip(".").strip()
     if not name:
         raise ValueError("invalid attachment filename")
-    return name[:200]
+    name = name[:200]
+    # A leaf like "CON"/"con.txt"/"NUL" resolves to a Windows device even inside
+    # the per-task attachments dir, so writing the blob would hang or silently
+    # discard it. Reject on Windows (where the OS resolves the device); the
+    # predicate is platform-independent so POSIX behaviour is unchanged.
+    if os.name == "nt":
+        from tools.path_security import is_windows_reserved_device_path
+
+        if is_windows_reserved_device_path(name):
+            raise ValueError("attachment filename names a Windows reserved device")
+    return name
 
 
 def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
@@ -4338,7 +4489,8 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, worker_pid, worker_incarnation, claim_expires, "
+        "       last_heartbeat_at "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -4359,7 +4511,9 @@ def release_stale_claims(
         if (
             host_local
             and row["worker_pid"]
-            and _pid_alive(row["worker_pid"])
+            and _worker_incarnation_alive(
+                row["worker_pid"], row["worker_incarnation"]
+            )
             and not heartbeat_stale
         ):
             new_expires = now + _resolve_claim_ttl_seconds()
@@ -4400,6 +4554,7 @@ def release_stale_claims(
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            incarnation=row["worker_incarnation"],
         )
         # Never release a claim while our own worker is still alive: that would
         # spawn a duplicate beside it. Hold the claim and retry next tick.
@@ -4469,7 +4624,7 @@ def reclaim_task(
     reclaimable state (not running, or doesn't exist).
     """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        "SELECT status, claim_lock, worker_pid, worker_incarnation FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row:
@@ -4480,6 +4635,7 @@ def reclaim_task(
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
+        incarnation=row["worker_incarnation"],
     )
     with write_txn(conn):
         cur = conn.execute(
@@ -5760,61 +5916,76 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    Self-contained: opens its own ``write_txn``. Callers that must perform the
+    requeue ATOMICALLY with another write (SEC-9 #9: the runtime resume endpoint
+    persists the ``run_resume`` event and requeues in ONE transaction) call
+    :func:`_unblock_task_locked` while already holding a ``write_txn`` instead.
     """
-    now = int(time.time())
     with write_txn(conn):
-        stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (task_id,),
-        ).fetchone()
-        if stale and stale["current_run_id"]:
-            conn.execute(
-                """
-                UPDATE task_runs
-                   SET status = 'reclaimed', outcome = 'reclaimed',
-                       summary = COALESCE(summary, 'invariant recovery on unblock'),
-                       ended_at = ?,
-                       claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
-                 WHERE id = ? AND ended_at IS NULL
-                """,
-                (now, int(stale["current_run_id"])),
-            )
-        # Re-gate on parent completion before flipping 'blocked' back to
-        # 'ready'. Unconditionally setting status='ready' here bypasses the
-        # parent-completion invariant (the dispatcher trusts that column);
-        # if parents are still in progress the task must wait in 'todo'
-        # until recompute_ready picks it up. RCA: Bug 2 at
-        # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
-        undone_parents = conn.execute(
-            "SELECT 1 FROM task_links l "
-            "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
-            (task_id,),
-        ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
-        # NOTE: deliberately does NOT touch ``block_recurrences`` or
-        # ``block_kind``. Resetting the recurrence counter on unblock is exactly
-        # the amnesia that let a cron unblock → worker re-block loop run
-        # unbounded (Dale's report). The counter survives the unblock so that a
-        # subsequent same-cause ``block_task`` can detect the loop and route to
-        # triage at ``BLOCK_RECURRENCE_LIMIT``. It is reset to 0 only on a
-        # successful completion (see ``complete_task``). ``consecutive_failures``
-        # (the *dispatcher* spawn/crash/timeout counter — a different signal) is
-        # still reset here, which is correct: a deliberate unblock is a fresh
-        # start for the dispatcher's retry budget.
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (new_status, task_id),
+        return _unblock_task_locked(conn, task_id)
+
+
+def _unblock_task_locked(conn: sqlite3.Connection, task_id: str) -> bool:
+    """The ``unblock_task`` body, assuming the caller ALREADY holds a
+    ``write_txn(conn)``. Extracted (SEC-9 #9) so the runtime resume endpoint can
+    append the ``run_resume`` event and flip ``blocked``->``ready`` atomically in
+    a single transaction — a failure there rolls back BOTH, so a run can never be
+    left with ``run_resume`` recorded while still blocked. Behaviour is identical
+    to the public :func:`unblock_task` for every external caller."""
+    now = int(time.time())
+    stale = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+        (task_id,),
+    ).fetchone()
+    if stale and stale["current_run_id"]:
+        conn.execute(
+            """
+            UPDATE task_runs
+               SET status = 'reclaimed', outcome = 'reclaimed',
+                   summary = COALESCE(summary, 'invariant recovery on unblock'),
+                   ended_at = ?,
+                   claim_lock = NULL, claim_expires = NULL, worker_pid = NULL
+             WHERE id = ? AND ended_at IS NULL
+            """,
+            (now, int(stale["current_run_id"])),
         )
-        if cur.rowcount != 1:
-            return False
-        _append_event(
-            conn, task_id, "unblocked",
-            {"status": new_status} if new_status != "ready" else None,
-        )
-        return True
+    # Re-gate on parent completion before flipping 'blocked' back to
+    # 'ready'. Unconditionally setting status='ready' here bypasses the
+    # parent-completion invariant (the dispatcher trusts that column);
+    # if parents are still in progress the task must wait in 'todo'
+    # until recompute_ready picks it up. RCA: Bug 2 at
+    # kanban/boards/cookai/workspaces/t_a6acd07d/root-cause.md.
+    undone_parents = conn.execute(
+        "SELECT 1 FROM task_links l "
+        "JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    new_status = "todo" if undone_parents else "ready"
+    # NOTE: deliberately does NOT touch ``block_recurrences`` or
+    # ``block_kind``. Resetting the recurrence counter on unblock is exactly
+    # the amnesia that let a cron unblock → worker re-block loop run
+    # unbounded (Dale's report). The counter survives the unblock so that a
+    # subsequent same-cause ``block_task`` can detect the loop and route to
+    # triage at ``BLOCK_RECURRENCE_LIMIT``. It is reset to 0 only on a
+    # successful completion (see ``complete_task``). ``consecutive_failures``
+    # (the *dispatcher* spawn/crash/timeout counter — a different signal) is
+    # still reset here, which is correct: a deliberate unblock is a fresh
+    # start for the dispatcher's retry budget.
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, current_run_id = NULL, "
+        "consecutive_failures = 0, last_failure_error = NULL "
+        "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+        (new_status, task_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    _append_event(
+        conn, task_id, "unblocked",
+        {"status": new_status} if new_status != "ready" else None,
+    )
+    return True
 
 
 def specify_triage_task(
@@ -6867,13 +7038,42 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _worker_incarnation_alive(
+    pid: Optional[int], incarnation: Optional[str]
+) -> bool:
+    """R7: True only when the recorded worker incarnation is the LIVE process.
+
+    A bare PID can be recycled, so ``_pid_alive`` alone can mistake an unrelated
+    new process for the worker. When an incarnation token was recorded at spawn,
+    require the live process to be that exact incarnation. Falls back to pid-only
+    liveness for legacy rows with no recorded incarnation.
+    """
+    if not pid or int(pid) <= 0:
+        return False
+    if incarnation:
+        from youtab_runtime.process_incarnation import same_incarnation
+
+        return same_incarnation(int(pid), incarnation)
+    return _pid_alive(pid)
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
     signal_fn=None,
+    incarnation: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Best-effort host-local worker termination for reclaim paths.
+
+    WAVE-30H R7: when the worker's ``incarnation`` token (pid+start-time, recorded
+    at spawn) is supplied, it is VERIFIED against the live process before any
+    signal is sent. The OS recycles PID numbers, so signalling a bare PID can kill
+    an innocent process that inherited the number after the worker exited. If the
+    live process is a DIFFERENT incarnation (or the PID is gone), the original
+    worker is already dead: we report ``terminated`` and NEVER signal. A row with
+    no recorded incarnation (legacy) falls back to the pre-R7 pid-only path.
+    """
     import signal
 
     info: dict[str, Any] = {
@@ -6882,6 +7082,8 @@ def _terminate_reclaimed_worker(
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "incarnation_verified": None,
+        "incarnation_mismatch": False,
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -6890,6 +7092,20 @@ def _terminate_reclaimed_worker(
     if not str(claim_lock).startswith(host_prefix):
         return info
     info["host_local"] = True
+
+    # R7 incarnation gate: never signal a PID that is not our exact worker
+    # incarnation. A recycled/absent PID means the worker is already gone.
+    if incarnation:
+        from youtab_runtime.process_incarnation import pid_exists, same_incarnation
+
+        if not pid_exists(int(pid)):
+            info["terminated"] = True  # already gone — nothing (and no one) to kill
+            return info
+        if not same_incarnation(int(pid), incarnation):
+            info["terminated"] = True  # original worker gone; PID now belongs to another process
+            info["incarnation_mismatch"] = True
+            return info
+        info["incarnation_verified"] = True
 
     kill = signal_fn if signal_fn is not None else (
         os.kill if hasattr(os, "kill") else None
@@ -7194,7 +7410,8 @@ def detect_stale_running(
     reclaimed: list[str] = []
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "SELECT t.id, t.worker_pid, t.worker_incarnation, t.last_heartbeat_at, "
+        "       t.claim_lock, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -7219,9 +7436,11 @@ def detect_stale_running(
         tid = row["id"]
         lock = row["claim_lock"] or ""
 
-        # Terminate the worker if it's still host-local.
+        # Terminate the worker if it's still host-local (R7: incarnation-verified
+        # so a recycled PID is never signalled).
         termination = _terminate_reclaimed_worker(
             pid, lock, signal_fn=signal_fn,
+            incarnation=row["worker_incarnation"],
         )
 
         # Never release a claim while our own worker is still alive: that would
@@ -7408,7 +7627,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, worker_incarnation, claim_lock, started_at FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -7425,7 +7644,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 grace = _resolve_crash_grace_seconds()
                 if time.time() - started_at < grace:
                     continue
-            if _pid_alive(row["worker_pid"]):
+            # R7: a recycled PID (same number, different incarnation) means our
+            # worker is gone -> treat as crashed, and never attribute a stranger's
+            # liveness to it.
+            if _worker_incarnation_alive(
+                row["worker_pid"], row["worker_incarnation"]
+            ):
                 continue
 
             pid = int(row["worker_pid"])
@@ -7826,10 +8050,18 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     tail`` can correlate log lines with OS-level traces without opening
     the drawer.
     """
+    # R7: capture the (pid+start-time) incarnation token now, so later liveness
+    # and termination bind to THIS exact process instance, not just its number.
+    try:
+        from youtab_runtime.process_incarnation import incarnation_token
+
+        incarnation = incarnation_token(int(pid))
+    except Exception:  # noqa: BLE001 - incarnation is best-effort; pid path still works
+        incarnation = None
     with write_txn(conn):
         conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
+            "UPDATE tasks SET worker_pid = ?, worker_incarnation = ? WHERE id = ?",
+            (int(pid), incarnation, task_id),
         )
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
@@ -7837,7 +8069,24 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
             )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        # R8 (WAVE-30H): stamp a wall-clock ns mark at spawn so the worker can
+        # compute QUEUE_WAIT (spawn − enqueue) and WORKER_STARTUP (worker T0 − spawn)
+        # as cross-process (clock="epoch") gaps — the coarse seconds-grained task
+        # timestamps cannot resolve these sub-second-to-second boundaries.
+        try:
+            import time as _t
+            _spawned_epoch_ns = _t.time_ns()
+        except Exception:  # pragma: no cover - observability never breaks spawn
+            _spawned_epoch_ns = None
+        _append_event(
+            conn, task_id, "spawned",
+            {
+                "pid": int(pid),
+                "incarnation": incarnation,
+                "spawned_epoch_ns": _spawned_epoch_ns,
+            },
+            run_id=run_id,
+        )
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -8384,6 +8633,7 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        _dispatch_t0 = time.monotonic_ns()  # R8: DISPATCH_SCHEDULE (claim -> spawn)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -8403,6 +8653,21 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        # R8: attribute the dispatcher's per-task scheduling work (claim -> workspace
+        # resolution -> ready to spawn), correlated by run_id. Intra-process monotonic.
+        try:
+            from youtab_runtime import stage_trace as _st_disp
+            with _st_disp.trace_context_scope(
+                run_id=getattr(claimed, "id", None),
+                tenant=getattr(claimed, "tenant", None),
+                user=getattr(claimed, "created_by", None),
+            ):
+                _st_disp.record(
+                    _st_disp.Stage.DISPATCH_SCHEDULE,
+                    duration_ns=time.monotonic_ns() - _dispatch_t0,
+                )
+        except Exception:  # pragma: no cover - observability never breaks dispatch
+            pass
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -8788,25 +9053,35 @@ def _resolve_worker_cli_toolsets(youtab_home: Optional[str]) -> Optional[list[st
         return None
 
 
-def _default_spawn(
-    task: Task,
+def _apply_correlation_env(env: "dict[str, str]", task: Task) -> "dict[str, str]":
+    """Inject the authoritative correlation id into a worker env, if present.
+
+    This is how model dispatch carries the gateway correlation id to the child
+    worker (contract C4). Pure and side-effect-free on ``task`` so it can be
+    unit-tested without spawning a subprocess. No-op when the task has no
+    correlation id (legacy rows, non-gateway creation paths).
+    """
+    if task.correlation_id:
+        env["YOUTAB_AGENT_CORRELATION_ID"] = task.correlation_id
+    return env
+
+
+def build_worker_invocation(
+    task: "Task",
     workspace: str,
     *,
     board: Optional[str] = None,
-) -> Optional[int]:
-    """Fire-and-forget ``youtab -p <profile> chat -q ...`` subprocess.
+) -> "tuple[dict, list]":
+    """Build the (env, cmd) for a kanban worker WITHOUT spawning it.
 
-    Returns the spawned child's PID so the dispatcher can detect crashes
-    before the claim TTL expires. The child's completion is still observed
-    via the ``complete`` / ``block`` transitions the worker writes itself;
-    the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
-
-    ``board`` pins the child's kanban context to that board: the child's
-    ``YOUTAB_AGENT_KANBAN_DB`` / ``YOUTAB_AGENT_KANBAN_BOARD`` / workspaces_root env
-    vars all resolve to the same board the dispatcher claimed the task
-    from. Workers cannot accidentally see other boards.
+    Extracted from :func:`_default_spawn` so a pre-warmed single-use worker
+    pool (see ``youtab_agent_cli.worker_pool``) reproduces the EXACT same
+    per-run binding a fresh dispatcher subprocess would get: profile, tenant,
+    created_by, correlation, task id, workspace, board, kanban DB/workspaces
+    root, model/provider override, toolsets, goal-mode, timeouts. The pool
+    hands the returned env+cmd to a warm worker; :func:`_default_spawn` calls
+    this then Popens. Behaviour-preserving.
     """
-    import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
@@ -8843,8 +9118,30 @@ def _default_spawn(
         pass
     if task.tenant:
         env["YOUTAB_AGENT_TENANT"] = task.tenant
+    # WAVE-26: the worker needs BOTH halves of the principal (tenant, user) to
+    # attribute durable usage/tool events in the run journal. tenant is exported
+    # above; carry the owning user (created_by) so the run observer can bind a
+    # fail-closed Principal.
+    if task.created_by:
+        env["YOUTAB_AGENT_KANBAN_CREATED_BY"] = task.created_by
+    # Carry the authoritative gateway correlation id to the worker (contract C4).
+    _apply_correlation_env(env, task)
     env["YOUTAB_AGENT_KANBAN_TASK"] = task.id
     env["YOUTAB_AGENT_KANBAN_WORKSPACE"] = workspace
+    # D2 (durable ingress only): carry a PER-RUN worker capability — a run-bound token
+    # distinct from the broad runtime service secret — plus the callback base URL, so
+    # the worker can request approval through the durable-FIRST worker-only endpoint.
+    # No-op (nothing added) when durable ingress is off or no service secret is set.
+    try:
+        from youtab_runtime import durable_ingress_process as _dip
+        _cap = _dip.mint_worker_capability(task.id)
+        if _cap:
+            env["YOUTAB_AGENT_RUNTIME_WORKER_CAP"] = _cap
+            _base = _dip.worker_ingress_base_url()
+            if _base:
+                env["YOUTAB_AGENT_RUNTIME_INGRESS_URL"] = _base
+    except Exception:  # a launcher-side capability failure must not block the spawn
+        pass
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
     # context-file loader anchor on the workspace, not whatever cwd the
     # dispatching gateway happened to export. The worker subprocess is already
@@ -8952,6 +9249,29 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+    return env, cmd
+
+
+def _default_spawn(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
+    """Fire-and-forget ``youtab -p <profile> chat -q ...`` subprocess.
+
+    Returns the spawned child's PID so the dispatcher can detect crashes
+    before the claim TTL expires. The child's completion is still observed
+    via the ``complete`` / ``block`` transitions the worker writes itself;
+    the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
+
+    ``board`` pins the child's kanban context to that board: the child's
+    ``YOUTAB_AGENT_KANBAN_DB`` / ``YOUTAB_AGENT_KANBAN_BOARD`` / workspaces_root env
+    vars all resolve to the same board the dispatcher claimed the task
+    from. Workers cannot accidentally see other boards.
+    """
+    import subprocess
+    env, cmd = build_worker_invocation(task, workspace, board=board)
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `youtab kanban log` on a specific board reads its own file and

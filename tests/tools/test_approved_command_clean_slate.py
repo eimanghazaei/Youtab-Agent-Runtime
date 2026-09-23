@@ -243,8 +243,12 @@ def test_execute_code_non_approved_still_interrupts_on_stale_bit(monkeypatch):
     )
     set_interrupt(True)
 
+    # A generous sleep so the interrupt poll reliably fires BEFORE the script can
+    # print, even on a heavily-loaded CI runner. The prior 0.5s margin was too
+    # tight and flaked on windows-latest when the first poll was delayed past the
+    # sleep (test-only timing hardening; the interrupt mechanism is unchanged).
     result = json.loads(execute_code(
-        code='import time; time.sleep(0.5); print("CODE_DONE")',
+        code='import time; time.sleep(10); print("CODE_DONE")',
         task_id="test-clean-slate-2",
     ))
 

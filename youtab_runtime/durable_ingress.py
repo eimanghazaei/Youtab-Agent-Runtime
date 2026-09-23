@@ -1,0 +1,367 @@
+"""Transport-agnostic, authority-bearing run-state adapter for the product
+``/api/runtime/v1`` ingress (R1).
+
+This binds the product ingress to the SINGLE durable run authority
+(:mod:`youtab_runtime.durable_run_store`) so run creation, status, event replay,
+principal-scoped idempotency and approval-decision durability are owned by ONE
+fenced store object — never a second ledger and never an unfenced write path.
+
+Deliberately NOT here (held pending the D1 execution-transport decision): the
+create-to-worker DISPATCH seam. This adapter carries only run STATE; how a worker
+is spawned and bound to the durable ``run_id`` is left to the owner-decided
+transport so that the durable RunStore remains the ONLY run-state/idempotency
+authority.
+
+Design constraints honored (from the R4/Timeout owner, integrated SHA
+``a1f9e33428``):
+  * runs are admitted **owner-stamped** via ``store.admit(..., owner=authority.owner)``
+    — never ``create_run`` (which is ownerless and would never be recovered);
+  * the fence lives on ONE ``_authority``-bearing store instance, so this adapter
+    holds that single store and every run write goes through it;
+  * on authority loss the caller must fail-stop (readiness off, admission
+    refused); ``AuthorityLost`` propagates from any write;
+  * approval decisions map ``approve -> once`` / ``deny -> deny`` only — the wider
+    ``session``/``always`` durable choices are never exposed (per-effect single
+    use).
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
+
+from youtab_runtime.durable_run_authority import AuthorityLost
+from youtab_runtime.durable_run_store import (
+    ApprovalNotOpen,
+    IdempotencyConflict,
+    InvalidTransition,
+    RunIdentity,
+    RunState,
+    create_run_store,
+)
+
+__all__ = [
+    "DurableRunStateAuthority",
+    "CreatedRun",
+    "IdempotencyConflict",
+    "AuthorityLost",
+    "APPROVAL_DECISION_TO_CHOICE",
+    "ApprovalNotOpen",
+    "ApprovalScopeMismatch",
+    "ApprovalAlreadyDecided",
+]
+
+# Product approval decision -> durable single-use choice. ``session`` / ``always``
+# are intentionally absent: the product surface is per-effect single use only.
+APPROVAL_DECISION_TO_CHOICE = {"approve": "once", "deny": "deny"}
+
+
+class ApprovalError(Exception):
+    """Base for fail-closed approval-decision refusals raised by the adapter."""
+
+
+# ``ApprovalNotOpen`` is the durable store's fail-closed signal (unknown run, run
+# not in WAITING_APPROVAL, approval_id mismatch, or CAS lost). It is re-exported
+# here so callers catch one type; the atomic decide lives in the store.
+class ApprovalScopeMismatch(ApprovalError):
+    """The run is outside the caller's tenant/workspace/principal scope."""
+
+
+class ApprovalAlreadyDecided(ApprovalError):
+    """Retained for compatibility. The store collapses an already-decided /
+    replayed / concurrent-lost decision into :class:`ApprovalNotOpen` (the run is
+    no longer in WAITING_APPROVAL), so this is no longer raised by the decide
+    path; kept exported so existing callers/tests importing it keep working."""
+
+
+@dataclass
+class CreatedRun:
+    """Result of an idempotent admit. ``created`` is False when a prior
+    idempotency key returned the ORIGINAL run (the generated run_id was not used)."""
+
+    row: Dict[str, Any]
+    created: bool
+
+
+class DurableRunStateAuthority:
+    """Single-authority run-state facade for the product ingress.
+
+    One instance per process holds the exclusive run authority (PostgreSQL session
+    advisory lock in server mode, OS file lock in local/SQLite mode). Construct,
+    then :meth:`acquire` at startup; every mutating call is fenced against that one
+    authority and raises :class:`AuthorityLost` after a takeover/loss.
+    """
+
+    def __init__(self, *, store: Any = None, backend: Optional[str] = None, **store_kwargs: Any) -> None:
+        # Exactly one authoritative store (never a second one). Injectable for tests.
+        self._store = store if store is not None else create_run_store(backend, **store_kwargs)
+        self._authority = None
+        self._lost_reason: Optional[str] = None
+        self._on_lost: Optional[Callable[[str], None]] = None
+
+    # -- lifecycle --------------------------------------------------------- #
+    def acquire(
+        self,
+        *,
+        scope: Optional[str] = None,
+        supervise_interval: Optional[float] = None,
+        on_lost: Optional[Callable[[str], None]] = None,
+    ) -> List[str]:
+        """Acquire the exclusive run authority, reconcile prior instances' runs to
+        UNKNOWN, and arm the loss listener. Returns the reconciled run_ids
+        (prior nonterminal owner-stamped ``operation='run'`` rows). Raises
+        ``AuthorityHeld`` if another live instance already holds it."""
+        self._on_lost = on_lost
+        self._lost_reason = None
+        self._authority = self._store.acquire_instance_authority(
+            scope=scope, supervise_interval=supervise_interval
+        )
+        self._authority.add_loss_listener(self._handle_loss)
+        return self._store.reconcile_prior_instances(self._authority)
+
+    def _handle_loss(self, reason: str) -> None:
+        self._lost_reason = reason
+        if self._on_lost is not None:
+            try:
+                self._on_lost(reason)
+            except Exception:  # noqa: BLE001 — a listener must never mask the loss
+                pass
+
+    def ready(self) -> bool:
+        """True only while this instance still holds the authority. Mirrors the
+        durable server readiness gate: a lost/absent authority is not ready."""
+        return self._authority is not None and self._lost_reason is None and self._authority.held
+
+    def release(self) -> None:
+        if self._authority is not None:
+            self._authority.release()
+
+    def _require_authority(self) -> None:
+        if self._authority is None or self._lost_reason is not None:
+            raise AuthorityLost(self._lost_reason or "run authority not held")
+
+    @property
+    def owner(self) -> str:
+        self._require_authority()
+        return self._authority.owner
+
+    @property
+    def epoch(self) -> int:
+        """The current held authority epoch. Bumps on every takeover, so a token that
+        embeds it is invalidated by a takeover (revocation-on-supersede)."""
+        self._require_authority()
+        return int(self._authority.epoch)
+
+    @property
+    def store(self) -> Any:
+        return self._store
+
+    # -- create (owner-stamped admit + principal-key dedup) ---------------- #
+    def create_run(
+        self,
+        *,
+        tenant_id: str,
+        organization_id: str,
+        workspace_id: str,
+        principal_id: str,
+        agent_id: str,
+        task_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        request_digest: Optional[str] = None,
+        execution_deadline: Optional[float] = None,
+        initial_state: RunState = RunState.QUEUED,
+    ) -> CreatedRun:
+        """Admit a new run under the single authority (owner-stamped, atomic).
+
+        Idempotent by the scoped key ``(tenant, workspace, principal, operation,
+        idempotency_key)``: the same key + the same ``request_digest`` returns the
+        ORIGINAL run (``created=False``); the same key + a DIFFERENT digest raises
+        :class:`IdempotencyConflict` (the caller maps it to product ``409``).
+        """
+        self._require_authority()
+        rid = run_id or uuid.uuid4().hex
+        identity = RunIdentity(
+            task_id=task_id or rid,
+            run_id=rid,
+            tenant_id=tenant_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            principal_id=principal_id,
+            agent_id=agent_id,
+            operation="run",
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+            execution_deadline=execution_deadline,
+        )
+        row = self._store.admit(identity, owner=self.owner, initial_state=initial_state)
+        # A dedup return carries the ORIGINAL run_id (!= the one we generated).
+        return CreatedRun(row=row, created=(row.get("run_id") == rid))
+
+    # -- reads (projection source) ----------------------------------------- #
+    def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        return self._store.get_run(run_id)
+
+    def get_events(self, run_id: str, *, from_seq: int = 0, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Durable event replay (``seq > from_seq``). An UNKNOWN run yields no
+        further live events and must be treated as terminal-uncertain."""
+        return self._store.get_events(run_id, from_seq=from_seq, limit=limit)
+
+    # -- approval: require-open + atomic id-bound single-use; approve->once, deny->deny - #
+    def open_approval(self, run_id: str, *, approval_id: str,
+                      payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Atomically open one approval on a RUNNING run.
+
+        The store binds the ID to the request event in the same fenced
+        transaction. An exact-ID retry returns the existing open request;
+        another ID cannot replace it. ``payload`` (e.g. effect_digest/action/mode) is
+        recorded on the durable ``approval_request`` event so the request is bound to a
+        specific effect.
+        """
+        self._require_authority()
+        return self._store.open_approval(run_id, approval_id=approval_id, payload=payload)
+
+    def ensure_running(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Project a FRESH executing run to RUNNING under the authority (idempotent).
+
+        A worker requesting approval on a not-yet-advanced run implies it is executing,
+        but the durable run is admitted QUEUED. Advance it along the validated path
+        ``QUEUED -> CLAIMED -> RUNNING`` so an ``open_approval`` (whose from-state CAS
+        requires RUNNING) can proceed.
+
+        DELIBERATELY does NOT revive ``UNKNOWN``: UNKNOWN is terminal-uncertain (a prior
+        owner died with an indeterminate effect outcome), and this layer has no proof of
+        a validated pending-tool checkpoint or effect-ledger state that a re-open would be
+        safe. An UNKNOWN run is left UNKNOWN for reconciliation — never auto-revived to
+        RUNNING — so a restart can never silently re-open an approval or risk a second
+        effect. Safe resume from UNKNOWN requires the durable exact-effect checkpoint +
+        single-use resume fence (staged; R1 NO-GO until implemented).
+
+        Idempotent and race-tolerant: an already-RUNNING/awaiting/terminal/UNKNOWN run is
+        left as-is and a lost CAS is swallowed. These are the ONE store's fenced writes.
+        """
+        self._require_authority()
+        row = self._store.get_run(run_id)
+        if row is None:
+            return None
+        st = RunState(row["state"])
+        # Only a FRESH pre-execution run advances. UNKNOWN/terminal/awaiting/running are
+        # left untouched (UNKNOWN is NOT auto-revived — it needs reconciliation).
+        if st == RunState.QUEUED:
+            try:
+                self._store.set_state(run_id, RunState.CLAIMED, kind="claimed", strict=True)
+            except InvalidTransition:
+                pass
+            row = self._store.get_run(run_id)
+            st = RunState(row["state"]) if row else st
+        if st == RunState.CLAIMED:
+            try:
+                self._store.set_state(run_id, RunState.RUNNING, kind="running", strict=True)
+            except InvalidTransition:
+                pass
+        return self._store.get_run(run_id)
+
+    def prior_decision(self, run_id: str, approval_id: str) -> Optional[str]:
+        """Return the DURABLE prior decision for ``approval_id`` (``approve``/``deny``)
+        or ``None``. The durable store is the authoritative replay source: a decided
+        approval leaves an ``approval_approved``/``approval_denied`` event bound to
+        the id, so a duplicate product request returns the ORIGINAL decision instead
+        of re-consuming (or being refused by) the single-use CAS."""
+        self._require_authority()
+        decision_kinds = {"approval_approved": "approve", "approval_denied": "deny"}
+        for ev in self._store.get_events(run_id):
+            if ev.get("kind") in decision_kinds:
+                if (ev.get("payload") or {}).get("approval_id") == approval_id:
+                    return decision_kinds[ev["kind"]]
+        return None
+
+    def record_admission_binding(self, run_id: str, payload: Dict[str, Any]) -> int:
+        """Append the run's admitted-grant binding (command_id, authorization_epoch,
+        expires_at) as a durable ``admission_binding`` event under the fence. Recorded
+        once at create so the worker capability + effect claim can bind to the exact
+        admitted grant. Idempotent by convention (create appends it exactly once)."""
+        self._require_authority()
+        return self._store.append_event(run_id, "admission_binding", payload)
+
+    def admission_binding(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """The run's admitted-grant binding payload, or None. A pure read."""
+        for ev in self._store.get_events(run_id):
+            if ev.get("kind") == "admission_binding":
+                return ev.get("payload") or {}
+        return None
+
+    def claim_effect(self, run_id: str, *, approval_id: str, attempt_id: str,
+                     binding: Dict[str, Any], ttl_seconds: float = 60.0) -> Dict[str, Any]:
+        """The single-use effect fence — thin pass-through to the store's fenced CAS
+        :meth:`DurableRunStore.claim_effect`. Raises ``EffectClaimRefused`` /
+        ``EffectAlreadyClaimed`` / ``AuthorityLost`` fail-closed."""
+        self._require_authority()
+        return self._store.claim_effect(run_id, approval_id=approval_id,
+                                        attempt_id=attempt_id, binding=binding,
+                                        ttl_seconds=ttl_seconds)
+
+    def decide_approval(
+        self,
+        run_id: str,
+        *,
+        approval_id: str,
+        decision: str,
+        tenant_id: str,
+        workspace_id: str,
+        principal_id: str,
+    ) -> Dict[str, Any]:
+        """Decide an OPEN approval — atomic, approval-id-BOUND, single-use, fail-closed.
+
+        1. ``session``/``always`` rejected (per-effect single use only): ValueError.
+        2. Foreign scope -> :class:`ApprovalScopeMismatch` (scope fields are
+           immutable on the row, so this pre-check is race-free).
+        3. The decision itself is the durable store's atomic primitive
+           :meth:`DurableRunStore.decide_open_approval` — ONE fenced
+           ``BEGIN IMMEDIATE`` transaction that requires ``WAITING_APPROVAL``,
+           requires the supplied ``approval_id`` to equal the OPEN approval's id
+           (the latest ``approval_request`` event's ``approval_id``), and applies a
+           from-state CAS (``UPDATE ... WHERE state='WAITING_APPROVAL'``,
+           ``rowcount==1``). A WRONG id, a closed/absent approval, or a
+           concurrent/replayed second decision is refused with
+           :class:`ApprovalNotOpen` — never a double consumption, across
+           concurrent requests and restart. ``deny`` leaves ``result_ref`` null
+           (durable denied decision, no fabricated receipt). No second ledger.
+        """
+        self._require_authority()
+        d = (decision or "").strip().lower()
+        if d not in APPROVAL_DECISION_TO_CHOICE:
+            raise ValueError("decision must be approve or deny")
+        choice = APPROVAL_DECISION_TO_CHOICE[d]
+
+        row = self._store.get_run(run_id)
+        if row is None:
+            raise ApprovalNotOpen(f"run {run_id} not found")
+        if (
+            row.get("tenant_id"),
+            row.get("workspace_id"),
+            row.get("principal_id"),
+        ) != (tenant_id, workspace_id, principal_id):
+            # Foreign tenant/principal/workspace scope (immutable -> race-free).
+            raise ApprovalScopeMismatch("run is outside the caller's scope")
+
+        target = RunState.RUNNING if d == "approve" else RunState.CANCELLED
+        # The decision IS the store's atomic, fenced, approval-id-BOUND,
+        # single-use primitive (one BEGIN IMMEDIATE txn: require WAITING_APPROVAL,
+        # require approval_id == the OPEN approval id, from-state CAS). A wrong id,
+        # closed/absent approval, or concurrent/replayed second decision raises
+        # ApprovalNotOpen. No second ledger; no non-atomic get-then-transition.
+        newrow = self._store.decide_open_approval(
+            run_id,
+            approval_id=approval_id,
+            to_state=target,
+            kind=("approval_approved" if d == "approve" else "approval_denied"),
+            payload={"decision": d, "choice": choice},
+        )
+        return {
+            "run_id": run_id,
+            "approval_id": approval_id,
+            "decision": d,
+            "choice": choice,
+            "state": newrow.get("state"),
+        }

@@ -18,7 +18,11 @@ import time
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def _wait_for_file(path: Path, *, timeout: float = 10.0) -> None:
+def _wait_for_file(path: Path, *, timeout: float = 60.0) -> None:
+    # Generous deadline: each spawned process cold-imports tools.mcp_tool (heavy)
+    # before writing its sentinel, which on an oversubscribed -j3 Windows runner
+    # can approach a tight deadline. The invariant under test is lock ordering,
+    # not startup speed, so a wide bounded wait does not mask anything.
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if path.exists():

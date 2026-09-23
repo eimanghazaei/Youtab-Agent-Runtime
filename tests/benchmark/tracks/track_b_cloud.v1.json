@@ -1,0 +1,101 @@
+{
+  "schema_version": "benchmark_tracks.v1",
+  "track": "B",
+  "generated_label": "PRELIMINARY_NOT_RELEASE_EVIDENCE",
+  "shared": {
+    "output_schema_version": "benchmark.v1",
+    "taskbank_schema_version": "benchmark_tasks.v1",
+    "manifest_path": "tests/benchmark/tasks/manifest.json",
+    "manifest_sha256": "b3700061c4d5757ff16a932e6289fc93e21a37d2bbd242ffd62f70a08948107f",
+    "scenario_count": 49,
+    "scenario_id_set_sha256": "de1d7a186f0eb715ff9d09d2dc34b4495c9db919dfb9a51c2fa184c07b822066",
+    "family_count": 21,
+    "family_set_sha256": "0846a7e5368d6820694e4cd8bb169649d876524da397e9eefb5fde39d8038820",
+    "scoring": "state-based oracles (tests/benchmark/harness/oracles.py); Runner.verdict_matches_expected gate; identical for both tracks",
+    "shared_limits": {
+      "max_iterations": 8,
+      "max_requests": 392,
+      "max_retries": 1,
+      "max_concurrency": 1,
+      "max_total_tokens": 1000000,
+      "max_runtime_seconds": 7200,
+      "failure_threshold": 3
+    }
+  },
+  "per_track": {
+    "label": "Track B - Cloud (non-Anthropic, Owner-selected)",
+    "execution": "cloud_api",
+    "mode": "real_provider",
+    "provider_name": "OWNER_SELECTION_REQUIRED",
+    "model_name": "OWNER_SELECTION_REQUIRED",
+    "model_source": "owner_selected_at_selection_time",
+    "selection_status": "OWNER_SELECTION_REQUIRED",
+    "provider_constraints": {
+      "must_be": "non-anthropic",
+      "exclude": ["anthropic"],
+      "protocol": "openai-compatible or native, as implemented by the runtime",
+      "selection_criteria": ["privacy", "data-processing terms", "residency", "price", "capability"],
+      "verified_comparison_required_before_selection": true
+    },
+    "credential_source": "file",
+    "credential_env_pattern": "<PROVIDER_API_KEY_ENV>_FILE",
+    "credential_examples": [
+      "OPENAI_API_KEY_FILE=/run/secrets/openai_benchmark_api_key",
+      "DEEPSEEK_API_KEY_FILE=/run/secrets/deepseek_benchmark_api_key",
+      "OPENROUTER_API_KEY_FILE=/run/secrets/openrouter_benchmark_api_key"
+    ],
+    "cost_model": "cloud_api_eur_budgeted",
+    "max_cost_eur": "10.00",
+    "campaign_budget": "shared_cumulative_10_eur_ledger",
+    "stage_allocation": {
+      "canary": "0.10",
+      "pilot": "2.00",
+      "full": "7.90",
+      "cumulative_max": "10.00",
+      "note": "Canary + Pilot + Full sum to the EUR 10.00 cumulative ceiling; the per-stage max_cost_eur caps in STAGE_PROFILES are additional per-run defense-in-depth, and the durable campaign ledger enforces the cumulative ceiling across canary + pilot + full + retries + failover + resumed/aborted-billable runs."
+    },
+    "matrix_ref": "docs/benchmark/PROVIDER_SELECTION_MATRIX.md",
+    "determinism_fields": [
+      "provider_name",
+      "canonical_model_name",
+      "model_version",
+      "api_protocol",
+      "configured_context_limit",
+      "max_input_tokens",
+      "max_output_tokens",
+      "sampling_temperature",
+      "sampling_top_p",
+      "tool_calling_mode",
+      "structured_output_support",
+      "runtime_head_sha",
+      "clean_worktree_or_image_digest"
+    ],
+    "measurement_fields": [
+      "wall_clock_ms",
+      "latency_ms",
+      "tokens_per_second",
+      "failure_count",
+      "retries_exhausted",
+      "cost_estimated_eur",
+      "cost_billed_eur"
+    ],
+    "cost_note": "Estimated cost and provider-billed cost are recorded SEPARATELY; the durable ledger enforces the EUR 10 cumulative ceiling and a provider-side spend cap is set as defense-in-depth.",
+    "enforced_run_controls": [
+      "max_requests",
+      "max_total_tokens",
+      "max_iterations",
+      "max_runtime_seconds",
+      "max_retries",
+      "failover_policy",
+      "failure_threshold",
+      "max_concurrency",
+      "max_cost_eur",
+      "safe_output_directory",
+      "expected_sha",
+      "clean_worktree_or_image_digest",
+      "redaction",
+      "budget_enforcement",
+      "deterministic_config_recording"
+    ]
+  }
+}

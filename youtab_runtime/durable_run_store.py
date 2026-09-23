@@ -1,0 +1,1293 @@
+"""Canonical durable Run/Event store for Youtab Agent Runtime durable execution.
+
+This is the SINGLE source of truth for task/run *execution* state: identity,
+state machine, append-only monotonic events, checkpoints/result references,
+attempts, progress, leases, cancellation and terminal results.
+
+Ownership boundaries (do NOT duplicate here):
+- external side-effect idempotency / UNKNOWN-after-effect / immutable receipts
+  live in the Lane-1 effect ledger — consumed through the typed ``EffectLedger``
+  Protocol below, never reimplemented.
+- semantic/episodic memory lives in Memory/Simorgh.
+- signed identity/scope/authorization lives in the Gateway.
+- the UI is a consumer only.
+
+Core invariant: a caller's synchronous wait, an HTTP request, a UI/SSE
+connection, a parent agent or a model/tool call timing out or disconnecting must
+NEVER silently cancel or destroy a durable task. ``wait_timeout`` ends only the
+caller's wait; the durable run continues under its own lease. Only explicit
+authorized cancellation, a persisted ``execution_deadline``, a safety violation
+or an unrecoverable terminal failure may stop a run.
+
+Local desktop uses SQLite (per-run monotonic sequence, foreign keys, busy
+timeout, crash-safe transactional state+event writes). The public interface is
+kept compatible with a future PostgreSQL implementation; SQLite is local
+correctness evidence only, not multi-host scale evidence.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import time
+import uuid
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Protocol, cast, runtime_checkable
+
+from youtab_constants import get_youtab_home
+
+SCHEMA_VERSION = 2
+_BUSY_TIMEOUT_MS = 5000
+
+
+class RunState(str, Enum):
+    QUEUED = "QUEUED"
+    CLAIMED = "CLAIMED"
+    RUNNING = "RUNNING"
+    WAITING_CHILD = "WAITING_CHILD"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
+    PAUSING = "PAUSING"
+    PAUSED = "PAUSED"
+    STALLED = "STALLED"
+    CANCELLING = "CANCELLING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+    UNKNOWN = "UNKNOWN"
+    RECONCILIATION_REQUIRED = "RECONCILIATION_REQUIRED"
+
+
+TERMINAL_STATES = frozenset(
+    {RunState.SUCCEEDED, RunState.FAILED, RunState.CANCELLED}
+)
+
+# States in which an effect claim is refused (the run is not safely active): terminal,
+# cancelling, and the terminal-uncertain UNKNOWN/RECONCILIATION_REQUIRED.
+EFFECT_CLAIM_INACTIVE_STATES = frozenset(
+    {RunState.SUCCEEDED, RunState.FAILED, RunState.CANCELLED, RunState.CANCELLING,
+     RunState.UNKNOWN, RunState.RECONCILIATION_REQUIRED}
+)
+
+# Validated transition table. Terminal states are immutable EXCEPT a permitted
+# reconciliation escape from UNKNOWN/RECONCILIATION_REQUIRED. A generic transport
+# timeout never appears here — it is not a transition at all.
+_TRANSITIONS: Dict[RunState, frozenset] = {
+    RunState.QUEUED: frozenset({RunState.CLAIMED, RunState.CANCELLING, RunState.CANCELLED, RunState.UNKNOWN}),
+    RunState.CLAIMED: frozenset({RunState.RUNNING, RunState.STALLED, RunState.CANCELLING, RunState.FAILED, RunState.UNKNOWN}),
+    RunState.RUNNING: frozenset({
+        RunState.WAITING_CHILD, RunState.WAITING_APPROVAL, RunState.PAUSING,
+        RunState.STALLED, RunState.CANCELLING, RunState.SUCCEEDED, RunState.FAILED,
+        RunState.UNKNOWN, RunState.RECONCILIATION_REQUIRED,
+    }),
+    RunState.WAITING_CHILD: frozenset({RunState.RUNNING, RunState.STALLED, RunState.CANCELLING, RunState.FAILED, RunState.UNKNOWN}),
+    RunState.WAITING_APPROVAL: frozenset({RunState.RUNNING, RunState.CANCELLING, RunState.FAILED, RunState.CANCELLED, RunState.UNKNOWN}),
+    RunState.PAUSING: frozenset({RunState.PAUSED, RunState.RUNNING, RunState.CANCELLING, RunState.UNKNOWN}),
+    RunState.PAUSED: frozenset({RunState.RUNNING, RunState.CANCELLING, RunState.CANCELLED, RunState.UNKNOWN}),
+    RunState.STALLED: frozenset({RunState.RUNNING, RunState.CANCELLING, RunState.FAILED, RunState.PAUSED, RunState.UNKNOWN, RunState.RECONCILIATION_REQUIRED}),
+    RunState.CANCELLING: frozenset({RunState.CANCELLED, RunState.FAILED, RunState.UNKNOWN}),
+    # Terminal:
+    RunState.SUCCEEDED: frozenset(),
+    RunState.FAILED: frozenset(),
+    RunState.CANCELLED: frozenset(),
+    # Ambiguity states may be reconciled to a real terminal or back to running.
+    RunState.UNKNOWN: frozenset({RunState.RECONCILIATION_REQUIRED, RunState.SUCCEEDED, RunState.FAILED, RunState.CANCELLED, RunState.RUNNING}),
+    RunState.RECONCILIATION_REQUIRED: frozenset({RunState.SUCCEEDED, RunState.FAILED, RunState.CANCELLED, RunState.RUNNING, RunState.UNKNOWN}),
+}
+
+
+class DurableRunError(RuntimeError):
+    pass
+
+
+class InvalidTransition(DurableRunError):
+    pass
+
+
+class IdempotencyConflict(DurableRunError):
+    """Same idempotency key, different request digest — fails closed."""
+
+
+class LeaseError(DurableRunError):
+    pass
+
+
+class ApprovalNotOpen(DurableRunError):
+    """The run is not awaiting the given approval — not WAITING_APPROVAL, the
+    approval_id does not match the open request, or it was already decided
+    (single-use). Fails closed so a decision cannot be replayed or misbound."""
+
+
+class ApprovalAlreadyOpen(DurableRunError):
+    """The run already has a DIFFERENT open approval. A second open must not
+    replace the pending id or append another request — fails closed so the
+    originally issued approval id stays authoritative. (An exact-id retry is
+    idempotent and does NOT raise.)"""
+
+
+class EffectClaimRefused(DurableRunError):
+    """The single-use effect claim is refused fail-closed: the run is not active,
+    the approval is not APPROVED, the effect binding does not match, or a cancel is
+    pending. No effect fence is issued."""
+
+
+class EffectAlreadyClaimed(DurableRunError):
+    """The effect for this approval was already claimed by a DIFFERENT attempt. The
+    claim is single-use across attempts (idempotent only for the SAME attempt_id),
+    so a second attempt fails closed — never a second effect apply."""
+
+
+# --------------------------------------------------------------------------- #
+# Lane-1 effect-ledger boundary (typed Protocol; NEVER reimplemented here)
+# --------------------------------------------------------------------------- #
+@runtime_checkable
+class EffectLedger(Protocol):
+    """Typed boundary to the canonical Lane-1 effect ledger (IR-1).
+
+    Durable Execution consults this BEFORE retrying any external effect:
+    committed -> return receipt; unknown -> reconciliation; not-executed -> safe.
+    """
+
+    def begin_effect(self, effect_id: str, principal: str, target_scope_digest: str) -> Dict[str, Any]: ...
+
+    def commit_effect(self, effect_id: str, receipt: Dict[str, Any]) -> Dict[str, Any]: ...
+
+    def lookup(self, effect_id: str) -> Dict[str, Any]:
+        """Return {'status': 'absent'|'in_flight'|'committed'|'unknown', 'receipt': ...}."""
+        ...
+
+
+class AbsentEffectLedger:
+    """Fail-closed default used until the Lane-1 ledger is integrated on the base.
+
+    It never fabricates a committed/absent verdict: every lookup is UNKNOWN, so
+    callers must route to reconciliation rather than blind-retry. This preserves
+    the safety invariant while the real boundary is wired by Master Integrator.
+    """
+
+    def begin_effect(self, effect_id, principal, target_scope_digest):
+        raise DurableRunError(
+            "canonical Lane-1 effect ledger is not integrated on this base; "
+            "external effects must be gated by the real ledger (IR-1)"
+        )
+
+    def commit_effect(self, effect_id, receipt):
+        raise DurableRunError("Lane-1 effect ledger not integrated (IR-1)")
+
+    def lookup(self, effect_id):
+        return {"status": "unknown", "receipt": None,
+                "detail": "Lane-1 effect ledger absent on base; reconcile, do not blind-retry"}
+
+
+# --------------------------------------------------------------------------- #
+# Records
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class RunIdentity:
+    task_id: str
+    run_id: str
+    tenant_id: str
+    organization_id: str
+    workspace_id: str
+    principal_id: str
+    agent_id: str
+    operation: str = "run"
+    parent_task_id: Optional[str] = None
+    delegation_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
+    request_digest: Optional[str] = None
+    execution_deadline: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class WaitResult:
+    """Typed non-terminal response returned when a caller's wait elapses.
+
+    Never a bare ``summary=None`` — always carries durable identity + recovery.
+    """
+    task_id: str
+    run_id: str
+    state: str
+    terminal: bool
+    last_progress_seq: int
+    checkpoint_ref: Optional[str]
+    result_ref: Optional[str]
+    reconnect: str
+
+
+# --------------------------------------------------------------------------- #
+# One typed interface; backend-specific implementations (no two authorities)
+# --------------------------------------------------------------------------- #
+@runtime_checkable
+class RunStore(Protocol):
+    """The single typed run-store contract. SQLite (desktop/offline) and a future
+    PostgreSQL (server/enterprise) implementation share identical state and
+    idempotency semantics behind this interface. There is never synchronization
+    between two authoritative stores — a deployment selects exactly one backend."""
+
+    def create_run(self, identity: RunIdentity, *, initial_state: RunState = ...) -> Dict[str, Any]: ...
+    def admit(self, identity: RunIdentity, *, owner: str, initial_state: RunState = ...) -> Dict[str, Any]: ...
+    def is_stop_requested(self, run_id: str, *, now: Optional[float] = ...) -> bool: ...
+    def get_run(self, run_id: str) -> Optional[Dict[str, Any]]: ...
+    def transition(self, run_id: str, to_state: RunState, **kw: Any) -> Dict[str, Any]: ...
+    def open_approval(self, run_id: str, *, approval_id: str, kind: str = ...,
+                      **kw: Any) -> Dict[str, Any]: ...
+    def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState,
+                             kind: str, **kw: Any) -> Dict[str, Any]: ...
+    def claim_effect(self, run_id: str, *, approval_id: str, attempt_id: str,
+                     binding: Dict[str, Any], ttl_seconds: float = ...) -> Dict[str, Any]: ...
+    def set_state(self, run_id: str, to_state: RunState, *, strict: bool = ..., **kw: Any) -> Optional[Dict[str, Any]]: ...
+    def record_progress(self, run_id: str, **kw: Any) -> int: ...
+    def append_event(self, run_id: str, kind: str, payload: Optional[dict] = ...) -> int: ...
+    def get_events(self, run_id: str, *, from_seq: int = ..., limit: int = ...) -> List[Dict[str, Any]]: ...
+    def claim(self, run_id: str, owner: str, *, ttl_seconds: float = ...) -> Optional[int]: ...
+    def heartbeat(self, run_id: str, owner: str, epoch: int, *, ttl_seconds: float = ...) -> bool: ...
+    def detect_stalled(self, *, stall_threshold: float, liveness_window: float = ..., now: Optional[float] = ...) -> List[str]: ...
+    def request_cancel(self, run_id: str, *, reason: str, by: str) -> Dict[str, Any]: ...
+    def reconcile_dead_owner(self, is_alive, *, operation: Optional[str] = ...) -> List[str]: ...
+    def enforce_execution_deadlines(self, *, now: Optional[float] = ...) -> List[str]: ...
+    def wait_for_terminal(self, run_id: str, *, wait_timeout: float, poll: float = ...) -> WaitResult: ...
+
+
+class SqliteRunStore:
+    """SQLite implementation of :class:`RunStore` — local/offline Desktop backend.
+    Local correctness evidence only (fenced claim under DELETE mode), NOT
+    multi-host scale evidence; server/enterprise uses the PostgreSQL backend."""
+
+    def __init__(self, db_path: Optional[Path] = None):
+        self._db_path = Path(db_path) if db_path else (get_youtab_home() / "durable_runs.db")
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Exclusive run authority once acquired (server durable mode); every
+        # write is then fenced against it. None = unfenced local/desktop mode.
+        self._authority = None
+        self._init_schema()
+
+    # -- connection --------------------------------------------------------- #
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self._db_path, timeout=_BUSY_TIMEOUT_MS / 1000, isolation_level=None)
+        conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            from youtab_state import apply_wal_with_fallback
+            apply_wal_with_fallback(conn, db_label="durable_runs.db")
+        except Exception:
+            pass
+        return conn
+
+    def _init_schema(self) -> None:
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT)"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS runs (
+                    run_id TEXT PRIMARY KEY,
+                    task_id TEXT NOT NULL,
+                    tenant_id TEXT NOT NULL,
+                    organization_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    principal_id TEXT NOT NULL,
+                    agent_id TEXT NOT NULL,
+                    operation TEXT NOT NULL DEFAULT 'run',
+                    parent_task_id TEXT,
+                    delegation_id TEXT,
+                    idempotency_key TEXT,
+                    request_digest TEXT,
+                    state TEXT NOT NULL,
+                    progress_seq INTEGER NOT NULL DEFAULT 0,
+                    last_progress_at REAL,
+                    checkpoint_ref TEXT,
+                    result_ref TEXT,
+                    error_ref TEXT,
+                    execution_deadline REAL,
+                    lease_owner TEXT,
+                    lease_epoch INTEGER NOT NULL DEFAULT 0,
+                    lease_expiry REAL,
+                    heartbeat_at REAL,
+                    cancel_requested_at REAL,
+                    cancel_reason TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )"""
+            )
+            # --- migrations (idempotent, crash-safe inside this transaction) --- #
+            # v1 -> v2: a pre-existing runs table may lack the `operation` column
+            # and may carry the OLD global unique index on idempotency_key alone.
+            # Preserve existing rows/events/results; add the column; replace the
+            # index with the scoped one. CREATE ... IF NOT EXISTS never REPLACES a
+            # same-named index, so the old global index must be dropped explicitly.
+            existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
+            if "operation" not in existing_cols:
+                conn.execute("ALTER TABLE runs ADD COLUMN operation TEXT NOT NULL DEFAULT 'run'")
+            old_idx = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='index' AND name='ux_runs_idempotency'"
+            ).fetchone()
+            if old_idx and old_idx[0] and "tenant_id" not in old_idx[0]:
+                conn.execute("DROP INDEX ux_runs_idempotency")
+
+            # Idempotency is SCOPED, never global: the same key in a different
+            # tenant/workspace/principal/operation is an independent task, and a
+            # scoped lookup cannot leak a foreign tenant's task existence.
+            conn.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS ux_runs_idempotency
+                   ON runs(tenant_id, workspace_id, principal_id, operation, idempotency_key)
+                   WHERE idempotency_key IS NOT NULL"""
+            )
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS run_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    event_id TEXT NOT NULL UNIQUE,
+                    kind TEXT NOT NULL,
+                    payload TEXT,
+                    created_at REAL NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES runs(run_id),
+                    UNIQUE(run_id, seq)
+                )"""
+            )
+            # Additive: exclusive run-execution authority epoch per scope
+            # (see youtab_runtime.durable_run_authority).
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS runtime_authority (
+                    scope TEXT PRIMARY KEY,
+                    epoch INTEGER NOT NULL,
+                    instance_id TEXT NOT NULL,
+                    host TEXT,
+                    os_pid INTEGER,
+                    acquired_at REAL NOT NULL
+                )"""
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', ?)",
+                (str(SCHEMA_VERSION),),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    # -- helpers ------------------------------------------------------------ #
+    @staticmethod
+    def _row_to_dict(cur, row) -> Dict[str, Any]:
+        return {d[0]: row[i] for i, d in enumerate(cur.description)}
+
+    def _next_seq(self, conn, run_id: str) -> int:
+        r = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE run_id=?", (run_id,)).fetchone()
+        return int(r[0]) + 1
+
+    def _fence(self, conn) -> None:
+        """Verify, inside the caller's write transaction, that this store's
+        attached run authority is still the current one. BEGIN IMMEDIATE holds
+        the database write lock, so a takeover's epoch bump is ordered strictly
+        before or after this write. No-op when no authority is attached."""
+        authority = self._authority
+        if authority is None:
+            return
+        from youtab_runtime.durable_run_authority import AuthorityLost
+
+        authority.ensure_held()
+        row = conn.execute(
+            "SELECT epoch, instance_id FROM runtime_authority WHERE scope=?",
+            (authority.scope,),
+        ).fetchone()
+        if row is None or int(row[0]) != authority.epoch or row[1] != authority.instance_id:
+            authority.mark_lost("superseded by another instance")
+            raise AuthorityLost("run authority superseded by another instance")
+
+    def acquire_instance_authority(self, *, scope: Optional[str] = None,
+                                   supervise_interval: Optional[float] = None):
+        """Acquire the exclusive run-execution authority for this store.
+
+        Takes a non-blocking OS file lock beside the database, then durably bumps
+        the scope's epoch. Raises AuthorityHeld while another live instance holds
+        it. From then on every write through this store object is fenced.
+        ``supervise_interval`` is accepted for interface parity; a local file
+        lock cannot be lost while this process holds it open."""
+        from youtab_runtime.durable_run_authority import (
+            RUNS_AUTHORITY_SCOPE,
+            FileInstanceAuthority,
+            acquire_file_lock,
+            holder_metadata,
+            new_instance_id,
+            release_file_lock,
+        )
+
+        scope = scope or RUNS_AUTHORITY_SCOPE
+        handle = acquire_file_lock(f"{self._db_path}.{scope}.authority.lock")
+        instance_id = new_instance_id()
+        meta = holder_metadata()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT epoch FROM runtime_authority WHERE scope=?", (scope,)
+            ).fetchone()
+            epoch = (int(row[0]) if row else 0) + 1
+            conn.execute(
+                "INSERT OR REPLACE INTO runtime_authority"
+                "(scope, epoch, instance_id, host, os_pid, acquired_at) VALUES(?,?,?,?,?,?)",
+                (scope, epoch, instance_id, meta["host"], meta["os_pid"], time.time()),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            release_file_lock(handle)
+            raise
+        finally:
+            conn.close()
+        authority = FileInstanceAuthority(
+            scope=scope, instance_id=instance_id, epoch=epoch, handle=handle
+        )
+        self._authority = authority
+        return authority
+
+    def reconcile_prior_instances(self, authority) -> List[str]:
+        """Move every nonterminal ``/v1/runs`` run owned by a prior instance to
+        UNKNOWN. Callable only while holding ``authority`` (fenced): exclusive
+        ownership proves any other owner is gone, whatever its old PID was.
+        Ownerless (never-admitted) rows and terminal rows are left unchanged;
+        nothing is resumed or resubmitted."""
+        return _reconcile_prior_instances_sqlite(self, authority)
+
+    def _append_event_locked(self, conn, run_id: str, kind: str, payload: Optional[dict]) -> int:
+        seq = self._next_seq(conn, run_id)
+        conn.execute(
+            "INSERT INTO run_events(run_id, seq, event_id, kind, payload, created_at) VALUES(?,?,?,?,?,?)",
+            (run_id, seq, uuid.uuid4().hex, kind, json.dumps(payload or {}), time.time()),
+        )
+        return seq
+
+    # -- public API --------------------------------------------------------- #
+    def create_run(self, identity: RunIdentity, *, initial_state: RunState = RunState.QUEUED) -> Dict[str, Any]:
+        """Durably accept a run BEFORE work starts. Idempotent by idempotency_key
+        + request_digest: same key+digest returns the existing run; same key with
+        a different digest fails closed (IdempotencyConflict)."""
+        now = time.time()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            if identity.idempotency_key:
+                # SCOPED lookup — cannot see another tenant/workspace/principal/
+                # operation's run, so no cross-tenant existence leak.
+                cur = conn.execute(
+                    "SELECT * FROM runs WHERE tenant_id=? AND workspace_id=? AND principal_id=? "
+                    "AND operation=? AND idempotency_key=?",
+                    (identity.tenant_id, identity.workspace_id, identity.principal_id,
+                     identity.operation, identity.idempotency_key),
+                )
+                existing = cur.fetchone()
+                if existing is not None:
+                    row = self._row_to_dict(cur, existing)
+                    conn.execute("COMMIT")
+                    if (identity.request_digest or None) != (row.get("request_digest") or None):
+                        raise IdempotencyConflict(
+                            f"scoped idempotency key {identity.idempotency_key!r} exists with a "
+                            f"different request_digest"
+                        )
+                    return row
+            conn.execute(
+                """INSERT INTO runs(run_id, task_id, tenant_id, organization_id, workspace_id,
+                        principal_id, agent_id, operation, parent_task_id, delegation_id,
+                        idempotency_key, request_digest, state, progress_seq, execution_deadline,
+                        lease_epoch, attempts, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,0,0,?,?)""",
+                (identity.run_id, identity.task_id, identity.tenant_id, identity.organization_id,
+                 identity.workspace_id, identity.principal_id, identity.agent_id, identity.operation,
+                 identity.parent_task_id, identity.delegation_id, identity.idempotency_key,
+                 identity.request_digest, initial_state.value, identity.execution_deadline, now, now),
+            )
+            self._append_event_locked(conn, identity.run_id, "accepted",
+                                      {"state": initial_state.value})
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (identity.run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            # Control-flow raises (e.g. IdempotencyConflict) can occur AFTER a
+            # COMMIT on the idempotent-return path; a ROLLBACK then has no active
+            # transaction. Tolerate that so the real exception surfaces.
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    def admit(self, identity: RunIdentity, *, owner: str,
+              initial_state: RunState = RunState.RUNNING) -> Dict[str, Any]:
+        """ATOMIC admission: in ONE transaction, create the durable run, stamp
+        fenced ownership (lease_owner/epoch) and set the admitted state. There is
+        no partially-admitted (created-but-ownerless) window: the transaction
+        either commits a fully owner-stamped run or leaves nothing. Idempotent by
+        the scoped key (same as create_run). This is the durable admission marker
+        that distinguishes an abandoned admission (owner-stamped, dead pid) from a
+        healthy unclaimed QUEUED entry (ownerless, never swept)."""
+        now = time.time()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            if identity.idempotency_key:
+                cur = conn.execute(
+                    "SELECT * FROM runs WHERE tenant_id=? AND workspace_id=? AND principal_id=? "
+                    "AND operation=? AND idempotency_key=?",
+                    (identity.tenant_id, identity.workspace_id, identity.principal_id,
+                     identity.operation, identity.idempotency_key),
+                )
+                existing = cur.fetchone()
+                if existing is not None:
+                    row = self._row_to_dict(cur, existing)
+                    conn.execute("COMMIT")
+                    if (identity.request_digest or None) != (row.get("request_digest") or None):
+                        raise IdempotencyConflict(
+                            f"scoped idempotency key {identity.idempotency_key!r} exists with a "
+                            f"different request_digest"
+                        )
+                    return row
+            conn.execute(
+                """INSERT INTO runs(run_id, task_id, tenant_id, organization_id, workspace_id,
+                        principal_id, agent_id, operation, parent_task_id, delegation_id,
+                        idempotency_key, request_digest, state, progress_seq, execution_deadline,
+                        lease_owner, lease_epoch, lease_expiry, heartbeat_at, attempts,
+                        created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,1,?,?,1,?,?)""",
+                (identity.run_id, identity.task_id, identity.tenant_id, identity.organization_id,
+                 identity.workspace_id, identity.principal_id, identity.agent_id, identity.operation,
+                 identity.parent_task_id, identity.delegation_id, identity.idempotency_key,
+                 identity.request_digest, initial_state.value, identity.execution_deadline,
+                 owner, now + 900.0, now, now, now),
+            )
+            self._append_event_locked(conn, identity.run_id, "accepted", {"state": "QUEUED"})
+            self._append_event_locked(conn, identity.run_id, "admitted",
+                                      {"owner": owner, "state": initial_state.value})
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (identity.run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    def is_stop_requested(self, run_id: str, *, now: Optional[float] = None) -> bool:
+        """Cooperative stop check for a worker before starting another effect.
+        Returns True if the run is cancelling/cancelled OR its persisted execution
+        deadline has passed. Independent of any parent wait."""
+        now = now if now is not None else time.time()
+        row = self.get_run(run_id)
+        if row is None:
+            return True
+        if RunState(row["state"]) in (RunState.CANCELLING, RunState.CANCELLED,
+                                      RunState.FAILED, RunState.SUCCEEDED):
+            return True
+        dl = row.get("execution_deadline")
+        return dl is not None and now >= float(dl)
+
+    def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._connect()
+        try:
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = cur.fetchone()
+            return self._row_to_dict(cur, row) if row else None
+        finally:
+            conn.close()
+
+    def transition(self, run_id: str, to_state: RunState, *, kind: Optional[str] = None,
+                   payload: Optional[dict] = None, result_ref: Optional[str] = None,
+                   error_ref: Optional[str] = None) -> Dict[str, Any]:
+        """Validated, durable, event-producing state transition."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            cur = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,))
+            r = cur.fetchone()
+            if r is None:
+                raise DurableRunError(f"run not found: {run_id}")
+            cur_state = RunState(r[0])
+            if to_state != cur_state and to_state not in _TRANSITIONS.get(cur_state, frozenset()):
+                raise InvalidTransition(f"{cur_state.value} -> {to_state.value} is not allowed")
+            now = time.time()
+            conn.execute(
+                "UPDATE runs SET state=?, updated_at=?, "
+                "result_ref=COALESCE(?, result_ref), error_ref=COALESCE(?, error_ref) WHERE run_id=?",
+                (to_state.value, now, result_ref, error_ref, run_id),
+            )
+            self._append_event_locked(conn, run_id, kind or f"state.{to_state.value.lower()}",
+                                      {**(payload or {}), "state": to_state.value})
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def open_approval(self, run_id: str, *, approval_id: str,
+                      kind: str = "approval_request",
+                      payload: Optional[dict] = None) -> Dict[str, Any]:
+        """Atomically open an approval on a RUNNING run — expected-from-state, single-open.
+
+        In ONE fenced ``BEGIN IMMEDIATE`` transaction the run moves
+        RUNNING -> WAITING_APPROVAL via a from-state CAS
+        (``WHERE state='RUNNING'``, rowcount 1) and exactly one
+        ``approval_request`` event carrying ``approval_id`` is appended. Unlike
+        generic ``transition()`` (which permits a same-state
+        WAITING_APPROVAL -> WAITING_APPROVAL no-op that would append a SECOND
+        request and silently re-home the authoritative id), a second open is
+        refused: an EXACT-id retry is IDEMPOTENT (returns the existing open
+        request, appends nothing); a DIFFERENT id raises ``ApprovalAlreadyOpen``
+        and never replaces the pending id.
+
+        ``approval_id`` must be a nonempty string (else ``ValueError``). Opening
+        from any state other than RUNNING or (idempotent) WAITING_APPROVAL raises
+        ``InvalidTransition`` (RUNNING is the only opener). generic transition
+        semantics are unchanged.
+        """
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a nonempty string")
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            r = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if r is None:
+                raise DurableRunError(f"run not found: {run_id}")
+            cur_state = RunState(r[0])
+            if cur_state == RunState.WAITING_APPROVAL:
+                # Already open: exact-id retry is idempotent; a different id is
+                # refused without replacing the pending id or appending an event.
+                open_id = self._latest_approval_id_locked(conn, run_id)
+                if open_id == approval_id:
+                    cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+                    row = self._row_to_dict(cur, cur.fetchone())
+                    conn.execute("COMMIT")
+                    return row
+                raise ApprovalAlreadyOpen(
+                    f"run {run_id} already has a different open approval; not replacing it"
+                )
+            if cur_state != RunState.RUNNING:
+                raise InvalidTransition(
+                    f"cannot open approval from {cur_state.value} (expected RUNNING)"
+                )
+            now = time.time()
+            upd = conn.execute(
+                "UPDATE runs SET state=?, updated_at=? WHERE run_id=? AND state='RUNNING'",
+                (RunState.WAITING_APPROVAL.value, now, run_id),
+            )
+            if upd.rowcount != 1:
+                raise ApprovalAlreadyOpen(
+                    f"run {run_id} is no longer RUNNING (concurrent open)"
+                )
+            self._append_event_locked(
+                conn, run_id, kind,
+                {**(payload or {}), "approval_id": approval_id,
+                 "state": RunState.WAITING_APPROVAL.value},
+            )
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def _latest_approval_id_locked(self, conn, run_id: str) -> Optional[str]:
+        ev = conn.execute(
+            "SELECT payload FROM run_events WHERE run_id=? AND kind='approval_request' "
+            "ORDER BY seq DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if ev is None:
+            return None
+        try:
+            return (json.loads(ev[0]) or {}).get("approval_id")
+        except Exception:
+            return None
+
+    def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState,
+                             kind: str, payload: Optional[dict] = None,
+                             result_ref: Optional[str] = None,
+                             error_ref: Optional[str] = None) -> Dict[str, Any]:
+        """Atomically resolve the OPEN approval for a run — id-bound and single-use.
+
+        In ONE fenced ``BEGIN IMMEDIATE`` transaction: the run must be
+        WAITING_APPROVAL; ``approval_id`` must equal the OPEN approval (the latest
+        ``approval_request`` event's ``payload.approval_id``); ``to_state`` must be
+        a valid target of WAITING_APPROVAL; and the state change is a
+        compare-and-swap on ``state='WAITING_APPROVAL'`` (rowcount must be 1) so
+        exactly one decision can ever win. A deny leaves ``result_ref`` NULL (a
+        durable denial, never a fabricated receipt). Unlike ``transition()`` (which
+        permits a same-state no-op), this is a strict expected-from-state CAS, so a
+        second or misbound decision fails closed with ``ApprovalNotOpen``.
+        """
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            r = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if r is None:
+                raise DurableRunError(f"run not found: {run_id}")
+            cur_state = RunState(r[0])
+            if cur_state != RunState.WAITING_APPROVAL:
+                raise ApprovalNotOpen(
+                    f"run {run_id} is not awaiting approval (state={cur_state.value})"
+                )
+            if to_state not in _TRANSITIONS.get(RunState.WAITING_APPROVAL, frozenset()):
+                raise InvalidTransition(f"WAITING_APPROVAL -> {to_state.value} is not allowed")
+            ev = conn.execute(
+                "SELECT payload FROM run_events WHERE run_id=? AND kind='approval_request' "
+                "ORDER BY seq DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            open_id = None
+            if ev is not None:
+                try:
+                    open_id = (json.loads(ev[0]) or {}).get("approval_id")
+                except Exception:
+                    open_id = None
+            if not open_id or open_id != approval_id:
+                raise ApprovalNotOpen(
+                    f"approval_id does not match the open approval for run {run_id}"
+                )
+            now = time.time()
+            upd = conn.execute(
+                "UPDATE runs SET state=?, updated_at=?, "
+                "result_ref=COALESCE(?, result_ref), error_ref=COALESCE(?, error_ref) "
+                "WHERE run_id=? AND state='WAITING_APPROVAL'",
+                (to_state.value, now, result_ref, error_ref, run_id),
+            )
+            if upd.rowcount != 1:
+                raise ApprovalNotOpen(
+                    f"approval for run {run_id} is no longer open (already decided)"
+                )
+            self._append_event_locked(
+                conn, run_id, kind,
+                {**(payload or {}), "approval_id": approval_id, "state": to_state.value},
+            )
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def claim_effect(self, run_id: str, *, approval_id: str, attempt_id: str,
+                     binding: Dict[str, Any], ttl_seconds: float = 60.0) -> Dict[str, Any]:
+        """Single-use, attempt-bound effect claim under the fence — the effect gate.
+
+        In ONE fenced ``BEGIN IMMEDIATE`` transaction, verify fail-closed that: the run
+        is ACTIVE (not terminal/cancelling/UNKNOWN) and has NO pending cancel; the
+        approval was APPROVED (an ``approval_approved`` event for ``approval_id``, no
+        ``approval_denied``); the FULL binding (effect/arguments/authorization/command/
+        checkpoint digests) equals the one recorded on the open ``approval_request``; and
+        there is NO prior ``effect_claim`` for this approval. Then append exactly one
+        ``effect_claim`` and return an attempt-bound fence with a short expiry.
+
+        Single-use: a claim with a DIFFERENT ``attempt_id`` after one exists raises
+        :class:`EffectAlreadyClaimed` (never a second apply); a retry with the SAME
+        ``attempt_id`` is idempotent and returns the existing fence. Any precondition
+        failure raises :class:`EffectClaimRefused`. Because the check-and-append is one
+        BEGIN IMMEDIATE transaction, exactly one attempt can ever win.
+        """
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            r = conn.execute(
+                "SELECT state, cancel_requested_at FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if r is None:
+                raise DurableRunError(f"run not found: {run_id}")
+            if RunState(r[0]) in EFFECT_CLAIM_INACTIVE_STATES:
+                raise EffectClaimRefused(f"run {run_id} is not active (state={r[0]})")
+            if r[1] is not None:
+                raise EffectClaimRefused(f"run {run_id} has a pending cancel")
+            req = None
+            approved = False
+            prior_claim = None
+            for k, p in conn.execute(
+                "SELECT kind, payload FROM run_events WHERE run_id=? AND kind IN "
+                "('approval_request','approval_approved','approval_denied','effect_claim') "
+                "ORDER BY seq ASC", (run_id,),
+            ).fetchall():
+                try:
+                    d = json.loads(p or "{}")
+                except Exception:
+                    continue
+                if d.get("approval_id") != approval_id:
+                    continue
+                if k == "approval_request":
+                    req = d
+                elif k == "approval_approved":
+                    approved = True
+                elif k == "approval_denied":
+                    raise EffectClaimRefused(f"approval {approval_id} was denied")
+                elif k == "effect_claim":
+                    prior_claim = d
+            if req is None:
+                raise EffectClaimRefused(f"no open approval request for {approval_id}")
+            if not approved:
+                raise EffectClaimRefused(f"approval {approval_id} is not approved")
+            for f in ("effect_digest", "arguments_digest", "authorization_id",
+                      "command_id", "checkpoint_digest"):
+                if binding.get(f) != req.get(f):
+                    raise EffectClaimRefused(f"effect binding mismatch: {f}")
+            if prior_claim is not None:
+                if prior_claim.get("attempt_id") == attempt_id:
+                    conn.execute("COMMIT")  # idempotent for the same attempt
+                    return {"approval_id": approval_id, "attempt_id": attempt_id,
+                            "expires_at": prior_claim.get("expires_at"), "replayed": True}
+                raise EffectAlreadyClaimed(
+                    f"effect for approval {approval_id} already claimed")
+            now = time.time()
+            expires_at = now + float(ttl_seconds)
+            self._append_event_locked(conn, run_id, "effect_claim", {
+                "approval_id": approval_id, "attempt_id": attempt_id,
+                "expires_at": expires_at, "effect_digest": binding.get("effect_digest"),
+                "authorization_id": binding.get("authorization_id"),
+                "command_id": binding.get("command_id"),
+            })
+            conn.execute("COMMIT")
+            return {"approval_id": approval_id, "attempt_id": attempt_id,
+                    "expires_at": expires_at, "replayed": False}
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    def set_state(self, run_id: str, to_state: RunState, *, result_ref: Optional[str] = None,
+                  error_ref: Optional[str] = None, kind: Optional[str] = None,
+                  payload: Optional[dict] = None, strict: bool = True) -> Optional[Dict[str, Any]]:
+        """Durably record a state for a run.
+
+        ``strict=True`` enforces the validated transition table (raises
+        InvalidTransition). ``strict=False`` is the ADAPTER mirror for an already-
+        dispatched external run (e.g. api_server's own status flow): it skips the
+        transition table BUT still refuses to overwrite a terminal state
+        (terminal immutability is preserved) and is a no-op when the state is
+        unchanged. Returns the row, or None if the run does not exist."""
+        if strict:
+            return self.transition(run_id, to_state, kind=kind, payload=payload,
+                                   result_ref=result_ref, error_ref=error_ref)
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            cur = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,))
+            r = cur.fetchone()
+            if r is None:
+                conn.execute("ROLLBACK")
+                return None
+            cur_state = RunState(r[0])
+            if cur_state in TERMINAL_STATES:
+                conn.execute("ROLLBACK")
+                return self.get_run(run_id)  # immutable — ignore late external writes
+            if cur_state == to_state:
+                conn.execute("ROLLBACK")
+                return self.get_run(run_id)
+            now = time.time()
+            conn.execute(
+                "UPDATE runs SET state=?, updated_at=?, "
+                "result_ref=COALESCE(?, result_ref), error_ref=COALESCE(?, error_ref) WHERE run_id=?",
+                (to_state.value, now, result_ref, error_ref, run_id),
+            )
+            self._append_event_locked(conn, run_id, kind or f"state.{to_state.value.lower()}",
+                                      {**(payload or {}), "state": to_state.value, "adapter": True})
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    def record_progress(self, run_id: str, *, step: Optional[str] = None,
+                        checkpoint_ref: Optional[str] = None, metric: Optional[dict] = None) -> int:
+        """Advance durable progress (distinct from liveness heartbeat). Returns the
+        new progress_seq. Requires a real progress signal — never token traffic."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            now = time.time()
+            seq = self._append_event_locked(conn, run_id, "progress",
+                                            {"step": step, "checkpoint_ref": checkpoint_ref, "metric": metric})
+            conn.execute(
+                "UPDATE runs SET progress_seq=?, last_progress_at=?, updated_at=?, "
+                "checkpoint_ref=COALESCE(?, checkpoint_ref) WHERE run_id=?",
+                (seq, now, now, checkpoint_ref, run_id),
+            )
+            conn.execute("COMMIT")
+            return seq
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def append_event(self, run_id: str, kind: str, payload: Optional[dict] = None) -> int:
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            seq = self._append_event_locked(conn, run_id, kind, payload)
+            conn.execute("UPDATE runs SET updated_at=? WHERE run_id=?", (time.time(), run_id))
+            conn.execute("COMMIT")
+            return seq
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def get_events(self, run_id: str, *, from_seq: int = 0, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Reconnect/replay: events with seq > from_seq, ascending, bounded."""
+        conn = self._connect()
+        try:
+            cur = conn.execute(
+                "SELECT run_id, seq, event_id, kind, payload, created_at FROM run_events "
+                "WHERE run_id=? AND seq>? ORDER BY seq ASC LIMIT ?",
+                (run_id, int(from_seq), int(limit)),
+            )
+            out = []
+            for row in cur.fetchall():
+                out.append({
+                    "run_id": row[0], "seq": row[1], "event_id": row[2],
+                    "kind": row[3], "payload": json.loads(row[4] or "{}"), "created_at": row[5],
+                })
+            return out
+        finally:
+            conn.close()
+
+    # -- lease / liveness --------------------------------------------------- #
+    def claim(self, run_id: str, owner: str, *, ttl_seconds: float = 900.0) -> Optional[int]:
+        """CAS claim QUEUED->CLAIMED with a fencing epoch. Returns the new epoch
+        on success, None if already claimed by someone else."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            now = time.time()
+            cur = conn.execute("SELECT state, lease_epoch FROM runs WHERE run_id=?", (run_id,))
+            r = cur.fetchone()
+            if r is None or RunState(r[0]) != RunState.QUEUED:
+                conn.execute("ROLLBACK")
+                return None
+            epoch = int(r[1]) + 1
+            conn.execute(
+                "UPDATE runs SET state=?, lease_owner=?, lease_epoch=?, lease_expiry=?, "
+                "heartbeat_at=?, attempts=attempts+1, updated_at=? WHERE run_id=? AND state='QUEUED'",
+                (RunState.CLAIMED.value, owner, epoch, now + ttl_seconds, now, now, run_id),
+            )
+            self._append_event_locked(conn, run_id, "claimed", {"owner": owner, "epoch": epoch})
+            conn.execute("COMMIT")
+            return epoch
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def heartbeat(self, run_id: str, owner: str, epoch: int, *, ttl_seconds: float = 900.0) -> bool:
+        """Liveness ONLY. Fenced: a stale epoch cannot renew. Does not advance progress."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            now = time.time()
+            cur = conn.execute(
+                "UPDATE runs SET heartbeat_at=?, lease_expiry=?, updated_at=? "
+                "WHERE run_id=? AND lease_owner=? AND lease_epoch=?",
+                (now, now + ttl_seconds, now, run_id, owner, int(epoch)),
+            )
+            ok = cur.rowcount == 1
+            conn.execute("COMMIT")
+            return ok
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def detect_stalled(self, *, stall_threshold: float, liveness_window: float = 3600.0,
+                       now: Optional[float] = None) -> List[str]:
+        """A live-but-not-progressing worker becomes STALLED (visible, recoverable),
+        never killed. Stall = heartbeat within ``liveness_window`` (still alive) AND
+        no durable progress within ``stall_threshold``. Liveness and progress use
+        SEPARATE windows on purpose — a healthy heartbeat is not progress."""
+        now = now if now is not None else time.time()
+        conn = self._connect()
+        stalled: List[str] = []
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            cur = conn.execute(
+                "SELECT run_id, heartbeat_at, last_progress_at, created_at FROM runs "
+                "WHERE state IN ('RUNNING','CLAIMED','WAITING_CHILD')"
+            )
+            rows = cur.fetchall()
+            for run_id, hb, lp, created in rows:
+                hb = hb or 0
+                last_prog = lp if lp is not None else (created or 0)
+                # Alive (heartbeat within the liveness window) but no durable
+                # progress beyond the stall threshold — two independent windows.
+                alive = (now - hb) <= liveness_window if hb else False
+                no_progress = (now - last_prog) > stall_threshold
+                if alive and no_progress:
+                    conn.execute("UPDATE runs SET state='STALLED', updated_at=? WHERE run_id=?", (now, run_id))
+                    self._append_event_locked(conn, run_id, "state.stalled",
+                                              {"reason": "no_progress", "stall_threshold": stall_threshold})
+                    stalled.append(run_id)
+            conn.execute("COMMIT")
+            return stalled
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def reconcile_dead_owner(self, is_alive, *, operation: Optional[str] = None) -> List[str]:
+        """Recover runs whose owning process has died. A non-terminal run whose
+        lease_owner is 'pid:<n>' with a dead pid is moved to UNKNOWN (never
+        silently lost, never resumed). ``is_alive(pid:int)->bool`` decides
+        liveness. Returns the run_ids reconciled. In-process children cannot be
+        resumed across an owner-process death — this only makes their outcome
+        explicitly UNKNOWN for reconciliation."""
+        conn = self._connect()
+        reconciled: List[str] = []
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            q = ("SELECT run_id, lease_owner, state FROM runs "
+                 "WHERE state IN ('QUEUED','CLAIMED','RUNNING','WAITING_CHILD','WAITING_APPROVAL','PAUSING','PAUSED','STALLED','CANCELLING')")
+            params: tuple = ()
+            if operation is not None:
+                q += " AND operation=?"
+                params = (operation,)
+            rows = conn.execute(q, params).fetchall()
+            now = time.time()
+            for run_id, owner, _state in rows:
+                # Only reconcile a run with a fenced owner whose PROCESS is dead.
+                # A healthy, unclaimed QUEUED run is legitimately ownerless and is
+                # NEVER swept — abandoned admission is instead prevented by the
+                # atomic owner-stamped admit() (a partially-admitted run either does
+                # not exist at all, or exists already owner-stamped and is caught by
+                # the dead-pid check here).
+                if not owner or not str(owner).startswith("pid:"):
+                    continue
+                try:
+                    pid = int(str(owner).split(":", 1)[1])
+                except (ValueError, IndexError):
+                    continue
+                if is_alive(pid):
+                    continue
+                conn.execute("UPDATE runs SET state='UNKNOWN', updated_at=? WHERE run_id=?", (now, run_id))
+                self._append_event_locked(conn, run_id, "state.unknown",
+                                          {"reason": "owner_process_dead", "owner": owner})
+                reconciled.append(run_id)
+            conn.execute("COMMIT")
+            return reconciled
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    def enforce_execution_deadlines(self, *, now: Optional[float] = None) -> List[str]:
+        """ACTIVE enforcement of the persisted execution_deadline (independent of
+        any parent wait). A non-terminal run whose execution_deadline has passed is
+        moved to CANCELLING with a deadline-reached event — a controlled
+        termination, distinct from a caller-wait timeout (which never stops a run).
+        Returns the run_ids whose deadline was enforced."""
+        now = now if now is not None else time.time()
+        conn = self._connect()
+        enforced: List[str] = []
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            rows = conn.execute(
+                "SELECT run_id, state FROM runs WHERE execution_deadline IS NOT NULL "
+                "AND execution_deadline < ? AND state IN "
+                "('QUEUED','CLAIMED','RUNNING','WAITING_CHILD','WAITING_APPROVAL','PAUSING','PAUSED','STALLED')",
+                (now,),
+            ).fetchall()
+            for run_id, state in rows:
+                cur_state = RunState(state)
+                target = (RunState.CANCELLING
+                          if RunState.CANCELLING in _TRANSITIONS.get(cur_state, frozenset())
+                          else RunState.FAILED)
+                conn.execute(
+                    "UPDATE runs SET state=?, cancel_requested_at=?, cancel_reason=?, updated_at=? WHERE run_id=?",
+                    (target.value, now, "execution_deadline_reached", now, run_id),
+                )
+                self._append_event_locked(conn, run_id, "state.deadline_enforced",
+                                          {"reason": "execution_deadline_reached", "to": target.value})
+                enforced.append(run_id)
+            conn.execute("COMMIT")
+            return enforced
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise
+        finally:
+            conn.close()
+
+    # -- cancellation ------------------------------------------------------- #
+    def request_cancel(self, run_id: str, *, reason: str, by: str) -> Dict[str, Any]:
+        """Explicit authorized cancellation — the ONLY caller-driven stop path.
+        Records intent + moves toward CANCELLING; does not itself kill a process."""
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            cur = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,))
+            r = cur.fetchone()
+            if r is None:
+                raise DurableRunError(f"run not found: {run_id}")
+            cur_state = RunState(r[0])
+            now = time.time()
+            conn.execute(
+                "UPDATE runs SET cancel_requested_at=?, cancel_reason=?, updated_at=? WHERE run_id=?",
+                (now, f"{by}:{reason}", now, run_id),
+            )
+            if RunState.CANCELLING in _TRANSITIONS.get(cur_state, frozenset()):
+                conn.execute("UPDATE runs SET state=? WHERE run_id=?", (RunState.CANCELLING.value, run_id))
+                self._append_event_locked(conn, run_id, "state.cancelling", {"by": by, "reason": reason})
+            else:
+                self._append_event_locked(conn, run_id, "cancel_requested",
+                                          {"by": by, "reason": reason, "note": "terminal — no-op"})
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    # -- caller wait (decoupled from lifetime) ------------------------------ #
+    def wait_for_terminal(self, run_id: str, *, wait_timeout: float, poll: float = 0.05) -> WaitResult:
+        """End the CALLER's synchronous wait after ``wait_timeout`` — WITHOUT ever
+        cancelling or destroying the run. On timeout returns a typed non-terminal
+        WaitResult with durable identity + reconnect action (never bare summary=None)."""
+        deadline = time.time() + wait_timeout
+        while True:
+            row = self.get_run(run_id)
+            if row is None:
+                raise DurableRunError(f"run not found: {run_id}")
+            state = RunState(row["state"])
+            terminal = state in TERMINAL_STATES
+            if terminal or time.time() >= deadline:
+                return WaitResult(
+                    task_id=row["task_id"], run_id=run_id, state=state.value,
+                    terminal=terminal, last_progress_seq=int(row["progress_seq"] or 0),
+                    checkpoint_ref=row["checkpoint_ref"], result_ref=row["result_ref"],
+                    reconnect=f"/v1/runs/{run_id}/events?from_seq={int(row['progress_seq'] or 0)}",
+                )
+            time.sleep(min(poll, max(0.0, deadline - time.time())))
+
+
+_NONTERMINAL_SQL = ("'QUEUED','CLAIMED','RUNNING','WAITING_CHILD','WAITING_APPROVAL',"
+                    "'PAUSING','PAUSED','STALLED','CANCELLING'")
+
+
+def _reconcile_prior_instances_sqlite(store: "SqliteRunStore", authority) -> List[str]:
+    if store._authority is not authority:
+        raise DurableRunError("reconcile_prior_instances requires this store's held authority")
+    conn = store._connect()
+    reconciled: List[str] = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        store._fence(conn)
+        rows = conn.execute(
+            f"SELECT run_id, lease_owner FROM runs WHERE state IN ({_NONTERMINAL_SQL}) "
+            "AND operation='run' AND lease_owner IS NOT NULL AND lease_owner != ?",
+            (authority.owner,),
+        ).fetchall()
+        now = time.time()
+        for run_id, owner in rows:
+            conn.execute("UPDATE runs SET state='UNKNOWN', updated_at=? WHERE run_id=?", (now, run_id))
+            store._append_event_locked(conn, run_id, "state.unknown", {
+                "reason": "prior_instance_superseded", "owner": owner,
+                "authority_epoch": authority.epoch,
+            })
+            reconciled.append(run_id)
+        conn.execute("COMMIT")
+        return reconciled
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+# Backward-compatible alias: the canonical name callers use.
+DurableRunStore = SqliteRunStore
+
+
+def _postgres_run_store(dsn: Optional[str] = None):
+    """Construct the real PostgreSQL backend (server/enterprise). Fail-closed:
+    raises if psycopg or a DSN is missing — never a silent SQLite fallback."""
+    import os as _os
+
+    from youtab_runtime.durable_run_store_pg import PostgresRunStore
+    return PostgresRunStore(dsn or _os.environ.get("YOUTAB_AGENT_DURABLE_PG_DSN"))
+
+
+def create_run_store(backend: Optional[str] = None, **kwargs: Any) -> RunStore:
+    """Select the single canonical run-store backend for this deployment.
+
+    ``sqlite`` -> local/offline Desktop; ``postgres`` -> server/enterprise. The
+    backend may be forced via the ``YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND`` env. Exactly
+    one authoritative store per deployment — never both, never a silent fallback.
+    """
+    import os as _os
+
+    backend = (backend or _os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") or "sqlite").lower()
+    if backend == "sqlite":
+        return cast(RunStore, SqliteRunStore(**kwargs))
+    if backend in ("postgres", "postgresql", "pg"):
+        return cast(RunStore, _postgres_run_store(kwargs.get("dsn")))
+    raise ValueError(f"unknown run-store backend: {backend!r}")

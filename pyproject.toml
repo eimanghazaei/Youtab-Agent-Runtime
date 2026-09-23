@@ -2,7 +2,7 @@
 
 [project]
 name = "youtab-agent-runtime"
-version = "0.19.1"
+version = "0.20.0"
 description = "Portable Youtab execution runtime for agents and Super-Agent Units under One Brain"
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
@@ -86,7 +86,7 @@ dependencies = [
   "urllib3>=2.7.0,<3",
   # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
   # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==48.0.1",  # CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf; ==48.0.1 (not 49.x): msal and alibabacloud-tea-openapi cap <49, hindsight-api-slim needs >=48.0.1
+  "cryptography==50.0.0",  # CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf; bumped 48.0.1->50.0.0 (WAVE-28 A06) to clear CVE-2026-69247 (fixed 50.0.0), CVE-2026-69248/69249 (fixed 49.0.0). Verify uv lock still resolves the msal/alibabacloud-tea-openapi/hindsight extras.
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -124,7 +124,7 @@ dependencies = [
   # libs required for the codecs we use, so it's safe to ship in the base
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
-  "Pillow==12.2.0",
+  "Pillow==12.3.0",  # CVE-2026-54058/54059/54060, 55379/55380, 55798, 59197/59198/59199/59200/59203/59204/59205 + others; all fixed in 12.3.0
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on
@@ -164,11 +164,11 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
-messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.1", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.1: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265
+dev = ["debugpy==1.8.20", "pytest==9.0.3", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # pytest 9.0.3: CVE-2025-71176; starlette: CVE-2026-48710; setuptools 83.0.0: CVE-2026-59890 (build-time sdist MANIFEST.in path traversal). torch (lazy, not in lock) caps setuptools<82 only when building torch from source; binary wheels are unaffected.
+messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: CVE-2026-34513/34518/34519/34520/34525 + 34993(RCE)/47265 + 59881/69243/69244 (bumped 3.14.1->3.14.3 WAVE-28)
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
-slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.1"]
-matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
+slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]
+matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.3"]  # aiohttp 3.14.3: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525 + 59881/69243/69244 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -272,18 +272,18 @@ pty = []
 # `request.url` can be bypassed. We pin a patched Starlette directly in every
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.26.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+mcp = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 # Backwards-compatible no-op alias. Relay is a core dependency on supported
 # wheel targets and intentionally unavailable on other platforms.
 nemo-relay = []
-homeassistant = ["aiohttp==3.14.1"]
-sms = ["aiohttp==3.14.1"]
-teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.1"]  # aiohttp 3.14.1: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525
+homeassistant = ["aiohttp==3.14.3"]
+sms = ["aiohttp==3.14.3"]
+teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"]  # aiohttp 3.14.3: CVE-2026-34993(RCE)/47265 + 34513/34518/34519/34520/34525 + 59881/69243/69244
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `youtab tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.26.0", "starlette==1.3.1"]  # starlette: CVE-2026-48710
+computer-use = ["mcp==1.28.1", "starlette==1.3.1"]  # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
@@ -379,8 +379,71 @@ all = [
   "youtab-agent-runtime[youtube]",
 ]
 
+[tool.uv]
+# Transitive-only version floors. These packages are NOT direct dependencies
+# (nothing in the repo imports them), so they cannot be exact-pinned in
+# [project].dependencies without forcing them into every install. A uv
+# constraint raises the floor ONLY when another dependency already pulls the
+# package, closing a transitive CVE without expanding the dependency surface.
+constraint-dependencies = [
+  # h2 is pulled transitively by grpclib (modal extra) and the http2/h2 extras
+  # of httpx / httpcore / urllib3. CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,
+  # "Duplicate Host header could facilitate request smuggling") affects all h2
+  # < 4.4.1. Constrain the floor so the resolved h2 is never the vulnerable one.
+  "h2>=4.4.1",
+  # pygments is pulled by rich (core). CVE-2026-4539 (PYSEC-2026-2987,
+  # GHSA-5239-wwwm-4pmq) is fixed in 2.20.0.
+  "pygments>=2.20.0",
+  # pydantic-settings is pulled by mcp / fastapi. GHSA-4xgf-cpjx-pc3j is fixed
+  # in 2.14.2.
+  "pydantic-settings>=2.14.2",
+  # ── WAVE-28 §4: floors for advisories surfaced only under opt-in adapter
+  # extras (the CVE gate now audits --all-extras, so these must be safe too). ──
+  # tornado is pulled by python-telegram-bot (telegram extra). 6.5.5 carries a
+  # cluster of DoS/leak advisories (CVE-2026-49853 cross-origin Authorization
+  # forwarding, CVE-2026-49855 gzip bomb, CVE-2026-82397 event-loop stall,
+  # GHSA-wwv5-g3v4-889x cookie-attr injection). All are fixed by 6.5.8.
+  "tornado>=6.5.8",
+  # pyasn1 is pulled by pyasn1-modules -> google-auth (google/gemini extras).
+  # CVE-2026-59884/59885/59886 (quadratic-complexity DoS in the BER/CER/DER
+  # decoder) are all fixed in 0.6.4.
+  "pyasn1>=0.6.4",
+  # httplib2 is pulled by google-api-python-client (google extra).
+  # CVE-2026-59939 (GHSA-j5g9-f88f-gfj3, gzip/deflate decompression-bomb DoS)
+  # is fixed in 0.32.0.
+  "httplib2>=0.32.0",
+  # msgpack is pulled by fal-client (fal extra). CVE-2026-57585
+  # (GHSA-6v7p-g79w-8964, out-of-bounds read / crash on Unpacker reuse after a
+  # caught error) is fixed in 1.2.1.
+  "msgpack>=1.2.1",
+]
+
+# ── WAVE-29 §3: narrow, reproducible override to close the PyNaCl advisory
+# without dropping Discord Voice. ─────────────────────────────────────────────
+# PyNaCl < 1.6.2 bundles a libsodium affected by CVE-2025-69277 /
+# PYSEC-2026-3002 (GHSA-mrfv-m5wm-5w6w, "Incomplete List of Disallowed Inputs");
+# the fix ships in PyNaCl 1.6.2. PyNaCl is a runtime dependency of
+# discord.py[voice] (our Discord voice-receive path calls nacl.secret.Aead).
+#
+# discord.py 2.7.1 (the latest release; verified against PyPI on 2026-09-05)
+# still declares `PyNaCl>=1.5.0,<1.6` under its `voice` extra. That upper bound
+# is DEFENSIVE, not a real API break: nacl.secret.Aead (KEY_SIZE/NONCE_SIZE/
+# encrypt/decrypt) and the xchacha20poly1305_ietf AEAD bindings our
+# VoiceReceiver uses are byte-for-byte identical in 1.5.0 and 1.6.2, and
+# discord.py's own voice modules (voice_client/voice_state/player/gateway)
+# import and run unchanged against 1.6.2 (proven by co-install + import + Aead
+# round-trip during WAVE-29). A `constraint-dependencies` floor cannot express
+# this — it would collide with discord.py's `<1.6` cap and fail resolution — so
+# a scoped override is the only correct, reproducible mechanism. The override is
+# restricted to this single package; uv.lock pins the exact version with
+# per-artifact hashes, so it is reproducible, hash-verified, and visible to the
+# SBOM and the full-extras CVE gate.
+override-dependencies = [
+  "pynacl>=1.6.2",
+]
+
 [build-system]
-requires = ["setuptools>=77.0,<83"]
+requires = ["setuptools>=77.0,<84"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
@@ -417,7 +480,7 @@ py-modules = [
 include = ["agent", "agent.*", "tools", "tools.*", "youtab_agent_cli", "youtab_agent_cli.*", "youtab_runtime", "youtab_runtime.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.setuptools.package-data]
-youtab_agent_cli = ["observability/schemas/*.json", "data/*.json"]
+youtab_agent_cli = ["observability/schemas/*.json", "data/*.json", "assets/*.PNG"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram
@@ -434,9 +497,13 @@ markers = [
     "requires_wal: needs the runtime to actually enable SQLite WAL mode (skipped where Youtab falls back to journal_mode=DELETE)",
     "no_isolate: opt out of per-file subprocess isolation (tests share mutable module-level state)",
     "ssh: marks tests requiring a reachable SSH server (skipped in normal CI)",
+    "benchmark: WAVE-26 Agent Runtime capability benchmark (tests/benchmark) — kept OUT of default collection; run explicitly via `-m benchmark` in the dedicated benchmark CI job",
 ]
-# integration tests take way too long to run in the normal CI environments
-addopts = "-m 'not integration'"
+# integration tests take way too long to run in the normal CI environments, and
+# the WAVE-26 capability benchmark (tests/benchmark) is a separate, opt-in gate
+# with its own CI job — both are excluded from default collection so the standard
+# suites never pick them up. The benchmark job re-selects them with `-m benchmark`.
+addopts = "-m 'not integration and not benchmark'"
 
 [tool.ty.environment]
 python-version = "3.13"

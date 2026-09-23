@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://youtab.io/contracts/capability_discovery.schema.json",
+  "title": "GET /capabilities discovery response",
+  "description": "Authenticated capability-discovery response. Wraps the Ed25519-signed manifest defined by gateway_manifest.schema.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["gateway_sha", "manifest"],
+  "properties": {
+    "gateway_sha": {
+      "description": "Exact Gateway commit SHA (40 lowercase hex) serving this manifest.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "manifest": {
+      "$ref": "https://youtab.io/contracts/gateway_manifest.schema.json"
+    }
+  }
+}

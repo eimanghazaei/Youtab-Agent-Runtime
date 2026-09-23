@@ -120,7 +120,14 @@ class TestClawHubSource(unittest.TestCase):
         mock_get.side_effect = side_effect
         mock_safe.side_effect = lambda url: not url.startswith("http://127.0.0.1/")
 
-        bundle = self.src.fetch("caldav-calendar")
+        # The /download ZIP fetch now flows through the SSRF-pinning helper
+        # (WAVE-28 §6.3); funnel it back into the same mock so the URL-keyed
+        # side effect and call-count assertions still hold.
+        with patch(
+            "tools.skills_hub._ssrf_safe_http_get_following",
+            side_effect=lambda url, **kw: mock_get(url, **kw),
+        ):
+            bundle = self.src.fetch("caldav-calendar")
 
         self.assertIsNone(bundle)
         self.assertEqual(mock_get.call_count, 3)

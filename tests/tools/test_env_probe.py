@@ -299,7 +299,8 @@ class TestRunBoundedByTimeout:
     def test_returns_before_inheriting_grandchild_exits(self):
         import time
 
-        grandchild_sleep = 20  # far longer than _run's timeout
+        grandchild_sleep = 60  # far longer than both _run's timeout and the bound
+        run_timeout = 15.0     # generous vs. the assertion bound below
         # Direct child: emit "ok", spawn a detached grandchild that inherits
         # this process's stdout (no stdout= redirect), then exit right away.
         child_code = (
@@ -310,10 +311,15 @@ class TestRunBoundedByTimeout:
         )
 
         start = time.monotonic()
-        rc, out, err = env_probe._run([sys.executable, "-c", child_code], timeout=3.0)
+        rc, out, err = env_probe._run(
+            [sys.executable, "-c", child_code], timeout=run_timeout)
         elapsed = time.monotonic() - start
 
-        # Must not wait on the grandchild, and must not have hit the timeout.
-        assert elapsed < 3.0, f"_run blocked on grandchild for {elapsed:.1f}s"
+        # Assertion bound (10s) is well BELOW _run's own timeout (15s) and the
+        # grandchild's lifetime (60s), so the two invariants are provable
+        # independently of -j3 scheduler jitter: _run returned on the child's
+        # exit (not its own timeout → rc would be -1) and did NOT wait on the
+        # grandchild (would be ~60s). A correct return is a few ms.
+        assert elapsed < 10.0, f"_run blocked on grandchild for {elapsed:.1f}s"
         assert rc == 0, f"expected clean exit, got rc={rc} err={err!r}"
         assert out == "ok"

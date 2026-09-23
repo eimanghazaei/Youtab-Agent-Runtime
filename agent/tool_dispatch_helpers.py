@@ -310,6 +310,50 @@ def _multimodal_text_summary(value: Any) -> str:
         return str(value)
 
 
+_IMAGE_CONTENT_PART_TYPES = {"image", "image_url", "input_image"}
+
+
+def _persist_list_content_to_text(content: list) -> Optional[str]:
+    """Flatten an OpenAI-style content-parts list to the durable DB text.
+
+    Text parts are kept verbatim; image parts normally collapse to a
+    ``[screenshot]`` placeholder (base64 blobs must not bloat the session DB
+    and are useless for cross-session replay).
+
+    The one exception is the attached-image turn: when the message's own text
+    parts already carry ``@image:`` directive refs covering every image part —
+    the durable, UI-rendered form built by
+    ``tui_gateway.server._build_persist_message_with_image_refs`` — the image
+    parts are those refs' binary twin. Emitting a redundant ``[screenshot]``
+    beside the ref both duplicates the image in the transcript and hides the
+    thumbnail after a restart (the ref renders as an image, the stray
+    placeholder leaks as literal text). Suppress the placeholder ONLY when the
+    refs cover all image parts; a genuine screenshot/image with no covering ref
+    (e.g. a tool-produced capture) still falls back to ``[screenshot]`` exactly
+    as before. This is deliberately NOT a blanket ``[screenshot]`` removal.
+    """
+    image_part_count = sum(
+        1
+        for p in content
+        if isinstance(p, dict) and p.get("type") in _IMAGE_CONTENT_PART_TYPES
+    )
+    ref_count = sum(
+        str(p.get("text", "")).count("@image:")
+        for p in content
+        if isinstance(p, dict) and p.get("type") == "text"
+    )
+    refs_cover_images = image_part_count > 0 and ref_count >= image_part_count
+
+    parts: list[str] = []
+    for p in content:
+        if isinstance(p, dict) and p.get("type") == "text":
+            parts.append(str(p.get("text", "")))
+        elif isinstance(p, dict) and p.get("type") in _IMAGE_CONTENT_PART_TYPES:
+            if not refs_cover_images:
+                parts.append("[screenshot]")
+    return "\n".join(parts) if parts else None
+
+
 def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
     """Mutate a multimodal tool-result envelope to append a subdir hint.
 
@@ -644,6 +688,7 @@ __all__ = [
     "_paths_overlap",
     "_is_multimodal_tool_result",
     "_multimodal_text_summary",
+    "_persist_list_content_to_text",
     "_append_subdir_hint_to_multimodal",
     "_extract_file_mutation_targets",
     "_extract_landed_file_mutation_paths",

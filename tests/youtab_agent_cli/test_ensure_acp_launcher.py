@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests import _wincompat
 from youtab_agent_cli.main import _ensure_acp_launcher
 
 
@@ -31,6 +32,7 @@ def fake_home(tmp_path, monkeypatch):
 
 
 
+@_wincompat.requires_symlink
 def test_does_not_follow_symlink_into_venv(fake_home, tmp_path):
     """#21454 failure mode: never write through a symlinked youtab-acp."""
     (fake_home / "youtab").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -50,6 +52,7 @@ def test_does_not_follow_symlink_into_venv(fake_home, tmp_path):
 
 
 
+@_wincompat.requires_os_attr("geteuid")
 def test_unwritable_bin_dir_is_skipped(fake_home):
     (fake_home / "youtab").write_text("#!/bin/sh\n", encoding="utf-8")
     if os.geteuid() == 0:
