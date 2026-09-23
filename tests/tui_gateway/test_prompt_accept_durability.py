@@ -561,4 +561,3 @@ def test_disabled_auto_continue_keeps_routine_24h_retention(tmp_path, monkeypatc
     assert resp["result"] == {"status": "streaming"}
     assert read_turn_marker(tmp_path, "recent") is not None
     assert read_turn_marker(tmp_path, "expired") is None
-
