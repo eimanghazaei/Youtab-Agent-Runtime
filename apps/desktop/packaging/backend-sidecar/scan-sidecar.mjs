@@ -12,8 +12,8 @@
 //
 // Usage: node apps/desktop/packaging/backend-sidecar/scan-sidecar.mjs
 //
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readSync, writeFileSync } from 'node:fs'
-import { basename, join, relative, resolve } from 'node:path'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync, writeFileSync } from 'node:fs'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 // EICAR test signature (must never be present). Split so this source file does
@@ -34,13 +34,16 @@ const secretPat = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /xox[baprs]-[0-9A-Za-z-
 const attribPat = [/Co-Authored-By:\s*Claude/i, /Generated with \[?Claude/i]
 const maxScanBytes = 8 * 1024 * 1024
 
-function walk(d, acc = []) {
+function walk(d, files = [], links = []) {
   for (const n of readdirSync(d)) {
     const p = join(d, n)
-    lstatSync(p).isDirectory() ? walk(p, acc) : acc.push(p)
+    const st = lstatSync(p)
+    if (st.isSymbolicLink()) links.push(p)
+    else if (st.isDirectory()) walk(p, files, links)
+    else files.push(p)
   }
 
-  return acc
+  return { files, links }
 }
 
 /**
@@ -48,10 +51,28 @@ function walk(d, acc = []) {
  * Pure (no process exit, no file writes) so it is unit-testable.
  */
 export function scanBundle(bundleRoot) {
-  const files = walk(bundleRoot)
+  // Visit each physical directory once. Valid in-bundle symlinks are aliases
+  // of paths visited this way; following directory aliases would duplicate
+  // scans or recurse forever on a link back to an ancestor.
+  const rootReal = realpathSync(bundleRoot)
+  const { files, links } = walk(bundleRoot)
   const findings = []
   const add = (severity, rule, file, detail) =>
     findings.push({ severity, rule, file: relative(bundleRoot, file).split('\\').join('/'), detail })
+
+  for (const link of links) {
+    const name = basename(link)
+    if (badNames.some(re => re.test(name))) add('high', 'forbidden-filename', link, name)
+    try {
+      const target = realpathSync(link)
+      const targetRel = relative(rootReal, target)
+      if (targetRel === '..' || targetRel.startsWith(`..${sep}`) || isAbsolute(targetRel)) {
+        add('high', 'unsafe-symlink', link, 'target escapes bundle')
+      }
+    } catch {
+      add('high', 'unsafe-symlink', link, 'target is dangling or cyclic')
+    }
+  }
 
   for (const f of files) {
     const name = basename(f)
