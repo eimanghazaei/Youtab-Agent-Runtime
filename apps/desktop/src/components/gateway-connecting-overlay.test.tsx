@@ -170,6 +170,38 @@ describe('connecting overlay vs recovery surface', () => {
     expect(isRecoveryShown()).toBe(false)
   })
 
+  it('startup screen shows the "Youtab Agent Runtime" heading in the Web Platform font and Ice Blue', async () => {
+    // Drive the initial-boot connecting state so the overlay renders.
+    setGatewayState('connecting')
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error: null,
+      running: true,
+      visible: true,
+      progress: 10
+    })
+
+    let container!: HTMLElement
+    await act(async () => {
+      ;({ container } = render(<GatewayConnectingOverlay />))
+    })
+
+    // Exact heading text, no other title/intro wording added.
+    const heading = screen.getByRole('heading', { name: 'Youtab Agent Runtime' })
+    expect(heading.tagName).toBe('H1')
+    expect(heading.textContent).toBe('Youtab Agent Runtime')
+    // Ice Blue via the brand token + the Web Platform font (system sans via
+    // --font-sans → --dt-font-sans).
+    expect(heading.className).toContain('var(--youtab-ice-blue)')
+    expect(heading.className).toContain('font-sans')
+    // The animated CONNECTING status node is still rendered alongside the
+    // heading (kept as a subordinate status indicator, not a title). Its glyphs
+    // scramble frame-to-frame, so assert the node exists rather than its text.
+    const status = container.querySelector('[class*="opacity-70"]')
+    expect(status).not.toBeNull()
+    expect(status).not.toBe(heading)
+  })
+
   it('FIX: once the prolonged reconnect raises a recoverable boot error, the recovery overlay takes over', async () => {
     // Mirrors what useGatewayBoot.scheduleReconnect() now does after ~45s of
     // failed post-boot reconnects: it calls failDesktopBoot(), flipping the UI

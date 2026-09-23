@@ -145,16 +145,26 @@ export function GatewayConnectingOverlay() {
         overlayHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
     >
-      <DecodeText
-        active={phase === 'live' && (previewing || connecting)}
+      <div
         className={cn(
-          'pl-[0.4em] text-(--theme-primary) transition duration-300 ease-out',
+          'flex flex-col items-center gap-5 transition duration-300 ease-out',
           leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
         )}
-        cursor
-        prefix={4}
-        text={TEXT}
-      />
+      >
+        {/* Startup heading — the app name in the Web Platform font (system sans
+            stack via --font-sans) and Youtab Ice Blue. */}
+        <h1 className="text-center font-sans text-3xl font-semibold tracking-tight text-[color:var(--youtab-ice-blue)]">
+          Youtab Agent Runtime
+        </h1>
+        {/* CONNECTING is a status indicator, not a title — kept subordinate. */}
+        <DecodeText
+          active={phase === 'live' && (previewing || connecting)}
+          className="pl-[0.4em] text-sm tracking-[0.35em] text-(--theme-primary) opacity-70"
+          cursor
+          prefix={4}
+          text={TEXT}
+        />
+      </div>
     </div>
   )
 }

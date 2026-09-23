@@ -136,6 +136,11 @@
   :root {
     color-scheme: light;
 
+    /* Youtab "Ice Blue" — startup heading accent. The Web Platform ships no
+       dedicated ice-blue token, so this is the specified brand value. Constant
+       across themes/modes (it is a fixed brand accent, not a palette seed). */
+    --youtab-ice-blue: #a8e7ff;
+
     --theme-foreground: #17171a;
     --theme-primary: #0053fd;
     --theme-secondary: color-mix(in srgb, #0053fd 7%, #ffffff);
@@ -381,17 +386,20 @@
     --dt-user-bubble: var(--ui-chat-bubble-background);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
+    /* Match the Youtab Web Platform default sans stack
+       (web/src/index.css --theme-font-sans). Overwritten at runtime by
+       applyTheme() from the active skin's typography, but kept in sync here so
+       the pre-hydration frame renders in the same font. */
     --dt-font-sans:
-      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
-      'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+      system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif, 'Apple Color Emoji',
+      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-    /* Menlo/Monaco first — Apple's native monospace faces — so code/diff read
-       in the system mono on macOS, with SF Mono and bundled Courier Prime as
-       fallbacks. */
+    /* Match the Web Platform default mono stack (web/src/index.css
+       --theme-font-mono). */
     --dt-font-mono:
-      Menlo, Monaco, 'SF Mono', 'Courier Prime', monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
-      'Noto Color Emoji', emoji;
+      ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace, 'Apple Color Emoji', 'Segoe UI Emoji',
+      'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
@@ -499,7 +507,8 @@
 
     /* Dark-only accent palette overrides. */
     --ui-red: #e75e78;
-    --ui-green: #55a583;
+    /* Web Platform emerald (#34d399) — its output/success accent. */
+    --ui-green: #34d399;
     --ui-cyan: #6f9ba6;
     --ui-diff-add-foreground: color-mix(in srgb, var(--ui-green) 62%, #fff);
     --ui-diff-remove-foreground: color-mix(in srgb, var(--ui-red) 62%, #fff);
@@ -2213,4 +2222,171 @@ button[data-slot='aui_msg-reactions'] svg {
     width: 100%;
     opacity: 0.4;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   NEUMORPHISM (soft-UI) LAYER — VISUAL ONLY. Desktop parity with @youtab/ui.
+   Mirrors the shared globals so desktop-specific surfaces (sidebar rows,
+   settings ListRow, composer / ChatBar, status bar, nav items, cards, menus)
+   read as one consistent soft-UI system: raised surfaces extrude from the dark
+   teal canvas, fields sit inset. Palette / layout / spacing unchanged — depth,
+   radius and border softening only. Focus rings preserved for a11y.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  /* Canvas the depth is sculpted from — the desktop chrome background. */
+  --neu-bg: var(--dt-background, #041c1c);
+  --neu-light: rgba(255, 255, 255, 0.03);
+  --neu-dark: rgba(0, 0, 0, 0.34);
+  --neu-raised: 4px 4px 11px var(--neu-dark), -4px -4px 11px var(--neu-light);
+  --neu-raised-sm: 2px 2px 6px var(--neu-dark), -2px -2px 6px var(--neu-light);
+  --neu-raised-lg: 6px 6px 16px var(--neu-dark), -6px -6px 16px var(--neu-light);
+  --neu-inset: inset 3px 3px 7px var(--neu-dark), inset -3px -3px 7px var(--neu-light);
+  --neu-inset-sm: inset 1px 1px 4px var(--neu-dark), inset -1px -1px 4px var(--neu-light);
+  --neu-radius: 0.9rem;
+  --neu-radius-control: 0.7rem;
+  --neu-focus-ring: 0 0 0 2px color-mix(in srgb, var(--youtab-ice-blue) 85%, transparent);
+}
+
+/* DAY (light) mode: classic light neumorphism on white — a soft grey cast
+   shadow (bottom-right) + a white highlight (top-left). The dark-teal values
+   above stay under `.dark`. Offsets/radii are inherited unchanged. */
+:root:not(.dark) {
+  --neu-dark: rgba(0, 0, 0, 0.12);
+  --neu-light: rgba(255, 255, 255, 0.9);
+}
+
+/* DAY mode legibility: the Persepolis bull backdrop is a dark photo — on a
+   white canvas even 10% opacity reads as a grey smudge, so nearly hide it in
+   light mode. Full strength returns under `.dark`. */
+:root:not(.dark) .youtab-backdrop {
+  /* Keep the Persepolis bull as a subtle light watermark in day mode (a dark
+     image on white reads as faint grey — tasteful, not a smudge). */
+  opacity: 0.07;
+}
+
+/* DAY mode wordmark: the intro wordmark uses `mix-blend-plus-lighter`, which on
+   a white canvas erases the glyphs. Force normal compositing + near-black text
+   so it reads BLACK on white. Dark mode keeps the additive glow. */
+:root:not(.dark) [data-slot='aui_intro'] .fit-text {
+  mix-blend-mode: normal;
+  color: var(--dt-foreground, #0a0a0a);
+}
+
+/* ── RAISED: cards, panels, overlays, menus, dialogs ────────────────────────── */
+[data-slot='card'],
+.card,
+[data-slot='dropdown-menu-content'],
+[data-slot='select-content'],
+[data-slot='dialog-content'],
+[data-slot='popover-content'],
+[data-slot='thread-timeline-popover'],
+[data-slot='tooltip-content'] {
+  background-color: var(--neu-bg);
+  border-color: transparent;
+  box-shadow: var(--neu-raised);
+  border-radius: var(--neu-radius);
+}
+
+/* ── RAISED interactive: buttons, badges, tabs, toggles ─────────────────────── */
+[data-slot='button'],
+[data-slot='badge'],
+[data-slot='toggle'],
+[data-slot='tabs-trigger'] {
+  border-color: transparent;
+  box-shadow: var(--neu-raised-sm);
+  border-radius: var(--neu-radius-control);
+  transition: box-shadow 160ms ease-out;
+}
+
+[data-slot='button']:hover:not(:disabled),
+[data-slot='toggle']:hover:not(:disabled) {
+  box-shadow: var(--neu-raised);
+}
+
+[data-slot='button']:active:not(:disabled),
+[data-slot='button'][data-state='open'],
+[data-slot='button'][aria-pressed='true'],
+[data-slot='toggle'][data-state='on'],
+[data-slot='tabs-trigger'][data-state='active'] {
+  box-shadow: var(--neu-inset);
+}
+
+/* Message action-bar icon hits stay flat (they explicitly clear chrome above). */
+[data-slot='aui_msg-actions'] button,
+button[data-slot='aui_msg-reactions'] {
+  box-shadow: none;
+}
+
+/* ── INSET: text fields, textareas, selects, the shared input chrome ────────── */
+[data-slot='input'],
+[data-slot='textarea'],
+[data-slot='select-trigger'],
+.desktop-input-chrome,
+textarea,
+input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='color']) {
+  background-color: var(--neu-bg);
+  border-color: transparent;
+  box-shadow: var(--neu-inset);
+  border-radius: var(--neu-radius-control);
+}
+
+/* The input chrome's hover/open states keep the recess (was a hairline border). */
+.desktop-input-chrome:hover {
+  box-shadow: var(--neu-inset);
+}
+.desktop-input-chrome:focus,
+.desktop-input-chrome:focus-within,
+.desktop-input-chrome[data-state='open'] {
+  box-shadow: var(--neu-inset), var(--neu-focus-ring);
+}
+
+/* Switch: recessed track, raised thumb. */
+[data-slot='switch'] {
+  border-color: transparent;
+  box-shadow: var(--neu-inset-sm);
+}
+[data-slot='switch-thumb'] {
+  box-shadow: var(--neu-raised-sm);
+}
+
+/* ── Composer / ChatBar: the docked surface reads as a raised soft panel. ───── */
+[data-slot='composer-surface'] {
+  border-color: transparent !important;
+  box-shadow: var(--neu-raised);
+  border-radius: var(--neu-radius);
+}
+
+/* ── RAISED: status bar + nav / sidebar rail as extruded chrome. ────────────── */
+[data-slot='status-bar'],
+[data-slot='sidebar'],
+[data-slot='sidebar-rail'] {
+  border-color: transparent;
+  box-shadow: var(--neu-raised-sm);
+}
+
+/* ── INSET-on-active: sidebar rows, settings ListRow, nav items press in when
+   selected — soft-UI feedback instead of a fill swap. Hover keeps the existing
+   translucent highlight. ────────────────────────────────────────────────────── */
+[data-slot='sidebar-menu-button'][data-active='true'],
+[data-slot='list-row'][data-active='true'],
+[data-slot='list-row'][aria-selected='true'],
+[data-slot='nav-item'][data-active='true'],
+[data-slot='nav-item'][aria-current='page'] {
+  box-shadow: var(--neu-inset-sm);
+  border-color: transparent;
+  border-radius: var(--neu-radius-control);
+}
+
+/* ── Focus: always-visible Ice-Blue ring for a11y (never removed). ──────────── */
+[data-slot='input']:focus-visible,
+[data-slot='textarea']:focus-visible,
+[data-slot='select-trigger']:focus-visible,
+textarea:focus-visible,
+input:focus-visible {
+  box-shadow: var(--neu-inset), var(--neu-focus-ring);
+}
+[data-slot='button']:focus-visible,
+[data-slot='toggle']:focus-visible,
+[data-slot='tabs-trigger']:focus-visible {
+  box-shadow: var(--neu-raised-sm), var(--neu-focus-ring);
 }
