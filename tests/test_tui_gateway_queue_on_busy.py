@@ -113,6 +113,41 @@ def test_busy_steer_mode_injects_when_accepted(monkeypatch):
     assert session.get("queued_prompt") is None
 
 
+def test_busy_steer_does_not_ack_a_turn_that_ended_during_injection(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    session = _session(running=True)
+    old_turn = {"user": "A"}
+    session["inflight_turn"] = old_turn
+
+    def _steer(_text):
+        with session["history_lock"]:
+            session["running"] = False
+        return True
+
+    session["agent"] = types.SimpleNamespace(steer=_steer)
+    assert server._handle_busy_submit("r1", "sid", session, "B", "ws-1") is None
+    assert session.get("queued_prompt") is None
+
+
+def test_busy_redirect_does_not_ack_a_replaced_turn(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
+    session = _session(running=True)
+    old_turn = {"user": "A"}
+    session["inflight_turn"] = old_turn
+
+    def _redirect(_text):
+        with session["history_lock"]:
+            session["inflight_turn"] = {"user": "C"}
+        return True
+
+    session["agent"] = types.SimpleNamespace(
+        _supports_active_turn_redirect=True, redirect=_redirect
+    )
+    assert server._handle_busy_submit("r1", "sid", session, "B", "ws-1") is None
+    assert old_turn.get("corrections") is None
+    assert session.get("queued_prompt") is None
+
+
 
 
 
@@ -180,5 +215,4 @@ def test_drain_releases_running_on_dispatch_failure(monkeypatch):
     assert server._drain_queued_prompt("r1", "sid", session) is True
     # Failure must not leave the session wedged as running.
     assert session["running"] is False
-
 

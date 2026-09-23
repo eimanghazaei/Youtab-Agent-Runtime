@@ -129,20 +129,86 @@ def _(rid, params: dict) -> dict:
     if (t := current_transport()) is not None:
         session["transport"] = t
     while True:
-        busy_transport = None
         with session["history_lock"]:
-            # Another submit is between its claim and its durable acceptance
-            # write. Queueing behind it now could strand this prompt if that
-            # write fails (nothing would drain the queue), so wait for the
-            # outcome, then decide: queue behind an accepted turn, or claim.
+            # Classification and claim share one lock acquisition. A failed
+            # acceptance cannot leave a later request queued behind it.
             _wait_for_acceptance_locked(session)
             if session.get("running"):
-                # Don't reject a mid-turn prompt — queue it (and, by default,
-                # interrupt the live turn) so it runs as the next turn. The
-                # provider interrupt itself must happen after this lock is
-                # released: a non-interruptible tool may keep it waiting.
                 busy_transport = t or session.get("transport")
             else:
+                # A watch session's run lives in the PARENT turn, so its own running
+                # flag is False — without this, typing mid-run builds a second agent
+                # racing the in-flight child on the same stored session (interleaved
+                # transcript, stale fork). After the run completes, submitting is fine:
+                # the upgrade resumes the child's transcript as a normal conversation.
+                if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+                    return _err(rid, 4009, "subagent still running — wait for it to finish")
+                if truncate_user_ordinal is not None:
+                    try:
+                        ordinal = int(truncate_user_ordinal)
+                    except (TypeError, ValueError):
+                        return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+                    history = session.get("history", [])
+                    user_indices = [
+                        i for i, m in enumerate(history)
+                        if m.get("role") == "user" and not m.get("display_kind")
+                    ]
+                    # Reject out-of-range ordinals on BOTH ends. A negative value would
+                    # otherwise sail past the upper-bound check and hit Python's negative
+                    # indexing below (user_indices[-1] -> the LAST user turn), silently
+                    # truncating history to everything before it and persisting that loss
+                    # via replace_messages — an unrecoverable overwrite of the session DB.
+                    if ordinal < 0 or ordinal >= len(user_indices):
+                        return _err(rid, 4018, "target user message is no longer in session history")
+                    truncated = history[: user_indices[ordinal]]
+                    # Stale clients can attach truncate_before_user_ordinal=0 to an
+                    # ordinary submit. That resolves to history[:0] == [] and
+                    # replace_messages() DELETEs every durable row — silent total
+                    # transcript loss. Refuse the empty-truncation edge unless the
+                    # client explicitly opts in (legitimate restore/regenerate of the
+                    # first user turn).
+                    if (
+                        not truncated
+                        and history
+                        and not is_truthy_value(params.get("confirm_empty_truncate"))
+                    ):
+                        logger.warning(
+                            "prompt.submit: REFUSED empty truncation of session %s "
+                            "(%d messages would be wiped; ordinal=%d).",
+                            sid,
+                            len(history),
+                            ordinal,
+                        )
+                        return _err(
+                            rid,
+                            4028,
+                            "truncation would erase the entire session transcript; "
+                            "resubmit with confirm_empty_truncate=true if this is intended",
+                        )
+                    # Info for routine rewind/edit cuts; warning only when the client
+                    # explicitly opts into wiping the whole transcript.
+                    log_fn = logger.warning if not truncated else logger.info
+                    log_fn(
+                        "prompt.submit: truncating session %s history %d -> %d messages "
+                        "(ordinal=%d)",
+                        sid,
+                        len(history),
+                        len(truncated),
+                        ordinal,
+                    )
+                    session["history"] = truncated
+                    session["history_version"] = int(session.get("history_version", 0)) + 1
+                    if (db := _get_db()) is not None:
+                        try:
+                            db.replace_messages(session["session_key"], truncated)
+                        except Exception as exc:
+                            print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+                session["running"] = True
+                session["_accepting"] = True
+                session["_turn_cancel_requested"] = False
+                session["last_active"] = time.time()
+                _start_inflight_turn(session, text)
+
                 break
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport,
@@ -150,83 +216,8 @@ def _(rid, params: dict) -> dict:
         )
         if busy_response is not None:
             return busy_response
-        # The old turn finished between the two lock acquisitions. Retry the
-        # claim so this prompt starts normally instead of being stranded in a
-        # queue whose drain already ran.
-
-    with session["history_lock"]:
-        # A watch session's run lives in the PARENT turn, so its own running
-        # flag is False — without this, typing mid-run builds a second agent
-        # racing the in-flight child on the same stored session (interleaved
-        # transcript, stale fork). After the run completes, submitting is fine:
-        # the upgrade resumes the child's transcript as a normal conversation.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
-            return _err(rid, 4009, "subagent still running — wait for it to finish")
-        if truncate_user_ordinal is not None:
-            try:
-                ordinal = int(truncate_user_ordinal)
-            except (TypeError, ValueError):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            history = session.get("history", [])
-            user_indices = [
-                i for i, m in enumerate(history)
-                if m.get("role") == "user" and not m.get("display_kind")
-            ]
-            # Reject out-of-range ordinals on BOTH ends. A negative value would
-            # otherwise sail past the upper-bound check and hit Python's negative
-            # indexing below (user_indices[-1] -> the LAST user turn), silently
-            # truncating history to everything before it and persisting that loss
-            # via replace_messages — an unrecoverable overwrite of the session DB.
-            if ordinal < 0 or ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
-            # Stale clients can attach truncate_before_user_ordinal=0 to an
-            # ordinary submit. That resolves to history[:0] == [] and
-            # replace_messages() DELETEs every durable row — silent total
-            # transcript loss. Refuse the empty-truncation edge unless the
-            # client explicitly opts in (legitimate restore/regenerate of the
-            # first user turn).
-            if (
-                not truncated
-                and history
-                and not is_truthy_value(params.get("confirm_empty_truncate"))
-            ):
-                logger.warning(
-                    "prompt.submit: REFUSED empty truncation of session %s "
-                    "(%d messages would be wiped; ordinal=%d).",
-                    sid,
-                    len(history),
-                    ordinal,
-                )
-                return _err(
-                    rid,
-                    4028,
-                    "truncation would erase the entire session transcript; "
-                    "resubmit with confirm_empty_truncate=true if this is intended",
-                )
-            # Info for routine rewind/edit cuts; warning only when the client
-            # explicitly opts into wiping the whole transcript.
-            log_fn = logger.warning if not truncated else logger.info
-            log_fn(
-                "prompt.submit: truncating session %s history %d -> %d messages "
-                "(ordinal=%d)",
-                sid,
-                len(history),
-                len(truncated),
-                ordinal,
-            )
-            session["history"] = truncated
-            session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
-                try:
-                    db.replace_messages(session["session_key"], truncated)
-                except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
-        session["running"] = True
-        session["_accepting"] = True
-        session["_turn_cancel_requested"] = False
-        session["last_active"] = time.time()
-        _start_inflight_turn(session, text)
+        # The active turn changed while the busy handler was outside the lock.
+        # Reclassify before acknowledging a correction or claiming a new turn.
 
     # The acceptance gate stays held until this prompt is durably accepted
     # or refused; _end_acceptance releases it on every exit path.

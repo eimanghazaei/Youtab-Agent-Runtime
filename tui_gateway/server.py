@@ -7366,18 +7366,23 @@ def _handle_busy_submit(
     semantics betrayed by a millisecond race the user can't see.
     """
     mode = "queue" if queued else _load_busy_input_mode()
-    agent = session.get("agent")
     with session["history_lock"]:
+        _wait_for_acceptance_locked(session)
         if not session.get("running"):
             # The turn ended between prompt.submit's first busy check and this
             # helper. Let the caller retry and claim the now-idle session.
             return None
+        agent = session.get("agent")
+        busy_turn = session.get("inflight_turn")
     text_only = _is_text_only_busy_payload(text)
     plain_text = _coerce_message_text(text).strip() if text_only else ""
     if mode == "steer" and text_only and plain_text and agent is not None and hasattr(agent, "steer"):
         try:
             if agent.steer(plain_text):
                 with session["history_lock"]:
+                    _wait_for_acceptance_locked(session)
+                    if not session.get("running") or session.get("inflight_turn") is not busy_turn:
+                        return None
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
         except Exception:
@@ -7396,6 +7401,9 @@ def _handle_busy_submit(
         try:
             if agent.redirect(plain_text):
                 with session["history_lock"]:
+                    _wait_for_acceptance_locked(session)
+                    if not session.get("running") or session.get("inflight_turn") is not busy_turn:
+                        return None
                     _record_inflight_correction(session, plain_text)
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "redirected"})
@@ -7405,6 +7413,7 @@ def _handle_busy_submit(
     # provider or compute-host method while holding history_lock: an interrupt
     # can wait behind the very operation it is trying to cancel.
     with session["history_lock"]:
+        _wait_for_acceptance_locked(session)
         if not session.get("running"):
             return None
         _enqueue_prompt(session, text, transport)

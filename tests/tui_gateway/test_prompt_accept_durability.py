@@ -475,6 +475,74 @@ def test_concurrent_submit_claims_after_a_failed_acceptance_and_runs(tmp_path, m
     assert len(_HeldThread.started) == 1, "exactly the accepted prompt gets a run thread"
 
 
+def test_busy_classification_rechecks_a_later_failed_acceptance(tmp_path, monkeypatch):
+    """A ends while B is classified busy; C's failed claim cannot strand B."""
+    monkeypatch.setattr(gw, "_load_cfg", lambda: {})
+    monkeypatch.setattr(gw, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(gw, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(gw, "_start_agent_build", lambda _sid, _session: None)
+    monkeypatch.setattr(gw.threading, "Thread", _HeldThread)
+    monkeypatch.setattr(gw, "_load_busy_input_mode", lambda: "queue")
+    _HeldThread.started = []
+    session = _session(tmp_path, running=True)
+    session["inflight_turn"] = {"user": "A", "status": "streaming"}
+    gw._sessions["sid-three"] = session
+    b_classified = threading.Event()
+    resume_b = threading.Event()
+    c_writing = threading.Event()
+    release_c = threading.Event()
+    real_busy = gw._handle_busy_submit
+    real_record = gw.record_turn_start
+
+    def _busy(rid, *args, **kwargs):
+        if rid == "B":
+            b_classified.set()
+            assert resume_b.wait(10)
+        return real_busy(rid, *args, **kwargs)
+
+    def _record(*args, **kwargs):
+        if args[2] == "C":
+            c_writing.set()
+            assert release_c.wait(10)
+            raise OSError("marker journal unwritable")
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(gw, "_handle_busy_submit", _busy)
+    monkeypatch.setattr(gw, "record_turn_start", _record)
+    results = {}
+
+    def _send(name):
+        results[name] = gw.handle_request(
+            {"id": name, "method": "prompt.submit", "params": {"session_id": "sid-three", "text": name}}
+        )
+
+    b = _RealThread(target=_send, args=("B",))
+    c = _RealThread(target=_send, args=("C",))
+    try:
+        b.start()
+        assert b_classified.wait(10)
+        with session["history_lock"]:
+            session["running"] = False  # A has finished and drained its queue.
+        c.start()
+        assert c_writing.wait(10)
+        resume_b.set()
+        b.join(0.1)
+        assert b.is_alive(), "B must wait for C's acceptance outcome"
+        release_c.set()
+        b.join(10)
+        c.join(10)
+        assert not b.is_alive() and not c.is_alive()
+    finally:
+        resume_b.set()
+        release_c.set()
+        gw._sessions.pop("sid-three", None)
+
+    assert results["C"]["error"]["code"] == 5030
+    assert results["B"]["result"] == {"status": "streaming"}
+    assert read_turn_marker(tmp_path, session["session_key"])["prompt"] == "B"
+    assert session.get("queued_prompt") is None
+
+
 def test_windows_marker_rename_is_write_through(tmp_path, monkeypatch):
     """Publishing the marker must persist the rename itself, not just the bytes."""
     import sys
