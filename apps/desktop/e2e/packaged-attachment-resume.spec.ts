@@ -792,8 +792,14 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
         message: 'one reopen must run and durably commit the recovered prompt',
       })
       .toBeGreaterThanOrEqual(1)
-    expect(durableCaptionRowCount(sandbox.youtabHome), 'the prompt is recovered exactly once with its attachment').toBe(1)
-    expect(durableCaptionTurnCount(sandbox.youtabHome), 'it is replayed as a genuine user turn, not a recovery note').toBe(1)
+    // Poll: the backend's rollback journal can briefly lock readers while it
+    // commits, and the read-only helpers report a locked read as 0.
+    await expect
+      .poll(() => durableCaptionRowCount(sandbox!.youtabHome), { timeout: 30_000, message: 'the prompt is recovered exactly once with its attachment' })
+      .toBe(1)
+    await expect
+      .poll(() => durableCaptionTurnCount(sandbox!.youtabHome), { timeout: 30_000, message: 'it is replayed as a genuine user turn, not a recovery note' })
+      .toBe(1)
     logProviderCalls('pre-turn replay', mock)
     expect(providerTurnCalls(mock), 'the recovered prompt reaches the provider exactly once').toBe(1)
     await expect
