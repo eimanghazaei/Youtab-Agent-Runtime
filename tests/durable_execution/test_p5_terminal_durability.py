@@ -99,6 +99,29 @@ def test_terminal_write_failure_is_reconciliation_not_false_completed(monkeypatc
     assert store.rows[rid]["state"] == "RUNNING"
 
 
+def test_empty_success_output_is_preserved_in_durable_mirror(monkeypatch, tmp_path):
+    """An empty successful response is a real result, not a missing result."""
+    from youtab_runtime.durable_run_store import SqliteRunStore
+
+    monkeypatch.delenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", raising=False)
+    adapter = _adapter()
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
+    store = SqliteRunStore(str(tmp_path / "runs.db"))
+    adapter._run_store = store
+
+    run_id = "run_empty_output"
+    adapter._set_run_status(run_id, "queued", session_id="local", model="agent")
+    adapter._set_run_status(run_id, "running")
+    completed = adapter._set_run_status(run_id, "completed", output="")
+
+    assert completed["status"] == "completed"
+    assert completed["output"] == ""
+    row = store.get_run(run_id)
+    assert row is not None and row["state"] == "SUCCEEDED"
+    assert row["result_ref"] == ""
+    assert adapter._run_status_from_store(run_id)["output"] == ""
+
+
 @pytest.mark.parametrize("prior_owner", [
     "pid:999999",
     f"pid:{os.getpid()}",  # prior instance had the SAME numeric pid as this one

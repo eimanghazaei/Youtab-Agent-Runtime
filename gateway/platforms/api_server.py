@@ -6146,8 +6146,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     ))
                 row = store.set_state(
                     run_id, to_state, strict=False,
-                    result_ref=(str(result_ref) if result_ref else None),
-                    error_ref=(str(error_ref) if error_ref else None),
+                    result_ref=(str(result_ref) if result_ref is not None else None),
+                    error_ref=(str(error_ref) if error_ref is not None else None),
                     kind=f"status.{str(status).lower()}",
                 )
                 if row is None or row.get("state") != to_state.value:
