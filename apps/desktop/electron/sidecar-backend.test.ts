@@ -8,7 +8,6 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import { canUseDeveloperSourceOverride, resolvePackagedSidecarBackend } from './sidecar-backend'
-import { TRUSTED_SIDECAR_ROOT_DIGEST } from './sidecar-trusted-digest'
 
 const DIGEST = 'a'.repeat(64)
 const ARGS = ['serve', '--host', '127.0.0.1', '--port', '0']
@@ -67,13 +66,14 @@ test('packaged sidecar ignores an environment-supplied replacement digest', () =
     resourcesPath: '/app/resources',
     platform: 'linux',
     fileExists: () => true,
+    trustedDigest: DIGEST,
     env: { YOUTAB_AGENT_SIDECAR_TRUSTED_DIGEST: replacement },
     computeDigest: () => replacement
   })
 
   assert.equal(b!.kind, 'sidecar-refused')
   assert.equal((b as any).sidecarRefusal.reason, 'digest-mismatch')
-  assert.equal((b as any).sidecarRefusal.expected, TRUSTED_SIDECAR_ROOT_DIGEST)
+  assert.equal((b as any).sidecarRefusal.expected, DIGEST)
 })
 
 test('packaged + missing bundle but anchor pinned → sidecar-refused (release must ship it)', () => {
