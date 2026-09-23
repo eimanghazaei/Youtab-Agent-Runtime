@@ -40,5 +40,13 @@ jobs:
           upload: never
           upload-database: false
           output: results
+      - name: Preserve SARIF for finding triage
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codeql-sarif-${{ matrix.language }}-${{ github.sha }}
+          path: results/*.sarif
+          if-no-files-found: warn
+          retention-days: 7
       - name: Fail on CodeQL findings or missing SARIF
         run: python scripts/youtab/codeql_sarif_gate.py results
