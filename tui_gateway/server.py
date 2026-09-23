@@ -7155,6 +7155,10 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         text = pending["text"]
         replay_images = [p for p in pending["images"] if Path(p).is_file()]
         display_kind = None
+        # Nothing of this prompt is in the transcript yet; project it as the
+        # live turn so the resuming client shows the user's message at once.
+        with session["history_lock"]:
+            _start_inflight_turn(session, marker["prompt"])
     else:
         text = _auto_continue_note(marker["prompt"])
         replay_images = []
@@ -7171,12 +7175,17 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         if err:
             # Leave the marker: the next resume retries (bounded by attempts).
             session["_auto_continue_scheduled"] = False
+            if pending is not None:
+                with session["history_lock"]:
+                    _clear_inflight_turn(session)
             return
         with session["history_lock"]:
             if session.get("running") or session.get("_turn_cancel_requested") or session.get("_finalized"):
                 # A real user prompt beat us to it — their turn wins, and its
                 # own conclusion clears the marker.
                 session["_auto_continue_scheduled"] = False
+                if pending is not None and not session.get("running"):
+                    _clear_inflight_turn(session)
                 return
             session["running"] = True
             session["last_active"] = time.time()
@@ -7214,7 +7223,23 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         attempt,
         age,
     )
-    return {"attempt": attempt, "interrupted_at": marker["started_at"]}
+    descriptor = {"attempt": attempt, "interrupted_at": marker["started_at"]}
+    if pending is not None:
+        descriptor["replay"] = True
+    return descriptor
+
+
+def _auto_continue_inflight(session: dict | None, auto_continue: dict | None) -> dict | None:
+    """The live-turn projection a cold resume should carry for a replayed prompt.
+
+    A replayed first prompt is not in the transcript yet; without this the
+    client resumes onto an empty chat and only the assistant reply appears.
+    """
+    if not session or not auto_continue or not auto_continue.get("replay"):
+        return None
+    with session["history_lock"]:
+        turn = session.get("inflight_turn")
+        return dict(turn) if isinstance(turn, dict) else None
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:

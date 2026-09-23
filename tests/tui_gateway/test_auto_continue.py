@@ -410,3 +410,37 @@ def test_started_turn_marker_drops_pending_input(marker_home):
     record_turn_start(marker_home, "session-key", "hello")
 
     assert "pending" not in read_turn_marker(marker_home, "session-key")
+
+
+def test_unstarted_prompt_replay_is_projected_to_the_resuming_client(emits, marker_home, monkeypatch):
+    """The resume payload must carry the replayed prompt as the live turn:
+    it is not in the transcript yet, so without it the client shows only
+    the assistant reply."""
+    held = []
+    monkeypatch.setattr(server.threading, "Thread", lambda target=None, **kw: types.SimpleNamespace(start=lambda: held.append(target)))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    record_turn_start(
+        marker_home,
+        "session-key",
+        "describe this\n@image:composer-images/capture.png",
+        pending={"text": "describe this", "images": []},
+    )
+    session = _session()
+
+    descriptor = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert descriptor["replay"] is True
+    inflight = server._auto_continue_inflight(session, descriptor)
+    assert inflight["user"] == "describe this\n@image:composer-images/capture.png"
+    assert inflight["streaming"] is True
+    assert server._auto_continue_inflight(session, {"attempt": 1}) is None
+
+
+def test_started_turn_recovery_is_not_projected_as_a_replay(emits, schedule_env, marker_home):
+    record_turn_start(marker_home, "session-key", "fix the flaky test")
+    session = _session()
+
+    descriptor = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert "replay" not in descriptor
+    assert server._auto_continue_inflight(session, descriptor) is None
