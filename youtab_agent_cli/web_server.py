@@ -11746,6 +11746,23 @@ from youtab_agent_cli.web_routers.sessions import (  # noqa: E402,F401 — legac
 
 
 
+def _pending_recovery_ids(home: Optional[Path] = None) -> List[str]:
+    """Session ids whose first prompt awaits crash recovery (see tui_gateway).
+
+    Session lists hide message-less rows; an interrupted first prompt has only
+    its recovery marker, so these ids stay listable until one reopen recovers
+    it. Best effort: listing never fails on the marker read.
+    """
+    try:
+        from tui_gateway.server import pending_recovery_session_ids
+        from youtab_constants import get_youtab_home
+
+        return pending_recovery_session_ids(home or get_youtab_home())
+    except Exception:
+        _log.debug("pending recovery marker read failed", exc_info=True)
+        return []
+
+
 def _open_session_db_for_profile(profile: Optional[str]):
     """Open a SessionDB for read paths, optionally for another profile.
 

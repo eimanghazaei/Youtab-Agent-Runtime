@@ -137,6 +137,34 @@ def clear_turn_marker(home: Path | str, session_key: str) -> None:
         logger.debug("failed to clear turn marker for %s", session_key, exc_info=True)
 
 
+def pending_turn_keys(home: Path | str, *, max_age_s: float | None = None) -> list[str]:
+    """Session keys that still hold an unconcluded turn marker.
+
+    ``max_age_s`` drops markers older than the auto-continue freshness window,
+    which session.resume would discard instead of recovering.
+    """
+    try:
+        with _lock:
+            entries = _load(_marker_path(home))
+    except Exception:
+        return []
+    now = time.time()
+    keys: list[str] = []
+    for key, entry in entries.items():
+        if not key or not isinstance(entry, dict):
+            continue
+        if not str(entry.get("prompt") or "").strip():
+            continue
+        try:
+            started_at = float(entry.get("started_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if max_age_s is not None and now - started_at > max_age_s:
+            continue
+        keys.append(key)
+    return keys
+
+
 def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | None:
     """The marker left by a turn that never concluded, or None."""
     if not session_key:

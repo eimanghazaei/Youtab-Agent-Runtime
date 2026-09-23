@@ -42,6 +42,7 @@ router = APIRouter()
 # Late-bound web_server helpers (resolved at call time; cycle-safe,
 # monkeypatch-transparent).
 _cron_profile_home = late("_cron_profile_home")
+_pending_recovery_ids = late("_pending_recovery_ids")
 _disable_unselected_skills = late("_disable_unselected_skills")
 _fallback_profile_dicts = late("_fallback_profile_dicts")
 _hub_action_name = late("_hub_action_name")
@@ -133,6 +134,7 @@ def get_profiles_sessions(
         except Exception as exc:
             errors.append({"profile": name, "error": str(exc)})
             continue
+        recovery_ids = _pending_recovery_ids(Path(home)) if min_message_count > 0 else []
         try:
             rows = db.list_sessions_rich(
                 source=source_filter,
@@ -141,6 +143,7 @@ def get_profiles_sessions(
                 limit=per_profile,
                 offset=0,
                 min_message_count=min_message_count,
+                include_ids=recovery_ids,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
@@ -153,6 +156,7 @@ def get_profiles_sessions(
                 sources=source_list or None,
                 exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
+                include_ids=recovery_ids,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 exclude_children=True,
@@ -263,13 +267,14 @@ def get_profiles_sessions_sidebar(
             s["pinned"] = bool(s.get("pinned"))
         return rows
 
-    def _slice(db, *, source=None, exclude=None, cap):
+    def _slice(db, *, source=None, exclude=None, cap, include_ids=None):
         return db.list_sessions_rich(
             source=source,
             exclude_sources=exclude or None,
             limit=cap,
             offset=0,
             min_message_count=1,
+            include_ids=include_ids,
             include_archived=False,
             archived_only=False,
             order_by_last_active=True,
@@ -290,7 +295,12 @@ def get_profiles_sessions_sidebar(
             continue
         try:
             if recents_scope == "all" or name == recents_scope:
-                profile_rows = _slice(db, exclude=recents_exclude_list, cap=recents_cap)
+                profile_rows = _slice(
+                    db,
+                    exclude=recents_exclude_list,
+                    cap=recents_cap,
+                    include_ids=_pending_recovery_ids(Path(home)),
+                )
                 # A full window means more rows remain on disk. That is all the
                 # sidebar's "load more" needs, and unlike an exact COUNT(*) per
                 # profile per refresh it costs nothing beyond the rows already

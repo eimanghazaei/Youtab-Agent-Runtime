@@ -38,6 +38,7 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
 from tui_gateway.turn_marker import (
     clear_turn_marker,
+    pending_turn_keys,
     read_turn_marker,
     record_turn_start,
 )
@@ -1867,6 +1868,25 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+def _test_agent_build_delay() -> None:
+    """TEST-ONLY deferred-build delay seam (inert in prod).
+
+    ``YOUTAB_AGENT_TEST_AGENT_BUILD_DELAY_S`` holds the deferred agent build so
+    packaged acceptance tests can deterministically close the app inside the
+    window between prompt acceptance and turn start (a slow cold build). Unset,
+    empty or invalid values do nothing; the delay is capped at 120 seconds.
+    """
+    raw = (os.environ.get("YOUTAB_AGENT_TEST_AGENT_BUILD_DELAY_S") or "").strip()
+    if not raw:
+        return
+    try:
+        delay = min(max(float(raw), 0.0), 120.0)
+    except ValueError:
+        return
+    if delay:
+        time.sleep(delay)
+
+
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
@@ -1899,6 +1919,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
     key = session["session_key"]
 
     def _build() -> None:
+        _test_agent_build_delay()
         with _sessions_lock:
             current = _sessions.get(sid)
         if current is None:
@@ -6914,6 +6935,47 @@ def _session_home(session: dict) -> Path:
     return Path(profile_home) if profile_home else Path(_youtab_home)
 
 
+def _record_accepted_turn(session: dict, text: Any) -> None:
+    """Make an accepted prompt durable before its turn can start.
+
+    prompt.submit answers ``streaming`` and then waits for the deferred agent
+    build, which can take seconds (or minutes on a cold start). Without a marker
+    written at acceptance, a process death in that window loses the user's
+    message with no trace; with it, session.resume recovers it like any other
+    interrupted turn. _run_prompt_submit re-records the same key when the turn
+    actually starts.
+    """
+    key = str(session.get("session_key") or "")
+    if not key or not isinstance(text, str):
+        return
+    try:
+        # Record the transcript form: staged attachments join the prompt only
+        # when the turn starts, so a recovered first prompt must carry its
+        # @image refs.
+        images = list(session.get("attached_images") or [])
+        prompt = _build_persist_message_with_image_refs(text, images) if images else text
+        if not prompt.strip():
+            return
+        attempts = int(session.get("_auto_continue_attempt", 0) or 0)
+        record_turn_start(_session_home(session), key, prompt, attempts=attempts)
+    except Exception:
+        # Durability is best effort here; it must never refuse an accepted prompt.
+        logger.warning("could not record accepted turn for %s", key, exc_info=True)
+
+
+def pending_recovery_session_ids(home: Path | str) -> list[str]:
+    """Session ids with a fresh, recoverable interrupted-turn marker.
+
+    Session lists hide rows with no messages, but a first prompt interrupted
+    before its turn started has only its marker. Listing these ids keeps the
+    session reachable so one normal reopen recovers the prompt.
+    """
+    enabled, freshness_secs, _max_attempts = _auto_continue_config()
+    if not enabled:
+        return []
+    return pending_turn_keys(home, max_age_s=freshness_secs)
+
+
 def _retire_turn_marker(session: dict, *keys: str) -> None:
     """Drop the crash marker for a turn whose outcome is about to reach the client.
 
@@ -11192,6 +11254,7 @@ def _project_tree_inputs(
         offset=0,
         order_by_last_active=True,
         min_message_count=1,
+        include_ids=pending_recovery_session_ids(_youtab_home),
         include_children=False,
         exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
         include_archived=False,

@@ -543,6 +543,16 @@ def _unsupported_feature_reason(feature: str) -> Optional[str]:
     known-impossible installs out of both first-use lazy installation and the
     ``youtab update`` lazy-refresh pass.
     """
+    if getattr(sys, "frozen", False):
+        # A frozen (packaged) backend can import only what was bundled.
+        # sys.executable is the backend binary itself, so the pip tier would
+        # re-launch the backend CLI, and uv resolves whatever environment the
+        # inherited VIRTUAL_ENV/PATH points at — installing into a foreign
+        # Python the bundle can never import. Report the feature unavailable.
+        return (
+            "unavailable in the packaged desktop backend: optional dependencies "
+            "cannot be installed into a frozen bundle"
+        )
     if sys.platform == "win32" and feature == "platform.matrix":
         return (
             "unsupported on Windows: Matrix E2EE depends on python-olm, "

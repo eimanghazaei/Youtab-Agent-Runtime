@@ -1717,6 +1717,20 @@ def quarantine_zeroed_state_db(path: Path) -> Optional[Path]:
             handle.close()
 
 
+def _min_message_count_clause(min_message_count: int, include_ids) -> tuple[str, list]:
+    """``message_count >= N``, exempting ``include_ids`` (recoverable sessions).
+
+    A session whose first prompt was interrupted before its turn persisted has
+    no messages yet but a pending recovery marker; the caller passes those ids
+    so the session stays listable and one reopen recovers the prompt.
+    """
+    ids = [str(i) for i in (include_ids or ()) if i]
+    if not ids:
+        return "s.message_count >= ?", [min_message_count]
+    placeholders = ",".join("?" for _ in ids)
+    return f"(s.message_count >= ? OR s.id IN ({placeholders}))", [min_message_count, *ids]
+
+
 class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin):
     """
     SQLite-backed session storage with FTS5 search.
@@ -5011,6 +5025,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         search_query: str = None,
         compact_rows: bool = False,
         include_pinned: bool = False,
+        include_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -5097,8 +5112,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(clause)
             params.extend(clause_params)
         if min_message_count > 0:
-            where_clauses.append("s.message_count >= ?")
-            params.append(min_message_count)
+            clause, clause_params = _min_message_count_clause(min_message_count, include_ids)
+            where_clauses.append(clause)
+            params.extend(clause_params)
         if archived_only:
             where_clauses.append("s.archived = 1")
         elif not include_archived:
@@ -6842,6 +6858,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         archived_only: bool = False,
         exclude_children: bool = False,
         exclude_sources: List[str] = None,
+        include_ids: Optional[List[str]] = None,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -6880,8 +6897,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             where_clauses.append(clause)
             params.extend(clause_params)
         if min_message_count > 0:
-            where_clauses.append("s.message_count >= ?")
-            params.append(min_message_count)
+            clause, clause_params = _min_message_count_clause(min_message_count, include_ids)
+            where_clauses.append(clause)
+            params.extend(clause_params)
         if archived_only:
             where_clauses.append("s.archived = 1")
         elif not include_archived:

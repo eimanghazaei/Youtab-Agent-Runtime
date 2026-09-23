@@ -28,7 +28,7 @@ import {
   writeMockProviderConfig,
 } from './fixtures'
 import { BackendSentinel } from './backend-sentinel'
-import { startMockServer } from './mock-server'
+import { MOCK_REPLY, startMockServer } from './mock-server'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
 const CAPTION = 'E2E packaged attachment must survive a relaunch'
@@ -172,6 +172,35 @@ function crashMarkerHasEntry(youtabHome: string): boolean {
     return data && typeof data === 'object' && Object.keys(data).length > 0
   } catch {
     return false
+  }
+}
+
+/** Every durable user row carrying the caption AND its image ref, INCLUDING a recovery note. */
+function durableCaptionRowCount(youtabHome: string): number {
+  const dbPath = path.join(youtabHome, 'state.db')
+  if (!fs.existsSync(dbPath)) return 0
+  let db: DatabaseSync | null = null
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true })
+    const row = db
+      .prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'user' AND content LIKE ? AND content LIKE '%@image:%'")
+      .get(`%${CAPTION}%`) as { n?: number } | undefined
+    return row ? Number(row.n) : 0
+  } catch {
+    return 0
+  } finally {
+    try { db?.close() } catch { /* ignore */ }
+  }
+}
+
+/** The recorded prompt of the single crash-recovery marker entry, or ''. */
+function crashMarkerPrompt(youtabHome: string): string {
+  try {
+    const data = JSON.parse(fs.readFileSync(path.join(youtabHome, 'desktop', 'interrupted_turns.json'), 'utf8'))
+    const entries = Object.values(data ?? {}) as Array<{ prompt?: string }>
+    return entries.length === 1 ? String(entries[0]?.prompt ?? '') : ''
+  } catch {
+    return ''
   }
 }
 
@@ -414,11 +443,19 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await page1.locator('[data-slot="composer-attachments"]').waitFor({ state: 'visible', timeout: 30_000 })
     await page1.keyboard.press('Enter')
 
-    // Wait for the turn to be USER-VISIBLY COMPLETE: the attached image rendered
-    // AND the turn is idle again (the "Stop" affordance is gone). This is the
-    // moment a user would consider the turn done and could close the app.
+    // Wait for the turn to be USER-VISIBLY COMPLETE: the provider answered this
+    // prompt, the turn is idle again (the "Stop" affordance is gone) and the
+    // assistant reply is on screen. An idle composer alone is not completion:
+    // before the deferred agent build finishes the turn has not started yet
+    // (that pre-turn window is covered by its own recovery test below).
     await page1.getByRole('button', { name: /open image/i }).first()
       .waitFor({ state: 'visible', timeout: 180_000 })
+    await expect
+      .poll(() => mock!.receivedPrompts.some(p => p.includes(CAPTION)), {
+        timeout: 180_000,
+        message: 'the bundled backend must run the turn before it can complete',
+      })
+      .toBe(true)
     await expect
       .poll(() => page1.getByRole('button', { name: 'Stop' }).count(), {
         timeout: 180_000,
@@ -426,6 +463,9 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       })
       .toBe(0)
     sentinel?.assertAlive('turn idle')
+    await expect
+      .poll(() => transcriptText(page1), { timeout: 60_000, message: 'the assistant reply must be visible' })
+      .toContain(MOCK_REPLY)
 
     // Close PROMPTLY — no state.db poll, no settle wait. If the acknowledgement
     // boundary is correct, the acknowledged turn is already durable.
@@ -656,5 +696,81 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     app = null
     await expect.poll(() => bundledBackendProcessCount(), { timeout: 20_000 }).toBe(0)
     expect(crashMarkerHasEntry(sandbox.youtabHome), 'the marker must survive process close').toBe(true)
+  })
+  // R6: a FIRST prompt accepted by prompt.submit waits for the deferred agent
+  // build before its turn starts. Closing the app in that window must not lose
+  // it: the prompt is durable (crash marker) the moment it is accepted, the
+  // message-less session stays listable, and one normal reopen recovers it
+  // exactly once with its attachment reference. The build is held by the
+  // test-only YOUTAB_AGENT_TEST_AGENT_BUILD_DELAY_S seam so the close lands
+  // inside the window deterministically.
+  test('first prompt closed before its turn starts is recovered once after relaunch', async ({}, testInfo) => {
+    test.skip(!packagedBinaryExists(), 'requires the packaged binary — run npm run dist:win first')
+    test.slow()
+    test.setTimeout(600_000)
+
+    mock = await startMockServer()
+    sandbox = createSandbox('packaged-pre-turn-close')
+    writeMockProviderConfig(sandbox.youtabHome, mock.url, undefined, NATIVE_IMAGE_CONFIG)
+    writeEnvFile(sandbox.youtabHome)
+
+    ;({ app } = await launchPackagedAppRealBackend(sandbox, { YOUTAB_AGENT_TEST_AGENT_BUILD_DELAY_S: '30' }))
+    const page1 = await app.firstWindow()
+    await waitForAppReady({ page: page1, app } as never, 240_000)
+    await watchBackend()
+
+    const composer = await focusComposer(page1)
+    await composer.type(CAPTION, { delay: 10 })
+    await pasteImage(page1)
+    await page1.locator('[data-slot="composer-attachments"]').waitFor({ state: 'visible', timeout: 30_000 })
+    await page1.keyboard.press('Enter')
+
+    // Accepted => durable, while the turn has provably not started.
+    await expect
+      .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), {
+        timeout: 20_000,
+        message: 'an accepted prompt must be durable before its turn starts',
+      })
+      .toBe(true)
+    expect(mock.receivedPrompts.some(p => p.includes(CAPTION)), 'the turn must not have started yet').toBe(false)
+    const recorded = crashMarkerPrompt(sandbox.youtabHome)
+    expect(recorded, 'the durable prompt keeps the caption').toContain(CAPTION)
+    expect(recorded, 'the durable prompt keeps the attachment reference').toContain('@image:')
+    await page1.screenshot({ path: testInfo.outputPath('packaged-pre-turn-accepted.png') })
+
+    releaseBackend('before close')
+    await closePackagedApp(app)
+    app = null
+    await expect.poll(() => bundledBackendProcessCount(), { timeout: 20_000 }).toBe(0)
+    expect(crashMarkerHasEntry(sandbox.youtabHome), 'the accepted prompt must survive the close').toBe(true)
+    expect(durableCaptionRowCount(sandbox.youtabHome), 'nothing ran, so no transcript row exists yet').toBe(0)
+
+    ;({ app } = await launchPackagedAppRealBackend(sandbox))
+    const page2 = await app.firstWindow()
+    await waitForAppReady({ page: page2, app } as never, 240_000)
+    await watchBackend()
+
+    // The session has no messages, only its recovery marker, and must still be
+    // reachable; one normal reopen is the whole recovery trigger.
+    const row = sessionRow(page2)
+    await row.waitFor({ state: 'visible', timeout: 180_000 })
+    await row.click()
+
+    await expect
+      .poll(() => durableAssistantReplyCount(sandbox!.youtabHome), {
+        timeout: 180_000,
+        intervals: [2000, 3000, 5000],
+        message: 'one reopen must run and durably commit the recovered prompt',
+      })
+      .toBeGreaterThanOrEqual(1)
+    expect(durableCaptionRowCount(sandbox.youtabHome), 'the prompt is recovered exactly once with its attachment').toBe(1)
+    await expect
+      .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), { timeout: 60_000, message: 'marker retired after the durable recovery' })
+      .toBe(false)
+    await expect
+      .poll(() => transcriptText(page2), { timeout: 120_000, message: 'the reopened session shows the recovered prompt' })
+      .toContain(CAPTION)
+    sentinel?.assertAlive('recovered')
+    await page2.screenshot({ path: testInfo.outputPath('packaged-pre-turn-recovered.png') })
   })
 })

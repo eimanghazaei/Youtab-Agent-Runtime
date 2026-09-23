@@ -237,6 +237,8 @@ def _(rid, params: dict) -> dict:
     # A branch becomes real here: copy its parent's transcript into the row so it
     # resumes with full context (the agent won't persist the seed itself).
     _persist_branch_seed(session)
+    # The prompt is accepted: make it durable before waiting on the agent build.
+    _record_accepted_turn(session, text)
     _start_agent_build(sid, session)
 
     def run_after_agent_ready() -> None:
@@ -247,6 +249,9 @@ def _(rid, params: dict) -> dict:
         # only errors when the build itself fails or the bounded cap expires.
         err = _wait_agent_for_prompt(session, rid, sid)
         if err:
+            # The client is told this message was not sent; do not auto-run it
+            # on a later resume.
+            _retire_turn_marker(session)
             # Terminal frame + retained snapshot (not a bare "error" event +
             # cleared inflight): if the client is disconnected right now, the
             # retained snapshot is the only way resume can show this failure.
@@ -264,6 +269,7 @@ def _(rid, params: dict) -> dict:
             if session.get("_turn_cancel_requested") or not session.get("running"):
                 session["running"] = False
                 _clear_inflight_turn(session)
+                _retire_turn_marker(session)
                 # Surface the cancellation to the client. Without this emit the
                 # turn vanishes silently — the Desktop sees `prompt.submit`
                 # return `{"status": "streaming"}` but never receives a
