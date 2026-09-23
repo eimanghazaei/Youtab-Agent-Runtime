@@ -1,7 +1,7 @@
 // Determinism/tamper tests for the canonical sidecar root-digest algorithm.
 // Run: npx vitest run --project electron packaging/backend-sidecar/root-digest.test.mjs
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync, symlinkSync } from 'node:fs'
+import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, renameSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join, relative } from 'node:path'
 import { afterEach, test } from 'vitest'
@@ -95,7 +95,7 @@ test('digest rejects escaping and cyclic directory symlinks', () => {
     if (error.code === 'EPERM') return
     throw error
   }
-  assert.throws(() => rootDigestFromBundle(root), /escapes root/)
+  assert.throws(() => rootDigestFromBundle(root), /not portable within root/)
   rmSync(join(root, 'escape'))
   symlinkSync('..', join(root, 'nested', 'back'), 'dir')
   assert.throws(() => rootDigestFromBundle(root), /cyclic bundle directory symlink/)
@@ -155,6 +155,22 @@ test('relative symlinks keep the same digest after moving the whole bundle', () 
   const moved = join(holder, 'relocated-bundle')
   renameSync(root, moved)
   assert.equal(rootDigestFromBundle(moved), before)
+})
+
+test('relative symlinks keep the same digest in a verbatim installer copy', () => {
+  const root = fixture({ 'lib/data.txt': 'data' })
+  try {
+    symlinkSync('lib/data.txt', join(root, 'data-alias.txt'))
+    symlinkSync('lib', join(root, 'lib-alias'), 'dir')
+  } catch (error) {
+    if (error.code === 'EPERM') return
+    throw error
+  }
+  const copied = mkdtempSync(join(tmpdir(), 'rd-copy-'))
+  dirs.push(copied)
+  const dest = join(copied, 'bundle')
+  cpSync(root, dest, { recursive: true, verbatimSymlinks: true })
+  assert.equal(rootDigestFromBundle(dest), rootDigestFromBundle(root))
 })
 
 test('absolute symlink resolving inside the build tree is rejected before packaging', () => {

@@ -82,6 +82,18 @@ test('POSITIVE: case-insensitive attribution host substring is flagged', () => {
   assert.ok(r.findings.some(x => x.rule === 'forbidden-attribution' && x.detail === 'anthropic.com'))
 })
 
+test('POSITIVE: attribution host at sentence boundary is flagged', () => {
+  const r = scanBundle(fixture({ 'notice.txt': 'noreply@anthropic.com. End of notice.' }))
+  assert.ok(r.findings.some(x => x.rule === 'forbidden-attribution' && x.detail === 'anthropic.com'))
+})
+
+test('NEGATIVE: attribution lookalike host labels do not match', () => {
+  const r = scanBundle(fixture({
+    'notice.txt': 'xanthropic.com anthropic.com.evil anthropic.company -anthropic.com'
+  }))
+  assert.equal(r.findings.filter(x => x.rule === 'forbidden-attribution').length, 0)
+})
+
 test('POSITIVE: in-bundle file and directory symlinks remain valid without duplicate traversal', () => {
   const root = fixture({ 'nested/key.txt': '-----BEGIN OPENSSH PRIVATE KEY-----\nabc' })
   try {
