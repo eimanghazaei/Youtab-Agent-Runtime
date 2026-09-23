@@ -203,16 +203,18 @@ class DurableRunStateAuthority:
         return self._store.get_events(run_id, from_seq=from_seq, limit=limit)
 
     # -- approval: require-open + atomic id-bound single-use; approve->once, deny->deny - #
-    def open_approval(self, run_id: str, *, approval_id: str) -> Dict[str, Any]:
+    def open_approval(self, run_id: str, *, approval_id: str,
+                      payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Atomically open one approval on a RUNNING run.
 
         The store binds the ID to the request event in the same fenced
         transaction. An exact-ID retry returns the existing open request;
-        another ID cannot replace it. Emitting this from the worker/tool path
-        remains the held D1 dispatch seam.
+        another ID cannot replace it. ``payload`` (e.g. effect_digest/action/mode) is
+        recorded on the durable ``approval_request`` event so the request is bound to a
+        specific effect.
         """
         self._require_authority()
-        return self._store.open_approval(run_id, approval_id=approval_id)
+        return self._store.open_approval(run_id, approval_id=approval_id, payload=payload)
 
     def ensure_running(self, run_id: str) -> Optional[Dict[str, Any]]:
         """Project a pre-decision run to RUNNING under the authority (idempotent).

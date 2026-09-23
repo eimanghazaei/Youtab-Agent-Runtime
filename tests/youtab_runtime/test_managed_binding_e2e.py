@@ -1038,41 +1038,193 @@ def _approve(client, run_id, approval_id, decision, *, grant_header,
 
 
 def _freeze_dispatcher():
-    """Stop the background ticker so approval ingest happens ONLY when a test drives
-    _tick() explicitly (deterministic; the noop-spawn fixture has nothing to run)."""
+    """Stop the background ticker (deterministic; the noop-spawn fixture has nothing to
+    run and the approval ingest is now the worker-only endpoint, not the tick)."""
     from youtab_agent_cli.web_routers import runtime as _rt
     _rt.stop_dispatcher()
 
 
-def _tick():
-    """Drive ONE server-owned dispatcher tick — the poll-independent ingest boundary."""
-    from youtab_agent_cli.web_routers import runtime as _rt
-    _rt._dispatch_tick()
+def _worker_cap(run_id):
+    import youtab_runtime.durable_ingress_process as dip
+    return dip.mint_worker_capability(run_id)
+
+
+def _worker_ingest(client, run_id, approval_id="ap1", *, effect="eff-1",
+                   action="delete_all", mode="once", cap=None):
+    """Simulate the worker calling the durable-FIRST worker-only ingest endpoint (the
+    producer boundary). Uses the per-run capability, NOT the service secret."""
+    body = json.dumps({"approval_id": approval_id, "effect_digest": effect,
+                       "action": action, "mode": mode}).encode()
+    return client.post(
+        f"/api/runtime/worker/v1/runs/{run_id}/approval-request",
+        content=body,
+        headers={"X-Youtab-Worker-Cap": cap or _worker_cap(run_id),
+                 "Content-Type": "application/json"},
+    )
+
+
+def _worker_read(client, run_id, approval_id="ap1", cap=None):
+    return client.get(
+        f"/api/runtime/worker/v1/runs/{run_id}/approval/{approval_id}",
+        headers={"X-Youtab-Worker-Cap": cap or _worker_cap(run_id)},
+    )
 
 
 def _durable_run(client):
     _, gh = _mint_grant()
     r = _create(client, grant_header=gh, idempotency=f"dur-appr-{uuid.uuid4().hex[:8]}")
     assert r.status_code == 200, r.text
-    _freeze_dispatcher()  # tests drive ingest via _tick() for determinism
+    _freeze_dispatcher()  # deterministic: no background ticks
     return r.json()["run_id"]
 
 
+# ── D2 read helpers (product surface) ─────────────────────────────────────────
+def _get_run(client, run_id, *, tenant=TENANT, user=USER):
+    return client.get(f"/api/runtime/v1/runs/{run_id}", headers=_headers(tenant, user))
+
+
+def _get_events(client, run_id, *, tenant=TENANT, user=USER):
+    return client.get(f"/api/runtime/v1/runs/{run_id}/events?after=0",
+                      headers=_headers(tenant, user))
+
+
+# ── D2: worker-only durable-FIRST approval-request endpoint (the producer) ─────
+def test_worker_endpoint_ingests_durable_first_and_derives_kanban(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    r = _worker_ingest(client, run_id, "ap1", effect="eff-1")
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "pending" and r.json()["effect_digest"] == "eff-1"
+    # durable holds the request FIRST (WAITING_APPROVAL), scoped to the admitted run
+    row = dip.get_ingress_authority().get_run(run_id)
+    assert row["state"] == "WAITING_APPROVAL"
+    reqs = [e for e in dip.get_ingress_authority().get_events(run_id)
+            if e["kind"] == "approval_request"]
+    assert reqs[-1]["payload"]["approval_id"] == "ap1"
+    assert reqs[-1]["payload"]["effect_digest"] == "eff-1"
+    # kanban is DERIVED from durable (present after the durable open)
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert [e for e in kb.list_events(conn, run_id)
+                if e.kind == _rc_d2.APPROVAL_REQUEST]
+    finally:
+        conn.close()
+
+
+def test_worker_endpoint_rejects_missing_or_wrong_cap(managed_durable):
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    other = _durable_run(client)
+    body = json.dumps({"approval_id": "ap1", "effect_digest": "e"}).encode()
+    path = f"/api/runtime/worker/v1/runs/{run_id}/approval-request"
+    # no cap -> 401
+    assert client.post(path, content=body,
+                       headers={"Content-Type": "application/json"}).status_code == 401
+    # a cap minted for ANOTHER run -> 401 (run-bound)
+    assert client.post(path, content=body,
+                       headers={"X-Youtab-Worker-Cap": _worker_cap(other),
+                                "Content-Type": "application/json"}).status_code == 401
+    # the broad service secret is NOT a worker capability -> 401
+    assert client.post(path, content=body,
+                       headers={"Authorization": f"Bearer {SECRET}",
+                                "Content-Type": "application/json"}).status_code == 401
+
+
+def test_worker_endpoint_idempotent_same_effect_conflict_diff_effect(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    assert _worker_ingest(client, run_id, "ap1", effect="eff-1").status_code == 200
+    # same id + same effect -> idempotent pending, exactly one durable request
+    assert _worker_ingest(client, run_id, "ap1", effect="eff-1").json()["status"] == "pending"
+    reqs = [e for e in dip.get_ingress_authority().get_events(run_id)
+            if e["kind"] == "approval_request"]
+    assert len(reqs) == 1
+    # same id + DIFFERENT effect -> 409 conflict
+    r = _worker_ingest(client, run_id, "ap1", effect="eff-2")
+    assert r.status_code == 409 and r.json()["detail"]["error"] == "approval_effect_conflict"
+
+
+def test_worker_endpoint_authority_loss_503_no_pending(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    dip._on_lost("simulated advisory-lock loss")
+    r = _worker_ingest(client, run_id, "ap1")
+    assert r.status_code == 503 and r.json()["detail"]["error"] == "run_authority_unavailable"
+
+
+def test_worker_endpoint_disabled_404(managed_deferred):
+    """With durable ingress OFF the worker-only endpoint is not available (404)."""
+    client = managed_deferred
+    _, gh = _mint_grant()
+    run_id = _create(client, grant_header=gh).json()["run_id"]
+    body = json.dumps({"approval_id": "ap1", "effect_digest": "e"}).encode()
+    r = client.post(f"/api/runtime/worker/v1/runs/{run_id}/approval-request",
+                    content=body,
+                    headers={"X-Youtab-Worker-Cap": "anything",
+                             "Content-Type": "application/json"})
+    assert r.status_code == 404
+
+
+def test_worker_read_pending_then_decided(managed_durable):
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
+    assert _worker_read(client, run_id, "ap1").json()["status"] == "pending"
+    _, gh = _mint_grant()
+    assert _approve(client, run_id, "ap1", "approve", grant_header=gh).status_code == 200
+    got = _worker_read(client, run_id, "ap1").json()
+    assert got["status"] == "approved" and got["decision"] == "approve"
+    # a never-requested id reads 'absent'
+    assert _worker_read(client, run_id, "nope").json()["status"] == "absent"
+
+
+def test_worker_read_unknown_after_restart(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
+    dip.reset_for_tests()
+    dip.acquire_ingress_authority()  # takeover -> prior WAITING_APPROVAL becomes UNKNOWN
+    assert _worker_read(client, run_id, "ap1").json()["status"] == "unknown"
+    # the worker re-requests after restart (no user click); it re-opens durably
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
+    assert _worker_read(client, run_id, "ap1").json()["status"] == "pending"
+
+
+def test_worker_ingest_is_keyed_not_a_scan(managed_durable):
+    """The producer path is keyed to ONE run (the worker's cap+URL), never a scan: an
+    ingest for run A must not open any approval on an unrelated run B."""
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_a = _durable_run(client)
+    run_b = _durable_run(client)
+    assert _worker_ingest(client, run_a, "ap1").status_code == 200
+    assert dip.get_ingress_authority().get_run(run_a)["state"] == "WAITING_APPROVAL"
+    assert dip.get_ingress_authority().get_run(run_b)["state"] == "QUEUED"  # untouched
+
+
+# ── D2: product /approve decides only an already-open durable approval ─────────
 def test_durable_route_approve_decides_via_cas(managed_durable):
     import youtab_runtime.durable_ingress_process as dip
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    _tick()  # server-owned producer ingest opens the durable approval FIRST
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200  # producer opens it
     _, gh = _mint_grant()
     r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
     assert r.status_code == 200, r.text
-    assert r.json()["decision"] == "approve"
-    assert r.json()["state"] == "RUNNING"          # durable CAS outcome, not kanban
-    auth = dip.get_ingress_authority()
-    approved = [e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]
-    assert len(approved) == 1                        # single-use
+    assert r.json()["decision"] == "approve" and r.json()["state"] == "RUNNING"
+    approved = [e for e in dip.get_ingress_authority().get_events(run_id)
+                if e["kind"] == "approval_approved"]
+    assert len(approved) == 1  # single-use
 
 
 def test_durable_route_deny_is_terminal(managed_durable):
@@ -1080,14 +1232,12 @@ def test_durable_route_deny_is_terminal(managed_durable):
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    _tick()  # producer ingest opens the durable approval before the decision
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
     _, gh = _mint_grant()
     r = _approve(client, run_id, "ap1", "deny", grant_header=gh)
     assert r.status_code == 200, r.text
     assert r.json()["decision"] == "deny" and r.json()["state"] == "CANCELLED"
-    auth = dip.get_ingress_authority()
-    assert not auth.get_run(run_id).get("result_ref")
+    assert not dip.get_ingress_authority().get_run(run_id).get("result_ref")
 
 
 def test_durable_route_duplicate_returns_original(managed_durable):
@@ -1095,46 +1245,42 @@ def test_durable_route_duplicate_returns_original(managed_durable):
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    _tick()  # producer ingest opens the durable approval before the decision
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
     _, g1 = _mint_grant()
     assert _approve(client, run_id, "ap1", "approve", grant_header=g1).status_code == 200
     _, g2 = _mint_grant()
     r2 = _approve(client, run_id, "ap1", "approve", grant_header=g2)
     assert r2.status_code == 200, r2.text
     assert r2.json()["already_decided"] is True and r2.json()["decision"] == "approve"
-    auth = dip.get_ingress_authority()
-    approved = [e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]
-    assert len(approved) == 1                        # no second consume
+    approved = [e for e in dip.get_ingress_authority().get_events(run_id)
+                if e["kind"] == "approval_approved"]
+    assert len(approved) == 1  # no second consume
 
 
 def test_durable_route_no_open_request_409(managed_durable):
     client, _ = managed_durable
-    run_id = _durable_run(client)  # no worker request written
+    run_id = _durable_run(client)  # nothing ingested -> not durably open
     _, gh = _mint_grant()
     r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
-    assert r.status_code == 409
-    assert r.json()["detail"]["error"] == "no_such_open_approval"
+    assert r.status_code == 409 and r.json()["detail"]["error"] == "no_such_open_approval"
 
 
 def test_durable_route_wrong_id_409(managed_durable):
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "expected")
-    _tick()  # durable opens "expected"; a decision for "wrong" must still be refused
+    assert _worker_ingest(client, run_id, "expected").status_code == 200
     _, gh = _mint_grant()
     r = _approve(client, run_id, "wrong", "approve", grant_header=gh)
-    assert r.status_code == 409
-    assert r.json()["detail"]["error"] == "no_such_open_approval"
+    assert r.status_code == 409 and r.json()["detail"]["error"] == "no_such_open_approval"
 
 
 def test_durable_route_foreign_owner_404(managed_durable):
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
     _, gh = _mint_grant(user="intruder")
     r = _approve(client, run_id, "ap1", "approve", grant_header=gh, user="intruder")
-    assert r.status_code == 404  # ownership check refuses before the durable layer
+    assert r.status_code == 404  # ownership refuses before the durable layer
 
 
 def test_durable_route_authority_loss_503(managed_durable):
@@ -1142,23 +1288,40 @@ def test_durable_route_authority_loss_503(managed_durable):
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
     dip._on_lost("simulated advisory-lock loss")
     _, gh = _mint_grant()
     r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
-    assert r.status_code == 503
-    assert r.json()["detail"]["error"] == "run_authority_unavailable"
+    assert r.status_code == 503 and r.json()["detail"]["error"] == "run_authority_unavailable"
+
+
+def test_direct_post_before_ingest_cannot_self_open(managed_durable):
+    """Blocker 2: a direct POST /approve BEFORE the producer ingest must NOT open the
+    approval itself — it decides only an already-open durable approval. So it is refused
+    and the durable run is left untouched (no self-open bypass)."""
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)  # nothing ingested
+    _, gh = _mint_grant()
+    r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
+    assert r.status_code == 409 and r.json()["detail"]["error"] == "no_such_open_approval"
+    row = dip.get_ingress_authority().get_run(run_id)
+    assert row["state"] == "QUEUED"  # the refused POST did not open it
+    assert [e for e in dip.get_ingress_authority().get_events(run_id)
+            if e["kind"] in ("approval_request", "approval_approved")] == []
+    # only after the producer ingest can the decision be made
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
+    _, g2 = _mint_grant()
+    r2 = _approve(client, run_id, "ap1", "approve", grant_header=g2)
+    assert r2.status_code == 200 and r2.json()["state"] == "RUNNING"
 
 
 def test_flag_off_approve_uses_kanban_path(managed_deferred):
-    """With durable ingress OFF, /approve keeps the exact kanban decision path
-    (records the decision as a kanban event; no durable 'state' in the response)."""
+    """With durable ingress OFF, /approve keeps the exact kanban decision path."""
     client = managed_deferred
     _, gh = _mint_grant()
-    r = _create(client, grant_header=gh)
-    assert r.status_code == 200, r.text
-    run_id = r.json()["run_id"]
-    # worker requests approval over kanban (the only authority when the flag is off)
+    run_id = _create(client, grant_header=gh).json()["run_id"]
     conn = kb.connect(board="runtime")
     try:
         with kb.write_txn(conn):
@@ -1172,67 +1335,14 @@ def test_flag_off_approve_uses_kanban_path(managed_deferred):
     assert "state" not in r2.json()  # kanban path: no durable CAS state field
 
 
-# ── D2 gap 1: server-owned projection on a status/events READ (no click) ──────
-def _get_run(client, run_id, *, tenant=TENANT, user=USER):
-    return client.get(f"/api/runtime/v1/runs/{run_id}", headers=_headers(tenant, user))
-
-
-def _get_events(client, run_id, *, tenant=TENANT, user=USER):
-    return client.get(f"/api/runtime/v1/runs/{run_id}/events?after=0",
-                      headers=_headers(tenant, user))
-
-
-def test_tick_ingests_pending_before_publish_and_read_is_pure(managed_durable):
-    """The server-owned dispatcher tick — NOT a GET — persists the worker's request
-    into the fenced RunStore before it is published. A status read is a pure durable
-    reader: it does not itself ingest."""
-    import youtab_runtime.durable_ingress_process as dip
-
-    client, db_path = managed_durable
-    run_id = _durable_run(client)  # dispatcher frozen
-    auth = dip.get_ingress_authority()
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    # BEFORE the tick: durable not pending, and a GET does NOT ingest (pure read) —
-    # so it publishes the base status, never a kanban-derived awaiting_approval.
-    assert auth.get_run(run_id)["state"] == "QUEUED"
-    assert _get_run(client, run_id).json()["status"] != "awaiting_approval"
-    assert auth.get_run(run_id)["state"] == "QUEUED"   # the read did not write
-    # the server-owned tick ingests (no client poll), then the read publishes pending
-    _tick()
-    row = auth.get_run(run_id)
-    assert row["state"] == "WAITING_APPROVAL"
-    assert (row["tenant_id"], row["principal_id"]) == (TENANT, f"{TENANT}:{USER}")
-    assert _get_run(client, run_id).json()["status"] == "awaiting_approval"
-
-
-def test_pending_approval_visible_after_restart_no_click(managed_durable):
-    import youtab_runtime.durable_ingress_process as dip
-
-    client, db_path = managed_durable
-    run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    _tick()  # server-owned ingest, no click
-    assert dip.get_ingress_authority().get_run(run_id)["state"] == "WAITING_APPROVAL"
-
-    dip.reset_for_tests()   # process restart / authority handoff
-    dip.acquire_ingress_authority()  # takeover: prior nonterminal -> UNKNOWN
-    assert dip.get_ingress_authority().get_run(run_id)["state"] == "UNKNOWN"
-    # another server-owned tick after restart re-ingests it — still no user click
-    _tick()
-    assert dip.get_ingress_authority().get_run(run_id)["state"] == "WAITING_APPROVAL"
-
-
 # ── D2 gap 2: idempotent repair of the kanban decision projection on retry ────
 def test_decision_projection_repaired_on_retry(managed_durable, monkeypatch):
     import youtab_runtime.durable_ingress_process as dip
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    _tick()  # producer ingest opens the durable approval before the decision
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
 
-    # Inject a ONE-TIME failure of the kanban decision projection write, AFTER the
-    # durable decision has committed, to model a crash between the two writes.
     orig_append = kb._append_event
     state = {"failed": False}
 
@@ -1243,95 +1353,81 @@ def test_decision_projection_repaired_on_retry(managed_durable, monkeypatch):
         return orig_append(conn, task_id, kind, payload)
 
     monkeypatch.setattr(kb, "_append_event", _flaky_append)
-
     _, g1 = _mint_grant()
     with pytest.raises(RuntimeError):
         _approve(client, run_id, "ap1", "approve", grant_header=g1)
 
-    # durable decision is committed even though the transport projection failed
     auth = dip.get_ingress_authority()
-    approved = [e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]
-    assert len(approved) == 1
-    # kanban transport currently MISSING the decision (the failed write rolled back)
+    assert len([e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]) == 1
     conn = kb.connect(db_path=db_path)
     try:
-        kdec = [e for e in kb.list_events(conn, run_id)
-                if e.kind == _rc_d2.APPROVAL_DECISION]
+        assert [e for e in kb.list_events(conn, run_id)
+                if e.kind == _rc_d2.APPROVAL_DECISION] == []  # rolled back
     finally:
         conn.close()
-    assert kdec == []
 
-    # retry: durable is the replay source; the projection is repaired before ack,
-    # with exactly ONE transport decision and NO second durable decision.
     _, g2 = _mint_grant()
     r = _approve(client, run_id, "ap1", "approve", grant_header=g2)
     assert r.status_code == 200, r.text
     assert r.json()["already_decided"] is True and r.json()["decision"] == "approve"
-    approved2 = [e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]
-    assert len(approved2) == 1  # still exactly one durable decision
+    assert len([e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]) == 1
     conn = kb.connect(db_path=db_path)
     try:
-        kdec2 = [e for e in kb.list_events(conn, run_id)
-                 if e.kind == _rc_d2.APPROVAL_DECISION]
+        assert len([e for e in kb.list_events(conn, run_id)
+                    if e.kind == _rc_d2.APPROVAL_DECISION]) == 1  # repaired, exactly one
     finally:
         conn.close()
-    assert len(kdec2) == 1  # exactly one transport decision after repair
 
 
-# ── D2 P1: pending approval is durable-authoritative on the product surface ───
-def test_no_poll_ingest_is_server_owned_not_client(managed_durable):
-    """With NO client poll at all, the server-owned tick persists the request into the
-    fenced RunStore; before it runs, durable is not falsely pending."""
+# ── D2 P1: pending approval is durable-authoritative; reads are pure ───────────
+def test_status_read_is_pure_and_publishes_only_after_durable_open(managed_durable):
+    """A status GET never ingests (pure read). Pending is published only after the
+    worker's durable-FIRST ingest has opened it on the RunStore."""
     import youtab_runtime.durable_ingress_process as dip
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    assert dip.get_ingress_authority().get_run(run_id)["state"] == "QUEUED"  # not stale
-    _tick()  # server-owned, no client involved
-    assert dip.get_ingress_authority().get_run(run_id)["state"] == "WAITING_APPROVAL"
+    auth = dip.get_ingress_authority()
+    # before any ingest: a GET does not open durable and does not publish pending
+    assert _get_run(client, run_id).json()["status"] != "awaiting_approval"
+    assert auth.get_run(run_id)["state"] == "QUEUED"  # the read did not write
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
+    assert auth.get_run(run_id)["state"] == "WAITING_APPROVAL"
+    assert _get_run(client, run_id).json()["status"] == "awaiting_approval"
 
 
-def test_events_withholds_request_until_durably_backed(managed_durable):
-    """A consumer must not SEE the APPROVAL_REQUEST event before its durable open; the
-    /events cursor holds at the un-backed request and delivers it once backed."""
+def test_events_withholds_unbacked_kanban_request(managed_durable):
+    """A kanban APPROVAL_REQUEST that is NOT durably backed (e.g. a rogue/legacy direct
+    write) is withheld from /events and never published as pending; once the durable
+    open exists it surfaces."""
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
+    _worker_requests_approval_db(db_path, run_id, "ap1")  # kanban-only, NOT durable
     before = _get_events(client, run_id).json()
-    kinds = [e.get("kind") for e in before["events"]]
-    assert _rc_d2.APPROVAL_REQUEST not in kinds       # withheld pre-ingest
+    assert _rc_d2.APPROVAL_REQUEST not in [e.get("kind") for e in before["events"]]
     assert before["status"] != "awaiting_approval"
-    _tick()                                            # server-owned durable ingest
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200  # durable open
     after = _get_events(client, run_id).json()
-    kinds2 = [e.get("kind") for e in after["events"]]
-    assert _rc_d2.APPROVAL_REQUEST in kinds2           # surfaced once durably backed
+    assert _rc_d2.APPROVAL_REQUEST in [e.get("kind") for e in after["events"]]
     assert after["status"] == "awaiting_approval"
 
 
 def test_crash_after_durable_commit_rebuilds_kanban_request(managed_durable):
-    """Process death AFTER the durable open but BEFORE the kanban projection: the next
-    server-owned tick rebuilds the kanban request from the RunStore (idempotent)."""
+    """Death AFTER the durable open but BEFORE the kanban projection: rebuild restores
+    the kanban request from the RunStore (idempotent)."""
     import youtab_runtime.durable_ingress_process as dip
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    # durable is opened (committed) but the kanban request projection is missing.
-    dip.open_managed_approval(run_id, approval_id="ap1")
+    dip.open_managed_approval(run_id, approval_id="ap1")  # durable only, no kanban
+    from youtab_agent_cli.web_routers import runtime as _rt
     conn = kb.connect(db_path=db_path)
     try:
         assert [e for e in kb.list_events(conn, run_id)
                 if e.kind == _rc_d2.APPROVAL_REQUEST] == []
-    finally:
-        conn.close()
-    # the tick's ingest boundary derives kanban from the durable record
-    from youtab_agent_cli.web_routers import runtime as _rt
-    conn = kb.connect(db_path=db_path)
-    try:
         assert _rt.rebuild_kanban_approval_projection(conn, run_id) == 1
     finally:
         conn.close()
-    # now durable-backed -> the request surfaces and status is awaiting_approval
     after = _get_events(client, run_id).json()
     assert _rc_d2.APPROVAL_REQUEST in [e.get("kind") for e in after["events"]]
     assert after["status"] == "awaiting_approval"
@@ -1342,127 +1438,47 @@ def test_authority_loss_status_is_unknown_not_pending(managed_durable):
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    _tick()  # ingest -> durable WAITING_APPROVAL
+    assert _worker_ingest(client, run_id, "ap1").status_code == 200
     assert _get_run(client, run_id).json()["status"] == "awaiting_approval"
-    # the sole authority is lost: a status read must NOT keep inviting a decision
     dip._on_lost("simulated advisory-lock loss")
-    r = _get_run(client, run_id)
-    assert r.status_code == 200
-    assert r.json()["status"] == "unknown"          # explicit, not awaiting_approval
+    assert _get_run(client, run_id).json()["status"] == "unknown"
     e = _get_events(client, run_id).json()
     assert e["status"] == "unknown" and e["terminal"] is False
-    # and the request event is withheld once the authority can no longer back it
     assert _rc_d2.APPROVAL_REQUEST not in [ev.get("kind") for ev in e["events"]]
 
 
 def test_status_unknown_never_shown_as_pending_without_durable_accept(managed_durable):
-    """A pending kanban request whose durable open cannot be confirmed is published as
-    'unknown', never as a kanban-derived awaiting_approval (the P1 lie)."""
     import youtab_runtime.durable_ingress_process as dip
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
+    _worker_requests_approval_db(db_path, run_id, "ap1")  # kanban-only, unbacked
     dip._on_lost("lost before first poll")
     assert _get_run(client, run_id).json()["status"] == "unknown"
 
 
 def test_rebuild_kanban_approval_projection_from_runstore(managed_durable):
-    """Kanban is a rebuildable projection: with the approval history ONLY in the
-    durable RunStore, rebuild restores the kanban transport events."""
     from youtab_agent_cli.web_routers import runtime as _rt
     import youtab_runtime.durable_ingress_process as dip
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
-    # drive the durable authority directly (as the server would), WITHOUT writing the
-    # kanban approval transport events — modelling a lost/rebuilt kanban projection.
-    row = dip.get_ingress_authority().get_run(run_id)  # exact admitted scope
+    row = dip.get_ingress_authority().get_run(run_id)
     dip.open_managed_approval(run_id, approval_id="ap1")
     dip.decide_managed_approval(run_id, approval_id="ap1", decision="approve",
                                 tenant_id=row["tenant_id"], workspace_id=row["workspace_id"],
                                 principal_id=row["principal_id"])
     conn = kb.connect(db_path=db_path)
     try:
-        before = [e for e in kb.list_events(conn, run_id)
-                  if e.kind in (_rc_d2.APPROVAL_REQUEST, _rc_d2.APPROVAL_DECISION)]
-        assert before == []  # kanban has no approval transport events
-        rebuilt = _rt.rebuild_kanban_approval_projection(conn, run_id)
-        assert rebuilt == 2  # request + decision rebuilt from the RunStore
+        assert [e for e in kb.list_events(conn, run_id)
+                if e.kind in (_rc_d2.APPROVAL_REQUEST, _rc_d2.APPROVAL_DECISION)] == []
+        assert _rt.rebuild_kanban_approval_projection(conn, run_id) == 2
         kinds = {(e.kind, (e.payload or {}).get("approval_id"),
                   (e.payload or {}).get("decision"))
                  for e in kb.list_events(conn, run_id)
                  if e.kind in (_rc_d2.APPROVAL_REQUEST, _rc_d2.APPROVAL_DECISION)}
         assert (_rc_d2.APPROVAL_REQUEST, "ap1", None) in kinds
         assert (_rc_d2.APPROVAL_DECISION, "ap1", "approve") in kinds
-        # idempotent: a second rebuild adds nothing
-        assert _rt.rebuild_kanban_approval_projection(conn, run_id) == 0
+        assert _rt.rebuild_kanban_approval_projection(conn, run_id) == 0  # idempotent
     finally:
         conn.close()
-
-
-def test_direct_post_before_ingest_cannot_self_open(managed_durable):
-    """Re-review blocker 2: a direct POST /approve BEFORE any producer/tick ingest must
-    NOT open the approval itself and decide — it can only decide an already-open durable
-    approval. So a no-tick/no-poll direct POST is refused and the run is untouched."""
-    import youtab_runtime.durable_ingress_process as dip
-
-    client, db_path = managed_durable
-    run_id = _durable_run(client)  # dispatcher frozen — no ingest has run
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    assert dip.get_ingress_authority().get_run(run_id)["state"] == "QUEUED"
-    _, gh = _mint_grant()
-    r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
-    assert r.status_code == 409
-    assert r.json()["detail"]["error"] == "no_such_open_approval"
-    # the refused POST did NOT open the durable approval (no self-open bypass)
-    assert dip.get_ingress_authority().get_run(run_id)["state"] == "QUEUED"
-    approved = [e for e in dip.get_ingress_authority().get_events(run_id)
-                if e["kind"] in ("approval_request", "approval_approved")]
-    assert approved == []
-    # only after the producer ingest (tick) can the decision be made
-    _tick()
-    _, gh2 = _mint_grant()
-    r2 = _approve(client, run_id, "ap1", "approve", grant_header=gh2)
-    assert r2.status_code == 200 and r2.json()["state"] == "RUNNING"
-
-
-def test_direct_post_replay_after_decision_returns_original(managed_durable):
-    """Idempotent replay is preserved with decide-only: a duplicate POST after a real
-    decision returns the ORIGINAL decision, not 409."""
-    client, db_path = managed_durable
-    run_id = _durable_run(client)
-    _worker_requests_approval_db(db_path, run_id, "ap1")
-    _tick()
-    _, g1 = _mint_grant()
-    assert _approve(client, run_id, "ap1", "approve", grant_header=g1).status_code == 200
-    _, g2 = _mint_grant()
-    r = _approve(client, run_id, "ap1", "approve", grant_header=g2)
-    assert r.status_code == 200 and r.json()["already_decided"] is True
-    assert r.json()["decision"] == "approve"
-
-
-def test_tick_ingest_no_starvation_old_active_behind_many(managed_durable):
-    """Re-review blocker 3: an OLD active approval must not starve behind >200 newer /
-    terminal tasks. The tick scans active runs OLDEST-FIRST, so the old pending approval
-    is ingested regardless of how many newer/terminal tasks exist."""
-    import youtab_runtime.durable_ingress_process as dip
-
-    client, db_path = managed_durable
-    old_run = _durable_run(client)                 # the OLDEST run
-    _worker_requests_approval_db(db_path, old_run, "ap1")
-    # pile up >200 NEWER kanban tasks: a mix of terminal (done) and active, none of
-    # which is the target — they must not push the old pending approval past the scan.
-    conn = kb.connect(db_path=db_path)
-    try:
-        for i in range(240):
-            tid, _ = kb.create_task_ex(conn, title=f"filler-{i}", tenant=TENANT,
-                                       created_by=USER)
-            if i % 2 == 0:
-                kb.complete_task(conn, tid, result="x", summary="done")  # terminal
-    finally:
-        conn.close()
-    # one server-owned tick: the old active approval is ingested despite the pile-up
-    _tick()
-    assert dip.get_ingress_authority().get_run(old_run)["state"] == "WAITING_APPROVAL"

@@ -210,3 +210,63 @@ def test_create_task_ex_default_id_still_generated(tmp_path):
         assert tid.startswith("t_")                 # server-generated as before
     finally:
         conn.close()
+
+
+# ── per-run worker capability + launcher carry (D2 producer boundary auth) ────
+def test_worker_capability_mint_verify_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_INGRESS", "1")
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", "s3cr3t-strong-value")
+    cap = dip.mint_worker_capability("t_run1")
+    assert cap and dip.verify_worker_capability("t_run1", cap) is True
+    # run-bound: a cap for one run must not authorize another
+    assert dip.verify_worker_capability("t_run2", cap) is False
+    # arbitrary / empty caps are rejected
+    assert dip.verify_worker_capability("t_run1", "nope") is False
+    assert dip.verify_worker_capability("t_run1", None) is False
+    # the broad service secret itself is NOT a capability
+    assert dip.verify_worker_capability("t_run1", "s3cr3t-strong-value") is False
+
+
+def test_worker_capability_none_without_secret_or_flag(monkeypatch):
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_INGRESS", "1")
+    monkeypatch.delenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", raising=False)
+    assert dip.mint_worker_capability("t_run1") is None          # no secret
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", "x-strong-secret")
+    monkeypatch.delenv("YOUTAB_AGENT_DURABLE_INGRESS", raising=False)
+    assert dip.mint_worker_capability("t_run1") is None          # flag off
+
+
+def test_build_worker_invocation_carries_capability(tmp_path, monkeypatch):
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_INGRESS", "1")
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", "launcher-strong-secret")
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SELF_URL", "http://127.0.0.1:9/")
+    from pathlib import Path
+
+    from youtab_agent_cli import kanban_db as kb
+    conn = kb.connect(Path(tmp_path) / "kanban.db")
+    try:
+        tid = kb.create_task(conn, title="t", assignee="default",
+                             created_by="u", tenant="t1")
+        task = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+    env, _cmd = kb.build_worker_invocation(task, str(tmp_path / "ws"))
+    assert dip.verify_worker_capability(tid, env.get("YOUTAB_AGENT_RUNTIME_WORKER_CAP"))
+    assert env.get("YOUTAB_AGENT_RUNTIME_INGRESS_URL") == "http://127.0.0.1:9"
+
+
+def test_build_worker_invocation_no_capability_when_flag_off(tmp_path, monkeypatch):
+    monkeypatch.delenv("YOUTAB_AGENT_DURABLE_INGRESS", raising=False)
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", "off-strong-secret")
+    from pathlib import Path
+
+    from youtab_agent_cli import kanban_db as kb
+    conn = kb.connect(Path(tmp_path) / "kanban.db")
+    try:
+        tid = kb.create_task(conn, title="t", assignee="default",
+                             created_by="u", tenant="t1")
+        task = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+    env, _cmd = kb.build_worker_invocation(task, str(tmp_path / "ws"))
+    assert "YOUTAB_AGENT_RUNTIME_WORKER_CAP" not in env  # no-op when durable is off

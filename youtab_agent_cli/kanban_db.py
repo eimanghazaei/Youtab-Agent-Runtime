@@ -9128,6 +9128,20 @@ def build_worker_invocation(
     _apply_correlation_env(env, task)
     env["YOUTAB_AGENT_KANBAN_TASK"] = task.id
     env["YOUTAB_AGENT_KANBAN_WORKSPACE"] = workspace
+    # D2 (durable ingress only): carry a PER-RUN worker capability — a run-bound token
+    # distinct from the broad runtime service secret — plus the callback base URL, so
+    # the worker can request approval through the durable-FIRST worker-only endpoint.
+    # No-op (nothing added) when durable ingress is off or no service secret is set.
+    try:
+        from youtab_runtime import durable_ingress_process as _dip
+        _cap = _dip.mint_worker_capability(task.id)
+        if _cap:
+            env["YOUTAB_AGENT_RUNTIME_WORKER_CAP"] = _cap
+            _base = _dip.worker_ingress_base_url()
+            if _base:
+                env["YOUTAB_AGENT_RUNTIME_INGRESS_URL"] = _base
+    except Exception:  # a launcher-side capability failure must not block the spawn
+        pass
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
     # context-file loader anchor on the workspace, not whatever cwd the
     # dispatching gateway happened to export. The worker subprocess is already

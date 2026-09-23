@@ -278,7 +278,8 @@ def test_durable_approval_events_source_for_rebuild(enabled):
     dip.open_managed_approval("t_de", approval_id="ap1")
     dip.decide_managed_approval("t_de", approval_id="ap1", decision="deny", **_SCOPE)
     evs = dip.durable_approval_events("t_de")
-    assert {"kind": "request", "approval_id": "ap1"} in evs
+    reqs = [e for e in evs if e["kind"] == "request" and e["approval_id"] == "ap1"]
+    assert reqs and all(k in reqs[-1] for k in ("effect_digest", "action", "mode"))
     assert {"kind": "decision", "approval_id": "ap1", "decision": "deny"} in evs
 
 

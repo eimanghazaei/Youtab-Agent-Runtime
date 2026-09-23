@@ -44,6 +44,7 @@ web-server lifespan wires the hard process fail-stop via the ``on_lost`` hook.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -70,6 +71,14 @@ _ENABLE_ENV = "YOUTAB_AGENT_DURABLE_INGRESS"
 _BACKEND_ENV = "YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"
 _PG_DSN_ENV = "YOUTAB_AGENT_DURABLE_PG_DSN"
 _DB_PATH_ENV = "YOUTAB_AGENT_DURABLE_DB_PATH"
+
+# The broad runtime service secret. The per-run worker capability is DERIVED from it
+# (a distinct HMAC key), so a client presenting the service secret itself does NOT
+# authenticate the worker-only endpoints, and vice versa.
+_SERVICE_SECRET_ENV = "YOUTAB_AGENT_RUNTIME_SERVICE_SECRET"
+# Optional explicit self-URL the launcher hands the worker for the callback endpoint.
+_SELF_URL_ENV = "YOUTAB_AGENT_RUNTIME_SELF_URL"
+_WORKER_CAP_LABEL = b"youtab.worker-approval-cap.v1"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -105,6 +114,9 @@ __all__ = [
     "reconcile_pending_approval",
     "durable_run_state",
     "durable_approval_events",
+    "mint_worker_capability",
+    "verify_worker_capability",
+    "worker_ingress_base_url",
     "PROJECTION_ACCEPTED",
     "PROJECTION_NONE",
     "PROJECTION_UNAVAILABLE",
@@ -280,15 +292,17 @@ def admit_managed_run(
     )
 
 
-def open_managed_approval(run_id: str, *, approval_id: str) -> Dict[str, Any]:
-    """Project a worker's APPROVAL_REQUEST into a durable open approval (D2).
+def open_managed_approval(run_id: str, *, approval_id: str,
+                          payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Open a worker's approval request on the durable RunStore, durable-FIRST (D2).
 
-    The worker signals an approval need over the kanban transport; the SERVER —
-    the sole holder of the run authority — opens it durably here: ensure the run is
-    RUNNING, then ``open_approval`` (RUNNING -> WAITING_APPROVAL, id-bound, and
-    idempotent for an exact-id retry). The worker never writes the durable store;
-    kanban stays a rebuildable transport projection. Raises :class:`AuthorityLost`
-    when the authority is absent/lost (fail closed).
+    The SERVER — the sole holder of the run authority — opens it durably here: ensure
+    the run is RUNNING, then ``open_approval`` (RUNNING -> WAITING_APPROVAL, id-bound,
+    idempotent for an exact-id retry). ``payload`` carries the request metadata
+    (effect_digest, action, mode) recorded on the durable ``approval_request`` event so
+    the request is bound to a specific effect. The worker never writes the durable
+    store; kanban stays a rebuildable transport projection. Raises
+    :class:`AuthorityLost` when the authority is absent/lost (fail closed).
     """
     if _lost_reason is not None:
         raise AuthorityLost(f"durable ingress authority lost: {_lost_reason}")
@@ -296,7 +310,7 @@ def open_managed_approval(run_id: str, *, approval_id: str) -> Dict[str, Any]:
     if auth is None:
         raise AuthorityLost("durable ingress authority not available")
     auth.ensure_running(run_id)
-    return auth.open_approval(run_id, approval_id=approval_id)
+    return auth.open_approval(run_id, approval_id=approval_id, payload=payload)
 
 
 def reconcile_pending_approval(run_id: str, *, pending_approval_id: Optional[str]) -> str:
@@ -391,7 +405,10 @@ def durable_approval_events(run_id: str) -> List[Dict[str, Any]]:
         if not aid:
             continue
         if k == "approval_request":
-            out.append({"kind": "request", "approval_id": aid})
+            p = ev.get("payload") or {}
+            out.append({"kind": "request", "approval_id": aid,
+                        "effect_digest": p.get("effect_digest"),
+                        "action": p.get("action"), "mode": p.get("mode")})
         elif k in kinds:
             out.append({"kind": "decision", "approval_id": aid, "decision": kinds[k]})
     return out
@@ -437,6 +454,48 @@ def prior_approval_decision(run_id: str, approval_id: str) -> Optional[str]:
     if auth is None:
         raise AuthorityLost("durable ingress authority not available")
     return auth.prior_decision(run_id, approval_id)
+
+
+def _worker_cap_secret() -> Optional[bytes]:
+    """The per-run worker-capability signing key: a DISTINCT key derived from the
+    runtime service secret via HMAC, so the capability is not the service secret and
+    the service secret is not a capability. Returns None when no service secret is
+    configured (the worker-only endpoints then cannot authenticate — fail closed)."""
+    secret = os.environ.get(_SERVICE_SECRET_ENV)
+    if not secret:
+        return None
+    return hmac.new(secret.encode("utf-8"), _WORKER_CAP_LABEL, hashlib.sha256).digest()
+
+
+def mint_worker_capability(run_id: str) -> Optional[str]:
+    """Mint the per-run worker capability the launcher carries to the worker
+    (``build_worker_invocation`` env). Run-bound HMAC: unforgeable without the derived
+    key, and it authorizes ONLY that ``run_id``'s worker-only approval endpoints.
+    Returns None when durable ingress is off or no service secret is configured."""
+    if not ingress_enabled():
+        return None
+    key = _worker_cap_secret()
+    if key is None or not run_id:
+        return None
+    return hmac.new(key, run_id.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def verify_worker_capability(run_id: str, cap: Optional[str]) -> bool:
+    """Constant-time verify a presented per-run worker capability binds to ``run_id``.
+    Rejects arbitrary clients (no/wrong cap) and a capability minted for another run."""
+    if not cap or not run_id:
+        return False
+    expected = mint_worker_capability(run_id)
+    if expected is None:
+        return False
+    return hmac.compare_digest(expected, str(cap))
+
+
+def worker_ingress_base_url() -> Optional[str]:
+    """The base URL the launcher hands the worker for the callback endpoint, or None
+    (the worker then has no transport — that wiring is the worker-owner's integration)."""
+    url = os.environ.get(_SELF_URL_ENV)
+    return url.rstrip("/") if url else None
 
 
 def reset_for_tests() -> None:

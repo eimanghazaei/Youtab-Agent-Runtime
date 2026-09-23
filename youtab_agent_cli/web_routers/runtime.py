@@ -337,9 +337,6 @@ def _dispatch_tick() -> None:
     try:
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
             kb.dispatch_once(conn, spawn_fn=_mode_aware_spawn, board=RUNTIME_BOARD)
-            # D2 P1: server-owned, poll-independent ingest of pending worker approval
-            # requests into the fenced RunStore before any client can publish them.
-            _ingest_pending_approval_requests(conn)
     except Exception as exc:  # noqa: BLE001 — a tick failure must not crash the loop
         _log.debug("runtime dispatcher tick failed: %s", exc)
 
@@ -2047,70 +2044,33 @@ def rebuild_kanban_approval_projection(conn, run_id: str) -> int:
     return rebuilt
 
 
-def ingest_worker_approval_request(conn, run_id: str, *, approval_id: str) -> str:
+def ingest_worker_approval_request(conn, run_id: str, *, approval_id: str,
+                                   effect_digest: "Optional[str]" = None,
+                                   action: "Optional[str]" = None,
+                                   mode: "Optional[str]" = None) -> str:
     """Server-owned, durable-FIRST ingest of a worker's approval request (D2 P1).
 
     THE producer boundary the one-RunStore design requires: the request is committed
     under the fenced authority BEFORE it is published as pending, and the kanban
-    APPROVAL_REQUEST is DERIVED from that durable record (never the reverse). The
-    worker never writes the durable store; a worker producer — or, today, the
-    server-owned dispatcher-tick bridge that observes the worker's transport signal —
-    calls this. Fail-closed: if the authority cannot accept the request (lost/absent),
-    NO pending is published and NO kanban request is derived (a failed durable open
-    never surfaces as a pending approval). Idempotent. Returns the durable result
+    APPROVAL_REQUEST is DERIVED from that durable record (never the reverse). Bound to
+    the specific effect via ``effect_digest``/``action``/``mode`` recorded on the
+    durable request event. The worker never writes the durable store; it calls the
+    worker-only endpoint, which calls this. Fail-closed: if the authority cannot accept
+    the request (lost/absent), NO pending is published and NO kanban request is derived
+    (a failed durable open never surfaces as a pending approval). Idempotent (exact-id
+    re-open returns the existing open request). Returns the durable result
     (``PROJECTION_*``), or ``"disabled"`` when durable ingress is off.
     """
     _dip = _durable_ingress_active()
     if _dip is None:
         return "disabled"
-    result = _dip.reconcile_pending_approval(run_id, pending_approval_id=approval_id)
-    if result == _dip.PROJECTION_ACCEPTED:
-        # kanban is a projection of the fenced RunStore — derive it from durable.
-        rebuild_kanban_approval_projection(conn, run_id)
-    return result
-
-
-# Per-tick approval-ingest scan cap. This scan is only the transitional BRIDGE for a
-# worker that signals over kanban transport; the real producer-first path is the keyed
-# boundary ``ingest_worker_approval_request(run_id, approval_id)`` called directly for
-# ONE run (no scan). The scan is ACTIVE-ONLY (terminal excluded in SQL) and ordered
-# OLDEST-FIRST so an old active approval can never starve behind newer or terminal
-# tasks; the cap is a generous defensive bound on the active set, not a starvation gate.
-_APPROVAL_INGEST_TICK_CAP = 2000
-_TERMINAL_KANBAN_STATUSES = frozenset({"done", "archived"})
-
-
-def _ingest_pending_approval_requests(conn) -> int:
-    """Server-owned, poll-INDEPENDENT ingest (D2 P1): on each dispatcher tick, persist
-    every worker-signalled pending approval into the fenced RunStore BEFORE any client
-    poll can publish it, then derive kanban from durable. A no-op when durable ingress
-    is off. This is the live production caller of the ingest boundary — NOT a GET-time
-    reconciliation. Scans ACTIVE runs OLDEST-FIRST (no starvation); returns the count
-    accepted."""
-    _dip = _durable_ingress_active()
-    if _dip is None:
-        return 0
-    try:
-        # include_archived=False drops 'archived' in SQL; 'created' is oldest-first so
-        # the oldest active approval is ingested before any newer task.
-        tasks = kb.list_tasks(conn, include_archived=False, order_by="created",
-                              limit=_APPROVAL_INGEST_TICK_CAP)
-    except Exception:  # a tick failure must never crash the loop
-        return 0
-    accepted = 0
-    for t in tasks:
-        if t.status in _TERMINAL_KANBAN_STATUSES:
-            continue
-        try:
-            aid = _open_approval_id(kb.list_events(conn, t.id))
-            if aid is None:
-                continue
-            if ingest_worker_approval_request(conn, t.id, approval_id=aid) == \
-                    _dip.PROJECTION_ACCEPTED:
-                accepted += 1
-        except Exception:
-            continue
-    return accepted
+    payload = {k: v for k, v in
+               (("effect_digest", effect_digest), ("action", action), ("mode", mode))
+               if v is not None}
+    _dip.open_managed_approval(run_id, approval_id=approval_id, payload=payload or None)
+    # kanban is a projection of the fenced RunStore — derive it from durable.
+    rebuild_kanban_approval_projection(conn, run_id)
+    return _dip.PROJECTION_ACCEPTED
 
 
 def _durable_backed_approval_ids(run_id: str) -> "Optional[set]":
@@ -3011,6 +2971,132 @@ async def runtime_approve_run(
                              {"approval_id": approval_id, "decision": decision,
                               "by": identity.user})
     return {"run_id": run_id, "approval_id": approval_id, "decision": decision}
+
+
+# ── Worker-only durable-FIRST approval-request contract (D2) ──────────────────
+# These endpoints live UNDER A DISTINCT PREFIX (/api/runtime/worker/v1/…) that is NOT
+# the service-secret token-route prefix, and they authenticate ONLY via a per-run
+# worker capability (X-Youtab-Worker-Cap) minted at spawn and carried through
+# build_worker_invocation — never the broad runtime service secret, and arbitrary
+# clients (no/wrong cap) are rejected. This is the producer boundary the worker calls:
+# the request is committed to the fenced RunStore BEFORE any kanban projection, bound
+# to the run's admitted scope (cap -> run -> tenant/principal/workspace/agent) and to a
+# specific effect (approval_id + effect_digest + action + mode).
+def _worker_dip_or_error(run_id: str, request: "Request"):
+    """Authorize a worker-only call: durable ingress enabled (else 404), a valid per-run
+    capability (else 401), and the fenced authority currently held (else 503). Returns
+    the durable_ingress_process module."""
+    _dip = _durable_ingress_active()
+    if _dip is None:
+        raise HTTPException(status_code=404, detail={"error": "not_found"})
+    if not _dip.verify_worker_capability(run_id, request.headers.get("X-Youtab-Worker-Cap")):
+        raise HTTPException(status_code=401, detail={"error": "unauthorized_worker"})
+    if not _dip.ingress_ready():
+        raise HTTPException(status_code=503, detail={"error": "run_authority_unavailable"})
+    return _dip
+
+
+def _approval_status_for_decision(decision: str) -> str:
+    return "approved" if decision == _rc.APPROVE else "denied"
+
+
+@router.post("/api/runtime/worker/v1/runs/{run_id}/approval-request")
+async def worker_request_approval(
+    run_id: str,
+    request: "Request",
+):
+    """Worker-only, durable-FIRST approval-request ingest (D2).
+
+    Auth: per-run ``X-Youtab-Worker-Cap`` (not the service secret). Body:
+    ``{approval_id, effect_digest, action?, mode?}``. Persists the request on the fenced
+    RunStore FIRST, then derives the kanban projection. Replay: same approval_id + same
+    effect_digest after the durable commit is idempotent (``pending``); a conflicting
+    effect_digest is 409; an already-decided approval returns its decision; a terminal /
+    non-openable run is 409; authority loss is 503; a failed durable open yields no
+    pending and no kanban projection (fail closed)."""
+    _dip = _worker_dip_or_error(run_id, request)
+    body = await _json_body(request)
+    approval_id = str(body.get("approval_id") or "").strip()
+    effect_digest = str(body.get("effect_digest") or "").strip()
+    action = (str(body.get("action")).strip() if body.get("action") is not None else None)
+    mode = (str(body.get("mode")).strip() if body.get("mode") is not None else None)
+    if not approval_id:
+        raise HTTPException(status_code=422, detail={"error": "approval_id_required"})
+    if not effect_digest:
+        raise HTTPException(status_code=422, detail={"error": "effect_digest_required"})
+
+    def _do() -> "Dict[str, Any]":
+        try:
+            prior = _dip.prior_approval_decision(run_id, approval_id)
+            if prior is not None:  # already decided durably — replay the decision
+                return {"run_id": run_id, "approval_id": approval_id,
+                        "status": _approval_status_for_decision(prior), "decision": prior}
+            # A prior request for THIS id binds the effect: a different effect is a
+            # conflict (never silently rebound); the same effect is idempotent.
+            existing = [d for d in _dip.durable_approval_events(run_id)
+                        if d["kind"] == "request" and d["approval_id"] == approval_id]
+            if existing:
+                prev = existing[-1].get("effect_digest")
+                if prev is not None and prev != effect_digest:
+                    raise HTTPException(status_code=409,
+                                        detail={"error": "approval_effect_conflict"})
+            # If the RunStore already holds THIS approval open, it is idempotent — do
+            # not re-open. Otherwise (a fresh request, or a run reconciled to UNKNOWN
+            # after a takeover) open/RE-open it durable-FIRST, then derive kanban.
+            state = _dip.durable_run_state(run_id)
+            if state.get("available") and state.get("state") == "WAITING_APPROVAL" and existing:
+                return {"run_id": run_id, "approval_id": approval_id,
+                        "status": "pending", "effect_digest": effect_digest}
+            with kb.connect_closing(board=RUNTIME_BOARD) as conn:
+                ingest_worker_approval_request(
+                    conn, run_id, approval_id=approval_id,
+                    effect_digest=effect_digest, action=action, mode=mode,
+                )
+            return {"run_id": run_id, "approval_id": approval_id,
+                    "status": "pending", "effect_digest": effect_digest}
+        except _dip.AuthorityLost:
+            raise HTTPException(status_code=503,
+                                detail={"error": "run_authority_unavailable"})
+        except _dip.ApprovalAlreadyOpen:
+            raise HTTPException(status_code=409, detail={"error": "another_approval_open"})
+        except _dip.InvalidTransition:
+            raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+
+    return await run_in_threadpool(_do)
+
+
+@router.get("/api/runtime/worker/v1/runs/{run_id}/approval/{approval_id}")
+async def worker_read_approval(
+    run_id: str,
+    approval_id: str,
+    request: "Request",
+):
+    """Worker-only authoritative decision read (D2). Auth: per-run capability. Returns
+    the durable decision status: ``approved``/``denied`` once decided; ``pending`` while
+    the RunStore holds an open request for this id; ``unknown`` if the run left
+    WAITING_APPROVAL without a decision (e.g. reconciled to UNKNOWN after a takeover);
+    ``absent`` if no such request. The RunStore is the sole authority — never kanban."""
+    _dip = _worker_dip_or_error(run_id, request)
+
+    def _do() -> "Dict[str, Any]":
+        try:
+            prior = _dip.prior_approval_decision(run_id, approval_id)
+            if prior is not None:
+                return {"run_id": run_id, "approval_id": approval_id,
+                        "status": _approval_status_for_decision(prior), "decision": prior}
+            requested = any(d["kind"] == "request" and d["approval_id"] == approval_id
+                            for d in _dip.durable_approval_events(run_id))
+            state = _dip.durable_run_state(run_id)
+        except _dip.AuthorityLost:
+            raise HTTPException(status_code=503,
+                                detail={"error": "run_authority_unavailable"})
+        if not requested:
+            return {"run_id": run_id, "approval_id": approval_id, "status": "absent"}
+        if state.get("available") and state.get("state") == "WAITING_APPROVAL":
+            return {"run_id": run_id, "approval_id": approval_id, "status": "pending"}
+        return {"run_id": run_id, "approval_id": approval_id, "status": "unknown"}
+
+    return await run_in_threadpool(_do)
 
 
 @router.post("/api/runtime/v1/runs/{run_id}/pause")
