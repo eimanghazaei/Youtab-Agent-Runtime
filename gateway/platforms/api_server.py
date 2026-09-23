@@ -6056,6 +6056,13 @@ class APIServerAdapter(BasePlatformAdapter):
         current.update(fields)
         self._run_statuses[run_id] = current
         mirror_ok = self._mirror_run_state(run_id, status, current)
+        if not mirror_ok and os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+            durable = self._run_status_from_store(run_id)
+            if durable and durable["status"] in self._TERMINAL_STATUSES:
+                # A late in-memory update cannot overwrite an immutable
+                # terminal row. Return the actual durable result instead.
+                self._run_statuses[run_id] = durable
+                return durable
         # Server durable mode: a TERMINAL state that could not be made durable
         # must NOT be exposed as a durable terminal result — otherwise a client
         # could observe status=completed with output that then disappears after a
@@ -6137,12 +6144,19 @@ class APIServerAdapter(BasePlatformAdapter):
                         organization_id="local", workspace_id="local",
                         principal_id=str(scope), agent_id=str(current.get("model") or "agent"),
                     ))
-                store.set_state(
+                row = store.set_state(
                     run_id, to_state, strict=False,
                     result_ref=(str(result_ref) if result_ref else None),
                     error_ref=(str(error_ref) if error_ref else None),
                     kind=f"status.{str(status).lower()}",
                 )
+                if row is None or row.get("state") != to_state.value:
+                    return False
+                if is_terminal and (
+                    (result_ref is not None and row.get("result_ref") != str(result_ref))
+                    or (error_ref is not None and row.get("error_ref") != str(error_ref))
+                ):
+                    return False
                 return True
             except Exception:
                 logger.debug(
@@ -6640,6 +6654,18 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
+                    if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+                        if not self._run_authority_held() or self._run_store is None:
+                            raise RuntimeError("durable approval authority unavailable")
+                        approval_id = uuid.uuid4().hex
+                        # The queued waiter holds this same dict. Publish its
+                        # identity only after the fenced open commits.
+                        self._run_store.open_approval(
+                            run_id, approval_id=approval_id,
+                            payload={"choice_required": True},
+                        )
+                        approval_data["approval_id"] = approval_id
+                        event["approval_id"] = approval_id
                     # Redact credentials from the command before it enters the
                     # SSE/API event stream — same egress bug as #48456, second
                     # transport: API/desktop clients would otherwise receive the
@@ -7085,17 +7111,49 @@ class APIServerAdapter(BasePlatformAdapter):
             _coerce_request_bool(body.get("all"), default=False)
             or _coerce_request_bool(body.get("resolve_all"), default=False)
         )
+        durable_mode = bool(os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"))
+        approval_id = body.get("approval_id")
+        if durable_mode and (not isinstance(approval_id, str) or not approval_id.strip() or resolve_all):
+            return web.json_response(
+                _openai_error("One exact approval_id is required", code="approval_id_required"),
+                status=400,
+            )
         try:
             from tools.approval import resolve_gateway_approval
+
+            before_release = None
+            if durable_mode:
+                from youtab_runtime.durable_run_store import RunState
+
+                def before_release():
+                    if not self._run_authority_held() or self._run_store is None:
+                        raise RuntimeError("durable approval authority unavailable")
+                    self._run_store.decide_open_approval(
+                        run_id, approval_id=approval_id, to_state=RunState.RUNNING,
+                        kind="approval_denied" if choice == "deny" else "approval_approved",
+                        payload={"choice": choice},
+                    )
 
             resolved = resolve_gateway_approval(
                 approval_session_key,
                 choice,
                 resolve_all=resolve_all,
+                approval_id=approval_id if durable_mode else None,
+                before_release=before_release,
             )
         except Exception as exc:
             logger.exception("[api_server] approval resolution failed for run %s", run_id)
-            return web.json_response(_openai_error(str(exc)), status=500)
+            from youtab_runtime.durable_run_store import ApprovalNotOpen
+
+            if isinstance(exc, ApprovalNotOpen):
+                return web.json_response(
+                    _openai_error("Approval is no longer open", code="approval_not_pending"),
+                    status=409,
+                )
+            return web.json_response(
+                _openai_error("Durable approval decision unavailable", code="durable_approval_unavailable"),
+                status=503 if durable_mode else 500,
+            )
 
         if resolved <= 0:
             return web.json_response(
@@ -7115,6 +7173,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "run_id": run_id,
                     "timestamp": time.time(),
                     "choice": choice,
+                    **({"approval_id": approval_id} if durable_mode else {}),
                     "resolved": resolved,
                 })
             except Exception:
@@ -7124,6 +7183,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "youtab.run.approval_response",
             "run_id": run_id,
             "choice": choice,
+            **({"approval_id": approval_id} if durable_mode else {}),
             "resolved": resolved,
         })
 

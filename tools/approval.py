@@ -2215,7 +2215,9 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             approval_id: Optional[str] = None,
+                             before_release=None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2233,6 +2235,15 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
+        if approval_id is not None:
+            # An API approval must resolve exactly the waiter whose durable
+            # request was decided. Keep the queue locked across the durable
+            # CAS and event.set(): no timeout/drop or second request can swap
+            # the target between those operations.
+            if resolve_all or queue[0].data.get("approval_id") != approval_id:
+                return 0
+            if before_release is not None:
+                before_release()
         if resolve_all:
             targets = list(queue)
             queue.clear()
