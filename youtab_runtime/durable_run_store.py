@@ -107,9 +107,16 @@ class LeaseError(DurableRunError):
 
 
 class ApprovalNotOpen(DurableRunError):
-    """No open approval matched the atomic decide: the run is not in
-    ``WAITING_APPROVAL`` (unknown / closed / already decided — CAS lost), or the
-    supplied ``approval_id`` does not equal the OPEN approval's id. Fail-closed."""
+    """The run is not awaiting the given approval — not WAITING_APPROVAL, the
+    approval_id does not match the open request, or it was already decided
+    (single-use). Fails closed so a decision cannot be replayed or misbound."""
+
+
+class ApprovalAlreadyOpen(DurableRunError):
+    """The run already has a DIFFERENT open approval. A second open must not
+    replace the pending id or append another request — fails closed so the
+    originally issued approval id stays authoritative. (An exact-id retry is
+    idempotent and does NOT raise.)"""
 
 
 # --------------------------------------------------------------------------- #
@@ -205,7 +212,10 @@ class RunStore(Protocol):
     def is_stop_requested(self, run_id: str, *, now: Optional[float] = ...) -> bool: ...
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]: ...
     def transition(self, run_id: str, to_state: RunState, **kw: Any) -> Dict[str, Any]: ...
-    def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState, kind: str, payload: Optional[dict] = ...) -> Dict[str, Any]: ...
+    def open_approval(self, run_id: str, *, approval_id: str, kind: str = ...,
+                      **kw: Any) -> Dict[str, Any]: ...
+    def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState,
+                             kind: str, **kw: Any) -> Dict[str, Any]: ...
     def set_state(self, run_id: str, to_state: RunState, *, strict: bool = ..., **kw: Any) -> Optional[Dict[str, Any]]: ...
     def record_progress(self, run_id: str, **kw: Any) -> int: ...
     def append_event(self, run_id: str, kind: str, payload: Optional[dict] = ...) -> int: ...
@@ -610,81 +620,156 @@ class SqliteRunStore:
         finally:
             conn.close()
 
-    def decide_open_approval(
-        self,
-        run_id: str,
-        *,
-        approval_id: str,
-        to_state: RunState,
-        kind: str,
-        payload: Optional[dict] = None,
-    ) -> Dict[str, Any]:
-        """Atomic, fenced, approval-id-BOUND, single-use approval decision.
+    def open_approval(self, run_id: str, *, approval_id: str,
+                      kind: str = "approval_request",
+                      payload: Optional[dict] = None) -> Dict[str, Any]:
+        """Atomically open an approval on a RUNNING run — expected-from-state, single-open.
 
-        The generic :meth:`transition` is NOT a from-state CAS (its
-        ``to_state != cur_state`` escape allows a same-state self-write, so two
-        concurrent decisions could both append a decision event). This primitive
-        closes that: in ONE ``BEGIN IMMEDIATE`` + fenced transaction it
-        (1) requires the run to be in ``WAITING_APPROVAL``; (2) requires the
-        supplied ``approval_id`` to equal the OPEN approval's id — the latest
-        ``approval_request`` event's ``payload.approval_id`` (product
-        ``approval_id`` lives only in the event log; no schema/second ledger);
-        (3) performs the state change as a from-state CAS
-        ``UPDATE ... WHERE state='WAITING_APPROVAL'`` and requires ``rowcount==1``;
-        (4) appends the decision event. Exactly one decision consumes the open
-        approval — a concurrent or replayed second decision (wrong id, or the run
-        already past ``WAITING_APPROVAL``) is refused with :class:`ApprovalNotOpen`,
-        across concurrent requests and restart (state is durable). ``to_state``
-        must be a permitted ``WAITING_APPROVAL`` target.
+        In ONE fenced ``BEGIN IMMEDIATE`` transaction the run moves
+        RUNNING -> WAITING_APPROVAL via a from-state CAS
+        (``WHERE state='RUNNING'``, rowcount 1) and exactly one
+        ``approval_request`` event carrying ``approval_id`` is appended. Unlike
+        generic ``transition()`` (which permits a same-state
+        WAITING_APPROVAL -> WAITING_APPROVAL no-op that would append a SECOND
+        request and silently re-home the authoritative id), a second open is
+        refused: an EXACT-id retry is IDEMPOTENT (returns the existing open
+        request, appends nothing); a DIFFERENT id raises ``ApprovalAlreadyOpen``
+        and never replaces the pending id.
+
+        ``approval_id`` must be a nonempty string (else ``ValueError``). Opening
+        from any state other than RUNNING or (idempotent) WAITING_APPROVAL raises
+        ``InvalidTransition`` (RUNNING is the only opener). generic transition
+        semantics are unchanged.
         """
-        if to_state not in _TRANSITIONS.get(RunState.WAITING_APPROVAL, frozenset()):
-            raise InvalidTransition(f"WAITING_APPROVAL -> {to_state.value} is not allowed")
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a nonempty string")
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
             self._fence(conn)
             r = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,)).fetchone()
             if r is None:
-                conn.execute("ROLLBACK")
-                raise ApprovalNotOpen(f"run not found: {run_id}")
-            if RunState(r[0]) != RunState.WAITING_APPROVAL:
-                conn.execute("ROLLBACK")
-                raise ApprovalNotOpen(f"no open approval (run state={r[0]})")
+                raise DurableRunError(f"run not found: {run_id}")
+            cur_state = RunState(r[0])
+            if cur_state == RunState.WAITING_APPROVAL:
+                # Already open: exact-id retry is idempotent; a different id is
+                # refused without replacing the pending id or appending an event.
+                open_id = self._latest_approval_id_locked(conn, run_id)
+                if open_id == approval_id:
+                    cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+                    row = self._row_to_dict(cur, cur.fetchone())
+                    conn.execute("COMMIT")
+                    return row
+                raise ApprovalAlreadyOpen(
+                    f"run {run_id} already has a different open approval; not replacing it"
+                )
+            if cur_state != RunState.RUNNING:
+                raise InvalidTransition(
+                    f"cannot open approval from {cur_state.value} (expected RUNNING)"
+                )
+            now = time.time()
+            upd = conn.execute(
+                "UPDATE runs SET state=?, updated_at=? WHERE run_id=? AND state='RUNNING'",
+                (RunState.WAITING_APPROVAL.value, now, run_id),
+            )
+            if upd.rowcount != 1:
+                raise ApprovalAlreadyOpen(
+                    f"run {run_id} is no longer RUNNING (concurrent open)"
+                )
+            self._append_event_locked(
+                conn, run_id, kind,
+                {**(payload or {}), "approval_id": approval_id,
+                 "state": RunState.WAITING_APPROVAL.value},
+            )
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def _latest_approval_id_locked(self, conn, run_id: str) -> Optional[str]:
+        ev = conn.execute(
+            "SELECT payload FROM run_events WHERE run_id=? AND kind='approval_request' "
+            "ORDER BY seq DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if ev is None:
+            return None
+        try:
+            return (json.loads(ev[0]) or {}).get("approval_id")
+        except Exception:
+            return None
+
+    def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState,
+                             kind: str, payload: Optional[dict] = None,
+                             result_ref: Optional[str] = None,
+                             error_ref: Optional[str] = None) -> Dict[str, Any]:
+        """Atomically resolve the OPEN approval for a run — id-bound and single-use.
+
+        In ONE fenced ``BEGIN IMMEDIATE`` transaction: the run must be
+        WAITING_APPROVAL; ``approval_id`` must equal the OPEN approval (the latest
+        ``approval_request`` event's ``payload.approval_id``); ``to_state`` must be
+        a valid target of WAITING_APPROVAL; and the state change is a
+        compare-and-swap on ``state='WAITING_APPROVAL'`` (rowcount must be 1) so
+        exactly one decision can ever win. A deny leaves ``result_ref`` NULL (a
+        durable denial, never a fabricated receipt). Unlike ``transition()`` (which
+        permits a same-state no-op), this is a strict expected-from-state CAS, so a
+        second or misbound decision fails closed with ``ApprovalNotOpen``.
+        """
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            r = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if r is None:
+                raise DurableRunError(f"run not found: {run_id}")
+            cur_state = RunState(r[0])
+            if cur_state != RunState.WAITING_APPROVAL:
+                raise ApprovalNotOpen(
+                    f"run {run_id} is not awaiting approval (state={cur_state.value})"
+                )
+            if to_state not in _TRANSITIONS.get(RunState.WAITING_APPROVAL, frozenset()):
+                raise InvalidTransition(f"WAITING_APPROVAL -> {to_state.value} is not allowed")
             ev = conn.execute(
                 "SELECT payload FROM run_events WHERE run_id=? AND kind='approval_request' "
                 "ORDER BY seq DESC LIMIT 1",
                 (run_id,),
             ).fetchone()
             open_id = None
-            if ev and ev[0]:
+            if ev is not None:
                 try:
                     open_id = (json.loads(ev[0]) or {}).get("approval_id")
-                except (ValueError, TypeError):
+                except Exception:
                     open_id = None
-            if open_id is None or open_id != approval_id:
-                conn.execute("ROLLBACK")
-                raise ApprovalNotOpen("approval_id does not match the open approval")
+            if not open_id or open_id != approval_id:
+                raise ApprovalNotOpen(
+                    f"approval_id does not match the open approval for run {run_id}"
+                )
             now = time.time()
-            cur = conn.execute(
-                "UPDATE runs SET state=?, updated_at=? WHERE run_id=? AND state=?",
-                (to_state.value, now, run_id, RunState.WAITING_APPROVAL.value),
+            upd = conn.execute(
+                "UPDATE runs SET state=?, updated_at=?, "
+                "result_ref=COALESCE(?, result_ref), error_ref=COALESCE(?, error_ref) "
+                "WHERE run_id=? AND state='WAITING_APPROVAL'",
+                (to_state.value, now, result_ref, error_ref, run_id),
             )
-            if cur.rowcount != 1:  # lost the single-use CAS (concurrent/replayed)
-                conn.execute("ROLLBACK")
-                raise ApprovalNotOpen("open approval already decided")
+            if upd.rowcount != 1:
+                raise ApprovalNotOpen(
+                    f"approval for run {run_id} is no longer open (already decided)"
+                )
             self._append_event_locked(
                 conn, run_id, kind,
                 {**(payload or {}), "approval_id": approval_id, "state": to_state.value},
             )
-            cur2 = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
-            row = self._row_to_dict(cur2, cur2.fetchone())
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
             conn.execute("COMMIT")
             return row
         except Exception:
-            try:
-                conn.execute("ROLLBACK")
-            except sqlite3.OperationalError:
-                pass
+            conn.execute("ROLLBACK")
             raise
         finally:
             conn.close()

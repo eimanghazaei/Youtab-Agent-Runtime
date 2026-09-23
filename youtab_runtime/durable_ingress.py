@@ -130,7 +130,7 @@ class DurableRunStateAuthority:
     def ready(self) -> bool:
         """True only while this instance still holds the authority. Mirrors the
         durable server readiness gate: a lost/absent authority is not ready."""
-        return self._authority is not None and self._lost_reason is None and self._authority.held()
+        return self._authority is not None and self._lost_reason is None and self._authority.held
 
     def release(self) -> None:
         if self._authority is not None:
@@ -202,19 +202,15 @@ class DurableRunStateAuthority:
 
     # -- approval: require-open + atomic id-bound single-use; approve->once, deny->deny - #
     def open_approval(self, run_id: str, *, approval_id: str) -> Dict[str, Any]:
-        """Open an approval: transition ``RUNNING -> WAITING_APPROVAL`` recording the
-        OPEN ``approval_id`` in the durable ``approval_request`` event (the id the
-        decide binds to). Fenced through the single authority. Emitting this from
-        the worker/tool path is the D1 dispatch seam (HELD); it is exposed here as
-        the run-state half so the store contract (approval_request carries
-        approval_id) is testable and self-contained."""
+        """Atomically open one approval on a RUNNING run.
+
+        The store binds the ID to the request event in the same fenced
+        transaction. An exact-ID retry returns the existing open request;
+        another ID cannot replace it. Emitting this from the worker/tool path
+        remains the held D1 dispatch seam.
+        """
         self._require_authority()
-        return self._store.transition(
-            run_id,
-            RunState.WAITING_APPROVAL,
-            kind="approval_request",
-            payload={"approval_id": approval_id},
-        )
+        return self._store.open_approval(run_id, approval_id=approval_id)
 
     def decide_approval(
         self,
