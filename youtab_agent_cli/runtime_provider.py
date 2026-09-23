@@ -218,6 +218,22 @@ def _host_derived_api_key(base_url: str) -> str:
     return (_getenv(env_name, "") or "").strip()
 
 
+def _https_host_matches(base_url: str, domain: str) -> bool:
+    """Require HTTPS before a recognized host can receive implicit credentials."""
+    return urlparse(base_url).scheme == "https" and base_url_host_matches(base_url, domain)
+
+
+def _configured_anthropic_key(model_cfg: Dict[str, Any]) -> str:
+    """Read only a key explicitly bound to the configured Anthropic-compatible URL."""
+    for hint_key in ("key_env", "api_key_env"):
+        env_var = str(model_cfg.get(hint_key) or "").strip()
+        if env_var:
+            token = _getenv(env_var, "").strip()
+            if token:
+                return token
+    return str(model_cfg.get("api_key") or "").strip()
+
+
 def _anthropic_base_url_override_ok(base_url: str) -> bool:
     """Decide whether a configured ``model.base_url`` may back native Anthropic.
 
@@ -1486,17 +1502,30 @@ def _resolve_explicit_runtime(
         base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
         api_key = explicit_api_key
         if not api_key:
-            if not base_url_host_matches(base_url, "anthropic.com"):
+            if (
+                base_url_host_matches(base_url, "anthropic.com")
+                or base_url_host_matches(base_url, "azure.com")
+            ) and urlparse(base_url).scheme != "https":
+                raise AuthError("HTTPS is required for implicit Anthropic or Azure credentials.")
+            if _https_host_matches(base_url, "anthropic.com"):
+                from agent.anthropic_adapter import resolve_anthropic_token
+
+                api_key = resolve_anthropic_token()
+                if not api_key:
+                    raise AuthError(
+                        "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
+                        "run 'claude setup-token', or authenticate with 'claude /login'."
+                    )
+            elif cfg_base_url and base_url == cfg_base_url:
+                api_key = _configured_anthropic_key(model_cfg)
+                if not api_key:
+                    raise AuthError(
+                        "A configured third-party Anthropic endpoint requires model.api_key "
+                        "or model.key_env/api_key_env."
+                    )
+            else:
                 raise AuthError(
                     "An explicit API key is required for a third-party Anthropic endpoint."
-                )
-            from agent.anthropic_adapter import resolve_anthropic_token
-
-            api_key = resolve_anthropic_token()
-            if not api_key:
-                raise AuthError(
-                    "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                    "run 'claude setup-token', or authenticate with 'claude /login'."
                 )
         return {
             "provider": "anthropic",
@@ -1684,6 +1713,8 @@ def resolve_runtime_provider(
     # Instead, use the Azure key directly with anthropic_messages api_mode.
     _eff_base = (explicit_base_url or "").strip()
     if requested_provider == "anthropic" and base_url_host_matches(_eff_base, "azure.com"):
+        if urlparse(_eff_base).scheme != "https" and not explicit_api_key:
+            raise AuthError("HTTPS is required for implicit Azure credentials.")
         _azure_key = (
             (explicit_api_key or "").strip()
             or _getenv("AZURE_ANTHROPIC_KEY", "").strip()
@@ -2016,6 +2047,11 @@ def resolve_runtime_provider(
             if not _anthropic_base_url_override_ok(cfg_base_url):
                 cfg_base_url = ""
         base_url = cfg_base_url or "https://api.anthropic.com"
+        if cfg_base_url and (
+            base_url_host_matches(base_url, "anthropic.com")
+            or base_url_host_matches(base_url, "azure.com")
+        ) and urlparse(base_url).scheme != "https":
+            raise AuthError("HTTPS is required for implicit Anthropic or Azure credentials.")
 
         # For Microsoft Foundry endpoints, use ANTHROPIC_API_KEY directly —
         # Claude Code OAuth tokens (sk-ant-oat01) are not accepted by Azure.
@@ -2023,7 +2059,7 @@ def resolve_runtime_provider(
         # would find the Claude Code OAuth token first (priority 3) and return
         # that instead, causing 401s. Detect Azure endpoints and use the env
         # key directly to bypass the OAuth priority chain.
-        _is_azure_endpoint = base_url_host_matches(base_url, "azure.com")
+        _is_azure_endpoint = _https_host_matches(base_url, "azure.com")
         if _is_azure_endpoint:
             # Honor user-specified env var hints on the model config before
             # falling back to the built-in AZURE_ANTHROPIC_KEY / ANTHROPIC_API_KEY
@@ -2055,7 +2091,7 @@ def resolve_runtime_provider(
                     "config.yaml model section at a custom env var."
                 )
         else:
-            if base_url_host_matches(base_url, "anthropic.com"):
+            if _https_host_matches(base_url, "anthropic.com"):
                 from agent.anthropic_adapter import resolve_anthropic_token
                 token = resolve_anthropic_token()
                 if not token:
@@ -2064,14 +2100,7 @@ def resolve_runtime_provider(
                         "run 'claude setup-token', or authenticate with 'claude /login'."
                     )
             else:
-                token = str(model_cfg.get("api_key") or "").strip()
-                if not token:
-                    for hint_key in ("key_env", "api_key_env"):
-                        env_var = str(model_cfg.get(hint_key) or "").strip()
-                        if env_var:
-                            token = _getenv(env_var, "").strip()
-                            if token:
-                                break
+                token = _configured_anthropic_key(model_cfg)
                 if not token:
                     raise AuthError(
                         "A third-party Anthropic endpoint requires model.api_key "

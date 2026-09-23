@@ -53,6 +53,7 @@ class TestBuildAnthropicClient:
     @pytest.mark.parametrize("base_url", [
         "https://proxy.test/api.anthropic.com/anthropic",
         "https://api.anthropic.com.attacker.test/anthropic",
+        "http://api.anthropic.com/v1",
     ])
     def test_deceptive_anthropic_url_is_third_party(self, base_url):
         assert _is_third_party_anthropic_endpoint(base_url)
