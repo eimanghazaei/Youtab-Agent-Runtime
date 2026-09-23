@@ -38,6 +38,35 @@ const unifiedIndexFile = join(websiteDir, "static", "api", "skills-index.json");
 const UNIFIED_INDEX_URL =
   "https://youtab-agent-runtime.youtab.io/docs/api/skills-index.json";
 const UNIFIED_INDEX_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+const UNIFIED_INDEX_MAX_BYTES = 64 * 1024 * 1024;
+const SAFE_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]*$/;
+
+function validSkill(skill) {
+  return skill && typeof skill === "object" &&
+      typeof skill.name === "string" && skill.name.length > 0 &&
+      typeof skill.source === "string" && skill.source.length > 0 &&
+      typeof skill.identifier === "string" && skill.identifier.length <= 2048 &&
+      SAFE_IDENTIFIER.exec(skill.identifier)?.[0] === skill.identifier &&
+      !skill.identifier.split("/").includes("..") &&
+      (skill.description === undefined || typeof skill.description === "string") &&
+      (skill.tags === undefined || Array.isArray(skill.tags) && skill.tags.every((tag) => typeof tag === "string")) &&
+      (skill.repo === undefined || typeof skill.repo === "string") &&
+      (skill.extra === undefined || skill.extra !== null && typeof skill.extra === "object" && !Array.isArray(skill.extra));
+}
+
+async function boundedResponseText(resp) {
+  const advertised = Number(resp.headers.get("content-length"));
+  if (advertised > UNIFIED_INDEX_MAX_BYTES) throw new Error("skills index exceeds size limit");
+  if (!resp.body) throw new Error("skills index response has no body");
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of resp.body) {
+    size += chunk.byteLength;
+    if (size > UNIFIED_INDEX_MAX_BYTES) throw new Error("skills index exceeds size limit");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, size).toString("utf8");
+}
 
 function writeEmptyFallback(reason) {
   mkdirSync(dirname(outputFile), { recursive: true });
@@ -79,7 +108,13 @@ async function ensureUnifiedIndex() {
   try {
     const resp = await fetch(UNIFIED_INDEX_URL, {
       headers: { accept: "application/json" },
+      redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
     });
+    // The catalog is a build input; do not let its origin change on redirect.
+    if (new URL(resp.url).origin !== new URL(UNIFIED_INDEX_URL).origin) {
+      throw new Error("skills index response changed origin");
+    }
     if (!resp.ok) {
       console.warn(
         `[prebuild] skills-index.json fetch returned HTTP ${resp.status}; ` +
@@ -87,15 +122,26 @@ async function ensureUnifiedIndex() {
       );
       return existsSync(unifiedIndexFile);
     }
-    const text = await resp.text();
-    // Sanity check: must be valid JSON with a skills array
+    let text = await boundedResponseText(resp);
+    // Validate every publishable command operand before replacing the cache.
     try {
       const parsed = JSON.parse(text);
-      if (!parsed || !Array.isArray(parsed.skills)) {
+      if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.skills)) {
         console.warn(
           "[prebuild] skills-index.json from live site has no skills array; ignoring",
         );
         return existsSync(unifiedIndexFile);
+      }
+      const validSkills = parsed.skills.filter(validSkill);
+      if (validSkills.length === 0) {
+        console.warn("[prebuild] skills-index.json has no valid skills; ignoring");
+        return existsSync(unifiedIndexFile);
+      }
+      if (validSkills.length !== parsed.skills.length) {
+        console.warn(`[prebuild] discarded ${parsed.skills.length - validSkills.length} invalid skills-index rows`);
+        parsed.skills = validSkills;
+        parsed.skill_count = validSkills.length;
+        text = JSON.stringify(parsed);
       }
     } catch (e) {
       console.warn(`[prebuild] skills-index.json from live site is not valid JSON: ${e}`);
