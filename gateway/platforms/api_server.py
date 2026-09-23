@@ -6043,8 +6043,30 @@ class APIServerAdapter(BasePlatformAdapter):
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
         self._run_statuses[run_id] = current
-        self._mirror_run_state(run_id, status, current)
+        mirror_ok = self._mirror_run_state(run_id, status, current)
+        # Server durable mode: a TERMINAL state that could not be made durable
+        # must NOT be exposed as a durable terminal result — otherwise a client
+        # could observe status=completed with output that then disappears after a
+        # restart (in-memory only). Report reconciliation_required truthfully.
+        if (
+            not mirror_ok
+            and str(status).lower() in self._TERMINAL_STATUSES
+            and os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND")
+        ):
+            current["status"] = "reconciliation_required"
+            current["durable"] = False
+            current["pending_status"] = status
+            logger.warning(
+                "run %s reached terminal '%s' but the durable store write failed; "
+                "reporting reconciliation_required (not a durable completion)",
+                run_id, status,
+            )
+            self._run_statuses[run_id] = current
         return current
+
+    _TERMINAL_STATUSES = frozenset(
+        {"completed", "succeeded", "done", "failed", "error", "cancelled", "canceled"}
+    )
 
     # Map api_server's status vocabulary onto the canonical RunState.
     _RUN_STATE_MAP = {
@@ -6057,40 +6079,60 @@ class APIServerAdapter(BasePlatformAdapter):
         "failed": "FAILED", "error": "FAILED",
     }
 
-    def _mirror_run_state(self, run_id: str, status: str, current: Dict[str, Any]) -> None:
+    def _mirror_run_state(self, run_id: str, status: str, current: Dict[str, Any]) -> bool:
         """Write-through the run's state to the canonical durable RunStore.
 
-        Best-effort (never breaks the API): the store is authoritative for
-        get/events/result/restart, the in-memory dict is only a live cache."""
+        Returns True when the state is durably written (or when there is nothing
+        to persist / local best-effort mode); False when a write was attempted
+        and failed. For non-terminal states the store is a live mirror and a
+        transient failure is tolerated; TERMINAL states in server durable mode
+        are retried a few times because a lost terminal write would otherwise
+        expose a non-durable completion (the caller reports
+        reconciliation_required when this returns False)."""
         store = getattr(self, "_run_store", None)
+        server_mode = bool(os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"))
         if store is None:
-            return
+            # No store: local best-effort path is fine; server mode without a
+            # store is a durability failure the caller must reflect.
+            return not server_mode
         from youtab_runtime.durable_run_store import RunIdentity, RunState
         mapped = self._RUN_STATE_MAP.get(str(status).lower())
         if mapped is None:
-            return
+            return True
         to_state = RunState(mapped)
         result_ref = current.get("output")
         error_ref = current.get("error")
-        try:
-            if store.get_run(run_id) is None:
-                # Shipped /v1/runs is single-operator today; scope is degenerate
-                # but present so the store's tenant/workspace/principal binding is
-                # ready for a signed multi-tenant identity later.
-                scope = current.get("session_id") or "local"
-                store.create_run(RunIdentity(
-                    task_id=run_id, run_id=run_id, tenant_id="local",
-                    organization_id="local", workspace_id="local",
-                    principal_id=str(scope), agent_id=str(current.get("model") or "agent"),
-                ))
-            store.set_state(
-                run_id, to_state, strict=False,
-                result_ref=(str(result_ref) if result_ref else None),
-                error_ref=(str(error_ref) if error_ref else None),
-                kind=f"status.{str(status).lower()}",
-            )
-        except Exception:
-            logger.debug("durable run-state mirror failed for %s", run_id, exc_info=True)
+        is_terminal = str(status).lower() in self._TERMINAL_STATUSES
+        # Terminal writes in server mode get a few bounded retries; everything
+        # else is a single best-effort attempt.
+        attempts = 3 if (is_terminal and server_mode) else 1
+        for attempt in range(attempts):
+            try:
+                if store.get_run(run_id) is None:
+                    # Shipped /v1/runs is single-operator today; scope is degenerate
+                    # but present so the store's tenant/workspace/principal binding is
+                    # ready for a signed multi-tenant identity later.
+                    scope = current.get("session_id") or "local"
+                    store.create_run(RunIdentity(
+                        task_id=run_id, run_id=run_id, tenant_id="local",
+                        organization_id="local", workspace_id="local",
+                        principal_id=str(scope), agent_id=str(current.get("model") or "agent"),
+                    ))
+                store.set_state(
+                    run_id, to_state, strict=False,
+                    result_ref=(str(result_ref) if result_ref else None),
+                    error_ref=(str(error_ref) if error_ref else None),
+                    kind=f"status.{str(status).lower()}",
+                )
+                return True
+            except Exception:
+                logger.debug(
+                    "durable run-state mirror failed for %s (attempt %d/%d)",
+                    run_id, attempt + 1, attempts, exc_info=True,
+                )
+                if attempt + 1 < attempts:
+                    time.sleep(0.25)
+        return False
 
     def _admit_durable_or_fail(
         self, run_id: str, *, session_id: Optional[str], model: Optional[str]
@@ -6110,8 +6152,22 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         store = getattr(self, "_run_store", None)
         server_backend = os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND")
-        if store is None or not server_backend:
+        if not server_backend:
+            # Default local/sqlite path: no-op (never block desktop).
             return None
+        if store is None:
+            # Server durable mode was requested but no store is present. This
+            # should not happen (startup fails closed), but if it does we must
+            # NOT admit an in-memory-only run — fail closed.
+            logger.warning(
+                "server durable mode set but _run_store is absent; refusing run %s "
+                "(fail-closed, no in-memory-only execution)",
+                run_id,
+            )
+            return web.json_response(
+                {"error": "durable store unavailable", "code": "durable_store_unavailable"},
+                status=503,
+            )
         from youtab_runtime.durable_run_store import RunIdentity, RunState
         try:
             store.create_run(
