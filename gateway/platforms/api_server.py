@@ -6289,11 +6289,36 @@ class APIServerAdapter(BasePlatformAdapter):
         supervisor restarts it and the new process must re-acquire the authority.
         """
         logger.critical("durable run authority lost (%s); fail-stopping /v1/runs", reason)
+        # 1) Cooperative interrupt: signal every live agent's worker threads so
+        # in-process effect gates abort at their next checkpoint.
         for agent in list(getattr(self, "_active_run_agents", {}).values()):
             try:
                 agent.interrupt("durable run authority lost")
             except Exception:
                 pass
+        # 2) Synchronous descendant teardown BEFORE exit: the cooperative flag
+        # does not reap already-spawned descendants, and os._exit would orphan
+        # them (own session/process group) — free to complete a NEW external
+        # effect after authority loss. Reap the owned descendant tree via the
+        # single process-supervision authority (no second reaper), bounded and
+        # fail-closed. contained=False is logged CRITICAL (unverified cleanup);
+        # we still exit — a dying process can do no more, but never reports the
+        # cleanup as applied.
+        try:
+            from tools.process_registry import reap_effect_descendants
+            _reap = reap_effect_descendants(deadline_s=2.0)
+            logger.critical(
+                "effect-descendant reap on fail-stop: contained=%s killed=%d "
+                "tracked=%d tree=%d unverified=%s platform=%s",
+                _reap.get("contained"), len(_reap.get("killed", [])),
+                _reap.get("tracked"), _reap.get("tree"),
+                _reap.get("unverified"), _reap.get("platform"),
+            )
+        except Exception:
+            logger.critical(
+                "effect-descendant reap FAILED on fail-stop (unverified cleanup)",
+                exc_info=True,
+            )
         self._authority_fail_stop()
 
     @staticmethod

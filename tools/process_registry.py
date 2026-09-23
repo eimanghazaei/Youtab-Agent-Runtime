@@ -671,6 +671,102 @@ class ProcessRegistry:
             except (psutil.AccessDenied, OSError):
                 pass
 
+    # ----- Effect-descendant teardown (durable fail-stop) -----
+
+    def reap_effect_descendants(self, *, deadline_s: float = 2.0) -> Dict[str, Any]:
+        """Idempotent, synchronous teardown of every effect-capable descendant.
+
+        The durable ``/v1/runs`` fail-stop calls this AFTER cooperative interrupt
+        and BEFORE ``os._exit(75)`` so that no already-spawned descendant can
+        complete a NEW external effect after run-authority loss. This is the SOLE
+        process-tree reaper for that path — it does not add a second mechanism: it
+        reuses this registry's start-time-guarded :meth:`_terminate_host_pid`, and
+        additionally sweeps the live OS descendant tree of THIS process so
+        untracked spawns (MCP servers, browsers, code-exec children, detached /
+        new-session children) are covered as well.
+
+        Safety / ownership:
+          * Only registry sessions we spawned and live descendants of THIS process
+            are targeted — never a sibling, parent or unrelated process.
+          * Every kill is start-time-guarded (:meth:`_host_pid_is_ours`), so a
+            recycled PID that now names a stranger is refused.
+          * Bounded by ``deadline_s``; idempotent (dead targets are skipped).
+          * FAIL-CLOSED: returns ``contained=False`` with the surviving owned PIDs
+            when any owned descendant cannot be verified dead within the deadline.
+            Callers must treat ``contained=False`` as unverified cleanup — never
+            report it as applied and never blind-retry.
+
+        Returns a dict: ``{contained, killed, unverified, tracked, tree,
+        platform, deadline_s}``.
+        """
+        me = os.getpid()
+        targets: Dict[int, Optional[int]] = {}
+
+        # (1) Registry-tracked host sessions. Catches descendants that daemonized
+        # or reparented to init and are no longer in our live child tree; their
+        # spawn-time start baseline gives the strongest recycle guard.
+        with self._lock:
+            sessions = list(self._running.values())
+        tracked = 0
+        for sess in sessions:
+            pid = getattr(sess, "pid", None)
+            if (pid and pid != me
+                    and getattr(sess, "pid_scope", "host") == "host"
+                    and not getattr(sess, "exited", False)):
+                targets.setdefault(pid, getattr(sess, "host_start_time", None))
+                tracked += 1
+
+        # (2) Live OS descendant tree of this process. Catches every effect-capable
+        # descendant not in the registry. Only descendants of ``me`` are ever
+        # enumerated, so unrelated processes are structurally excluded.
+        tree = 0
+        try:
+            import psutil
+            for child in psutil.Process(me).children(recursive=True):
+                cpid = child.pid
+                if cpid and cpid != me and cpid not in targets:
+                    targets[cpid] = self._safe_host_start_time(cpid)
+                    tree += 1
+        except Exception:
+            logger.debug("reap: descendant-tree enumeration failed", exc_info=True)
+
+        # Terminate (start-time guarded inside _terminate_host_pid).
+        killed: List[int] = []
+        for pid, start in list(targets.items()):
+            try:
+                self._terminate_host_pid(pid, start)
+                killed.append(pid)
+            except Exception:
+                logger.debug("reap: terminate pid %s failed", pid, exc_info=True)
+
+        # Verify containment within the bounded deadline.
+        deadline = time.monotonic() + max(deadline_s, 0.0)
+        unverified: List[int] = []
+        while True:
+            unverified = [pid for pid, start in targets.items()
+                          if self._host_pid_is_ours(pid, start)]
+            if not unverified or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+
+        contained = not unverified
+        result: Dict[str, Any] = {
+            "contained": contained,
+            "killed": killed,
+            "unverified": unverified,
+            "tracked": tracked,
+            "tree": tree,
+            "platform": ("windows" if _IS_WINDOWS else "posix"),
+            "deadline_s": deadline_s,
+        }
+        if not contained:
+            logger.critical(
+                "effect-descendant reap could NOT verify containment; surviving "
+                "owned pids=%s (fail-closed: cleanup unverified, not applied)",
+                unverified,
+            )
+        return result
+
     # ----- Spawn -----
 
     @staticmethod
@@ -2083,6 +2179,15 @@ class ProcessRegistry:
 
 # Module-level singleton
 process_registry = ProcessRegistry()
+
+
+def reap_effect_descendants(*, deadline_s: float = 2.0) -> Dict[str, Any]:
+    """Module-level entry for the durable fail-stop's descendant teardown.
+
+    Delegates to the single :data:`process_registry` authority (no second
+    reaper). See :meth:`ProcessRegistry.reap_effect_descendants`.
+    """
+    return process_registry.reap_effect_descendants(deadline_s=deadline_s)
 
 
 def _format_age(seconds: float) -> str:
