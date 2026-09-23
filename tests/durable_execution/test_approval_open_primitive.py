@@ -182,6 +182,16 @@ def test_legacy_incomplete_binding_cannot_be_replayed_sqlite(tmp_path):
     assert len(_request_events(store)) == 1
 
 
+def test_decided_approval_id_cannot_be_opened_again_sqlite(tmp_path):
+    store = _running(SqliteRunStore(str(tmp_path / "decided.db")))
+    store.open_approval("r", approval_id="same-id", payload=_binding("A"))
+    store.decide_open_approval("r", approval_id="same-id", to_state=RunState.RUNNING,
+                               kind="approval_approved")
+    with pytest.raises(InvalidTransition):
+        store.open_approval("r", approval_id="same-id", payload=_binding("A"))
+    assert len(_request_events(store)) == 1
+
+
 # --------------------------- real PostgreSQL --------------------------------- #
 
 _PG_DSN = os.environ.get("YOUTAB_TEST_PG_DSN",

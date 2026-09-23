@@ -57,6 +57,7 @@ import os
 import secrets
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -1148,6 +1149,66 @@ def test_worker_endpoint_idempotent_same_effect_conflict_diff_effect(managed_dur
     # same id + DIFFERENT effect (changed binding) -> 409 conflict
     r = _worker_ingest(client, run_id, "ap1", effect="eff-2")
     assert r.status_code == 409 and r.json()["detail"]["error"] == "approval_binding_conflict"
+
+
+def test_concurrent_worker_posts_attest_only_the_committed_binding(managed_durable,
+                                                                    monkeypatch):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, _ = managed_durable
+    run_id = _durable_run(client)
+    original_events = dip.durable_approval_events
+    first_reads = threading.Barrier(2)
+    read_lock = threading.Lock()
+    read_count = 0
+
+    def simultaneous_first_read(rid):
+        nonlocal read_count
+        with read_lock:
+            read_count += 1
+            first = read_count <= 2
+        if first:
+            snapshot = original_events(rid)
+            first_reads.wait(timeout=10)
+            return snapshot
+        return original_events(rid)
+
+    monkeypatch.setattr(dip, "durable_approval_events", simultaneous_first_read)
+    responses = {}
+
+    def post(effect):
+        responses[effect] = _worker_ingest(client, run_id, "same-id", effect=effect)
+
+    threads = [threading.Thread(target=post, args=(effect,)) for effect in ("A", "B")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+        assert not thread.is_alive()
+    assert {effect: response.status_code for effect, response in responses.items()} in (
+        {"A": 200, "B": 409}, {"A": 409, "B": 200})
+    requests = [e for e in dip.get_ingress_authority().get_events(run_id)
+                if e["kind"] == "approval_request"]
+    assert len(requests) == 1
+    committed = requests[0]["payload"]["effect_digest"]
+    assert responses[committed].json()["effect_digest"] == committed
+    assert responses["B" if committed == "A" else "A"].json()["detail"]["error"] == \
+        "approval_binding_conflict"
+
+
+def test_worker_post_rejects_legacy_incomplete_binding(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, _ = managed_durable
+    run_id = _durable_run(client)
+    dip.open_managed_approval(run_id, approval_id="legacy",
+                              payload={"effect_digest": "eff-1"})
+    response = _worker_ingest(client, run_id, "legacy", effect="eff-1")
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "approval_binding_conflict"
+    requests = [e for e in dip.get_ingress_authority().get_events(run_id)
+                if e["kind"] == "approval_request"]
+    assert len(requests) == 1
 
 
 def test_worker_endpoint_authority_loss_503_no_pending(managed_durable):

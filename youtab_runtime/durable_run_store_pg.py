@@ -417,7 +417,8 @@ class PostgresRunStore:
         Advisory-fenced transaction: the run row is taken ``FOR UPDATE``; a
         from-state CAS ``UPDATE ... WHERE state='RUNNING'`` (rowcount 1) moves it
         to WAITING_APPROVAL and appends one ``approval_request`` event with
-        ``approval_id``. Exact-id retry while WAITING_APPROVAL is idempotent; a
+        ``approval_id``. Exact-id-and-payload retry while WAITING_APPROVAL is
+        idempotent; changed payload raises ``ApprovalBindingConflict``; a
         different id raises ``ApprovalAlreadyOpen`` (pending id not replaced).
         Mirrors the SqliteRunStore semantics; see it for the full contract."""
         from youtab_runtime.durable_run_store import ApprovalAlreadyOpen

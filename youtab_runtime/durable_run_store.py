@@ -657,8 +657,9 @@ class SqliteRunStore:
         generic ``transition()`` (which permits a same-state
         WAITING_APPROVAL -> WAITING_APPROVAL no-op that would append a SECOND
         request and silently re-home the authoritative id), a second open is
-        refused: an EXACT-id retry is IDEMPOTENT (returns the existing open
-        request, appends nothing); a DIFFERENT id raises ``ApprovalAlreadyOpen``
+        refused: an EXACT-id-and-payload retry is IDEMPOTENT (returns the existing
+        open request, appends nothing); a changed payload raises
+        ``ApprovalBindingConflict``; a DIFFERENT id raises ``ApprovalAlreadyOpen``
         and never replaces the pending id.
 
         ``approval_id`` must be a nonempty string (else ``ValueError``). Opening

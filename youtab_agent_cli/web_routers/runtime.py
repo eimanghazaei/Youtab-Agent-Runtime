@@ -3053,8 +3053,8 @@ def _approval_status_for_decision(decision: str) -> str:
 
 def _binding_conflict(prev: "Dict[str, Any]", new: "Dict[str, Any]") -> bool:
     """True if a persisted request binding differs from a new request for the SAME
-    approval_id. Any recorded field that changed (including one now missing) is a
-    conflict — a changed binding must never silently rebind, even after a decision."""
+    approval_id. A legacy incomplete binding or any changed field is a conflict —
+    a replay must never add previously unrecorded fields or rebind a decision."""
     return not prev.get("binding_complete", False) or any(
         prev.get(f) != new.get(f) for f in _APPROVAL_BINDING_FIELDS)
 
