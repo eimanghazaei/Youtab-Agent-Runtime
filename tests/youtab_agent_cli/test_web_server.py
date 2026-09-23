@@ -3345,26 +3345,17 @@ class TestValidateProviderCredential:
         class _Resp:
             status_code = 200
             is_success = True
+            is_redirect = False
 
             def json(self):
                 return {"data": [{"id": "gpt-oss-120b"}]}
 
-        class _Client:
-            def __init__(self, *a, **k):
-                pass
+        def _probe(base_url, api_key):
+            captured["url"] = base_url
+            captured["api_key"] = api_key
+            return _Resp()
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *a):
-                return False
-
-            def get(self, url, *a, headers=None, **k):
-                captured["url"] = url
-                captured["headers"] = headers
-                return _Resp()
-
-        monkeypatch.setattr("httpx.Client", _Client)
+        monkeypatch.setattr("youtab_agent_cli.provider_probe.probe_provider_models", _probe)
 
         resp = self.client.post(
             "/api/providers/validate",
@@ -3377,8 +3368,41 @@ class TestValidateProviderCredential:
         data = resp.json()
         assert data["ok"] is True and data["reachable"] is True
         assert data["models"] == ["gpt-oss-120b"]
-        assert captured["url"] == "https://text.example.com/v1/models"
-        assert captured["headers"] == {"Authorization": "Bearer sk-secret"}
+        assert captured == {"url": "https://text.example.com/v1", "api_key": "sk-secret"}
+
+    def test_custom_probe_rejects_metadata_destination_before_http(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", lambda **_kwargs: pytest.fail("HTTP request sent"))
+        response = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={
+                "name": "local",
+                "base_url": "http://169.254.169.254/latest",
+                "model": "example",
+                "api_key": "sk-secret",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert response.json()["models"] == []
+
+    def test_legacy_custom_probe_does_not_accept_redirect(self, monkeypatch):
+        import httpx
+
+        monkeypatch.setattr(
+            "youtab_agent_cli.provider_probe.probe_provider_models",
+            lambda *_args: httpx.Response(302, headers={"Location": "https://evil.test/collect"}),
+        )
+        response = self.client.post(
+            "/api/providers/validate",
+            json={
+                "key": "OPENAI_BASE_URL",
+                "value": "https://models.example.test/v1",
+                "api_key": "sk-secret",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["ok"] is False
+        assert "redirected" in response.json()["message"]
 
 
 class TestDesktopCronTicker:
