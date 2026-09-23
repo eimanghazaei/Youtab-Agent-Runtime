@@ -1,0 +1,219 @@
+# R4 live probe — image youtab-agent-runtime:r4-415a1734a (Id sha256:ccfe1bc5e184…), embedded SHA 415a1734a49f04ceced1801f5ddaffd7ff36ee55
+# topology: docker net r4-net; r4-pg postgres:16-alpine; r4-mock streaming mock; gateways 'gateway run' via s6 /init; API key REDACTED
+## gw1 started; runtime_authority row:
+v1_runs|1|fd3d215d43144fad9b9237d0bcd181de|0e69d869cb15|123|70
+## pg_locks advisory holders:
+70|1498693970|1187975806|2|t
+   17 /bin/sh -e /run/s6/basedir/scripts/rc.init top /opt/youtab/docker/main-wrapper.sh gateway run
+  123 /opt/youtab/.venv/bin/python3 /opt/youtab/.venv/bin/youtab gateway run --replace
+
+########## CASE 5a: success — terminal SSE follows durable commit ##########
+POST /v1/runs -> {"run_id": "run_f46121101d3246dab8a51fbc27542318", "status": "started"}
+GET /result -> {"object": "youtab.run.result", "run_id": "run_f46121101d3246dab8a51fbc27542318", "status": "completed", "terminal": true, "output": "CUSTOMER_TASK_OK_42", "error": null}
+--- SSE replay (durable events) ---
+id: 1
+data: {"seq": 1, "kind": "accepted", "state": "QUEUED"}
+
+id: 2
+data: {"seq": 2, "kind": "admitted", "owner": "inst:fd3d215d43144fad9b9237d0bcd181de:1", "state": "QUEUED"}
+
+id: 3
+data: {"seq": 3, "kind": "status.running", "state": "RUNNING", "adapter": true}
+
+id: 4
+data: {"seq": 4, "kind": "progress", "step": "reasoning.available", "metric": {"tool": null}, "checkpoint_ref": null}
+
+id: 5
+data: {"seq": 5, "kind": "status.completed", "state": "SUCCEEDED", "adapter": true}
+
+data: {"event": "message.delta", "run_id": "run_f46121101d3246dab8a51fbc27542318", "timestamp": 1790169602.9444144, "delta": "CUSTOMER_TASK_OK_42"}
+
+data: {"event": "reasoning.available", "run_id": "run_f46121101d3246dab8a51fbc27542318", "timestamp": 1790169602.9472227, "text": "CUSTOMER_TASK_OK_42"}
+
+data: {"event": "run.completed", "run_id": "run_f46121101d3246dab8a51fbc27542318", "timestamp": 1790169603.0575686, "output": "CUSTOMER_TASK_OK_42", "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}}
+
+: stream closed
+
+--- PG row ---
+run_f46121101d3246dab8a51fbc27542318|SUCCEEDED|CUSTOMER_TASK_OK_42|inst:fd3d215d43144fad9b9237d0bcd181de:1
+
+########## CASE 5b: cancellation — run.cancelled follows durable CANCELLED ##########
+POST /v1/runs -> {"run_id": "run_84b9eec0406a4b8dbeab88c2a0cbab4a", "status": "started"}
+state before stop: RUNNING
+POST /stop -> {"run_id": "run_84b9eec0406a4b8dbeab88c2a0cbab4a", "status": "stopping"}
+GET /result -> {"object": "youtab.run.result", "run_id": "run_84b9eec0406a4b8dbeab88c2a0cbab4a", "status": "cancelled", "terminal": true, "output": null, "error": null}
+--- live SSE (connected before stop) ---
+id: 1
+data: {"seq": 1, "kind": "accepted", "state": "QUEUED"}
+
+id: 2
+data: {"seq": 2, "kind": "admitted", "owner": "inst:fd3d215d43144fad9b9237d0bcd181de:1", "state": "QUEUED"}
+
+id: 3
+data: {"seq": 3, "kind": "status.running", "state": "RUNNING", "adapter": true}
+
+data: {"event": "run.cancelled", "run_id": "run_84b9eec0406a4b8dbeab88c2a0cbab4a", "timestamp": 1790169620.3233962}
+
+: stream closed
+
+--- durable events ---
+1|accepted|QUEUED
+2|admitted|QUEUED
+3|status.running|RUNNING
+4|status.stopping|CANCELLING
+5|cancel_requested|
+6|status.cancelled|CANCELLED
+--- PG row ---
+CANCELLED|
+--- commit timestamps (run_events.created_at of terminal state) vs SSE terminal timestamp ---
+run_f46121101d3246dab8a51fbc27542318|status.completed|13:20:03.053511|1790169603.053511
+run_84b9eec0406a4b8dbeab88c2a0cbab4a|status.cancelled|13:20:20.319571|1790169620.319571
+SSE run.completed ts=1790169603.0575686 ; SSE run.cancelled ts=1790169620.3233962
+
+########## CASE 5c: failure — run.failed follows durable FAILED ##########
+POST /v1/runs -> {"run_id": "run_f0e3b16a0b604a56a55d1c4013d56d7d", "status": "started"}
+GET /result -> {"object": "youtab.run.result", "run_id": "run_f0e3b16a0b604a56a55d1c4013d56d7d", "status": "failed", "terminal": true, "output": null, "error": "HTTP 400: mock provider rejected request"}
+--- live SSE ---
+id: 1
+data: {"seq": 1, "kind": "accepted", "state": "QUEUED"}
+
+id: 2
+data: {"seq": 2, "kind": "admitted", "owner": "inst:fd3d215d43144fad9b9237d0bcd181de:1", "state": "QUEUED"}
+
+id: 3
+data: {"seq": 3, "kind": "status.running", "state": "RUNNING", "adapter": true}
+
+data: {"event": "run.failed", "run_id": "run_f0e3b16a0b604a56a55d1c4013d56d7d", "timestamp": 1790169648.1373348, "error": "HTTP 400: mock provider rejected request"}
+
+: stream closed
+
+--- durable events with commit ts ---
+1|accepted|QUEUED|1790169647.359768
+2|admitted|QUEUED|1790169647.3614683
+3|status.running|RUNNING|1790169647.4338238
+4|status.failed|FAILED|1790169648.1314335
+--- PG row ---
+FAILED|HTTP 400: mock provider rejected request|
+
+########## CASE 2: competing instance on the same PostgreSQL store ##########
+gw1 POST /v1/runs -> {"run_id": "run_5f91fabb0c0147038044c2dc2de4345a", "status": "started"}
+gw1 run state: RUNNING|inst:fd3d215d43144fad9b9237d0bcd181de:1
+gw2 /health/ready -> http=000
+gw2 POST /v1/runs -> http=000
+gw1 /health/ready -> {"ready": true, "durable_store": "ok", "backend": "postgres"}
+--- gw2 log (authority) ---
+      2     authority = acquire()
+      2     raise AuthorityHeld(
+      2   File "/opt/youtab/gateway/platforms/api_server.py", line 1260, in __init__
+      2   File "/opt/youtab/gateway/platforms/api_server.py", line 6254, in _reconcile_orphaned_runs_on_startup
+      2   File "/opt/youtab/youtab_runtime/durable_run_store_pg.py", line 207, in acquire_instance_authority
+      2 Traceback (most recent call last):
+      2 youtab_runtime.durable_run_authority.AuthorityHeld: another Runtime instance holds the durable run authority for this database (epoch=1 host=0e69d869cb15 pid=123)
+gw1 run state while gw2 attempted: SUCCEEDED|inst:fd3d215d43144fad9b9237d0bcd181de:1
+runtime_authority: 1|fd3d215d43144fad9b9237d0bcd181de|123|70
+
+########## CASE 1+4: abrupt kill, restart with the SAME numeric PID ##########
+(gw2 stopped first so gw1's own restart performs recovery)
+gw1 POST /v1/runs -> {"run_id": "run_6b150b93c05942adba0dc64491da8fac", "status": "started"}
+pre-kill gateway pid: 123
+pre-kill row: RUNNING|inst:fd3d215d43144fad9b9237d0bcd181de:1|
+docker kill -s KILL r4-gw1 at 13:22:13
+advisory locks after kill: []
+row after kill (before restart): RUNNING|inst:fd3d215d43144fad9b9237d0bcd181de:1
+restarted gw1 ready http=200
+post-restart gateway pid: 151
+runtime_authority: 2|a63fa87c7633426bb870278c4a27983a|151|252
+row after restart: UNKNOWN|inst:fd3d215d43144fad9b9237d0bcd181de:1|
+GET /v1/runs/{id} -> {"object": "youtab.run", "run_id": "run_6b150b93c05942adba0dc64491da8fac", "status": "unknown", "created_at": 1790169726.0898736, "updated_at": 1790169748.7299106, "session_id": "run_6b150b93c05942adba0dc64491da8fac", "output": null, "error": null, "recovered_from_store": true}
+GET /result -> {"object": "youtab.run.result", "run_id": "run_6b150b93c05942adba0dc64491da8fac", "status": "unknown", "terminal": false, "output": null, "error": null}
+--- durable events ---
+1|accepted|{"state": "QUEUED"}
+2|admitted|{"owner": "inst:fd3d215d43144fad9b9237d0bcd181de:1", "state": "QUEUED"}
+3|status.running|{"state": "RUNNING", "adapter": true}
+4|state.unknown|{"owner": "inst:fd3d215d43144fad9b9237d0bcd181de:1", "reason": "prior_instance_superseded", "authority_epoch": 2}
+committed success result still stable: {"object": "youtab.run.result", "run_id": "run_f46121101d3246dab8a51fbc27542318", "status": "completed", "terminal": true, "output": "CUSTOMER_TASK_OK_42", "error": null}
+
+########## CASE 1 (live same-PID): fresh container recreate -> kill -> recreate ##########
+gw1(A) ready http=200 pid=123 authority=3|abea48d8352c4f408dcb0f10dca95ef8|123
+run run_c0dddb3503e0400c867d57fb9ccf7758 row: RUNNING|inst:abea48d8352c4f408dcb0f10dca95ef8:3
+seeded legacy row: run_legacy_pid123|RUNNING|pid:123
+SIGKILL gw1(A)
+gw1(B) ready http=200 pid=123 authority=4|97b30f29531a4d81ad346f6cf37481eb|123
+run run_c0dddb3503e0400c867d57fb9ccf7758 after restart: UNKNOWN|inst:abea48d8352c4f408dcb0f10dca95ef8:3|
+legacy pid:123 row after restart: UNKNOWN|pid:123
+GET /result -> {"object": "youtab.run.result", "run_id": "run_c0dddb3503e0400c867d57fb9ccf7758", "status": "unknown", "terminal": false, "output": null, "error": null}
+mock requests seen for SLOW tasks (no resubmit): 4
+
+########## CASE 3b: authority lock lost after startup (pg_terminate_backend on the lock session) ##########
+POST -> {"run_id": "run_1b645d695b4c49b0936c21d8466c5446", "status": "started"}
+pre-loss: gateway pid=123 row=RUNNING|inst:97b30f29531a4d81ad346f6cf37481eb:4 authority=4|321
+pg_terminate_backend(321) -> t at 13:23:56.256
+t+1s ready=000 post=000 gwpid=182
+t+2s ready=000 post=000 gwpid=182
+t+3s ready=000 post=000 gwpid=182
+t+4s ready=000 post=000 gwpid=182
+t+5s ready=000 post=000 gwpid=182
+t+6s ready=000 post=000 gwpid=182
+--- gw1 log around loss ---
+CRITICAL youtab_runtime.durable_run_authority: durable run authority LOST (scope=v1_runs epoch=4 instance=97b30f29531a4d81ad346f6cf37481eb): authority session failed (AdminShutdown)
+CRITICAL gateway.platforms.api_server: durable run authority lost (authority session failed (AdminShutdown)); fail-stopping /v1/runs
+new gateway process ready http=200 pid=182 authority=5|82e2d3a1009a4e7e9bda3a2d8b607e9f|182|385
+after mock's 20s delay elapsed: row=UNKNOWN|inst:97b30f29531a4d81ad346f6cf37481eb:4|
+GET /result -> {"object": "youtab.run.result", "run_id": "run_1b645d695b4c49b0936c21d8466c5446", "status": "unknown", "terminal": false, "output": null, "error": null}
+--- durable events ---
+1|accepted|{"state": "QUEUED"}
+2|admitted|{"owner": "inst:97b30f29531a4d81ad346f6cf37481eb:4", "state": "QUEUED"}
+3|status.running|{"state": "RUNNING", "adapter": true}
+4|state.unknown|{"owner": "inst:97b30f29531a4d81ad346f6cf37481eb:4", "reason": "prior_instance_superseded", "authority_epoch": 5}
+--- live SSE consumer (connected before loss) ---
+id: 1
+data: {"seq": 1, "kind": "accepted", "state": "QUEUED"}
+
+id: 2
+data: {"seq": 2, "kind": "admitted", "owner": "inst:97b30f29531a4d81ad346f6cf37481eb:4", "state": "QUEUED"}
+
+id: 3
+data: {"seq": 3, "kind": "status.running", "state": "RUNNING", "adapter": true}
+
+curl-exit=18
+exit status of fail-stopped process (s6 supervise):
+cont-init: info: /etc/cont-init.d/02-reconcile-profiles exited 0
+WARNING gateway.platforms.api_server: startup reconcile: 2 abandoned run(s) moved to UNKNOWN: run_c0dddb3503e0400c867d57fb9ccf7758, run_legacy_pid123
+WARNING gateway.lifecycle_ledger: Previous gateway life (pid=123, started_at=2026-09-23T13:23:27.370071+00:00) exited UNCLEANLY (no exit path ran — SIGKILL / OOM / VM death). last_heartbeat_at=2026-09-23T13:23:30.280824+00:00 last_mem={'rss_kib': 181856, 'mem_total_kib': 20485292, 'mem_available_kib': 18879520, 'swap_used_kib': 2408304} suspected_oom=False
+
+########## CASE 3a/3c: PostgreSQL lost mid-run; startup while store is down ##########
+POST -> {"run_id": "run_1e5bbc91dd7a4c5bb3297b29d909a322", "status": "started"}
+pre-loss row=RUNNING|inst:82e2d3a1009a4e7e9bda3a2d8b607e9f:5 gwpid=182
+docker stop r4-pg at 13:25:01
+PG down ~2s: ready=000 post=000 gwpid=271
+PG down ~4s: ready=000 post=000 gwpid=271
+PG down ~8s: ready=000 post=000 gwpid=271
+PG down ~16s: ready=000 post=000 gwpid=309
+PG down ~30s: ready=000 post=000 gwpid=332
+--- gw1 log during outage ---
+CRITICAL gateway.platforms.api_server: durable run authority lost (authority session failed (AdminShutdown)); fail-stopping /v1/runs
+    raise DurableRunError(
+youtab_runtime.durable_run_store.DurableRunError: PostgreSQL backend unavailable at startup (OperationalError); server durability fail-closed (no SQLite fallback)
+    raise DurableRunError(
+youtab_runtime.durable_run_store.DurableRunError: PostgreSQL backend unavailable at startup (OperationalError); server durability fail-closed (no SQLite fallback)
+docker start r4-pg at 13:25:51
+gw1 ready after PG return: http=200 (~16s) pid=355 authority=6|4be41ca3f3a045198d7496cea5f57d49|355
+run row: UNKNOWN|inst:82e2d3a1009a4e7e9bda3a2d8b607e9f:5|
+GET /result -> {"object": "youtab.run.result", "run_id": "run_1e5bbc91dd7a4c5bb3297b29d909a322", "status": "unknown", "terminal": false, "output": null, "error": null}
+1|accepted|{"state": "QUEUED"}
+2|admitted|{"owner": "inst:82e2d3a1009a4e7e9bda3a2d8b607e9f:5", "state": "QUEUED"}
+3|status.running|{"state": "RUNNING", "adapter": true}
+4|state.unknown|{"owner": "inst:82e2d3a1009a4e7e9bda3a2d8b607e9f:5", "reason": "prior_instance_superseded", "authority_epoch": 6}
+
+########## FINAL: all runs in store ##########
+run_f46121101d3246dab8a51fbc27542318|SUCCEEDED|inst:fd3d215d43144fad9b9237d0bcd181de:1|CUSTOMER_TASK_OK_42
+run_84b9eec0406a4b8dbeab88c2a0cbab4a|CANCELLED|inst:fd3d215d43144fad9b9237d0bcd181de:1|-
+run_f0e3b16a0b604a56a55d1c4013d56d7d|FAILED|inst:fd3d215d43144fad9b9237d0bcd181de:1|-
+run_5f91fabb0c0147038044c2dc2de4345a|SUCCEEDED|inst:fd3d215d43144fad9b9237d0bcd181de:1|CUSTOMER_TASK_OK_42
+run_6b150b93c05942adba0dc64491da8fac|UNKNOWN|inst:fd3d215d43144fad9b9237d0bcd181de:1|-
+run_c0dddb3503e0400c867d57fb9ccf7758|UNKNOWN|inst:abea48d8352c4f408dcb0f10dca95ef8:3|-
+run_legacy_pid123|UNKNOWN|pid:123|-
+run_1b645d695b4c49b0936c21d8466c5446|UNKNOWN|inst:97b30f29531a4d81ad346f6cf37481eb:4|-
+run_1e5bbc91dd7a4c5bb3297b29d909a322|UNKNOWN|inst:82e2d3a1009a4e7e9bda3a2d8b607e9f:5|-
+SLOW requests seen by mock (one per SLOW submission => no blind retry): 6
+SUCCEEDED rows without an owner-committed success event: 0
