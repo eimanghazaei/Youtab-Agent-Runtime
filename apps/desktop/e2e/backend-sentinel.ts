@@ -15,7 +15,8 @@ interface BackendProcess {
 }
 
 function listBundledBackends(sidecarRoot: string): BackendProcess[] {
-  if (process.platform !== 'win32') return []
+  if (process.platform !== 'win32') {return []}
+
   try {
     const out = execFileSync(
       'powershell',
@@ -23,9 +24,12 @@ function listBundledBackends(sidecarRoot: string): BackendProcess[] {
         "Get-CimInstance Win32_Process -Filter \"Name='youtab-backend.exe'\" | ForEach-Object { \"$($_.ProcessId)|$($_.ExecutablePath)\" }"],
       { encoding: 'utf8' },
     )
+
     const root = sidecarRoot.toLowerCase()
+
     return out.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
       const [pid, exe] = line.split('|')
+
       return { pid: Number(pid), path: exe || '' }
     }).filter(p => Number.isInteger(p.pid) && p.path.toLowerCase().startsWith(root))
   } catch {
@@ -37,13 +41,16 @@ function isAlive(pid: number): boolean {
   if (process.platform === 'win32') {
     try {
       const out = execFileSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'], { encoding: 'utf8' })
+
       return out.includes(`"${pid}"`)
     } catch {
       return true // unknown: never report a false death
     }
   }
+
   try {
     process.kill(pid, 0)
+
     return true
   } catch {
     return false
@@ -67,16 +74,21 @@ export class BackendSentinel {
   static async attach(youtabHome: string, packagedBinary: string, timeoutMs = 30_000): Promise<BackendSentinel> {
     const sidecarRoot = path.join(path.dirname(packagedBinary), 'resources', 'backend-sidecar') + path.sep
     const deadline = Date.now() + timeoutMs
+
     for (;;) {
       const found = listBundledBackends(sidecarRoot)
+
       if (found.length === 1) {
         const sentinel = new BackendSentinel(found[0].pid, youtabHome)
         sentinel.timer = setInterval(() => sentinel.check(), 1000)
+
         return sentinel
       }
+
       if (Date.now() > deadline) {
         throw new Error(`expected exactly one bundled backend under ${sidecarRoot}, found ${JSON.stringify(found)}`)
       }
+
       await new Promise(resolve => setTimeout(resolve, 500))
     }
   }
@@ -90,7 +102,8 @@ export class BackendSentinel {
   /** Throw with the backend's own evidence if it has exited. */
   assertAlive(label: string): void {
     this.check()
-    if (!this.deathAt) return
+
+    if (!this.deathAt) {return}
     const logs = path.join(this.youtabHome, 'logs')
     throw new Error(
       `bundled backend pid=${this.pid} exited unexpectedly (observed by ${this.deathAt}; checkpoint: ${label})\n` +
@@ -101,7 +114,7 @@ export class BackendSentinel {
   }
 
   stop(): void {
-    if (this.timer) clearInterval(this.timer)
+    if (this.timer) {clearInterval(this.timer)}
     this.timer = null
   }
 }
