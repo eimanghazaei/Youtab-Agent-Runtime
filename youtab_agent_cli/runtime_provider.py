@@ -225,13 +225,16 @@ def _https_host_matches(base_url: str, domain: str) -> bool:
 
 def _configured_anthropic_key(model_cfg: Dict[str, Any]) -> str:
     """Read only a key explicitly bound to the configured Anthropic-compatible URL."""
+    inline_key = str(model_cfg.get("api_key") or "").strip()
+    if inline_key:
+        return inline_key
     for hint_key in ("key_env", "api_key_env"):
         env_var = str(model_cfg.get(hint_key) or "").strip()
         if env_var:
             token = _getenv(env_var, "").strip()
             if token:
                 return token
-    return str(model_cfg.get("api_key") or "").strip()
+    return ""
 
 
 def _anthropic_base_url_override_ok(base_url: str) -> bool:

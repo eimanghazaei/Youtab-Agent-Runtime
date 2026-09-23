@@ -1163,6 +1163,28 @@ class TestAzureAnthropicEnvVarHint:
         assert resolved["api_key"] == "proxy-secret"
         assert resolved["base_url"] == "https://proxy.test/anthropic"
 
+    def test_third_party_inline_key_wins_conflicting_official_env(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "official-secret")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(
+            rp, "_get_model_config",
+            lambda: self._cfg(
+                base_url="https://proxy.test/anthropic",
+                api_key="proxy-secret",
+                key_env="ANTHROPIC_API_KEY",
+            ),
+        )
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+        assert resolved["api_key"] == "proxy-secret"
+
+        explicit = rp.resolve_runtime_provider(
+            requested="anthropic",
+            explicit_base_url="https://proxy.test/anthropic",
+        )
+        assert explicit["api_key"] == "proxy-secret"
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # custom_providers / providers normalizer — api_key_env alias for key_env
