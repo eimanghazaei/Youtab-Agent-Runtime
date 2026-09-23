@@ -7376,19 +7376,27 @@ def _handle_busy_submit(
         busy_turn = session.get("inflight_turn")
     text_only = _is_text_only_busy_payload(text)
     plain_text = _coerce_message_text(text).strip() if text_only else ""
-    if mode == "steer" and text_only and plain_text and agent is not None and hasattr(agent, "steer"):
-        try:
-            steered = agent.steer(plain_text)
-        except Exception:
-            steered = False
-        if steered:
-            with session["history_lock"]:
-                _wait_for_acceptance_locked(session)
-                if session.get("running") and session.get("inflight_turn") is busy_turn:
+    if mode == "steer" and text_only and plain_text and agent is not None:
+        # The generic steer() merely fills a slot and returns True even after
+        # the last drain. Only the turn-scoped operation can acknowledge an
+        # in-turn steer; all other cases become a queued next turn.
+        with session["history_lock"]:
+            _wait_for_acceptance_locked(session)
+            token = session.get("busy_steer_token")
+            if (
+                session.get("running")
+                and session.get("inflight_turn") is busy_turn
+                and session.get("agent") is agent
+                and token is not None
+                and callable(getattr(agent, "steer_for_turn", None))
+            ):
+                try:
+                    steered = agent.steer_for_turn(plain_text, token)
+                except Exception:
+                    steered = False
+                if steered:
                     session["last_active"] = time.time()
-            # steer() accepted the text. The turn may have completed while
-            # the call was outside the lock; retrying would submit it twice.
-            return _ok(rid, {"status": "steered"})
+                    return _ok(rid, {"status": "steered"})
     # Text-only corrections redirect the live turn in place when the runtime
     # supports it; media/attachment payloads and older agents fall through to
     # the proven interrupt + queue path below.
@@ -9261,6 +9269,11 @@ def _run_prompt_submit(
             agent.clear_interrupt()
         except Exception:
             pass
+    steer_turn_token = object()
+    with session["history_lock"]:
+        if callable(getattr(agent, "begin_steer_turn", None)):
+            agent.begin_steer_turn(steer_turn_token)
+            session["busy_steer_token"] = steer_turn_token
     _emit("message.start", sid)
 
     def run():
@@ -9914,6 +9927,14 @@ def _run_prompt_submit(
             # this turn can't fire during a later turn on the same agent.
             agent.interim_assistant_callback = None
             with session["history_lock"]:
+                # Catch exceptional paths that never reached finalize_turn.
+                # Successful finalization already closed/drained this token.
+                _close_steer_turn = getattr(agent, "close_steer_turn", None)
+                if callable(_close_steer_turn):
+                    _remaining_steer = _close_steer_turn(steer_turn_token)
+                    if _remaining_steer:
+                        _enqueue_prompt(session, _remaining_steer, session.get("transport"))
+                session.pop("busy_steer_token", None)
                 session["running"] = False
                 session["last_active"] = time.time()
                 if not turn_error_retained:

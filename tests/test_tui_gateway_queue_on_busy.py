@@ -16,6 +16,7 @@ import types
 import pytest
 
 import tools.async_delegation as ad
+from run_agent import AIAgent
 from tui_gateway import server
 
 
@@ -31,6 +32,14 @@ def _session(agent=None, **extra):
         "attached_images": [],
         **extra,
     }
+
+
+def _steer_agent():
+    agent = object.__new__(AIAgent)
+    agent._pending_steer_lock = threading.Lock()
+    agent._pending_steer = None
+    agent._gateway_steer_turn = None
+    return agent
 
 
 # ── _enqueue_prompt ────────────────────────────────────────────────────────
@@ -106,29 +115,68 @@ def test_busy_interrupt_mode_ignores_completed_background_delegation(monkeypatch
 
 def test_busy_steer_mode_injects_when_accepted(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
-    agent = types.SimpleNamespace(steer=lambda text: True, interrupt=lambda *a, **k: None)
+    agent = _steer_agent()
     session = _session(agent=agent, running=True)
+    token = object()
+    agent.begin_steer_turn(token)
+    session["busy_steer_token"] = token
 
     resp = server._handle_busy_submit("r1", "sid", session, "nudge", "ws-1")
 
     assert resp["result"]["status"] == "steered"
     assert session.get("queued_prompt") is None
+    assert agent.close_steer_turn(token) == "nudge"
 
 
-def test_busy_steer_acks_accepted_text_when_turn_ends_during_injection(monkeypatch):
+def test_busy_steer_queues_when_turn_completed_before_acceptance(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
-    session = _session(running=True)
+    agent = _steer_agent()
+    session = _session(agent=agent, running=True)
     old_turn = {"user": "A"}
     session["inflight_turn"] = old_turn
+    token = object()
+    agent.begin_steer_turn(token)
+    session["busy_steer_token"] = token
+    assert agent.close_steer_turn(token) is None
 
-    def _steer(_text):
-        with session["history_lock"]:
-            session["running"] = False
-        return True
+    assert server._handle_busy_submit("r1", "sid", session, "B", "ws-1")["result"] == {"status": "queued"}
+    assert session["queued_prompt"]["text"] == "B"
+    assert agent._pending_steer is None
 
-    session["agent"] = types.SimpleNamespace(steer=_steer)
-    assert server._handle_busy_submit("r1", "sid", session, "B", "ws-1")["result"] == {"status": "steered"}
-    assert session.get("queued_prompt") is None
+
+def test_busy_steer_completion_during_acceptance_queues_once(monkeypatch):
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
+    agent = _steer_agent()
+    session = _session(agent=agent, running=True)
+    session["inflight_turn"] = {"user": "A"}
+    token = object()
+    agent.begin_steer_turn(token)
+    session["busy_steer_token"] = token
+    entered = threading.Event()
+    release = threading.Event()
+    real_steer = agent.steer_for_turn
+
+    def delayed_steer(text, turn_token):
+        entered.set()
+        assert release.wait(2)
+        return real_steer(text, turn_token)
+
+    agent.steer_for_turn = delayed_steer
+    response = []
+    submit = threading.Thread(target=lambda: response.append(
+        server._handle_busy_submit("r1", "sid", session, "B", "ws-1")
+    ))
+    submit.start()
+    assert entered.wait(2)
+    # Agent finalization closes acceptance before the pending call gets to
+    # the slot. The gateway must deliver B as a next-turn prompt instead.
+    assert agent.close_steer_turn(token) is None
+    release.set()
+    submit.join(2)
+    assert not submit.is_alive()
+    assert response[0]["result"] == {"status": "queued"}
+    assert session["queued_prompt"]["text"] == "B"
+    assert agent._pending_steer is None
 
 
 def test_busy_redirect_acks_accepted_text_when_turn_is_replaced(monkeypatch):
@@ -151,7 +199,6 @@ def test_busy_redirect_acks_accepted_text_when_turn_is_replaced(monkeypatch):
 
 
 @pytest.mark.parametrize("mode,method,finish", [
-    ("steer", "steer", True),
     ("interrupt", "redirect", False),
 ])
 def test_prompt_submit_never_reclaims_an_accepted_busy_correction(

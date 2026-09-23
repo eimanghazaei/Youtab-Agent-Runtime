@@ -3183,6 +3183,34 @@ class AIAgent:
                 self._pending_steer = cleaned
         return True
 
+    def begin_steer_turn(self, token: object) -> None:
+        """Arm turn-scoped steering for a gateway turn after interrupt reset."""
+        with self._pending_steer_lock:
+            self._gateway_steer_turn = token
+
+    def steer_for_turn(self, text: str, token: object) -> bool:
+        """Accept only while this turn can still consume or return the steer."""
+        cleaned = text.strip() if isinstance(text, str) else ""
+        if not cleaned:
+            return False
+        with self._pending_steer_lock:
+            if getattr(self, "_gateway_steer_turn", None) is not token:
+                return False
+            existing = self._pending_steer
+            self._pending_steer = (existing + "\n" + cleaned) if existing else cleaned
+            return True
+
+    def close_steer_turn(self, token: object | None = None) -> Optional[str]:
+        """Atomically stop accepting steers and return any unconsumed text."""
+        with self._pending_steer_lock:
+            active = getattr(self, "_gateway_steer_turn", None)
+            if token is not None and active is not token:
+                return None
+            self._gateway_steer_turn = None
+            text = self._pending_steer
+            self._pending_steer = None
+            return text
+
     def redirect(self, text: str) -> bool:
         """Redirect the active turn without converting it into a new task.
 
