@@ -195,21 +195,27 @@ class TestRunSingleChildTimeoutDump:
             parent_agent=parent,
         )
 
-    def test_zero_api_calls_writes_dump_and_surfaces_path(self, youtab_home, monkeypatch):
+    def test_zero_api_calls_detaches_and_writes_investigation_dump(self, youtab_home, monkeypatch):
+        """CORRECTED (Codex): a 0-API-call child that outlives the parent WAIT
+        budget is a legitimate child still working before its first LLM call — it
+        is DETACHED (RUNNING + task_id), NOT killed. The diagnostic dump is still
+        written as an investigation artifact while the child continues; it no
+        longer means the child was terminated."""
         child = _StubChild(api_call_count=0, hang_seconds=10.0)
         result = self._invoke_with_short_timeout(child, monkeypatch)
 
-        assert result["status"] == "timeout"
+        # Parent-wait expiry -> detach, not kill (regardless of api_calls).
+        assert result["status"] == "running"
+        assert result["detached"] is True
         assert result["api_calls"] == 0
+        assert result["task_id"]
+        # Diagnostic artifact is still written for investigation.
         assert result["diagnostic_path"] is not None
         dump_path = Path(result["diagnostic_path"])
         assert dump_path.is_file()
         assert dump_path.parent == youtab_home / "logs"
-
-        # Error message surfaces the path and the "no API call" phrasing
-        assert "without making any API call" in result["error"]
-        assert "Diagnostic:" in result["error"]
-        assert str(dump_path) in result["error"]
+        # The child was NOT interrupted by the parent-wait timeout.
+        child.interrupt()  # cleanup only
 
 
     # ── explicit timeout metadata (#51690, salvaged from PR #60378) ────

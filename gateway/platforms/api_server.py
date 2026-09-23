@@ -1235,6 +1235,29 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        # Canonical durable run authority (single source of truth for run state,
+        # events and result). The in-memory dicts below are now only a LIVE SSE
+        # fan-out cache; get/events/result/restart are served from this store so
+        # a client disconnect, HTTP timeout or backend restart never loses a run.
+        try:
+            import os as _os
+
+            from youtab_runtime.durable_run_store import create_run_store
+            # Backend is env-driven (YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND, default sqlite).
+            self._run_store = create_run_store()
+        except Exception:
+            # Fail CLOSED when a server backend was explicitly requested (never a
+            # silent SQLite fallback in server mode); only the default local
+            # sqlite path degrades gracefully so gateway startup is never blocked.
+            if _os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+                raise
+            self._run_store = None
+        # Exclusive durable run authority (server durable mode only). Acquired
+        # before readiness; the prior instance's abandoned runs are then moved to
+        # UNKNOWN durably, so they never read back as RUNNING after a restart
+        # (see the method for the contract).
+        self._run_authority = None
+        self._reconcile_orphaned_runs_on_startup()
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -1809,7 +1832,9 @@ class APIServerAdapter(BasePlatformAdapter):
         routes: List[tuple] = [
             ("GET", "/health", self._handle_health),
             ("GET", "/health/detailed", self._handle_health_detailed),
+            ("GET", "/health/ready", self._handle_ready),
             ("GET", "/v1/health", self._handle_health),
+            ("GET", "/v1/health/ready", self._handle_ready),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("GET", "/v1/capabilities", self._handle_capabilities),
@@ -1843,6 +1868,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("POST", "/api/jobs/{job_id}/run", self._handle_run_job),
             ("POST", "/v1/runs", self._handle_runs),
             ("GET", "/v1/runs/{run_id}", self._handle_get_run),
+            ("GET", "/v1/runs/{run_id}/result", self._handle_run_result),
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
             ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
             ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
@@ -2686,6 +2712,50 @@ class APIServerAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response(
             {"status": "ok", "platform": "youtab-agent-runtime", "version": _youtab_version()}
+        )
+
+    async def _handle_ready(self, request: "web.Request") -> "web.Response":
+        """GET /health/ready — durable-store readiness (NOT /health liveness).
+
+        Unlike ``/health`` (a static liveness OK) this probe actually exercises
+        the durable RunStore with a cheap read round-trip. If the store is
+        unreachable (e.g. PostgreSQL lost while the API is running) it returns
+        ``503`` with ``ready:false`` so an orchestrator/admin drains this
+        instance and no run is admitted against a dead store. This is the signal
+        an admin wires their readiness probe / load-balancer health to; do NOT
+        use ``/health`` for durable-store readiness.
+
+        No auth (up/down only, no secrets); the error is never surfaced verbatim
+        so DSN/credentials cannot leak through the probe.
+        """
+        store = getattr(self, "_run_store", None)
+        backend = os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "sqlite")
+        if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") and not self._run_authority_held():
+            # Server durable mode without the exclusive run authority: never ready.
+            return web.json_response(
+                {"ready": False, "durable_store": "no_run_authority", "backend": backend},
+                status=503,
+            )
+        if store is None:
+            # No durable store configured (local default path degraded to none).
+            # The process is live but there is no durable backend to be ready.
+            return web.json_response(
+                {"ready": True, "durable_store": "none", "backend": backend},
+            )
+        try:
+            # Cheap real round-trip: a missing id returns None but still forces a
+            # connection + query, so a dead PostgreSQL raises here.
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None, store.get_run, "__youtab_readiness_probe__"
+            )
+        except Exception:
+            return web.json_response(
+                {"ready": False, "durable_store": "unavailable", "backend": backend},
+                status=503,
+            )
+        return web.json_response(
+            {"ready": True, "durable_store": "ok", "backend": backend},
         )
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":
@@ -5985,7 +6055,283 @@ class APIServerAdapter(BasePlatformAdapter):
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
         self._run_statuses[run_id] = current
+        mirror_ok = self._mirror_run_state(run_id, status, current)
+        # Server durable mode: a TERMINAL state that could not be made durable
+        # must NOT be exposed as a durable terminal result — otherwise a client
+        # could observe status=completed with output that then disappears after a
+        # restart (in-memory only). Report reconciliation_required truthfully.
+        if (
+            not mirror_ok
+            and str(status).lower() in self._TERMINAL_STATUSES
+            and os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND")
+        ):
+            current["status"] = "reconciliation_required"
+            current["durable"] = False
+            current["pending_status"] = status
+            current["reconciliation_reason"] = "terminal_durable_commit_failed"
+            current["last_event"] = "run.reconciliation_required"
+            # Do NOT present uncommitted output/error/usage as a recoverable
+            # result — it was never durably committed and would vanish on restart.
+            current.pop("output", None)
+            current.pop("error", None)
+            current.pop("usage", None)
+            logger.warning(
+                "run %s reached terminal '%s' but the durable store write failed; "
+                "reporting reconciliation_required and withholding uncommitted output",
+                run_id, status,
+            )
+            self._run_statuses[run_id] = current
         return current
+
+    _TERMINAL_STATUSES = frozenset(
+        {"completed", "succeeded", "done", "failed", "error", "cancelled", "canceled"}
+    )
+
+    # Map api_server's status vocabulary onto the canonical RunState.
+    _RUN_STATE_MAP = {
+        "queued": "QUEUED", "running": "RUNNING",
+        "waiting_for_approval": "WAITING_APPROVAL", "waiting_approval": "WAITING_APPROVAL",
+        "paused": "PAUSED", "stalled": "STALLED", "cancelling": "CANCELLING",
+        "stopping": "CANCELLING",
+        "cancelled": "CANCELLED", "canceled": "CANCELLED",
+        "completed": "SUCCEEDED", "succeeded": "SUCCEEDED", "done": "SUCCEEDED",
+        "failed": "FAILED", "error": "FAILED",
+    }
+
+    def _mirror_run_state(self, run_id: str, status: str, current: Dict[str, Any]) -> bool:
+        """Write-through the run's state to the canonical durable RunStore.
+
+        Returns True when the state is durably written (or when there is nothing
+        to persist / local best-effort mode); False when a write was attempted
+        and failed. For non-terminal states the store is a live mirror and a
+        transient failure is tolerated; TERMINAL states in server durable mode
+        are retried a few times because a lost terminal write would otherwise
+        expose a non-durable completion (the caller reports
+        reconciliation_required when this returns False)."""
+        store = getattr(self, "_run_store", None)
+        server_mode = bool(os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"))
+        if store is None:
+            # No store: local best-effort path is fine; server mode without a
+            # store is a durability failure the caller must reflect.
+            return not server_mode
+        from youtab_runtime.durable_run_store import RunIdentity, RunState
+        mapped = self._RUN_STATE_MAP.get(str(status).lower())
+        if mapped is None:
+            return True
+        to_state = RunState(mapped)
+        result_ref = current.get("output")
+        error_ref = current.get("error")
+        is_terminal = str(status).lower() in self._TERMINAL_STATUSES
+        # Terminal writes in server mode get a few bounded retries; everything
+        # else is a single best-effort attempt.
+        attempts = 3 if (is_terminal and server_mode) else 1
+        for attempt in range(attempts):
+            try:
+                if store.get_run(run_id) is None:
+                    # Shipped /v1/runs is single-operator today; scope is degenerate
+                    # but present so the store's tenant/workspace/principal binding is
+                    # ready for a signed multi-tenant identity later.
+                    scope = current.get("session_id") or "local"
+                    store.create_run(RunIdentity(
+                        task_id=run_id, run_id=run_id, tenant_id="local",
+                        organization_id="local", workspace_id="local",
+                        principal_id=str(scope), agent_id=str(current.get("model") or "agent"),
+                    ))
+                store.set_state(
+                    run_id, to_state, strict=False,
+                    result_ref=(str(result_ref) if result_ref else None),
+                    error_ref=(str(error_ref) if error_ref else None),
+                    kind=f"status.{str(status).lower()}",
+                )
+                return True
+            except Exception:
+                logger.debug(
+                    "durable run-state mirror failed for %s (attempt %d/%d)",
+                    run_id, attempt + 1, attempts, exc_info=True,
+                )
+                if attempt + 1 < attempts:
+                    time.sleep(0.25)
+        return False
+
+    def _admit_durable_or_fail(
+        self, run_id: str, *, session_id: Optional[str], model: Optional[str]
+    ) -> "Optional[web.Response]":
+        """Persist-before-ack admission barrier for server durable mode.
+
+        In server durable mode (an explicit YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND,
+        e.g. postgres) a run MUST be durably recorded BEFORE it is acked/dispatched
+        — otherwise a store outage (e.g. PostgreSQL lost while the API is up) would
+        let the API return 202 and execute a run with no durable record, which is
+        lost on process death. If the durable admission write fails, this returns a
+        503 the caller sends instead of 202, and the run is never dispatched.
+
+        In the default local/sqlite path (no explicit server backend, or no store)
+        this is a no-op: desktop startup/serving is never blocked, and the
+        best-effort write-through mirror handles persistence.
+        """
+        store = getattr(self, "_run_store", None)
+        server_backend = os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND")
+        if not server_backend:
+            # Default local/sqlite path: no-op (never block desktop).
+            return None
+        if store is None:
+            # Server durable mode was requested but no store is present. This
+            # should not happen (startup fails closed), but if it does we must
+            # NOT admit an in-memory-only run — fail closed.
+            logger.warning(
+                "server durable mode set but _run_store is absent; refusing run %s "
+                "(fail-closed, no in-memory-only execution)",
+                run_id,
+            )
+            return web.json_response(
+                {"error": "durable store unavailable", "code": "durable_store_unavailable"},
+                status=503,
+            )
+        from youtab_runtime.durable_run_store import RunIdentity, RunState
+        authority = getattr(self, "_run_authority", None)
+        try:
+            # Owner-stamped atomic admission under the exclusive run authority
+            # (lease_owner=inst:<instance_id>:<epoch>, fenced in the store). The
+            # owner makes an abandoned run discoverable after a restart: the next
+            # authority holder moves it to UNKNOWN (see
+            # _reconcile_orphaned_runs_on_startup) instead of letting it read
+            # back as RUNNING.
+            if authority is None:
+                raise RuntimeError("no durable run authority")
+            authority.ensure_held()
+            store.admit(
+                RunIdentity(
+                    task_id=run_id, run_id=run_id, tenant_id="local",
+                    organization_id="local", workspace_id="local",
+                    principal_id=str(session_id or "local"),
+                    agent_id=str(model or "agent"),
+                ),
+                owner=authority.owner,
+                initial_state=RunState.QUEUED,
+            )
+        except Exception:
+            logger.warning(
+                "durable admission failed for %s; refusing run "
+                "(server durable mode fail-closed, no in-memory-only execution)",
+                run_id,
+            )
+            return web.json_response(
+                {"error": "durable store unavailable", "code": "durable_store_unavailable"},
+                status=503,
+            )
+        return None
+
+    def _reconcile_orphaned_runs_on_startup(self) -> None:
+        """Establish exclusive run authority, then recover the prior instance's runs.
+
+        Server durable mode only; the local/desktop default is unchanged. The
+        durable server is a store-enforced singleton: startup acquires the
+        store's exclusive run authority (PostgreSQL session advisory lock on a
+        supervised connection; SQLite file lock) and FAILS if another live
+        instance holds it, if the store is unavailable, or if the store cannot
+        enforce authority. Only after exclusive ownership is proven are ALL
+        prior owner-stamped nonterminal ``/v1/runs`` runs moved to UNKNOWN,
+        whatever PID they carried; ownerless rows and terminal results are
+        untouched. Numeric PIDs are never used as liveness evidence.
+
+        Recovery contract: an UNKNOWN run is terminal-uncertain and is NOT
+        auto-resumed or resubmitted. It is exposed as status "unknown"
+        (recovered_from_store) so an operator/client can reconcile it (verify side
+        effects and, if needed, re-submit).
+        """
+        store = getattr(self, "_run_store", None)
+        if not os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+            return
+        if store is None:
+            raise RuntimeError("durable startup reconciliation requires a run store")
+        acquire = getattr(store, "acquire_instance_authority", None)
+        reconcile = getattr(store, "reconcile_prior_instances", None)
+        if acquire is None or reconcile is None:
+            raise RuntimeError(
+                "durable startup reconciliation unsupported: run store cannot "
+                "enforce exclusive run authority"
+            )
+        authority = acquire()
+        try:
+            authority.add_loss_listener(self._on_run_authority_lost)
+            reconciled = reconcile(authority)
+        except Exception:
+            logger.warning("startup run reconcile failed", exc_info=True)
+            authority.release()
+            raise
+        self._run_authority = authority
+        logger.info(
+            "durable run authority acquired (scope=%s epoch=%d)",
+            authority.scope, authority.epoch,
+        )
+        if reconciled:
+            logger.warning(
+                "startup reconcile: %d abandoned run(s) moved to UNKNOWN: %s",
+                len(reconciled), ", ".join(reconciled[:20]),
+            )
+
+    def _run_authority_held(self) -> bool:
+        authority = getattr(self, "_run_authority", None)
+        return authority is not None and authority.held
+
+    def _release_run_authority(self) -> None:
+        authority = getattr(self, "_run_authority", None)
+        if authority is not None:
+            authority.release()
+
+    def _on_run_authority_lost(self, reason: str) -> None:
+        """Fail-stop on durable run authority loss.
+
+        Another instance may now own the store, so this process must produce no
+        further effect, terminal success or ack. Store writes are already fenced
+        and admission/readiness gated; interrupt live agents, then terminate the
+        process so no in-flight tool call can outlive the authority. The
+        supervisor restarts it and the new process must re-acquire the authority.
+        """
+        logger.critical("durable run authority lost (%s); fail-stopping /v1/runs", reason)
+        # 1) Cooperative interrupt: signal every live agent's worker threads so
+        # in-process effect gates abort at their next checkpoint.
+        for agent in list(getattr(self, "_active_run_agents", {}).values()):
+            try:
+                agent.interrupt("durable run authority lost")
+            except Exception:
+                pass
+        # 2) Synchronous descendant teardown BEFORE exit: the cooperative flag
+        # does not reap already-spawned descendants, and os._exit would orphan
+        # them (own session/process group) — free to complete a NEW external
+        # effect after authority loss. Reap the owned descendant tree via the
+        # single process-supervision authority (no second reaper), bounded and
+        # fail-closed. contained=False is logged CRITICAL (unverified cleanup);
+        # we still exit — a dying process can do no more, but never reports the
+        # cleanup as applied.
+        try:
+            from tools.process_registry import reap_effect_descendants
+            _reap = reap_effect_descendants(deadline_s=8.0)
+            logger.critical(
+                "effect-descendant reap on fail-stop: contained=%s targets=%d "
+                "signalled=%d verified_dead=%d unverified=%s unidentified=%s "
+                "budget_exceeded=%s enumeration_ok=%s sweeps=%d elapsed=%.3fs platform=%s",
+                _reap.get("contained"), _reap.get("targets", 0),
+                len(_reap.get("signalled", [])), len(_reap.get("verified_dead", [])),
+                _reap.get("unverified"), _reap.get("unidentified"),
+                _reap.get("budget_exceeded"), _reap.get("enumeration_ok"),
+                _reap.get("sweeps", 0), _reap.get("elapsed_s", 0.0), _reap.get("platform"),
+            )
+        except Exception:
+            logger.critical(
+                "effect-descendant reap FAILED on fail-stop (unverified cleanup)",
+                exc_info=True,
+            )
+        self._authority_fail_stop()
+
+    @staticmethod
+    def _authority_fail_stop() -> None:
+        for handler in logging.getLogger().handlers:
+            try:
+                handler.flush()
+            except Exception:
+                pass
+        os._exit(75)  # EX_TEMPFAIL: supervisor restarts; startup re-acquires
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
@@ -5995,6 +6341,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_statuses.get(run_id, {}).get("status", "running"),
                 last_event=event.get("event"),
             )
+            # Persist a durable, replayable progress event for the lifecycle
+            # timeline (skip high-frequency message.delta text — it is live-only
+            # and reconstructable from the final result). This gives reconnect /
+            # restart a monotonic progress sequence distinct from liveness.
+            _store = getattr(self, "_run_store", None)
+            _kind = event.get("event")
+            if _store is not None and _kind and _kind != "message.delta":
+                try:
+                    _store.record_progress(run_id, step=_kind,
+                                           metric={"tool": event.get("tool")})
+                except Exception:
+                    pass
             q = self._run_streams.get(run_id)
             if q is None:
                 return
@@ -6176,6 +6534,17 @@ class APIServerAdapter(BasePlatformAdapter):
         # approval for one run must not unblock another run's dangerous command.
         approval_session_key = run_id
         ephemeral_system_prompt = instructions
+
+        # Persist-before-ack: in server durable mode a run must be durably
+        # recorded before it is acked/dispatched. If the durable store is
+        # unavailable (e.g. PostgreSQL lost mid-flight) this returns 503 and the
+        # run is never dispatched — no 202 for an in-memory-only run.
+        admit_fail = self._admit_durable_or_fail(
+            run_id, session_id=session_id, model=body.get("model")
+        )
+        if admit_fail is not None:
+            return admit_fail
+
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
@@ -6189,6 +6558,23 @@ class APIServerAdapter(BasePlatformAdapter):
             """Enqueue only while this run still owns live transport state."""
             if self._run_streams.get(run_id) is q:
                 q.put_nowait(event)
+
+        def _emit_terminal(res: Optional[Dict[str, Any]], ok_event: Dict) -> None:
+            """Emit a terminal SSE ONLY after the durable commit succeeded.
+
+            _set_run_status flips the status to reconciliation_required when the
+            terminal durable write fails (server mode); in that case emit a
+            NONTERMINAL run.reconciliation_required event carrying no uncommitted
+            output, never the terminal ok_event."""
+            if isinstance(res, dict) and res.get("status") == "reconciliation_required":
+                _put_event_if_active({
+                    "event": "run.reconciliation_required",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "reason": res.get("reconciliation_reason", "durable_commit_failed"),
+                })
+            else:
+                _put_event_if_active(ok_event)
 
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
@@ -6222,17 +6608,22 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 self._set_run_status(run_id, "running")
                 if run_id in self._stopping_run_ids:
-                    _put_event_if_active({
-                        "event": "run.cancelled",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                    })
-                    self._set_run_status(
+                    res = self._set_run_status(
                         run_id,
                         "cancelled",
                         last_event="run.cancelled",
                     )
+                    _emit_terminal(res, {
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
                     return
+                if (
+                    os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND")
+                    and not self._run_authority_held()
+                ):
+                    raise RuntimeError("durable run authority lost before execution")
                 with self._profile_scope(request_profile):
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt,
@@ -6342,57 +6733,63 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                 if run_id in self._stopping_run_ids:
-                    _put_event_if_active({
-                        "event": "run.cancelled",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                    })
-                    self._set_run_status(
+                    res = self._set_run_status(
                         run_id,
                         "cancelled",
                         last_event="run.cancelled",
                     )
+                    _emit_terminal(res, {
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).
                 elif isinstance(result, dict) and result.get("failed"):
                     error_msg = _redact_api_error_text(result.get("error") or "agent run failed")
-                    _put_event_if_active({
-                        "event": "run.failed",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "error": error_msg,
-                    })
-                    self._set_run_status(
+                    # Durable commit FIRST, then the terminal SSE (or a
+                    # reconciliation event if the commit failed).
+                    res = self._set_run_status(
                         run_id,
                         "failed",
                         error=error_msg,
                         last_event="run.failed",
                     )
-                else:
-                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    _put_event_if_active({
-                        "event": "run.completed",
+                    _emit_terminal(res, {
+                        "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "output": final_response,
-                        "usage": usage,
+                        "error": error_msg,
                     })
-                    self._set_run_status(
+                else:
+                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    # Durable commit FIRST: a stable terminal result + the
+                    # run.completed SSE are exposed only after the RunStore write
+                    # succeeds. If it fails, _emit_terminal sends a nonterminal
+                    # reconciliation event and no uncommitted output.
+                    res = self._set_run_status(
                         run_id,
                         "completed",
                         output=final_response,
                         usage=usage,
                         last_event="run.completed",
                     )
+                    _emit_terminal(res, {
+                        "event": "run.completed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "output": final_response,
+                        "usage": usage,
+                    })
             except asyncio.CancelledError:
-                self._set_run_status(
+                res = self._set_run_status(
                     run_id,
                     "cancelled",
                     last_event="run.cancelled",
                 )
                 try:
-                    _put_event_if_active({
+                    _emit_terminal(res, {
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -6410,14 +6807,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 # except-Exception branch below.
                 logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
                 error_msg = f"⚠️ Provider authentication failed: {exc}"
-                self._set_run_status(
+                res = self._set_run_status(
                     run_id,
                     "failed",
                     error=error_msg,
                     last_event="run.failed",
                 )
                 try:
-                    _put_event_if_active({
+                    _emit_terminal(res, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -6427,18 +6824,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
-                self._set_run_status(
+                _err = _redact_api_error_text(exc)
+                res = self._set_run_status(
                     run_id,
                     "failed",
-                    error=_redact_api_error_text(exc),
+                    error=_err,
                     last_event="run.failed",
                 )
                 try:
-                    _put_event_if_active({
+                    _emit_terminal(res, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "error": _redact_api_error_text(exc),
+                        "error": _err,
                     })
                 except Exception:
                     pass
@@ -6464,6 +6862,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_approval_sessions.pop(run_id, None)
                 self._stopping_run_ids.discard(run_id)
 
+        if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") and not self._run_authority_held():
+            # Authority lost after admission: no dispatch, no 202. The admitted
+            # row is reconciled to UNKNOWN by the next authority holder.
+            return web.json_response(
+                {"error": "durable run authority unavailable", "code": "durable_store_unavailable"},
+                status=503,
+            )
         self._activate_admitted_request()
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -6492,11 +6897,63 @@ class APIServerAdapter(BasePlatformAdapter):
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
         if status is None:
+            # In-memory cache miss (e.g. after a backend restart): reconstruct
+            # from the durable RunStore so accepted runs survive restart.
+            status = self._run_status_from_store(run_id)
+        if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
         return web.json_response(status)
+
+    _STATE_TO_STATUS = {
+        "QUEUED": "queued", "CLAIMED": "running", "RUNNING": "running",
+        "WAITING_APPROVAL": "waiting_for_approval", "WAITING_CHILD": "running",
+        "PAUSING": "running", "PAUSED": "paused", "STALLED": "stalled",
+        "CANCELLING": "cancelling", "SUCCEEDED": "completed", "FAILED": "failed",
+        "CANCELLED": "cancelled", "UNKNOWN": "unknown",
+        "RECONCILIATION_REQUIRED": "reconciliation_required",
+    }
+
+    def _run_status_from_store(self, run_id: str) -> Optional[Dict[str, Any]]:
+        store = getattr(self, "_run_store", None)
+        if store is None:
+            return None
+        try:
+            row = store.get_run(run_id)
+        except Exception:
+            return None
+        if row is None:
+            return None
+        return {
+            "object": "youtab.run", "run_id": run_id,
+            "status": self._STATE_TO_STATUS.get(row["state"], row["state"].lower()),
+            "created_at": row["created_at"], "updated_at": row["updated_at"],
+            "session_id": row.get("principal_id"),
+            "output": row.get("result_ref"), "error": row.get("error_ref"),
+            "recovered_from_store": True,
+        }
+
+    async def _handle_run_result(self, request: "web.Request") -> "web.Response":
+        """GET /v1/runs/{run_id}/result — durable terminal result by run id.
+
+        Served from the canonical RunStore so the result survives client
+        disconnect and backend restart."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        run_id = request.match_info["run_id"]
+        status = self._run_statuses.get(run_id) or self._run_status_from_store(run_id)
+        if status is None:
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
+        state = str(status.get("status", "")).lower()
+        terminal = state in ("completed", "succeeded", "failed", "error", "cancelled", "canceled")
+        return web.json_response({
+            "object": "youtab.run.result", "run_id": run_id, "status": status.get("status"),
+            "terminal": terminal, "output": status.get("output"), "error": status.get("error"),
+        })
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
         """GET /v1/runs/{run_id}/events — SSE stream of structured agent lifecycle events."""
@@ -6506,16 +6963,30 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = request.match_info["run_id"]
 
-        # Allow subscribing slightly before the run is registered (race condition window)
+        # Reconnect cursor: Last-Event-ID header wins, else ?from_seq=.
+        try:
+            from_seq = int(request.headers.get("Last-Event-ID", request.query.get("from_seq", 0)) or 0)
+        except (TypeError, ValueError):
+            from_seq = 0
+
+        store = getattr(self, "_run_store", None)
+        durable_known = False
+        if store is not None:
+            try:
+                durable_known = store.get_run(run_id) is not None
+            except Exception:
+                durable_known = False
+
+        # Allow subscribing slightly before the run is registered (race window).
         for _ in range(20):
             if run_id in self._run_streams:
                 break
             await asyncio.sleep(0.05)
-        else:
+        live = run_id in self._run_streams
+        # A run known to the durable store (completed, or after a backend restart)
+        # must be replayable even without a live queue — never a false 404.
+        if not live and not durable_known:
             return web.json_response(_openai_error(f"Run not found: {run_id}", code="run_not_found"), status=404)
-
-        q = self._run_streams[run_id]
-        self._run_stream_subscribers.add(run_id)
 
         response = web.StreamResponse(
             status=200,
@@ -6527,7 +6998,25 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         await response.prepare(request)
 
+        # 1) Durable replay from the cursor (reconnect-from-sequence + restart).
+        last_seq = from_seq
+        if store is not None and durable_known:
+            try:
+                for e in store.get_events(run_id, from_seq=from_seq):
+                    last_seq = e["seq"]
+                    body = json.dumps({"seq": e["seq"], "kind": e["kind"], **e.get("payload", {})})
+                    await response.write(f"id: {e['seq']}\ndata: {body}\n\n".encode())
+            except Exception as exc:
+                logger.debug("[api_server] durable replay failed for %s: %s", run_id, exc)
+
         try:
+            if not live:
+                # Terminal / restart-recovered: durable replay is complete.
+                await response.write(b": stream closed\n\n")
+                return response
+            q = self._run_streams[run_id]
+            self._run_stream_subscribers.add(run_id)
+            # 2) Tail the live fan-out queue.
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=30.0)
@@ -6653,6 +7142,16 @@ class APIServerAdapter(BasePlatformAdapter):
 
         self._set_run_status(run_id, "stopping", last_event="run.stopping")
         self._stopping_run_ids.add(run_id)
+        # Persist the explicit authorized cancellation intent in the durable
+        # authority (only an explicit stop, deadline, safety or terminal failure
+        # may stop a run — a disconnect/timeout never reaches here).
+        _store = getattr(self, "_run_store", None)
+        if _store is not None:
+            try:
+                _store.request_cancel(run_id, reason="client stop via /v1/runs/stop",
+                                      by="api_client")
+            except Exception:
+                logger.debug("durable cancel intent record failed for %s", run_id, exc_info=True)
 
         if agent is not None:
             try:
@@ -6755,7 +7254,20 @@ class APIServerAdapter(BasePlatformAdapter):
         return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Start the aiohttp web server."""
+        """Start the aiohttp web server.
+
+        A failed or cancelled start releases the durable run authority acquired
+        at construction, so a retried adapter in this process can re-acquire it.
+        """
+        started = False
+        try:
+            started = await self._start_server(is_reconnect=is_reconnect)
+            return started
+        finally:
+            if not started:
+                self._release_run_authority()
+
+    async def _start_server(self, *, is_reconnect: bool = False) -> bool:
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
@@ -6937,6 +7449,9 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        # Last: give up the exclusive durable run authority. Any later write by
+        # a lingering executor thread is refused by the store fence.
+        self._release_run_authority()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

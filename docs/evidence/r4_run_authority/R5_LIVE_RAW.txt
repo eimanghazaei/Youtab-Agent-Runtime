@@ -1,0 +1,36 @@
+# R5 live authority-loss probe + POSIX/Windows reap proof — redacted raw
+# RC image: youtab-agent-runtime:r5-ac7bb5b1e
+# embedded source SHA: ac7bb5b1ebcb351dc132b3fd238c98b47a81d3ea
+# image Id (config digest): sha256:ce121bdd60625116b6171a0aa198dd2e9ed9865180e01e92146e21ae9ac8fc63
+
+== A. Live gateway fail-stop on real PostgreSQL authority loss (Linux container) ==
+run_id=run_2ce21c0d37924cc9aff3ecbf63d4ed87 ; provider=mock ; backend=postgres
+-- gw logs (authority loss -> interrupt -> REAP -> reconcile) --
+CRITICAL youtab_runtime.durable_run_authority: durable run authority LOST (scope=v1_runs epoch=1 instance=fb67a17103964284bf573d48a6233ced): authority session failed (AdminShutdown)
+CRITICAL gateway.platforms.api_server: durable run authority lost (authority session failed (AdminShutdown)); fail-stopping /v1/runs
+CRITICAL gateway.platforms.api_server: effect-descendant reap on fail-stop: contained=True killed=0 tracked=0 tree=0 unverified=[] platform=posix
+WARNING gateway.platforms.api_server: startup reconcile: 1 abandoned run(s) moved to UNKNOWN: run_2ce21c0d37924cc9aff3ecbf63d4ed87
+-- run terminal state after takeover (served from durable store) --
+{"object": "youtab.run", "run_id": "run_2ce21c0d37924cc9aff3ecbf63d4ed87", "status": "unknown", "created_at": 1790176529.2136693, "updated_at": 1790176544.490607, "session_id": "run_2ce21c0d37924cc9aff3ecbf63d4ed87", "output": null, "error": null, "recovered_from_store": true}
+{"object": "youtab.run.result", "run_id": "run_2ce21c0d37924cc9aff3ecbf63d4ed87", "status": "unknown", "terminal": false, "output": null, "error": null}
+-- durable epoch (bumped on re-acquire) + run row --
+epoch=2
+run_2ce21c0d37924cc9aff3ecbf63d4ed87|UNKNOWN|NULL
+NOTE: idle run had no effect-capable descendant (tree=0); the reap fired in
+the real fail-stop path. Real-descendant kill on each platform is below.
+
+== B. POSIX real-descendant reap (inside Linux container from the R5 image) ==
+detached child in its own process group; reap kills it before its delayed effect:
+  REAP: contained=True killed=[<child>] tree=1 platform=posix ; sentinel_written=False
+  (full run captured in session transcript; child pgid == child pid; effect prevented)
+
+== C. Windows real-descendant reap (host, deterministic test) ==
+tests/durable_execution/test_r5_effect_fence.py::test_failstop_reaps_detached_descendant
+  CREATE_NEW_PROCESS_GROUP child; reap -> contained=True; sentinel absent (effect prevented).
+  Companion test ..._DOCUMENTS_GAP: no-reap fail-stop orphans the child (sentinel written).
+
+== Platform teardown primitives used (single authority, no second reaper) ==
+POSIX: psutil child-tree walk + SIGTERM->SIGKILL + killpg (ProcessRegistry._terminate_host_pid).
+Windows: taskkill /PID <pid> /T /F (tree kill; the registry's existing primitive).
+Start-time guard (_host_pid_is_ours) refuses recycled/unrelated PIDs (observed live: a
+recycled transient PID was refused during the reap).
