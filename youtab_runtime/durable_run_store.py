@@ -220,6 +220,9 @@ class SqliteRunStore:
     def __init__(self, db_path: Optional[Path] = None):
         self._db_path = Path(db_path) if db_path else (get_youtab_home() / "durable_runs.db")
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Exclusive run authority once acquired (server durable mode); every
+        # write is then fenced against it. None = unfenced local/desktop mode.
+        self._authority = None
         self._init_schema()
 
     # -- connection --------------------------------------------------------- #
@@ -309,6 +312,18 @@ class SqliteRunStore:
                     UNIQUE(run_id, seq)
                 )"""
             )
+            # Additive: exclusive run-execution authority epoch per scope
+            # (see youtab_runtime.durable_run_authority).
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS runtime_authority (
+                    scope TEXT PRIMARY KEY,
+                    epoch INTEGER NOT NULL,
+                    instance_id TEXT NOT NULL,
+                    host TEXT,
+                    os_pid INTEGER,
+                    acquired_at REAL NOT NULL
+                )"""
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO schema_meta(key, value) VALUES('version', ?)",
                 (str(SCHEMA_VERSION),),
@@ -329,6 +344,83 @@ class SqliteRunStore:
         r = conn.execute("SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE run_id=?", (run_id,)).fetchone()
         return int(r[0]) + 1
 
+    def _fence(self, conn) -> None:
+        """Verify, inside the caller's write transaction, that this store's
+        attached run authority is still the current one. BEGIN IMMEDIATE holds
+        the database write lock, so a takeover's epoch bump is ordered strictly
+        before or after this write. No-op when no authority is attached."""
+        authority = self._authority
+        if authority is None:
+            return
+        from youtab_runtime.durable_run_authority import AuthorityLost
+
+        authority.ensure_held()
+        row = conn.execute(
+            "SELECT epoch, instance_id FROM runtime_authority WHERE scope=?",
+            (authority.scope,),
+        ).fetchone()
+        if row is None or int(row[0]) != authority.epoch or row[1] != authority.instance_id:
+            authority.mark_lost("superseded by another instance")
+            raise AuthorityLost("run authority superseded by another instance")
+
+    def acquire_instance_authority(self, *, scope: Optional[str] = None,
+                                   supervise_interval: Optional[float] = None):
+        """Acquire the exclusive run-execution authority for this store.
+
+        Takes a non-blocking OS file lock beside the database, then durably bumps
+        the scope's epoch. Raises AuthorityHeld while another live instance holds
+        it. From then on every write through this store object is fenced.
+        ``supervise_interval`` is accepted for interface parity; a local file
+        lock cannot be lost while this process holds it open."""
+        from youtab_runtime.durable_run_authority import (
+            RUNS_AUTHORITY_SCOPE,
+            FileInstanceAuthority,
+            acquire_file_lock,
+            holder_metadata,
+            new_instance_id,
+            release_file_lock,
+        )
+
+        scope = scope or RUNS_AUTHORITY_SCOPE
+        handle = acquire_file_lock(f"{self._db_path}.{scope}.authority.lock")
+        instance_id = new_instance_id()
+        meta = holder_metadata()
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT epoch FROM runtime_authority WHERE scope=?", (scope,)
+            ).fetchone()
+            epoch = (int(row[0]) if row else 0) + 1
+            conn.execute(
+                "INSERT OR REPLACE INTO runtime_authority"
+                "(scope, epoch, instance_id, host, os_pid, acquired_at) VALUES(?,?,?,?,?,?)",
+                (scope, epoch, instance_id, meta["host"], meta["os_pid"], time.time()),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            release_file_lock(handle)
+            raise
+        finally:
+            conn.close()
+        authority = FileInstanceAuthority(
+            scope=scope, instance_id=instance_id, epoch=epoch, handle=handle
+        )
+        self._authority = authority
+        return authority
+
+    def reconcile_prior_instances(self, authority) -> List[str]:
+        """Move every nonterminal ``/v1/runs`` run owned by a prior instance to
+        UNKNOWN. Callable only while holding ``authority`` (fenced): exclusive
+        ownership proves any other owner is gone, whatever its old PID was.
+        Ownerless (never-admitted) rows and terminal rows are left unchanged;
+        nothing is resumed or resubmitted."""
+        return _reconcile_prior_instances_sqlite(self, authority)
+
     def _append_event_locked(self, conn, run_id: str, kind: str, payload: Optional[dict]) -> int:
         seq = self._next_seq(conn, run_id)
         conn.execute(
@@ -346,6 +438,7 @@ class SqliteRunStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             if identity.idempotency_key:
                 # SCOPED lookup — cannot see another tenant/workspace/principal/
                 # operation's run, so no cross-tenant existence leak.
@@ -407,6 +500,7 @@ class SqliteRunStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             if identity.idempotency_key:
                 cur = conn.execute(
                     "SELECT * FROM runs WHERE tenant_id=? AND workspace_id=? AND principal_id=? "
@@ -483,6 +577,7 @@ class SqliteRunStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             cur = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,))
             r = cur.fetchone()
             if r is None:
@@ -525,6 +620,7 @@ class SqliteRunStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             cur = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,))
             r = cur.fetchone()
             if r is None:
@@ -565,6 +661,7 @@ class SqliteRunStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             now = time.time()
             seq = self._append_event_locked(conn, run_id, "progress",
                                             {"step": step, "checkpoint_ref": checkpoint_ref, "metric": metric})
@@ -585,6 +682,7 @@ class SqliteRunStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             seq = self._append_event_locked(conn, run_id, kind, payload)
             conn.execute("UPDATE runs SET updated_at=? WHERE run_id=?", (time.time(), run_id))
             conn.execute("COMMIT")
@@ -621,6 +719,7 @@ class SqliteRunStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             now = time.time()
             cur = conn.execute("SELECT state, lease_epoch FROM runs WHERE run_id=?", (run_id,))
             r = cur.fetchone()
@@ -647,6 +746,7 @@ class SqliteRunStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             now = time.time()
             cur = conn.execute(
                 "UPDATE runs SET heartbeat_at=?, lease_expiry=?, updated_at=? "
@@ -673,6 +773,7 @@ class SqliteRunStore:
         stalled: List[str] = []
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             cur = conn.execute(
                 "SELECT run_id, heartbeat_at, last_progress_at, created_at FROM runs "
                 "WHERE state IN ('RUNNING','CLAIMED','WAITING_CHILD')"
@@ -709,6 +810,7 @@ class SqliteRunStore:
         reconciled: List[str] = []
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             q = ("SELECT run_id, lease_owner, state FROM runs "
                  "WHERE state IN ('QUEUED','CLAIMED','RUNNING','WAITING_CHILD','WAITING_APPROVAL','PAUSING','PAUSED','STALLED','CANCELLING')")
             params: tuple = ()
@@ -758,6 +860,7 @@ class SqliteRunStore:
         enforced: List[str] = []
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             rows = conn.execute(
                 "SELECT run_id, state FROM runs WHERE execution_deadline IS NOT NULL "
                 "AND execution_deadline < ? AND state IN "
@@ -794,6 +897,7 @@ class SqliteRunStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
             cur = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,))
             r = cur.fetchone()
             if r is None:
@@ -840,6 +944,43 @@ class SqliteRunStore:
                     reconnect=f"/v1/runs/{run_id}/events?from_seq={int(row['progress_seq'] or 0)}",
                 )
             time.sleep(min(poll, max(0.0, deadline - time.time())))
+
+
+_NONTERMINAL_SQL = ("'QUEUED','CLAIMED','RUNNING','WAITING_CHILD','WAITING_APPROVAL',"
+                    "'PAUSING','PAUSED','STALLED','CANCELLING'")
+
+
+def _reconcile_prior_instances_sqlite(store: "SqliteRunStore", authority) -> List[str]:
+    if store._authority is not authority:
+        raise DurableRunError("reconcile_prior_instances requires this store's held authority")
+    conn = store._connect()
+    reconciled: List[str] = []
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        store._fence(conn)
+        rows = conn.execute(
+            f"SELECT run_id, lease_owner FROM runs WHERE state IN ({_NONTERMINAL_SQL}) "
+            "AND operation='run' AND lease_owner IS NOT NULL AND lease_owner != ?",
+            (authority.owner,),
+        ).fetchall()
+        now = time.time()
+        for run_id, owner in rows:
+            conn.execute("UPDATE runs SET state='UNKNOWN', updated_at=? WHERE run_id=?", (now, run_id))
+            store._append_event_locked(conn, run_id, "state.unknown", {
+                "reason": "prior_instance_superseded", "owner": owner,
+                "authority_epoch": authority.epoch,
+            })
+            reconciled.append(run_id)
+        conn.execute("COMMIT")
+        return reconciled
+    except Exception:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        raise
+    finally:
+        conn.close()
 
 
 # Backward-compatible alias: the canonical name callers use.

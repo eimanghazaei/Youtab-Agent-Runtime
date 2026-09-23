@@ -28,6 +28,12 @@ def _app(adapter):
     return app
 
 
+class _HeldAuthority:
+    """The exclusive durable run authority, held (see test_r4_run_authority)."""
+
+    held = True
+
+
 class _OkStore:
     def get_run(self, run_id):
         return None  # missing id -> None, but a real round-trip succeeded
@@ -51,6 +57,7 @@ async def test_ready_ok_when_store_answers(monkeypatch):
     adapter = _adapter()
     monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
     adapter._run_store = _OkStore()
+    adapter._run_authority = _HeldAuthority()
     async with TestClient(TestServer(_app(adapter))) as cli:
         r = await cli.get("/health/ready")
         assert r.status == 200
@@ -67,6 +74,7 @@ async def test_ready_503_and_no_secret_leak_when_store_dead(monkeypatch):
     adapter = _adapter()
     monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
     adapter._run_store = _DeadStore(secret)
+    adapter._run_authority = _HeldAuthority()
     async with TestClient(TestServer(_app(adapter))) as cli:
         r = await cli.get("/health/ready")
         assert r.status == 503

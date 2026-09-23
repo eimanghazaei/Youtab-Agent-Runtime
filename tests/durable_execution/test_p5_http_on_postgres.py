@@ -87,6 +87,9 @@ async def test_shipped_v1_runs_uses_postgres_and_survives_restart(pg_dsn, monkey
             assert s["status"] == "completed"
 
     # The run is durable in PostgreSQL: a fresh adapter (restart) recovers it.
+    # A restart means the prior instance is gone; while it held the exclusive
+    # run authority a second instance could not start at all.
+    await adapter.disconnect()
     adapter2 = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
     async with TestClient(TestServer(_app(adapter2))) as cli2:
         g = await cli2.get(f"/v1/runs/{run_id}")

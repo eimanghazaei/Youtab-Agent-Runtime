@@ -17,6 +17,7 @@ a durable completion that vanished.
 import os
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -98,19 +99,22 @@ def test_terminal_write_failure_is_reconciliation_not_false_completed(monkeypatc
     assert store.rows[rid]["state"] == "RUNNING"
 
 
-@pytest.mark.parametrize("prior_pid", [999999, os.getpid()])
-def test_startup_reconcile_moves_orphaned_running_to_unknown(monkeypatch, tmp_path, prior_pid):
-    """A non-terminal run owned by a dead prior instance is moved to UNKNOWN at
-    startup, even if the replacement process reused its numeric PID."""
+@pytest.mark.parametrize("prior_owner", [
+    "pid:999999",
+    f"pid:{os.getpid()}",  # prior instance had the SAME numeric pid as this one
+    "inst:5f0c0ffee0000000000000000000dead:7",
+])
+def test_startup_reconcile_moves_orphaned_running_to_unknown(monkeypatch, tmp_path, prior_owner):
+    """A non-terminal run owned by a prior instance is moved to UNKNOWN once this
+    instance holds the exclusive run authority, even if it reused the prior PID."""
     from youtab_runtime.durable_run_store import RunIdentity, RunState, SqliteRunStore
 
     store = SqliteRunStore(str(tmp_path / "runs.db"))
-    # Simulate a run admitted+running by a PRIOR process (a dead pid).
     store.admit(
         RunIdentity(task_id="run_orphan", run_id="run_orphan", tenant_id="local",
                     organization_id="local", workspace_id="local",
                     principal_id="local", agent_id="agent"),
-        owner=f"pid:{prior_pid}", initial_state=RunState.RUNNING,
+        owner=prior_owner, initial_state=RunState.RUNNING,
     )
     assert store.get_run("run_orphan")["state"] == "RUNNING"
 
@@ -119,16 +123,36 @@ def test_startup_reconcile_moves_orphaned_running_to_unknown(monkeypatch, tmp_pa
     monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
     adapter._run_store = store
     adapter._reconcile_orphaned_runs_on_startup()
+    try:
+        row = store.get_run("run_orphan")
+        assert row["state"] == "UNKNOWN"  # discoverable unresolved state, not RUNNING
+        assert row["result_ref"] is None
+        assert adapter._run_authority_held()
+    finally:
+        adapter._release_run_authority()
 
-    row = store.get_run("run_orphan")
-    assert row["state"] == "UNKNOWN"  # discoverable unresolved state, not RUNNING
+
+class _AuthorityRecorder:
+    def __init__(self):
+        self.released = False
+        self.held = True
+
+    def add_loss_listener(self, _cb):
+        pass
+
+    def release(self):
+        self.released = True
+        self.held = False
 
 
 def test_startup_reconcile_store_failure_fails_closed(monkeypatch):
-    """A failed recovery cannot leave stale RUNNING rows behind a ready server."""
+    """A failed authority acquisition cannot leave a ready server behind."""
     class _UnavailableStore:
-        def reconcile_dead_owner(self, _is_alive):
+        def acquire_instance_authority(self, **_kw):
             raise RuntimeError("durable store unavailable during recovery")
+
+        def reconcile_prior_instances(self, _authority):
+            raise AssertionError("must not reconcile without authority")
 
     monkeypatch.delenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", raising=False)
     adapter = _adapter()
@@ -137,6 +161,29 @@ def test_startup_reconcile_store_failure_fails_closed(monkeypatch):
 
     with pytest.raises(RuntimeError, match="durable store unavailable during recovery"):
         adapter._reconcile_orphaned_runs_on_startup()
+    assert not adapter._run_authority_held()
+
+
+def test_startup_recovery_failure_releases_authority_and_fails_closed(monkeypatch):
+    """Authority acquired but recovery failed: startup fails AND gives the
+    authority back, so a retried start is not blocked by a dead half-start."""
+    authority = _AuthorityRecorder()
+
+    class _RecoveryFailsStore:
+        def acquire_instance_authority(self, **_kw):
+            return authority
+
+        def reconcile_prior_instances(self, _authority):
+            raise RuntimeError("durable store unavailable during recovery")
+
+    monkeypatch.delenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", raising=False)
+    adapter = _adapter()
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
+    adapter._run_store = _RecoveryFailsStore()
+    with pytest.raises(RuntimeError, match="durable store unavailable during recovery"):
+        adapter._reconcile_orphaned_runs_on_startup()
+    assert authority.released is True
+    assert not adapter._run_authority_held()
 
 
 @pytest.mark.parametrize(
@@ -152,29 +199,61 @@ def test_startup_reconcile_missing_authority_fails_closed(monkeypatch, store, me
         adapter._reconcile_orphaned_runs_on_startup()
 
 
-def test_startup_does_not_reconcile_another_live_instance(monkeypatch, tmp_path):
-    """A second server sharing the store must not mark a live owner's run UNKNOWN."""
-    from youtab_runtime.durable_run_store import RunIdentity, RunState, SqliteRunStore
-
-    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    try:
-        assert owner.poll() is None
-        store = SqliteRunStore(str(tmp_path / "runs.db"))
-        store.admit(
-            RunIdentity(task_id="run_live", run_id="run_live", tenant_id="local",
+_LIVE_INSTANCE = """
+import os, sys
+from youtab_runtime.durable_run_store import RunIdentity, RunState, SqliteRunStore
+store = SqliteRunStore(sys.argv[1])
+authority = store.acquire_instance_authority()
+store.admit(RunIdentity(task_id="run_live", run_id="run_live", tenant_id="local",
                         organization_id="local", workspace_id="local",
                         principal_id="local", agent_id="agent"),
-            owner=f"pid:{owner.pid}", initial_state=RunState.RUNNING,
-        )
+            owner=authority.owner, initial_state=RunState.RUNNING)
+print("READY", flush=True)
+sys.stdin.read()  # parent closes stdin -> die abruptly, never releasing
+os._exit(9)
+"""
+
+
+def test_startup_does_not_reconcile_another_live_instance(monkeypatch, tmp_path):
+    """A second server sharing the store must not start, and must not mark the
+    live authority holder's run UNKNOWN. Once that instance is gone, the next
+    start recovers its run."""
+    from youtab_runtime.durable_run_authority import AuthorityHeld
+    from youtab_runtime.durable_run_store import SqliteRunStore
+
+    db = str(tmp_path / "runs.db")
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env = dict(os.environ, PYTHONPATH=root)
+    owner = subprocess.Popen([sys.executable, "-c", _LIVE_INSTANCE, db],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                             cwd=root, env=env, text=True)
+    try:
+        assert owner.stdout.readline().strip() == "READY"
+        store = SqliteRunStore(db)
         monkeypatch.delenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", raising=False)
         adapter = _adapter()
         monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
         adapter._run_store = store
-        adapter._reconcile_orphaned_runs_on_startup()
+        with pytest.raises(AuthorityHeld):
+            adapter._reconcile_orphaned_runs_on_startup()
+        assert not adapter._run_authority_held()
         assert store.get_run("run_live")["state"] == "RUNNING"
     finally:
-        owner.terminate()
-        owner.wait(timeout=10)
+        owner.stdin.close()
+        owner.wait(timeout=30)
+
+    # The holder died without releasing: the OS dropped its lock (Windows
+    # releases a dead process's byte-range locks asynchronously).
+    for _ in range(300):
+        try:
+            adapter._reconcile_orphaned_runs_on_startup()
+            break
+        except AuthorityHeld:
+            time.sleep(0.1)
+    try:
+        assert store.get_run("run_live")["state"] == "UNKNOWN"
+    finally:
+        adapter._release_run_authority()
 
 
 def test_local_mode_keeps_best_effort_completion(monkeypatch, tmp_path):

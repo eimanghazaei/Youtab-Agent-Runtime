@@ -1252,9 +1252,11 @@ class APIServerAdapter(BasePlatformAdapter):
             if _os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
                 raise
             self._run_store = None
-        # Recover from a prior process instance: any non-terminal run still owned
-        # by a dead owner is moved to UNKNOWN durably, so it does not silently
-        # read back as RUNNING after a restart (see the method for the contract).
+        # Exclusive durable run authority (server durable mode only). Acquired
+        # before readiness; the prior instance's abandoned runs are then moved to
+        # UNKNOWN durably, so they never read back as RUNNING after a restart
+        # (see the method for the contract).
+        self._run_authority = None
         self._reconcile_orphaned_runs_on_startup()
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
@@ -2728,6 +2730,12 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         store = getattr(self, "_run_store", None)
         backend = os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "sqlite")
+        if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") and not self._run_authority_held():
+            # Server durable mode without the exclusive run authority: never ready.
+            return web.json_response(
+                {"ready": False, "durable_store": "no_run_authority", "backend": backend},
+                status=503,
+            )
         if store is None:
             # No durable store configured (local default path degraded to none).
             # The process is live but there is no durable backend to be ready.
@@ -6180,12 +6188,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=503,
             )
         from youtab_runtime.durable_run_store import RunIdentity, RunState
+        authority = getattr(self, "_run_authority", None)
         try:
-            # Owner-stamped atomic admission (lease_owner=pid:<n>). The owner is
-            # what makes an abandoned run discoverable after a restart: on startup
-            # a fresh process reconciles non-terminal runs owned by a dead prior
-            # instance to UNKNOWN (see _reconcile_orphaned_runs_on_startup),
-            # instead of letting them silently read back as RUNNING.
+            # Owner-stamped atomic admission under the exclusive run authority
+            # (lease_owner=inst:<instance_id>:<epoch>, fenced in the store). The
+            # owner makes an abandoned run discoverable after a restart: the next
+            # authority holder moves it to UNKNOWN (see
+            # _reconcile_orphaned_runs_on_startup) instead of letting it read
+            # back as RUNNING.
+            if authority is None:
+                raise RuntimeError("no durable run authority")
+            authority.ensure_held()
             store.admit(
                 RunIdentity(
                     task_id=run_id, run_id=run_id, tenant_id="local",
@@ -6193,7 +6206,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     principal_id=str(session_id or "local"),
                     agent_id=str(model or "agent"),
                 ),
-                owner=f"pid:{os.getpid()}",
+                owner=authority.owner,
                 initial_state=RunState.QUEUED,
             )
         except Exception:
@@ -6209,40 +6222,88 @@ class APIServerAdapter(BasePlatformAdapter):
         return None
 
     def _reconcile_orphaned_runs_on_startup(self) -> None:
-        """Recover runs abandoned by a prior process instance.
+        """Establish exclusive run authority, then recover the prior instance's runs.
 
-        Server durable mode only. At startup this process owns no runs yet, so any
-        non-terminal run in the store is necessarily owned by a previous (now
-        dead) instance. reconcile_dead_owner moves those to UNKNOWN durably.
+        Server durable mode only; the local/desktop default is unchanged. The
+        durable server is a store-enforced singleton: startup acquires the
+        store's exclusive run authority (PostgreSQL session advisory lock on a
+        supervised connection; SQLite file lock) and FAILS if another live
+        instance holds it, if the store is unavailable, or if the store cannot
+        enforce authority. Only after exclusive ownership is proven are ALL
+        prior owner-stamped nonterminal ``/v1/runs`` runs moved to UNKNOWN,
+        whatever PID they carried; ownerless rows and terminal results are
+        untouched. Numeric PIDs are never used as liveness evidence.
 
         Recovery contract: an UNKNOWN run is terminal-uncertain and is NOT
-        auto-resumed — an in-process agent run cannot be resumed across an
-        owner-process death. It is exposed as status "unknown"
+        auto-resumed or resubmitted. It is exposed as status "unknown"
         (recovered_from_store) so an operator/client can reconcile it (verify side
-        effects and, if needed, re-submit). This is why a restarted service does
-        NOT report such a run as ordinary "running".
+        effects and, if needed, re-submit).
         """
         store = getattr(self, "_run_store", None)
         if not os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
             return
         if store is None:
             raise RuntimeError("durable startup reconciliation requires a run store")
-        reconcile = getattr(store, "reconcile_dead_owner", None)
-        if reconcile is None:
-            raise RuntimeError("durable startup reconciliation unsupported")
+        acquire = getattr(store, "acquire_instance_authority", None)
+        reconcile = getattr(store, "reconcile_prior_instances", None)
+        if acquire is None or reconcile is None:
+            raise RuntimeError(
+                "durable startup reconciliation unsupported: run store cannot "
+                "enforce exclusive run authority"
+            )
+        authority = acquire()
         try:
-            my_pid = os.getpid()
-            # This process owns nothing at startup, so any pid != mine is a dead
-            # prior instance. Trusting only my own pid is robust to pid reuse.
-            reconciled = reconcile(lambda pid: pid == my_pid)
-            if reconciled:
-                logger.warning(
-                    "startup reconcile: %d abandoned run(s) moved to UNKNOWN: %s",
-                    len(reconciled), ", ".join(reconciled[:20]),
-                )
+            authority.add_loss_listener(self._on_run_authority_lost)
+            reconciled = reconcile(authority)
         except Exception:
             logger.warning("startup run reconcile failed", exc_info=True)
+            authority.release()
             raise
+        self._run_authority = authority
+        logger.info(
+            "durable run authority acquired (scope=%s epoch=%d)",
+            authority.scope, authority.epoch,
+        )
+        if reconciled:
+            logger.warning(
+                "startup reconcile: %d abandoned run(s) moved to UNKNOWN: %s",
+                len(reconciled), ", ".join(reconciled[:20]),
+            )
+
+    def _run_authority_held(self) -> bool:
+        authority = getattr(self, "_run_authority", None)
+        return authority is not None and authority.held
+
+    def _release_run_authority(self) -> None:
+        authority = getattr(self, "_run_authority", None)
+        if authority is not None:
+            authority.release()
+
+    def _on_run_authority_lost(self, reason: str) -> None:
+        """Fail-stop on durable run authority loss.
+
+        Another instance may now own the store, so this process must produce no
+        further effect, terminal success or ack. Store writes are already fenced
+        and admission/readiness gated; interrupt live agents, then terminate the
+        process so no in-flight tool call can outlive the authority. The
+        supervisor restarts it and the new process must re-acquire the authority.
+        """
+        logger.critical("durable run authority lost (%s); fail-stopping /v1/runs", reason)
+        for agent in list(getattr(self, "_active_run_agents", {}).values()):
+            try:
+                agent.interrupt("durable run authority lost")
+            except Exception:
+                pass
+        self._authority_fail_stop()
+
+    @staticmethod
+    def _authority_fail_stop() -> None:
+        for handler in logging.getLogger().handlers:
+            try:
+                handler.flush()
+            except Exception:
+                pass
+        os._exit(75)  # EX_TEMPFAIL: supervisor restarts; startup re-acquires
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
@@ -6530,6 +6591,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         "timestamp": time.time(),
                     })
                     return
+                if (
+                    os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND")
+                    and not self._run_authority_held()
+                ):
+                    raise RuntimeError("durable run authority lost before execution")
                 with self._profile_scope(request_profile):
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt,
@@ -6762,6 +6828,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._run_approval_sessions.pop(run_id, None)
                 self._stopping_run_ids.discard(run_id)
 
+        if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") and not self._run_authority_held():
+            # Authority lost after admission: no dispatch, no 202. The admitted
+            # row is reconciled to UNKNOWN by the next authority holder.
+            return web.json_response(
+                {"error": "durable run authority unavailable", "code": "durable_store_unavailable"},
+                status=503,
+            )
         self._activate_admitted_request()
         task = asyncio.create_task(_run_and_close())
         self._active_run_tasks[run_id] = task
@@ -7147,7 +7220,20 @@ class APIServerAdapter(BasePlatformAdapter):
         return True
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        """Start the aiohttp web server."""
+        """Start the aiohttp web server.
+
+        A failed or cancelled start releases the durable run authority acquired
+        at construction, so a retried adapter in this process can re-acquire it.
+        """
+        started = False
+        try:
+            started = await self._start_server(is_reconnect=is_reconnect)
+            return started
+        finally:
+            if not started:
+                self._release_run_authority()
+
+    async def _start_server(self, *, is_reconnect: bool = False) -> bool:
         if not AIOHTTP_AVAILABLE:
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
@@ -7329,6 +7415,9 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.cleanup()
             self._runner = None
         self._app = None
+        # Last: give up the exclusive durable run authority. Any later write by
+        # a lingering executor thread is refused by the store fence.
+        self._release_run_authority()
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

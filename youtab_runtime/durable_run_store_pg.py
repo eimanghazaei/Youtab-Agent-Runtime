@@ -13,10 +13,20 @@ silently falls back to SQLite.
 from __future__ import annotations
 
 import json
+import threading
 import time
 import uuid
+import zlib
 from typing import Any, Dict, List, Optional
 
+from youtab_runtime.durable_run_authority import (
+    RUNS_AUTHORITY_SCOPE,
+    AuthorityHeld,
+    AuthorityLost,
+    InstanceAuthority,
+    holder_metadata,
+    new_instance_id,
+)
 from youtab_runtime.durable_run_store import (
     _TRANSITIONS,
     TERMINAL_STATES,
@@ -29,6 +39,23 @@ from youtab_runtime.durable_run_store import (
 )
 
 SCHEMA_VERSION = 2
+
+# Advisory-lock key space for the run authority: pg_try_advisory_lock(int4, int4)
+# with a fixed Youtab namespace ("YTAR") and a CRC of the authority scope. The
+# collision domain is the connected database (advisory locks are per-database).
+_AUTHORITY_LOCK_NAMESPACE = 0x59544152
+_DEFAULT_SUPERVISE_INTERVAL = 2.0
+
+# True iff backend %s holds the scope's advisory lock in the current database.
+_LOCK_HELD_SQL = (
+    "EXISTS(SELECT 1 FROM pg_locks l WHERE l.locktype='advisory' AND l.granted "
+    "AND l.pid=%s AND l.classid::bigint=%s AND l.objid::bigint=%s AND l.objsubid=2 "
+    "AND l.database=(SELECT oid FROM pg_database WHERE datname=current_database()))"
+)
+
+
+def _authority_lock_key(scope: str) -> int:
+    return zlib.crc32(scope.encode("utf-8")) & 0x7FFFFFFF
 
 
 class PostgresRunStore:
@@ -49,6 +76,9 @@ class PostgresRunStore:
             )
         self._dsn: str = str(dsn)
         self._psycopg = __import__("psycopg")
+        # Exclusive run authority once acquired (server durable mode); every
+        # write is then fenced against it. None = unfenced.
+        self._authority: Optional["PostgresInstanceAuthority"] = None
         try:
             self._init_schema()
         except DurableRunError:
@@ -107,12 +137,130 @@ class PostgresRunStore:
                         seq BIGINT NOT NULL, event_id TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
                         payload JSONB, created_at DOUBLE PRECISION NOT NULL, UNIQUE(run_id, seq))"""
                 )
+                # Additive: exclusive run-execution authority epoch per scope.
+                cur.execute(
+                    """CREATE TABLE IF NOT EXISTS runtime_authority (
+                        scope TEXT PRIMARY KEY, epoch BIGINT NOT NULL,
+                        instance_id TEXT NOT NULL, host TEXT, os_pid BIGINT,
+                        backend_pid BIGINT, acquired_at DOUBLE PRECISION NOT NULL)"""
+                )
                 cur.execute(
                     "INSERT INTO schema_meta(key,value) VALUES('version',%s) "
                     "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
                     (str(SCHEMA_VERSION),),
                 )
             conn.commit()
+
+    # -- run authority (store-enforced singleton) ----------------------------- #
+    def _fence(self, cur) -> None:
+        """Verify, inside the caller's write transaction, that this store's run
+        authority is current: the epoch row still names this instance AND the
+        recorded lock-holding backend still holds the advisory lock. The epoch
+        row is read FOR SHARE, so a takeover's epoch bump waits for this write to
+        finish, and this write fails if the takeover already committed."""
+        authority = self._authority
+        if authority is None:
+            return
+        authority.ensure_held()
+        cur.execute(
+            f"SELECT a.epoch, a.instance_id, {_LOCK_HELD_SQL} FROM runtime_authority a "
+            "WHERE a.scope=%s FOR SHARE OF a",
+            (authority.backend_pid, _AUTHORITY_LOCK_NAMESPACE, authority.lock_key,
+             authority.scope),
+        )
+        row = cur.fetchone()
+        if row is None or int(row[0]) != authority.epoch or row[1] != authority.instance_id:
+            authority.mark_lost("superseded by another instance")
+            raise AuthorityLost("run authority superseded by another instance")
+        if not row[2]:
+            authority.mark_lost("advisory lock no longer held")
+            raise AuthorityLost("run authority advisory lock no longer held")
+
+    def acquire_instance_authority(self, *, scope: Optional[str] = None,
+                                   supervise_interval: Optional[float] = None
+                                   ) -> "PostgresInstanceAuthority":
+        """Acquire the exclusive run-execution authority for this database.
+
+        Opens a dedicated autocommit session (TCP keepalives, statement timeout),
+        takes ``pg_try_advisory_lock`` without waiting, then durably bumps the
+        scope epoch. Raises AuthorityHeld while another live session holds it.
+        The returned authority supervises its session and reports loss; every
+        write through this store object is fenced from now on."""
+        scope = scope or RUNS_AUTHORITY_SCOPE
+        key = _authority_lock_key(scope)
+        conn = self._psycopg.connect(
+            self._dsn, autocommit=True, connect_timeout=10,
+            keepalives=1, keepalives_idle=5, keepalives_interval=2, keepalives_count=3,
+            tcp_user_timeout=10000,
+        )
+        try:
+            conn.execute("SET statement_timeout = 5000")
+            backend_pid = int(conn.execute("SELECT pg_backend_pid()").fetchone()[0])
+            got = conn.execute("SELECT pg_try_advisory_lock(%s, %s)",
+                               (_AUTHORITY_LOCK_NAMESPACE, key)).fetchone()[0]
+            if not got:
+                holder = conn.execute(
+                    "SELECT epoch, host, os_pid FROM runtime_authority WHERE scope=%s", (scope,)
+                ).fetchone()
+                detail = (f" (epoch={holder[0]} host={holder[1]} pid={holder[2]})"
+                          if holder else "")
+                raise AuthorityHeld(
+                    "another Runtime instance holds the durable run authority for this "
+                    f"database{detail}"
+                )
+            instance_id = new_instance_id()
+            meta = holder_metadata()
+            epoch = int(conn.execute(
+                "INSERT INTO runtime_authority(scope, epoch, instance_id, host, os_pid, "
+                "backend_pid, acquired_at) VALUES(%s, 1, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (scope) DO UPDATE SET epoch=runtime_authority.epoch+1, "
+                "instance_id=EXCLUDED.instance_id, host=EXCLUDED.host, "
+                "os_pid=EXCLUDED.os_pid, backend_pid=EXCLUDED.backend_pid, "
+                "acquired_at=EXCLUDED.acquired_at RETURNING epoch",
+                (scope, instance_id, meta["host"], meta["os_pid"], backend_pid, time.time()),
+            ).fetchone()[0])
+        except Exception:
+            conn.close()
+            raise
+        authority = PostgresInstanceAuthority(
+            scope=scope, instance_id=instance_id, epoch=epoch, conn=conn,
+            backend_pid=backend_pid, lock_key=key,
+            supervise_interval=(supervise_interval if supervise_interval is not None
+                                else _DEFAULT_SUPERVISE_INTERVAL),
+        )
+        self._authority = authority
+        authority.start_supervision()
+        return authority
+
+    def reconcile_prior_instances(self, authority) -> List[str]:
+        """Move every nonterminal ``/v1/runs`` run owned by a prior instance to
+        UNKNOWN. Callable only while holding ``authority`` (fenced): exclusive
+        ownership proves any other owner is gone, whatever its old PID was.
+        Ownerless rows and terminal rows are unchanged; nothing is resubmitted."""
+        if self._authority is not authority:
+            raise DurableRunError("reconcile_prior_instances requires this store's held authority")
+        reconciled: List[str] = []
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                self._fence(cur)
+                cur.execute(
+                    "SELECT run_id, lease_owner FROM runs WHERE state IN "
+                    "('QUEUED','CLAIMED','RUNNING','WAITING_CHILD','WAITING_APPROVAL','PAUSING',"
+                    "'PAUSED','STALLED','CANCELLING') AND operation='run' "
+                    "AND lease_owner IS NOT NULL AND lease_owner <> %s FOR UPDATE",
+                    (authority.owner,),
+                )
+                now = time.time()
+                for run_id, owner in cur.fetchall():
+                    cur.execute("UPDATE runs SET state='UNKNOWN', updated_at=%s WHERE run_id=%s",
+                                (now, run_id))
+                    self._append_event(cur, run_id, "state.unknown", {
+                        "reason": "prior_instance_superseded", "owner": owner,
+                        "authority_epoch": authority.epoch,
+                    })
+                    reconciled.append(run_id)
+            conn.commit()
+            return reconciled
 
     # -- helpers ------------------------------------------------------------ #
     @staticmethod
@@ -141,6 +289,7 @@ class PostgresRunStore:
         now = time.time()
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 if identity.idempotency_key:
                     cur.execute(
                         "SELECT * FROM runs WHERE tenant_id=%s AND workspace_id=%s AND principal_id=%s "
@@ -180,6 +329,7 @@ class PostgresRunStore:
         now = time.time()
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 if identity.idempotency_key:
                     cur.execute(
                         "SELECT * FROM runs WHERE tenant_id=%s AND workspace_id=%s AND principal_id=%s "
@@ -236,6 +386,7 @@ class PostgresRunStore:
                    error_ref: Optional[str] = None) -> Dict[str, Any]:
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 cur.execute("SELECT state FROM runs WHERE run_id=%s FOR UPDATE", (run_id,))
                 r = cur.fetchone()
                 if r is None:
@@ -265,6 +416,7 @@ class PostgresRunStore:
                                    result_ref=result_ref, error_ref=error_ref)
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 cur.execute("SELECT state FROM runs WHERE run_id=%s FOR UPDATE", (run_id,))
                 r = cur.fetchone()
                 if r is None:
@@ -292,6 +444,7 @@ class PostgresRunStore:
                         checkpoint_ref: Optional[str] = None, metric: Optional[dict] = None) -> int:
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 now = time.time()
                 seq = self._append_event(cur, run_id, "progress",
                                          {"step": step, "checkpoint_ref": checkpoint_ref, "metric": metric})
@@ -306,6 +459,7 @@ class PostgresRunStore:
     def append_event(self, run_id: str, kind: str, payload: Optional[dict] = None) -> int:
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 seq = self._append_event(cur, run_id, kind, payload)
                 cur.execute("UPDATE runs SET updated_at=%s WHERE run_id=%s", (time.time(), run_id))
             conn.commit()
@@ -329,6 +483,7 @@ class PostgresRunStore:
     def claim(self, run_id: str, owner: str, *, ttl_seconds: float = 900.0) -> Optional[int]:
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 now = time.time()
                 cur.execute("SELECT state, lease_epoch FROM runs WHERE run_id=%s FOR UPDATE", (run_id,))
                 r = cur.fetchone()
@@ -348,6 +503,7 @@ class PostgresRunStore:
     def heartbeat(self, run_id: str, owner: str, epoch: int, *, ttl_seconds: float = 900.0) -> bool:
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 now = time.time()
                 cur.execute(
                     "UPDATE runs SET heartbeat_at=%s, lease_expiry=%s, updated_at=%s "
@@ -364,6 +520,7 @@ class PostgresRunStore:
         stalled: List[str] = []
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 cur.execute("SELECT run_id, heartbeat_at, last_progress_at, created_at FROM runs "
                             "WHERE state IN ('RUNNING','CLAIMED','WAITING_CHILD') FOR UPDATE")
                 for run_id, hb, lp, created in cur.fetchall():
@@ -382,6 +539,7 @@ class PostgresRunStore:
         reconciled: List[str] = []
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 q = ("SELECT run_id, lease_owner FROM runs WHERE state IN "
                      "('QUEUED','CLAIMED','RUNNING','WAITING_CHILD','WAITING_APPROVAL','PAUSING','PAUSED','STALLED','CANCELLING')")
                 params: tuple = ()
@@ -412,6 +570,7 @@ class PostgresRunStore:
         enforced: List[str] = []
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 cur.execute(
                     "SELECT run_id, state FROM runs WHERE execution_deadline IS NOT NULL "
                     "AND execution_deadline < %s AND state IN "
@@ -436,6 +595,7 @@ class PostgresRunStore:
     def request_cancel(self, run_id: str, *, reason: str, by: str) -> Dict[str, Any]:
         with self._conn() as conn:
             with conn.cursor() as cur:
+                self._fence(cur)
                 cur.execute("SELECT state FROM runs WHERE run_id=%s FOR UPDATE", (run_id,))
                 r = cur.fetchone()
                 if r is None:
@@ -472,3 +632,71 @@ class PostgresRunStore:
                     reconnect=f"/v1/runs/{run_id}/events?from_seq={int(row['progress_seq'] or 0)}",
                 )
             time.sleep(min(poll, max(0.0, deadline - time.time())))
+
+
+class PostgresInstanceAuthority(InstanceAuthority):
+    """Run authority held as a session advisory lock on a dedicated connection.
+
+    A daemon supervisor re-verifies, every ``supervise_interval`` seconds on that
+    same session, that the lock is still granted to it and the epoch row still
+    names this instance. Any failure (session or database loss, statement
+    timeout, supersession) is reported as authority loss, the fail-stop trigger.
+    PostgreSQL itself releases the lock as soon as the session ends (process
+    crash, network loss detected by keepalive/tcp_user_timeout, server restart).
+    """
+
+    def __init__(self, *, scope: str, instance_id: str, epoch: int, conn,
+                 backend_pid: int, lock_key: int, supervise_interval: float):
+        super().__init__(scope=scope, instance_id=instance_id, epoch=epoch)
+        self.backend_pid = int(backend_pid)
+        self.lock_key = int(lock_key)
+        self._conn = conn
+        self._conn_lock = threading.Lock()
+        self._interval = max(0.05, float(supervise_interval))
+        self._stop = threading.Event()
+
+    def start_supervision(self) -> None:
+        threading.Thread(
+            target=self._supervise, name="youtab-run-authority", daemon=True
+        ).start()
+
+    def verify(self) -> None:
+        """One supervision check; marks loss and raises AuthorityLost on failure."""
+        self.ensure_held()
+        try:
+            with self._conn_lock:
+                row = self._conn.execute(
+                    f"SELECT {_LOCK_HELD_SQL}, "
+                    "(SELECT epoch FROM runtime_authority WHERE scope=%s), "
+                    "(SELECT instance_id FROM runtime_authority WHERE scope=%s)",
+                    (self.backend_pid, _AUTHORITY_LOCK_NAMESPACE, self.lock_key,
+                     self.scope, self.scope),
+                ).fetchone()
+        except Exception as exc:
+            reason = f"authority session failed ({type(exc).__name__})"
+            self.mark_lost(reason)
+            raise AuthorityLost(reason) from None
+        if not row[0]:
+            self.mark_lost("advisory lock no longer held")
+            raise AuthorityLost("advisory lock no longer held")
+        if row[1] is None or int(row[1]) != self.epoch or row[2] != self.instance_id:
+            self.mark_lost("superseded by another instance")
+            raise AuthorityLost("superseded by another instance")
+
+    def _supervise(self) -> None:
+        while not self._stop.wait(self._interval):
+            if not self.held:
+                return
+            try:
+                self.verify()
+            except Exception:
+                return
+
+    def _release_backend(self) -> None:
+        self._stop.set()
+        try:
+            with self._conn_lock:
+                self._conn.execute("SELECT pg_advisory_unlock(%s, %s)",
+                                   (_AUTHORITY_LOCK_NAMESPACE, self.lock_key))
+        finally:
+            self._conn.close()
