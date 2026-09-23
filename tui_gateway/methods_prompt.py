@@ -338,7 +338,7 @@ def _(rid, params: dict) -> dict:
 
 @method("image.attach")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
     raw = str(params.get("path", "") or "").strip()
@@ -396,7 +396,7 @@ def _(rid, params: dict) -> dict:
       filename / ext (str, optional): extension hint. Without it, magic bytes
         identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
     """
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
 

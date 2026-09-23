@@ -227,3 +227,36 @@ def test_marker_write_failure_never_refuses_an_accepted_prompt(tmp_path, monkeyp
     assert resp["result"] == {"status": "streaming"}
     assert session["running"] is True
     assert len(_HeldThread.started) == 1
+
+
+def test_image_upload_does_not_wait_for_the_agent_build(tmp_path, monkeypatch):
+    """The first message's image upload gates its prompt.submit in the client;
+    it must not sit behind the deferred agent build."""
+    import base64
+
+    session = _session(tmp_path)
+    builds = []
+    monkeypatch.setattr(gw, "_start_agent_build", lambda sid, _session: builds.append(sid))
+
+    def _no_wait(*_args, **_kwargs):
+        raise AssertionError("attachment staging must not wait for the agent")
+
+    monkeypatch.setattr(gw, "_wait_agent", _no_wait)
+    monkeypatch.setattr(gw, "_youtab_home", tmp_path)
+    png = base64.b64encode(bytes.fromhex("89504e470d0a1a0a") + bytes(32)).decode()
+    gw._sessions["sid-upload"] = session
+    try:
+        resp = gw.handle_request(
+            {
+                "id": "r1",
+                "method": "image.attach_bytes",
+                "params": {"session_id": "sid-upload", "content_base64": png, "filename": "capture.png"},
+            }
+        )
+    finally:
+        gw._sessions.pop("sid-upload", None)
+
+    assert resp["result"]["attached"] is True, resp
+    assert builds == ["sid-upload"], "the build still starts in the background"
+    assert not session["agent_ready"].is_set()
+    assert len(session["attached_images"]) == 1

@@ -2106,6 +2106,21 @@ def _sess(params, rid):
     return (s, _wait_agent(s, rid))
 
 
+def _sess_building(params, rid):
+    """Session for work that does not need the agent: start its build, don't wait.
+
+    Staging an attachment only writes bytes beside the session. Blocking it on
+    the deferred agent build held the first message's upload -- and therefore
+    its prompt.submit -- in the client for the whole build, where closing the
+    app lost the prompt; past the flat 30s wait it also failed the upload.
+    """
+    s, err = _sess_nowait(params, rid)
+    if err:
+        return (None, err)
+    _start_agent_build(params.get("session_id") or "", s)
+    return (s, None)
+
+
 def _normalize_completion_path(path_part: str) -> str:
     expanded = os.path.expanduser(path_part)
     if os.name != "nt":
