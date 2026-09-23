@@ -60,6 +60,16 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("gpt-5.3-codex", rt2, ["youtab-telegram"], "")
         assert sig1 != sig2
 
+    def test_same_credential_keeps_process_local_signature(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "synthetic-secret-AAA123", "provider": "openrouter"}
+        first = GatewayRunner._agent_config_signature("model", runtime, [], "")
+        second = GatewayRunner._agent_config_signature("model", runtime, [], "")
+
+        assert first == second
+        assert runtime["api_key"] not in first
+
     def test_provider_change_different_signature(self):
         from gateway.run import GatewayRunner
 

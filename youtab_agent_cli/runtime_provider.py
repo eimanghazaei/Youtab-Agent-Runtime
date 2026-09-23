@@ -2095,13 +2095,16 @@ def resolve_runtime_provider(
                 )
         else:
             if _https_host_matches(base_url, "anthropic.com"):
-                from agent.anthropic_adapter import resolve_anthropic_token
-                token = resolve_anthropic_token()
-                if not token:
-                    raise AuthError(
-                        "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
-                        "run 'claude setup-token', or authenticate with 'claude /login'."
-                    )
+                # Use the same native credential resolution as the explicit
+                # endpoint path. Keeping that import at one site avoids an
+                # additional runtime_provider -> anthropic_adapter cycle.
+                native = _resolve_explicit_runtime(
+                    provider="anthropic",
+                    requested_provider=requested_provider,
+                    model_cfg=model_cfg,
+                    explicit_base_url=base_url,
+                )
+                token = native["api_key"]
             else:
                 token = _configured_anthropic_key(model_cfg)
                 if not token:

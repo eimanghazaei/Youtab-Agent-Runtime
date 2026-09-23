@@ -5,7 +5,6 @@ and run_agent.py for pre-flight context checks.
 """
 
 import base64
-import hashlib
 import ipaddress
 import json
 import logging
@@ -17,6 +16,8 @@ from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
 
 import yaml
+
+from agent.credential_fingerprint import credential_cache_fingerprint
 
 if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
     import requests
@@ -2037,7 +2038,7 @@ _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
     """Return a non-secret cache key for a Codex OAuth access token."""
-    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
+    return credential_cache_fingerprint(access_token)[:16]
 
 
 def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:

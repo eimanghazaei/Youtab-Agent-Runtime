@@ -58,6 +58,7 @@ from agent.conversation_compression import (
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
 )
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+from agent.credential_fingerprint import credential_cache_fingerprint
 from agent.i18n import t
 from youtab_agent_cli.config import cfg_get
 from youtab_agent_cli.fallback_config import get_fallback_chain
@@ -21550,7 +21551,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # (e.g. "eyJhbGci"), which can cause false cache hits across auth
         # switches if only the first few characters are considered.
         _api_key = str(runtime.get("api_key", "") or "")
-        _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
+        _api_key_fingerprint = credential_cache_fingerprint(_api_key) if _api_key else ""
 
         _cache_keys_sorted = sorted((cache_keys or {}).items())
 

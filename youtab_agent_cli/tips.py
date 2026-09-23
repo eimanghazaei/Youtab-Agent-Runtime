@@ -446,7 +446,7 @@ TIPS = [
     'YOUTAB_AGENT_ALLOW_PRIVATE_URLS=true lets web tools hit localhost and private networks — off by default in gateway mode.',
     'YOUTAB_AGENT_OPTIONAL_SKILLS=name1,name2 auto-installs extra optional-catalog skills on first run per profile.',
     'YOUTAB_AGENT_BUNDLED_SKILLS points at a custom bundled-skill tree — used by Homebrew and Nix packaging.',
-    'YOUTAB_AGENT_DUMP_REQUEST_STDOUT=1 dumps every API request payload to stdout instead of log files.',
+    'YOUTAB_AGENT_DUMP_REQUEST_STDOUT=1 prints the local request dump path without exposing request content on stdout.',
     'YOUTAB_AGENT_OAUTH_TRACE=1 logs redacted OAuth token exchange and refresh attempts for debugging provider auth.',
     'YOUTAB_AGENT_STREAM_RETRIES (default 3) controls mid-stream reconnect attempts on transient network errors.',
 
