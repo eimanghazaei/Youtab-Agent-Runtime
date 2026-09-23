@@ -44,6 +44,9 @@ export interface MockServer {
   port: number
   url: string
   receivedPrompts: string[]
+  /** Every chat-completion request: its last user text (string or text parts)
+   *  and whether it offered tools (the agent's main turn loop does). */
+  completionLog: Array<{ lastUser: string; tools: boolean }>
   waitForHeldStream: () => Promise<void>
   waitForHeldCompletion: () => Promise<void>
   releaseHeldStream: () => void
@@ -324,6 +327,7 @@ function includesBlockingClarifyTrigger(value: unknown): boolean {
 export function startMockServer(options: MockServerOptions = {}): Promise<MockServer> {
   return new Promise((resolve, reject) => {
     const receivedPrompts: string[] = []
+    const completionLog: Array<{ lastUser: string; tools: boolean }> = []
     let resolveHeldStreamStarted: (() => void) | null = null
     let releaseHeldStream: (() => void) | null = null
     let heldCompletionCount = 0
@@ -389,6 +393,18 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
           if (typeof lastUserMessage?.content === 'string') {
             receivedPrompts.push(lastUserMessage.content)
           }
+
+          const lastUserContent = lastUserMessage?.content
+          const lastUserText =
+            typeof lastUserContent === 'string'
+              ? lastUserContent
+              : Array.isArray(lastUserContent)
+                ? lastUserContent
+                    .map((part: { text?: unknown }) => (typeof part?.text === 'string' ? part.text : ''))
+                    .join('\n')
+                : ''
+
+          completionLog.push({ lastUser: lastUserText, tools: Array.isArray(parsed.tools) && parsed.tools.length > 0 })
 
           const stream = parsed.stream === true
           const model = parsed.model || 'mock-model'
@@ -551,6 +567,7 @@ export function startMockServer(options: MockServerOptions = {}): Promise<MockSe
         port,
         url,
         receivedPrompts,
+        completionLog,
         waitForHeldStream: () => heldStreamStarted,
         waitForHeldCompletion: () => heldStreamStarted,
         releaseHeldStream: () => releaseHeldStream?.(),

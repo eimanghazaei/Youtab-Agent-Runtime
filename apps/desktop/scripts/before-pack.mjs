@@ -57,10 +57,24 @@
  *   - electronPlatformName: 'win32' | 'darwin' | 'linux'
  *   - arch:                 Arch enum (0=ia32, 1=x64, 2=armv7l, 3=arm64, 4=universal)
  */
-import { existsSync, rmSync, renameSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
 import { stageNodePty } from './stage-native-deps.mjs'
+
+const sidecarManifestPath = path.resolve(import.meta.dirname, '../build/backend-sidecar/manifest.json')
+
+export function assertSidecarTarget(manifest, platform, arch) {
+  if (!manifest || manifest.schema !== 'youtab.backend_sidecar_manifest/v1') {
+    throw new Error('missing or invalid backend sidecar manifest')
+  }
+  if (manifest.platform !== platform || manifest.arch !== arch) {
+    throw new Error(
+      `backend sidecar targets ${manifest.platform || 'unknown'}-${manifest.arch || 'unknown'}, ` +
+      `but the package targets ${platform}-${arch}; build a native sidecar for this target`
+    )
+  }
+}
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -133,7 +147,18 @@ export default async function beforePack(context) {
   try {
     const platform = context && context.electronPlatformName
     const archName = context && typeof context.arch === 'number' ? Arch[context.arch] : undefined
+    const manifestPath = context?.sidecarManifestPath || sidecarManifestPath
+    if (existsSync(manifestPath)) {
+      if (!platform || !archName) {
+        throw new Error('backend sidecar is staged but electron-builder target platform/arch is missing')
+      }
+      assertSidecarTarget(JSON.parse(readFileSync(manifestPath, 'utf8')), platform, archName)
+    }
     if (platform && archName) {
+      // The sidecar is a native PyInstaller executable. A matching root digest
+      // proves its bytes, not that it can execute on this package's target.
+      // The release builder requires the manifest; developer shell-only builds
+      // deliberately have none and skip this check.
       if (archName === 'universal') {
         console.warn(
           '[before-pack] target arch is "universal" — node-pty has no universal prebuild; ' +
@@ -149,6 +174,6 @@ export default async function beforePack(context) {
     // This one SHOULD fail the build — a missing/wrong native binary for the
     // target arch means a broken package shipped to users, which is worse
     // than a build that fails loudly here.
-    throw new Error(`[before-pack] failed to stage node-pty for this target: ${err.message}`)
+    throw new Error(`[before-pack] failed native target validation: ${err.message}`)
   }
 }

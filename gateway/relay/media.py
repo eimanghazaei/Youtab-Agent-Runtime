@@ -164,11 +164,70 @@ class RelayMediaClient:
         needs_auth = self.is_relay_media_url(url)
         if needs_auth and not self.enabled:
             return None
-        headers = {}
-        if needs_auth:
-            headers["Authorization"] = f"Bearer {self._bearer()}"
 
-        def _get() -> Optional[str]:
+        def _write_temp(data: bytes, headers: Any) -> Optional[str]:
+            if not data or len(data) > MEDIA_MAX_BYTES:
+                return None
+            # Extension: prefer the response's content-disposition / suggested
+            # name, fall back to the mime type, then .bin — vision/file tools
+            # sniff by extension.
+            name = suggested_name or ""
+            if not name:
+                cd = (headers.get("Content-Disposition")
+                      or headers.get("content-disposition") or "")
+                if "filename=" in cd:
+                    name = cd.split("filename=", 1)[1].strip().strip('"')
+            ext = Path(name).suffix if name else ""
+            if not ext:
+                mime = ((headers.get("Content-Type")
+                         or headers.get("content-type") or "").split(";")[0])
+                ext = mimetypes.guess_extension(mime) or ".bin"
+            fd, tmp_path = tempfile.mkstemp(prefix="relay_media_", suffix=ext)
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            return tmp_path
+
+        def _get_untrusted() -> Optional[str]:
+            # WAVE-27 SSRF fix: a non-relay ``url`` is an inbound-message media URL
+            # (e.g. a Discord CDN pass-through from ``event.media_urls``) — i.e.
+            # attacker/user-controllable. Fetch it through the connect-time
+            # SSRF-pinning client, which re-resolves and re-validates EVERY connect
+            # INCLUDING each redirect hop, so a public URL that 30x-redirects to
+            # 169.254.169.254 / loopback / a private address is blocked at connect
+            # (a first-hop-only check would be redirect-bypassable).
+            from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client
+
+            try:
+                with create_ssrf_safe_client(
+                    follow_redirects=True, timeout=_REQUEST_TIMEOUT_S
+                ) as client:
+                    with client.stream("GET", url) as resp:
+                        resp.raise_for_status()
+                        declared = int(resp.headers.get("Content-Length") or 0)
+                        if declared > MEDIA_MAX_BYTES:
+                            logger.warning("relay media download too large: %s", url)
+                            return None
+                        chunks: list[bytes] = []
+                        total = 0
+                        for chunk in resp.iter_bytes():
+                            total += len(chunk)
+                            if total > MEDIA_MAX_BYTES:
+                                logger.warning("relay media download too large: %s", url)
+                                return None
+                            chunks.append(chunk)
+                        return _write_temp(b"".join(chunks), resp.headers)
+            except SSRFConnectionBlocked:
+                logger.warning("relay media download blocked (unsafe URL target)")
+                return None
+            except Exception as exc:  # httpx errors / OSError — best-effort
+                logger.warning("relay media download failed for %s: %s", url, exc)
+                return None
+
+        def _get_relay() -> Optional[str]:
+            # Relay re-host URLs (needs_auth) are the operator's own configured
+            # relay host and may legitimately be private/self-hosted, so they keep
+            # the urllib path; the bearer is only ever sent to them.
+            headers = {"Authorization": f"Bearer {self._bearer()}"}
             req = urllib.request.Request(url, headers=headers)
             try:
                 with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
@@ -177,28 +236,12 @@ class RelayMediaClient:
                         logger.warning("relay media download too large: %s", url)
                         return None
                     data = resp.read(MEDIA_MAX_BYTES + 1)
-                    if not data or len(data) > MEDIA_MAX_BYTES:
-                        return None
-                    # Extension: prefer the response's content-disposition /
-                    # suggested name, fall back to the mime type, then .bin —
-                    # vision/file tools sniff by extension.
-                    name = suggested_name or ""
-                    if not name:
-                        cd = resp.headers.get("Content-Disposition") or ""
-                        if "filename=" in cd:
-                            name = cd.split("filename=", 1)[1].strip().strip('"')
-                    ext = Path(name).suffix if name else ""
-                    if not ext:
-                        mime = (resp.headers.get("Content-Type") or "").split(";")[0]
-                        ext = mimetypes.guess_extension(mime) or ".bin"
-                    fd, tmp_path = tempfile.mkstemp(prefix="relay_media_", suffix=ext)
-                    with os.fdopen(fd, "wb") as fh:
-                        fh.write(data)
-                    return tmp_path
+                    return _write_temp(data, resp.headers)
             except (urllib.error.URLError, ValueError, OSError) as exc:
                 logger.warning("relay media download failed for %s: %s", url, exc)
                 return None
 
+        _get = _get_relay if needs_auth else _get_untrusted
         return await asyncio.get_running_loop().run_in_executor(None, _get)
 
 

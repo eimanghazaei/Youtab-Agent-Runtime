@@ -7,13 +7,34 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Optional, Union
 from urllib.parse import urlparse
 
 import yaml
 
+from tools.path_security import is_windows_reserved_device_path
+
 logger = logging.getLogger(__name__)
+
+
+def _reject_windows_reserved_device(target: Union[str, Path]) -> None:
+    """Fail closed, before any side effect, when *target* names a Windows
+    reserved device.
+
+    Enforcement is gated on Windows, where the OS resolves ``CON``/``NUL``/
+    ``COM1``/``\\\\.\\PhysicalDrive0``/... to a device (write hangs, silently
+    discards the data, or reaches raw hardware).  The predicate is
+    platform-independent so the rule stays unit-testable on any host.
+    """
+    if os.name == "nt" and is_windows_reserved_device_path(str(target)):
+        raise ValueError(
+            f"Refusing to write to '{target}': it names a Windows reserved "
+            f"device (CON, PRN, AUX, NUL, COM1-9, LPT1-9, or a \\\\.\\ / \\\\?\\ "
+            f"device path), which would hang, discard the data, or reach raw "
+            f"hardware."
+        )
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -88,6 +109,55 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+# Windows error codes that MoveFileEx (which backs os.replace) can return
+# *transiently* when the destination is momentarily open by another handle —
+# a concurrent reader, another writer's in-flight replace, an antivirus/indexer
+# scan, or a just-closed handle Windows has not fully released. The replace is
+# still atomic; only the moment of the swap can bounce. POSIX os.replace has no
+# such window.
+_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset((5, 32))  # ACCESS_DENIED, SHARING_VIOLATION
+# Attempts/backoff are sized to ride out a genuinely contended destination — a
+# concurrent reader (or antivirus/indexer) that keeps re-opening the target on a
+# slow, I/O-throttled filesystem (e.g. a CI Windows runner). Worst case is ~3s
+# of bounded backoff BEFORE re-raising, and it only engages while the swap is
+# actually bouncing; the uncontended path still succeeds on the first try.
+_WINDOWS_REPLACE_MAX_ATTEMPTS = 20
+_WINDOWS_REPLACE_MAX_BACKOFF = 0.2  # seconds
+
+
+def _os_replace_resilient(src: str, dst: str) -> None:
+    """``os.replace(src, dst)`` with a BOUNDED retry for the documented,
+    transient Windows sharing violation.
+
+    On POSIX this is a single ``os.replace`` — there is no retry and no sleep,
+    so behaviour is byte-for-byte the pre-existing contract. On Windows,
+    ``MoveFileEx`` can return ``ERROR_ACCESS_DENIED`` (WinError 5) or
+    ``ERROR_SHARING_VIOLATION`` (WinError 32) for a brief window when the
+    destination is momentarily held open; this retries ONLY those two winerror
+    codes, a finite number of times, with a short capped backoff. Every other
+    error (including the ``EXDEV``/``EBUSY`` the caller handles) is re-raised
+    immediately and unchanged, and the transient error is itself re-raised once
+    the bounded attempts are exhausted. This is the standard remediation used by
+    CPython, pip and Git-for-Windows; it does not mask a logic race — the swap
+    is atomic, the retry only rides out the OS-level sharing window.
+    """
+    if os.name != "nt":
+        os.replace(src, dst)
+        return
+    backoff = 0.001
+    last_attempt = _WINDOWS_REPLACE_MAX_ATTEMPTS - 1
+    for attempt in range(_WINDOWS_REPLACE_MAX_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if winerror not in _WINDOWS_TRANSIENT_REPLACE_ERRORS or attempt == last_attempt:
+                raise
+            time.sleep(backoff)
+            backoff = min(backoff * 2, _WINDOWS_REPLACE_MAX_BACKOFF)
+
+
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
@@ -109,10 +179,12 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     need to re-apply permissions can target it instead of the symlink.
     """
     target_str = str(target)
+    # Fail closed before the swap if the destination names a Windows device.
+    _reject_windows_reserved_device(target_str)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
     tmp_str = str(tmp_path)
     try:
-        os.replace(tmp_str, real_path)
+        _os_replace_resilient(tmp_str, real_path)
     except OSError as exc:
         if exc.errno not in (errno.EXDEV, errno.EBUSY):
             raise
@@ -142,6 +214,7 @@ def atomic_write_text(
     *,
     encoding: str = "utf-8",
     tmp_prefix: str = ".tmp_",
+    effect: Optional[tuple] = None,
 ) -> None:
     """Write *content* to *path* via temp file + fsync + atomic rename.
 
@@ -151,7 +224,29 @@ def atomic_write_text(
 
     Used by the memory store, skill manager, and agent importer so that
     every destructive file rewrite in the codebase shares one implementation.
+
+    WAVE-26 (optional): pass ``effect=(run_id, principal)`` to bracket the
+    atomic rename with an effect-ledger guard so a crash-then-requeue does not
+    re-apply the write. Default ``None`` preserves behaviour for the many
+    context-free internal callers.
     """
+    # Validate before creating the parent dir or a temp file (no side effects
+    # on a rejected Windows device target).
+    _reject_windows_reserved_device(path)
+    _eff_id = None
+    _eff_principal = None
+    if effect is not None:
+        from youtab_runtime import effect_ledger as _el
+
+        run_id, principal = effect
+        _eff = _el.begin_effect(run_id, principal, "fs.write", os.fspath(path))
+        # Atomically claim: exactly one caller wins. A loser (concurrent writer,
+        # already committed, or crash-stranded unknown) skips the rename — never
+        # a blind rewrite.
+        won, _eff = _el.try_claim(_eff.effect_id, principal)
+        if not won:
+            return
+        _eff_id, _eff_principal = _eff.effect_id, principal
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_path = tempfile.mkstemp(
@@ -162,8 +257,32 @@ def atomic_write_text(
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        atomic_replace(tmp_path, path)
+        atomic_replace(tmp_path, path)  # durable commit point
+        if _eff_id is not None:
+            from youtab_runtime import effect_ledger as _el
+
+            _el.mark_committed(_eff_id, _eff_principal)
     except BaseException:
+        if _eff_id is not None:
+            from youtab_runtime import effect_ledger as _el
+
+            # Torn/crash after the claim: outcome unproven -> unknown, so a later
+            # retry is reconciled rather than blindly re-applied. Guard the ledger
+            # write: a secondary ledger/DB error here (e.g. the journal is locked
+            # under contention) must NEVER mask the original write failure the
+            # caller needs to see. On such a failure the effect is left
+            # in_progress; a later process restart's recover_interrupted reclaims
+            # it to unknown (its owner is then provably dead).
+            try:
+                _el.mark_unknown(_eff_id, _eff_principal)
+            except BaseException:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "atomic_write_text: could not mark effect %s unknown after a "
+                    "write failure; leaving it for restart recovery",
+                    _eff_id, exc_info=True,
+                )
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -195,6 +314,9 @@ def atomic_json_write(
         **dump_kwargs: Additional keyword args forwarded to json.dump(), such
             as default=str for non-native types.
     """
+    # Validate before creating the parent dir or a temp file (no side effects
+    # on a rejected Windows device target).
+    _reject_windows_reserved_device(path)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -207,12 +329,15 @@ def atomic_json_write(
         suffix=".tmp",
     )
     try:
-        if mode is not None and hasattr(os, "fchmod"):
-            # fchmod is Unix-only; Windows' os module has no fchmod. Skipping it
-            # here is safe — mkstemp already created the temp file as 0o600, and
-            # the post-replace os.chmod below applies the final mode durably.
-            os.fchmod(fd, mode)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
+            if mode is not None and hasattr(os, "fchmod"):
+                # fchmod is Unix-only; Windows' os module has no fchmod. Skipping
+                # it here is safe — mkstemp already created the temp file as
+                # 0o600, and the post-replace os.chmod below applies the final
+                # mode durably. Done INSIDE the fdopen context so that a fchmod
+                # error (e.g. ENOTSUP/EPERM on some FUSE/overlay/NFS backings)
+                # cannot leak the raw descriptor: the ``with`` always closes it.
+                os.fchmod(f.fileno(), mode)
             json.dump(
                 data,
                 f,

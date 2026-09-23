@@ -35,9 +35,11 @@ export interface RealSessionTurn {
 }
 
 export interface RealSessionSpec {
-  /** Session label. The durable row stores no title, so clients fall back to
-   * the preview (the first 60 characters of the first user message). */
-  title: string
+  /** Optional session label. A title passed to session.create is promoted to
+   * the durable `title` column once the first turn completes, so it WINS the
+   * sidebar label over the preview. Omit it when the test needs the label to
+   * fall back to the preview (the first 60 chars of the first user message). */
+  title?: string
   /** Each item becomes one real user prompt followed by the mock provider's reply. */
   turns: readonly (RealSessionTurn | string)[]
 }
@@ -109,7 +111,9 @@ export class RealSessionBuilder {
       cols: 120,
       cwd: REPO_ROOT,
       source: 'desktop',
-      title: spec.title,
+      // Only send a title when the spec sets one — an empty/absent title leaves
+      // the durable row title-less so the sidebar label falls back to preview.
+      ...(spec.title ? { title: spec.title } : {}),
     })
     const runtimeId = requireString(created, 'session_id')
     const sessionId = requireString(created, 'stored_session_id')

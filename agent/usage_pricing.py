@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
+from urllib.parse import urlparse
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
 from utils import base_url_host_matches
@@ -15,7 +17,11 @@ _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
 _YOUTAB_DEFAULT_BASE_URL = "https://inference-api.youtab.io/v1"
 
-CostStatus = Literal["actual", "estimated", "included", "unknown"]
+# ``local_zero`` = a self-hosted local-inference server verified to have zero
+# provider-API cost (Track A / ECO). It is a first-class, auditable status
+# distinct from ``unknown`` (no price found → fail closed) and from a
+# self-reported ``$0`` cloud price (which stays ``estimated``/``included``).
+CostStatus = Literal["actual", "estimated", "included", "unknown", "local_zero"]
 CostSource = Literal[
     "provider_cost_api",
     "provider_generation_api",
@@ -23,8 +29,87 @@ CostSource = Literal[
     "official_docs_snapshot",
     "user_override",
     "custom_contract",
+    "verified_local",
     "none",
 ]
+
+# Local-inference servers that can be verified as zero provider-API cost. Kept
+# deliberately in step with ``engine_connection.LOCAL_SERVER_PROVIDERS`` but
+# held as an INDEPENDENT copy here: a €0 cost decision must never inherit the
+# connection layer's broader endpoint authorization (which admits a public host
+# under an opt-in env). The cost layer owns its own, strictly narrower rule.
+LOCAL_ZERO_PROVIDERS = frozenset(
+    {"ollama", "vllm", "llamacpp", "llama.cpp", "llama-cpp", "lmstudio"}
+)
+_LOCAL_ZERO_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+# The Owner's self-hosted inference box can sit on the Tailscale CGNAT range.
+_LOCAL_ZERO_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+# 6to4 (2002::/16) and Teredo (2001::/32) IPv6 literals embed a PUBLIC IPv4
+# destination yet report ``is_private`` in the stdlib — never treat them as local.
+_LOCAL_ZERO_V6_PUBLIC_TUNNELS = (
+    ipaddress.ip_network("2002::/16"),
+    ipaddress.ip_network("2001::/32"),
+)
+
+
+def is_verified_local_zero_endpoint(base_url: Optional[str]) -> bool:
+    """Whether ``base_url`` addresses a self-hosted, non-metered local server.
+
+    STRICTER than ``engine_connection.endpoint_is_authorized`` on purpose:
+
+    * never a public host — even if the ECO public-endpoint opt-in is set,
+    * never a bare hostname (it could resolve to anything — no DNS/IO here),
+    * never trusts a self-reported price.
+
+    Only a loopback / RFC1918-private / link-local / Tailscale-CGNAT **IP
+    literal** (or the literal loopback host names) qualifies. Anything else
+    fails closed to ``False`` so the caller prices normally (and, for a model
+    with no price entry, fails closed rather than inheriting €0).
+    """
+    raw = (base_url or "").strip()
+    if not raw:
+        return False
+    # Scheme recognition is case-insensitive and consistent with endpoint
+    # canonicalization: ``HTTPS://127.0.0.1`` is HTTPS loopback, not host
+    # ``https``. Only http/https may be a local-zero candidate — a non-http
+    # scheme (ftp/file/...) fails closed. A scheme-less value (``127.0.0.1:11434``)
+    # is treated as http.
+    _scheme = re.match(r"^([a-zA-Z][a-zA-Z0-9+.\-]*)://", raw)
+    if _scheme is not None:
+        if _scheme.group(1).lower() not in ("http", "https"):
+            return False  # non-http scheme is never local-zero
+    else:
+        raw = "http://" + raw
+    try:
+        parsed = urlparse(raw)
+    except Exception:  # noqa: BLE001 — malformed => not local-zero
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host or parsed.username or parsed.password:
+        return False
+    if host in _LOCAL_ZERO_LOOPBACK_HOSTS:
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False  # a hostname, not an IP literal — never €0
+    if isinstance(ip, ipaddress.IPv6Address) and any(
+        ip in n for n in _LOCAL_ZERO_V6_PUBLIC_TUNNELS
+    ):
+        return False  # 6to4/Teredo embed a public IPv4 dest — not local
+    if ip.is_loopback or ip.is_private or ip.is_link_local:
+        return True
+    return ip in _LOCAL_ZERO_CGNAT
+
+
+def classify_local_zero(provider: Optional[str], base_url: Optional[str]) -> bool:
+    """True iff (provider is a local-inference server) AND (endpoint is verified
+    local). Both conditions are required — a remote/cloud endpoint or a
+    non-local provider can never claim the local-zero cost policy."""
+    prov = (provider or "").strip().lower()
+    if prov not in LOCAL_ZERO_PROVIDERS:
+        return False
+    return is_verified_local_zero_endpoint(base_url)
 
 
 @dataclass(frozen=True)
@@ -1317,6 +1402,20 @@ def estimate_usage_cost(
 
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
     if not entry:
+        # No published/live price for this model. Before failing closed, honour
+        # the one benign zero: a verified self-hosted local-inference server
+        # (Track A / ECO) has no provider-API cost. This is gated on a strict
+        # local classifier — provider AND endpoint must both be verified local —
+        # so an unknown *cloud* model still returns ``unknown`` (fail closed) and
+        # a remote endpoint can never masquerade as free local inference.
+        if classify_local_zero(provider, base_url):
+            return CostResult(
+                amount_usd=_ZERO,
+                status="local_zero",
+                source="verified_local",
+                label="local €0",
+                pricing_version="local-zero-v1",
+            )
         return CostResult(amount_usd=None, status="unknown", source="none", label="n/a")
 
     notes: list[str] = []

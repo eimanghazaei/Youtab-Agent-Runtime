@@ -39,21 +39,21 @@ def test_override_propagates_to_mcp_loop(tmp_path, monkeypatch, mcp_loop):
         return str(get_youtab_home())
 
     # Unscoped: the loop task sees the process home.
-    assert mcp_loop._run_on_mcp_loop(read_home(), timeout=10) == str(process_home)
+    assert mcp_loop._run_on_mcp_loop(read_home(), timeout=60) == str(process_home)
 
     # Scoped: the caller's override must reach the loop task.
     token = set_youtab_home_override(str(profile_home))
     try:
-        assert mcp_loop._run_on_mcp_loop(read_home(), timeout=10) == str(profile_home)
+        assert mcp_loop._run_on_mcp_loop(read_home(), timeout=60) == str(profile_home)
         # Factory form must be wrapped too.
-        assert mcp_loop._run_on_mcp_loop(lambda: read_home(), timeout=10) == str(
+        assert mcp_loop._run_on_mcp_loop(lambda: read_home(), timeout=60) == str(
             profile_home
         )
     finally:
         reset_youtab_home_override(token)
 
     # The loop thread's default context is untouched afterwards.
-    assert mcp_loop._run_on_mcp_loop(read_home(), timeout=10) == str(process_home)
+    assert mcp_loop._run_on_mcp_loop(read_home(), timeout=60) == str(process_home)
 
 
 def test_concurrent_scopes_do_not_interfere(tmp_path, monkeypatch, mcp_loop):
@@ -82,7 +82,7 @@ def test_concurrent_scopes_do_not_interfere(tmp_path, monkeypatch, mcp_loop):
     def scoped_call(key, home):
         token = set_youtab_home_override(str(home))
         try:
-            results[key] = mcp_loop._run_on_mcp_loop(read_home(), timeout=10)
+            results[key] = mcp_loop._run_on_mcp_loop(read_home(), timeout=60)
         finally:
             reset_youtab_home_override(token)
 

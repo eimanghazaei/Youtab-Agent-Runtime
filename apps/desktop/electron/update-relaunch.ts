@@ -64,11 +64,16 @@ function resolveUnpackedRelease(execPath, updateRoot, platform) {
     return null
   }
 
-  const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release')
-  const unpacked = path.join(releaseDir, unpackedDirName(platform))
-  const normalizedExec = path.resolve(String(execPath))
+  // Resolve in the TARGET platform's path flavor, not the host's: this helper
+  // may be exercised (and unit-tested) for a platform other than the one it runs
+  // on. `path.resolve` would also inject the host cwd/drive into an absolute
+  // POSIX path on Windows, so normalize with the flavor instead.
+  const pth = platform === 'win32' ? path.win32 : path.posix
+  const releaseDir = pth.join(updateRoot, 'apps', 'desktop', 'release')
+  const unpacked = pth.join(releaseDir, unpackedDirName(platform))
+  const normalizedExec = pth.normalize(String(execPath))
   // execPath must be the unpacked dir itself or a descendant of it.
-  const withSep = unpacked.endsWith(path.sep) ? unpacked : unpacked + path.sep
+  const withSep = unpacked.endsWith(pth.sep) ? unpacked : unpacked + pth.sep
 
   if (normalizedExec === unpacked || normalizedExec.startsWith(withSep)) {
     return unpacked

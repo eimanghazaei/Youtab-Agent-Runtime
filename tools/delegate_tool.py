@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
+
+# WAVE-30H R8: child-agent spawn/wait latency spans (self-noops when tracing off).
+try:  # pragma: no cover - observability import guard
+    from youtab_runtime.stage_trace import stage_span as _stage_span
+except Exception:  # pragma: no cover - defensive
+    from contextlib import nullcontext
+
+    def _stage_span(_stage_attr, **_attrs):
+        return nullcontext({})
 from concurrent.futures import (
     TimeoutError as FuturesTimeoutError,
 )
@@ -1236,6 +1245,28 @@ def _build_child_agent(
     orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
     effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"
 
+    # WAVE-30H R5: for a managed run, the Simorgh grant's max_spawn_depth bounds
+    # the whole execution tree. Refuse to spawn past it (fail-closed) — this is in
+    # ADDITION to the local _get_max_spawn_depth guard, never a widening of it.
+    _tree_root = getattr(parent_agent, "_execution_tree_root", None)
+    # Managed only: root_run_id is a non-empty str (isinstance guards against a
+    # MagicMock parent auto-vivifying the attribute as a truthy Mock in tests).
+    if isinstance(_tree_root, str) and _tree_root:
+        from youtab_runtime import execution_tree_budget as _etb
+
+        try:
+            _grant_max_depth = _etb.snapshot(_tree_root).max_spawn_depth
+        except _etb.TreeBudgetError as exc:
+            raise ValueError(
+                "managed delegation could not verify the execution-tree spawn "
+                "depth budget; refusing to spawn"
+            ) from exc
+        if child_depth > _grant_max_depth:
+            raise ValueError(
+                f"delegation depth {child_depth} exceeds the Simorgh grant's "
+                f"max_spawn_depth {_grant_max_depth} for this execution tree"
+            )
+
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
     # subagent_id is generated here so the progress callback, the
     # spawn_requested event, and the _active_subagents registry all share
@@ -1551,6 +1582,56 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    # WAVE-30H R3/R5: a delegated child inherits the parent's sealed admitted
+    # context AND the SAME execution-tree budget root, so (a) its tool calls stay
+    # Simorgh-gated (enforce_managed_tool_authority) and (b) its conversation loop
+    # debits the ONE shared tree budget (the remaining root budget), never a fresh
+    # or unlimited one. Non-managed parents carry neither, so this is a no-op.
+    # Managed only: gate on a real str root_run_id so a non-managed parent (or a
+    # MagicMock test double) never copies mock authority/budget onto the child.
+    _parent_tree_root = getattr(parent_agent, "_execution_tree_root", None)
+    if isinstance(_parent_tree_root, str) and _parent_tree_root:
+        _parent_admitted = getattr(parent_agent, "_admitted_command", None)
+        if _parent_admitted is not None:
+            child._admitted_command = _parent_admitted
+        child._execution_tree_root = _parent_tree_root
+        child._execution_tree_limits = getattr(
+            parent_agent, "_execution_tree_limits", None
+        )
+        # WAVE-30H: a managed child inherits the EXACT parent binding, or fails
+        # closed. Gated on the parent actually carrying a binding, so non-managed/
+        # legacy parents (and test doubles) are untouched.
+        _parent_binding = getattr(parent_agent, "_runtime_effective_binding", None)
+        if isinstance(_parent_binding, dict):
+            from youtab_agent_cli import effective_binding as _eb
+
+            # Parent binding integrity — a tampered/forged parent binding fails closed.
+            if not _eb.verify_binding(_parent_binding):
+                raise ValueError(
+                    "managed delegation refused: parent binding hash integrity failure"
+                )
+            # Compare SUBSTRATE identity (provider/model/model_ref/execution/
+            # endpoint_class/endpoint_fingerprint/cost_policy) — NOT the per-run hash,
+            # which differs by run_id. This catches an endpoint drift that a bare
+            # provider+model check would miss.
+            _child_substrate = _eb.build_effective_binding(
+                provider=effective_provider, model=effective_model,
+                endpoint=effective_base_url,
+            )
+            if _eb.binding_digest(_child_substrate) == _eb.binding_digest(_parent_binding):
+                # EXACT same substrate → inherit the parent binding unchanged.
+                child._runtime_effective_binding = _parent_binding
+            else:
+                # Substrate drift. Rebinding a managed child to a DIFFERENT substrate
+                # requires an explicit signed, single-use rebind authorization
+                # (predecessor-hash + monotonic version + nonce), which is a separate
+                # Codex-reviewed security primitive not yet landed. Until then ANY
+                # drift FAILS CLOSED — never a silent record-and-run.
+                raise ValueError(
+                    "managed delegation substrate drift (provider/model/endpoint "
+                    "differs from the parent binding) requires a signed rebind "
+                    "authorization; refusing to run the child"
+                )
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1973,6 +2054,29 @@ def _run_single_child(
     """
     child_start = time.monotonic()
 
+    # WAVE-30H R5: acquire the managed max_concurrent_agents permit for this
+    # delegated child BEFORE it runs. This is the single common chokepoint every
+    # delegation path funnels through, so the tree's live-agent count is enforced
+    # for success, failure, timeout, cancellation and retry alike (the permit is
+    # released in the outermost `finally` below; a crash that skips it is
+    # reclaimed by the reaper via the recorded pid+incarnation). No-op for a
+    # non-managed child. Fail-closed: past the ceiling the child is refused, not
+    # silently run unbudgeted.
+    from agent import managed_budget_gate as _mbg
+
+    try:
+        _mbg.acquire_delegation_permit(child)
+    except Exception as _permit_exc:  # noqa: BLE001 - TreeConcurrency/DepthExceeded
+        return {
+            "task_index": task_index,
+            "status": "error",
+            "summary": None,
+            "error": f"delegation refused by execution-tree budget: {_permit_exc}",
+            "api_calls": 0,
+            "duration_seconds": 0.0,
+            "_child_role": getattr(child, "_delegate_role", None),
+        }
+
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
 
@@ -2184,12 +2288,14 @@ def _run_single_child(
                 )
 
         _child_context = contextvars.copy_context()
-        _child_future = _timeout_executor.submit(
-            _child_context.run,
-            _run_with_thread_capture,
-        )
+        with _stage_span("CHILD_SPAWN"):
+            _child_future = _timeout_executor.submit(
+                _child_context.run,
+                _run_with_thread_capture,
+            )
         try:
-            result = _child_future.result(timeout=child_timeout)
+            with _stage_span("CHILD_WAIT"):
+                result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
             # Signal the child to stop so its thread can exit cleanly.
             try:
@@ -2558,6 +2664,14 @@ def _run_single_child(
                 child_pool.release_lease(leased_cred_id)
             except Exception as exc:
                 logger.debug("Failed to release credential lease: %s", exc)
+
+        # WAVE-30H R5: release the managed concurrency permit on EVERY exit path
+        # (success/failure/timeout/cancellation). Idempotent + no-op if none was
+        # acquired, so it is always safe here.
+        try:
+            _mbg.release_delegation_permit(child)
+        except Exception as exc:  # noqa: BLE001 - release must never mask the result
+            logger.debug("Failed to release delegation permit: %s", exc)
 
         # Restore the parent's tool names so the process-global is correct
         # for any subsequent execute_code calls or other consumers.

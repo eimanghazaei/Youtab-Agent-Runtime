@@ -93,6 +93,7 @@ import shutil
 import struct
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -2912,6 +2913,70 @@ def _section_rows(state: Plan) -> list[dict]:
 # ── writing, atomically and once ─────────────────────────────────────────────
 
 
+_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset((5, 32))  # ACCESS_DENIED, SHARING_VIOLATION
+
+
+def _replace_resilient(src, dst) -> None:
+    """``os.replace(src, dst)`` with a bounded retry for the transient Windows
+    sharing violation.
+
+    Two concurrent imports of one speaker stage the same original under a shared
+    ``originals`` dir and both ``os.replace`` onto it. On POSIX both renames are
+    atomic and simply last-wins; on Windows the loser can briefly see
+    ``ERROR_ACCESS_DENIED`` (WinError 5) / ``ERROR_SHARING_VIOLATION`` (32) while
+    the winner still holds the target open. This retries ONLY those two winerror
+    codes a bounded number of times with a short capped backoff, then re-raises —
+    so a genuinely stuck handle still surfaces, and the loser goes on to be
+    refused at the serialised publish window rather than crashing with a bare
+    PermissionError. POSIX behaviour is a single unretried ``os.replace``.
+    """
+    if os.name != "nt":
+        os.replace(src, dst)
+        return
+    backoff = 0.001
+    last = 19
+    for attempt in range(20):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            if getattr(exc, "winerror", None) not in _WINDOWS_TRANSIENT_REPLACE_ERRORS or attempt == last:
+                raise
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 0.2)
+
+
+def _sha256_resilient(path: Path) -> str:
+    """``freeze_manifest.sha256_file(path)`` with a bounded retry for the transient
+    Windows sharing violation a concurrent ``os.replace`` onto the same target
+    provokes — the READ-side sibling of :func:`_replace_resilient`.
+
+    Two concurrent imports of one speaker also READ the shared ``originals`` target
+    (the resume fast-path and the re-verify). While the winner's ``os.replace``
+    (MoveFileEx) briefly holds the target, the loser's hashing ``open(path, "rb")``
+    sees ``ERROR_SHARING_VIOLATION``, which the CRT reports as
+    ``PermissionError(errno=13, winerror=None)``. So this keys on ``PermissionError``
+    on ``nt`` — NOT on winerror, which ``open`` leaves ``None`` (a winerror check,
+    like _replace_resilient's, would miss it entirely). Bounded retry with capped
+    backoff, then RE-RAISE — a genuinely stuck handle still surfaces, and the loser
+    goes on to be refused at the serialised publish window rather than crashing with
+    a bare PermissionError. POSIX reads never contend: single unretried path.
+    """
+    if os.name != "nt":
+        return freeze_manifest.sha256_file(path)
+    backoff = 0.001
+    last = 19
+    for attempt in range(20):
+        try:
+            return freeze_manifest.sha256_file(path)
+        except PermissionError:
+            if attempt == last:
+                raise
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 0.2)
+    raise AssertionError("unreachable")  # loop always returns or re-raises
+
+
 def _write_atomic(path: Path, payload: bytes) -> None:
     """Write ``payload`` to ``path`` so no reader ever sees half of it."""
     # Unique per writer, not per path: two writers sharing one temporary name
@@ -2926,7 +2991,7 @@ def _write_atomic(path: Path, payload: bytes) -> None:
         handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    _replace_resilient(temporary, path)
 
 
 def _copy_and_hash(source: Path, target: Path) -> str:
@@ -3072,7 +3137,10 @@ def _copy_originals(state: Plan, staging: Path, destination: Path) -> dict:
     copied = resumed = 0
     for row in state.originals:
         target = destination / row.path
-        if target.is_file() and freeze_manifest.sha256_file(target) == row.sha256:
+        # Shared-target read: a peer import may be os.replace'ing this same target
+        # right now — ride out the transient Windows sharing violation (see
+        # _sha256_resilient) instead of leaking a bare PermissionError to the loser.
+        if target.is_file() and _sha256_resilient(target) == row.sha256:
             resumed += 1
             continue
         temporary = staging / row.path
@@ -3085,7 +3153,9 @@ def _copy_originals(state: Plan, staging: Path, destination: Path) -> dict:
                 "nothing that follows would describe the audio that was recorded"
             )
         target.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(temporary, target)
+        # Concurrent imports of one speaker race on this shared target; ride out
+        # the transient Windows sharing violation instead of crashing the loser.
+        _replace_resilient(temporary, target)
         copied += 1
     return {"copied": copied, "already_present": resumed}
 
@@ -3102,9 +3172,13 @@ def _reverify(state: Plan, destination: Path) -> dict:
     source_changed: list[str] = []
     copy_changed: list[str] = []
     for row in state.originals:
+        # Source is the read-only submission — never a peer's write target, so it
+        # cannot contend and takes the plain read.
         if freeze_manifest.sha256_file(state.originals_root / row.path) != row.sha256:
             source_changed.append(row.path)
-        if freeze_manifest.sha256_file(destination / row.path) != row.sha256:
+        # Destination is the shared published target a lagging peer may still be
+        # replacing — guard the read against the transient Windows sharing violation.
+        if _sha256_resilient(destination / row.path) != row.sha256:
             copy_changed.append(row.path)
     if source_changed or copy_changed:
         raise Refused(
@@ -3149,7 +3223,7 @@ def _publish_report(staging: Path, derived: Path, body: dict) -> dict:
         )
     staged = staging / REPORT_FILENAME
     _write_atomic(staged, payload)
-    os.replace(staged, final)
+    _replace_resilient(staged, final)
     _write_atomic(
         derived / (REPORT_FILENAME + ".sha256"),
         f"{freeze_manifest.sha256_file(final)}  {REPORT_FILENAME}\n".encode("utf-8"),
@@ -3197,7 +3271,7 @@ def _publish_manifest(state: Plan, staging: Path, derived: Path, originals_root:
             f"{sorted(planned - listed)[:5]})"
         )
     for name in (*sidecars, staged):  # the manifest last: it is what says "imported"
-        os.replace(name, derived / name.name)
+        _replace_resilient(name, derived / name.name)
     return fresh
 
 

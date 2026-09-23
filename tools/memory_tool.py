@@ -23,15 +23,170 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import base64
+import contextvars
+import hashlib
 import json
 import logging
+import os
+import re
 import time
+import unicodedata
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from youtab_constants import get_youtab_home
 from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_write_text
+
+# WAVE-30H R4: managed runs physically namespace the memory store by the grant's
+# tenant/workspace so one managed run can never read or write another tenant's
+# memory.
+#
+# WAVE-30H (post-review correction 4): the namespace is an IMMUTABLE PER-RUN
+# context carried in a ``contextvars.ContextVar`` — NOT a mutable process-global
+# environment variable. A ContextVar is isolated per-thread and per-asyncio-task
+# (each thread starts with a fresh context; each task copies its context at
+# creation), so a process that serves concurrent runs gives every run its own
+# namespace with no cross-talk. An env var, by contrast, is one shared slot for
+# the whole process and would leak one tenant's memory into a concurrent run.
+# The worker installs it from the admitted grant envelope (see worker_admission);
+# standalone leaves it unset and the flat profile-scoped path is unchanged.
+#
+# ``MEMORY_NAMESPACE_ENV`` is retained ONLY as a one-time subprocess-boot
+# transport (a legacy dispatcher that set env before this change). It is read
+# at most once, to seed the contextvar, and is NEVER consulted per storage
+# operation — the enforcement point (get_memory_dir) reads the contextvar only.
+MEMORY_NAMESPACE_ENV = "YOUTAB_AGENT_MEMORY_NAMESPACE"
+
+# Explicit on-disk encoding version for a namespace component. Bump only with a
+# migration rule (see ``encode_namespace_component``).
+_NAMESPACE_ENC_VERSION = "v1"
+# Runs of anything but lowercase ASCII alphanumerics collapse to a single "-" in
+# the *human-readable* slug. The slug carries NO uniqueness (see below), so this
+# lossy collapse is safe.
+_NAMESPACE_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def encode_namespace_component(raw: str) -> str:
+    """Injective, case-insensitive-filesystem-safe, versioned encoding of one
+    namespace component (a tenant or workspace id).
+
+    The previous encoding replaced every disallowed character with ``_``, which
+    was NOT injective: ``tenant/a`` and ``tenant?a`` (and ``Tenant`` vs
+    ``tenant`` on a case-insensitive filesystem, and NFC vs NFD forms) collapsed
+    to the same directory, crossing tenant/workspace boundaries.
+
+    Uniqueness here comes from a collision-resistant digest over the
+    NFC-normalized UTF-8 bytes, so two distinct components can never share a
+    directory regardless of:
+      * disallowed characters collapsing (``a/b`` vs ``a?b``),
+      * ASCII case folding on case-insensitive filesystems (Windows/macOS) — the
+        entire encoded name is lowercase, so folding is a no-op and distinct
+        digests stay distinct real paths,
+      * Unicode NFC/NFD form (normalized before hashing, so the two forms of one
+        id map to the SAME directory).
+
+    A short human-readable slug is prepended purely for legibility; it carries no
+    uniqueness. The ``v<N>-`` prefix and ``-<digest>`` suffix also guarantee the
+    result can never be a reserved Windows device name (CON/PRN/AUX/NUL/COM#/LPT#)
+    and can never contain a path separator or a ``..`` traversal component.
+    """
+    norm = unicodedata.normalize("NFC", raw or "").strip()
+    digest = hashlib.sha256(norm.encode("utf-8")).digest()
+    # base32 alphabet is [A-Z2-7]; lowercased it is [a-z2-7] — stable under case
+    # folding and free of path-hostile characters.
+    token = base64.b32encode(digest).decode("ascii").rstrip("=").lower()[:20]
+    slug = _NAMESPACE_SLUG_RE.sub("-", norm.lower()).strip("-")[:24]
+    if slug:
+        return f"{_NAMESPACE_ENC_VERSION}-{slug}-{token}"
+    return f"{_NAMESPACE_ENC_VERSION}-{token}"
+
+
+@dataclass(frozen=True)
+class MemoryNamespace:
+    """Immutable per-run memory scope (a managed run's tenant/workspace).
+
+    Frozen so a run's namespace cannot be mutated in place while the run holds a
+    reference to it; distinct runs hold distinct instances.
+    """
+
+    tenant: str
+    workspace: str
+
+    def safe_parts(self) -> list:
+        """Collision-free, traversal-safe path components, or [] if empty.
+
+        Each component is encoded with :func:`encode_namespace_component`, which
+        is injective over the NFC-normalized bytes, so distinct tenant/workspace
+        ids can never resolve to a shared directory (even across case-folding or
+        Unicode-form differences).
+        """
+        parts = []
+        for component in (self.tenant, self.workspace):
+            component = (component or "").strip()
+            if not component:
+                continue
+            parts.append(encode_namespace_component(component))
+        return parts
+
+
+# The authoritative per-run namespace. Default None == standalone / unscoped.
+_MEMORY_NAMESPACE: "contextvars.ContextVar[MemoryNamespace | None]" = (
+    contextvars.ContextVar("youtab_memory_namespace", default=None)
+)
+
+
+def set_memory_namespace(tenant: str, workspace: str) -> "contextvars.Token":
+    """Install the per-run memory namespace into the current context.
+
+    Returns the token so a caller that scopes a single run (e.g. a concurrent
+    server task) can ``reset_memory_namespace`` afterwards. The worker, which is
+    a single-run subprocess, sets it once at admission and never resets it.
+    """
+    return _MEMORY_NAMESPACE.set(MemoryNamespace(tenant=tenant, workspace=workspace))
+
+
+def reset_memory_namespace(token: "contextvars.Token") -> None:
+    _MEMORY_NAMESPACE.reset(token)
+
+
+@contextmanager
+def memory_namespace_scope(tenant: str, workspace: str):
+    """Scope the per-run namespace to a block (for a process serving concurrent
+    runs, one scope per run/task). Isolation is provided by contextvars."""
+    token = set_memory_namespace(tenant, workspace)
+    try:
+        yield
+    finally:
+        reset_memory_namespace(token)
+
+
+def current_memory_namespace() -> "MemoryNamespace | None":
+    """The active per-run namespace, or None (standalone / unscoped).
+
+    Reads the contextvar (per-run, concurrency-safe). Only if it is unset does it
+    consult ``MEMORY_NAMESPACE_ENV`` ONCE, as a legacy subprocess-boot transport,
+    seeding the contextvar so subsequent reads are contextvar-only. This keeps the
+    per-operation enforcement path free of any mutable process-global.
+    """
+    ns = _MEMORY_NAMESPACE.get()
+    if ns is not None:
+        return ns
+    raw = (os.environ.get(MEMORY_NAMESPACE_ENV) or "").strip()
+    if not raw:
+        return None
+    tenant, _, workspace = raw.partition("/")
+    ns = MemoryNamespace(tenant=tenant, workspace=workspace)
+    _MEMORY_NAMESPACE.set(ns)  # seed once; env is not read again per operation
+    return ns
+
+
+def _sanitized_namespace_parts() -> list:
+    """Sanitized ``[tenant, workspace]`` path parts, or [] when unscoped."""
+    ns = current_memory_namespace()
+    return ns.safe_parts() if ns is not None else []
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -51,8 +206,16 @@ logger = logging.getLogger(__name__)
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_youtab_home() / "memories"
+    """Return the memories directory, tenant/workspace-namespaced in managed mode.
+
+    Standalone (namespace env unset): the flat ``<home>/memories`` path, unchanged.
+    Managed (env set by the worker at admission): ``<home>/memories/<tenant>/<workspace>``
+    so a managed run's memory is physically isolated from other tenants (R4).
+    """
+    base = get_youtab_home() / "memories"
+    for part in _sanitized_namespace_parts():
+        base = base / part
+    return base
 
 # Stable header prefixes for the system-prompt memory blocks rendered by
 # MemoryStore._render_block. Exported so compression's prompt-retention check
@@ -290,13 +453,32 @@ class MemoryStore:
             yield
             return
 
-        fd = open(lock_path, "a+", encoding="utf-8")
+        # msvcrt locks a byte region, so ensure the lock file is non-empty.
+        if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
+            lock_path.write_text(" ", encoding="utf-8")
+
+        fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
         try:
             if fcntl:
                 fcntl.flock(fd, fcntl.LOCK_EX)
             else:
-                fd.seek(0)
-                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+                # msvcrt LK_LOCK gives up after ~10s and RAISES, which under
+                # multi-process contention (gateway + dashboard both writing
+                # MEMORY.md/USER.md) would drop a read-modify-write. Retry the
+                # non-blocking LK_NBLCK up to a generous deadline so this blocks-
+                # until-acquired like POSIX flock(LOCK_EX) (same fix as
+                # tools/skill_usage.py). Raises past the deadline rather than
+                # masking a real deadlock.
+                _deadline = time.monotonic() + 60.0
+                while True:
+                    fd.seek(0)
+                    try:
+                        msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                        break
+                    except OSError:
+                        if time.monotonic() >= _deadline:
+                            raise
+                        time.sleep(0.02)
             yield
         finally:
             if fcntl:
@@ -1233,6 +1415,12 @@ registry.register(
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",
+    # WAVE-30H R4: memory operations are memory-writes, so the managed authority
+    # gate routes them through the grant's allowed_memory_scopes (a run may only
+    # touch memory its Simorgh grant authorizes). Effect class is advisory
+    # metadata; it never gates the standalone path.
+    side_effect_class="memory_write",
+    capabilities=("memory",),
 )
 
 

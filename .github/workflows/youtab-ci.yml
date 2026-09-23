@@ -28,6 +28,9 @@ permissions:
 jobs:
   python-security:
     runs-on: ubuntu-latest
+    # Finite bound so a wedged step cannot burn the 6h default (WAVE-24). Set
+    # well above the job's normal duration — it caps runaways, not normal runs.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -106,6 +109,19 @@ jobs:
       # the extra would regenerate uv.lock.
       - name: Install the tflite runtime the wake-word regression tests need
         run: python -m pip install 'ai-edge-litert==2.1.6'
+      # Discord Voice decrypts RTP with PyNaCl's AEAD. WAVE-29 bumped PyNaCl to
+      # 1.6.2 (CVE-2025-69277 fix) via a uv override, but this job installs with
+      # `pip install -e`, which does NOT honor [tool.uv] override-dependencies —
+      # so PyNaCl is installed explicitly here at the locked version, matching
+      # uv.lock. tests/gateway/test_discord_voice_crypto.py exercises the real
+      # VoiceReceiver crypto path and asserts the running PyNaCl is >=1.6.2, so a
+      # regression to a vulnerable pin fails the required gate rather than
+      # silently validating a vulnerable build. `discord.py` itself is not needed
+      # (VoiceReceiver imports without it; the native Opus decoder is stubbed).
+      # Kept out of the `dev` extra for the same reason as the pins above: it is
+      # CI tooling and would otherwise force a uv.lock regeneration.
+      - name: Install the PyNaCl the Discord Voice crypto tests need
+        run: python -m pip install 'pynacl==1.6.2'
       # `scripts/run_tests.sh` refuses to run unless it finds a venv carrying
       # pytest at .venv/ or venv/, or YOUTAB_AGENT_PYTHON pointing at a python
       # that has it. `pip install -e '.[dev]'` above installs into the
@@ -135,6 +151,68 @@ jobs:
       - name: Origin TLS floor -- nginx 1.18 config test and real handshake matrix
         if: ${{ !cancelled() }}
         run: scripts/youtab/nginx_tls_gate.sh
+      # A06: dependency CVE scanning (integrity != vulnerability — the
+      # dependency_gate proves the lock matches, this proves the locked versions
+      # have no KNOWN CVEs). BLOCKING as of WAVE-28: every disclosed advisory was
+      # closed at the source (pins bumped + uv.lock regenerated), so
+      # cve_allowlist.toml is empty. A new applicable Critical/High/Medium
+      # advisory — or a scanner failure / malformed output (cve_audit.py exits 2,
+      # fail-closed) — now fails the required `python-security` job. It runs as a
+      # step of this already-required job rather than a new context on purpose: a
+      # floor proved by a check nobody must pass is a floor a green PR can remove.
+      #
+      # SCOPE: audit the LOCKED PROJECT dependency graph exported from uv.lock —
+      # NOT this runner's interpreter. The runner also carries CI-only tooling
+      # (uv, pip-audit, rapidocr-onnxruntime) installed with bare `pip install`,
+      # never shipped and deliberately absent from uv.lock; auditing the
+      # interpreter conflated those tools with project dependencies (e.g. uv's
+      # own CVEs). `uv export --all-extras` resolves, from the lock, EVERY extra
+      # this project ships — the core install plus every opt-in adapter/backend
+      # (telegram, discord[voice], google, fal, matrix, teams, dingtalk, ...) —
+      # so the gate audits the entire shipped surface, deterministically, with no
+      # tool noise. `--no-deps --disable-pip` audits precisely those exported
+      # pins against the advisory DB WITHOUT invoking pip at all: the lock is
+      # already the full pinned closure, so no resolution is needed, and skipping
+      # pip avoids its venv step failing on a locked pin whose Requires-Python
+      # excludes this runner's interpreter (a resolver artifact, never a real
+      # vulnerability) as well as any sdist build.
+      #
+      # WAVE-29 flipped this from the installed-subset to the FULL `--all-extras`
+      # surface. Every advisory previously found only under an opt-in extra is now
+      # closed at the source and enforced by this blocking gate:
+      #   * tornado>=6.5.8, pyasn1>=0.6.4, httplib2>=0.32.0, msgpack>=1.2.1
+      #     ([tool.uv] constraint floors), and
+      #   * pynacl: discord.py[voice] pulls PyNaCl, and discord.py 2.7.1 (latest)
+      #     hard-caps PyNaCl<1.6, so CVE-2025-69277 / PYSEC-2026-3002 (a
+      #     libsodium input-validation issue fixed in 1.6.2) had no satisfiable
+      #     in-cap bump. WAVE-29 closed it with a narrow, reproducible
+      #     [tool.uv] override-dependencies = ["pynacl>=1.6.2"]: the <1.6 cap is
+      #     defensive, not a real API break — nacl.secret.Aead and the AEAD
+      #     bindings our VoiceReceiver uses are identical in 1.5.0 and 1.6.2, and
+      #     Discord voice is exercised by the crypto/RTP regression suite. The
+      #     override is visible in uv.lock (hash-pinned) and to this gate.
+      # cve_allowlist.toml remains EMPTY: nothing is suppressed — every finding is
+      # fixed at the source. A new applicable Critical/High/Medium advisory (or a
+      # scanner error) fails this required job, fail-closed.
+      #
+      # ai-edge-litert is a genuine LOCKED dependency (Darwin-only, macOS tflite
+      # interpreter) — uv export filters it out on this Linux runner by its
+      # platform marker, not by any allowlist; it is audited on macOS via its own
+      # locked pin. Not in run_all_gates.sh for the reason on the TLS step: it
+      # needs pip-audit + network, which a workstation run should not require.
+      - name: Install pip-audit for the CVE gate
+        if: ${{ !cancelled() }}
+        run: python -m pip install 'pip-audit==2.10.1'
+      - name: CVE audit (pip-audit over the FULL locked project graph, all extras) [blocking]
+        if: ${{ !cancelled() }}
+        run: |
+          uv export --format requirements-txt --no-hashes --no-emit-project --frozen \
+            --all-extras \
+            -o "$RUNNER_TEMP/audit-reqs.txt"
+          python scripts/youtab/cve_audit.py --requirement "$RUNNER_TEMP/audit-reqs.txt" --no-deps --disable-pip --output "$RUNNER_TEMP/cve-audit.json"
+      - name: CycloneDX SBOM (artifact, never fails)
+        if: ${{ !cancelled() }}
+        run: python scripts/youtab/generate_sbom.py --output "$RUNNER_TEMP/sbom.cdx.json"
 
   # Both shipped wake-word artifacts, executed on the operating systems that
   # load them. `python-security` above already runs the regression suite, but
@@ -184,6 +262,9 @@ jobs:
         # (`macos-latest`, or a pinned `macos-14`/`macos-15`) are the only
         # viable macOS legs.
     runs-on: ${{ matrix.os }}
+    # Finite bound so a wedged step cannot burn the 6h default (10x billing on
+    # the macOS leg). Set above normal duration — caps runaways, not normal runs.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -196,7 +277,7 @@ jobs:
       # unconditionally here, because the tflite artifact ships on every
       # platform and an untested binary is the gap this job closes.
       - name: Install both wake-word backends at the shipped pins
-        run: python -m pip install "numpy==2.4.3" "onnxruntime==1.27.0" "ai-edge-litert==2.1.6" "pytest==9.0.2"
+        run: python -m pip install "numpy==2.4.3" "onnxruntime==1.27.0" "ai-edge-litert==2.1.6" "pytest==9.0.3"
       - name: Both artifacts load, agree and keep up with the frame rate
         run: python scripts/wakeword/verify_backends.py --report backend-report.json
       # The report is the evidence, and it is printed rather than uploaded:
@@ -237,9 +318,214 @@ jobs:
 
   javascript:
     runs-on: ubuntu-latest
+    # Finite bound so a wedged step cannot burn the 6h default (WAVE-24).
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install exact JavaScript lock
         run: npm ci
       - name: Type, lint and workspace tests
         run: npm run check
+
+  # Windows portability gate (WAVE-23). The wake-word job already runs ON
+  # windows-latest, but only the two backend artifacts — the broader runtime/CLI
+  # portability surface (atomic writes, file locking, WAL, path/encoding,
+  # subprocess construction, and the dashboard-auth lifecycle/serving invariants)
+  # had no Windows coverage, so a Windows regression could land unseen. This job
+  # runs the Windows-compatible runtime/CLI suite (tests/youtab_runtime +
+  # tests/youtab_agent_cli) on every PR and on push to main. Genuinely
+  # POSIX/Linux-only integration paths (systemd, s6, chown/uid, sudo, FHS
+  # symlinks, /proc, curses, pty, POSIX permission bits, flock) skip via narrow
+  # capability guards in tests/_wincompat.py — never a blanket platform skip, and
+  # each is paired with a Windows fail-closed test. Not optional and not
+  # continue-on-error: a red run blocks. (Making it a *required* status still
+  # needs it added to the `main-required-gates` ruleset — an Owner change,
+  # mirroring the note on the wake-word job above.)
+  windows-runtime-cli:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    # Cancel a superseded run of THIS job on the same ref only — scoped so it
+    # cannot affect the existing Linux/macOS/CodeQL/token-auth jobs.
+    concurrency:
+      group: windows-runtime-cli-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py
+        with:
+          python-version: "3.12"
+      # Same locked install surface as python-security minus the POSIX-only
+      # ingestion extra (wakeword-ingest/PyAV is for tests/tools, not run here).
+      # `web` pins FastAPI to the deployed version; `slack` is present because
+      # the platform-picker tests assert on plugins that only import with it.
+      - name: Install locked development environment
+        run: python -m pip install -e ".[dev,web,slack]"
+      # scripts/run_tests.sh runs each test file in its own subprocess and
+      # refuses to run without a venv carrying pytest, or YOUTAB_AGENT_PYTHON
+      # pointing at one — point it at the setup-python interpreter, same as the
+      # Linux gate. `-j 3` bounds parallelism on the 4-vCPU runner so the
+      # subprocess-spawning meta-tests are not oversubscribed; `--file-retries 0`
+      # forbids the retry-that-hides-a-flake (a file must pass on first run).
+      # The suite output is tee'd to the job log (visible on failure in the run
+      # output) rather than an artifact: this repo SHA-pins every third-party
+      # action and introduces none it has not verified, so a new
+      # upload-artifact action is deliberately not added here — the diagnostics
+      # are already in the failed job's log.
+      - name: Windows runtime/CLI suite (atomic-write, locking, WAL, paths, encoding, subprocess, lifecycle/auth)
+        shell: bash
+        env:
+          YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
+          TZ: UTC
+          PYTHONUTF8: "1"
+          # Per-file timeout, raised from the 300s default for THIS job only.
+          # Cause is identified, not masked: the heaviest suites here spawn their
+          # own child process (e.g. test_session_recovery runs `youtab_agent_cli
+          # ... sessions recover`), and on the 4-vCPU windows-latest runner under
+          # -j 3 that oversubscribes the CPU. Those files finish in ~8s on Linux
+          # and ~19s alone on Windows, but scheduling variance can collide three
+          # heavy files and starve one past 300s (observed 300.72s) — a
+          # contention stall, NOT a hang. A generous ceiling absorbs the variance
+          # while the 60-minute job timeout still bounds a genuine hang. `-j 3`
+          # is unchanged (concurrency is not reduced to make tests pass).
+          YOUTAB_AGENT_TEST_FILE_TIMEOUT: "900"
+        run: |
+          set -o pipefail
+          bash scripts/run_tests.sh tests/youtab_runtime tests/youtab_agent_cli \
+            -j 3 --file-retries 0 -q 2>&1 | tee windows-runtime-cli.log
+
+  # Windows tools gate (WAVE-25). `tests/tools` runs in full on ubuntu (via
+  # python-security's run_all_gates) and partially on the wake-word job, but its
+  # broad surface — file-safety guards, device-path blocking, subprocess
+  # construction, tirith, kanban attachments, ingestion — had no Windows
+  # coverage, so a Windows-only regression in any of them could land unseen.
+  # This job runs the Windows-compatible `tests/tools` suite on every PR and on
+  # push to main. Genuinely POSIX-only paths (/dev, /proc, symlink, mode bits,
+  # the tirith installer's platform key) skip via the same narrow capability
+  # guards in tests/_wincompat.py used by the runtime/CLI gate — never a blanket
+  # platform skip, and paired with Windows fail-closed tests
+  # (tests/tools/test_windows_device_paths.py, test_windows_fallback_safety.py).
+  # A separate job from windows-runtime-cli so this large suite has its own time
+  # budget and cannot destabilise that gate. Making it a *required* status needs
+  # it added to the `main-required-gates` ruleset once green (an Owner change,
+  # mirroring the note on windows-runtime-cli above).
+  windows-tools:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    concurrency:
+      group: windows-tools-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py
+        with:
+          python-version: "3.12"
+      # Same locked surface tests/tools needs on the ubuntu gate: `web` pins
+      # FastAPI to the deployed version, `slack` for the platform-picker tests,
+      # and `wakeword-ingest` brings numpy + PyAV for the ingestion suites
+      # (module-top numpy imports — they fail rather than skip without it, by
+      # design). PyAV and ai-edge-litert both ship Windows wheels at these pins.
+      - name: Install locked development environment
+        run: python -m pip install -e ".[dev,web,slack,wakeword-ingest]"
+      # The branding gate's OCR tests need an engine; rapidocr is the accurate
+      # one on this repo's assets (see python-security). onnxruntime arrives
+      # transitively; ai-edge-litert supplies the tflite interpreter the
+      # wake-word regression tests load.
+      - name: Install the OCR engine and tflite runtime the tools suite needs
+        run: python -m pip install 'rapidocr-onnxruntime==1.4.4' 'ai-edge-litert==2.1.6'
+      # Each test file runs in its own subprocess (scripts/run_tests.sh), so a
+      # single hung device/subprocess test hits the per-file timeout and is
+      # reported without wedging the whole suite. `-j 3` bounds parallelism on
+      # the 4-vCPU runner; `--file-retries 0` forbids the retry-that-hides-a-flake.
+      - name: Windows tools suite (file-safety, device paths, subprocess, tirith, kanban, ingestion)
+        shell: bash
+        env:
+          YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
+          TZ: UTC
+          PYTHONUTF8: "1"
+          # Per-file ceiling raised from the 300s default for THIS job: the same
+          # -j3 contention rationale as windows-runtime-cli, and tests/tools
+          # carries heavier ingestion/subprocess files. The 90-minute job
+          # timeout still bounds a genuine hang; -j3 is unchanged.
+          YOUTAB_AGENT_TEST_FILE_TIMEOUT: "900"
+        run: |
+          set -o pipefail
+          bash scripts/run_tests.sh tests/tools \
+            -j 3 --file-retries 0 -q 2>&1 | tee windows-tools.log
+
+  # WAVE-26 Agent Runtime capability benchmark (deterministic offline). Judges
+  # runtime capability ONLY from observable, durable state — the run journal
+  # (events by seq), the effect ledger, the egress audit trail, harness process
+  # evidence, and files — never from the agent's self-report. No provider, no
+  # network, no production home: the deterministic executors drive the REAL
+  # WAVE-26 substrate at an isolated YOUTAB_AGENT_HOME + journal DB and controlled
+  # fault injection, so a regression in any WAVE-26 module flips a verdict and
+  # fails this gate. Model-quality dimensions (task quality, tool-selection/arg
+  # accuracy, real token/cost, model-driven injection) are DEFINED with oracles
+  # but marked real_provider and reported as unknown/OWNER_LIVE_PROVIDER_ACTION
+  # _REQUIRED here — never coerced to pass or 0.
+  #
+  # NOT a required check yet: adding it to the `main-required-gates` ruleset is a
+  # separate Owner step AFTER it is green once (mirroring the note on the
+  # windows-runtime-cli / windows-tools jobs). Renaming this job renames the
+  # check context, so a rename is a two-place change.
+  benchmark-deterministic:
+    runs-on: ubuntu-latest
+    # Finite bound so a wedged step cannot burn the 6h default; well above the
+    # normal ~1-2 min duration (one scenario spawns a real subprocess).
+    timeout-minutes: 20
+    # Cancel a superseded run of THIS job on the same ref only — scoped so it
+    # cannot affect the other required jobs.
+    concurrency:
+      group: benchmark-deterministic-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: py
+        with:
+          python-version: "3.12"
+      # The benchmark imports youtab_runtime (journal/effect/egress/harness),
+      # gateway.status, tools.url_safety and youtab_agent_cli.runtime_command_auth,
+      # so it needs the same editable install as the runtime gates. `web` is
+      # mandatory on every `pip install -e` here (governed by
+      # tests/youtab_runtime/test_framework_version_matches_lock.py): without it
+      # FastAPI resolves freely from the core range. stdlib + httpx only — no new
+      # dependency and no uv.lock churn.
+      - name: Install locked development environment
+        run: python -m pip install -e ".[dev,web]"
+      # Step 1 (authoritative): run the full deterministic bank through the CLI.
+      # The CLI validates the task bank (>=40 scenarios, all 20 families),
+      # asserts every observed verdict equals the verdict a correct runtime must
+      # yield (--check-expected, default in deterministic mode), and exits
+      # non-zero on ANY harness error or unexpected verdict. This is the backstop
+      # against a silent no-collection: it fails loudly if the bank shrank or a
+      # WAVE-26 module regressed.
+      - name: Deterministic capability benchmark (authoritative)
+        env:
+          PYTHONUTF8: "1"
+          TZ: UTC
+        run: python -m tests.benchmark.harness.cli run --mode deterministic --out .bench
+      # The measured record is the evidence, printed rather than uploaded (this
+      # workflow SHA-pins every action and adds none it has not verified, so a new
+      # upload-artifact action is deliberately not introduced). It contains only
+      # verdicts + aggregate metrics over synthetic fixtures — no secrets, no
+      # paths outside the checkout.
+      - name: The measured record (summary.json)
+        run: cat .bench/summary.json
+      # Step 2 (runner-contract smoke): the same suite via the canonical runner,
+      # per-file isolated, `--file-retries 0` (a file must pass first try). The
+      # `benchmark` marker is excluded from default collection, so it is
+      # re-selected with `-m benchmark`. Step 1 already guarantees the benchmark
+      # actually ran, so this is defense-in-depth for the pytest path, not the
+      # sole gate. No continue-on-error; a red run blocks.
+      - name: Benchmark suite via canonical runner (synthetic-journey smoke)
+        env:
+          YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
+          PYTHONUTF8: "1"
+          TZ: UTC
+        run: |
+          set -o pipefail
+          bash scripts/run_tests.sh tests/benchmark \
+            -j 2 --file-retries 0 -m benchmark -q 2>&1 | tee benchmark.log

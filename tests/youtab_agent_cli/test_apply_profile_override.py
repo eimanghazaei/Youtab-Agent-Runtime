@@ -16,6 +16,10 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+from tests import _wincompat
+
 
 def _run_apply_profile_override(
     tmp_path, monkeypatch, *, youtab_home: str | None, active_profile: str | None,
@@ -35,6 +39,15 @@ def _run_apply_profile_override(
     if active_profile and active_profile != "default":
         (youtab_root / "profiles" / active_profile).mkdir(parents=True, exist_ok=True)
 
+    # Anchor the platform-default youtab home at the harness's youtab_root on ALL
+    # platforms. Production resolves active_profile via
+    # youtab_constants.get_default_youtab_root() -> _get_platform_default_youtab_home(),
+    # which reads %LOCALAPPDATA%\youtab on native Windows (NOT Path.home()). Without
+    # this patch the active_profile file the harness writes would never be found on
+    # Windows. On POSIX this resolves to the same tmp_path/.youtab-agent-runtime.
+    monkeypatch.setattr(
+        "youtab_constants._get_platform_default_youtab_home", lambda: youtab_root
+    )
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     if youtab_home is not None:
         monkeypatch.setenv("YOUTAB_AGENT_HOME", youtab_home)
@@ -86,6 +99,7 @@ class TestApplyProfileOverrideYoutabHomeGuard:
         )
 
 
+    @_wincompat.requires_module("pwd")
     def test_sudo_explicit_profile_resolves_invoking_users_profile(self, tmp_path, monkeypatch):
         """sudo elias ... should resolve `-p elias` under SUDO_USER, not root."""
         root_home = tmp_path / "root"
@@ -109,6 +123,46 @@ class TestApplyProfileOverrideYoutabHomeGuard:
 
         assert os.environ.get("YOUTAB_AGENT_HOME") == str(profile_dir)
         assert sys.argv == ["youtab", "gateway", "install", "--system"]
+
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid"),
+        reason="paired fail-closed test: proves the sudo/pwd home-resolution "
+        "branch degrades to a no-op where os.geteuid is absent (native Windows); "
+        "on POSIX geteuid exists and the branch is exercised by the test above",
+    )
+    def test_windows_sudo_branch_is_noop(self, tmp_path, monkeypatch):
+        """Fail-closed on native Windows: the SUDO_USER/pwd home-resolution
+        branch is guarded in production by ``not hasattr(os, "geteuid")`` and
+        short-circuits BEFORE ``import pwd``. So even with SUDO_USER set and the
+        target profile present only under the invoking user's home, Windows must
+        NOT rescue a missing profile via that branch: a missing profile exits 1
+        and YOUTAB_AGENT_HOME is never set (no crash from the absent syscall)."""
+        youtab_root = tmp_path / ".youtab-agent-runtime"
+        youtab_root.mkdir(parents=True, exist_ok=True)
+        # The `elias` profile exists ONLY under a would-be SUDO_USER home. Only
+        # the (POSIX-only) sudo branch could find it; on Windows it must not.
+        user_home = tmp_path / "home" / "youtab"
+        (user_home / ".youtab-agent-runtime" / "profiles" / "elias").mkdir(
+            parents=True, exist_ok=True
+        )
+
+        monkeypatch.setattr(
+            "youtab_constants._get_platform_default_youtab_home", lambda: youtab_root
+        )
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("SUDO_USER", "youtab")
+        monkeypatch.delenv("YOUTAB_AGENT_HOME", raising=False)
+        monkeypatch.setattr(
+            sys, "argv", ["youtab", "-p", "elias", "gateway", "install", "--system"]
+        )
+
+        from youtab_agent_cli.main import _apply_profile_override
+
+        with pytest.raises(SystemExit) as exc:
+            _apply_profile_override()
+
+        assert exc.value.code == 1
+        assert os.environ.get("YOUTAB_AGENT_HOME") is None
 
 
 
@@ -152,6 +206,9 @@ class TestSupervisedChildIgnoresStickyProfile:
         (youtab_root / "profiles" / "briefer").mkdir(parents=True, exist_ok=True)
         (youtab_root / "profiles" / "coder").mkdir(parents=True, exist_ok=True)
 
+        monkeypatch.setattr(
+            "youtab_constants._get_platform_default_youtab_home", lambda: youtab_root
+        )
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.delenv("YOUTAB_AGENT_HOME", raising=False)
         monkeypatch.setenv("YOUTAB_AGENT_S6_SUPERVISED_CHILD", "1")

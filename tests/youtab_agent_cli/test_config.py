@@ -33,10 +33,15 @@ from youtab_agent_cli.config import (
 
 class TestGetYoutabHome:
     def test_default_path(self):
+        # The default home is platform-native: %LOCALAPPDATA%\youtab on
+        # Windows, ~/.youtab-agent-runtime on POSIX. Assert against the
+        # production resolver rather than the POSIX-only literal.
+        from youtab_constants import _get_platform_default_youtab_home
+
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("YOUTAB_AGENT_HOME", None)
             home = get_youtab_home()
-            assert home == Path.home() / ".youtab-agent-runtime"
+            assert home == _get_platform_default_youtab_home()
 
 
 class TestEnsureYoutabHome:

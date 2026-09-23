@@ -43,6 +43,7 @@ _cron_profile_home = late("_cron_profile_home")
 _import_sessions_for_profile = late("_import_sessions_for_profile")
 _maybe_auto_archive_for_profile = late("_maybe_auto_archive_for_profile")
 _open_session_db_for_profile = late("_open_session_db_for_profile")
+_pending_recovery_ids = late("_pending_recovery_ids")
 _prune_sessions = late("_prune_sessions")
 _read_session_import_body = late("_read_session_import_body")
 _session_latest_descendant = late("_session_latest_descendant")
@@ -99,6 +100,11 @@ def get_sessions(
             # `youtab serve` backend. No-op when disabled or run recently.
             _maybe_auto_archive_for_profile(db, profile)
             min_message_count = max(0, min_messages)
+            recovery_ids = (
+                _pending_recovery_ids(_cron_profile_home(profile)[1] if profile else None)
+                if min_message_count > 0
+                else []
+            )
             archived_only = archived == "only"
             include_archived = archived == "include"
             # Optional source scoping: ``source`` includes a single class,
@@ -116,6 +122,7 @@ def get_sessions(
                 limit=limit,
                 offset=offset,
                 min_message_count=min_message_count,
+                include_ids=recovery_ids,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
@@ -131,6 +138,7 @@ def get_sessions(
                 cwd_prefix=(cwd_prefix or None),
                 exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
+                include_ids=recovery_ids,
                 include_archived=include_archived,
                 archived_only=archived_only,
                 exclude_children=True,

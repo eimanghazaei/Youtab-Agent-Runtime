@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from tests import _wincompat
 from youtab_agent_cli.plugins_cmd import (
     PluginOperationError,
     _copy_example_files,
@@ -103,6 +104,7 @@ class TestResolveSubdirWithin:
 
 
 
+    @_wincompat.requires_symlink
     def test_rejects_symlink_escape(self, tmp_path):
         clone = tmp_path / "clone"
         clone.mkdir()

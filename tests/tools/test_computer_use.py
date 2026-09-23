@@ -10,6 +10,7 @@ from typing import Any, Dict, List, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from tests import _wincompat
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +76,7 @@ class TestRegistration:
         assert entry.schema["name"] == "computer_use"
 
 
+    @_wincompat.requires_posix_permissions
     def test_cua_driver_cmd_env_override_is_resolved_dynamically(self, tmp_path, monkeypatch):
         from tools.computer_use import cua_backend
 
@@ -1114,8 +1116,10 @@ class TestCuaDriverSessionReconnect:
             returncode = 0
             stderr = ""
             # Daemon returns a path, not inline base64.
+            # as_posix() so the Windows backslashes in the path don't become
+            # invalid JSON string escapes (\U, \A, ...) inside this literal.
             stdout = ('{"element_count": 7, "tree_markdown": "- [0] AXButton",'
-                      ' "screenshot_file_path": "%s"}' % str(shot))
+                      ' "screenshot_file_path": "%s"}' % shot.as_posix())
 
         import subprocess as _sp
         orig_run = _sp.run
@@ -1221,7 +1225,13 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid is None
         assert backend._active_window_id is None
 
-    def test_linux_default_capture_skips_gnome_shell_helper(self):
+    def test_linux_default_capture_skips_gnome_shell_helper(self, monkeypatch):
+        # The gnome-shell-helper skip is gated on sys.platform == "linux"
+        # (cua_backend); fake it so the Linux-default behaviour is exercised on
+        # any host instead of silently not applying on Windows/macOS.
+        import sys as _sys
+
+        monkeypatch.setattr(_sys, "platform", "linux")
         windows = [
             {"app_name": "", "pid": 100, "window_id": 1,
              "is_on_screen": None, "title": "@!1921,0;BDHF", "z_index": 0},

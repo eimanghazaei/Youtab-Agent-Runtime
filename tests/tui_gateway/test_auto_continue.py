@@ -152,9 +152,8 @@ def test_concluded_turn_clears_marker(emits, turn_env, marker_home):
     assert read_turn_marker(marker_home, "session-key") is None
 
 
-def test_handled_failure_still_clears_marker(emits, turn_env, marker_home):
-    """An exception is a CONCLUDED turn (terminal frame + retained snapshot own
-    recovery) — only a process death may leave the marker behind."""
+def test_uncommitted_failure_keeps_marker_for_recovery(emits, turn_env, marker_home):
+    """A terminal error frame without a durable turn commit leaves recovery armed."""
 
     def _boom(message, **kwargs):
         raise RuntimeError("provider exploded")
@@ -166,7 +165,7 @@ def test_handled_failure_still_clears_marker(emits, turn_env, marker_home):
 
     server._run_prompt_submit("rid", "sid", session, "do the thing")
 
-    assert read_turn_marker(marker_home, "session-key") is None
+    assert read_turn_marker(marker_home, "session-key") is not None
 
 
 def test_continuation_turn_records_attempt_and_original_prompt(
@@ -374,3 +373,127 @@ def test_failed_agent_build_leaves_marker_for_retry(
 # ── End to end: continuation runs a real turn and clears the marker ────
 
 
+
+
+def test_unstarted_prompt_replays_as_the_users_own_turn(emits, schedule_env, marker_home):
+    """A prompt accepted but never started ran nothing: recovery replays the
+    user's own text and re-stages its images as a normal turn, not a note."""
+    image = marker_home / "composer-images" / "capture.png"
+    image.parent.mkdir()
+    image.write_bytes(b"png")
+    missing = marker_home / "composer-images" / "gone.png"
+    record_turn_start(
+        marker_home,
+        "session-key",
+        "describe this\n@image:composer-images/capture.png",
+        pending={"text": "describe this", "images": [str(image), str(missing)]},
+    )
+    session = _session()
+
+    result = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert result is not None and result["attempt"] == 1
+    (text, kwargs), = schedule_env
+    assert text == "describe this"
+    assert kwargs["display_kind"] is None
+    assert session["attached_images"] == [str(image)]
+    # A crash during the replay still trips the breaker with the full prompt.
+    assert session["_auto_continue_attempt"] == 1
+    assert session["_auto_continue_prompt"] == "describe this\n@image:composer-images/capture.png"
+
+
+def test_started_turn_marker_drops_pending_input(marker_home):
+    record_turn_start(marker_home, "session-key", "hello", pending={"text": "hello", "images": []})
+    assert read_turn_marker(marker_home, "session-key")["pending"] == {"text": "hello", "images": []}
+
+    record_turn_start(marker_home, "session-key", "hello")
+
+    assert "pending" not in read_turn_marker(marker_home, "session-key")
+
+
+def test_unstarted_prompt_replay_is_projected_to_the_resuming_client(emits, marker_home, monkeypatch):
+    """The resume payload must carry the replayed prompt as the live turn:
+    it is not in the transcript yet, so without it the client shows only
+    the assistant reply."""
+    held = []
+    monkeypatch.setattr(server.threading, "Thread", lambda target=None, **kw: types.SimpleNamespace(start=lambda: held.append(target)))
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    record_turn_start(
+        marker_home,
+        "session-key",
+        "describe this\n@image:composer-images/capture.png",
+        pending={"text": "describe this", "images": []},
+    )
+    session = _session()
+
+    descriptor = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert descriptor["replay"] is True
+    inflight = server._auto_continue_inflight(session, descriptor)
+    assert inflight["user"] == "describe this\n@image:composer-images/capture.png"
+    assert inflight["streaming"] is True
+    assert server._auto_continue_inflight(session, {"attempt": 1}) is None
+
+
+def test_started_turn_recovery_is_not_projected_as_a_replay(emits, schedule_env, marker_home):
+    record_turn_start(marker_home, "session-key", "fix the flaky test")
+    session = _session()
+
+    descriptor = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert "replay" not in descriptor
+    assert server._auto_continue_inflight(session, descriptor) is None
+
+
+def test_replay_projection_survives_a_replay_that_finishes_first(emits, marker_home, monkeypatch):
+    """Cold-resume race: the kickoff may complete (clearing inflight_turn)
+    before session.resume serializes its payload. The projection must be the
+    snapshot taken before the kickoff could run."""
+    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda session, rid, timeout=30.0: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    def _finish_turn(rid, sid, session, text, **kw):
+        with session["history_lock"]:
+            server._clear_inflight_turn(session)
+            session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _finish_turn)
+    record_turn_start(
+        marker_home, "session-key", "describe this",
+        pending={"text": "describe this", "images": []},
+    )
+    session = _session()
+
+    descriptor = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert session.get("inflight_turn") is None, "the replay already finished"
+    inflight = server._auto_continue_inflight(session, descriptor)
+    assert inflight is not None and inflight["user"] == "describe this"
+    assert "_inflight" not in descriptor, "the private snapshot must not reach the payload"
+
+
+def test_turn_start_marker_write_keeps_markers_inside_a_long_recovery_window(
+    emits, turn_env, marker_home, monkeypatch
+):
+    """The real turn-start write must prune with the configured recovery
+    window, not the fixed 24h, or it deletes another session's recoverable
+    prompt."""
+    import json
+
+    record_turn_start(marker_home, "older-session", "still recoverable")
+    path = marker_home / "desktop" / "interrupted_turns.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["older-session"]["started_at"] -= 30 * 3600
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(server, "_auto_continue_config", lambda: (True, 48 * 3600.0, 2))
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=lambda message, **kw: {"final_response": "done"},
+        clear_interrupt=lambda: None,
+    )
+
+    server._run_prompt_submit("rid", "sid", _session(agent=agent, running=True), "do the thing")
+
+    assert read_turn_marker(marker_home, "older-session") is not None

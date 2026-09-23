@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://youtab.io/contracts/health.schema.json",
+  "title": "Gateway health / capability-availability response",
+  "description": "GET /healthz response. The Runtime records the exact gateway_sha on every LIVE receipt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "gateway_sha", "capabilities_available"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["ok", "degraded", "unavailable"]
+    },
+    "gateway_sha": {
+      "description": "Exact Gateway commit SHA (40 lowercase hex).",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "capabilities_available": { "type": "boolean" }
+  }
+}

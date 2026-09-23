@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 
 // Bridges WSL/POSIX paths into forms the *Windows host* can open, for the case
 // where the desktop UI runs on Windows and the gateway runs inside WSL (remote
@@ -71,6 +72,20 @@ function wslUncBase(distro: string): string {
 
   const modern = `\\\\wsl.localhost\\${distro}`
   const legacy = `\\\\wsl$\\${distro}`
+
+  // `\\wsl.localhost` exists on Windows 11 and Windows 10 >= build 21364. On
+  // those builds we KNOW the modern form is right and must NOT touch the disk:
+  // `fs.existsSync` on a `\\wsl.localhost\...` UNC path opens a real 9P/SMB
+  // network share and can block for seconds when WSL is installed (a hot-path
+  // stall, and a source of non-deterministic test timeouts). Only genuinely old
+  // builds fall through to the probe, where distinguishing the form matters.
+  const build = Number(os.release().split('.')[2] ?? '0')
+
+  if (!Number.isFinite(build) || build >= 21364) {
+    cachedUncBase = modern
+
+    return cachedUncBase
+  }
 
   try {
     if (!fs.existsSync(modern) && fs.existsSync(legacy)) {

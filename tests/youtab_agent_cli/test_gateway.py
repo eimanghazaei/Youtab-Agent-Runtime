@@ -2,7 +2,6 @@
 
 import argparse
 import os
-import pty
 import signal
 import subprocess
 import sys
@@ -11,6 +10,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from tests import _wincompat
 import youtab_agent_cli.gateway as gateway
 
 
@@ -52,7 +52,7 @@ def _install_fake_gateway_run(monkeypatch, start_gateway):
 
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY coverage")
+@_wincompat.requires_module("termios")
 @pytest.mark.parametrize(
     ("stdin_is_tty", "outcome", "expected_exit"),
     [
@@ -72,6 +72,8 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
     In particular, a non-TTY daemon launch must not blanket-catch SystemExit,
     because doing so would hide genuine startup/configuration failures.
     """
+    import pty  # POSIX-only; guarded by @requires_module("termios") above
+
     script = textwrap.dedent(
         """
         import os
@@ -219,6 +221,7 @@ class TestContainerSystemdSupport:
 
 
 
+@_wincompat.requires_os_attr("getuid")
 def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "youtab-gateway.service"
 

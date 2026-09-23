@@ -18,6 +18,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 import yaml
 
+from tests import _wincompat
 from youtab_agent_cli import profiles
 from youtab_agent_cli.profiles import (
     normalize_profile_name,
@@ -115,6 +116,7 @@ class TestCreateProfile:
     """Tests for create_profile()."""
 
 
+    @_wincompat.requires_posix_permissions
     def test_seeds_placeholder_env_file(self, profile_env):
         """Fresh profiles get their own .env (owner-only) so channel/env
         writes are profile-scoped from day one instead of falling through
@@ -217,6 +219,7 @@ class TestBackfillProfileEnvs:
     gives pre-#44792 profiles (created before .env seeding) their own
     .env, copied from the default install so credentials don't break."""
 
+    @_wincompat.requires_posix_permissions
     def test_copies_default_env_into_envless_profiles(self, profile_env):
         import stat
         tmp_path = profile_env
@@ -614,6 +617,7 @@ class TestExportImport:
         assert "default/memories/MEMORY.md" in names
 
 
+    @_wincompat.requires_symlink
     def test_export_default_handles_broken_symlinks(self, profile_env, tmp_path):
         """Broken symlinks inside allowed artifacts are preserved, not crashed (#58394).
 

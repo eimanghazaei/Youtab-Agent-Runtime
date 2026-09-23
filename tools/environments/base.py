@@ -466,6 +466,14 @@ class BaseEnvironment(ABC):
         """
         return "/tmp"
 
+    @property
+    def session_scope(self) -> str:
+        """Opaque, Runtime-generated per-session identifier, stable for this
+        environment's lifetime. Public read-only accessor for the tool-result
+        spill scope (ADR-0005 §7a) so callers don't reach into the private
+        ``_session_id``. Never derived from caller/model input."""
+        return self._session_id
+
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
         self.timeout = timeout

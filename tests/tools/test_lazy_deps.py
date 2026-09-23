@@ -361,3 +361,23 @@ class TestInstallSpecs:
         result = ld.install_specs(["honcho-ai==2.2.0"])
         assert result.ok is False
         assert "disk on fire" in result.stderr
+
+
+class TestFrozenBackend:
+    """A packaged (frozen) backend must never shell out to install packages."""
+
+    def test_frozen_bundle_reports_feature_unavailable_without_installing(self, monkeypatch):
+        import sys
+
+        import pytest
+
+        monkeypatch.setattr(sys, "frozen", True, raising=False)
+        monkeypatch.setattr(ld, "feature_missing", lambda _feature: ("faster-whisper==1.2.1",))
+        installs = []
+        monkeypatch.setattr(ld, "_venv_pip_install", lambda specs, **kw: installs.append(specs))
+
+        with pytest.raises(ld.FeatureUnavailable) as exc:
+            ld.ensure("stt.faster_whisper", prompt=False)
+
+        assert installs == []
+        assert "frozen bundle" in str(exc.value)

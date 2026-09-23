@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,6 +87,12 @@ def _usage_file() -> Path:
     return _skills_dir() / ".usage.json"
 
 
+# Windows LK_NBLCK acquire deadline. Generous: contention is brief (each holder
+# releases in ms), so this only bounds a pathological stall and never masks a
+# real deadlock — it raises past the deadline rather than dropping the update.
+_USAGE_LOCK_DEADLINE_S = 60.0
+
+
 @contextmanager
 def _usage_file_lock():
     """Serialize .usage.json read-modify-write cycles across processes."""
@@ -96,16 +103,38 @@ def _usage_file_lock():
         yield
         return
 
-    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-        lock_path.write_text(" ", encoding="utf-8")
+    if msvcrt:
+        # Create the lock file if missing WITHOUT truncating it (WAVE-28 §7).
+        # A truncating write here (write_text) rewrites byte 0, which races a
+        # concurrent holder's byte-0 msvcrt.locking lock and raises PermissionError
+        # (ERROR_LOCK_VIOLATION); _mutate swallows that as a best-effort failure,
+        # silently DROPPING the increment (the 149/150 lost-update flake). An empty
+        # file is lockable (Windows byte-range locks may sit at/after EOF), so a
+        # create-if-missing that never touches byte 0 is sufficient and safe.
+        os.close(os.open(lock_path, os.O_CREAT | os.O_RDWR))
 
     fd = open(lock_path, "r+" if msvcrt else "a+", encoding="utf-8")
     try:
         if fcntl:
             fcntl.flock(fd, fcntl.LOCK_EX)
         else:
-            fd.seek(0)
-            msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
+            # msvcrt LK_LOCK blocks but gives up after ~10 s and RAISES. Under
+            # heavy multi-process contention that failure would propagate to the
+            # best-effort caller and silently DROP a read-modify-write (a lost
+            # update). Retry the non-blocking LK_NBLCK on a short interval up to a
+            # generous deadline so this behaves like POSIX flock(LOCK_EX)
+            # (block-until-acquired) and the counter increment is genuinely atomic
+            # across processes.
+            deadline = time.monotonic() + _USAGE_LOCK_DEADLINE_S
+            while True:
+                fd.seek(0)
+                try:
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.02)
         yield
     finally:
         if fcntl:
@@ -761,7 +790,11 @@ def _mutate(skill_name: str, mutator, *, require_curation_eligible: bool = False
             data[skill_name] = rec
             save_usage(data)
     except Exception as e:
-        logger.debug("skill_usage._mutate(%s) failed: %s", skill_name, e, exc_info=True)
+        # WARNING, not DEBUG (WAVE-28 §7): a dropped read-modify-write here is a
+        # LOST durable increment — materially more serious than a corrupt-sidecar
+        # read — and must be visible, not buried at debug level. Control flow is
+        # unchanged (still best-effort; usage counting never breaks a skill call).
+        logger.warning("skill_usage._mutate(%s) failed: %s", skill_name, e, exc_info=True)
 
 
 # ---------------------------------------------------------------------------

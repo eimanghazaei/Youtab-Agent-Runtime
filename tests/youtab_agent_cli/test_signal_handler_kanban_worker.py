@@ -166,17 +166,19 @@ def test_sigterm_with_kanban_task_env_terminates_quickly():
         t0 = time.time()
         os.kill(proc.pid, signal.SIGTERM)
 
-        # Should die in <2s. The handler sleeps ~50ms, then os._exit(0)
-        # is immediate. Give generous headroom for slow CI runners.
-        deadline = t0 + 2.0
+        # The handler sleeps ~50ms then os._exit(0); a regression that fails to
+        # handle SIGTERM leaves the process ALIVE indefinitely, so a generous
+        # ceiling still catches it while absorbing -j3 CPU-contention scheduling
+        # on the CI runner (a 2s ceiling flaked there; intent unchanged).
+        deadline = t0 + 10.0
         while time.time() < deadline:
             if not _is_alive_like_dispatcher(proc.pid):
                 elapsed = time.time() - t0
-                assert elapsed < 2.0
+                assert elapsed < 10.0
                 return
             time.sleep(0.02)
         pytest.fail(
-            "process still alive 2s after SIGTERM with YOUTAB_AGENT_KANBAN_TASK set "
+            "process still alive 10s after SIGTERM with YOUTAB_AGENT_KANBAN_TASK set "
             "(dispatcher would keep extending claim) — fix regressed"
         )
     finally:

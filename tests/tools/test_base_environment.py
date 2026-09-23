@@ -6,6 +6,7 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
+from tests import _wincompat
 from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
 
 
@@ -170,6 +171,7 @@ class TestAtomicSnapshotWrite:
         assert boot.index("umask 077") < boot.index("export -p")
 
 
+@_wincompat.requires_posix
 class TestAtomicSnapshotConcurrencyBehavioral:
     """Behavioral regression for #38249 — actually EXECUTES the generated
     snapshot write/read concurrently and asserts the file never tears.
@@ -248,6 +250,7 @@ class TestAtomicSnapshotConcurrencyBehavioral:
 class TestSnapshotFileModes:
     """Snapshot metadata files are private without changing user command umask."""
 
+    @_wincompat.requires_posix
     def test_snapshot_and_cwd_files_are_0600(self, tmp_path):
         import os
         from pathlib import Path

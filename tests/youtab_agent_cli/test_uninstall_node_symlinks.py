@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from tests import _wincompat
 import youtab_agent_cli.uninstall as uninstall
 
 
@@ -37,6 +38,7 @@ def _make_youtab_node(youtab_home: Path) -> Path:
 
 
 
+@_wincompat.requires_symlink
 def test_leaves_unrelated_symlinks_untouched(fake_home):
     """A node symlink the user repointed at nvm must survive uninstall."""
     youtab_home = fake_home / ".youtab-agent-runtime"
@@ -64,6 +66,12 @@ def test_leaves_unrelated_symlinks_untouched(fake_home):
 
 
 
+# FHS root-install of node symlinks under /usr/local/bin is a POSIX deployment
+# concept; native Windows node installs do not use FHS symlinks, so
+# remove_node_symlinks finds nothing to remove there. This is Linux-only, not
+# merely symlink-capability-gated (a symlink-capable Windows session still has
+# no FHS install to clean).
+@_wincompat.requires_posix
 def test_removes_fhs_symlinks_in_usr_local_bin(fake_home, tmp_path, monkeypatch):
     """Root FHS installs place node symlinks in /usr/local/bin.
 

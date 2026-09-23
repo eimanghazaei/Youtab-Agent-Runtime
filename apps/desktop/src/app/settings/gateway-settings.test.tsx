@@ -1,16 +1,27 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { atom } from 'nanostores'
+import type * as Nanostores from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProfileInfo } from '@/types/youtab'
 
-const getConnectionConfig = vi.fn()
-const profiles = atom<ProfileInfo[]>([])
+// Create the atom the mock exposes inside vi.hoisted so it exists before the
+// (hoisted) static import of GatewaySettings runs its '@/store/profile' mock
+// factory — the factory dereferences `profiles` at eval time.
+const { getConnectionConfig, profiles } = vi.hoisted(() => {
+  const { atom } = require('nanostores') as typeof Nanostores
+
+  return { getConnectionConfig: vi.fn(), profiles: atom<ProfileInfo[]>([]) }
+})
 
 vi.mock('@/store/profile', () => ({
   $profiles: profiles,
   refreshActiveProfile: vi.fn()
 }))
+
+// Static import so the heavy GatewaySettings module graph is transformed at
+// collection, not lazily inside the timed test body (see skills/index.test.tsx).
+// Keeps the test to render+assert under the official (unchanged) 15s timeout.
+import { GatewaySettings } from './gateway-settings'
 
 const localConnection = {
   cloudOrg: '',
@@ -58,8 +69,6 @@ afterEach(() => {
 
 describe('GatewaySettings', () => {
   it('labels local mode as default inheritance for a named profile', async () => {
-    const { GatewaySettings } = await import('./gateway-settings')
-
     render(<GatewaySettings />)
     expect(await screen.findByText('Local gateway')).toBeTruthy()
     expect(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from tests import _wincompat
 from youtab_agent_cli.service_manager import (
     LaunchdServiceManager,
     S6ServiceManager,
@@ -36,6 +37,22 @@ from youtab_agent_cli.service_manager import (
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    not _wincompat.WINDOWS,
+    reason="paired fail-closed test: proves the POSIX-only s6 skeleton path is "
+    "never selected on native Windows; the s6 layout tests are skipped there",
+)
+def test_detect_service_manager_selects_windows_on_windows() -> None:
+    """Fail-safe by selection: on native Windows, detect_service_manager()
+    resolves to the "windows" backend and get_service_manager() returns a
+    WindowsServiceManager — never the s6 backend whose _seed_supervise_skeleton
+    calls the absent os.chown/os.mkfifo. This is why the s6 skeleton tests are
+    genuinely unreachable on Windows rather than merely skipped."""
+    assert detect_service_manager() == "windows"
+
+    mgr = get_service_manager()
+    assert isinstance(mgr, WindowsServiceManager)
+    assert mgr.kind == "windows"
 
 
 
@@ -192,6 +209,7 @@ def fake_subprocess_run(monkeypatch: pytest.MonkeyPatch):
 # tests/docker/test_s6_profile_gateway_integration.py.
 
 
+@_wincompat.requires_os_attr("mkfifo")
 def test_seed_supervise_skeleton_creates_expected_layout(tmp_path) -> None:
     """Verifies the dirs + FIFO + modes the helper lays down."""
     import stat
@@ -328,6 +346,7 @@ def _log_run_setup_fragment(rendered: str) -> str:
     return "#!/bin/sh\n" + "".join(keep)
 
 
+@_wincompat.requires_os_attr("mkfifo")
 def test_s6_log_run_creates_leaf_as_youtab_without_chown(
     s6_scandir, fake_subprocess_run,
 ) -> None:

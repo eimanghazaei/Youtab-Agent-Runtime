@@ -46,8 +46,10 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
+import { openBackendStdioLog } from './backend-stdio-log'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
+import { readImagePngFromClipboardViaRenderer, writeImagePngToClipboardViaRenderer } from './clipboard-image'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
   authModeFromStatus,
@@ -173,6 +175,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { canUseDeveloperSourceOverride, resolvePackagedSidecarBackend } from './sidecar-backend'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -1869,6 +1872,12 @@ const _serveSupportCache = new Map()
 
 function backendSupportsServe(backend) {
   if (!backend || !backend.command) {
+    return true
+  }
+
+  // The packaged sidecar is a freeze of the current `youtab_agent_cli.main`,
+  // which always declares `serve` — skip the ~10s cold `serve --help` probe.
+  if (backend.sidecar) {
     return true
   }
 
@@ -3808,18 +3817,49 @@ function createActiveBackend(backendArgs) {
 }
 
 function resolveYoutabBackend(backendArgs) {
-  // 1. Explicit override -- YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT points at a developer
-  //    checkout. Honour it as-is (no bootstrap; the user is driving).
+  // 1. Development-only source override. A packaged app must verify and run
+  //    its compiled sidecar; a process environment variable cannot bypass it.
   const overrideRoot =
     process.env.YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT &&
     path.resolve(process.env.YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT)
 
-  if (overrideRoot && isYoutabSourceRoot(overrideRoot)) {
+  if (canUseDeveloperSourceOverride(IS_PACKAGED, overrideRoot, isYoutabSourceRoot)) {
     const backend = createPythonBackend(overrideRoot, `Youtab source at ${overrideRoot}`, backendArgs)
 
     if (backend) {
       return backend
     }
+  }
+
+  // 1b. Packaged self-contained sidecar. In a packaged app the frozen
+  //     `youtab-backend` executable shipped under process.resourcesPath is the
+  //     canonical backend: it runs the SAME `serve` entrypoint as dev, so the
+  //     existing HTTP lifecycle (port announcement, /api/health, session token,
+  //     shutdown) consumes it unchanged. Fail-closed: a tampered/missing/
+  //     unverifiable bundle returns a 'sidecar-refused' backend that ensureRuntime
+  //     surfaces as a visible boot failure instead of silently downgrading.
+  //     Dev mode (isPackaged=false) returns null → the source/venv chain below.
+  //     Source overrides are only honored in development (step 1).
+  const sidecarBackend = resolvePackagedSidecarBackend(backendArgs, {
+    isPackaged: IS_PACKAGED,
+    resourcesPath: process.resourcesPath,
+    platform: process.platform,
+    fileExists,
+    env: process.env
+  })
+
+  if (sidecarBackend) {
+    if (sidecarBackend.kind === 'sidecar-refused') {
+      rememberLog(
+        `[sidecar] refusing bundled backend: ${sidecarBackend.sidecarRefusal.reason} — ${sidecarBackend.sidecarRefusal.detail || ''}`
+      )
+    } else {
+      rememberLog(
+        `[sidecar] using bundled backend at ${sidecarBackend.command} (digest ${sidecarBackend.sidecarDigest})`
+      )
+    }
+
+    return sidecarBackend
   }
 
   // 2. Development source -- when running `npm run dev` from a checkout, the
@@ -3987,6 +4027,25 @@ function resolveYoutabBackend(backendArgs) {
 }
 
 async function ensureRuntime(backend) {
+  // Fail-closed: a packaged sidecar that failed the integrity gate must NOT be
+  // launched and must NOT silently downgrade to another runtime. Surface a
+  // visible boot failure (BootFailureOverlay) with a recovery hint.
+  if (backend.kind === 'sidecar-refused') {
+    const refusal = backend.sidecarRefusal || {}
+    const sidecarError = new Error(
+      `The bundled Youtab backend failed integrity verification (${refusal.reason || 'unknown'}). ` +
+        `${refusal.detail || ''} Reinstall the Youtab desktop app to restore a trusted backend.`
+    ) as any
+
+    sidecarError.isBootstrapFailure = true
+    sidecarError.sidecarRefused = true
+    sidecarError.sidecarRefusalReason = refusal.reason || null
+    // Latch so repeated startYoutab() calls return the same failure without
+    // re-attempting to launch unverified code.
+    bootstrapFailure = sidecarError
+    throw sidecarError
+  }
+
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
@@ -4760,7 +4819,16 @@ async function copyImageFromUrl(rawUrl) {
     throw new Error('Could not read image')
   }
 
-  clipboard.writeImage(image)
+  // Prefer the sync clipboard image API when a build provides it; electron@44
+  // does not, so fall back to the SUPPORTED async path driven through the app's
+  // own secure-context renderer. Only error out when neither is available.
+  if (typeof clipboard.writeImage === 'function') {
+    clipboard.writeImage(image)
+  } else if (mainWindow && !mainWindow.isDestroyed()) {
+    await writeImagePngToClipboardViaRenderer(mainWindow.webContents, image.toPNG())
+  } else {
+    throw new Error('Copying images to the clipboard is not supported (no renderer available)')
+  }
 }
 
 async function saveImageFromUrl(rawUrl) {
@@ -8441,8 +8509,23 @@ async function startYoutab() {
       throw new Error('Youtab backend start was superseded by a newer connection attempt.')
     }
 
-    youtabProcess.stdout.on('data', rememberLog)
-    youtabProcess.stderr.on('data', rememberLog)
+    // Synchronous per-pid record of spawn, raw stdio and exit: the buffered
+    // desktop log can lose its tail on close, and a vanished backend must
+    // always leave its last output and exit status on disk.
+    const stdioLog = openBackendStdioLog(path.dirname(DESKTOP_LOG_PATH), youtabProcess.pid)
+    stdioLog.event(`spawned pid=${youtabProcess.pid} via ${backend.label}`)
+    rememberLog(`Youtab backend pid=${youtabProcess.pid} spawned`)
+    youtabProcess.stdout.on('data', chunk => {
+      stdioLog.output('stdout', chunk)
+      rememberLog(chunk)
+    })
+    youtabProcess.stderr.on('data', chunk => {
+      stdioLog.output('stderr', chunk)
+      rememberLog(chunk)
+    })
+    youtabProcess.once('exit', (code, signal) => {
+      stdioLog.event(`exited pid=${youtabProcess.pid} code=${code} signal=${signal}`)
+    })
     let backendReady = false
     let rejectBackendStart = null
 
@@ -8482,7 +8565,8 @@ async function startYoutab() {
         return
       }
 
-      rememberLog(`Youtab backend exited (${signal || code})`)
+      rememberLog(`Youtab backend pid=${youtabProcess.pid} exited (${signal || code})`)
+      flushDesktopLogBufferSync()
       sendBackendExit({ code, signal })
 
       if (!backendReady) {
@@ -10399,7 +10483,21 @@ ipcMain.handle('youtab:saveImageBuffer', async (_event, payload) => {
 })
 
 ipcMain.handle('youtab:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
+  // Prefer the sync image API when present (electron@44 lacks it); otherwise
+  // read via the SUPPORTED async path through the app's secure-context renderer.
+  let image = typeof clipboard.readImage === 'function' ? clipboard.readImage() : null
+
+  if ((!image || image.isEmpty()) && mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      const png = await readImagePngFromClipboardViaRenderer(mainWindow.webContents)
+
+      if (png) {
+        image = nativeImage.createFromBuffer(png)
+      }
+    } catch (error) {
+      rememberLog(`Clipboard image read via renderer failed: ${(error as Error).message}`)
+    }
+  }
 
   if (image && !image.isEmpty()) {
     return writeComposerImage(image.toPNG(), '.png')

@@ -20,6 +20,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
+from tests import _wincompat
 from youtab_agent_cli.main import (
     _finish_dashboard_update_cleanup,
     _find_stale_dashboard_pids,
@@ -91,7 +92,14 @@ class TestFindStaleDashboardPids:
 
 
 
-    def test_self_pid_excluded(self):
+    def test_self_pid_excluded(self, monkeypatch):
+        # The scan uses `ps` on POSIX and `wmic` on Windows with different
+        # output formats; this test feeds ps-format output, so pin the platform
+        # to the POSIX branch (subprocess.run is fully stubbed, so no real `ps`
+        # is invoked). The Windows wmic branch is covered by
+        # TestWindowsWmicEncoding. The self-PID exclusion logic under test is
+        # identical across both branches.
+        monkeypatch.setattr(sys, "platform", "linux")
         with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
@@ -288,8 +296,14 @@ class TestSupervisedBackendRestart:
     def _live(self):
         return sys.modules["youtab_agent_cli.main"]
 
+    @_wincompat.requires_posix
     def test_supervised_pid_restarts_owning_unit(self, capsys):
-        """A killed PID whose cgroup names a custom unit → systemctl restart."""
+        """A killed PID whose cgroup names a custom unit → systemctl restart.
+
+        Irreducibly POSIX: the production restart path is gated on
+        ``sys.platform != "win32"`` and depends on SIGTERM semantics + systemd
+        cgroups. The Windows kill path (taskkill /F, no systemd) is covered by
+        TestKillStaleDashboardWindows."""
         live = self._live()
 
         def fake_kill(pid, sig):
@@ -324,7 +338,12 @@ class TestManualBackendRespawn:
         return sys.modules["youtab_agent_cli.main"]
 
 
+    @_wincompat.requires_posix
     def test_argv_capture_failure_falls_back_to_hint(self, capsys):
+        # Irreducibly POSIX: manual-respawn argv capture runs only in the
+        # non-win32 kill branch (SIGTERM + /proc-or-ps cmdline capture). The
+        # Windows kill path (taskkill /F) is covered by
+        # TestKillStaleDashboardWindows.
         live = self._live()
 
         def fake_kill(pid, sig):
@@ -385,6 +404,11 @@ class TestCmdlineCapture:
 
     def test_reads_proc_cmdline_when_available(self, tmp_path, monkeypatch):
         live = self._live()
+        # Production early-returns None on win32 before the /proc logic. Pin the
+        # platform to the POSIX branch; os.path.exists and open are fully mocked
+        # below, so no real /proc access happens (runs on Windows too). The
+        # win32 short-circuit itself is covered by test_returns_none_on_windows.
+        monkeypatch.setattr(live.sys, "platform", "linux")
         proc_file = tmp_path / "cmdline"
         proc_file.write_bytes(b"/usr/bin/python3\x00-m\x00youtab_agent_cli.main\x00serve\x00")
 
@@ -410,6 +434,11 @@ class TestCmdlineCapture:
 
     def test_falls_back_to_ps_without_proc(self, monkeypatch):
         live = self._live()
+        # Production early-returns None on win32; pin to the POSIX branch. With
+        # os.path.exists mocked False the /proc path is skipped and the ps
+        # fallback runs — and subprocess.run is fully stubbed, so no real `ps`
+        # is invoked (runs on Windows too).
+        monkeypatch.setattr(live.sys, "platform", "linux")
 
         def fake_run(args, *a, **kw):
             assert args == ["ps", "-p", "888", "-o", "command="]

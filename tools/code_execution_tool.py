@@ -73,6 +73,12 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
+# Bound on joining the RPC accept thread at teardown. The thread is signalled to
+# stop and the accept socket is closed first, so a healthy run joins near-
+# instantly; this only caps a pathological hang. A module constant so tests can
+# raise it to prove a no-tool script does NOT block on the accept thread without
+# depending on a razor-thin absolute wall-clock bound.
+RPC_THREAD_JOIN_TIMEOUT_S = 3.0
 MAX_STDERR_BYTES = 10_000    # 10 KB
 
 
@@ -1561,7 +1567,7 @@ def execute_code(
         stop_event.set()
         server_sock.close()  # break accept() so thread exits promptly
         server_sock = None  # prevent double close in finally
-        rpc_thread.join(timeout=3)
+        rpc_thread.join(timeout=RPC_THREAD_JOIN_TIMEOUT_S)
 
         # Strip ANSI escape sequences so the model never sees terminal
         # formatting — prevents it from copying escapes into file writes.
@@ -2011,4 +2017,8 @@ registry.register(
     check_fn=check_sandbox_requirements,
     emoji="🐍",
     max_result_size_chars=100_000,
+    # ADR-0005 §5: arbitrary code execution can mutate the filesystem; it is an
+    # external effect. decide_tool refuses to self-authorize it, so a managed run
+    # cannot execute arbitrary code (fail closed). Inert in local-standalone.
+    side_effect_class="process",
 )

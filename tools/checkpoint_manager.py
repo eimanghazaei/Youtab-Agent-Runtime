@@ -54,7 +54,9 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
+import sys
 import time
 from pathlib import Path
 from youtab_constants import get_youtab_home
@@ -64,6 +66,35 @@ from typing import Dict, List, Optional, Set, Tuple
 from utils import env_int
 
 logger = logging.getLogger(__name__)
+
+
+def _rmtree_clear_readonly(func, path, _exc):
+    """rmtree error handler: clear the read-only bit and retry once.
+
+    Git object files under a checkpoint store are read-only; on Windows
+    ``shutil.rmtree`` then fails with ``WinError 5`` (ACCESS_DENIED). POSIX
+    rmtree removes a read-only file inside a writable dir without complaint, so
+    this only engages on the Windows failure and restores parity — it does not
+    mask a genuine permission problem (the retried op re-raises if it still
+    fails, which rmtree surfaces).
+    """
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        pass
+    func(path)
+
+
+def _rmtree_resilient(path) -> None:
+    """``shutil.rmtree`` that clears the Windows read-only bit and retries.
+
+    Uses ``onexc`` on Python 3.12+ (``onerror`` is deprecated there) and
+    ``onerror`` on 3.11; both hand the same three-argument handler.
+    """
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_rmtree_clear_readonly)
+    else:
+        shutil.rmtree(path, onerror=_rmtree_clear_readonly)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1556,7 +1587,7 @@ def prune_checkpoints(
                 continue
             try:
                 size = _dir_size_bytes(child)
-                shutil.rmtree(child)
+                _rmtree_resilient(child)
                 result["bytes_freed"] += size
                 result["deleted_stale"] += 1
             except OSError as exc:
@@ -1602,7 +1633,7 @@ def prune_checkpoints(
             continue
         try:
             size = _dir_size_bytes(child)
-            shutil.rmtree(child)
+            _rmtree_resilient(child)
             result["bytes_freed"] += size
             if reason == "orphan":
                 result["deleted_orphan"] += 1
@@ -1923,7 +1954,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        shutil.rmtree(base)
+        _rmtree_resilient(base)
         out["bytes_freed"] = size
         out["deleted"] = True
     except OSError as exc:
@@ -1945,7 +1976,7 @@ def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
             continue
         try:
             size = _dir_size_bytes(child)
-            shutil.rmtree(child)
+            _rmtree_resilient(child)
             out["bytes_freed"] += size
             out["deleted"] += 1
         except OSError as exc:

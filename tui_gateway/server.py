@@ -38,6 +38,7 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
 from tui_gateway.turn_marker import (
     clear_turn_marker,
+    pending_turn_keys,
     read_turn_marker,
     record_turn_start,
 )
@@ -1867,6 +1868,25 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if err else None
 
 
+def _test_agent_build_delay() -> None:
+    """TEST-ONLY deferred-build delay seam (inert in prod).
+
+    ``YOUTAB_AGENT_TEST_AGENT_BUILD_DELAY_S`` holds the deferred agent build so
+    packaged acceptance tests can deterministically close the app inside the
+    window between prompt acceptance and turn start (a slow cold build). Unset,
+    empty or invalid values do nothing; the delay is capped at 120 seconds.
+    """
+    raw = (os.environ.get("YOUTAB_AGENT_TEST_AGENT_BUILD_DELAY_S") or "").strip()
+    if not raw:
+        return
+    try:
+        delay = min(max(float(raw), 0.0), 120.0)
+    except ValueError:
+        return
+    if delay:
+        time.sleep(delay)
+
+
 def _start_agent_build(sid: str, session: dict) -> None:
     """Start building the real AIAgent for a TUI session, once.
 
@@ -1899,6 +1919,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
     key = session["session_key"]
 
     def _build() -> None:
+        _test_agent_build_delay()
         with _sessions_lock:
             current = _sessions.get(sid)
         if current is None:
@@ -2083,6 +2104,21 @@ def _sess(params, rid):
         return (None, err)
     _start_agent_build(params.get("session_id") or "", s)
     return (s, _wait_agent(s, rid))
+
+
+def _sess_building(params, rid):
+    """Session for work that does not need the agent: start its build, don't wait.
+
+    Staging an attachment only writes bytes beside the session. Blocking it on
+    the deferred agent build held the first message's upload -- and therefore
+    its prompt.submit -- in the client for the whole build, where closing the
+    app lost the prompt; past the flat 30s wait it also failed the upload.
+    """
+    s, err = _sess_nowait(params, rid)
+    if err:
+        return (None, err)
+    _start_agent_build(params.get("session_id") or "", s)
+    return (s, None)
 
 
 def _normalize_completion_path(path_part: str) -> str:
@@ -6914,6 +6950,91 @@ def _session_home(session: dict) -> Path:
     return Path(profile_home) if profile_home else Path(_youtab_home)
 
 
+def _marker_retention_secs() -> float | None:
+    """How long a marker stays recoverable: the auto-continue window if on."""
+    enabled, freshness_secs, _max_attempts = _auto_continue_config()
+    return freshness_secs if enabled else None
+
+
+def _acceptance_condition(session: dict) -> threading.Condition:
+    """Per-session condition over ``history_lock`` for the acceptance gate.
+
+    Callers must hold ``history_lock`` (it is the condition's own lock)."""
+    cond = session.get("_accept_cond")
+    if cond is None:
+        cond = threading.Condition(session["history_lock"])
+        session["_accept_cond"] = cond
+    return cond
+
+
+def _wait_for_acceptance_locked(session: dict) -> None:
+    """Block (with ``history_lock`` held) while another submit is accepting."""
+    cond = _acceptance_condition(session)
+    while session.get("_accepting"):
+        cond.wait(timeout=5.0)
+
+
+def _end_acceptance(session: dict) -> None:
+    """Release the acceptance gate and wake submits waiting on its outcome."""
+    with session["history_lock"]:
+        session["_accepting"] = False
+        _acceptance_condition(session).notify_all()
+
+
+def _record_accepted_turn(session: dict, text: Any) -> None:
+    """Make an accepted prompt durable before its turn can start.
+
+    prompt.submit answers ``streaming`` and then waits for the deferred agent
+    build, which can take seconds (or minutes on a cold start). Without a marker
+    written at acceptance, a process death in that window loses the user's
+    message with no trace; with it, session.resume recovers it like any other
+    interrupted turn. _run_prompt_submit re-records the same key when the turn
+    actually starts.
+    """
+    key = str(session.get("session_key") or "")
+    if not isinstance(text, str):
+        return
+    try:
+        # Record the transcript form: staged attachments join the prompt only
+        # when the turn starts, so a recovered first prompt must carry its
+        # @image refs.
+        images = list(session.get("attached_images") or [])
+        prompt = _build_persist_message_with_image_refs(text, images) if images else text
+        if not prompt.strip():
+            return  # nothing the user could lose
+        if not key:
+            raise ValueError("session has no durable key for its recovery marker")
+        attempts = int(session.get("_auto_continue_attempt", 0) or 0)
+        enabled, freshness_secs, _max_attempts = _auto_continue_config()
+        record_turn_start(
+            _session_home(session),
+            key,
+            prompt,
+            attempts=attempts,
+            pending={"text": text, "images": images},
+            strict=True,
+            # Markers resume would discard can make room; fresh ones never do.
+            reclaim_older_than=freshness_secs if enabled else 0.0,
+            retain_seconds=freshness_secs if enabled else None,
+        )
+    except Exception:
+        logger.error("could not durably accept turn for %s", key, exc_info=True)
+        raise
+
+
+def pending_recovery_session_ids(home: Path | str) -> list[str]:
+    """Session ids with a fresh, recoverable interrupted-turn marker.
+
+    Session lists hide rows with no messages, but a first prompt interrupted
+    before its turn started has only its marker. Listing these ids keeps the
+    session reachable so one normal reopen recovers the prompt.
+    """
+    enabled, freshness_secs, _max_attempts = _auto_continue_config()
+    if not enabled:
+        return []
+    return pending_turn_keys(home, max_age_s=freshness_secs)
+
+
 def _retire_turn_marker(session: dict, *keys: str) -> None:
     """Drop the crash marker for a turn whose outcome is about to reach the client.
 
@@ -6928,6 +7049,102 @@ def _retire_turn_marker(session: dict, *keys: str) -> None:
     for key in dict.fromkeys((*keys, str(session.get("session_key") or ""))):
         if key:
             clear_turn_marker(home, key)
+
+
+
+
+def _finalize_turn_ack(
+    session: dict,
+    agent: Any,
+    marker_key: str,
+    status: str,
+    payload: dict,
+    result: Any,
+    raw: Any,
+) -> tuple[str, bool, bool]:
+    """Commit the session transcript BEFORE the client-observable completion ack,
+    then settle recovery state — enforcing durable-commit-happens-before-ack for
+    BOTH success and failure.
+
+    The desktop finalizes / goes idle on the ``message.complete`` frame the caller
+    emits right after this returns, so the turn must be durable first. We force a
+    synchronous, idempotent commit via the same marker-deduped ``_persist_session``
+    path the WS-disconnect flush uses (commit exactly once on retry, no duplicate
+    rows, no second store — transcript stays in the session DB). If a would-be-
+    SUCCESSFUL turn cannot be durably committed we do NOT acknowledge success:
+    it is downgraded to a RECOVERABLE error and a truthful failure is surfaced.
+
+    Crash-marker ownership follows DURABILITY, not turn outcome: the on-disk
+    crash-recovery marker (the durable carrier that survives a process death —
+    the in-memory retained ``inflight_turn`` does NOT) is retired ONLY when the
+    transcript was actually committed. If the commit FAILED for ANY status
+    (success OR already-error), the marker is preserved so ``session.resume``
+    re-runs the turn on relaunch; the caller's ``finally`` must likewise retire
+    the marker only when this reports a durable commit.
+
+    Returns ``(final_status, turn_error_retained, committed)`` — ``committed`` is
+    True when there is no snapshot to persist or the session-DB flush explicitly
+    reports success. A nonempty snapshot with no session DB returns None and is
+    not durable, just like a failed write.
+    """
+    committed = True  # nothing to persist counts as durable
+    persist_failed_detail: Optional[str] = None
+    if agent is not None and hasattr(agent, "_persist_session"):
+        snapshot = getattr(agent, "_session_messages", None)
+        if snapshot:
+            # Only an explicit True proves the session-DB flush completed. It
+            # returns False on a swallowed per-row error and None when the DB is
+            # unavailable or persistence is disabled; neither is a durable
+            # transcript commit for a nonempty turn snapshot.
+            persist_exc: Optional[Exception] = None
+            try:
+                flushed = agent._persist_session(snapshot)
+            except Exception as exc:  # noqa: BLE001
+                flushed = False
+                persist_exc = exc
+            if flushed is not True:
+                committed = False
+                if status != "error":
+                    _detail = (
+                        f"({type(persist_exc).__name__})" if persist_exc is not None
+                        else "(session store write failed)"
+                    )
+                    persist_failed_detail = (
+                        "The turn completed but could not be saved to the session "
+                        f"store; it is preserved for retry on reconnect. {_detail}"
+                    )
+                    status = "error"
+                    payload["status"] = "error"
+
+    turn_error_retained = False
+    with session["history_lock"]:
+        if status == "error":
+            # Returned-error result (provider 4xx, budget, etc.) OR a
+            # would-be-success turn that failed to durably persist: retain the
+            # turn for resume replay instead of clearing it. (This in-memory
+            # snapshot serves a live reconnect; a process death is covered by the
+            # durable marker preserved below when ``committed`` is False.)
+            _fail_inflight_turn(
+                session,
+                persist_failed_detail
+                or (result.get("error") if isinstance(result, dict) else raw),
+            )
+            turn_error_retained = True
+        else:
+            _clear_inflight_turn(session)
+    if status == "error":
+        payload["error"] = str(
+            persist_failed_detail
+            or (result.get("error") if isinstance(result, dict) else "")
+            or raw
+        )
+        payload["recoverable"] = True
+    # Retire the crash-recovery marker ONLY once the transcript is durable —
+    # never on a failed commit (success OR error), or the turn would have no
+    # recovery path after a process death.
+    if committed:
+        _retire_turn_marker(session, marker_key)
+    return status, turn_error_retained, committed
 
 
 def _auto_continue_note(prompt: str) -> str:
@@ -6969,7 +7186,21 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     session["_auto_continue_scheduled"] = True
     attempt = marker["attempts"] + 1
-    text = _auto_continue_note(marker["prompt"])
+    pending = marker.get("pending")
+    if pending is not None:
+        # Accepted but never started: nothing ran, so replay the user's own
+        # prompt (and its staged images) as the normal turn it was meant to be.
+        text = pending["text"]
+        replay_images = [p for p in pending["images"] if Path(p).is_file()]
+        display_kind = None
+        # Nothing of this prompt is in the transcript yet; project it as the
+        # live turn so the resuming client shows the user's message at once.
+        with session["history_lock"]:
+            _start_inflight_turn(session, marker["prompt"])
+    else:
+        text = _auto_continue_note(marker["prompt"])
+        replay_images = []
+        display_kind = "auto_continue"
 
     def kickoff() -> None:
         rid = f"__auto_continue__{int(time.time() * 1000)}"
@@ -6982,12 +7213,17 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         if err:
             # Leave the marker: the next resume retries (bounded by attempts).
             session["_auto_continue_scheduled"] = False
+            if pending is not None:
+                with session["history_lock"]:
+                    _clear_inflight_turn(session)
             return
         with session["history_lock"]:
             if session.get("running") or session.get("_turn_cancel_requested") or session.get("_finalized"):
                 # A real user prompt beat us to it — their turn wins, and its
                 # own conclusion clears the marker.
                 session["_auto_continue_scheduled"] = False
+                if pending is not None and not session.get("running"):
+                    _clear_inflight_turn(session)
                 return
             session["running"] = True
             session["last_active"] = time.time()
@@ -6999,6 +7235,8 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             # behind for a racing user turn to inherit.
             session["_auto_continue_attempt"] = attempt
             session["_auto_continue_prompt"] = marker["prompt"]
+            if replay_images:
+                session["attached_images"] = list(replay_images)
         try:
             _emit(
                 "status.update",
@@ -7006,7 +7244,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                 {"kind": "process", "text": "Resuming interrupted turn…"},
             )
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
+            _run_prompt_submit(rid, sid, session, text, display_kind=display_kind)
         except Exception as exc:
             print(
                 f"[tui_gateway] auto-continue dispatch failed: "
@@ -7016,6 +7254,14 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             with session["history_lock"]:
                 session["running"] = False
 
+    descriptor = {"attempt": attempt, "interrupted_at": marker["started_at"]}
+    if pending is not None:
+        descriptor["replay"] = True
+        # Snapshot the projection BEFORE the kickoff can run: a fast replay may
+        # finish (and clear inflight_turn) before the resume payload is built.
+        with session["history_lock"]:
+            turn = session.get("inflight_turn")
+            descriptor["_inflight"] = dict(turn) if isinstance(turn, dict) else None
     threading.Thread(target=kickoff, daemon=True).start()
     logger.info(
         "auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago)",
@@ -7023,7 +7269,23 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         attempt,
         age,
     )
-    return {"attempt": attempt, "interrupted_at": marker["started_at"]}
+    return descriptor
+
+
+def _auto_continue_inflight(session: dict | None, auto_continue: dict | None) -> dict | None:
+    """The live-turn projection a cold resume should carry for a replayed prompt.
+
+    A replayed first prompt is not in the transcript yet; without this the
+    client resumes onto an empty chat and only the assistant reply appears.
+    """
+    if not auto_continue:
+        return None
+    # Always strip the private snapshot so it never leaks into the payload's
+    # auto_continue descriptor.
+    snapshot = auto_continue.pop("_inflight", None)
+    if not session or not auto_continue.get("replay"):
+        return None
+    return dict(snapshot) if isinstance(snapshot, dict) else None
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
@@ -7252,7 +7514,14 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
         rendered = ""
     if rendered:
         payload["rendered"] = rendered
-    _retire_turn_marker(session)
+    # Do NOT retire the crash-recovery marker here. This frame closes a turn
+    # that died by EXCEPTION (e.g. a transcript-commit failure), so the turn
+    # was never durably committed. Marker ownership follows durability, not the
+    # emission of a terminal frame: the caller's ``finally`` retires the marker
+    # only when ``turn_durably_committed`` is set (never on this path), so a
+    # process death after this frame still auto-continues from the marker on
+    # ``session.resume``. Retiring here unconditionally previously deleted the
+    # only recovery carrier for an uncommitted, crash-closed turn.
     _emit("message.complete", sid, payload)
 
 
@@ -8994,6 +9263,12 @@ def _run_prompt_submit(
         # True once a failed turn's snapshot was retained for resume replay —
         # tells the finally below to skip the normal inflight clear.
         turn_error_retained = False
+        # True once the turn's transcript was DURABLY committed (set by
+        # _finalize_turn_ack). Stays False on the exception path and on a failed
+        # commit, so the finally preserves the on-disk crash-recovery marker for
+        # session.resume — the marker must never be retired for an uncommitted
+        # turn, or a process death after ack would lose it with no recovery path.
+        turn_durably_committed = False
         # Durable crash marker: written before the turn runs, retired the
         # moment its outcome reaches the client (see _retire_turn_marker).
         # Any concluded turn — success, handled error, interrupt — retires
@@ -9005,7 +9280,13 @@ def _run_prompt_submit(
         marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
         marker_text = session.pop("_auto_continue_prompt", None) or text
         if isinstance(marker_text, str) and marker_text.strip():
-            record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
+            record_turn_start(
+                marker_home,
+                marker_key,
+                marker_text,
+                attempts=marker_attempt,
+                retain_seconds=_marker_retention_secs(),
+            )
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -9404,25 +9685,13 @@ def _run_prompt_submit(
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
-            with session["history_lock"]:
-                if status == "error":
-                    # Returned-error result (provider 4xx, budget, etc.): retain
-                    # the failed turn for resume replay instead of clearing it.
-                    # If this terminal frame is lost to a disconnect, resume's
-                    # inflight payload is the only carrier of the failure.
-                    _fail_inflight_turn(
-                        session,
-                        result.get("error") if isinstance(result, dict) else raw,
-                    )
-                    turn_error_retained = True
-                else:
-                    _clear_inflight_turn(session)
-            if status == "error":
-                payload["error"] = str(
-                    (result.get("error") if isinstance(result, dict) else "") or raw
-                )
-                payload["recoverable"] = True
-            _retire_turn_marker(session, marker_key)
+            # Durability happens-before the client-observable completion ack (for
+            # BOTH success and failure): commit the transcript, settle recovery
+            # state, and possibly downgrade a would-be-success turn that could not
+            # be persisted to a recoverable error — see _finalize_turn_ack.
+            status, turn_error_retained, turn_durably_committed = _finalize_turn_ack(
+                session, agent, marker_key, status, payload, result, raw
+            )
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
@@ -9636,9 +9905,17 @@ def _run_prompt_submit(
                 session["last_active"] = time.time()
                 if not turn_error_retained:
                     _clear_inflight_turn(session)
-            # Backstop for turns that never reached a terminal frame (the
-            # frame paths retire the marker as they emit).
-            _retire_turn_marker(session, marker_key)
+            # Retire the crash-recovery marker ONLY when the turn's transcript
+            # was durably committed. A concluded-but-uncommitted turn — a failed
+            # _persist_session commit (success OR error, via _finalize_turn_ack)
+            # or the exception path below, which never committed — MUST keep the
+            # marker so session.resume re-runs it on relaunch. Retiring here
+            # unconditionally previously defeated that: the desktop had acked the
+            # turn complete, so a prompt close after a failed commit lost it with
+            # no recovery path. The frame paths already retired the marker when
+            # they committed, so this is an idempotent backstop for that case.
+            if turn_durably_committed:
+                _retire_turn_marker(session, marker_key)
             session.pop("_auto_continue_scheduled", None)
             _emit_settled_session_info(sid, session, agent)
 
@@ -11087,6 +11364,7 @@ def _project_tree_inputs(
         offset=0,
         order_by_last_active=True,
         min_message_count=1,
+        include_ids=pending_recovery_session_ids(_youtab_home),
         include_children=False,
         exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
         include_archived=False,

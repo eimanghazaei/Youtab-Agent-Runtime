@@ -170,7 +170,8 @@ def main() -> int:
             continue
 
         for py_file in dirpath.rglob("*.py"):
-            rel = str(py_file.relative_to(repo_root))
+            # POSIX form so the forward-slash KNOWN_SAFE entries match on Windows.
+            rel = py_file.relative_to(repo_root).as_posix()
 
             # Skip known-safe files.
             if rel in KNOWN_SAFE:
@@ -200,7 +201,7 @@ def main() -> int:
         seen_roots.add(resolved)
 
         for py_file in resolved.rglob("*.py"):
-            rel = str(py_file)
+            rel = py_file.as_posix()
             if py_file.name in ("conftest.py",) or "/tests/" in rel:
                 continue
 

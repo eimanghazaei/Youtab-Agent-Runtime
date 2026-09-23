@@ -2,9 +2,53 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { Arch } from 'electron-builder'
 import { test } from 'vitest'
 
-import beforePack, { cleanStaleAppOutDir, preserveRollbackBackup } from '../scripts/before-pack.mjs'
+import beforePack, { assertSidecarTarget, cleanStaleAppOutDir, preserveRollbackBackup } from '../scripts/before-pack.mjs'
+
+// Cleanup-only cases must not depend on a sidecar staged by a local release build.
+const NO_SIDECAR_MANIFEST = path.join(os.tmpdir(), 'youtab-no-sidecar-manifest', 'manifest.json')
+
+test('native sidecar manifest must match the actual package platform and architecture', () => {
+  const manifest = { schema: 'youtab.backend_sidecar_manifest/v1', platform: 'darwin', arch: 'arm64' }
+  assert.doesNotThrow(() => assertSidecarTarget(manifest, 'darwin', 'arm64'))
+  assert.throws(() => assertSidecarTarget(manifest, 'darwin', 'x64'), /package targets darwin-x64/)
+  assert.throws(() => assertSidecarTarget(manifest, 'linux', 'arm64'), /package targets linux-arm64/)
+  assert.throws(() => assertSidecarTarget({ ...manifest, schema: 'unknown' }, 'darwin', 'arm64'), /invalid backend sidecar manifest/)
+})
+
+test('beforePack refuses a mismatched native sidecar before packaging files', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'youtab-sidecar-target-'))
+  try {
+    const manifestPath = path.join(tempRoot, 'manifest.json')
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      schema: 'youtab.backend_sidecar_manifest/v1', platform: 'darwin', arch: 'arm64'
+    }))
+    await assert.rejects(
+      beforePack({ appOutDir: '', electronPlatformName: 'darwin', arch: Arch.x64, sidecarManifestPath: manifestPath }),
+      /backend sidecar targets darwin-arm64, but the package targets darwin-x64/
+    )
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test('beforePack refuses a staged sidecar when target metadata is absent', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'youtab-sidecar-target-'))
+  try {
+    const manifestPath = path.join(tempRoot, 'manifest.json')
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      schema: 'youtab.backend_sidecar_manifest/v1', platform: 'linux', arch: 'x64'
+    }))
+    await assert.rejects(
+      beforePack({ appOutDir: '', electronPlatformName: 'linux', sidecarManifestPath: manifestPath }),
+      /target platform\/arch is missing/
+    )
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
 
 test('cleanStaleAppOutDir removes a populated unpacked directory', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'youtab-before-pack-'))
@@ -48,7 +92,7 @@ test('beforePack default export resolves even when cleanup throws', async () => 
   // A directory path that rmSync can't remove is simulated by passing a
   // context whose appOutDir is a file the hook will try (and be allowed) to
   // remove; the contract under test is that the hook never rejects.
-  await assert.doesNotReject(beforePack({ appOutDir: '', electronPlatformName: 'linux' }))
+  await assert.doesNotReject(beforePack({ appOutDir: '', electronPlatformName: 'linux', sidecarManifestPath: NO_SIDECAR_MANIFEST }))
 })
 
 // ─── Windows rollback preservation (#69179) ────────────────────────────────
@@ -126,7 +170,7 @@ test('beforePack on win32 preserves the previous build instead of wiping it', as
 
     // No packager info in the context → default 'Youtab.exe' product name.
     // node-pty staging is skipped because arch is not a number here.
-    await beforePack({ appOutDir, electronPlatformName: 'win32' })
+    await beforePack({ appOutDir, electronPlatformName: 'win32', sidecarManifestPath: NO_SIDECAR_MANIFEST })
 
     assert.equal(fs.existsSync(appOutDir), false)
     assert.equal(
@@ -145,7 +189,7 @@ test('beforePack on linux keeps the plain wipe (no .bak)', async () => {
     fs.mkdirSync(appOutDir, { recursive: true })
     fs.writeFileSync(path.join(appOutDir, 'Youtab.exe'), 'x', 'utf8')
 
-    await beforePack({ appOutDir, electronPlatformName: 'linux' })
+    await beforePack({ appOutDir, electronPlatformName: 'linux', sidecarManifestPath: NO_SIDECAR_MANIFEST })
 
     assert.equal(fs.existsSync(appOutDir), false)
     assert.equal(fs.existsSync(`${appOutDir}.bak`), false)

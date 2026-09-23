@@ -350,13 +350,20 @@ class FileSyncManager:
         except Exception:
             file_mapping = []
 
-        with tempfile.NamedTemporaryFile(suffix=".tar") as tf:
-            self._bulk_download_fn(Path(tf.name))
+        # delete=False + close our own handle: on Windows a still-open
+        # NamedTemporaryFile cannot be reopened by bulk_download_fn / tarfile
+        # (WinError 32/13), so release the handle, use the path, and remove it
+        # in the finally. On POSIX this is equivalent to the previous behaviour.
+        tf = tempfile.NamedTemporaryFile(suffix=".tar", delete=False)
+        tf.close()
+        tar_path = tf.name
+        try:
+            self._bulk_download_fn(Path(tar_path))
 
             # Defensive size cap: a misbehaving sandbox could produce an
             # arbitrarily large tar. Refuse to extract if it exceeds the cap.
             try:
-                tar_size = os.path.getsize(tf.name)
+                tar_size = os.path.getsize(tar_path)
             except OSError:
                 tar_size = 0
             if tar_size > _SYNC_BACK_MAX_BYTES:
@@ -367,7 +374,7 @@ class FileSyncManager:
                 return
 
             with tempfile.TemporaryDirectory(prefix="youtab-sync-back-") as staging:
-                with tarfile.open(tf.name) as tar:
+                with tarfile.open(tar_path) as tar:
                     tar.extractall(staging, filter="data")
 
                 applied = 0
@@ -378,7 +385,11 @@ class FileSyncManager:
                     for fname in filenames:
                         staged_file = os.path.join(dirpath, fname)
                         rel = os.path.relpath(staged_file, staging)
-                        remote_path = "/" + rel
+                        # Remote paths are POSIX; os.path.relpath yields
+                        # backslashes on Windows, which would never match the
+                        # forward-slash mapping keys, so the file silently would
+                        # not be applied. Normalize to forward slashes.
+                        remote_path = "/" + rel.replace(os.sep, "/")
 
                         pushed_hash = self._pushed_hashes.get(remote_path)
 
@@ -430,6 +441,11 @@ class FileSyncManager:
                     logger.info("sync_back: applied %d changed file(s)", applied)
                 else:
                     logger.debug("sync_back: no remote changes detected")
+        finally:
+            try:
+                os.unlink(tar_path)
+            except OSError:
+                pass
 
     def _resolve_host_path(self, remote_path: str,
                            file_mapping: list[tuple[str, str]] | None = None) -> str | None:

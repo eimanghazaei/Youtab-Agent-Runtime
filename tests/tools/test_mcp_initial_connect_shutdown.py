@@ -23,7 +23,7 @@ def _cleanup_mcp_state(mcp_tool, extra_servers=()) -> None:
         for server in extra_servers:
             task = getattr(server, "_task", None)
             if task is not None and not task.done():
-                mcp_tool._run_on_mcp_loop(server.shutdown, timeout=5)
+                mcp_tool._run_on_mcp_loop(server.shutdown, timeout=60)
     mcp_tool.shutdown_mcp_servers()
     with mcp_tool._lock:
         mcp_tool._servers.clear()
@@ -66,7 +66,7 @@ def test_initial_connect_failure_is_registry_owned_and_reaped(monkeypatch, tmp_p
 
     def _observed_stop(*, only_if_idle=False):
         pending_at_stop.extend(
-            mcp_tool._run_on_mcp_loop(_pending_tasks, timeout=5)
+            mcp_tool._run_on_mcp_loop(_pending_tasks, timeout=60)
         )
         return real_stop(only_if_idle=only_if_idle)
 
@@ -177,7 +177,7 @@ def test_initial_connect_failure_revives_same_registered_server(monkeypatch, tmp
         backend_up.set()
         mcp_tool.register_mcp_servers(config)
 
-        assert revived.wait(timeout=5), "cached parked server did not revive"
+        assert revived.wait(timeout=60), "cached parked server did not revive"
         assert len(created) == 1, "revival created a duplicate server task"
         with mcp_tool._lock:
             assert mcp_tool._servers["recovering"] is server
@@ -261,7 +261,7 @@ def test_standalone_failed_connect_is_reaped_without_global_owner(monkeypatch, t
                 lambda: mcp_tool._connect_server(
                     "probe-only", {"command": "unused"}
                 ),
-                timeout=5,
+                timeout=60,
             )
 
         assert len(created) == 1

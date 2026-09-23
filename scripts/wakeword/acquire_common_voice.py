@@ -924,7 +924,7 @@ def resolve_decoder(explicit: str | None = None) -> Decoder:
     probe = subprocess.run(  # noqa: S603
         [executable, "-version"],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         check=False,
         env=_child_env(),
     )
@@ -978,7 +978,7 @@ def decode_one(decoder: Decoder, source: Path, target: Path) -> None:
         assert_no_credential(argument, "the decoder command line")
     try:
         result = subprocess.run(  # noqa: S603
-            argv, capture_output=True, text=True, check=False, env=_child_env()
+            argv, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False, env=_child_env()
         )
     except BaseException:
         partial.unlink(missing_ok=True)

@@ -131,6 +131,11 @@ def _(rid, params: dict) -> dict:
     while True:
         busy_transport = None
         with session["history_lock"]:
+            # Another submit is between its claim and its durable acceptance
+            # write. Queueing behind it now could strand this prompt if that
+            # write fails (nothing would drain the queue), so wait for the
+            # outcome, then decide: queue behind an accepted turn, or claim.
+            _wait_for_acceptance_locked(session)
             if session.get("running"):
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
@@ -218,76 +223,97 @@ def _(rid, params: dict) -> dict:
                 except Exception as exc:
                     print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
         session["running"] = True
+        session["_accepting"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
 
-    if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
-        if not isolated_response.get("error"):
-            return isolated_response
-        logger.warning(
-            "compute-host dispatch failed for session %s; falling back inline: %s",
-            sid,
-            isolated_response["error"].get("message", "unknown error"),
-        )
-
-    # Persist the DB row lazily, now that the user has actually sent a message.
-    _ensure_session_db_row(session)
-    # A branch becomes real here: copy its parent's transcript into the row so it
-    # resumes with full context (the agent won't persist the seed itself).
-    _persist_branch_seed(session)
-    _start_agent_build(sid, session)
-
-    def run_after_agent_ready() -> None:
-        # Patient wait (#63078): the user's message is already the accepted
-        # in-flight turn, so a slow deferred build must not eat it. The wait
-        # delivers the prompt when the still-running build completes, honors a
-        # cancel promptly, notices the user once past the slow threshold, and
-        # only errors when the build itself fails or the bounded cap expires.
-        err = _wait_agent_for_prompt(session, rid, sid)
-        if err:
-            # Terminal frame + retained snapshot (not a bare "error" event +
-            # cleared inflight): if the client is disconnected right now, the
-            # retained snapshot is the only way resume can show this failure.
-            _emit_terminal_turn_error(
+    # The acceptance gate stays held until this prompt is durably accepted
+    # or refused; _end_acceptance releases it on every exit path.
+    def _accept_claimed_prompt() -> dict:
+        if turn_isolation:
+            isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+            if not isolated_response.get("error"):
+                return isolated_response
+            logger.warning(
+                "compute-host dispatch failed for session %s; falling back inline: %s",
                 sid,
-                session,
-                (err.get("error") or {}).get("message", "agent initialization failed"),
+                isolated_response["error"].get("message", "unknown error"),
             )
+
+        # Persist the DB row lazily, now that the user has actually sent a message.
+        _ensure_session_db_row(session)
+        # A branch becomes real here: copy its parent's transcript into the row so it
+        # resumes with full context (the agent won't persist the seed itself).
+        _persist_branch_seed(session)
+        # The prompt is accepted: make it durable before waiting on the agent build.
+        try:
+            _record_accepted_turn(session, text)
+        except Exception:
             with session["history_lock"]:
                 session["running"] = False
-                session["last_active"] = time.time()
-            _emit("session.info", sid, _session_info(session.get("agent"), session))
-            return
-        with session["history_lock"]:
-            if session.get("_turn_cancel_requested") or not session.get("running"):
-                session["running"] = False
                 _clear_inflight_turn(session)
-                # Surface the cancellation to the client. Without this emit the
-                # turn vanishes silently — the Desktop sees `prompt.submit`
-                # return `{"status": "streaming"}` but never receives a
-                # `message.start` or `error` event, so the composer shows no
-                # feedback (issue #63078 server-side half). Match the
-                # `_wait_agent` error branch above: emit, then bail.
-                _emit(
-                    "error",
-                    sid,
-                    {
-                        "message": "Turn cancelled before the agent was ready"
-                        if session.get("_turn_cancel_requested")
-                        else "Session no longer running before the agent was ready"
-                    },
-                )
-                return
-        _run_prompt_submit(rid, sid, session, text)
+            return _err(rid, 5030, "Prompt was not accepted: durable write failed; retry")
+        _start_agent_build(sid, session)
 
-    run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
-    # Keep a handle so session.interrupt can tell a live turn from a stuck
-    # `running` flag (a turn that died without clearing it) and recover the latter.
-    session["_run_thread"] = run_thread
-    run_thread.start()
-    return _ok(rid, {"status": "streaming"})
+        def run_after_agent_ready() -> None:
+            # Patient wait (#63078): the user's message is already the accepted
+            # in-flight turn, so a slow deferred build must not eat it. The wait
+            # delivers the prompt when the still-running build completes, honors a
+            # cancel promptly, notices the user once past the slow threshold, and
+            # only errors when the build itself fails or the bounded cap expires.
+            err = _wait_agent_for_prompt(session, rid, sid)
+            if err:
+                # The client is told this message was not sent; do not auto-run it
+                # on a later resume.
+                _retire_turn_marker(session)
+                # Terminal frame + retained snapshot (not a bare "error" event +
+                # cleared inflight): if the client is disconnected right now, the
+                # retained snapshot is the only way resume can show this failure.
+                _emit_terminal_turn_error(
+                    sid,
+                    session,
+                    (err.get("error") or {}).get("message", "agent initialization failed"),
+                )
+                with session["history_lock"]:
+                    session["running"] = False
+                    session["last_active"] = time.time()
+                _emit("session.info", sid, _session_info(session.get("agent"), session))
+                return
+            with session["history_lock"]:
+                if session.get("_turn_cancel_requested") or not session.get("running"):
+                    session["running"] = False
+                    _clear_inflight_turn(session)
+                    _retire_turn_marker(session)
+                    # Surface the cancellation to the client. Without this emit the
+                    # turn vanishes silently — the Desktop sees `prompt.submit`
+                    # return `{"status": "streaming"}` but never receives a
+                    # `message.start` or `error` event, so the composer shows no
+                    # feedback (issue #63078 server-side half). Match the
+                    # `_wait_agent` error branch above: emit, then bail.
+                    _emit(
+                        "error",
+                        sid,
+                        {
+                            "message": "Turn cancelled before the agent was ready"
+                            if session.get("_turn_cancel_requested")
+                            else "Session no longer running before the agent was ready"
+                        },
+                    )
+                    return
+            _run_prompt_submit(rid, sid, session, text)
+
+        run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
+        # Keep a handle so session.interrupt can tell a live turn from a stuck
+        # `running` flag (a turn that died without clearing it) and recover the latter.
+        session["_run_thread"] = run_thread
+        run_thread.start()
+        return _ok(rid, {"status": "streaming"})
+
+    try:
+        return _accept_claimed_prompt()
+    finally:
+        _end_acceptance(session)
 
 
 @method("clipboard.paste")
@@ -332,7 +358,7 @@ def _(rid, params: dict) -> dict:
 
 @method("image.attach")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
     raw = str(params.get("path", "") or "").strip()
@@ -390,7 +416,7 @@ def _(rid, params: dict) -> dict:
       filename / ext (str, optional): extension hint. Without it, magic bytes
         identify PNG/JPEG/GIF/WebP/BMP, falling back to ``.png``.
     """
-    session, err = _sess(params, rid)
+    session, err = _sess_building(params, rid)
     if err:
         return err
 

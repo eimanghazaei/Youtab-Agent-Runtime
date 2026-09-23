@@ -1469,7 +1469,13 @@ def _get_env_config() -> Dict[str, Any]:
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
+        expanded = os.path.expanduser(docker_cwd_source)
+        # A POSIX-absolute source (a host/container path like /Users/... or
+        # /home/...) must NOT go through os.path.abspath on Windows: that splices
+        # in a drive letter (C:\Users\...), so the _HOST_CWD_PREFIXES and
+        # /workspace checks below no longer match and the remap is silently lost.
+        # Only a genuinely relative path needs abspath.
+        candidate = expanded if expanded.startswith("/") else os.path.abspath(expanded)
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
@@ -1761,6 +1767,15 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         except ImportError:
             pass
 
+        # Remove this run's tool-result spill scope (ADR-0005 §7a) while the env
+        # can still run a shell command — before its sandbox is torn down. Scoped
+        # + fail-safe: it only ever removes {store-root}/{run-scope}.
+        try:
+            from tools.tool_result_storage import cleanup_run_scope
+            cleanup_run_scope(env)
+        except Exception:
+            pass
+
         try:
             if hasattr(env, 'cleanup'):
                 env.cleanup()
@@ -1911,6 +1926,14 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
 
     if env is None:
         return
+
+    # Remove this run's tool-result spill scope (ADR-0005 §7a) before the env is
+    # torn down. Scoped + fail-safe: only {store-root}/{run-scope} is removed.
+    try:
+        from tools.tool_result_storage import cleanup_run_scope
+        cleanup_run_scope(env)
+    except Exception:
+        pass
 
     try:
         if hasattr(env, 'cleanup'):
@@ -3223,4 +3246,8 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    # ADR-0005 §5: arbitrary shell can mutate the filesystem; it is an external
+    # effect. decide_tool refuses to self-authorize it, so a managed run cannot
+    # run effectful shell (fail closed). Inert in local-standalone.
+    side_effect_class="process",
 )

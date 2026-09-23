@@ -47,7 +47,21 @@ def test_command_registered():
 
 
 def test_compose_reads_and_strips_header(monkeypatch):
-    monkeypatch.setenv("EDITOR", _fake_editor("Refactor the auth module.\nUse pytest."))
+    import subprocess
+
+    # Simulate the editor at the subprocess seam rather than via a bash
+    # `.sh` script (shebang + chmod +x is POSIX-only and won't run on
+    # Windows). _compose_in_editor is explicitly "unit-testable without
+    # spawning an editor"; the temp markdown path is the last argv element,
+    # so we append the composed body to it exactly as an editor save would.
+    def fake_editor_call(cmd, *args, **kwargs):
+        path = cmd[-1]
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write("Refactor the auth module.\nUse pytest.\n")
+        return 0
+
+    monkeypatch.setenv("EDITOR", "fake-editor")
+    monkeypatch.setattr(subprocess, "call", fake_editor_call)
     out = _Stub()._compose_in_editor("")
     assert "Refactor the auth module." in out
     assert "Use pytest." in out
