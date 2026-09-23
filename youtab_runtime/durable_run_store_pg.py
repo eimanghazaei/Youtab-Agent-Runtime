@@ -49,7 +49,17 @@ class PostgresRunStore:
             )
         self._dsn: str = str(dsn)
         self._psycopg = __import__("psycopg")
-        self._init_schema()
+        try:
+            self._init_schema()
+        except DurableRunError:
+            raise
+        except Exception as exc:
+            # Fail closed BEFORE any run is accepted or the server reports healthy.
+            # Never surface the DSN/credentials in the error — report the class only.
+            raise DurableRunError(
+                f"PostgreSQL backend unavailable at startup ({type(exc).__name__}); "
+                f"server durability fail-closed (no SQLite fallback)"
+            ) from None
 
     def _conn(self):
         # A short-lived connection per operation (autocommit off; explicit commit).

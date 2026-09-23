@@ -67,8 +67,8 @@ def _completing_agent():
 
 @pytest.mark.asyncio
 async def test_shipped_v1_runs_uses_postgres_and_survives_restart(pg_dsn, monkeypatch):
-    monkeypatch.setenv("YOUTAB_DURABLE_RUNSTORE_BACKEND", "postgres")
-    monkeypatch.setenv("YOUTAB_DURABLE_PG_DSN", pg_dsn)
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_PG_DSN", pg_dsn)
 
     adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
     # The shipped store is the PostgreSQL backend, not SQLite.
@@ -103,8 +103,8 @@ async def test_shipped_v1_runs_uses_postgres_and_survives_restart(pg_dsn, monkey
 
 
 def test_server_mode_fails_closed_on_bad_postgres(monkeypatch):
-    monkeypatch.setenv("YOUTAB_DURABLE_RUNSTORE_BACKEND", "postgres")
-    monkeypatch.setenv("YOUTAB_DURABLE_PG_DSN",
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_PG_DSN",
                        "postgresql://nouser:nopass@127.0.0.1:5999/nodb?connect_timeout=2")
     # Explicit server backend + unreachable PostgreSQL -> fail closed (no SQLite fallback).
     with pytest.raises(Exception):

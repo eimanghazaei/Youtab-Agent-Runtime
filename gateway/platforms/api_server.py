@@ -1243,13 +1243,13 @@ class APIServerAdapter(BasePlatformAdapter):
             import os as _os
 
             from youtab_runtime.durable_run_store import create_run_store
-            # Backend is env-driven (YOUTAB_DURABLE_RUNSTORE_BACKEND, default sqlite).
+            # Backend is env-driven (YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND, default sqlite).
             self._run_store = create_run_store()
         except Exception:
             # Fail CLOSED when a server backend was explicitly requested (never a
             # silent SQLite fallback in server mode); only the default local
             # sqlite path degrades gracefully so gateway startup is never blocked.
-            if _os.environ.get("YOUTAB_DURABLE_RUNSTORE_BACKEND"):
+            if _os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
                 raise
             self._run_store = None
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts

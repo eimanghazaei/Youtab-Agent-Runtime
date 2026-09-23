@@ -852,19 +852,19 @@ def _postgres_run_store(dsn: Optional[str] = None):
     import os as _os
 
     from youtab_runtime.durable_run_store_pg import PostgresRunStore
-    return PostgresRunStore(dsn or _os.environ.get("YOUTAB_DURABLE_PG_DSN"))
+    return PostgresRunStore(dsn or _os.environ.get("YOUTAB_AGENT_DURABLE_PG_DSN"))
 
 
 def create_run_store(backend: Optional[str] = None, **kwargs: Any) -> RunStore:
     """Select the single canonical run-store backend for this deployment.
 
     ``sqlite`` -> local/offline Desktop; ``postgres`` -> server/enterprise. The
-    backend may be forced via the ``YOUTAB_DURABLE_RUNSTORE_BACKEND`` env. Exactly
+    backend may be forced via the ``YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND`` env. Exactly
     one authoritative store per deployment — never both, never a silent fallback.
     """
     import os as _os
 
-    backend = (backend or _os.environ.get("YOUTAB_DURABLE_RUNSTORE_BACKEND") or "sqlite").lower()
+    backend = (backend or _os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") or "sqlite").lower()
     if backend == "sqlite":
         return cast(RunStore, SqliteRunStore(**kwargs))
     if backend in ("postgres", "postgresql", "pg"):
