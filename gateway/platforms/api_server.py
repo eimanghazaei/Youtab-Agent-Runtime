@@ -6587,6 +6587,30 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": time.time(),
                     "reason": res.get("reconciliation_reason", "durable_commit_failed"),
                 })
+            elif isinstance(res, dict) and res.get("recovered_from_store"):
+                # A competing durable terminal state won the mirror race.
+                # Never emit the losing local result as a completion ack.
+                durable_status = res.get("status")
+                event_name = {
+                    "completed": "run.completed",
+                    "failed": "run.failed",
+                    "cancelled": "run.cancelled",
+                }.get(durable_status)
+                if event_name:
+                    _put_event_if_active({
+                        "event": event_name,
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        **({"output": res.get("output")} if event_name == "run.completed" else {}),
+                        **({"error": res.get("error")} if event_name == "run.failed" else {}),
+                    })
+                else:
+                    _put_event_if_active({
+                        "event": "run.reconciliation_required",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "reason": "durable_terminal_conflict",
+                    })
             else:
                 _put_event_if_active(ok_event)
 
@@ -6657,12 +6681,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
                         if not self._run_authority_held() or self._run_store is None:
                             raise RuntimeError("durable approval authority unavailable")
-                        approval_id = uuid.uuid4().hex
+                        binding = approval_data.get("effect_binding")
+                        if (not isinstance(binding, dict)
+                                or binding.get("kind") not in {"terminal_command", "execute_code"}
+                                or not isinstance(binding.get("arguments_digest"), str)
+                                or len(binding["arguments_digest"]) != 64
+                                or any(c not in "0123456789abcdef" for c in binding["arguments_digest"])):
+                            raise RuntimeError("exact effect binding unavailable")
+                        approval_id = f"{uuid.uuid4().hex}.{binding['arguments_digest']}"
                         # The queued waiter holds this same dict. Publish its
                         # identity only after the fenced open commits.
                         self._run_store.open_approval(
                             run_id, approval_id=approval_id,
-                            payload={"choice_required": True},
+                            payload={"choice_required": True, "effect_binding": binding},
                         )
                         approval_data["approval_id"] = approval_id
                         event["approval_id"] = approval_id
@@ -6678,10 +6709,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         "event": "approval.request",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "choices": _approval_event_choices(
-                            smart_denied=bool(event.get("smart_denied")),
-                            allow_permanent=event.get("allow_permanent") is not False,
-                        ),
+                        "choices": (["once", "deny"] if os.environ.get(
+                            "YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") else _approval_event_choices(
+                                smart_denied=bool(event.get("smart_denied")),
+                                allow_permanent=event.get("allow_permanent") is not False,
+                            )),
                     })
                     self._set_run_status(
                         run_id,
@@ -7096,6 +7128,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 ),
                 status=400,
             )
+        if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") and choice not in {"once", "deny"}:
+            return web.json_response(
+                _openai_error("Durable approvals allow once or deny only", code="approval_scope_not_supported"),
+                status=400,
+            )
 
         approval_session_key = self._run_approval_sessions.get(run_id)
         if not approval_session_key:
@@ -7113,7 +7150,14 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         durable_mode = bool(os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"))
         approval_id = body.get("approval_id")
-        if durable_mode and (not isinstance(approval_id, str) or not approval_id.strip() or resolve_all):
+        effect_binding = body.get("effect_binding")
+        if durable_mode and (
+            not isinstance(approval_id, str) or not approval_id.strip() or resolve_all
+            or not isinstance(effect_binding, dict)
+            or effect_binding.get("kind") not in {"terminal_command", "execute_code"}
+            or not isinstance(effect_binding.get("arguments_digest"), str)
+            or not approval_id.endswith("." + effect_binding["arguments_digest"])
+        ):
             return web.json_response(
                 _openai_error("One exact approval_id is required", code="approval_id_required"),
                 status=400,
@@ -7131,7 +7175,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     self._run_store.decide_open_approval(
                         run_id, approval_id=approval_id, to_state=RunState.RUNNING,
                         kind="approval_denied" if choice == "deny" else "approval_approved",
-                        payload={"choice": choice},
+                        payload={"choice": choice, "effect_binding": effect_binding},
                     )
 
             resolved = resolve_gateway_approval(
@@ -7139,6 +7183,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 choice,
                 resolve_all=resolve_all,
                 approval_id=approval_id if durable_mode else None,
+                effect_binding=effect_binding if durable_mode else None,
                 before_release=before_release,
             )
         except Exception as exc:
