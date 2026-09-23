@@ -1,0 +1,70 @@
+# CodeQL security-and-quality analysis with a reviewed existing-debt baseline.
+# GitHub Code Scanning uploads are unavailable for this repository. The job
+# must fail on a missing SARIF, malformed SARIF, or new unsuppressed finding rather
+# than reporting a green check after an upload/configuration error.
+name: CodeQL no-new-findings gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "27 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  analyze:
+    name: CodeQL analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Record changed source paths
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git diff --name-only -z "$BASE_SHA" HEAD > changed-files.bin
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "Pull request base commit unavailable; cannot verify changed-file extraction" >&2
+            exit 1
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --name-only -z HEAD^ HEAD > changed-files.bin
+          else
+            : > changed-files.bin
+          fi
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          upload: never
+          upload-database: false
+          output: results
+      - name: Preserve SARIF for finding triage
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codeql-sarif-${{ matrix.language }}-${{ github.sha }}
+          path: results/*.sarif
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Fail on new CodeQL findings or missing SARIF
+        run: python scripts/youtab/codeql_sarif_gate.py results scripts/youtab/codeql_baselines/${{ matrix.language }}.json changed-files.bin
