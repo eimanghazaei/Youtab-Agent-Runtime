@@ -1773,6 +1773,8 @@ class ElicitationHandler:
                     description,
                     timeout_seconds=int(self.timeout),
                     surface=f"mcp-elicitation/{self.server_name}",
+                    server_name=self.server_name,
+                    requested_schema=schema,
                 )
             # Context.run can only execute a context once — copy to allow
             # multiple elicitations within a single tool call.
@@ -1782,6 +1784,8 @@ class ElicitationHandler:
                 description,
                 timeout_seconds=int(self.timeout),
                 surface=f"mcp-elicitation/{self.server_name}",
+                server_name=self.server_name,
+                requested_schema=schema,
             )
 
         try:

@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from typing import Optional
+from typing import Any, Optional
 from youtab_agent_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
@@ -2858,11 +2858,12 @@ def _smart_approve(command: str, description: str) -> str:
         return "escalate"
 
 
-def _exact_effect_binding(kind: str, raw_input: str, context: str) -> dict:
+def _exact_effect_binding(kind: str, raw_input: Any, context: Any) -> dict:
     """Hash the exact gated input without exposing secrets to an API client."""
     canonical = json.dumps(
         {"kind": kind, "input": raw_input, "context": context},
         sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
     ).encode("utf-8")
     return {"kind": kind, "arguments_digest": hashlib.sha256(canonical).hexdigest()}
 
@@ -3182,6 +3183,8 @@ def request_tool_approval(
     *,
     rule_key: str = "",
     approval_callback=None,
+    tool_args: Optional[dict] = None,
+    effect_context: Optional[dict] = None,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -3239,10 +3242,24 @@ def request_tool_approval(
     # executes; it only labels the gate. Namespaced identically.
     display_target = f"<{tool_name}> (plugin approval rule)"
 
+    effect_binding = None
+    if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+        if not isinstance(tool_args, dict) or not isinstance(effect_context, dict):
+            return {"approved": False, "message": "BLOCKED: exact plugin tool arguments unavailable"}
+        try:
+            effect_binding = _exact_effect_binding(
+                "plugin_tool_call", {"tool_name": tool_name, "arguments": tool_args},
+                {**effect_context, "approval_rule_key": rule_key,
+                 "approval_reason": description},
+            )
+        except (TypeError, ValueError):
+            return {"approved": False, "message": "BLOCKED: plugin tool arguments cannot be bound"}
+
     return _run_approval_gate(
         pattern_key=pattern_key,
         description=description,
         display_target=display_target,
+        effect_binding=effect_binding,
         approval_callback=approval_callback,
         cron_deny_message=(
             f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
@@ -4133,6 +4150,8 @@ def request_elicitation_consent(
     *,
     timeout_seconds: int | None = None,
     surface: str = "mcp-elicitation",
+    server_name: str = "",
+    requested_schema: Optional[dict] = None,
 ) -> str:
     """Route an MCP elicitation request to whichever approval surface owns
     the active session and return a normalized result.
@@ -4171,6 +4190,18 @@ def request_elicitation_consent(
             "pattern_key": "mcp_elicitation",
             "pattern_keys": ["mcp_elicitation"],
         }
+        if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+            if not server_name or not isinstance(requested_schema, dict):
+                return "decline"
+            try:
+                approval_data["effect_binding"] = _exact_effect_binding(
+                    "mcp_elicitation",
+                    {"server_name": server_name, "message": message,
+                     "requested_schema": requested_schema},
+                    {"surface": surface, "session_key": session_key},
+                )
+            except (TypeError, ValueError):
+                return "decline"
         try:
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface=surface,
