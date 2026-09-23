@@ -6306,13 +6306,16 @@ class APIServerAdapter(BasePlatformAdapter):
         # cleanup as applied.
         try:
             from tools.process_registry import reap_effect_descendants
-            _reap = reap_effect_descendants(deadline_s=2.0)
+            _reap = reap_effect_descendants(deadline_s=8.0)
             logger.critical(
-                "effect-descendant reap on fail-stop: contained=%s killed=%d "
-                "tracked=%d tree=%d unverified=%s platform=%s",
-                _reap.get("contained"), len(_reap.get("killed", [])),
-                _reap.get("tracked"), _reap.get("tree"),
-                _reap.get("unverified"), _reap.get("platform"),
+                "effect-descendant reap on fail-stop: contained=%s targets=%d "
+                "signalled=%d verified_dead=%d unverified=%s unidentified=%s "
+                "budget_exceeded=%s enumeration_ok=%s sweeps=%d elapsed=%.3fs platform=%s",
+                _reap.get("contained"), _reap.get("targets", 0),
+                len(_reap.get("signalled", [])), len(_reap.get("verified_dead", [])),
+                _reap.get("unverified"), _reap.get("unidentified"),
+                _reap.get("budget_exceeded"), _reap.get("enumeration_ok"),
+                _reap.get("sweeps", 0), _reap.get("elapsed_s", 0.0), _reap.get("platform"),
             )
         except Exception:
             logger.critical(
