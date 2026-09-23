@@ -24,15 +24,15 @@ const HEX64 = /^[0-9a-f]{64}$/
 //   sidecar_main.py (loopback-only enforced).
 //   ⚠ The PyInstaller onedir freeze is NOT bit-reproducible (clean builds on the
 //   same pinned toolchain gave 54e4823b…, 0b2ba35d…, 60933699…, 83823e99…,
-//   13f2ad93…, 976c5255… and 1848c7d9…), so this anchor is a per-RELEASE attestation of one
+//   13f2ad93…, 976c5255…, 1848c7d9… and 04d255cd…), so this anchor is a per-RELEASE attestation of one
 //   specific frozen bundle — re-pin it (and rebuild the installer) on every
 //   sidecar build. Re-pinned for the Runtime lanes-integration packaged build
 //   that INCLUDES both the attachment-persistence fix (3eac0af5) and the
-//   prompt-close durability fix incl. the failure-path handling (7f97449, tui_gateway _finalize_turn_ack)
+//   prompt-close durability incl. whole-handler crash-marker ownership (748ebe5, _finalize_turn_ack + finally gate)
 //   frozen into the backend (toolchain unchanged: python 3.12.10, uv 0.8.17,
 //   pyinstaller 6.22.3).
 export const TRUSTED_SIDECAR_ROOT_DIGEST: string | null =
-  '1848c7d992ec63eb3d7dd70a2c58aa5895eca820ae6243cb914237a0aeb6918c'
+  '04d255cd6198f2530ff612c6cf207a536a8d6b6a49ce77c2d0ade1cb92f8da66'
 
 /**
  * Resolve the effective trust anchor: an operator/CI env override (must be a
