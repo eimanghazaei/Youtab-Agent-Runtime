@@ -147,15 +147,18 @@ export default async function beforePack(context) {
   try {
     const platform = context && context.electronPlatformName
     const archName = context && typeof context.arch === 'number' ? Arch[context.arch] : undefined
+    const manifestPath = context?.sidecarManifestPath || sidecarManifestPath
+    if (existsSync(manifestPath)) {
+      if (!platform || !archName) {
+        throw new Error('backend sidecar is staged but electron-builder target platform/arch is missing')
+      }
+      assertSidecarTarget(JSON.parse(readFileSync(manifestPath, 'utf8')), platform, archName)
+    }
     if (platform && archName) {
       // The sidecar is a native PyInstaller executable. A matching root digest
       // proves its bytes, not that it can execute on this package's target.
       // The release builder requires the manifest; developer shell-only builds
       // deliberately have none and skip this check.
-      const manifestPath = context.sidecarManifestPath || sidecarManifestPath
-      if (existsSync(manifestPath)) {
-        assertSidecarTarget(JSON.parse(readFileSync(manifestPath, 'utf8')), platform, archName)
-      }
       if (archName === 'universal') {
         console.warn(
           '[before-pack] target arch is "universal" — node-pty has no universal prebuild; ' +

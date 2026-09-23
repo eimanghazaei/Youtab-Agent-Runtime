@@ -31,6 +31,22 @@ test('beforePack refuses a mismatched native sidecar before packaging files', as
   }
 })
 
+test('beforePack refuses a staged sidecar when target metadata is absent', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'youtab-sidecar-target-'))
+  try {
+    const manifestPath = path.join(tempRoot, 'manifest.json')
+    fs.writeFileSync(manifestPath, JSON.stringify({
+      schema: 'youtab.backend_sidecar_manifest/v1', platform: 'linux', arch: 'x64'
+    }))
+    await assert.rejects(
+      beforePack({ appOutDir: '', electronPlatformName: 'linux', sidecarManifestPath: manifestPath }),
+      /target platform\/arch is missing/
+    )
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true })
+  }
+})
+
 test('cleanStaleAppOutDir removes a populated unpacked directory', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'youtab-before-pack-'))
   try {
