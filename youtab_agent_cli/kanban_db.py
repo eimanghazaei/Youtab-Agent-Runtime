@@ -2926,6 +2926,7 @@ def create_task_ex(
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
     on_created=None,
+    task_id: Optional[str] = None,
 ) -> tuple[str, bool]:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2933,7 +2934,16 @@ def create_task_ex(
     was inserted and ``False`` when an existing row was returned via an
     ``idempotency_key`` hit. This lets callers perform create-once side effects
     (e.g. appending create-time events) without duplicating them on idempotent
-    retries. Status is ``ready`` when there are no
+    retries.
+
+    ``task_id`` lets an authority that has ALREADY allocated the canonical run id
+    (the durable RunStore ingress) pin the kanban row to that exact id, so the
+    kanban task is a same-id execution-transport projection of the one durable
+    run — never a second id. When supplied it is used verbatim (no server-side
+    generation and no id-collision retry: the durable authority guarantees
+    uniqueness); an id collision then surfaces as an IntegrityError. Callers that
+    also delegate idempotency to the durable authority pass ``idempotency_key=None``
+    here so kanban performs no second dedup. Status is ``ready`` when there are no
     parents (or all parents already ``done``), otherwise ``todo``.
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
@@ -3174,9 +3184,13 @@ def create_task_ex(
         if board_default:
             workspace_path = str(board_default)
 
-    # Retry once on the extremely unlikely id collision.
+    # Retry once on the extremely unlikely id collision. When the caller pins an
+    # explicit id (the durable ingress passing its canonical run id), use it
+    # verbatim and do NOT retry: the durable authority already guaranteed
+    # uniqueness, so a collision is a real error, not a birthday-paradox miss.
+    _caller_task_id = task_id
     for attempt in range(2):
-        task_id = _new_task_id()
+        task_id = _caller_task_id or _new_task_id()
         try:
             with write_txn(conn):
                 # AUTHORITATIVE idempotency re-check under the write lock. The
@@ -3318,7 +3332,7 @@ def create_task_ex(
                     on_created(conn, task_id)
             return task_id, True
         except sqlite3.IntegrityError:
-            if attempt == 1:
+            if attempt == 1 or _caller_task_id is not None:
                 raise
             # Retry with a fresh id.
             continue
