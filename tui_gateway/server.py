@@ -6972,7 +6972,13 @@ def _record_accepted_turn(session: dict, text: Any) -> None:
         if not prompt.strip():
             return
         attempts = int(session.get("_auto_continue_attempt", 0) or 0)
-        record_turn_start(_session_home(session), key, prompt, attempts=attempts)
+        record_turn_start(
+            _session_home(session),
+            key,
+            prompt,
+            attempts=attempts,
+            pending={"text": text, "images": images},
+        )
     except Exception:
         # Durability is best effort here; it must never refuse an accepted prompt.
         logger.warning("could not record accepted turn for %s", key, exc_info=True)
@@ -7142,7 +7148,17 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         return None
     session["_auto_continue_scheduled"] = True
     attempt = marker["attempts"] + 1
-    text = _auto_continue_note(marker["prompt"])
+    pending = marker.get("pending")
+    if pending is not None:
+        # Accepted but never started: nothing ran, so replay the user's own
+        # prompt (and its staged images) as the normal turn it was meant to be.
+        text = pending["text"]
+        replay_images = [p for p in pending["images"] if Path(p).is_file()]
+        display_kind = None
+    else:
+        text = _auto_continue_note(marker["prompt"])
+        replay_images = []
+        display_kind = "auto_continue"
 
     def kickoff() -> None:
         rid = f"__auto_continue__{int(time.time() * 1000)}"
@@ -7172,6 +7188,8 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             # behind for a racing user turn to inherit.
             session["_auto_continue_attempt"] = attempt
             session["_auto_continue_prompt"] = marker["prompt"]
+            if replay_images:
+                session["attached_images"] = list(replay_images)
         try:
             _emit(
                 "status.update",
@@ -7179,7 +7197,7 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
                 {"kind": "process", "text": "Resuming interrupted turn…"},
             )
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
+            _run_prompt_submit(rid, sid, session, text, display_kind=display_kind)
         except Exception as exc:
             print(
                 f"[tui_gateway] auto-continue dispatch failed: "

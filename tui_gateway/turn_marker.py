@@ -95,22 +95,37 @@ def _store(path: Path, entries: dict[str, dict]) -> None:
 
 
 def record_turn_start(
-    home: Path | str, session_key: str, prompt: str, *, attempts: int = 0
+    home: Path | str,
+    session_key: str,
+    prompt: str,
+    *,
+    attempts: int = 0,
+    pending: dict[str, Any] | None = None,
 ) -> None:
     """Persist the marker for a turn that is about to run.
 
     ``attempts`` counts how many auto-continues led to this run: 0 for a
     user-initiated turn, N for the Nth automatic re-run — the crash-loop
     breaker reads it back on the next resume.
+
+    ``pending`` (``{"text", "images"}``) marks a prompt that was accepted but
+    whose turn has not started: nothing ran, so recovery replays the original
+    input instead of an "interrupted" note. Re-recording when the turn starts
+    (without ``pending``) drops it.
     """
     if not session_key or not prompt:
         return
     now = time.time()
-    entry = {
+    entry: dict[str, Any] = {
         "attempts": max(0, int(attempts)),
         "prompt": prompt[:_MAX_PROMPT_CHARS],
         "started_at": now,
     }
+    if isinstance(pending, dict) and isinstance(pending.get("text"), str):
+        entry["pending"] = {
+            "text": pending["text"][:_MAX_PROMPT_CHARS],
+            "images": [str(i) for i in (pending.get("images") or []) if i],
+        }
     try:
         with _lock:
             path = _marker_path(home)
@@ -184,4 +199,12 @@ def read_turn_marker(home: Path | str, session_key: str) -> dict[str, Any] | Non
         attempts = max(0, int(entry.get("attempts") or 0))
     except (TypeError, ValueError):
         return None
-    return {"attempts": attempts, "prompt": prompt, "started_at": started_at}
+    marker: dict[str, Any] = {"attempts": attempts, "prompt": prompt, "started_at": started_at}
+    pending = entry.get("pending")
+    if isinstance(pending, dict) and isinstance(pending.get("text"), str):
+        images = pending.get("images")
+        marker["pending"] = {
+            "text": pending["text"],
+            "images": [str(i) for i in images] if isinstance(images, list) else [],
+        }
+    return marker

@@ -764,6 +764,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       })
       .toBeGreaterThanOrEqual(1)
     expect(durableCaptionRowCount(sandbox.youtabHome), 'the prompt is recovered exactly once with its attachment').toBe(1)
+    expect(durableCaptionTurnCount(sandbox.youtabHome), 'it is replayed as the user's own turn, not a recovery note').toBe(1)
     await expect
       .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), { timeout: 60_000, message: 'marker retired after the durable recovery' })
       .toBe(false)

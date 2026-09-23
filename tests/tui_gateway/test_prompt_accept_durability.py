@@ -260,3 +260,15 @@ def test_image_upload_does_not_wait_for_the_agent_build(tmp_path, monkeypatch):
     assert builds == ["sid-upload"], "the build still starts in the background"
     assert not session["agent_ready"].is_set()
     assert len(session["attached_images"]) == 1
+
+
+def test_accepted_marker_keeps_the_original_input_for_replay(tmp_path, monkeypatch):
+    image = tmp_path / "composer-images" / "capture.png"
+    image.parent.mkdir()
+    image.write_bytes(b"png")
+    session = _session(tmp_path, attached_images=[str(image)])
+
+    _submit(monkeypatch, session, "sid-pending", "E2E caption")
+
+    marker = read_turn_marker(tmp_path, "sess-accept-001")
+    assert marker["pending"] == {"text": "E2E caption", "images": [str(image)]}

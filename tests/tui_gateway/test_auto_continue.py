@@ -374,3 +374,39 @@ def test_failed_agent_build_leaves_marker_for_retry(
 # ── End to end: continuation runs a real turn and clears the marker ────
 
 
+
+
+def test_unstarted_prompt_replays_as_the_users_own_turn(emits, schedule_env, marker_home):
+    """A prompt accepted but never started ran nothing: recovery replays the
+    user's own text and re-stages its images as a normal turn, not a note."""
+    image = marker_home / "composer-images" / "capture.png"
+    image.parent.mkdir()
+    image.write_bytes(b"png")
+    missing = marker_home / "composer-images" / "gone.png"
+    record_turn_start(
+        marker_home,
+        "session-key",
+        "describe this\n@image:composer-images/capture.png",
+        pending={"text": "describe this", "images": [str(image), str(missing)]},
+    )
+    session = _session()
+
+    result = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert result is not None and result["attempt"] == 1
+    (text, kwargs), = schedule_env
+    assert text == "describe this"
+    assert kwargs["display_kind"] is None
+    assert session["attached_images"] == [str(image)]
+    # A crash during the replay still trips the breaker with the full prompt.
+    assert session["_auto_continue_attempt"] == 1
+    assert session["_auto_continue_prompt"] == "describe this\n@image:composer-images/capture.png"
+
+
+def test_started_turn_marker_drops_pending_input(marker_home):
+    record_turn_start(marker_home, "session-key", "hello", pending={"text": "hello", "images": []})
+    assert read_turn_marker(marker_home, "session-key")["pending"] == {"text": "hello", "images": []}
+
+    record_turn_start(marker_home, "session-key", "hello")
+
+    assert "pending" not in read_turn_marker(marker_home, "session-key")
