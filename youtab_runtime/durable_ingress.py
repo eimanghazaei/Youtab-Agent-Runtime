@@ -33,8 +33,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 from youtab_runtime.durable_run_authority import AuthorityLost
 from youtab_runtime.durable_run_store import (
+    ApprovalNotOpen,
     IdempotencyConflict,
-    InvalidTransition,
     RunIdentity,
     RunState,
     create_run_store,
@@ -57,19 +57,21 @@ APPROVAL_DECISION_TO_CHOICE = {"approve": "once", "deny": "deny"}
 
 
 class ApprovalError(Exception):
-    """Base for fail-closed approval-decision refusals."""
+    """Base for fail-closed approval-decision refusals raised by the adapter."""
 
 
-class ApprovalNotOpen(ApprovalError):
-    """No open approval to decide (unknown run, or run not in WAITING_APPROVAL)."""
-
-
+# ``ApprovalNotOpen`` is the durable store's fail-closed signal (unknown run, run
+# not in WAITING_APPROVAL, approval_id mismatch, or CAS lost). It is re-exported
+# here so callers catch one type; the atomic decide lives in the store.
 class ApprovalScopeMismatch(ApprovalError):
     """The run is outside the caller's tenant/workspace/principal scope."""
 
 
 class ApprovalAlreadyDecided(ApprovalError):
-    """The open approval was already consumed (concurrent/replayed decision)."""
+    """Retained for compatibility. The store collapses an already-decided /
+    replayed / concurrent-lost decision into :class:`ApprovalNotOpen` (the run is
+    no longer in WAITING_APPROVAL), so this is no longer raised by the decide
+    path; kept exported so existing callers/tests importing it keep working."""
 
 
 @dataclass
@@ -198,7 +200,22 @@ class DurableRunStateAuthority:
         further live events and must be treated as terminal-uncertain."""
         return self._store.get_events(run_id, from_seq=from_seq, limit=limit)
 
-    # -- approval: require-open + atomic single-use; approve->once, deny->deny - #
+    # -- approval: require-open + atomic id-bound single-use; approve->once, deny->deny - #
+    def open_approval(self, run_id: str, *, approval_id: str) -> Dict[str, Any]:
+        """Open an approval: transition ``RUNNING -> WAITING_APPROVAL`` recording the
+        OPEN ``approval_id`` in the durable ``approval_request`` event (the id the
+        decide binds to). Fenced through the single authority. Emitting this from
+        the worker/tool path is the D1 dispatch seam (HELD); it is exposed here as
+        the run-state half so the store contract (approval_request carries
+        approval_id) is testable and self-contained."""
+        self._require_authority()
+        return self._store.transition(
+            run_id,
+            RunState.WAITING_APPROVAL,
+            kind="approval_request",
+            payload={"approval_id": approval_id},
+        )
+
     def decide_approval(
         self,
         run_id: str,
@@ -209,35 +226,22 @@ class DurableRunStateAuthority:
         workspace_id: str,
         principal_id: str,
     ) -> Dict[str, Any]:
-        """Decide an OPEN approval, atomically and single-use, fail-closed.
+        """Decide an OPEN approval — atomic, approval-id-BOUND, single-use, fail-closed.
 
-        Enforced with the durable store's existing atomic primitive (no second
-        ledger, no non-atomic get-events→append):
-
-        1. ``session``/``always`` are rejected (per-effect single use only).
-        2. Foreign scope: the run must belong to the caller's
-           tenant/workspace/principal, else :class:`ApprovalScopeMismatch`.
-        3. Require-open: the run must be in ``WAITING_APPROVAL`` (an open
-           approval), else :class:`ApprovalNotOpen` (covers unknown/closed).
-        4. Single-use: the decision is the atomic state transition
-           ``WAITING_APPROVAL -> RUNNING`` (approve) / ``-> CANCELLED`` (deny).
-           ``transition`` runs under ``BEGIN IMMEDIATE`` + the validated
-           transition table + terminal immutability, so exactly ONE decision
-           consumes the ``WAITING_APPROVAL`` edge; a concurrent/replayed second
-           decision finds the run past ``WAITING_APPROVAL`` and is refused
-           (:class:`ApprovalAlreadyDecided`) — never a double consumption, across
-           concurrent requests and restart (the state is durable). ``deny``
-           leaves ``result_ref`` null (durable denied decision, no fabricated
-           receipt).
-
-        HELD interface request (see R1_INTEGRATION_BOUNDARY_SPEC §9): an
-        approval_id-BOUND, from-state-guarded CAS decide primitive is not present
-        in the durable store (the schema has no pending-approval-id column). Only
-        ONE approval is open per run at a time (``WAITING_APPROVAL`` is a single
-        state), so this decides THE open approval and records ``approval_id`` for
-        audit; binding the decision to a specific ``approval_id`` atomically
-        (multi-approval) requires a store primitive owned by the durable owner and
-        the D1 dispatch/worker path that opens the approval — both HELD.
+        1. ``session``/``always`` rejected (per-effect single use only): ValueError.
+        2. Foreign scope -> :class:`ApprovalScopeMismatch` (scope fields are
+           immutable on the row, so this pre-check is race-free).
+        3. The decision itself is the durable store's atomic primitive
+           :meth:`DurableRunStore.decide_open_approval` — ONE fenced
+           ``BEGIN IMMEDIATE`` transaction that requires ``WAITING_APPROVAL``,
+           requires the supplied ``approval_id`` to equal the OPEN approval's id
+           (the latest ``approval_request`` event's ``approval_id``), and applies a
+           from-state CAS (``UPDATE ... WHERE state='WAITING_APPROVAL'``,
+           ``rowcount==1``). A WRONG id, a closed/absent approval, or a
+           concurrent/replayed second decision is refused with
+           :class:`ApprovalNotOpen` — never a double consumption, across
+           concurrent requests and restart. ``deny`` leaves ``result_ref`` null
+           (durable denied decision, no fabricated receipt). No second ledger.
         """
         self._require_authority()
         d = (decision or "").strip().lower()
@@ -253,26 +257,22 @@ class DurableRunStateAuthority:
             row.get("workspace_id"),
             row.get("principal_id"),
         ) != (tenant_id, workspace_id, principal_id):
-            # Foreign tenant/principal/workspace: not-found to the caller.
+            # Foreign tenant/principal/workspace scope (immutable -> race-free).
             raise ApprovalScopeMismatch("run is outside the caller's scope")
-        if row.get("state") != RunState.WAITING_APPROVAL.value:
-            raise ApprovalNotOpen(
-                f"no open approval (run state={row.get('state')})"
-            )
 
         target = RunState.RUNNING if d == "approve" else RunState.CANCELLED
-        try:
-            newrow = self._store.transition(
-                run_id,
-                target,
-                kind=("approval_approved" if d == "approve" else "approval_denied"),
-                payload={"approval_id": approval_id, "decision": d, "choice": choice},
-            )
-        except InvalidTransition as exc:
-            # The WAITING_APPROVAL edge was already consumed (concurrent/replayed).
-            raise ApprovalAlreadyDecided(
-                f"approval for run {run_id} already decided"
-            ) from exc
+        # The decision IS the store's atomic, fenced, approval-id-BOUND,
+        # single-use primitive (one BEGIN IMMEDIATE txn: require WAITING_APPROVAL,
+        # require approval_id == the OPEN approval id, from-state CAS). A wrong id,
+        # closed/absent approval, or concurrent/replayed second decision raises
+        # ApprovalNotOpen. No second ledger; no non-atomic get-then-transition.
+        newrow = self._store.decide_open_approval(
+            run_id,
+            approval_id=approval_id,
+            to_state=target,
+            kind=("approval_approved" if d == "approve" else "approval_denied"),
+            payload={"decision": d, "choice": choice},
+        )
         return {
             "run_id": run_id,
             "approval_id": approval_id,

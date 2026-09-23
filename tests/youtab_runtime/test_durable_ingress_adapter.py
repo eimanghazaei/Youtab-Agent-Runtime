@@ -15,6 +15,7 @@ create-to-worker DISPATCH seam is intentionally NOT exercised here (held for D1)
 from __future__ import annotations
 
 import os
+import threading
 
 import pytest
 
@@ -44,10 +45,17 @@ def _authority(tmp_path, name="durable_runs.db"):
     return DurableRunStateAuthority(backend="sqlite", db_path=tmp_path / name)
 
 
-def _open_approval(a, rid):
-    """Simulate the (held, D1) worker path opening an approval: move the run into
-    WAITING_APPROVAL on the fenced store. strict=False is the adapter-mirror path."""
-    a.store.set_state(rid, RunState.WAITING_APPROVAL, strict=False, kind="approval_request")
+def _open_approval(a, rid, approval_id="ap1"):
+    """Simulate the (held, D1) worker path OPENING an approval: force the run to
+    WAITING_APPROVAL and RECORD the open approval_id in the approval_request event
+    (the id the atomic decide binds to). strict=False is the adapter-mirror path."""
+    a.store.set_state(
+        rid,
+        RunState.WAITING_APPROVAL,
+        strict=False,
+        kind="approval_request",
+        payload={"approval_id": approval_id},
+    )
 
 
 # ---------------------------------------------------------------- positive --- #
@@ -199,6 +207,81 @@ def test_approval_foreign_scope_refused(tmp_path):
         a.release()
 
 
+def test_approval_wrong_id_refused(tmp_path):
+    """Gateway review bug #1: an open approval id 'expected' must REJECT a decision
+    id 'wrong'. The atomic decide binds to the OPEN approval_id; the open approval
+    survives for the correct id."""
+    a = _authority(tmp_path)
+    a.acquire()
+    try:
+        rid = a.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
+        _open_approval(a, rid, approval_id="expected")
+        with pytest.raises(ApprovalNotOpen):
+            a.decide_approval(rid, approval_id="wrong", decision="approve", **_SCOPE)
+        assert a.get_run(rid)["state"] == RunState.WAITING_APPROVAL.value  # untouched
+        out = a.decide_approval(rid, approval_id="expected", decision="approve", **_SCOPE)
+        assert out["decision"] == "approve"
+        assert a.get_run(rid)["state"] == RunState.RUNNING.value
+    finally:
+        a.release()
+
+
+def test_approval_concurrent_duplicate_single_use(tmp_path):
+    """Gateway review bug #2: two concurrent approvers must NOT both succeed. The
+    from-state CAS admits exactly one; exactly one approval_approved event lands."""
+    a = _authority(tmp_path)
+    a.acquire()
+    try:
+        rid = a.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
+        _open_approval(a, rid, approval_id="ap1")
+        results: list[str] = []
+        barrier = threading.Barrier(2)
+
+        def worker() -> None:
+            barrier.wait()
+            try:
+                a.decide_approval(rid, approval_id="ap1", decision="approve", **_SCOPE)
+                results.append("ok")
+            except ApprovalNotOpen:
+                results.append("refused")
+            except Exception as exc:  # surface anything unexpected
+                results.append(f"err:{type(exc).__name__}")
+
+        ts = [threading.Thread(target=worker) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=30)
+        assert sorted(results) == ["ok", "refused"], results
+        assert a.get_run(rid)["state"] == RunState.RUNNING.value
+        approved = [e for e in a.get_events(rid) if e["kind"] == "approval_approved"]
+        assert len(approved) == 1, approved  # single-use
+    finally:
+        a.release()
+
+
+def test_approval_decision_survives_restart_no_double_consume(tmp_path):
+    """A decided approval must not be re-consumable after a restart/takeover: the
+    decision is durable and a replay finds the run past WAITING_APPROVAL."""
+    db = tmp_path / "durable_runs.db"
+    a1 = DurableRunStateAuthority(backend="sqlite", db_path=db)
+    a1.acquire()
+    rid = a1.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
+    _open_approval(a1, rid, approval_id="ap1")
+    a1.decide_approval(rid, approval_id="ap1", decision="approve", **_SCOPE)
+    a1.release()
+
+    a2 = DurableRunStateAuthority(backend="sqlite", db_path=db)
+    a2.acquire()  # restart: reconcile moves the RUNNING run -> UNKNOWN
+    try:
+        with pytest.raises(ApprovalNotOpen):
+            a2.decide_approval(rid, approval_id="ap1", decision="approve", **_SCOPE)
+        approved = [e for e in a2.get_events(rid) if e["kind"] == "approval_approved"]
+        assert len(approved) == 1  # still exactly one across restart
+    finally:
+        a2.release()
+
+
 def test_write_without_authority_fails_closed(tmp_path):
     a = _authority(tmp_path)  # never acquired
     with pytest.raises(AuthorityLost):
@@ -271,5 +354,41 @@ def test_pg_authority_loss_fails_closed():
         if not a.ready():
             with pytest.raises(AuthorityLost):
                 a.create_run(idempotency_key="pgk2", request_digest="d2", **_IDENT)
+    finally:
+        a.release()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("YOUTAB_TEST_PG_DSN"),
+    reason="requires a real PostgreSQL (YOUTAB_TEST_PG_DSN) for real-concurrency proof",
+)
+def test_pg_approval_concurrent_single_use():
+    """PostgreSQL concurrency: two concurrent approvers, exactly one wins the
+    from-state CAS; exactly one approval_approved event."""
+    dsn = os.environ["YOUTAB_TEST_PG_DSN"]
+    a = DurableRunStateAuthority(backend="postgres", dsn=dsn)
+    a.acquire()
+    try:
+        rid = a.create_run(idempotency_key="pgap1", request_digest="d1", **_IDENT).row["run_id"]
+        _open_approval(a, rid, approval_id="ap1")
+        results: list[str] = []
+        barrier = threading.Barrier(2)
+
+        def worker() -> None:
+            barrier.wait()
+            try:
+                a.decide_approval(rid, approval_id="ap1", decision="approve", **_SCOPE)
+                results.append("ok")
+            except ApprovalNotOpen:
+                results.append("refused")
+
+        ts = [threading.Thread(target=worker) for _ in range(2)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=30)
+        assert sorted(results) == ["ok", "refused"], results
+        approved = [e for e in a.get_events(rid) if e["kind"] == "approval_approved"]
+        assert len(approved) == 1
     finally:
         a.release()

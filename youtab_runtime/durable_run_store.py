@@ -106,6 +106,12 @@ class LeaseError(DurableRunError):
     pass
 
 
+class ApprovalNotOpen(DurableRunError):
+    """No open approval matched the atomic decide: the run is not in
+    ``WAITING_APPROVAL`` (unknown / closed / already decided — CAS lost), or the
+    supplied ``approval_id`` does not equal the OPEN approval's id. Fail-closed."""
+
+
 # --------------------------------------------------------------------------- #
 # Lane-1 effect-ledger boundary (typed Protocol; NEVER reimplemented here)
 # --------------------------------------------------------------------------- #
@@ -199,6 +205,7 @@ class RunStore(Protocol):
     def is_stop_requested(self, run_id: str, *, now: Optional[float] = ...) -> bool: ...
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]: ...
     def transition(self, run_id: str, to_state: RunState, **kw: Any) -> Dict[str, Any]: ...
+    def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState, kind: str, payload: Optional[dict] = ...) -> Dict[str, Any]: ...
     def set_state(self, run_id: str, to_state: RunState, *, strict: bool = ..., **kw: Any) -> Optional[Dict[str, Any]]: ...
     def record_progress(self, run_id: str, **kw: Any) -> int: ...
     def append_event(self, run_id: str, kind: str, payload: Optional[dict] = ...) -> int: ...
@@ -599,6 +606,85 @@ class SqliteRunStore:
             return row
         except Exception:
             conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def decide_open_approval(
+        self,
+        run_id: str,
+        *,
+        approval_id: str,
+        to_state: RunState,
+        kind: str,
+        payload: Optional[dict] = None,
+    ) -> Dict[str, Any]:
+        """Atomic, fenced, approval-id-BOUND, single-use approval decision.
+
+        The generic :meth:`transition` is NOT a from-state CAS (its
+        ``to_state != cur_state`` escape allows a same-state self-write, so two
+        concurrent decisions could both append a decision event). This primitive
+        closes that: in ONE ``BEGIN IMMEDIATE`` + fenced transaction it
+        (1) requires the run to be in ``WAITING_APPROVAL``; (2) requires the
+        supplied ``approval_id`` to equal the OPEN approval's id — the latest
+        ``approval_request`` event's ``payload.approval_id`` (product
+        ``approval_id`` lives only in the event log; no schema/second ledger);
+        (3) performs the state change as a from-state CAS
+        ``UPDATE ... WHERE state='WAITING_APPROVAL'`` and requires ``rowcount==1``;
+        (4) appends the decision event. Exactly one decision consumes the open
+        approval — a concurrent or replayed second decision (wrong id, or the run
+        already past ``WAITING_APPROVAL``) is refused with :class:`ApprovalNotOpen`,
+        across concurrent requests and restart (state is durable). ``to_state``
+        must be a permitted ``WAITING_APPROVAL`` target.
+        """
+        if to_state not in _TRANSITIONS.get(RunState.WAITING_APPROVAL, frozenset()):
+            raise InvalidTransition(f"WAITING_APPROVAL -> {to_state.value} is not allowed")
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            r = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if r is None:
+                conn.execute("ROLLBACK")
+                raise ApprovalNotOpen(f"run not found: {run_id}")
+            if RunState(r[0]) != RunState.WAITING_APPROVAL:
+                conn.execute("ROLLBACK")
+                raise ApprovalNotOpen(f"no open approval (run state={r[0]})")
+            ev = conn.execute(
+                "SELECT payload FROM run_events WHERE run_id=? AND kind='approval_request' "
+                "ORDER BY seq DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            open_id = None
+            if ev and ev[0]:
+                try:
+                    open_id = (json.loads(ev[0]) or {}).get("approval_id")
+                except (ValueError, TypeError):
+                    open_id = None
+            if open_id is None or open_id != approval_id:
+                conn.execute("ROLLBACK")
+                raise ApprovalNotOpen("approval_id does not match the open approval")
+            now = time.time()
+            cur = conn.execute(
+                "UPDATE runs SET state=?, updated_at=? WHERE run_id=? AND state=?",
+                (to_state.value, now, run_id, RunState.WAITING_APPROVAL.value),
+            )
+            if cur.rowcount != 1:  # lost the single-use CAS (concurrent/replayed)
+                conn.execute("ROLLBACK")
+                raise ApprovalNotOpen("open approval already decided")
+            self._append_event_locked(
+                conn, run_id, kind,
+                {**(payload or {}), "approval_id": approval_id, "state": to_state.value},
+            )
+            cur2 = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur2, cur2.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
             raise
         finally:
             conn.close()
