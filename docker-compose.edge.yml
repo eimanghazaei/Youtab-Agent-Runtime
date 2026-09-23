@@ -1,0 +1,53 @@
+# PROPOSED secure ingress override — TLS edge for the durable /v1/runs API
+# (pending Master coordination). ADDITIVE: does NOT modify the shared
+# docker-compose.yml. Layer it AFTER the postgres override:
+#
+#   POSTGRES_PASSWORD=... API_SERVER_KEY=... \
+#   docker compose -f docker-compose.yml \
+#                  -f docker-compose.postgres.yml \
+#                  -f docker-compose.edge.yml up -d
+#
+# Security posture:
+#   * The api_server binds 0.0.0.0 INSIDE the container but is NOT published to
+#     the host — only `expose`d on the internal docker network. So the
+#     unsandboxed local terminal backend is never directly reachable from an
+#     untrusted network.
+#   * The Caddy `edge` service is the ONLY host-published entrypoint. It
+#     TLS-terminates and reverse-proxies to the api_server. Bearer auth
+#     (API_SERVER_KEY) is still enforced end-to-end by the api_server.
+#   * Publish the edge to a trusted interface. The default binds the host
+#     loopback (127.0.0.1:${EDGE_PORT}); set EDGE_BIND=0.0.0.0 only behind a
+#     firewall / on a trusted network.
+
+services:
+  youtab-agent-runtime:
+    environment:
+      # Bind the api_server on all container interfaces so the edge (a separate
+      # container on the internal network) can reach it. NOT published to host.
+      - API_SERVER_HOST=0.0.0.0
+    expose:
+      - "${API_SERVER_PORT:-8642}"
+
+  edge:
+    image: caddy:2-alpine
+    container_name: youtab-durable-edge
+    restart: unless-stopped
+    depends_on:
+      youtab-agent-runtime:
+        condition: service_healthy
+    networks:
+      - youtab-runtime
+    ports:
+      - "${EDGE_BIND:-127.0.0.1}:${EDGE_PORT:-8443}:8443"
+    volumes:
+      - ./deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      - youtab-durable-edge-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://127.0.0.1:8443/health >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  youtab-durable-edge-data:

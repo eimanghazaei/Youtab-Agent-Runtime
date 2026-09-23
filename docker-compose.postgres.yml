@@ -55,12 +55,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    # Liveness/readiness on the durable ingress. With backend=postgres and PG
-    # unreachable the api_server never binds, so /health does not answer and this
-    # probe fails (the intended fail-closed signal). Uses the OBSERVED route
-    # /health (no /api/health, no /healthz). Adjust the port to API_SERVER_PORT.
+    # Durable-store READINESS probe (NOT liveness). /health/ready round-trips the
+    # PostgreSQL RunStore: 200 when the store answers, 503 when it is unreachable.
+    # So this healthcheck fails when PG is lost — at startup (api_server never
+    # binds → connection refused) AND mid-flight (store dead → 503) — which is the
+    # intended fail-closed signal that drains this instance. /health (static
+    # liveness OK) is deliberately NOT used here. Route is OBSERVED on the image
+    # (/health/ready + /v1/health/ready; there is no /api/health or /healthz).
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import os,urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:%s/health' % os.environ.get('API_SERVER_PORT','8642'), timeout=3); sys.exit(0)\""]
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:%s/health/ready' % os.environ.get('API_SERVER_PORT','8642'), timeout=3); sys.exit(0 if r.status==200 else 1)\""]
       interval: 15s
       timeout: 5s
       retries: 5

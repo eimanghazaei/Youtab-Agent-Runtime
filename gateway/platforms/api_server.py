@@ -1826,7 +1826,9 @@ class APIServerAdapter(BasePlatformAdapter):
         routes: List[tuple] = [
             ("GET", "/health", self._handle_health),
             ("GET", "/health/detailed", self._handle_health_detailed),
+            ("GET", "/health/ready", self._handle_ready),
             ("GET", "/v1/health", self._handle_health),
+            ("GET", "/v1/health/ready", self._handle_ready),
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("GET", "/v1/capabilities", self._handle_capabilities),
@@ -2704,6 +2706,44 @@ class APIServerAdapter(BasePlatformAdapter):
         """GET /health — simple health check."""
         return web.json_response(
             {"status": "ok", "platform": "youtab-agent-runtime", "version": _youtab_version()}
+        )
+
+    async def _handle_ready(self, request: "web.Request") -> "web.Response":
+        """GET /health/ready — durable-store readiness (NOT /health liveness).
+
+        Unlike ``/health`` (a static liveness OK) this probe actually exercises
+        the durable RunStore with a cheap read round-trip. If the store is
+        unreachable (e.g. PostgreSQL lost while the API is running) it returns
+        ``503`` with ``ready:false`` so an orchestrator/admin drains this
+        instance and no run is admitted against a dead store. This is the signal
+        an admin wires their readiness probe / load-balancer health to; do NOT
+        use ``/health`` for durable-store readiness.
+
+        No auth (up/down only, no secrets); the error is never surfaced verbatim
+        so DSN/credentials cannot leak through the probe.
+        """
+        store = getattr(self, "_run_store", None)
+        backend = os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "sqlite")
+        if store is None:
+            # No durable store configured (local default path degraded to none).
+            # The process is live but there is no durable backend to be ready.
+            return web.json_response(
+                {"ready": True, "durable_store": "none", "backend": backend},
+            )
+        try:
+            # Cheap real round-trip: a missing id returns None but still forces a
+            # connection + query, so a dead PostgreSQL raises here.
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None, store.get_run, "__youtab_readiness_probe__"
+            )
+        except Exception:
+            return web.json_response(
+                {"ready": False, "durable_store": "unavailable", "backend": backend},
+                status=503,
+            )
+        return web.json_response(
+            {"ready": True, "durable_store": "ok", "backend": backend},
         )
 
     async def _handle_health_detailed(self, request: "web.Request") -> "web.Response":

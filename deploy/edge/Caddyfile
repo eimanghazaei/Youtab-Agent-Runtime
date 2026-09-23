@@ -1,0 +1,35 @@
+# Secure TLS edge for the durable-execution API ingress (/v1/runs).
+#
+# The api_server itself is NOT published to the host (see docker-compose.edge.yml:
+# it binds 0.0.0.0 INSIDE the container and is only `expose`d on the internal
+# docker network). This Caddy edge is the ONLY host-published entrypoint: it
+# terminates TLS and reverse-proxies to the api_server. Authentication is still
+# enforced end-to-end by the api_server's Bearer API_SERVER_KEY check — the edge
+# adds transport encryption and is the single, auditable ingress.
+#
+# `tls internal` makes Caddy mint its own local CA + leaf cert (no public domain
+# needed for a self-hosted/test deployment). For a real domain, replace the
+# site address with your hostname and remove `tls internal` to use ACME, or
+# point tls at your own cert/key.
+#
+# Only /v1/* and the health probes are proxied; everything else is refused, so
+# the unsandboxed local terminal backend is never widened to the network beyond
+# the durable-run API surface.
+
+{
+	admin off
+	auto_https disable_redirects
+}
+
+:8443 {
+	tls internal
+
+	@durable path /v1/* /health /health/ready /v1/health /v1/health/ready
+	handle @durable {
+		reverse_proxy youtab-agent-runtime:8642
+	}
+
+	handle {
+		respond "not found" 404
+	}
+}
