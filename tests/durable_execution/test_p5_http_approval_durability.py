@@ -260,3 +260,96 @@ async def test_live_run_opens_exact_effect_before_notification(monkeypatch, tmp_
         assert decision.status == 200
         await asyncio.wait_for(run_task, timeout=5)
         assert store.get_run(run_id)["state"] == "SUCCEEDED"
+
+
+async def _exercise_live_gate(monkeypatch, tmp_path, gate):
+    monkeypatch.delenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", raising=False)
+    adapter = APIServerAdapter(PlatformConfig(enabled=True, extra={}))
+    store = SqliteRunStore(str(tmp_path / "gated.db"))
+    adapter._run_store = store
+    adapter._run_authority_held = lambda: True
+    adapter._admit_durable_or_fail = lambda *args, **kwargs: None
+    agent = MagicMock()
+    agent.run_conversation.side_effect = lambda *, task_id, **kwargs: {
+        "final_response": str(gate(task_id)),
+    }
+    adapter._create_agent = lambda **kwargs: agent
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
+    app = web.Application()
+    app.router.add_post("/v1/runs", adapter._handle_runs)
+    app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
+    async with TestClient(TestServer(app)) as client:
+        accepted = await client.post("/v1/runs", json={"input": "test"})
+        assert accepted.status == 202
+        run_id = (await accepted.json())["run_id"]
+        q = adapter._run_streams[run_id]
+        event = None
+        for _ in range(100):
+            if not q.empty():
+                candidate = q.get_nowait()
+                if candidate and candidate.get("event") == "approval.request":
+                    event = candidate
+                    break
+            await asyncio.sleep(0.01)
+        assert event is not None
+        assert store.get_run(run_id)["state"] == "WAITING_APPROVAL"
+        run_task = adapter._active_run_tasks[run_id]
+        response = await client.post(f"/v1/runs/{run_id}/approval", json={
+            "choice": "once", "approval_id": event["approval_id"],
+            "effect_binding": event["effect_binding"],
+        })
+        assert response.status == 200
+        await asyncio.wait_for(run_task, timeout=5)
+        assert store.get_run(run_id)["state"] == "SUCCEEDED"
+        return event, store.get_run(run_id)["result_ref"]
+
+
+@pytest.mark.asyncio
+async def test_live_plugin_approval_binds_tool_arguments(monkeypatch, tmp_path):
+    import youtab_agent_cli.plugins as plugins
+
+    monkeypatch.setattr(plugins, "invoke_hook", lambda hook_name, **kwargs: [
+        {"action": "approve", "message": "sensitive write", "rule_key": "write-file"}
+    ])
+
+    def gate(run_id):
+        return plugins.resolve_pre_tool_block(
+            "write_file", {"path": "/tmp/target", "content": "exact bytes"},
+            task_id=run_id, tool_call_id="call-write-1",
+        )
+
+    event, result = await _exercise_live_gate(monkeypatch, tmp_path, gate)
+    assert event["effect_binding"] == approvals._exact_effect_binding(
+        "plugin_tool_call",
+        {"tool_name": "write_file", "arguments": {"path": "/tmp/target", "content": "exact bytes"}},
+        {"task_id": event["run_id"], "session_id": "", "tool_call_id": "call-write-1",
+         "turn_id": "", "api_request_id": "", "approval_rule_key": "write-file",
+         "approval_reason": "sensitive write"},
+    )
+    assert result == "None"  # None means the plugin allowed exactly this call.
+
+
+@pytest.mark.asyncio
+async def test_live_mcp_elicitation_binds_server_message_and_schema(monkeypatch, tmp_path):
+    schema = {"properties": {"approved": {"type": "boolean"}}}
+
+    def gate(run_id):
+        return approvals.request_elicitation_consent(
+            "authorize payment", "approval requested",
+            surface="mcp-elicitation/pay", server_name="pay",
+            requested_schema=schema,
+        )
+
+    event, result = await _exercise_live_gate(monkeypatch, tmp_path, gate)
+    assert event["effect_binding"]["kind"] == "mcp_elicitation"
+    assert event["effect_binding"] == approvals._exact_effect_binding(
+        "mcp_elicitation",
+        {"server_name": "pay", "message": "authorize payment", "requested_schema": schema},
+        {"surface": "mcp-elicitation/pay", "session_key": event["run_id"]},
+    )
+    assert result == "accept"
+
+
+def test_durable_plugin_approval_without_exact_arguments_fails_closed(monkeypatch):
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
+    assert approvals.request_tool_approval("write_file", "sensitive")["approved"] is False

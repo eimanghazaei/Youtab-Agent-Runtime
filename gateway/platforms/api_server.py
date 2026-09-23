@@ -6683,7 +6683,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             raise RuntimeError("durable approval authority unavailable")
                         binding = approval_data.get("effect_binding")
                         if (not isinstance(binding, dict)
-                                or binding.get("kind") not in {"terminal_command", "execute_code"}
+                                or binding.get("kind") not in {"terminal_command", "execute_code", "plugin_tool_call", "mcp_elicitation"}
                                 or not isinstance(binding.get("arguments_digest"), str)
                                 or len(binding["arguments_digest"]) != 64
                                 or any(c not in "0123456789abcdef" for c in binding["arguments_digest"])):
@@ -7148,7 +7148,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if durable_mode and (
             not isinstance(approval_id, str) or not approval_id.strip() or resolve_all
             or not isinstance(effect_binding, dict)
-            or effect_binding.get("kind") not in {"terminal_command", "execute_code"}
+            or effect_binding.get("kind") not in {"terminal_command", "execute_code", "plugin_tool_call", "mcp_elicitation"}
             or not isinstance(effect_binding.get("arguments_digest"), str)
             or not approval_id.endswith("." + effect_binding["arguments_digest"])
         ):
