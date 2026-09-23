@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -44,12 +45,23 @@ const replacement = `    // ${marker}: electron-builder 26.8.x can sometimes cop
         (0, builder_util_1.unlinkIfExists)(path.join(appOutDir, "LICENSES.chromium.html")),
     ]);`
 
-if (!fs.existsSync(electronMacPath)) {
+let source
+let sourceMode
+let sourceFd
+
+try {
+  sourceFd = fs.openSync(electronMacPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)
+  const stat = fs.fstatSync(sourceFd)
+  if (!stat.isFile()) throw new Error(`Not a regular file: ${electronMacPath}`)
+  sourceMode = stat.mode & 0o777
+  source = fs.readFileSync(sourceFd, 'utf8')
+} catch (error) {
+  if (error?.code !== 'ENOENT') throw error
   console.warn(`[patch-electron-builder] skipped: ${electronMacPath} not found`)
   process.exit(0)
+} finally {
+  if (sourceFd !== undefined) fs.closeSync(sourceFd)
 }
-
-const source = fs.readFileSync(electronMacPath, 'utf8')
 if (source.includes(marker)) {
   console.log('[patch-electron-builder] macOS Electron binary fallback already applied')
   process.exit(0)
@@ -60,5 +72,11 @@ if (!source.includes(needle)) {
   process.exit(0)
 }
 
-fs.writeFileSync(electronMacPath, source.replace(needle, replacement))
+const stagedPath = `${electronMacPath}.youtab-${process.pid}-${crypto.randomUUID()}.tmp`
+try {
+  fs.writeFileSync(stagedPath, source.replace(needle, replacement), { flag: 'wx', mode: sourceMode })
+  fs.renameSync(stagedPath, electronMacPath)
+} finally {
+  try { fs.unlinkSync(stagedPath) } catch { /* renamed or never created */ }
+}
 console.log('[patch-electron-builder] applied macOS Electron binary fallback')

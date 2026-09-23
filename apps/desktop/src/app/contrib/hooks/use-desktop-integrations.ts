@@ -20,6 +20,7 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { requestComposerFocus, requestComposerInsert } from '../../chat/composer/focus'
 import { appViewForPath, isOverlayView, NEW_CHAT_ROUTE, sessionRoute } from '../../routes'
+import { blueprintCommandFromDeepLink } from '../blueprint-deep-link'
 
 interface DesktopIntegrationsParams {
   chatOpen: boolean
@@ -154,19 +155,13 @@ export function useDesktopIntegrations({
   // youtab:// deep links -> a reviewable /blueprint command in the composer.
   useEffect(() => {
     const unsubscribe = window.youtabDesktop?.onDeepLink?.(payload => {
-      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
+      if (!payload) {
         return
       }
-
-      const slots = Object.entries(payload.params || {})
-        .map(([k, v]) => {
-          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
-
-          return `${k}=${sval}`
-        })
-        .join(' ')
-
-      const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
+      const command = blueprintCommandFromDeepLink(payload)
+      if (!command) {
+        return
+      }
       requestComposerInsert(command, { mode: 'block', target: 'main' })
       requestComposerFocus('main')
     })

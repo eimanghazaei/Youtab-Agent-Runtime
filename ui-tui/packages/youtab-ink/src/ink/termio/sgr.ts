@@ -41,10 +41,12 @@ function parseParams(str: string): Param[] {
   let num = ''
   let inSub = false
 
-  for (let i = 0; i <= str.length; i++) {
-    const c = str[i]
+  // A terminator keeps the final parameter without reading past the input.
+  const terminated = `${str};`
+  for (let i = 0; i < terminated.length; i++) {
+    const c = terminated[i]
 
-    if (c === ';' || c === undefined) {
+    if (c === ';') {
       const n = num === '' ? null : parseInt(num, 10)
 
       if (inSub) {

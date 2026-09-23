@@ -23,7 +23,8 @@
 // deploys get real data.
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, statSync, renameSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -48,10 +49,6 @@ function writeEmptyFallback(reason) {
 }
 
 function runPython(script, label) {
-  if (!existsSync(script)) {
-    console.warn(`[prebuild] ${label} skipped (script missing)`);
-    return false;
-  }
   const r = spawnSync("python3", [script], { stdio: "inherit", cwd: websiteDir });
   if (r.error && r.error.code === "ENOENT") {
     console.warn(`[prebuild] ${label} skipped (python3 not found)`);
@@ -66,19 +63,17 @@ function runPython(script, label) {
 
 async function ensureUnifiedIndex() {
   // If we have a recent copy on disk, trust it.
-  if (existsSync(unifiedIndexFile)) {
-    try {
-      const age = Date.now() - statSync(unifiedIndexFile).mtimeMs;
-      if (age < UNIFIED_INDEX_MAX_AGE_MS) {
-        return true;
-      }
-      console.log(
-        `[prebuild] skills-index.json is ${(age / 3600000).toFixed(1)}h old; ` +
-          `refreshing from ${UNIFIED_INDEX_URL}`,
-      );
-    } catch {
-      // fall through to re-fetch
+  try {
+    const age = Date.now() - statSync(unifiedIndexFile).mtimeMs;
+    if (age < UNIFIED_INDEX_MAX_AGE_MS) {
+      return true;
     }
+    console.log(
+      `[prebuild] skills-index.json is ${(age / 3600000).toFixed(1)}h old; ` +
+        `refreshing from ${UNIFIED_INDEX_URL}`,
+    );
+  } catch {
+    // Missing or unreadable cache: fall through to re-fetch.
   }
 
   try {
@@ -107,7 +102,13 @@ async function ensureUnifiedIndex() {
       return existsSync(unifiedIndexFile);
     }
     mkdirSync(dirname(unifiedIndexFile), { recursive: true });
-    writeFileSync(unifiedIndexFile, text);
+    const stagedPath = `${unifiedIndexFile}.youtab-${process.pid}-${randomUUID()}.tmp`;
+    try {
+      writeFileSync(stagedPath, text, { flag: "wx" });
+      renameSync(stagedPath, unifiedIndexFile);
+    } finally {
+      try { unlinkSync(stagedPath); } catch { /* renamed or never created */ }
+    }
     console.log(
       `[prebuild] downloaded skills-index.json from ${UNIFIED_INDEX_URL} ` +
         `(${(text.length / 1024).toFixed(0)} KB)`,
@@ -123,18 +124,14 @@ async function ensureUnifiedIndex() {
 await ensureUnifiedIndex();
 
 // 1) skills.json — required for the Skills Hub page.
-if (!existsSync(extractScript)) {
-  writeEmptyFallback("extract script missing");
-} else {
-  const r = spawnSync("python3", [extractScript], {
-    stdio: "inherit",
-    cwd: websiteDir,
-  });
-  if (r.error && r.error.code === "ENOENT") {
-    writeEmptyFallback("python3 not found");
-  } else if (r.status !== 0) {
-    writeEmptyFallback(`extract-skills.py exited with status ${r.status}`);
-  }
+const r = spawnSync("python3", [extractScript], {
+  stdio: "inherit",
+  cwd: websiteDir,
+});
+if (r.error && r.error.code === "ENOENT") {
+  writeEmptyFallback("python3 not found");
+} else if (r.status !== 0) {
+  writeEmptyFallback(`extract-skills.py exited with status ${r.status}`);
 }
 
 // 2) llms.txt + llms-full.txt — agent-friendly docs entrypoints. Non-fatal.

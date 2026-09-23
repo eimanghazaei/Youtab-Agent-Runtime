@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { BUILTIN_THEMES, defaultTheme } from "./presets";
+import { assetVars } from "./assets";
 import {
   FONT_CHOICES,
   THEME_DEFAULT_FONT_ID,
@@ -16,7 +17,6 @@ import {
 } from "./fonts";
 import type {
   DashboardTheme,
-  ThemeAssets,
   ThemeColorOverrides,
   ThemeComponentStyles,
   ThemeDensity,
@@ -180,10 +180,6 @@ function seriesColorVars(
 // Asset + component-style + layout variant vars
 // ---------------------------------------------------------------------------
 
-/** Well-known named asset slots a theme may populate. Kept in sync with
- *  `_THEME_NAMED_ASSET_KEYS` in `youtab_agent_cli/web_server.py`. */
-const NAMED_ASSET_KEYS = ["bg", "hero", "logo", "crest", "sidebar", "header"] as const;
-
 /** Component buckets mirrored from the backend's `_THEME_COMPONENT_BUCKETS`.
  *  Each bucket emits `--component-<bucket>-<kebab-prop>` CSS vars. */
 const COMPONENT_BUCKETS = [
@@ -194,40 +190,6 @@ const COMPONENT_BUCKETS = [
 /** Camel → kebab (`clipPath` → `clip-path`). */
 function toKebab(s: string): string {
   return s.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
-}
-
-/** Build `--theme-asset-*` CSS vars from the assets block. Values are wrapped
- *  in `url(...)` when they look like a bare path/URL; raw CSS expressions
- *  (`linear-gradient(...)`, pre-wrapped `url(...)`, `none`) pass through. */
-function assetVars(assets: ThemeAssets | undefined): Record<string, string> {
-  if (!assets) return {};
-  const out: Record<string, string> = {};
-  const wrap = (v: string): string => {
-    const trimmed = v.trim();
-    if (!trimmed) return "";
-    // Already a CSS image/gradient/url/none — don't re-wrap.
-    if (/^(url\(|linear-gradient|radial-gradient|conic-gradient|none$)/i.test(trimmed)) {
-      return trimmed;
-    }
-    // Bare path / http(s) URL / data: URL → wrap in url().
-    return `url("${trimmed.replace(/"/g, '\\"')}")`;
-  };
-  for (const key of NAMED_ASSET_KEYS) {
-    const val = assets[key];
-    if (typeof val === "string" && val.trim()) {
-      out[`--theme-asset-${key}`] = wrap(val);
-      out[`--theme-asset-${key}-raw`] = val;
-    }
-  }
-  if (assets.custom) {
-    for (const [key, val] of Object.entries(assets.custom)) {
-      if (typeof val !== "string" || !val.trim()) continue;
-      if (!/^[a-zA-Z0-9_-]+$/.test(key)) continue;
-      out[`--theme-asset-custom-${key}`] = wrap(val);
-      out[`--theme-asset-custom-${key}-raw`] = val;
-    }
-  }
-  return out;
 }
 
 /** Build `--component-<bucket>-<prop>` CSS vars from the componentStyles

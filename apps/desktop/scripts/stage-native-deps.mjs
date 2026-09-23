@@ -10,15 +10,22 @@
 // platform/arch during multi-arch builds.
 
 import { createRequire } from 'node:module'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve, join } from 'node:path'
 import {
   chmodSync,
+  constants,
   cpSync,
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  openSync,
+  fstatSync,
+  closeSync,
+  renameSync,
+  unlinkSync,
   rmSync,
   writeFileSync
 } from 'node:fs'
@@ -35,9 +42,23 @@ function makeExecutable(filePath) {
 
 function patchUnixTerminalAsarPaths(destRoot) {
   const filePath = join(destRoot, 'lib', 'unixTerminal.js')
-  if (!existsSync(filePath)) return
+  let fd
+  let source
+  let mode
 
-  const source = readFileSync(filePath, 'utf8')
+  try {
+    fd = openSync(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0))
+    const stat = fstatSync(fd)
+    if (!stat.isFile()) throw new Error(`Not a regular file: ${filePath}`)
+    mode = stat.mode & 0o777
+    source = readFileSync(fd, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return
+    throw error
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+
   const patched = source
     .replace(
       "helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
@@ -49,7 +70,13 @@ function patchUnixTerminalAsarPaths(destRoot) {
     )
 
   if (patched !== source) {
-    writeFileSync(filePath, patched)
+    const stagedPath = `${filePath}.youtab-${process.pid}-${randomUUID()}.tmp`
+    try {
+      writeFileSync(stagedPath, patched, { flag: 'wx', mode })
+      renameSync(stagedPath, filePath)
+    } finally {
+      try { unlinkSync(stagedPath) } catch { /* renamed or never created */ }
+    }
   }
 }
 

@@ -6,7 +6,7 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath } from './git-review-ops'
+import { gitFor, repoStatus, resolveRenamePath, reviewList } from './git-review-ops'
 
 const tempDirs: string[] = []
 
@@ -86,4 +86,24 @@ test('repoStatus reports an untracked directory without recursively listing its 
     status.files.map(file => file.path),
     ['generated/']
   )
+})
+
+test('reviewList counts only bounded regular untracked files', async () => {
+  const dir = makeRepo()
+  fs.writeFileSync(path.join(dir, 'short.txt'), 'one\ntwo')
+  fs.writeFileSync(path.join(dir, 'oversized.txt'), Buffer.alloc(1024 * 1024 + 1, 65))
+
+  if (process.platform !== 'win32') {
+    fs.symlinkSync(path.join(dir, 'short.txt'), path.join(dir, 'link.txt'))
+  }
+
+  const result = await reviewList(dir, 'unstaged', null, 'git')
+  const files = new Map(result.files.map(file => [file.path, file] as const))
+
+  assert.equal(files.get('short.txt')?.added, 2)
+  assert.equal(files.get('oversized.txt')?.added, 0)
+
+  if (process.platform !== 'win32') {
+    assert.equal(files.get('link.txt')?.added, 0)
+  }
 })

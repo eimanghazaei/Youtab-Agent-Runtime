@@ -3,6 +3,8 @@ export function getNestedValue(obj: Record<string, unknown>, path: string): unkn
   let cur: unknown = obj;
   for (const p of parts) {
     if (cur == null || typeof cur !== "object") return undefined;
+    if (p === "__proto__" || p === "prototype" || p === "constructor") return undefined;
+    if (!Object.prototype.hasOwnProperty.call(cur, p)) return undefined;
     cur = (cur as Record<string, unknown>)[p];
   }
   return cur;
@@ -11,9 +13,16 @@ export function getNestedValue(obj: Record<string, unknown>, path: string): unkn
 export function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
   const clone = structuredClone(obj);
   const parts = path.split(".");
+  if (parts.some((part) => part === "__proto__" || part === "prototype" || part === "constructor")) {
+    throw new Error("Unsafe config path");
+  }
   let cur: Record<string, unknown> = clone;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (cur[parts[i]] == null || typeof cur[parts[i]] !== "object") {
+    if (
+      !Object.prototype.hasOwnProperty.call(cur, parts[i]) ||
+      cur[parts[i]] == null ||
+      typeof cur[parts[i]] !== "object"
+    ) {
       cur[parts[i]] = {};
     }
     cur = cur[parts[i]] as Record<string, unknown>;

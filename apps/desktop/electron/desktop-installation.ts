@@ -15,10 +15,23 @@ function parseInstallationId(raw) {
 }
 
 function readInstallationId(filePath) {
-  try {
-    const stat = fs.lstatSync(filePath)
+  let fd
 
-    if (!stat.isFile() || stat.isSymbolicLink()) {
+  try {
+    // Node has no O_NOFOLLOW on Windows. Keep the previous symlink refusal
+    // there and verify the opened handle still names the checked file.
+    const windowsStat = process.platform === 'win32' ? fs.lstatSync(filePath) : null
+
+    if (windowsStat && (!windowsStat.isFile() || windowsStat.isSymbolicLink())) {
+      return ''
+    }
+
+    // Keep the ownership, mode repair and read on one inode. O_NOFOLLOW
+    // prevents a swapped symlink from redirecting the chmod on POSIX.
+    fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0))
+    const stat = fs.fstatSync(fd)
+
+    if (!stat.isFile() || (windowsStat && (stat.dev !== windowsStat.dev || stat.ino !== windowsStat.ino))) {
       return ''
     }
 
@@ -27,12 +40,16 @@ function readInstallationId(filePath) {
     }
 
     if (process.platform !== 'win32' && (stat.mode & 0o777) !== 0o600) {
-      fs.chmodSync(filePath, 0o600)
+      fs.fchmodSync(fd, 0o600)
     }
 
-    return parseInstallationId(fs.readFileSync(filePath, 'utf8'))
+    return parseInstallationId(fs.readFileSync(fd, 'utf8'))
   } catch {
     return ''
+  } finally {
+    if (fd !== undefined) {
+      fs.closeSync(fd)
+    }
   }
 }
 

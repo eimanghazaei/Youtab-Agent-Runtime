@@ -4,7 +4,6 @@ import { cn } from '../../utils'
 
 import { ImageDistortion } from './image-distortion'
 import { Typography } from './typography'
-import { Small } from './typography/small'
 
 /**
  * Selectable tier / pricing card. Full-bleed distorted image background,

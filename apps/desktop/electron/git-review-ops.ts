@@ -5,6 +5,7 @@
 // non-repo / remote backend; mutations reject so the renderer can toast.
 
 import { execFile } from 'node:child_process'
+import { constants } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -101,27 +102,42 @@ function countsByPath(summary) {
 async function untrackedInsertions(cwd, relPath) {
   try {
     const fullPath = path.join(cwd, relPath)
-    const stat = await fs.stat(fullPath)
+    const handle = await fs.open(fullPath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0))
 
-    if (!stat.isFile() || stat.size > UNTRACKED_LINE_COUNT_MAX_BYTES) {
-      return 0
-    }
+    try {
+      const stat = await handle.stat()
 
-    const buf = await fs.readFile(fullPath)
-
-    if (buf.includes(0)) {
-      return 0
-    }
-
-    let lines = 0
-
-    for (const byte of buf) {
-      if (byte === 10) {
-        lines++
+      if (!stat.isFile() || stat.size > UNTRACKED_LINE_COUNT_MAX_BYTES) {
+        return 0
       }
-    }
 
-    return buf.length > 0 && buf[buf.length - 1] !== 10 ? lines + 1 : lines
+      // A file can grow after stat; read at most one byte past the cap from
+      // this same handle and treat an oversized result as binary/unknown.
+      const sample = Buffer.alloc(UNTRACKED_LINE_COUNT_MAX_BYTES + 1)
+      const { bytesRead } = await handle.read(sample, 0, sample.length, 0)
+
+      if (bytesRead > UNTRACKED_LINE_COUNT_MAX_BYTES) {
+        return 0
+      }
+
+      const buf = sample.subarray(0, bytesRead)
+
+      if (buf.includes(0)) {
+        return 0
+      }
+
+      let lines = 0
+
+      for (const byte of buf) {
+        if (byte === 10) {
+          lines++
+        }
+      }
+
+      return buf.length > 0 && buf[buf.length - 1] !== 10 ? lines + 1 : lines
+    } finally {
+      await handle.close()
+    }
   } catch {
     return 0
   }

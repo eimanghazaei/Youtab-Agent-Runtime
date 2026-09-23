@@ -1,5 +1,3 @@
-import * as path from 'node:path'
-
 import { type TestInfo } from '@playwright/test'
 
 import { expect, test, type ElectronApplication, type Page } from './test'
@@ -16,7 +14,6 @@ import {
 import { MOCK_REPLY, startMockServer, type MockServer, type MockServerOptions } from './mock-server'
 import { RealSessionBuilder } from './real-session-builder'
 
-const DESKTOP_ROOT = path.resolve(import.meta.dirname, '..')
 const SESSION_TITLE = 'E2E large persisted session'
 const EXPECTED_TEXT = 'E2E persisted user message 52'
 // The oldest seeded turn (HISTORY_TURNS[0]). The transcript first paints only

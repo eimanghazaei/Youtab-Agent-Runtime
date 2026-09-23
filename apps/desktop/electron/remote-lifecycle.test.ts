@@ -232,7 +232,6 @@ test('metadata and process proof transport failures remain indeterminate', async
 })
 
 test('pidIsOurDashboard requires the exact serve ownership nonce', async () => {
-  const ours = `/x/youtab serve --isolated --ssh-owner-nonce ${SPAWN_NONCE}`
   assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'OWNED\n']]), 5, SPAWN_NONCE, '/x/youtab'), true)
   assert.equal(
     await pidIsOurDashboard(
@@ -914,8 +913,6 @@ test('cleanupStale never deletes a lock-supplied unexpected log path', async () 
 })
 
 test('pidIsOurDashboard requires an exact nonce option value', async () => {
-  const prefix = `/x/youtab serve --isolated --ssh-owner-nonce ${SPAWN_NONCE}ff`
-  const suffix = `/x/youtab serve --isolated --ssh-owner-nonce xx${SPAWN_NONCE}`
   assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, SPAWN_NONCE, '/x/youtab'), false)
   assert.equal(await pidIsOurDashboard(fakeSsh([[/print\("OWNED"/, 'FOREIGN\n']]), 5, SPAWN_NONCE, '/x/youtab'), false)
 })

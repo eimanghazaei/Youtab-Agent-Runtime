@@ -30,8 +30,6 @@ interface Skill {
   _search?: string;
 }
 
-const allSkills: Skill[] = [];
-
 interface IndexMeta {
   extractedAt?: string;
   indexGeneratedAt?: string;

@@ -144,7 +144,7 @@ export function PreviewPane({
   const consoleOpen = useStore(consoleState.$open)
   const [currentUrl, setCurrentUrl] = useState(target.url)
   const [devtoolsOpen, setDevtoolsOpen] = useState(false)
-  const [loading, setLoading] = useState(true)
+  const [, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<PreviewLoadErrorState | null>(null)
   const [localReloadKey, setLocalReloadKey] = useState(0)
 

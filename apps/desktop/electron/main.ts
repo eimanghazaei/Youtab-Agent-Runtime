@@ -920,24 +920,24 @@ function looksBinary(buffer) {
 function previewFileMetadata(filePath, mimeType) {
   let byteSize = 0
   let binary = false
+  let fd
 
   try {
-    const stat = fs.statSync(filePath)
+    fd = fs.openSync(filePath, 'r')
+    const stat = fs.fstatSync(fd)
     byteSize = stat.size
 
     if (!mimeType.startsWith('image/')) {
-      const fd = fs.openSync(filePath, 'r')
-
-      try {
-        const sample = Buffer.alloc(Math.min(byteSize, 4096))
-        const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0)
-        binary = looksBinary(sample.subarray(0, bytesRead))
-      } finally {
-        fs.closeSync(fd)
-      }
+      const sample = Buffer.alloc(Math.min(byteSize, 4096))
+      const bytesRead = fs.readSync(fd, sample, 0, sample.length, 0)
+      binary = looksBinary(sample.subarray(0, bytesRead))
     }
   } catch {
     // Metadata is best-effort; the read handlers surface hard errors later.
+  } finally {
+    if (fd !== undefined) {
+      fs.closeSync(fd)
+    }
   }
 
   return {
@@ -3142,22 +3142,20 @@ function runningAppBundle() {
 // Python-level pre-update snapshot inside `youtab update`.
 function preflightStateDb(youtabHome, rememberLog) {
   const stateDbPath = path.join(youtabHome, 'state.db')
-
-  if (!fileExists(stateDbPath)) {
-    rememberLog('[updates] state.db pre-flight: not found (fresh install?)')
-
-    return
-  }
+  let sourceFd
 
   try {
-    const stat = fs.statSync(stateDbPath)
+    sourceFd = fs.openSync(stateDbPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0))
+    const stat = fs.fstatSync(sourceFd)
+
+    if (!stat.isFile()) {
+      throw new Error('state.db is not a regular file')
+    }
 
     if (stat.size > 100) {
-      const fd = fs.openSync(stateDbPath, 'r')
       const header = Buffer.alloc(16)
 
-      fs.readSync(fd, header, 0, 16, 0)
-      fs.closeSync(fd)
+      fs.readSync(sourceFd, header, 0, 16, 0)
 
       const expectedHeader = Buffer.from('SQLite format 3\0')
       const headerOk = header.equals(expectedHeader)
@@ -3178,12 +3176,46 @@ function preflightStateDb(youtabHome, rememberLog) {
       const ts = new Date().toISOString().replace(/[:.]/g, '-')
 
       const emergencyPath = path.join(youtabHome, `state.db.pre-update-emergency-${ts}.bak`)
+      const stagedPath = `${emergencyPath}.${process.pid}.${crypto.randomUUID()}.tmp`
 
       try {
-        fs.copyFileSync(stateDbPath, emergencyPath)
-        const emergStat = fs.statSync(emergencyPath)
+        // Copy from the same opened inode used for the header check. Exclusive
+        // creation also prevents a swapped backup-path symlink from receiving data.
+        let destFd
+        let emergSize = 0
 
-        rememberLog(`[updates] emergency state.db backup: ${emergencyPath} ` + `(${emergStat.size} bytes)`)
+        try {
+          destFd = fs.openSync(stagedPath, 'wx', 0o600)
+          const chunk = Buffer.alloc(64 * 1024)
+          let position = 0
+
+          while (true) {
+            const count = fs.readSync(sourceFd, chunk, 0, chunk.length, position)
+
+            if (count === 0) {
+              break
+            }
+
+            let written = 0
+
+            while (written < count) {
+              written += fs.writeSync(destFd, chunk, written, count - written)
+            }
+
+            position += count
+          }
+
+          fs.fsyncSync(destFd)
+          emergSize = fs.fstatSync(destFd).size
+        } finally {
+          if (destFd !== undefined) {
+            fs.closeSync(destFd)
+          }
+        }
+
+        fs.renameSync(stagedPath, emergencyPath)
+
+        rememberLog(`[updates] emergency state.db backup: ${emergencyPath} ` + `(${emergSize} bytes)`)
 
         // Prune to the 2 most recent emergency backups.
         try {
@@ -3211,12 +3243,26 @@ function preflightStateDb(youtabHome, rememberLog) {
         }
       } catch (copyErr) {
         rememberLog(`[updates] emergency state.db backup failed: ${copyErr.message}`)
+      } finally {
+        try {
+          fs.unlinkSync(stagedPath)
+        } catch {
+          void 0
+        }
       }
     } else {
       rememberLog(`[updates] state.db too small (${stat.size} bytes) for a valid SQLite database`)
     }
   } catch (statErr) {
-    rememberLog(`[updates] could not stat state.db before update: ${statErr.message}`)
+    if (statErr.code === 'ENOENT') {
+      rememberLog('[updates] state.db pre-flight: not found (fresh install?)')
+    } else {
+      rememberLog(`[updates] could not inspect state.db before update: ${statErr.message}`)
+    }
+  } finally {
+    if (sourceFd !== undefined) {
+      fs.closeSync(sourceFd)
+    }
   }
 }
 
@@ -6024,7 +6070,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     // loop-guard tripped, etc.) and the window is now showing an interactive
     // page. Reveal it so the user can complete sign-in manually rather than
     // staring at nothing. Cleared on finish().
-    if (silent && win) {
+    if (silent) {
       revealTimer = setTimeout(() => {
         try {
           if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
@@ -7774,7 +7820,7 @@ async function testDesktopConnectionConfig(input: any = {}) {
   // for local we fall back to the resolved/started backend.
   let baseUrl
   let token = null
-  let authMode = 'token'
+  let authMode: string
 
   if (wantRemote && block?.url) {
     baseUrl = normalizeRemoteBaseUrl(block.url)

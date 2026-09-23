@@ -129,8 +129,6 @@ export function dismissSensitivePrompt(
   }
 }
 
-const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
-
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const { actions, composer, gateway, terminal, voice, wheelStep } = ctx
   const { actions: cActions, refs: cRefs, state: cState } = composer
