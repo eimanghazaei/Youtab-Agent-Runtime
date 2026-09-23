@@ -15,11 +15,11 @@
 
 // Per-release attestation of ONE frozen Windows x64 bundle (the PyInstaller
 // onedir freeze is not bit-reproducible, so rebuild and re-pin per release).
-//   source: release/runtime-desktop-rc-prep 401df2a015dc948b2b17f05a7d98f7a9dca984d3
+//   source: release/runtime-desktop-rc-prep 937f993ea7b8593a588dfcdc53b28cbd061bf833
 //   (no-SessionDB ack, native-target guards, lifecycle diagnostics, durable
 //   prompt acceptance, unblocked image staging, no frozen lazy installs)
 //   build: win32/x64 (PE32+ AMD64), python 3.12.10, uv 0.8.17, pyinstaller 6.22.3
 // This anchor is valid only for a win32-x64 package; other targets need their
 // own native sidecar and anchor.
 export const TRUSTED_SIDECAR_ROOT_DIGEST: string | null =
-  '70e6939f672a37429998f4cdbb650250c6987db2348e9a35e7f25045fdd5a888'
+  'f0e1f7a529b9334a53070456fe740146e3abaa8cd1d94680ec45e3df97d3dac6'
