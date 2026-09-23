@@ -295,3 +295,112 @@ def test_seams_fail_closed_when_disabled(monkeypatch):
         dip.open_managed_approval("t_x", approval_id="ap1")
     with pytest.raises(AuthorityLost):
         dip.decide_managed_approval("t_x", approval_id="ap1", decision="approve", **_SCOPE)
+
+
+# ── D2: single-use effect-claim fence (the effect-count 0/1 gate) ─────────────
+from youtab_runtime.durable_run_store import EffectAlreadyClaimed, EffectClaimRefused  # noqa: E402
+
+_BIND = {"effect_digest": "eff-1", "arguments_digest": "args-1",
+         "authorization_id": "auth-1", "checkpoint_digest": "cp-1", "command_id": None}
+
+
+def _approved_run(run_id="t_fx"):
+    """Admit -> open (with a full binding) -> approve, leaving the run RUNNING with an
+    approved, effect-bound approval ready to claim."""
+    dip.acquire_ingress_authority()
+    _admit(run_id=run_id)
+    dip.open_managed_approval(run_id, approval_id="ap1", payload=dict(_BIND))
+    dip.decide_managed_approval(run_id, approval_id="ap1", decision="approve", **_SCOPE)
+    return dip.get_ingress_authority()
+
+
+def test_effect_claim_grants_single_use_fence(enabled):
+    auth = _approved_run("t_c1")
+    fence = dip.claim_managed_effect("t_c1", approval_id="ap1", attempt_id="att-1",
+                                     binding=dict(_BIND))
+    assert fence["attempt_id"] == "att-1" and fence["expires_at"] > 0
+    assert fence["replayed"] is False
+    claims = [e for e in auth.get_events("t_c1") if e["kind"] == "effect_claim"]
+    assert len(claims) == 1
+    # same attempt is idempotent (returns the existing fence, no second claim)
+    again = dip.claim_managed_effect("t_c1", approval_id="ap1", attempt_id="att-1",
+                                     binding=dict(_BIND))
+    assert again["replayed"] is True
+    assert len([e for e in auth.get_events("t_c1") if e["kind"] == "effect_claim"]) == 1
+    # a DIFFERENT attempt after one exists is refused single-use (no second apply)
+    with pytest.raises(EffectAlreadyClaimed):
+        dip.claim_managed_effect("t_c1", approval_id="ap1", attempt_id="att-2",
+                                 binding=dict(_BIND))
+    assert len([e for e in auth.get_events("t_c1") if e["kind"] == "effect_claim"]) == 1
+
+
+def test_effect_claim_binding_mismatch_refused(enabled):
+    _approved_run("t_c2")
+    for f, bad in [("effect_digest", "eff-X"), ("arguments_digest", "args-X"),
+                   ("authorization_id", "auth-X"), ("checkpoint_digest", "cp-X")]:
+        b = dict(_BIND); b[f] = bad
+        with pytest.raises(EffectClaimRefused):
+            dip.claim_managed_effect("t_c2", approval_id="ap1", attempt_id="a", binding=b)
+    # never claimed under a mismatched binding
+    auth = dip.get_ingress_authority()
+    assert [e for e in auth.get_events("t_c2") if e["kind"] == "effect_claim"] == []
+
+
+def test_effect_claim_requires_approved(enabled):
+    # pending (opened, not decided) -> refused
+    dip.acquire_ingress_authority()
+    _admit(run_id="t_c3")
+    dip.open_managed_approval("t_c3", approval_id="ap1", payload=dict(_BIND))
+    with pytest.raises(EffectClaimRefused):
+        dip.claim_managed_effect("t_c3", approval_id="ap1", attempt_id="a", binding=dict(_BIND))
+
+
+def test_effect_claim_denied_refused(enabled):
+    dip.acquire_ingress_authority()
+    _admit(run_id="t_c4")
+    dip.open_managed_approval("t_c4", approval_id="ap1", payload=dict(_BIND))
+    dip.decide_managed_approval("t_c4", approval_id="ap1", decision="deny", **_SCOPE)
+    with pytest.raises(EffectClaimRefused):  # denied + run CANCELLED (inactive)
+        dip.claim_managed_effect("t_c4", approval_id="ap1", attempt_id="a", binding=dict(_BIND))
+
+
+def test_effect_claim_inactive_run_refused(enabled):
+    auth = _approved_run("t_c5")
+    auth.store.set_state("t_c5", RunState.CANCELLED, strict=False)  # e.g. cancelled
+    with pytest.raises(EffectClaimRefused):
+        dip.claim_managed_effect("t_c5", approval_id="ap1", attempt_id="a", binding=dict(_BIND))
+
+
+def test_effect_claim_concurrent_single_winner(enabled):
+    import threading
+    _approved_run("t_c6")
+    barrier = threading.Barrier(4)
+    out: list = []
+
+    def worker(n):
+        barrier.wait()
+        try:
+            dip.claim_managed_effect("t_c6", approval_id="ap1", attempt_id=f"att-{n}",
+                                     binding=dict(_BIND))
+            out.append("ok")
+        except EffectAlreadyClaimed:
+            out.append("refused")
+        except Exception as exc:  # surface anything unexpected
+            out.append(f"err:{type(exc).__name__}")
+
+    ts = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(timeout=30)
+    assert out.count("ok") == 1 and out.count("refused") == 3, out
+    auth = dip.get_ingress_authority()
+    assert len([e for e in auth.get_events("t_c6") if e["kind"] == "effect_claim"]) == 1
+
+
+def test_effect_claim_authority_loss_fails_closed(enabled):
+    _approved_run("t_c7")
+    dip._on_lost("advisory lock lost")
+    from youtab_runtime.durable_ingress import AuthorityLost
+    with pytest.raises(AuthorityLost):
+        dip.claim_managed_effect("t_c7", approval_id="ap1", attempt_id="a", binding=dict(_BIND))

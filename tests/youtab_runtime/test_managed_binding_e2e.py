@@ -1500,3 +1500,67 @@ def test_rebuild_kanban_approval_projection_from_runstore(managed_durable):
         assert _rt.rebuild_kanban_approval_projection(conn, run_id) == 0  # idempotent
     finally:
         conn.close()
+
+
+# ── D2: worker-only single-use effect-claim fence (route level) ───────────────
+def _worker_claim(client, run_id, approval_id="ap1", *, attempt="att-1", effect="eff-1",
+                  cap=None):
+    body = json.dumps({"attempt_id": attempt, "effect_digest": effect}).encode()
+    return client.post(
+        f"/api/runtime/worker/v1/runs/{run_id}/approval/{approval_id}/effect-claim",
+        content=body,
+        headers={"X-Youtab-Worker-Cap": cap or _worker_cap(run_id),
+                 "Content-Type": "application/json"})
+
+
+def _approved_via_route(client, run_id):
+    assert _worker_ingest(client, run_id, "ap1", effect="eff-1").status_code == 200
+    _, gh = _mint_grant()
+    assert _approve(client, run_id, "ap1", "approve", grant_header=gh).status_code == 200
+
+
+def test_effect_claim_route_single_use(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _approved_via_route(client, run_id)
+    r = _worker_claim(client, run_id, attempt="att-1")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["durable"] is True and body["fence"]["attempt_id"] == "att-1"
+    assert body["replayed"] is False
+    # same attempt is idempotent
+    assert _worker_claim(client, run_id, attempt="att-1").json()["replayed"] is True
+    # a different attempt after one exists is refused single-use
+    r2 = _worker_claim(client, run_id, attempt="att-2")
+    assert r2.status_code == 409 and r2.json()["detail"]["error"] == "effect_already_claimed"
+    claims = [e for e in dip.get_ingress_authority().get_events(run_id)
+              if e["kind"] == "effect_claim"]
+    assert len(claims) == 1  # exactly one durable claim (effect-count 0/1)
+
+
+def test_effect_claim_route_refused_when_pending(managed_durable):
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    assert _worker_ingest(client, run_id, "ap1", effect="eff-1").status_code == 200  # not approved
+    r = _worker_claim(client, run_id, attempt="att-1")
+    assert r.status_code == 409 and r.json()["detail"]["error"] == "effect_claim_refused"
+
+
+def test_effect_claim_route_binding_mismatch_refused(managed_durable):
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _approved_via_route(client, run_id)
+    r = _worker_claim(client, run_id, attempt="att-1", effect="eff-DIFFERENT")
+    assert r.status_code == 409 and r.json()["detail"]["error"] == "effect_claim_refused"
+
+
+def test_effect_claim_route_rejects_bad_cap(managed_durable):
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    other = _durable_run(client)
+    _approved_via_route(client, run_id)
+    # a cap minted for another run cannot claim this run's effect
+    r = _worker_claim(client, run_id, attempt="att-1", cap=_worker_cap(other))
+    assert r.status_code == 401

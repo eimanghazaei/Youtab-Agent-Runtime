@@ -408,3 +408,45 @@ def test_pg_approval_concurrent_single_use():
         assert len(approved) == 1
     finally:
         a.release()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("YOUTAB_TEST_PG_DSN"),
+    reason="requires a real PostgreSQL (YOUTAB_TEST_PG_DSN) for real-concurrency proof",
+)
+def test_pg_effect_claim_concurrent_single_use():
+    """PostgreSQL concurrency: N concurrent effect claims with distinct attempts, EXACTLY
+    one wins the fenced CAS; exactly one effect_claim event (effect-count 0/1)."""
+    from youtab_runtime.durable_run_store import EffectAlreadyClaimed
+    dsn = os.environ["YOUTAB_TEST_PG_DSN"]
+    a = DurableRunStateAuthority(backend="postgres", dsn=dsn)
+    a.acquire()
+    try:
+        rid = a.create_run(idempotency_key=uuid.uuid4().hex,
+                           request_digest="d1", **_IDENT).row["run_id"]
+        bind = {"effect_digest": "eff-1", "arguments_digest": "args-1",
+                "authorization_id": "auth-1", "checkpoint_digest": "cp-1", "command_id": None}
+        a.ensure_running(rid)
+        a.open_approval(rid, approval_id="ap1", payload=dict(bind))
+        a.decide_approval(rid, approval_id="ap1", decision="approve", **_SCOPE)
+        results: list[str] = []
+        barrier = threading.Barrier(4)
+
+        def worker(n: int) -> None:
+            barrier.wait()
+            try:
+                a.claim_effect(rid, approval_id="ap1", attempt_id=f"att-{n}", binding=dict(bind))
+                results.append("ok")
+            except EffectAlreadyClaimed:
+                results.append("refused")
+
+        ts = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(timeout=30)
+        assert results.count("ok") == 1 and results.count("refused") == 3, results
+        claims = [e for e in a.get_events(rid) if e["kind"] == "effect_claim"]
+        assert len(claims) == 1
+    finally:
+        a.release()

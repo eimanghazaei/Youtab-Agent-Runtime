@@ -538,6 +538,75 @@ class PostgresRunStore:
             conn.commit()
             return row
 
+    def claim_effect(self, run_id: str, *, approval_id: str, attempt_id: str,
+                     binding: Dict[str, Any], ttl_seconds: float = 60.0) -> Dict[str, Any]:
+        """Single-use, attempt-bound effect claim under the fence (PG). Mirrors
+        SqliteRunStore.claim_effect; the run row is taken ``FOR UPDATE`` so the
+        check-and-append serialises and exactly one attempt wins."""
+        from youtab_runtime.durable_run_store import (
+            EFFECT_CLAIM_INACTIVE_STATES, EffectAlreadyClaimed, EffectClaimRefused,
+        )
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                self._fence(cur)
+                cur.execute(
+                    "SELECT state, cancel_requested_at FROM runs WHERE run_id=%s FOR UPDATE",
+                    (run_id,),
+                )
+                r = cur.fetchone()
+                if r is None:
+                    raise DurableRunError(f"run not found: {run_id}")
+                if RunState(r[0]) in EFFECT_CLAIM_INACTIVE_STATES:
+                    raise EffectClaimRefused(f"run {run_id} is not active (state={r[0]})")
+                if r[1] is not None:
+                    raise EffectClaimRefused(f"run {run_id} has a pending cancel")
+                cur.execute(
+                    "SELECT kind, payload FROM run_events WHERE run_id=%s AND kind IN "
+                    "('approval_request','approval_approved','approval_denied','effect_claim') "
+                    "ORDER BY seq ASC", (run_id,),
+                )
+                req = None
+                approved = False
+                prior_claim = None
+                for k, raw in cur.fetchall():
+                    d = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+                    if (d or {}).get("approval_id") != approval_id:
+                        continue
+                    if k == "approval_request":
+                        req = d
+                    elif k == "approval_approved":
+                        approved = True
+                    elif k == "approval_denied":
+                        raise EffectClaimRefused(f"approval {approval_id} was denied")
+                    elif k == "effect_claim":
+                        prior_claim = d
+                if req is None:
+                    raise EffectClaimRefused(f"no open approval request for {approval_id}")
+                if not approved:
+                    raise EffectClaimRefused(f"approval {approval_id} is not approved")
+                for f in ("effect_digest", "arguments_digest", "authorization_id",
+                          "command_id", "checkpoint_digest"):
+                    if binding.get(f) != req.get(f):
+                        raise EffectClaimRefused(f"effect binding mismatch: {f}")
+                if prior_claim is not None:
+                    if prior_claim.get("attempt_id") == attempt_id:
+                        conn.commit()
+                        return {"approval_id": approval_id, "attempt_id": attempt_id,
+                                "expires_at": prior_claim.get("expires_at"), "replayed": True}
+                    raise EffectAlreadyClaimed(
+                        f"effect for approval {approval_id} already claimed")
+                now = time.time()
+                expires_at = now + float(ttl_seconds)
+                self._append_event(cur, run_id, "effect_claim", {
+                    "approval_id": approval_id, "attempt_id": attempt_id,
+                    "expires_at": expires_at, "effect_digest": binding.get("effect_digest"),
+                    "authorization_id": binding.get("authorization_id"),
+                    "command_id": binding.get("command_id"),
+                })
+            conn.commit()
+            return {"approval_id": approval_id, "attempt_id": attempt_id,
+                    "expires_at": expires_at, "replayed": False}
+
     def set_state(self, run_id: str, to_state: RunState, *, result_ref: Optional[str] = None,
                   error_ref: Optional[str] = None, kind: Optional[str] = None,
                   payload: Optional[dict] = None, strict: bool = True) -> Optional[Dict[str, Any]]:

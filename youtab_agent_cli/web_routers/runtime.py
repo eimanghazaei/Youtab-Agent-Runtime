@@ -2049,7 +2049,9 @@ def ingest_worker_approval_request(conn, run_id: str, *, approval_id: str,
                                    action: "Optional[str]" = None,
                                    mode: "Optional[str]" = None,
                                    authorization_id: "Optional[str]" = None,
-                                   checkpoint_digest: "Optional[str]" = None) -> str:
+                                   checkpoint_digest: "Optional[str]" = None,
+                                   arguments_digest: "Optional[str]" = None,
+                                   command_id: "Optional[str]" = None) -> str:
     """Server-owned, durable-FIRST ingest of a worker's approval request (D2 P1).
 
     THE producer boundary the one-RunStore design requires: the request is committed
@@ -2073,6 +2075,7 @@ def ingest_worker_approval_request(conn, run_id: str, *, approval_id: str,
     payload = {k: v for k, v in (
         ("effect_digest", effect_digest), ("action", action), ("mode", mode),
         ("authorization_id", authorization_id), ("checkpoint_digest", checkpoint_digest),
+        ("arguments_digest", arguments_digest), ("command_id", command_id),
     ) if v is not None}
     _dip.open_managed_approval(run_id, approval_id=approval_id, payload=payload or None)
     # kanban is a projection of the fenced RunStore — derive it from durable.
@@ -2650,6 +2653,24 @@ async def runtime_create_run(
                 raise HTTPException(
                     status_code=503, detail={"error": "run_authority_unavailable"}
                 )
+            # Item 2: bind the admitted signed-grant identity to the durable run so the
+            # worker capability + effect claim bind to the EXACT admitted grant. Recorded
+            # only on a fresh admit, from the VERIFIED envelope decoded from grant_header.
+            if _durable_admit is not None and _durable_admit.created and grant_header:
+                try:
+                    from youtab_runtime import managed_execution as _mx_env
+                    _env = _mx_env.decode_grant_header(grant_header)
+                    _dip.record_admission_binding(
+                        _durable_admit.row["run_id"],
+                        command_id=getattr(_env, "command_id", None),
+                        authorization_epoch=getattr(_env, "authorization_epoch", None),
+                    )
+                except Exception:  # noqa: BLE001
+                    # Fail SAFE: without the binding the cap lacks command_id and every
+                    # worker approval/effect call is refused (fail-closed direction). The
+                    # run is admitted; do not corrupt create. Log for triage.
+                    _log.warning("durable admission-binding record failed for %s",
+                                 _durable_admit.row.get("run_id"), exc_info=True)
 
     _ctx_kwargs = dict(
         title=title,
@@ -2996,8 +3017,16 @@ _WORKER_AUTH_STATUS = {
     "run_not_active": 409,
 }
 # The full effect-binding fields recorded on the durable request and compared on replay.
-_APPROVAL_BINDING_FIELDS = ("effect_digest", "action", "mode",
-                            "authorization_id", "checkpoint_digest")
+_APPROVAL_BINDING_FIELDS = ("effect_digest", "action", "mode", "authorization_id",
+                            "checkpoint_digest", "arguments_digest", "command_id")
+
+
+def _derive_approval_id(run_id: str, authorization_id: str, effect_digest: str) -> str:
+    """Canonical approval id (ratified ABI): 'ma-' + sha256(run_id NUL authorization_id
+    NUL effect_digest) over UTF-8. The server recomputes it to reject a spoofed id."""
+    import hashlib as _h
+    blob = f"{run_id}\x00{authorization_id}\x00{effect_digest}".encode("utf-8")
+    return "ma-" + _h.sha256(blob).hexdigest()
 
 
 def _worker_dip_or_error(run_id: str, request: "Request"):
@@ -3063,20 +3092,31 @@ async def worker_request_approval(
         v = body.get(k)
         return str(v).strip() if v is not None else None
 
+    authorization_id = _opt("authorization_id")
+    # command_id is SERVER-FILLED from the run's admitted-grant binding — never trusted
+    # from the worker body — so the binding is bound to the exact admitted grant.
+    command_id = _dip.admission_command_id(run_id)
     new_binding = {"effect_digest": effect_digest, "action": _opt("action"),
-                   "mode": _opt("mode"), "authorization_id": _opt("authorization_id"),
-                   "checkpoint_digest": _opt("checkpoint_digest")}
+                   "mode": _opt("mode"), "authorization_id": authorization_id,
+                   "checkpoint_digest": _opt("checkpoint_digest"),
+                   "arguments_digest": _opt("arguments_digest"), "command_id": command_id}
     if not approval_id:
         raise HTTPException(status_code=422, detail={"error": "approval_id_required"})
     if not effect_digest:
         raise HTTPException(status_code=422, detail={"error": "effect_digest_required"})
+    # Server amendment: recompute the canonical approval_id and reject a spoofed one.
+    if authorization_id and approval_id != _derive_approval_id(
+            run_id, authorization_id, effect_digest):
+        raise HTTPException(status_code=422, detail={"error": "approval_id_mismatch"})
 
     def _attest(status: str, extra: "Dict[str, Any]") -> "Dict[str, Any]":
         out = {"run_id": run_id, "approval_id": approval_id, "durable": True,
                "state": status, "effect_digest": effect_digest,
                "authorization_id": new_binding["authorization_id"],
                "action": new_binding["action"], "mode": new_binding["mode"],
-               "checkpoint_digest": new_binding["checkpoint_digest"]}
+               "checkpoint_digest": new_binding["checkpoint_digest"],
+               "arguments_digest": new_binding["arguments_digest"],
+               "command_id": new_binding["command_id"]}
         out.update(extra)
         return out
 
@@ -3105,6 +3145,8 @@ async def worker_request_approval(
                     mode=new_binding["mode"],
                     authorization_id=new_binding["authorization_id"],
                     checkpoint_digest=new_binding["checkpoint_digest"],
+                    arguments_digest=new_binding["arguments_digest"],
+                    command_id=new_binding["command_id"],
                 )
             return _attest("waiting_approval", {})
         except _dip.AuthorityLost:
@@ -3133,9 +3175,9 @@ async def worker_read_approval(
     no such request. The RunStore is the sole authority.
 
     A returned ``approved`` is NOT an effect fence: cancellation or authority loss
-    between this read and the effect is possible, so the worker MUST obtain a single-use
-    server-side effect claim and re-validate the signed grant + time before applying —
-    that claim endpoint is STAGED (R1 NO-GO)."""
+    between this read and the effect is possible, so the worker MUST obtain the single-use
+    server-side effect claim (POST .../effect-claim) and re-validate the signed grant +
+    time before applying."""
     _dip = _worker_dip_or_error(run_id, request)
 
     def _do() -> "Dict[str, Any]":
@@ -3152,7 +3194,7 @@ async def worker_read_approval(
         base = {"run_id": run_id, "approval_id": approval_id, "durable": True,
                 "run_state": run_state, "effect_digest": binding.get("effect_digest"),
                 "authorization_id": binding.get("authorization_id"),
-                "effect_fence": False}  # decision read is NOT a single-use effect fence
+                "effect_fence": False}  # decision read is NEVER permission to mutate
         if prior is not None:
             base.update({"status": _approval_status_for_decision(prior), "decision": prior})
             return base
@@ -3161,6 +3203,64 @@ async def worker_read_approval(
             return base
         base["status"] = "pending" if run_state == "waiting_approval" else "unknown"
         return base
+
+    return await run_in_threadpool(_do)
+
+
+@router.post("/api/runtime/worker/v1/runs/{run_id}/approval/{approval_id}/effect-claim")
+async def worker_claim_effect(
+    run_id: str,
+    approval_id: str,
+    request: "Request",
+):
+    """Worker-only SINGLE-USE effect fence (the effect-count 0/1 gate).
+
+    Auth: per-run capability re-checked against the live run. Body
+    ``{attempt_id, effect_digest, arguments_digest, authorization_id, checkpoint_digest}``.
+    A fenced RunStore CAS requires: an APPROVED decision for this approval, an ACTIVE run
+    (not terminal/cancelling/UNKNOWN), NO pending cancel, the FULL binding
+    (effect/arguments/authorization/command/checkpoint) equal to the durable request, and
+    NO prior claim. On success it emits one durable ``effect_claim`` and returns a
+    single-use, attempt-bound fence with a short expiry. A retry with the SAME
+    ``attempt_id`` is idempotent; a DIFFERENT attempt after one exists is
+    ``409 effect_already_claimed`` (never a second apply); any precondition failure is
+    ``409 effect_claim_refused``; authority loss/ambiguity is ``503`` (the run reconciles
+    UNKNOWN — no second apply). command_id is server-filled from the admitted grant."""
+    _dip = _worker_dip_or_error(run_id, request)
+    body = await _json_body(request)
+    attempt_id = str(body.get("attempt_id") or "").strip()
+    if not attempt_id:
+        raise HTTPException(status_code=422, detail={"error": "attempt_id_required"})
+
+    def _opt(k):
+        v = body.get(k)
+        return str(v).strip() if v is not None else None
+
+    binding = {"effect_digest": _opt("effect_digest"),
+               "arguments_digest": _opt("arguments_digest"),
+               "authorization_id": _opt("authorization_id"),
+               "checkpoint_digest": _opt("checkpoint_digest"),
+               "command_id": _dip.admission_command_id(run_id)}
+
+    def _do() -> "Dict[str, Any]":
+        try:
+            fence = _dip.claim_managed_effect(
+                run_id, approval_id=approval_id, attempt_id=attempt_id, binding=binding)
+        except _dip.AuthorityLost:
+            raise HTTPException(status_code=503,
+                                detail={"error": "run_authority_unavailable"})
+        except _dip.EffectAlreadyClaimed:
+            raise HTTPException(status_code=409, detail={"error": "effect_already_claimed"})
+        except _dip.EffectClaimRefused as exc:
+            raise HTTPException(status_code=409,
+                                detail={"error": "effect_claim_refused", "reason": str(exc)})
+        return {"run_id": run_id, "approval_id": approval_id, "durable": True,
+                "fence": {"attempt_id": fence["attempt_id"],
+                          "expires_at": fence["expires_at"]},
+                "effect_digest": binding["effect_digest"],
+                "authorization_id": binding["authorization_id"],
+                "command_id": binding["command_id"],
+                "replayed": bool(fence.get("replayed"))}
 
     return await run_in_threadpool(_do)
 

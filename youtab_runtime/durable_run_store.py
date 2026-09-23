@@ -63,6 +63,13 @@ TERMINAL_STATES = frozenset(
     {RunState.SUCCEEDED, RunState.FAILED, RunState.CANCELLED}
 )
 
+# States in which an effect claim is refused (the run is not safely active): terminal,
+# cancelling, and the terminal-uncertain UNKNOWN/RECONCILIATION_REQUIRED.
+EFFECT_CLAIM_INACTIVE_STATES = frozenset(
+    {RunState.SUCCEEDED, RunState.FAILED, RunState.CANCELLED, RunState.CANCELLING,
+     RunState.UNKNOWN, RunState.RECONCILIATION_REQUIRED}
+)
+
 # Validated transition table. Terminal states are immutable EXCEPT a permitted
 # reconciliation escape from UNKNOWN/RECONCILIATION_REQUIRED. A generic transport
 # timeout never appears here — it is not a transition at all.
@@ -117,6 +124,18 @@ class ApprovalAlreadyOpen(DurableRunError):
     replace the pending id or append another request — fails closed so the
     originally issued approval id stays authoritative. (An exact-id retry is
     idempotent and does NOT raise.)"""
+
+
+class EffectClaimRefused(DurableRunError):
+    """The single-use effect claim is refused fail-closed: the run is not active,
+    the approval is not APPROVED, the effect binding does not match, or a cancel is
+    pending. No effect fence is issued."""
+
+
+class EffectAlreadyClaimed(DurableRunError):
+    """The effect for this approval was already claimed by a DIFFERENT attempt. The
+    claim is single-use across attempts (idempotent only for the SAME attempt_id),
+    so a second attempt fails closed — never a second effect apply."""
 
 
 # --------------------------------------------------------------------------- #
@@ -216,6 +235,8 @@ class RunStore(Protocol):
                       **kw: Any) -> Dict[str, Any]: ...
     def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState,
                              kind: str, **kw: Any) -> Dict[str, Any]: ...
+    def claim_effect(self, run_id: str, *, approval_id: str, attempt_id: str,
+                     binding: Dict[str, Any], ttl_seconds: float = ...) -> Dict[str, Any]: ...
     def set_state(self, run_id: str, to_state: RunState, *, strict: bool = ..., **kw: Any) -> Optional[Dict[str, Any]]: ...
     def record_progress(self, run_id: str, **kw: Any) -> int: ...
     def append_event(self, run_id: str, kind: str, payload: Optional[dict] = ...) -> int: ...
@@ -770,6 +791,94 @@ class SqliteRunStore:
             return row
         except Exception:
             conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def claim_effect(self, run_id: str, *, approval_id: str, attempt_id: str,
+                     binding: Dict[str, Any], ttl_seconds: float = 60.0) -> Dict[str, Any]:
+        """Single-use, attempt-bound effect claim under the fence — the effect gate.
+
+        In ONE fenced ``BEGIN IMMEDIATE`` transaction, verify fail-closed that: the run
+        is ACTIVE (not terminal/cancelling/UNKNOWN) and has NO pending cancel; the
+        approval was APPROVED (an ``approval_approved`` event for ``approval_id``, no
+        ``approval_denied``); the FULL binding (effect/arguments/authorization/command/
+        checkpoint digests) equals the one recorded on the open ``approval_request``; and
+        there is NO prior ``effect_claim`` for this approval. Then append exactly one
+        ``effect_claim`` and return an attempt-bound fence with a short expiry.
+
+        Single-use: a claim with a DIFFERENT ``attempt_id`` after one exists raises
+        :class:`EffectAlreadyClaimed` (never a second apply); a retry with the SAME
+        ``attempt_id`` is idempotent and returns the existing fence. Any precondition
+        failure raises :class:`EffectClaimRefused`. Because the check-and-append is one
+        BEGIN IMMEDIATE transaction, exactly one attempt can ever win.
+        """
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            r = conn.execute(
+                "SELECT state, cancel_requested_at FROM runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if r is None:
+                raise DurableRunError(f"run not found: {run_id}")
+            if RunState(r[0]) in EFFECT_CLAIM_INACTIVE_STATES:
+                raise EffectClaimRefused(f"run {run_id} is not active (state={r[0]})")
+            if r[1] is not None:
+                raise EffectClaimRefused(f"run {run_id} has a pending cancel")
+            req = None
+            approved = False
+            prior_claim = None
+            for k, p in conn.execute(
+                "SELECT kind, payload FROM run_events WHERE run_id=? AND kind IN "
+                "('approval_request','approval_approved','approval_denied','effect_claim') "
+                "ORDER BY seq ASC", (run_id,),
+            ).fetchall():
+                try:
+                    d = json.loads(p or "{}")
+                except Exception:
+                    continue
+                if d.get("approval_id") != approval_id:
+                    continue
+                if k == "approval_request":
+                    req = d
+                elif k == "approval_approved":
+                    approved = True
+                elif k == "approval_denied":
+                    raise EffectClaimRefused(f"approval {approval_id} was denied")
+                elif k == "effect_claim":
+                    prior_claim = d
+            if req is None:
+                raise EffectClaimRefused(f"no open approval request for {approval_id}")
+            if not approved:
+                raise EffectClaimRefused(f"approval {approval_id} is not approved")
+            for f in ("effect_digest", "arguments_digest", "authorization_id",
+                      "command_id", "checkpoint_digest"):
+                if binding.get(f) != req.get(f):
+                    raise EffectClaimRefused(f"effect binding mismatch: {f}")
+            if prior_claim is not None:
+                if prior_claim.get("attempt_id") == attempt_id:
+                    conn.execute("COMMIT")  # idempotent for the same attempt
+                    return {"approval_id": approval_id, "attempt_id": attempt_id,
+                            "expires_at": prior_claim.get("expires_at"), "replayed": True}
+                raise EffectAlreadyClaimed(
+                    f"effect for approval {approval_id} already claimed")
+            now = time.time()
+            expires_at = now + float(ttl_seconds)
+            self._append_event_locked(conn, run_id, "effect_claim", {
+                "approval_id": approval_id, "attempt_id": attempt_id,
+                "expires_at": expires_at, "effect_digest": binding.get("effect_digest"),
+                "authorization_id": binding.get("authorization_id"),
+                "command_id": binding.get("command_id"),
+            })
+            conn.execute("COMMIT")
+            return {"approval_id": approval_id, "attempt_id": attempt_id,
+                    "expires_at": expires_at, "replayed": False}
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
             raise
         finally:
             conn.close()

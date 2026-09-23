@@ -63,6 +63,8 @@ from youtab_runtime.durable_ingress import (
 )
 from youtab_runtime.durable_run_store import (
     ApprovalAlreadyOpen,
+    EffectAlreadyClaimed,
+    EffectClaimRefused,
     InvalidTransition,
     RunState,
 )
@@ -141,6 +143,11 @@ __all__ = [
     "ApprovalScopeMismatch",
     "ApprovalAlreadyOpen",
     "InvalidTransition",
+    "EffectClaimRefused",
+    "EffectAlreadyClaimed",
+    "record_admission_binding",
+    "admission_command_id",
+    "claim_managed_effect",
     "CreatedRun",
 ]
 
@@ -471,6 +478,51 @@ def prior_approval_decision(run_id: str, approval_id: str) -> Optional[str]:
     return auth.prior_decision(run_id, approval_id)
 
 
+def record_admission_binding(run_id: str, *, command_id: Optional[str],
+                             authorization_epoch: Optional[int] = None,
+                             expires_at: Optional[float] = None) -> None:
+    """Record the admitted-grant binding (command_id + authority epoch/expiry) on the
+    durable run at create so the worker capability and effect claim bind to the exact
+    grant. No-op when durable ingress is off; raises :class:`AuthorityLost` when lost."""
+    if _lost_reason is not None:
+        raise AuthorityLost(f"durable ingress authority lost: {_lost_reason}")
+    auth = get_ingress_authority()
+    if auth is None:
+        return
+    auth.record_admission_binding(run_id, {
+        "command_id": command_id, "authorization_epoch": authorization_epoch,
+        "expires_at": expires_at,
+    })
+
+
+def admission_command_id(run_id: str) -> Optional[str]:
+    """The run's admitted-grant command_id (from the durable admission binding), or
+    None. A pure read used to server-fill the request binding and the effect claim."""
+    if _lost_reason is not None:
+        return None
+    auth = _authority
+    if auth is None or not auth.ready():
+        return None
+    try:
+        return (auth.admission_binding(run_id) or {}).get("command_id")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def claim_managed_effect(run_id: str, *, approval_id: str, attempt_id: str,
+                         binding: Dict[str, Any], ttl_seconds: float = 60.0) -> Dict[str, Any]:
+    """Single-use effect fence: durable, fenced CAS that yields at most one effect apply
+    (approve-decided + active + binding-matched + unclaimed). Raises
+    ``EffectClaimRefused`` / ``EffectAlreadyClaimed`` / ``AuthorityLost`` fail-closed."""
+    if _lost_reason is not None:
+        raise AuthorityLost(f"durable ingress authority lost: {_lost_reason}")
+    auth = get_ingress_authority()
+    if auth is None:
+        raise AuthorityLost("durable ingress authority not available")
+    return auth.claim_effect(run_id, approval_id=approval_id, attempt_id=attempt_id,
+                             binding=binding, ttl_seconds=ttl_seconds)
+
+
 def _worker_cap_secret() -> Optional[bytes]:
     """The per-run worker-capability signing key: a DISTINCT key derived from the
     runtime service secret via HMAC, so the capability is not the service secret and
@@ -531,10 +583,12 @@ def mint_worker_capability(run_id: str) -> Optional[str]:
         return None
     deadline = row.get("execution_deadline")
     exp = float(deadline) if deadline else time.time() + _CAP_DEFAULT_TTL
+    binding = auth.admission_binding(run_id) or {}
     payload = {
         "v": 2, "run_id": run_id, "tenant": row.get("tenant_id"),
         "principal": row.get("principal_id"), "workspace": row.get("workspace_id"),
         "epoch": int(epoch), "exp": exp,
+        "command_id": binding.get("command_id"),  # the admitted-grant command id (or None)
     }
     return _cap_sign(payload, key)
 
@@ -609,6 +663,10 @@ def authorize_worker_capability(run_id: str, cap: Optional[str]) -> Tuple[bool, 
         return (False, "unauthorized_worker")  # scope drift
     if int(claims.get("epoch") or -1) != int(epoch):
         return (False, "unauthorized_worker")  # superseded by a takeover (revoked)
+    # command_id must equal the run's admitted-grant command id (grant-identity binding)
+    binding = auth.admission_binding(run_id) or {}
+    if claims.get("command_id") != binding.get("command_id"):
+        return (False, "unauthorized_worker")
     state = row.get("state")
     if state in _CAP_INACTIVE_STATES:
         return (False, "run_not_active")  # cancelled/terminal/UNKNOWN -> revoked

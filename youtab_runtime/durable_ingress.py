@@ -276,6 +276,31 @@ class DurableRunStateAuthority:
                     return decision_kinds[ev["kind"]]
         return None
 
+    def record_admission_binding(self, run_id: str, payload: Dict[str, Any]) -> int:
+        """Append the run's admitted-grant binding (command_id, authorization_epoch,
+        expires_at) as a durable ``admission_binding`` event under the fence. Recorded
+        once at create so the worker capability + effect claim can bind to the exact
+        admitted grant. Idempotent by convention (create appends it exactly once)."""
+        self._require_authority()
+        return self._store.append_event(run_id, "admission_binding", payload)
+
+    def admission_binding(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """The run's admitted-grant binding payload, or None. A pure read."""
+        for ev in self._store.get_events(run_id):
+            if ev.get("kind") == "admission_binding":
+                return ev.get("payload") or {}
+        return None
+
+    def claim_effect(self, run_id: str, *, approval_id: str, attempt_id: str,
+                     binding: Dict[str, Any], ttl_seconds: float = 60.0) -> Dict[str, Any]:
+        """The single-use effect fence — thin pass-through to the store's fenced CAS
+        :meth:`DurableRunStore.claim_effect`. Raises ``EffectClaimRefused`` /
+        ``EffectAlreadyClaimed`` / ``AuthorityLost`` fail-closed."""
+        self._require_authority()
+        return self._store.claim_effect(run_id, approval_id=approval_id,
+                                        attempt_id=attempt_id, binding=binding,
+                                        ttl_seconds=ttl_seconds)
+
     def decide_approval(
         self,
         run_id: str,
