@@ -3385,6 +3385,28 @@ class TestValidateProviderCredential:
         assert response.json()["ok"] is False
         assert response.json()["models"] == []
 
+    def test_probe_validation_never_returns_exception_details(self, monkeypatch):
+        from youtab_agent_cli.provider_probe import InvalidProviderProbeURL, ProbeURLReason
+
+        def _reject(*_args):
+            raise InvalidProviderProbeURL(
+                "secret-key-and-internal-url", ProbeURLReason.PROHIBITED_ADDRESS
+            )
+
+        monkeypatch.setattr("youtab_agent_cli.provider_probe.probe_provider_models", _reject)
+        custom = self.client.post(
+            "/api/providers/custom-endpoints/validate",
+            json={"name": "local", "base_url": "https://example.test/v1", "model": "m"},
+        )
+        credential = self.client.post(
+            "/api/providers/validate",
+            json={"key": "OPENAI_BASE_URL", "value": "https://example.test/v1"},
+        )
+        for response in (custom, credential):
+            assert response.status_code == 200
+            assert response.json()["error_code"] == "prohibited_address"
+            assert "secret-key-and-internal-url" not in response.text
+
     def test_legacy_custom_probe_does_not_accept_redirect(self, monkeypatch):
         import httpx
 

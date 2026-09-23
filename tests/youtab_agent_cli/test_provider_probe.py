@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
+import youtab_agent_cli.provider_probe as probe
 from youtab_agent_cli.provider_probe import (
     InvalidProviderProbeURL,
     probe_provider_models,
@@ -104,7 +105,6 @@ def test_public_http_rejected_but_private_http_allowed(monkeypatch):
     with pytest.raises(InvalidProviderProbeURL, match="HTTPS"):
         probe_provider_models("http://models.example.test/v1", "sk-secret")
     _resolve(monkeypatch, "10.0.0.4")
-    import youtab_agent_cli.provider_probe as probe
 
     pinned, host, _sni = probe._probe_destination("http://internal.example.test/v1")
     assert str(pinned) == "http://10.0.0.4/v1/models"

@@ -4,13 +4,27 @@ from __future__ import annotations
 
 import ipaddress
 import socket
+from enum import Enum
 from urllib.parse import urlsplit
 
 import httpx
 
 
+class ProbeURLReason(Enum):
+    INVALID_URL = "invalid_url"
+    UNRESOLVABLE_HOST = "unresolvable_host"
+    PROHIBITED_ADDRESS = "prohibited_address"
+    HTTPS_REQUIRED = "https_required"
+
+
 class InvalidProviderProbeURL(ValueError):
     """The requested model endpoint is unsafe for a credential-bearing probe."""
+
+    def __init__(
+        self, message: str, reason: ProbeURLReason = ProbeURLReason.INVALID_URL
+    ):
+        super().__init__(message)
+        self.reason = reason
 
 
 def _probe_destination(base_url: str) -> tuple[httpx.URL, str, str]:
@@ -45,7 +59,9 @@ def _probe_destination(base_url: str) -> tuple[httpx.URL, str, str]:
             )
         }
     except (OSError, UnicodeError, ValueError) as exc:
-        raise InvalidProviderProbeURL("Endpoint host could not be resolved") from exc
+        raise InvalidProviderProbeURL(
+            "Endpoint host could not be resolved", ProbeURLReason.UNRESOLVABLE_HOST
+        ) from exc
     if not addresses or any(
         address.is_link_local
         or address.is_multicast
@@ -53,14 +69,19 @@ def _probe_destination(base_url: str) -> tuple[httpx.URL, str, str]:
         or (address.is_reserved and not address.is_loopback)
         for address in addresses
     ):
-        raise InvalidProviderProbeURL("Endpoint resolves to a prohibited address")
+        raise InvalidProviderProbeURL(
+            "Endpoint resolves to a prohibited address",
+            ProbeURLReason.PROHIBITED_ADDRESS,
+        )
     # Plain HTTP is useful for local model servers. Never send an API key to a
     # publicly routed endpoint over cleartext. DNS is pinned below, so a later
     # resolver change cannot turn a checked private address into another host.
     if parsed.scheme == "http" and any(
         not (address.is_private or address.is_loopback) for address in addresses
     ):
-        raise InvalidProviderProbeURL("Public model endpoints must use HTTPS")
+        raise InvalidProviderProbeURL(
+            "Public model endpoints must use HTTPS", ProbeURLReason.HTTPS_REQUIRED
+        )
 
     address = str(sorted(addresses, key=str)[0])
     host_header = f"[{hostname}]" if ":" in hostname else hostname
