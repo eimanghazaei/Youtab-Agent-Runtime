@@ -17,10 +17,14 @@ def inspect(directory: Path) -> int:
     try:
         for path in paths:
             document = json.loads(path.read_text(encoding="utf-8"))
+            if document.get("version") != "2.1.0":
+                raise ValueError(f"{path}: unsupported SARIF version")
             runs = document["runs"]
             if not isinstance(runs, list) or not runs:
                 raise ValueError(f"{path}: no analysis runs")
             for run in runs:
+                if ((run.get("tool") or {}).get("driver") or {}).get("name") != "CodeQL":
+                    raise ValueError(f"{path}: analysis is not from CodeQL")
                 results = run["results"]
                 if not isinstance(results, list):
                     raise ValueError(f"{path}: invalid results")
