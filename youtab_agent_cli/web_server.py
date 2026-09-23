@@ -279,6 +279,28 @@ async def _lifespan(app: "FastAPI"):
     # (secret unset) declares no requirement and passes.
     verify_service_route_ownership()
 
+    # D1 durable single-authority ingress (opt-in). Acquire the ONE fenced,
+    # owner-stamped run authority for this effectful process BEFORE serving, so the
+    # product ingress admits and idempotency-dedupes against a SINGLE durable
+    # RunStore. A competing instance cannot acquire the exclusive lock, so
+    # AuthorityHeld here aborts startup — fail closed, never a second writer. On a
+    # later authority loss the process fail-stops (mirrors the durable /v1/runs
+    # server's exit 75); it must never keep serving a route whose authority is gone.
+    # Disabled by default: a no-op unless YOUTAB_AGENT_DURABLE_INGRESS is set.
+    from youtab_runtime import durable_ingress_process as _durable_ingress
+
+    if _durable_ingress.ingress_enabled():
+        def _durable_authority_lost(reason: str) -> None:
+            _log.critical(
+                "durable ingress run authority LOST (%s); fail-stopping (exit 75)",
+                reason,
+            )
+            os._exit(75)
+
+        _durable_ingress.acquire_ingress_authority(on_lost=_durable_authority_lost)
+        _log.info("durable single-authority ingress acquired (ready=%s)",
+                  _durable_ingress.ingress_ready())
+
     try:
         yield
     finally:
@@ -288,6 +310,7 @@ async def _lifespan(app: "FastAPI"):
         await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
+        _durable_ingress.release_ingress_authority()
 
 
 def _get_event_state(app: "FastAPI"):

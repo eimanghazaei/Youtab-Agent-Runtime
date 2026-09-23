@@ -987,3 +987,21 @@ def test_durable_same_key_different_body_conflicts_409(managed_durable):
     r2 = _create(client, grant_header=h2, task="body two", idempotency="dur-k3")
     assert r2.status_code == 409, r2.text
     assert r2.json()["detail"]["error"] == "idempotency_key_conflict"
+
+
+def test_durable_health_reflects_run_authority(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, _ = managed_durable
+    # a create acquires the authority lazily; health then reports ready
+    _, header = _mint_grant()
+    assert _create(client, grant_header=header, idempotency="dur-h1").status_code == 200
+    h = client.get("/api/runtime/v1/health", headers=_headers())
+    assert h.status_code == 200, h.text
+    assert h.json()["ok"] is True and h.json()["run_authority_ready"] is True
+
+    # authority loss must flip health to not-ok (fail closed). The bare test app
+    # has no lifespan fail-stop hook wired, so this only latches the readiness flag.
+    dip._on_lost("simulated advisory-lock loss")
+    h2 = client.get("/api/runtime/v1/health", headers=_headers())
+    assert h2.json()["ok"] is False and h2.json()["run_authority_ready"] is False

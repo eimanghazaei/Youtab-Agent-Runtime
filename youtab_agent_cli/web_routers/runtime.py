@@ -1472,12 +1472,24 @@ def _engine_modalities(role: str) -> List[str]:
 @router.get("/api/runtime/v1/health")
 async def runtime_health(identity: RuntimeIdentity = Depends(require_service_identity)):
     from youtab_agent_cli import __version__ as engine_version
-    return {
+    body = {
         "ok": True,
         "engine_version": engine_version,
         "contract_version": CONTRACT_VERSION,
         "auth_required": True,
     }
+    # D1: when the durable single-authority ingress is enabled, readiness reflects
+    # the run authority. A lost/absent authority is NOT ok — never report healthy
+    # while the process can no longer durably admit (fail closed).
+    try:
+        from youtab_runtime import durable_ingress_process as _dip
+    except Exception:  # pragma: no cover - durable module must import
+        _dip = None
+    if _dip is not None and _dip.ingress_enabled():
+        ready = _dip.ingress_ready()
+        body["ok"] = bool(ready)
+        body["run_authority_ready"] = bool(ready)
+    return body
 
 
 def _redaction_enabled() -> bool:
