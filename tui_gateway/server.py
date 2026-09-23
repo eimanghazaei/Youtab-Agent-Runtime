@@ -9423,6 +9423,22 @@ def _run_prompt_submit(
                 )
                 payload["recoverable"] = True
             _retire_turn_marker(session, marker_key)
+            # Durability MUST happen-before the completion the client can observe:
+            # the desktop finalizes/goes idle on this ``message.complete`` frame,
+            # and a user who then closes the app promptly must not lose the turn.
+            # The in-turn persist inside ``run_conversation`` can lag the frame
+            # (esp. the first turn's session-row + attachment-message flush), so
+            # force a synchronous, idempotent commit of the session transcript
+            # here — the same marker-deduped ``_persist_session`` path the
+            # WS-disconnect flush uses (no duplicate rows, no second store). This
+            # closes the persist/acknowledgement-boundary race (prompt-close loss).
+            if agent is not None and hasattr(agent, "_persist_session"):
+                _durable_snapshot = getattr(agent, "_session_messages", None)
+                if _durable_snapshot:
+                    try:
+                        agent._persist_session(_durable_snapshot)
+                    except Exception:
+                        pass
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
