@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 import threading
+import time
+import uuid
 
 import pytest
 
@@ -342,19 +344,33 @@ def test_fenced_write_after_supersede_raises_authority_lost(tmp_path):
     reason="requires a real PostgreSQL (YOUTAB_TEST_PG_DSN); mirrors R4's live-probe harness",
 )
 def test_pg_authority_loss_fails_closed():
+    import psycopg
+
     dsn = os.environ["YOUTAB_TEST_PG_DSN"]
     a = DurableRunStateAuthority(backend="postgres", dsn=dsn)
-    a.acquire()
+    successor = DurableRunStateAuthority(backend="postgres", dsn=dsn)
+    losses = []
+    a.acquire(supervise_interval=0.1, on_lost=losses.append)
     try:
-        a.create_run(idempotency_key="pgk1", request_digest="d1", **_IDENT)
-        # Terminate the advisory-lock backend out of band, then a fenced write and
-        # readiness must fail closed (no false-durable terminal). Operators run the
-        # pg_terminate_backend probe; here we assert the post-loss contract only if
-        # a loss has been signalled.
-        if not a.ready():
-            with pytest.raises(AuthorityLost):
-                a.create_run(idempotency_key="pgk2", request_digest="d2", **_IDENT)
+        run_id = a.create_run(
+            idempotency_key=uuid.uuid4().hex, request_digest="d1", **_IDENT
+        ).row["run_id"]
+        lock_pid = a._authority.backend_pid
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            assert admin.execute(
+                "SELECT pg_terminate_backend(%s)", (lock_pid,)
+            ).fetchone()[0]
+        deadline = time.monotonic() + 5
+        while a.ready() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not a.ready(), "authority supervisor did not report real PG loss"
+        assert len(losses) == 1
+        with pytest.raises(AuthorityLost):
+            a.create_run(idempotency_key=uuid.uuid4().hex, request_digest="d2", **_IDENT)
+        assert run_id in successor.acquire(supervise_interval=0.1)
+        assert successor.get_run(run_id)["state"] == RunState.UNKNOWN.value
     finally:
+        successor.release()
         a.release()
 
 
