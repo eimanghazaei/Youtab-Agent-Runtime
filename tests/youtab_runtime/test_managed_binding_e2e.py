@@ -1005,3 +1005,247 @@ def test_durable_health_reflects_run_authority(managed_durable):
     dip._on_lost("simulated advisory-lock loss")
     h2 = client.get("/api/runtime/v1/health", headers=_headers())
     assert h2.json()["ok"] is False and h2.json()["run_authority_ready"] is False
+
+
+# ── D2: durable approval projection + product /approve routing ────────────────
+# The managed /approve route decides via the canonical fenced durable RunStore CAS;
+# a worker's kanban APPROVAL_REQUEST (transport) drives the SERVER to open the SAME
+# durable run's approval under that authority. Kanban stays a rebuildable transport
+# projection of the authoritative decision.
+from youtab_runtime import run_control as _rc_d2  # noqa: E402
+
+
+def _worker_requests_approval_db(db_path, run_id, approval_id):
+    """Simulate the worker signalling an approval need over the kanban transport."""
+    conn = kb.connect(db_path=db_path)
+    try:
+        with kb.write_txn(conn):
+            kb._append_event(conn, run_id, _rc_d2.APPROVAL_REQUEST,
+                             {"approval_id": approval_id})
+    finally:
+        conn.close()
+
+
+def _approve(client, run_id, approval_id, decision, *, grant_header,
+             tenant=TENANT, user=USER):
+    body = json.dumps({"approval_id": approval_id, "decision": decision}).encode()
+    path = f"/api/runtime/v1/runs/{run_id}/approve"
+    h = _headers(tenant, user)
+    h.update(_sign("POST", path, tenant, user, body, h["X-Youtab-Correlation-Id"]))
+    h["Content-Type"] = "application/json"
+    h[mx.GRANT_HEADER] = grant_header
+    return client.post(path, content=body, headers=h)
+
+
+def _durable_run(client):
+    _, gh = _mint_grant()
+    r = _create(client, grant_header=gh, idempotency=f"dur-appr-{uuid.uuid4().hex[:8]}")
+    assert r.status_code == 200, r.text
+    return r.json()["run_id"]
+
+
+def test_durable_route_approve_decides_via_cas(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    _, gh = _mint_grant()
+    r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
+    assert r.status_code == 200, r.text
+    assert r.json()["decision"] == "approve"
+    assert r.json()["state"] == "RUNNING"          # durable CAS outcome, not kanban
+    auth = dip.get_ingress_authority()
+    approved = [e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]
+    assert len(approved) == 1                        # single-use
+
+
+def test_durable_route_deny_is_terminal(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    _, gh = _mint_grant()
+    r = _approve(client, run_id, "ap1", "deny", grant_header=gh)
+    assert r.status_code == 200, r.text
+    assert r.json()["decision"] == "deny" and r.json()["state"] == "CANCELLED"
+    auth = dip.get_ingress_authority()
+    assert not auth.get_run(run_id).get("result_ref")
+
+
+def test_durable_route_duplicate_returns_original(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    _, g1 = _mint_grant()
+    assert _approve(client, run_id, "ap1", "approve", grant_header=g1).status_code == 200
+    _, g2 = _mint_grant()
+    r2 = _approve(client, run_id, "ap1", "approve", grant_header=g2)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["already_decided"] is True and r2.json()["decision"] == "approve"
+    auth = dip.get_ingress_authority()
+    approved = [e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]
+    assert len(approved) == 1                        # no second consume
+
+
+def test_durable_route_no_open_request_409(managed_durable):
+    client, _ = managed_durable
+    run_id = _durable_run(client)  # no worker request written
+    _, gh = _mint_grant()
+    r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
+    assert r.status_code == 409
+    assert r.json()["detail"]["error"] == "no_such_open_approval"
+
+
+def test_durable_route_wrong_id_409(managed_durable):
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "expected")
+    _, gh = _mint_grant()
+    r = _approve(client, run_id, "wrong", "approve", grant_header=gh)
+    assert r.status_code == 409
+    assert r.json()["detail"]["error"] == "no_such_open_approval"
+
+
+def test_durable_route_foreign_owner_404(managed_durable):
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    _, gh = _mint_grant(user="intruder")
+    r = _approve(client, run_id, "ap1", "approve", grant_header=gh, user="intruder")
+    assert r.status_code == 404  # ownership check refuses before the durable layer
+
+
+def test_durable_route_authority_loss_503(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    dip._on_lost("simulated advisory-lock loss")
+    _, gh = _mint_grant()
+    r = _approve(client, run_id, "ap1", "approve", grant_header=gh)
+    assert r.status_code == 503
+    assert r.json()["detail"]["error"] == "run_authority_unavailable"
+
+
+def test_flag_off_approve_uses_kanban_path(managed_deferred):
+    """With durable ingress OFF, /approve keeps the exact kanban decision path
+    (records the decision as a kanban event; no durable 'state' in the response)."""
+    client = managed_deferred
+    _, gh = _mint_grant()
+    r = _create(client, grant_header=gh)
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+    # worker requests approval over kanban (the only authority when the flag is off)
+    conn = kb.connect(board="runtime")
+    try:
+        with kb.write_txn(conn):
+            kb._append_event(conn, run_id, _rc_d2.APPROVAL_REQUEST, {"approval_id": "ap1"})
+    finally:
+        conn.close()
+    _, gh2 = _mint_grant()
+    r2 = _approve(client, run_id, "ap1", "approve", grant_header=gh2)
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["decision"] == "approve"
+    assert "state" not in r2.json()  # kanban path: no durable CAS state field
+
+
+# ── D2 gap 1: server-owned projection on a status/events READ (no click) ──────
+def _get_run(client, run_id, *, tenant=TENANT, user=USER):
+    return client.get(f"/api/runtime/v1/runs/{run_id}", headers=_headers(tenant, user))
+
+
+def _get_events(client, run_id, *, tenant=TENANT, user=USER):
+    return client.get(f"/api/runtime/v1/runs/{run_id}/events?after=0",
+                      headers=_headers(tenant, user))
+
+
+def test_status_read_projects_pending_approval(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    auth = dip.get_ingress_authority()
+    assert auth.get_run(run_id)["state"] == "QUEUED"  # stale before any observation
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    # a plain status read (no /approve, no click) projects the pending approval
+    assert _get_run(client, run_id).status_code == 200
+    row = auth.get_run(run_id)
+    assert row["state"] == "WAITING_APPROVAL"
+    assert (row["tenant_id"], row["workspace_id"], row["principal_id"]) == \
+        (TENANT, row["workspace_id"], f"{TENANT}:{USER}")
+
+
+def test_pending_approval_visible_after_restart_no_click(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    assert _get_run(client, run_id).status_code == 200
+    assert dip.get_ingress_authority().get_run(run_id)["state"] == "WAITING_APPROVAL"
+
+    dip.reset_for_tests()  # simulate a process restart / authority handoff
+    # a poll (events read) after restart re-projects the durable pending approval;
+    # the takeover first reconciles the prior nonterminal run to UNKNOWN.
+    assert _get_events(client, run_id).status_code == 200
+    assert dip.get_ingress_authority().get_run(run_id)["state"] == "WAITING_APPROVAL"
+
+
+# ── D2 gap 2: idempotent repair of the kanban decision projection on retry ────
+def test_decision_projection_repaired_on_retry(managed_durable, monkeypatch):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+
+    # Inject a ONE-TIME failure of the kanban decision projection write, AFTER the
+    # durable decision has committed, to model a crash between the two writes.
+    orig_append = kb._append_event
+    state = {"failed": False}
+
+    def _flaky_append(conn, task_id, kind, payload=None):
+        if kind == _rc_d2.APPROVAL_DECISION and not state["failed"]:
+            state["failed"] = True
+            raise RuntimeError("injected projection-write failure")
+        return orig_append(conn, task_id, kind, payload)
+
+    monkeypatch.setattr(kb, "_append_event", _flaky_append)
+
+    _, g1 = _mint_grant()
+    with pytest.raises(RuntimeError):
+        _approve(client, run_id, "ap1", "approve", grant_header=g1)
+
+    # durable decision is committed even though the transport projection failed
+    auth = dip.get_ingress_authority()
+    approved = [e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]
+    assert len(approved) == 1
+    # kanban transport currently MISSING the decision (the failed write rolled back)
+    conn = kb.connect(db_path=db_path)
+    try:
+        kdec = [e for e in kb.list_events(conn, run_id)
+                if e.kind == _rc_d2.APPROVAL_DECISION]
+    finally:
+        conn.close()
+    assert kdec == []
+
+    # retry: durable is the replay source; the projection is repaired before ack,
+    # with exactly ONE transport decision and NO second durable decision.
+    _, g2 = _mint_grant()
+    r = _approve(client, run_id, "ap1", "approve", grant_header=g2)
+    assert r.status_code == 200, r.text
+    assert r.json()["already_decided"] is True and r.json()["decision"] == "approve"
+    approved2 = [e for e in auth.get_events(run_id) if e["kind"] == "approval_approved"]
+    assert len(approved2) == 1  # still exactly one durable decision
+    conn = kb.connect(db_path=db_path)
+    try:
+        kdec2 = [e for e in kb.list_events(conn, run_id)
+                 if e.kind == _rc_d2.APPROVAL_DECISION]
+    finally:
+        conn.close()
+    assert len(kdec2) == 1  # exactly one transport decision after repair

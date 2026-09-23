@@ -51,12 +51,18 @@ import threading
 from typing import Any, Callable, Dict, Optional
 
 from youtab_runtime.durable_ingress import (
+    ApprovalNotOpen,
+    ApprovalScopeMismatch,
     AuthorityLost,
     CreatedRun,
     DurableRunStateAuthority,
     IdempotencyConflict,
 )
-from youtab_runtime.durable_run_store import RunState
+from youtab_runtime.durable_run_store import (
+    ApprovalAlreadyOpen,
+    InvalidTransition,
+    RunState,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +88,17 @@ __all__ = [
     "release_ingress_authority",
     "admit_managed_run",
     "request_digest_for",
+    "open_managed_approval",
+    "decide_managed_approval",
+    "prior_approval_decision",
+    "reconcile_pending_approval",
     "reset_for_tests",
     "AuthorityLost",
     "IdempotencyConflict",
+    "ApprovalNotOpen",
+    "ApprovalScopeMismatch",
+    "ApprovalAlreadyOpen",
+    "InvalidTransition",
     "CreatedRun",
 ]
 
@@ -247,6 +261,101 @@ def admit_managed_run(
         execution_deadline=execution_deadline,
         initial_state=RunState.QUEUED,
     )
+
+
+def open_managed_approval(run_id: str, *, approval_id: str) -> Dict[str, Any]:
+    """Project a worker's APPROVAL_REQUEST into a durable open approval (D2).
+
+    The worker signals an approval need over the kanban transport; the SERVER —
+    the sole holder of the run authority — opens it durably here: ensure the run is
+    RUNNING, then ``open_approval`` (RUNNING -> WAITING_APPROVAL, id-bound, and
+    idempotent for an exact-id retry). The worker never writes the durable store;
+    kanban stays a rebuildable transport projection. Raises :class:`AuthorityLost`
+    when the authority is absent/lost (fail closed).
+    """
+    if _lost_reason is not None:
+        raise AuthorityLost(f"durable ingress authority lost: {_lost_reason}")
+    auth = get_ingress_authority()
+    if auth is None:
+        raise AuthorityLost("durable ingress authority not available")
+    auth.ensure_running(run_id)
+    return auth.open_approval(run_id, approval_id=approval_id)
+
+
+def reconcile_pending_approval(run_id: str, *, pending_approval_id: Optional[str]) -> None:
+    """Server-owned projection of a worker's PENDING approval request into durable
+    state (D2 gap 1), invoked when the server OBSERVES the request over the kanban
+    transport (a status/events read), BEFORE any human decision.
+
+    The worker never writes the durable store; the SERVER — the sole authority
+    holder — opens the SAME durable run's approval here so the durable run reflects
+    WAITING_APPROVAL (id-bound, scoped) rather than a stale RUNNING, and that is true
+    after a restart WITHOUT a user click (the next poll re-projects). Bounded and
+    idempotent: a no-op when there is nothing to open, when the approval is already
+    decided durably, or when the run is already awaiting it; transient
+    not-open/already-open/invalid-transition races are swallowed (the authoritative
+    ``/approve`` path re-opens/decides). Never re-opens a decided approval. On a lost
+    authority this is a silent no-op — a read must not write, and ``/approve`` remains
+    the fail-closed authority.
+    """
+    if pending_approval_id is None or _lost_reason is not None:
+        return
+    auth = get_ingress_authority()
+    if auth is None:
+        return
+    try:
+        if auth.prior_decision(run_id, pending_approval_id) is not None:
+            return  # already decided durably — nothing to open
+        row = auth.get_run(run_id)
+        if row is None or row.get("state") == RunState.WAITING_APPROVAL.value:
+            return  # unknown run, or already awaiting approval
+        auth.ensure_running(run_id)
+        auth.open_approval(run_id, approval_id=pending_approval_id)
+    except (ApprovalNotOpen, ApprovalAlreadyOpen, InvalidTransition, AuthorityLost):
+        # Bounded/idempotent projection; the authoritative decision path re-checks.
+        return
+
+
+def decide_managed_approval(
+    run_id: str,
+    *,
+    approval_id: str,
+    decision: str,
+    tenant_id: str,
+    workspace_id: str,
+    principal_id: str,
+) -> Dict[str, Any]:
+    """Decide an OPEN approval via the canonical fenced durable CAS (D2).
+
+    Thin pass-through to the adapter's atomic, approval-id-bound, single-use
+    ``decide_approval`` (approve -> once, deny -> deny; scope-checked; fail closed).
+    Raises :class:`AuthorityLost` when the authority is absent/lost.
+    """
+    if _lost_reason is not None:
+        raise AuthorityLost(f"durable ingress authority lost: {_lost_reason}")
+    auth = get_ingress_authority()
+    if auth is None:
+        raise AuthorityLost("durable ingress authority not available")
+    return auth.decide_approval(
+        run_id,
+        approval_id=approval_id,
+        decision=decision,
+        tenant_id=tenant_id,
+        workspace_id=workspace_id,
+        principal_id=principal_id,
+    )
+
+
+def prior_approval_decision(run_id: str, approval_id: str) -> Optional[str]:
+    """Authoritative durable replay lookup: the prior decision for ``approval_id``
+    (``approve``/``deny``) or ``None``. Lets the product route return the ORIGINAL
+    decision on a duplicate instead of re-consuming the single-use CAS."""
+    if _lost_reason is not None:
+        raise AuthorityLost(f"durable ingress authority lost: {_lost_reason}")
+    auth = get_ingress_authority()
+    if auth is None:
+        raise AuthorityLost("durable ingress authority not available")
+    return auth.prior_decision(run_id, approval_id)
 
 
 def reset_for_tests() -> None:

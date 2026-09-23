@@ -33,8 +33,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 from youtab_runtime.durable_run_authority import AuthorityLost
 from youtab_runtime.durable_run_store import (
+    TERMINAL_STATES,
     ApprovalNotOpen,
     IdempotencyConflict,
+    InvalidTransition,
     RunIdentity,
     RunState,
     create_run_store,
@@ -211,6 +213,56 @@ class DurableRunStateAuthority:
         """
         self._require_authority()
         return self._store.open_approval(run_id, approval_id=approval_id)
+
+    def ensure_running(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Project a pre-decision run to RUNNING under the authority (idempotent).
+
+        A worker requesting approval implies the run is executing, but the durable
+        run is admitted QUEUED. Advance it along the validated path
+        ``QUEUED -> CLAIMED -> RUNNING`` so an ``open_approval`` (whose from-state CAS
+        requires RUNNING) can proceed. Also reconciles ``UNKNOWN -> RUNNING`` for a
+        run whose prior owner died while an approval was pending: the gated effect has
+        NOT executed (it is exactly what is awaiting approval) and the decision stays
+        a single-use CAS, so re-awaiting after a takeover is safe and never
+        re-executes an effect — this is what makes the durable pending approval
+        visible after a restart WITHOUT a user click. Idempotent and race-tolerant:
+        an already-RUNNING/awaiting/terminal run is left as-is and a lost CAS is
+        swallowed. Never a second authority: these are the ONE store's fenced writes.
+        """
+        self._require_authority()
+        row = self._store.get_run(run_id)
+        if row is None:
+            return None
+        st = RunState(row["state"])
+        if st in TERMINAL_STATES or st in (RunState.RUNNING, RunState.WAITING_APPROVAL):
+            return row  # already running/awaiting or terminal — nothing to project
+        if st == RunState.QUEUED:
+            try:
+                self._store.set_state(run_id, RunState.CLAIMED, kind="claimed", strict=True)
+            except InvalidTransition:
+                pass
+            row = self._store.get_run(run_id)
+            st = RunState(row["state"]) if row else st
+        if st in (RunState.CLAIMED, RunState.UNKNOWN):
+            try:
+                self._store.set_state(run_id, RunState.RUNNING, kind="running", strict=True)
+            except InvalidTransition:
+                pass
+        return self._store.get_run(run_id)
+
+    def prior_decision(self, run_id: str, approval_id: str) -> Optional[str]:
+        """Return the DURABLE prior decision for ``approval_id`` (``approve``/``deny``)
+        or ``None``. The durable store is the authoritative replay source: a decided
+        approval leaves an ``approval_approved``/``approval_denied`` event bound to
+        the id, so a duplicate product request returns the ORIGINAL decision instead
+        of re-consuming (or being refused by) the single-use CAS."""
+        self._require_authority()
+        decision_kinds = {"approval_approved": "approve", "approval_denied": "deny"}
+        for ev in self._store.get_events(run_id):
+            if ev.get("kind") in decision_kinds:
+                if (ev.get("payload") or {}).get("approval_id") == approval_id:
+                    return decision_kinds[ev["kind"]]
+        return None
 
     def decide_approval(
         self,

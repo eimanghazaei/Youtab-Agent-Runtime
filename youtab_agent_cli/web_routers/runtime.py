@@ -1941,6 +1941,69 @@ async def runtime_agent_detail(
     raise HTTPException(status_code=404, detail={"error": "agent_not_found"})
 
 
+# ── D2 durable approval projection helpers (opt-in, managed-only) ─────────────
+def _open_approval_id(events: "List[kb.Event]") -> "Optional[str]":
+    """The approval_id of the latest kanban APPROVAL_REQUEST that has no matching
+    APPROVAL_DECISION — the pending human approval carried by the transport."""
+    decided = set()
+    requested: "List[str]" = []
+    for e in events:
+        aid = (e.payload or {}).get("approval_id")
+        if not aid:
+            continue
+        if e.kind == _rc.APPROVAL_DECISION:
+            decided.add(aid)
+        elif e.kind == _rc.APPROVAL_REQUEST:
+            requested.append(aid)
+    for aid in reversed(requested):
+        if aid not in decided:
+            return aid
+    return None
+
+
+def _durable_ingress_active() -> "Optional[Any]":
+    """The durable_ingress_process module when durable ingress is enabled AND the
+    runtime is in managed trust mode, else None (feature + managed-only boundary)."""
+    try:
+        from youtab_runtime import managed_execution as _mx
+        if _mx.current_trust_mode() is not _mx.TrustMode.MANAGED:
+            return None
+        from youtab_runtime import durable_ingress_process as _dip
+    except Exception:  # pragma: no cover - durable module must import
+        return None
+    return _dip if _dip.ingress_enabled() else None
+
+
+def _maybe_project_durable_approval(run_id: str, events: "List[kb.Event]") -> None:
+    """Bounded server-owned projection (D2 gap 1): when a poll OBSERVES a worker's
+    pending APPROVAL_REQUEST, open the SAME durable run's approval so durable state
+    reflects WAITING_APPROVAL before any human decision (and after a restart, on the
+    next poll, without a click). Idempotent; never breaks the read."""
+    try:
+        _dip = _durable_ingress_active()
+        if _dip is None:
+            return
+        _dip.reconcile_pending_approval(
+            run_id, pending_approval_id=_open_approval_id(events)
+        )
+    except Exception:  # a projection must never break a status/events read
+        pass
+
+
+def _ensure_kanban_decision(conn, task_id, approval_id, decision, by, events) -> None:
+    """Idempotently (re)build the kanban APPROVAL_DECISION transport projection of an
+    authoritative durable decision (D2 gap 2): append the transport event only if it
+    is missing, so a retry after a crash between the durable commit and this write
+    repairs the projection without ever recording a second decision."""
+    already = any(
+        e.kind == _rc.APPROVAL_DECISION and (e.payload or {}).get("approval_id") == approval_id
+        for e in events
+    )
+    if not already:
+        kb._append_event(conn, task_id, _rc.APPROVAL_DECISION,
+                         {"approval_id": approval_id, "decision": decision, "by": by})
+
+
 @router.get("/api/runtime/v1/runs")
 async def runtime_list_runs(
     identity: RuntimeIdentity = Depends(require_service_identity),
@@ -1992,6 +2055,8 @@ async def runtime_run_detail(
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
             task = _load_owned_task(conn, run_id, identity)
             events = kb.list_events(conn, task.id)
+            # D2 gap 1: project a pending worker approval request into durable state.
+            _maybe_project_durable_approval(run_id, events)
             return _run_detail(conn, task, cancelled=_is_cancelled(events))
 
     return await run_in_threadpool(_detail)
@@ -2018,6 +2083,8 @@ async def runtime_run_events(
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
             task = _load_owned_task(conn, run_id, identity)
             all_events = kb.list_events(conn, task.id)
+            # D2 gap 1: project a pending worker approval request into durable state.
+            _maybe_project_durable_approval(run_id, all_events)
             cancelled = _is_cancelled(all_events)
             fresh = [e for e in all_events if e.id > after][:limit]
             cursor = fresh[-1].id if fresh else after
@@ -2701,10 +2768,83 @@ async def runtime_approve_run(
         raise HTTPException(status_code=422, detail={"error": "approval_id_required"})
     if decision not in (_rc.APPROVE, _rc.DENY):
         raise HTTPException(status_code=422, detail={"error": "decision_must_be_approve_or_deny"})
+
+    # D2 durable approval routing (opt-in). When enabled and managed, the decision
+    # is made by the canonical fenced durable RunStore CAS — the SOLE approval
+    # authority — and kanban records the decision only as a rebuildable transport
+    # projection. The worker's kanban APPROVAL_REQUEST (transport) drives the SERVER
+    # to open the SAME durable run's approval under that authority.
+    _dip = _durable_ingress_active()
+
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
         with kb.write_txn(conn):
             task = _load_owned_task(conn, run_id, identity)
             events = kb.list_events(conn, task.id)
+            if _dip is not None:
+                # Authoritative durable replay: a duplicate returns the ORIGINAL
+                # decision (never a second consume / CAS refusal surfaced as error).
+                try:
+                    _prior = _dip.prior_approval_decision(run_id, approval_id)
+                except _dip.AuthorityLost:
+                    raise HTTPException(status_code=503,
+                                        detail={"error": "run_authority_unavailable"})
+                if _prior is not None:
+                    # Repair the transport projection if a prior decision's kanban
+                    # write was lost (crash between the durable commit and the
+                    # projection append) — durable is the replay source, and we
+                    # rebuild kanban BEFORE acknowledging. No second durable decision.
+                    _ensure_kanban_decision(conn, task.id, approval_id, _prior,
+                                            identity.user, events)
+                    return {"run_id": run_id, "approval_id": approval_id,
+                            "already_decided": True, "decision": _prior}
+                # A worker must have requested THIS approval over the transport.
+                open_a = any(
+                    e.kind == _rc.APPROVAL_REQUEST
+                    and (e.payload or {}).get("approval_id") == approval_id
+                    for e in events
+                )
+                if not open_a:
+                    raise HTTPException(status_code=409,
+                                        detail={"error": "no_such_open_approval"})
+                # Project the worker's request into a durable open approval, then
+                # decide via the id-bound, single-use, scope-checked fenced CAS.
+                try:
+                    _dip.open_managed_approval(run_id, approval_id=approval_id)
+                    _newrow = _dip.decide_managed_approval(
+                        run_id, approval_id=approval_id, decision=decision,
+                        tenant_id=identity.tenant, workspace_id=identity.workspace,
+                        principal_id=f"{identity.tenant}:{identity.user}",
+                    )
+                except _dip.ApprovalScopeMismatch:
+                    raise HTTPException(status_code=403,
+                                        detail={"error": "approval_scope_mismatch"})
+                except _dip.InvalidTransition:
+                    # The durable run is no longer in an approvable state (terminal
+                    # or otherwise past RUNNING) for a NOT-yet-decided approval id.
+                    raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+                except (_dip.ApprovalNotOpen, _dip.ApprovalAlreadyOpen):
+                    # Lost a concurrent race, or a stale/wrong id: the durable store
+                    # is authoritative — return the original decision if one landed,
+                    # else refuse (never a double decision).
+                    _prior = _dip.prior_approval_decision(run_id, approval_id)
+                    if _prior is not None:
+                        _ensure_kanban_decision(conn, task.id, approval_id, _prior,
+                                                identity.user, events)
+                        return {"run_id": run_id, "approval_id": approval_id,
+                                "already_decided": True, "decision": _prior}
+                    raise HTTPException(status_code=409,
+                                        detail={"error": "no_such_open_approval"})
+                except _dip.AuthorityLost:
+                    raise HTTPException(status_code=503,
+                                        detail={"error": "run_authority_unavailable"})
+                # Kanban transport projection of the authoritative decision, written
+                # idempotently (a retry rebuilds it without recording a 2nd decision).
+                _ensure_kanban_decision(conn, task.id, approval_id, decision,
+                                        identity.user, events)
+                return {"run_id": run_id, "approval_id": approval_id,
+                        "decision": decision, "state": _newrow.get("state")}
+
+            # -- non-durable path (unchanged): kanban is the decision record ------
             # Idempotent replay BEFORE the terminal guard (same rationale as
             # /answer): the worker may consume the decision and drive the run
             # terminal between the original decision and a retried duplicate; a
