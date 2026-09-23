@@ -13,20 +13,25 @@ export function getNestedValue(obj: Record<string, unknown>, path: string): unkn
 export function setNestedValue(obj: Record<string, unknown>, path: string, value: unknown): Record<string, unknown> {
   const clone = structuredClone(obj);
   const parts = path.split(".");
-  if (parts.some((part) => part === "__proto__" || part === "prototype" || part === "constructor")) {
-    throw new Error("Unsafe config path");
-  }
   let cur: Record<string, unknown> = clone;
   for (let i = 0; i < parts.length - 1; i++) {
-    if (
-      !Object.prototype.hasOwnProperty.call(cur, parts[i]) ||
-      cur[parts[i]] == null ||
-      typeof cur[parts[i]] !== "object"
-    ) {
-      cur[parts[i]] = {};
+    const part = parts[i];
+    if (part === "__proto__" || part === "prototype" || part === "constructor") {
+      throw new Error("Unsafe config path");
     }
-    cur = cur[parts[i]] as Record<string, unknown>;
+    if (
+      !Object.prototype.hasOwnProperty.call(cur, part) ||
+      cur[part] == null ||
+      typeof cur[part] !== "object"
+    ) {
+      cur[part] = {};
+    }
+    cur = cur[part] as Record<string, unknown>;
   }
-  cur[parts[parts.length - 1]] = value;
+  const leaf = parts[parts.length - 1];
+  if (leaf === "__proto__" || leaf === "prototype" || leaf === "constructor") {
+    throw new Error("Unsafe config path");
+  }
+  cur[leaf] = value;
   return clone;
 }
