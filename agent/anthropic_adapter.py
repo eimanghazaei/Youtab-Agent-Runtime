@@ -441,8 +441,7 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False  # No base_url = direct Anthropic API
-    normalized = normalized.rstrip("/").lower()
-    if "anthropic.com" in normalized:
+    if base_url_host_matches(normalized, "anthropic.com"):
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
 
@@ -595,7 +594,7 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     normalized = normalized.rstrip("/").lower()
     return (
         normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
-        or "azure.com" in normalized
+        or base_url_host_matches(normalized, "azure.com")
         # Palantir Foundry LLM proxy (<org>.palantirfoundry.com/api/v2/llm/proxy/anthropic)
         # rejects x-api-key with 401 and requires Authorization: Bearer.
         # Hostname match (not substring) so e.g. evil.com/palantirfoundry
@@ -609,7 +608,7 @@ def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:
     normalized = _normalize_base_url_text(base_url).lower()
     if not normalized:
         return False
-    return "azure.com" in normalized
+    return base_url_host_matches(normalized, "azure.com")
 
 
 def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
@@ -635,19 +634,23 @@ def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
     serving Anthropic's ``/anthropic`` route. Used to opt-in those hosts
     to the ``api-version`` query-param plumbing required by Azure.
 
-    Intentionally avoids a finite allow-list of TLD suffixes so it works
-    across sovereign / private Azure clouds.
+    Azure public and sovereign cloud DNS suffixes are listed explicitly so
+    attacker-controlled lookalike hosts cannot opt into Azure handling.
     """
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False
     parsed = urlparse(normalized)
-    host = (parsed.hostname or "").lower().rstrip(".")
     path = (parsed.path or "").lower()
-    host_padded = f".{host}."
-    is_foundry_host = ".services.ai.azure." in host_padded
-    is_legacy_azoai_host = ".openai.azure." in host_padded
-    return (is_foundry_host or is_legacy_azoai_host) and "/anthropic" in path
+    azure_suffixes = ("azure.com", "azure.us", "azure.cn", "azure.de")
+    is_azure_host = any(
+        base_url_host_matches(normalized, f"services.ai.{suffix}")
+        or base_url_host_matches(normalized, f"openai.{suffix}")
+        for suffix in azure_suffixes
+    )
+    return is_azure_host and any(
+        segment == "anthropic" for segment in path.split("/")
+    )
 
 
 def _common_betas_for_base_url(
