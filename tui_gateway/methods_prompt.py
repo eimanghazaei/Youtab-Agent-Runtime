@@ -216,8 +216,8 @@ def _(rid, params: dict) -> dict:
         )
         if busy_response is not None:
             return busy_response
-        # The active turn changed while the busy handler was outside the lock.
-        # Reclassify before acknowledging a correction or claiming a new turn.
+        # The busy handler returns None only when no correction was accepted.
+        # Reclassify an idle/changed turn before claiming a new one.
 
     # The acceptance gate stays held until this prompt is durably accepted
     # or refused; _end_acceptance releases it on every exit path.

@@ -13,6 +13,8 @@ import threading
 import time
 import types
 
+import pytest
+
 import tools.async_delegation as ad
 from tui_gateway import server
 
@@ -113,7 +115,7 @@ def test_busy_steer_mode_injects_when_accepted(monkeypatch):
     assert session.get("queued_prompt") is None
 
 
-def test_busy_steer_does_not_ack_a_turn_that_ended_during_injection(monkeypatch):
+def test_busy_steer_acks_accepted_text_when_turn_ends_during_injection(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "steer")
     session = _session(running=True)
     old_turn = {"user": "A"}
@@ -125,11 +127,11 @@ def test_busy_steer_does_not_ack_a_turn_that_ended_during_injection(monkeypatch)
         return True
 
     session["agent"] = types.SimpleNamespace(steer=_steer)
-    assert server._handle_busy_submit("r1", "sid", session, "B", "ws-1") is None
+    assert server._handle_busy_submit("r1", "sid", session, "B", "ws-1")["result"] == {"status": "steered"}
     assert session.get("queued_prompt") is None
 
 
-def test_busy_redirect_does_not_ack_a_replaced_turn(monkeypatch):
+def test_busy_redirect_acks_accepted_text_when_turn_is_replaced(monkeypatch):
     monkeypatch.setattr(server, "_load_busy_input_mode", lambda: "interrupt")
     session = _session(running=True)
     old_turn = {"user": "A"}
@@ -143,8 +145,52 @@ def test_busy_redirect_does_not_ack_a_replaced_turn(monkeypatch):
     session["agent"] = types.SimpleNamespace(
         _supports_active_turn_redirect=True, redirect=_redirect
     )
-    assert server._handle_busy_submit("r1", "sid", session, "B", "ws-1") is None
+    assert server._handle_busy_submit("r1", "sid", session, "B", "ws-1")["result"] == {"status": "redirected"}
     assert old_turn.get("corrections") is None
+    assert session.get("queued_prompt") is None
+
+
+@pytest.mark.parametrize("mode,method,finish", [
+    ("steer", "steer", True),
+    ("interrupt", "redirect", False),
+])
+def test_prompt_submit_never_reclaims_an_accepted_busy_correction(
+    monkeypatch, mode, method, finish
+):
+    """Acceptance by the old agent wins over a later turn-state change."""
+    monkeypatch.setattr(server, "_load_busy_input_mode", lambda: mode)
+    session = _session(running=True)
+    old_turn = {"user": "A"}
+    session["inflight_turn"] = old_turn
+    accepted = []
+
+    def _accept(text):
+        accepted.append(text)
+        with session["history_lock"]:
+            if finish:
+                session["running"] = False
+            else:
+                session["inflight_turn"] = {"user": "C"}
+        return True
+
+    agent = types.SimpleNamespace(_supports_active_turn_redirect=True)
+    setattr(agent, method, _accept)
+    session["agent"] = agent
+    monkeypatch.setattr(
+        server, "_record_accepted_turn",
+        lambda *_args: pytest.fail("accepted correction was submitted as a new turn"),
+    )
+    server._sessions["sid-busy-race"] = session
+    try:
+        response = server.handle_request({
+            "id": "r1", "method": "prompt.submit",
+            "params": {"session_id": "sid-busy-race", "text": "B"},
+        })
+    finally:
+        server._sessions.pop("sid-busy-race", None)
+
+    assert response["result"] == {"status": "steered" if finish else "redirected"}
+    assert accepted == ["B"]
     assert session.get("queued_prompt") is None
 
 

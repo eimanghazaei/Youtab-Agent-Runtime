@@ -7378,15 +7378,17 @@ def _handle_busy_submit(
     plain_text = _coerce_message_text(text).strip() if text_only else ""
     if mode == "steer" and text_only and plain_text and agent is not None and hasattr(agent, "steer"):
         try:
-            if agent.steer(plain_text):
-                with session["history_lock"]:
-                    _wait_for_acceptance_locked(session)
-                    if not session.get("running") or session.get("inflight_turn") is not busy_turn:
-                        return None
-                    session["last_active"] = time.time()
-                return _ok(rid, {"status": "steered"})
+            steered = agent.steer(plain_text)
         except Exception:
-            pass  # fall through to queue
+            steered = False
+        if steered:
+            with session["history_lock"]:
+                _wait_for_acceptance_locked(session)
+                if session.get("running") and session.get("inflight_turn") is busy_turn:
+                    session["last_active"] = time.time()
+            # steer() accepted the text. The turn may have completed while
+            # the call was outside the lock; retrying would submit it twice.
+            return _ok(rid, {"status": "steered"})
     # Text-only corrections redirect the live turn in place when the runtime
     # supports it; media/attachment payloads and older agents fall through to
     # the proven interrupt + queue path below.
@@ -7399,16 +7401,18 @@ def _handle_busy_submit(
         and hasattr(agent, "redirect")
     ):
         try:
-            if agent.redirect(plain_text):
-                with session["history_lock"]:
-                    _wait_for_acceptance_locked(session)
-                    if not session.get("running") or session.get("inflight_turn") is not busy_turn:
-                        return None
+            redirected = agent.redirect(plain_text)
+        except Exception:
+            redirected = False
+        if redirected:
+            with session["history_lock"]:
+                _wait_for_acceptance_locked(session)
+                if session.get("running") and session.get("inflight_turn") is busy_turn:
                     _record_inflight_correction(session, plain_text)
                     session["last_active"] = time.time()
-                return _ok(rid, {"status": "redirected"})
-        except Exception:
-            pass  # preserve the proven interrupt + queue fallback below
+            # A successful redirect is already accepted by the agent even
+            # if this turn finished or another turn replaced its marker.
+            return _ok(rid, {"status": "redirected"})
     # Queue before asking the live turn to stop. In particular, never call a
     # provider or compute-host method while holding history_lock: an interrupt
     # can wait behind the very operation it is trying to cancel.
