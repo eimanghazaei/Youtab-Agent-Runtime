@@ -6950,6 +6950,37 @@ def _session_home(session: dict) -> Path:
     return Path(profile_home) if profile_home else Path(_youtab_home)
 
 
+def _marker_retention_secs() -> float | None:
+    """How long a marker stays recoverable: the auto-continue window if on."""
+    enabled, freshness_secs, _max_attempts = _auto_continue_config()
+    return freshness_secs if enabled else None
+
+
+def _acceptance_condition(session: dict) -> threading.Condition:
+    """Per-session condition over ``history_lock`` for the acceptance gate.
+
+    Callers must hold ``history_lock`` (it is the condition's own lock)."""
+    cond = session.get("_accept_cond")
+    if cond is None:
+        cond = threading.Condition(session["history_lock"])
+        session["_accept_cond"] = cond
+    return cond
+
+
+def _wait_for_acceptance_locked(session: dict) -> None:
+    """Block (with ``history_lock`` held) while another submit is accepting."""
+    cond = _acceptance_condition(session)
+    while session.get("_accepting"):
+        cond.wait(timeout=5.0)
+
+
+def _end_acceptance(session: dict) -> None:
+    """Release the acceptance gate and wake submits waiting on its outcome."""
+    with session["history_lock"]:
+        session["_accepting"] = False
+        _acceptance_condition(session).notify_all()
+
+
 def _record_accepted_turn(session: dict, text: Any) -> None:
     """Make an accepted prompt durable before its turn can start.
 
@@ -6984,6 +7015,7 @@ def _record_accepted_turn(session: dict, text: Any) -> None:
             strict=True,
             # Markers resume would discard can make room; fresh ones never do.
             reclaim_older_than=freshness_secs if enabled else 0.0,
+            retain_seconds=freshness_secs if enabled else None,
         )
     except Exception:
         logger.error("could not durably accept turn for %s", key, exc_info=True)
@@ -9248,7 +9280,13 @@ def _run_prompt_submit(
         marker_attempt = int(session.pop("_auto_continue_attempt", 0) or 0)
         marker_text = session.pop("_auto_continue_prompt", None) or text
         if isinstance(marker_text, str) and marker_text.strip():
-            record_turn_start(marker_home, marker_key, marker_text, attempts=marker_attempt)
+            record_turn_start(
+                marker_home,
+                marker_key,
+                marker_text,
+                attempts=marker_attempt,
+                retain_seconds=_marker_retention_secs(),
+            )
         try:
             from tools.approval import (
                 reset_current_session_key,

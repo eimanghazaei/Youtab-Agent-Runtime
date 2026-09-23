@@ -22,8 +22,10 @@ acknowledges a first prompt that has no durable recovery record.
 from __future__ import annotations
 
 import json
+import errno
 import logging
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -39,6 +41,9 @@ _MAX_ENTRIES = 32
 # Enough to re-submit any realistic prompt; guards the sidecar against a
 # pathological multi-megabyte paste being journaled on every turn.
 _MAX_PROMPT_CHARS = 64_000
+
+_MOVEFILE_REPLACE_EXISTING = 0x1
+_MOVEFILE_WRITE_THROUGH = 0x8
 
 _lock = threading.Lock()
 
@@ -67,13 +72,51 @@ def _load(path: Path, *, strict: bool = False) -> dict[str, dict]:
     return {k: v for k, v in data.items() if isinstance(v, dict)}
 
 
-def _prune(entries: dict[str, dict], now: float) -> dict[str, dict]:
+def _prune(entries: dict[str, dict], now: float, max_age: float = _MAX_AGE_SECS) -> dict[str, dict]:
     fresh = {
         key: entry
         for key, entry in entries.items()
-        if now - float(entry.get("started_at") or 0) <= _MAX_AGE_SECS
+        if now - float(entry.get("started_at") or 0) <= max_age
     }
     return fresh
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Persist a directory entry change (POSIX). Windows uses write-through."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return  # platforms/filesystems that cannot open a directory
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EBADF):
+            raise
+    finally:
+        os.close(fd)
+
+
+def _durable_replace(src: str, dst: Path) -> None:
+    """Atomically replace ``dst`` with ``src`` and persist the rename itself.
+
+    Flushing the file is not enough: without persisting the directory entry a
+    power loss can leave the old file (or none) in place. Windows:
+    MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) returns only
+    after the move is flushed to disk. POSIX: os.replace, then fsync the
+    containing directory.
+    """
+    if sys.platform == "win32":
+        import ctypes
+        from ctypes import wintypes
+
+        move = ctypes.windll.kernel32.MoveFileExW
+        move.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+        move.restype = wintypes.BOOL
+        if not move(str(src), str(dst), _MOVEFILE_REPLACE_EXISTING | _MOVEFILE_WRITE_THROUGH):
+            raise ctypes.WinError()
+        return
+    os.replace(src, dst)
+    _fsync_dir(dst.parent)
 
 
 def _store(path: Path, entries: dict[str, dict]) -> None:
@@ -89,7 +132,7 @@ def _store(path: Path, entries: dict[str, dict]) -> None:
             # exit: land the bytes before the rename publishes them.
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        _durable_replace(tmp, path)
     except Exception:
         try:
             os.unlink(tmp)
@@ -107,6 +150,7 @@ def record_turn_start(
     pending: dict[str, Any] | None = None,
     strict: bool = False,
     reclaim_older_than: float | None = None,
+    retain_seconds: float | None = None,
 ) -> None:
     """Persist the marker for a turn that is about to run.
 
@@ -123,6 +167,10 @@ def record_turn_start(
     than this can no longer be recovered (session.resume discards them), so
     they are dropped to make room. Fresh markers are never evicted; a full
     journal of fresh markers refuses the new one.
+
+    ``retain_seconds``: the configured recovery window. Routine pruning never
+    drops a marker younger than it (nor younger than 24 hours), so a write for
+    one session cannot delete another session's still-recoverable prompt.
     """
     if not session_key or not prompt:
         if strict:
@@ -147,7 +195,8 @@ def record_turn_start(
     try:
         with _lock:
             path = _marker_path(home)
-            entries = _prune(_load(path, strict=strict), now)
+            max_age = max(_MAX_AGE_SECS, float(retain_seconds or 0))
+            entries = _prune(_load(path, strict=strict), now, max_age)
             if session_key not in entries and len(entries) >= _MAX_ENTRIES and reclaim_older_than is not None:
                 entries = {
                     key: value

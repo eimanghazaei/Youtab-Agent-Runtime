@@ -810,6 +810,32 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       .toContain(CAPTION)
     sentinel?.assertAlive('recovered')
     await page2.screenshot({ path: testInfo.outputPath('packaged-pre-turn-recovered.png') })
+
+    // Stable boundary: after a full close + relaunch + reopen, nothing may
+    // replay the prompt again (no marker left, no second provider turn, still
+    // exactly one durable user turn).
+    releaseBackend('before stability relaunch')
+    await closePackagedApp(app)
+    app = null
+    await expect.poll(() => bundledBackendProcessCount(), { timeout: 20_000 }).toBe(0)
+    expect(crashMarkerHasEntry(sandbox.youtabHome), 'no recovery marker survives a completed replay').toBe(false)
+    ;({ app } = await launchPackagedAppRealBackend(sandbox))
+    const page3 = await app.firstWindow()
+    await waitForAppReady({ page: page3, app } as never, 240_000)
+    await watchBackend()
+    const row3 = sessionRow(page3)
+    await row3.waitFor({ state: 'visible', timeout: 180_000 })
+    await row3.click()
+    await expect
+      .poll(() => transcriptText(page3), { timeout: 120_000, message: 'the reopened session still shows the prompt' })
+      .toContain(CAPTION)
+    await expect
+      .poll(() => durableCaptionTurnCount(sandbox!.youtabHome), { timeout: 30_000 })
+      .toBe(1)
+    expect(durableCaptionRowCount(sandbox.youtabHome), 'no duplicate row after relaunch').toBe(1)
+    expect(providerTurnCalls(mock), 'no second provider turn after relaunch').toBe(1)
+    expect(crashMarkerHasEntry(sandbox.youtabHome), 'reopen did not create a new marker').toBe(false)
+    sentinel?.assertAlive('stable after relaunch')
   })
   // R6 P1: when the accepted-prompt recovery record cannot be written, the
   // bundled backend must REFUSE the prompt (visible "not accepted" error, no

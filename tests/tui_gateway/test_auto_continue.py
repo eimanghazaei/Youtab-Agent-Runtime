@@ -472,3 +472,28 @@ def test_replay_projection_survives_a_replay_that_finishes_first(emits, marker_h
     inflight = server._auto_continue_inflight(session, descriptor)
     assert inflight is not None and inflight["user"] == "describe this"
     assert "_inflight" not in descriptor, "the private snapshot must not reach the payload"
+
+
+def test_turn_start_marker_write_keeps_markers_inside_a_long_recovery_window(
+    emits, turn_env, marker_home, monkeypatch
+):
+    """The real turn-start write must prune with the configured recovery
+    window, not the fixed 24h, or it deletes another session's recoverable
+    prompt."""
+    import json
+
+    record_turn_start(marker_home, "older-session", "still recoverable")
+    path = marker_home / "desktop" / "interrupted_turns.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["older-session"]["started_at"] -= 30 * 3600
+    path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr(server, "_auto_continue_config", lambda: (True, 48 * 3600.0, 2))
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=lambda message, **kw: {"final_response": "done"},
+        clear_interrupt=lambda: None,
+    )
+
+    server._run_prompt_submit("rid", "sid", _session(agent=agent, running=True), "do the thing")
+
+    assert read_turn_marker(marker_home, "older-session") is not None

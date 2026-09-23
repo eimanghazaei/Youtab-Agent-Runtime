@@ -385,3 +385,180 @@ def test_prompt_without_a_durable_session_key_is_refused(tmp_path, monkeypatch):
     assert resp["error"]["code"] == 5030
     assert session["running"] is False
     assert _HeldThread.started == []
+
+
+
+# ── Review round 2: acceptance gate, durable rename, recovery-window retention ──
+
+_RealThread = threading.Thread
+
+
+def _concurrent_submits(monkeypatch, tmp_path, *, second_write_fails: bool):
+    """Submit A blocks inside its strict marker write and then fails; submit B
+    arrives while A holds the claim. Returns (session, resp_a, resp_b, b_was_blocked)."""
+    import time as _time
+
+    from tui_gateway import turn_marker
+
+    real_record = turn_marker.record_turn_start
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def _record(*args, **kwargs):
+        calls.append(args[1])
+        if len(calls) == 1:
+            entered.set()
+            release.wait(10)
+            raise OSError("marker journal unwritable")
+        if second_write_fails:
+            raise OSError("marker journal unwritable")
+        return real_record(*args, **kwargs)
+
+    monkeypatch.setattr(gw, "record_turn_start", _record)
+    monkeypatch.setattr(gw, "_load_cfg", lambda: {})
+    monkeypatch.setattr(gw, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(gw, "_persist_branch_seed", lambda _session: None)
+    monkeypatch.setattr(gw, "_start_agent_build", lambda _sid, _session: None)
+    _HeldThread.started = []
+    monkeypatch.setattr(gw.threading, "Thread", _HeldThread)
+    session = _session(tmp_path)
+    gw._sessions["sid-race"] = session
+    results = {}
+
+    def _submit_as(name, text):
+        results[name] = gw.handle_request(
+            {"id": name, "method": "prompt.submit", "params": {"session_id": "sid-race", "text": text}}
+        )
+
+    try:
+        a = _RealThread(target=_submit_as, args=("a", "first prompt"))
+        a.start()
+        assert entered.wait(10), "submit A must reach its marker write"
+        b = _RealThread(target=_submit_as, args=("b", "second prompt"))
+        b.start()
+        _time.sleep(0.5)
+        b_was_blocked = b.is_alive() and "b" not in results
+        release.set()
+        a.join(10)
+        b.join(10)
+    finally:
+        release.set()
+        gw._sessions.pop("sid-race", None)
+    return session, results["a"], results["b"], b_was_blocked
+
+
+def test_concurrent_submit_waits_for_a_failing_acceptance_and_is_never_stranded(tmp_path, monkeypatch):
+    session, resp_a, resp_b, b_was_blocked = _concurrent_submits(
+        monkeypatch, tmp_path, second_write_fails=True
+    )
+
+    assert b_was_blocked, "B must wait for A's acceptance outcome instead of queueing behind it"
+    assert resp_a["error"]["code"] == 5030
+    assert resp_b.get("result") != {"status": "queued"}, "no queued ack that nothing will drain"
+    assert resp_b["error"]["code"] == 5030
+    assert not session.get("queued_prompt")
+    assert session["running"] is False
+    assert _HeldThread.started == []
+
+
+def test_concurrent_submit_claims_after_a_failed_acceptance_and_runs(tmp_path, monkeypatch):
+    session, resp_a, resp_b, b_was_blocked = _concurrent_submits(
+        monkeypatch, tmp_path, second_write_fails=False
+    )
+
+    assert b_was_blocked
+    assert resp_a["error"]["code"] == 5030
+    assert resp_b["result"] == {"status": "streaming"}
+    assert read_turn_marker(tmp_path, "sess-accept-001")["prompt"] == "second prompt"
+    assert not session.get("queued_prompt")
+    assert len(_HeldThread.started) == 1, "exactly the accepted prompt gets a run thread"
+
+
+def test_windows_marker_rename_is_write_through(tmp_path, monkeypatch):
+    """Publishing the marker must persist the rename itself, not just the bytes."""
+    import sys
+
+    from tui_gateway import turn_marker
+
+    if sys.platform != "win32":
+        import pytest
+
+        pytest.skip("MoveFileExW path is Windows-only")
+    import ctypes
+
+    seen = []
+    real_move = ctypes.windll.kernel32.MoveFileExW
+
+    class _Kernel32:
+        @property
+        def MoveFileExW(self):
+            def _move(src, dst, flags):
+                seen.append(flags)
+                return real_move(src, dst, flags)
+
+            return _move
+
+    monkeypatch.setattr(ctypes.windll, "kernel32", _Kernel32())
+    record_turn_start(tmp_path, "k", "hello", strict=True)
+
+    assert seen and seen[-1] & turn_marker._MOVEFILE_WRITE_THROUGH
+    assert seen[-1] & turn_marker._MOVEFILE_REPLACE_EXISTING
+    assert read_turn_marker(tmp_path, "k")["prompt"] == "hello"
+
+
+def test_real_durable_replace_overwrites_an_existing_marker(tmp_path):
+    record_turn_start(tmp_path, "k", "first", strict=True)
+    record_turn_start(tmp_path, "k", "second", strict=True)
+
+    assert read_turn_marker(tmp_path, "k")["prompt"] == "second"
+    leftovers = [p.name for p in (tmp_path / "desktop").iterdir() if p.name.startswith(".turn-marker-")]
+    assert leftovers == []
+
+
+def test_posix_marker_rename_fsyncs_its_directory(tmp_path, monkeypatch):
+    from tui_gateway import turn_marker
+
+    synced_dirs = []
+    monkeypatch.setattr(turn_marker.sys, "platform", "linux")
+    monkeypatch.setattr(turn_marker, "_fsync_dir", lambda d: synced_dirs.append(d))
+
+    record_turn_start(tmp_path, "k", "hello", strict=True)
+
+    assert synced_dirs == [tmp_path / "desktop"]
+
+
+def _age_marker(home, key, seconds):
+    import json
+
+    path = home / "desktop" / "interrupted_turns.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data[key]["started_at"] -= seconds
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_long_recovery_window_is_not_pruned_by_another_sessions_write(tmp_path, monkeypatch):
+    record_turn_start(tmp_path, "older", "still recoverable", strict=True)
+    _age_marker(tmp_path, "older", 30 * 3600)  # past 24h, inside a 48h window
+    monkeypatch.setattr(gw, "_auto_continue_config", lambda: (True, 48 * 3600.0, 2))
+
+    resp = _submit(monkeypatch, _session(tmp_path), "sid-long", "new prompt")
+
+    assert resp["result"] == {"status": "streaming"}
+    assert read_turn_marker(tmp_path, "older")["prompt"] == "still recoverable"
+    assert "older" in gw.pending_recovery_session_ids(tmp_path)
+
+
+def test_disabled_auto_continue_keeps_routine_24h_retention(tmp_path, monkeypatch):
+    record_turn_start(tmp_path, "recent", "one hour old", strict=True)
+    record_turn_start(tmp_path, "expired", "thirty hours old", strict=True)
+    _age_marker(tmp_path, "recent", 3600)
+    _age_marker(tmp_path, "expired", 30 * 3600)
+    monkeypatch.setattr(gw, "_auto_continue_config", lambda: (False, 900.0, 2))
+
+    resp = _submit(monkeypatch, _session(tmp_path), "sid-disabled", "new prompt")
+
+    assert resp["result"] == {"status": "streaming"}
+    assert read_turn_marker(tmp_path, "recent") is not None
+    assert read_turn_marker(tmp_path, "expired") is None
+
