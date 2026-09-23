@@ -64,7 +64,7 @@ def pg_dsn():
 
 
 _WORKER_SCRIPT = r"""
-import json, sys, time, urllib.error, urllib.request
+import json, os, sys, time, urllib.error, urllib.request
 url, cap, body_json, ack_file = sys.argv[1:]
 req = urllib.request.Request(url, data=body_json.encode(), method="POST",
                              headers={"X-Youtab-Worker-Cap": cap,
@@ -74,9 +74,12 @@ try:
         result = {"status": response.status, "body": json.load(response)}
 except urllib.error.HTTPError as error:
     result = {"status": error.code, "body": json.load(error)}
-with open(ack_file, "w", encoding="utf-8") as out:
+staged_ack = ack_file + ".tmp"
+with open(staged_ack, "w", encoding="utf-8") as out:
     json.dump(result, out)
     out.flush()
+    os.fsync(out.fileno())
+os.replace(staged_ack, ack_file)
 while True:
     time.sleep(1)
 """
