@@ -20,6 +20,7 @@ import {
   closePackagedApp,
   createSandbox,
   launchPackagedAppRealBackend,
+  PACKAGED_BINARY_PATH,
   packagedBinaryExists,
   type Sandbox,
   waitForAppReady,
@@ -203,6 +204,13 @@ function backendProcessPaths(): string[] {
   }
 }
 
+/** Is `p` inside the packaged binary's own resources/backend-sidecar tree? */
+function isPackagedSidecarPath(p: string): boolean {
+  const sidecarRoot = path.join(path.dirname(PACKAGED_BINARY_PATH), 'resources', 'backend-sidecar') + path.sep
+
+  return path.resolve(p).toLowerCase().startsWith(sidecarRoot.toLowerCase())
+}
+
 async function focusComposer(page: Page) {
   const composer = page.locator('[contenteditable="true"]').first()
   await composer.waitFor({ state: 'visible', timeout: 30_000 })
@@ -268,10 +276,10 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     // that waitForAppReady would never clear).
 
     // Process-path evidence: the live backend was spawned from the PACKAGED
-    // resources tree (…/release/win-unpacked/resources/backend-sidecar/…), never
+    // resources tree (<app dir>/resources/backend-sidecar/…), never
     // a dev checkout venv/source.
     await expect
-      .poll(() => backendProcessPaths().some(p => /win-unpacked[\\/]+resources[\\/]+backend-sidecar/i.test(p)), {
+      .poll(() => backendProcessPaths().some(isPackagedSidecarPath), {
         timeout: 60_000,
         message: 'the running backend must be the packaged bundled sidecar',
       })
@@ -572,7 +580,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     const page1 = await app.firstWindow()
     await waitForAppReady({ page: page1, app } as never, 240_000)
     await expect
-      .poll(() => backendProcessPaths().some(p => /win-unpacked[\\/]+resources[\\/]+backend-sidecar/i.test(p)), {
+      .poll(() => backendProcessPaths().some(isPackagedSidecarPath), {
         timeout: 60_000,
         message: 'the running backend must be the packaged bundled sidecar',
       })

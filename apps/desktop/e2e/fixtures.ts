@@ -536,6 +536,13 @@ providers:
  * electron-builder's output layout under release/.
  */
 function resolvePackagedBinaryPath(): string {
+  // Installed-app acceptance drives the same specs against an installed binary.
+  const installed = process.env.YOUTAB_E2E_PACKAGED_BINARY
+
+  if (installed) {
+    return path.resolve(installed)
+  }
+
   if (process.platform === 'win32') {
     return path.join(RELEASE_ROOT, 'win-unpacked', 'Youtab.exe')
   }
