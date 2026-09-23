@@ -41,6 +41,8 @@ services:
       - "${EDGE_BIND:-127.0.0.1}:${EDGE_PORT:-8443}:8443"
     volumes:
       - ./deploy/edge/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Admin-supplied TLS cert+key (see deploy/edge/tls/README.md). Required.
+      - ./deploy/edge/tls:/etc/caddy/tls:ro
       - youtab-durable-edge-data:/data
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://127.0.0.1:8443/health >/dev/null 2>&1 || exit 1"]

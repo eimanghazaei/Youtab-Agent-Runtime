@@ -6092,6 +6092,49 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("durable run-state mirror failed for %s", run_id, exc_info=True)
 
+    def _admit_durable_or_fail(
+        self, run_id: str, *, session_id: Optional[str], model: Optional[str]
+    ) -> "Optional[web.Response]":
+        """Persist-before-ack admission barrier for server durable mode.
+
+        In server durable mode (an explicit YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND,
+        e.g. postgres) a run MUST be durably recorded BEFORE it is acked/dispatched
+        — otherwise a store outage (e.g. PostgreSQL lost while the API is up) would
+        let the API return 202 and execute a run with no durable record, which is
+        lost on process death. If the durable admission write fails, this returns a
+        503 the caller sends instead of 202, and the run is never dispatched.
+
+        In the default local/sqlite path (no explicit server backend, or no store)
+        this is a no-op: desktop startup/serving is never blocked, and the
+        best-effort write-through mirror handles persistence.
+        """
+        store = getattr(self, "_run_store", None)
+        server_backend = os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND")
+        if store is None or not server_backend:
+            return None
+        from youtab_runtime.durable_run_store import RunIdentity, RunState
+        try:
+            store.create_run(
+                RunIdentity(
+                    task_id=run_id, run_id=run_id, tenant_id="local",
+                    organization_id="local", workspace_id="local",
+                    principal_id=str(session_id or "local"),
+                    agent_id=str(model or "agent"),
+                ),
+                initial_state=RunState.QUEUED,
+            )
+        except Exception:
+            logger.warning(
+                "durable admission failed for %s; refusing run "
+                "(server durable mode fail-closed, no in-memory-only execution)",
+                run_id,
+            )
+            return web.json_response(
+                {"error": "durable store unavailable", "code": "durable_store_unavailable"},
+                status=503,
+            )
+        return None
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -6293,6 +6336,17 @@ class APIServerAdapter(BasePlatformAdapter):
         # approval for one run must not unblock another run's dangerous command.
         approval_session_key = run_id
         ephemeral_system_prompt = instructions
+
+        # Persist-before-ack: in server durable mode a run must be durably
+        # recorded before it is acked/dispatched. If the durable store is
+        # unavailable (e.g. PostgreSQL lost mid-flight) this returns 503 and the
+        # run is never dispatched — no 202 for an in-memory-only run.
+        admit_fail = self._admit_durable_or_fail(
+            run_id, session_id=session_id, model=body.get("model")
+        )
+        if admit_fail is not None:
+            return admit_fail
+
         loop = asyncio.get_running_loop()
         q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
         created_at = time.time()
