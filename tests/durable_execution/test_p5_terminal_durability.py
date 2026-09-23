@@ -76,6 +76,12 @@ def test_terminal_write_failure_is_reconciliation_not_false_completed(monkeypatc
     assert final["status"] == "reconciliation_required"
     assert final.get("durable") is False
     assert final.get("pending_status") == "completed"
+    assert final.get("reconciliation_reason") == "terminal_durable_commit_failed"
+
+    # Uncommitted output/error/usage must NOT be exposed as a recoverable result.
+    assert final.get("output") is None
+    assert final.get("error") is None
+    assert "usage" not in final or final.get("usage") is None
 
     # /result would report terminal=false for this status.
     terminal = final["status"].lower() in (
@@ -86,6 +92,32 @@ def test_terminal_write_failure_is_reconciliation_not_false_completed(monkeypatc
     # The store never recorded a terminal state — a restart reading the store
     # shows RUNNING (the last durable truth), not a completion that vanished.
     assert store.rows[rid]["state"] == "RUNNING"
+
+
+def test_startup_reconcile_moves_orphaned_running_to_unknown(monkeypatch, tmp_path):
+    """A non-terminal run owned by a dead prior instance is moved to UNKNOWN at
+    startup, so it does NOT read back as ordinary running after a restart."""
+    from youtab_runtime.durable_run_store import RunIdentity, RunState, SqliteRunStore
+
+    store = SqliteRunStore(str(tmp_path / "runs.db"))
+    # Simulate a run admitted+running by a PRIOR process (a dead pid).
+    dead_pid = 999999
+    store.admit(
+        RunIdentity(task_id="run_orphan", run_id="run_orphan", tenant_id="local",
+                    organization_id="local", workspace_id="local",
+                    principal_id="local", agent_id="agent"),
+        owner=f"pid:{dead_pid}", initial_state=RunState.RUNNING,
+    )
+    assert store.get_run("run_orphan")["state"] == "RUNNING"
+
+    monkeypatch.delenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", raising=False)
+    adapter = _adapter()
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
+    adapter._run_store = store
+    adapter._reconcile_orphaned_runs_on_startup()
+
+    row = store.get_run("run_orphan")
+    assert row["state"] == "UNKNOWN"  # discoverable unresolved state, not RUNNING
 
 
 def test_local_mode_keeps_best_effort_completion(monkeypatch, tmp_path):

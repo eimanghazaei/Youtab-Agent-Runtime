@@ -1252,6 +1252,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if _os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
                 raise
             self._run_store = None
+        # Recover from a prior process instance: any non-terminal run still owned
+        # by a dead owner is moved to UNKNOWN durably, so it does not silently
+        # read back as RUNNING after a restart (see the method for the contract).
+        self._reconcile_orphaned_runs_on_startup()
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -6056,9 +6060,16 @@ class APIServerAdapter(BasePlatformAdapter):
             current["status"] = "reconciliation_required"
             current["durable"] = False
             current["pending_status"] = status
+            current["reconciliation_reason"] = "terminal_durable_commit_failed"
+            current["last_event"] = "run.reconciliation_required"
+            # Do NOT present uncommitted output/error/usage as a recoverable
+            # result — it was never durably committed and would vanish on restart.
+            current.pop("output", None)
+            current.pop("error", None)
+            current.pop("usage", None)
             logger.warning(
                 "run %s reached terminal '%s' but the durable store write failed; "
-                "reporting reconciliation_required (not a durable completion)",
+                "reporting reconciliation_required and withholding uncommitted output",
                 run_id, status,
             )
             self._run_statuses[run_id] = current
@@ -6170,13 +6181,19 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         from youtab_runtime.durable_run_store import RunIdentity, RunState
         try:
-            store.create_run(
+            # Owner-stamped atomic admission (lease_owner=pid:<n>). The owner is
+            # what makes an abandoned run discoverable after a restart: on startup
+            # a fresh process reconciles non-terminal runs owned by a dead prior
+            # instance to UNKNOWN (see _reconcile_orphaned_runs_on_startup),
+            # instead of letting them silently read back as RUNNING.
+            store.admit(
                 RunIdentity(
                     task_id=run_id, run_id=run_id, tenant_id="local",
                     organization_id="local", workspace_id="local",
                     principal_id=str(session_id or "local"),
                     agent_id=str(model or "agent"),
                 ),
+                owner=f"pid:{os.getpid()}",
                 initial_state=RunState.QUEUED,
             )
         except Exception:
@@ -6190,6 +6207,39 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=503,
             )
         return None
+
+    def _reconcile_orphaned_runs_on_startup(self) -> None:
+        """Recover runs abandoned by a prior process instance.
+
+        Server durable mode only. At startup this process owns no runs yet, so any
+        non-terminal run in the store is necessarily owned by a previous (now
+        dead) instance. reconcile_dead_owner moves those to UNKNOWN durably.
+
+        Recovery contract: an UNKNOWN run is terminal-uncertain and is NOT
+        auto-resumed — an in-process agent run cannot be resumed across an
+        owner-process death. It is exposed as status "unknown"
+        (recovered_from_store) so an operator/client can reconcile it (verify side
+        effects and, if needed, re-submit). This is why a restarted service does
+        NOT report such a run as ordinary "running".
+        """
+        store = getattr(self, "_run_store", None)
+        if store is None or not os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+            return
+        reconcile = getattr(store, "reconcile_dead_owner", None)
+        if reconcile is None:
+            return
+        try:
+            my_pid = os.getpid()
+            # This process owns nothing at startup, so any pid != mine is a dead
+            # prior instance. Trusting only my own pid is robust to pid reuse.
+            reconciled = reconcile(lambda pid: pid == my_pid)
+            if reconciled:
+                logger.warning(
+                    "startup reconcile: %d abandoned run(s) moved to UNKNOWN: %s",
+                    len(reconciled), ", ".join(reconciled[:20]),
+                )
+        except Exception:
+            logger.warning("startup run reconcile failed", exc_info=True)
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
@@ -6417,6 +6467,23 @@ class APIServerAdapter(BasePlatformAdapter):
             if self._run_streams.get(run_id) is q:
                 q.put_nowait(event)
 
+        def _emit_terminal(res: Optional[Dict[str, Any]], ok_event: Dict) -> None:
+            """Emit a terminal SSE ONLY after the durable commit succeeded.
+
+            _set_run_status flips the status to reconciliation_required when the
+            terminal durable write fails (server mode); in that case emit a
+            NONTERMINAL run.reconciliation_required event carrying no uncommitted
+            output, never the terminal ok_event."""
+            if isinstance(res, dict) and res.get("status") == "reconciliation_required":
+                _put_event_if_active({
+                    "event": "run.reconciliation_required",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "reason": res.get("reconciliation_reason", "durable_commit_failed"),
+                })
+            else:
+                _put_event_if_active(ok_event)
+
         # Also wire stream_delta_callback so message.delta events flow through.
         def _text_cb(delta: Optional[str]) -> None:
             if delta is None:
@@ -6449,16 +6516,16 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 self._set_run_status(run_id, "running")
                 if run_id in self._stopping_run_ids:
-                    _put_event_if_active({
-                        "event": "run.cancelled",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                    })
-                    self._set_run_status(
+                    res = self._set_run_status(
                         run_id,
                         "cancelled",
                         last_event="run.cancelled",
                     )
+                    _emit_terminal(res, {
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
                     return
                 with self._profile_scope(request_profile):
                     agent = self._create_agent(
@@ -6563,57 +6630,63 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                 if run_id in self._stopping_run_ids:
-                    _put_event_if_active({
-                        "event": "run.cancelled",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                    })
-                    self._set_run_status(
+                    res = self._set_run_status(
                         run_id,
                         "cancelled",
                         last_event="run.cancelled",
                     )
+                    _emit_terminal(res, {
+                        "event": "run.cancelled",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                    })
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
                 # block below never fires — issue #15561).
                 elif isinstance(result, dict) and result.get("failed"):
                     error_msg = _redact_api_error_text(result.get("error") or "agent run failed")
-                    _put_event_if_active({
-                        "event": "run.failed",
-                        "run_id": run_id,
-                        "timestamp": time.time(),
-                        "error": error_msg,
-                    })
-                    self._set_run_status(
+                    # Durable commit FIRST, then the terminal SSE (or a
+                    # reconciliation event if the commit failed).
+                    res = self._set_run_status(
                         run_id,
                         "failed",
                         error=error_msg,
                         last_event="run.failed",
                     )
-                else:
-                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    _put_event_if_active({
-                        "event": "run.completed",
+                    _emit_terminal(res, {
+                        "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "output": final_response,
-                        "usage": usage,
+                        "error": error_msg,
                     })
-                    self._set_run_status(
+                else:
+                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    # Durable commit FIRST: a stable terminal result + the
+                    # run.completed SSE are exposed only after the RunStore write
+                    # succeeds. If it fails, _emit_terminal sends a nonterminal
+                    # reconciliation event and no uncommitted output.
+                    res = self._set_run_status(
                         run_id,
                         "completed",
                         output=final_response,
                         usage=usage,
                         last_event="run.completed",
                     )
+                    _emit_terminal(res, {
+                        "event": "run.completed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "output": final_response,
+                        "usage": usage,
+                    })
             except asyncio.CancelledError:
-                self._set_run_status(
+                res = self._set_run_status(
                     run_id,
                     "cancelled",
                     last_event="run.cancelled",
                 )
                 try:
-                    _put_event_if_active({
+                    _emit_terminal(res, {
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -6631,14 +6704,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 # except-Exception branch below.
                 logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
                 error_msg = f"⚠️ Provider authentication failed: {exc}"
-                self._set_run_status(
+                res = self._set_run_status(
                     run_id,
                     "failed",
                     error=error_msg,
                     last_event="run.failed",
                 )
                 try:
-                    _put_event_if_active({
+                    _emit_terminal(res, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -6648,18 +6721,19 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
             except Exception as exc:
                 logger.exception("[api_server] run %s failed", run_id)
-                self._set_run_status(
+                _err = _redact_api_error_text(exc)
+                res = self._set_run_status(
                     run_id,
                     "failed",
-                    error=_redact_api_error_text(exc),
+                    error=_err,
                     last_event="run.failed",
                 )
                 try:
-                    _put_event_if_active({
+                    _emit_terminal(res, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
-                        "error": _redact_api_error_text(exc),
+                        "error": _err,
                     })
                 except Exception:
                     pass
