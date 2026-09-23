@@ -1,0 +1,43 @@
+# Secure TLS edge for the durable-execution API ingress (/v1/runs).
+#
+# The api_server itself is NOT published to the host (see docker-compose.edge.yml:
+# it binds 0.0.0.0 INSIDE the container and is only `expose`d on the internal
+# docker network). This Caddy edge is the ONLY host-published entrypoint: it
+# terminates TLS and reverse-proxies to the api_server. Authentication is still
+# enforced end-to-end by the api_server's Bearer API_SERVER_KEY check — the edge
+# adds transport encryption and is the single, auditable ingress.
+#
+# TLS uses an ADMIN-SUPPLIED cert + key mounted at /etc/caddy/tls/. The admin
+# provides either a CA-issued cert (public domain) or a self-signed cert (internal
+# / self-hosted). A self-signed test cert can be generated with:
+#
+#   openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+#     -keyout deploy/edge/tls/key.pem -out deploy/edge/tls/cert.pem \
+#     -subj "/CN=youtab-durable-edge" \
+#     -addext "subjectAltName=DNS:localhost,DNS:youtab-durable-edge,IP:127.0.0.1"
+#
+# (A mounted cert works with any client and any SNI, unlike Caddy `tls internal`
+# which needs a matching hostname. For a public domain with automatic ACME,
+# replace the site address with your hostname and drop the `tls` line.)
+#
+# Only /v1/* and the health probes are proxied; everything else is refused, so
+# the unsandboxed local terminal backend is never widened to the network beyond
+# the durable-run API surface.
+
+{
+	admin off
+	auto_https disable_redirects
+}
+
+:8443 {
+	tls /etc/caddy/tls/cert.pem /etc/caddy/tls/key.pem
+
+	@durable path /v1/* /health /health/ready /v1/health /v1/health/ready
+	handle @durable {
+		reverse_proxy youtab-agent-runtime:8642
+	}
+
+	handle {
+		respond "not found" 404
+	}
+}

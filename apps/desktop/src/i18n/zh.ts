@@ -198,7 +198,9 @@ export const zh: Translations = {
     openStarmap: '打开记忆图谱',
     openKeybinds: '键盘快捷键',
     layoutEditor: '布局编辑器',
-    layoutEditorTitle: '布局编辑器 — ⌘ 点击重置布局'
+    layoutEditorTitle: '布局编辑器 — ⌘ 点击重置布局',
+    switchToDayMode: '切换到日间模式',
+    switchToNightMode: '切换到夜间模式'
   },
 
   keybinds: {

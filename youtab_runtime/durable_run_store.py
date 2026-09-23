@@ -126,6 +126,10 @@ class ApprovalAlreadyOpen(DurableRunError):
     idempotent and does NOT raise.)"""
 
 
+class ApprovalBindingConflict(DurableRunError):
+    """An approval id was already committed with a different request payload."""
+
+
 class EffectClaimRefused(DurableRunError):
     """The single-use effect claim is refused fail-closed: the run is not active,
     the approval is not APPROVED, the effect binding does not match, or a cancel is
@@ -653,8 +657,9 @@ class SqliteRunStore:
         generic ``transition()`` (which permits a same-state
         WAITING_APPROVAL -> WAITING_APPROVAL no-op that would append a SECOND
         request and silently re-home the authoritative id), a second open is
-        refused: an EXACT-id retry is IDEMPOTENT (returns the existing open
-        request, appends nothing); a DIFFERENT id raises ``ApprovalAlreadyOpen``
+        refused: an EXACT-id-and-payload retry is IDEMPOTENT (returns the existing
+        open request, appends nothing); a changed payload raises
+        ``ApprovalBindingConflict``; a DIFFERENT id raises ``ApprovalAlreadyOpen``
         and never replaces the pending id.
 
         ``approval_id`` must be a nonempty string (else ``ValueError``). Opening
@@ -677,6 +682,19 @@ class SqliteRunStore:
                 # refused without replacing the pending id or appending an event.
                 open_id = self._latest_approval_id_locked(conn, run_id)
                 if open_id == approval_id:
+                    ev = conn.execute(
+                        "SELECT payload FROM run_events WHERE run_id=? AND kind='approval_request' "
+                        "ORDER BY seq DESC LIMIT 1", (run_id,),
+                    ).fetchone()
+                    expected = {**(payload or {}), "approval_id": approval_id,
+                                "state": RunState.WAITING_APPROVAL.value}
+                    try:
+                        persisted = json.loads(ev[0]) if ev else None
+                    except (TypeError, ValueError):
+                        persisted = None
+                    if persisted != expected:
+                        raise ApprovalBindingConflict(
+                            f"approval {approval_id} has a different durable binding")
                     cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
                     row = self._row_to_dict(cur, cur.fetchone())
                     conn.execute("COMMIT")
@@ -688,6 +706,19 @@ class SqliteRunStore:
                 raise InvalidTransition(
                     f"cannot open approval from {cur_state.value} (expected RUNNING)"
                 )
+            # An id is a single approval lifetime, including after a decision.
+            # A stale worker must not open a second request after a concurrent decide.
+            for ev in conn.execute(
+                "SELECT payload FROM run_events WHERE run_id=? AND kind='approval_request'",
+                (run_id,),
+            ):
+                try:
+                    prior_payload = json.loads(ev[0])
+                except (TypeError, ValueError):
+                    continue
+                if prior_payload.get("approval_id") == approval_id:
+                    raise InvalidTransition(
+                        f"approval {approval_id} has already been opened")
             now = time.time()
             upd = conn.execute(
                 "UPDATE runs SET state=?, updated_at=? WHERE run_id=? AND state='RUNNING'",

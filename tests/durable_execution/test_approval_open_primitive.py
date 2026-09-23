@@ -21,6 +21,7 @@ import pytest
 
 from youtab_runtime.durable_run_store import (
     ApprovalAlreadyOpen,
+    ApprovalBindingConflict,
     ApprovalNotOpen,
     InvalidTransition,
     RunIdentity,
@@ -135,6 +136,62 @@ def test_concurrent_open_records_exactly_one_request(tmp_path):
     assert outcomes.count("opened") == 1, outcomes
 
 
+def _binding(effect):
+    return {"effect_digest": effect, "action": "delete_all", "mode": "once",
+            "authorization_id": "auth-1", "checkpoint_digest": "checkpoint-1"}
+
+
+def _assert_concurrent_binding_fence(store, rid):
+    barrier = threading.Barrier(2)
+    outcomes = []
+
+    def _open(effect):
+        barrier.wait()
+        try:
+            store.open_approval(rid, approval_id="same-id", payload=_binding(effect))
+            outcomes.append((effect, "committed"))
+        except ApprovalBindingConflict:
+            outcomes.append((effect, "conflict"))
+
+    threads = [threading.Thread(target=_open, args=(effect,)) for effect in ("A", "B")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15)
+        assert not thread.is_alive()
+    assert sorted(result for _, result in outcomes) == ["committed", "conflict"]
+    requests = [e for e in store.get_events(rid) if e["kind"] == "approval_request"]
+    assert len(requests) == 1
+    committed = requests[0]["payload"]["effect_digest"]
+    assert sorted(outcomes) == sorted([
+        (committed, "committed"),
+        ("B" if committed == "A" else "A", "conflict"),
+    ])
+
+
+def test_concurrent_same_id_different_binding_fails_closed_sqlite(tmp_path):
+    store = _running(SqliteRunStore(str(tmp_path / "binding.db")))
+    _assert_concurrent_binding_fence(store, "r")
+
+
+def test_legacy_incomplete_binding_cannot_be_replayed_sqlite(tmp_path):
+    store = _running(SqliteRunStore(str(tmp_path / "legacy.db")))
+    store.open_approval("r", approval_id="same-id", payload={"effect_digest": "A"})
+    with pytest.raises(ApprovalBindingConflict):
+        store.open_approval("r", approval_id="same-id", payload=_binding("A"))
+    assert len(_request_events(store)) == 1
+
+
+def test_decided_approval_id_cannot_be_opened_again_sqlite(tmp_path):
+    store = _running(SqliteRunStore(str(tmp_path / "decided.db")))
+    store.open_approval("r", approval_id="same-id", payload=_binding("A"))
+    store.decide_open_approval("r", approval_id="same-id", to_state=RunState.RUNNING,
+                               kind="approval_approved")
+    with pytest.raises(InvalidTransition):
+        store.open_approval("r", approval_id="same-id", payload=_binding("A"))
+    assert len(_request_events(store)) == 1
+
+
 # --------------------------- real PostgreSQL --------------------------------- #
 
 _PG_DSN = os.environ.get("YOUTAB_TEST_PG_DSN",
@@ -209,3 +266,26 @@ def test_pg_concurrent_open_single_request_then_single_decide():
     approved = [e for e in store.get_events(rid) if e["kind"] == "approval_approved"]
     assert len(approved) == 1
     assert store.get_run(rid)["state"] == "RUNNING"
+
+
+@_needs_pg
+def test_pg_concurrent_same_id_different_binding_fails_closed():
+    import uuid
+
+    from youtab_runtime.durable_run_store_pg import PostgresRunStore
+    rid = "pgbind_" + uuid.uuid4().hex[:8]
+    store = _running(PostgresRunStore(_PG_DSN), rid)
+    _assert_concurrent_binding_fence(store, rid)
+
+
+@_needs_pg
+def test_pg_legacy_incomplete_binding_cannot_be_replayed():
+    import uuid
+
+    from youtab_runtime.durable_run_store_pg import PostgresRunStore
+    rid = "pglegacy_" + uuid.uuid4().hex[:8]
+    store = _running(PostgresRunStore(_PG_DSN), rid)
+    store.open_approval(rid, approval_id="same-id", payload={"effect_digest": "A"})
+    with pytest.raises(ApprovalBindingConflict):
+        store.open_approval(rid, approval_id="same-id", payload=_binding("A"))
+    assert len(_request_events(store, rid)) == 1

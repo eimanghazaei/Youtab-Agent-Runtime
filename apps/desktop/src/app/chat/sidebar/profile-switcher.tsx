@@ -64,7 +64,7 @@ import { getProfileSoul, updateProfileSoul } from '@/youtab'
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
-import { PROFILES_ROUTE } from '../../routes'
+import { PROFILES_ROUTE, SETTINGS_ROUTE } from '../../routes'
 
 import { useProfilePrewarm } from './use-profile-prewarm'
 
@@ -225,6 +225,20 @@ export function ProfileRail() {
 
   return (
     <div aria-label="Profiles" className="flex items-center gap-0.5" data-slot="profile-rail" role="tablist">
+      {/* Settings gear, pinned to the far left next to the Home toggle so the
+          two navigation glyphs read as a pair — this is where Settings now
+          lives (it used to sit in the top-right titlebar). Opens the Settings
+          route, same target as before. */}
+      <ProfilePill
+        active={false}
+        glyph="settings-gear"
+        label={t.titlebar.openSettings}
+        onSelect={() => {
+          triggerHaptic('open')
+          navigate(SETTINGS_ROUTE)
+        }}
+      />
+
       {/* One button toggles default ↔ all: home face when scoped to a profile,
           layers face when showing everything. Pinned left like Manage is right.
           Hidden until a second profile exists. */}

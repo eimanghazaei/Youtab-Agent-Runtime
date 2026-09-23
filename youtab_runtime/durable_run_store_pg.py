@@ -30,6 +30,7 @@ from youtab_runtime.durable_run_authority import (
 from youtab_runtime.durable_run_store import (
     _TRANSITIONS,
     TERMINAL_STATES,
+    ApprovalBindingConflict,
     DurableRunError,
     IdempotencyConflict,
     InvalidTransition,
@@ -416,7 +417,8 @@ class PostgresRunStore:
         Advisory-fenced transaction: the run row is taken ``FOR UPDATE``; a
         from-state CAS ``UPDATE ... WHERE state='RUNNING'`` (rowcount 1) moves it
         to WAITING_APPROVAL and appends one ``approval_request`` event with
-        ``approval_id``. Exact-id retry while WAITING_APPROVAL is idempotent; a
+        ``approval_id``. Exact-id-and-payload retry while WAITING_APPROVAL is
+        idempotent; changed payload raises ``ApprovalBindingConflict``; a
         different id raises ``ApprovalAlreadyOpen`` (pending id not replaced).
         Mirrors the SqliteRunStore semantics; see it for the full contract."""
         from youtab_runtime.durable_run_store import ApprovalAlreadyOpen
@@ -443,6 +445,11 @@ class PostgresRunStore:
                         d = raw if isinstance(raw, dict) else json.loads(raw or "{}")
                         open_id = (d or {}).get("approval_id")
                     if open_id == approval_id:
+                        expected = {**(payload or {}), "approval_id": approval_id,
+                                    "state": RunState.WAITING_APPROVAL.value}
+                        if d != expected:
+                            raise ApprovalBindingConflict(
+                                f"approval {approval_id} has a different durable binding")
                         cur.execute("SELECT * FROM runs WHERE run_id=%s", (run_id,))
                         row = self._row(cur, cur.fetchone())
                         assert row is not None
@@ -455,6 +462,15 @@ class PostgresRunStore:
                     raise InvalidTransition(
                         f"cannot open approval from {cur_state.value} (expected RUNNING)"
                     )
+                cur.execute(
+                    "SELECT payload FROM run_events WHERE run_id=%s AND kind='approval_request'",
+                    (run_id,),
+                )
+                for (raw,) in cur.fetchall():
+                    prior_payload = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+                    if prior_payload.get("approval_id") == approval_id:
+                        raise InvalidTransition(
+                            f"approval {approval_id} has already been opened")
                 now = time.time()
                 cur.execute(
                     "UPDATE runs SET state=%s, updated_at=%s WHERE run_id=%s AND state='RUNNING'",
