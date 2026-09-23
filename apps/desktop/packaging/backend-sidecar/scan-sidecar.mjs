@@ -12,9 +12,10 @@
 //
 // Usage: node apps/desktop/packaging/backend-sidecar/scan-sidecar.mjs
 //
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync, writeFileSync } from 'node:fs'
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, writeFileSync } from 'node:fs'
+import { basename, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { collectBundleTree, validateBundleLinks, validateBundleTree } from './root-digest.mjs'
 
 // EICAR test signature (must never be present). Split so this source file does
 // not itself contain the full trigger string.
@@ -34,44 +35,27 @@ const secretPat = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /xox[baprs]-[0-9A-Za-z-
 const attribPat = [/Co-Authored-By:\s*Claude/i, /Generated with \[?Claude/i]
 const maxScanBytes = 8 * 1024 * 1024
 
-function walk(d, files = [], links = []) {
-  for (const n of readdirSync(d)) {
-    const p = join(d, n)
-    const st = lstatSync(p)
-    if (st.isSymbolicLink()) links.push(p)
-    else if (st.isDirectory()) walk(p, files, links)
-    else files.push(p)
-  }
-
-  return { files, links }
-}
-
 /**
  * Scan a bundle directory and return { scanned_files, findings, findings_by_severity }.
  * Pure (no process exit, no file writes) so it is unit-testable.
  */
 export function scanBundle(bundleRoot) {
-  // Visit each physical directory once. Valid in-bundle symlinks are aliases
-  // of paths visited this way; following directory aliases would duplicate
-  // scans or recurse forever on a link back to an ancestor.
-  const rootReal = realpathSync(bundleRoot)
-  const { files, links } = walk(bundleRoot)
   const findings = []
   const add = (severity, rule, file, detail) =>
     findings.push({ severity, rule, file: relative(bundleRoot, file).split('\\').join('/'), detail })
-
+  let tree
+  try {
+    // The digest builder and scanner share one static-tree policy. Symlinks
+    // are aliases to existing physical paths, never directories to recurse.
+    tree = collectBundleTree(bundleRoot)
+  } catch (error) {
+    add('high', 'unsafe-bundle-tree', bundleRoot, String(error))
+    return { scanned_files: 0, findings, findings_by_severity: { high: 1 } }
+  }
+  const { files, links, rootReal } = tree
   for (const link of links) {
-    const name = basename(link)
-    if (badNames.some(re => re.test(name))) add('high', 'forbidden-filename', link, name)
-    try {
-      const target = realpathSync(link)
-      const targetRel = relative(rootReal, target)
-      if (targetRel === '..' || targetRel.startsWith(`..${sep}`) || isAbsolute(targetRel)) {
-        add('high', 'unsafe-symlink', link, 'target escapes bundle')
-      }
-    } catch {
-      add('high', 'unsafe-symlink', link, 'target is dangling or cyclic')
-    }
+    const name = basename(link.path)
+    if (badNames.some(re => re.test(name))) add('high', 'forbidden-filename', link.path, name)
   }
 
   for (const f of files) {
@@ -102,7 +86,7 @@ export function scanBundle(bundleRoot) {
         offset += count
       }
       const after = fstatSync(fd)
-      if (after.size !== st.size || after.mtimeMs !== st.mtimeMs) {
+      if (after.size !== st.size || after.mtimeMs !== st.mtimeMs || !lstatSync(f).isFile()) {
         throw new Error('file changed during scan')
       }
     } catch {
@@ -131,6 +115,13 @@ export function scanBundle(bundleRoot) {
     if (text.toLowerCase().includes('anthropic.com')) {
       add('medium', 'forbidden-attribution', f, 'anthropic.com')
     }
+  }
+
+  try {
+    validateBundleLinks(links, rootReal)
+    validateBundleTree(tree, bundleRoot)
+  } catch (error) {
+    add('high', 'unsafe-bundle-tree', bundleRoot, String(error))
   }
 
   const findings_by_severity = findings.reduce((a, f) => ((a[f.severity] = (a[f.severity] || 0) + 1), a), {})
