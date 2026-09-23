@@ -73,6 +73,17 @@ _DB_PATH_ENV = "YOUTAB_AGENT_DURABLE_DB_PATH"
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
+# Result of reconcile_pending_approval — the caller (status read) MUST derive the
+# published pending-approval status from this, never from kanban alone (P1):
+#   ACCEPTED     the sole authority holds the run in WAITING_APPROVAL for this id
+#   NONE         nothing pending, or already decided durably (not pending)
+#   UNAVAILABLE  the authority is absent/lost/holds no such run -> cannot accept
+#   NOT_ACCEPTED authority healthy but could not open (run terminal / other id open)
+PROJECTION_ACCEPTED = "accepted"
+PROJECTION_NONE = "none"
+PROJECTION_UNAVAILABLE = "unavailable"
+PROJECTION_NOT_ACCEPTED = "not_accepted"
+
 # One authority per process. Guarded by ``_lock`` for the acquire race only; the
 # store itself is internally fenced and concurrency-safe for writes.
 _lock = threading.Lock()
@@ -92,6 +103,11 @@ __all__ = [
     "decide_managed_approval",
     "prior_approval_decision",
     "reconcile_pending_approval",
+    "durable_approval_events",
+    "PROJECTION_ACCEPTED",
+    "PROJECTION_NONE",
+    "PROJECTION_UNAVAILABLE",
+    "PROJECTION_NOT_ACCEPTED",
     "reset_for_tests",
     "AuthorityLost",
     "IdempotencyConflict",
@@ -282,38 +298,80 @@ def open_managed_approval(run_id: str, *, approval_id: str) -> Dict[str, Any]:
     return auth.open_approval(run_id, approval_id=approval_id)
 
 
-def reconcile_pending_approval(run_id: str, *, pending_approval_id: Optional[str]) -> None:
-    """Server-owned projection of a worker's PENDING approval request into durable
-    state (D2 gap 1), invoked when the server OBSERVES the request over the kanban
-    transport (a status/events read), BEFORE any human decision.
+def reconcile_pending_approval(run_id: str, *, pending_approval_id: Optional[str]) -> str:
+    """Ingest a worker's PENDING approval request into the durable RunStore under the
+    fenced server authority (D2 P1), invoked when the server OBSERVES the request over
+    the kanban transport, and RETURN what the authority actually did so the caller can
+    publish a TRUTHFUL status.
 
-    The worker never writes the durable store; the SERVER — the sole authority
-    holder — opens the SAME durable run's approval here so the durable run reflects
-    WAITING_APPROVAL (id-bound, scoped) rather than a stale RUNNING, and that is true
-    after a restart WITHOUT a user click (the next poll re-projects). Bounded and
-    idempotent: a no-op when there is nothing to open, when the approval is already
-    decided durably, or when the run is already awaiting it; transient
-    not-open/already-open/invalid-transition races are swallowed (the authoritative
-    ``/approve`` path re-opens/decides). Never re-opens a decided approval. On a lost
-    authority this is a silent no-op — a read must not write, and ``/approve`` remains
-    the fail-closed authority.
+    The worker never writes the durable store; the SERVER — the sole authority holder
+    — opens the SAME durable run's approval so the canonical store (not kanban alone)
+    holds the pending request, id-bound and scoped, and can be rebuilt if kanban is
+    lost. Idempotent: a run already WAITING_APPROVAL for this id, or one just opened,
+    both return ``PROJECTION_ACCEPTED``.
+
+    Crucially this does NOT silently succeed on a lost/absent authority: it returns
+    ``PROJECTION_UNAVAILABLE`` so the caller publishes an explicit unknown rather than
+    a kanban-derived ``awaiting_approval`` the authority never accepted (the P1 lie).
+    A healthy authority that cannot open (run terminal / a different id already open)
+    returns ``PROJECTION_NOT_ACCEPTED``; an already-decided or absent request returns
+    ``PROJECTION_NONE``.
     """
-    if pending_approval_id is None or _lost_reason is not None:
-        return
+    if pending_approval_id is None:
+        return PROJECTION_NONE
+    if _lost_reason is not None:
+        return PROJECTION_UNAVAILABLE
     auth = get_ingress_authority()
     if auth is None:
-        return
+        return PROJECTION_UNAVAILABLE
     try:
         if auth.prior_decision(run_id, pending_approval_id) is not None:
-            return  # already decided durably — nothing to open
+            return PROJECTION_NONE  # already decided durably — not pending
         row = auth.get_run(run_id)
-        if row is None or row.get("state") == RunState.WAITING_APPROVAL.value:
-            return  # unknown run, or already awaiting approval
+        if row is None:
+            return PROJECTION_UNAVAILABLE  # authority holds no such run — cannot confirm
+        if row.get("state") == RunState.WAITING_APPROVAL.value:
+            return PROJECTION_ACCEPTED  # already open under the authority
         auth.ensure_running(run_id)
         auth.open_approval(run_id, approval_id=pending_approval_id)
-    except (ApprovalNotOpen, ApprovalAlreadyOpen, InvalidTransition, AuthorityLost):
-        # Bounded/idempotent projection; the authoritative decision path re-checks.
-        return
+        return PROJECTION_ACCEPTED
+    except AuthorityLost:
+        return PROJECTION_UNAVAILABLE
+    except (ApprovalNotOpen, ApprovalAlreadyOpen, InvalidTransition):
+        # Healthy authority but could not open (run terminal, or a different id is the
+        # open one): re-read durable truth and report it, never a false pending.
+        try:
+            row = auth.get_run(run_id)
+        except AuthorityLost:
+            return PROJECTION_UNAVAILABLE
+        if row is not None and row.get("state") == RunState.WAITING_APPROVAL.value:
+            return PROJECTION_ACCEPTED
+        return PROJECTION_NOT_ACCEPTED
+
+
+def durable_approval_events(run_id: str) -> List[Dict[str, Any]]:
+    """The run's approval history AS RECORDED IN THE CANONICAL DURABLE STORE, as
+    ``{"kind": "request"|"decision", "approval_id": str, "decision"?: "approve"|"deny"}``
+    in durable order. This is the source for rebuilding the kanban approval transport
+    projection from the RunStore (proving kanban is a rebuildable projection, not the
+    authority). Raises :class:`AuthorityLost` when the authority is absent/lost."""
+    if _lost_reason is not None:
+        raise AuthorityLost(f"durable ingress authority lost: {_lost_reason}")
+    auth = get_ingress_authority()
+    if auth is None:
+        raise AuthorityLost("durable ingress authority not available")
+    kinds = {"approval_approved": "approve", "approval_denied": "deny"}
+    out: List[Dict[str, Any]] = []
+    for ev in auth.get_events(run_id):
+        k = ev.get("kind")
+        aid = (ev.get("payload") or {}).get("approval_id")
+        if not aid:
+            continue
+        if k == "approval_request":
+            out.append({"kind": "request", "approval_id": aid})
+        elif k in kinds:
+            out.append({"kind": "decision", "approval_id": aid, "decision": kinds[k]})
+    return out
 
 
 def decide_managed_approval(

@@ -96,6 +96,11 @@ _STATUS_MAP = {
 # Statuses from which a run cannot progress further within the product model.
 _TERMINAL_PRODUCT_STATUSES = {"completed", "cancelled"}
 
+# D2 P1: published when a pending approval CANNOT be confirmed by the sole durable
+# RunStore authority (lost/absent). Explicitly NOT decision-inviting — a client must
+# not surface an approve/deny action on an ``unknown`` run.
+_DURABLE_UNKNOWN_STATUS = "unknown"
+
 # Event kind marking a product-initiated cancel (so a cancelled+archived task is
 # projected as ``cancelled`` and distinguished from an ordinary archive).
 _CANCEL_EVENT_KIND = "runtime_cancel_requested"
@@ -698,6 +703,11 @@ def _run_status(task: "kb.Task", *, cancelled: bool,
     if cancelled and task.status in ("archived", "blocked", "done"):
         return "cancelled"
     base = _STATUS_MAP.get(task.status, task.status)
+    # D2 P1: an explicit durable "unknown" — a pending approval the sole RunStore
+    # authority could not confirm (lost/unavailable) — is published truthfully over
+    # a non-terminal base, never as a decision-inviting awaiting_approval.
+    if interactive == _DURABLE_UNKNOWN_STATUS and base not in _TERMINAL_PRODUCT_STATUSES:
+        return _DURABLE_UNKNOWN_STATUS
     # A non-terminal run that is waiting on the user (question/approval) or has
     # been paused projects that interactive status over the coarse kanban status
     # (ADR-0004). Terminal runs and cancels always win and never show these.
@@ -1031,7 +1041,8 @@ def _run_detail(conn: "Any", task: "kb.Task", *, cancelled: bool) -> Dict[str, A
                 break
     summary = _run_summary(
         task, cancelled=cancelled, execution_mode=mode,
-        interactive=_interactive_status(events),
+        # D2 P1: publish awaiting_approval only if the durable authority accepted it.
+        interactive=_interactive_status_durable(task.id, events),
     )
     summary.update({
         "task": task.body,
@@ -1974,20 +1985,67 @@ def _durable_ingress_active() -> "Optional[Any]":
     return _dip if _dip.ingress_enabled() else None
 
 
-def _maybe_project_durable_approval(run_id: str, events: "List[kb.Event]") -> None:
-    """Bounded server-owned projection (D2 gap 1): when a poll OBSERVES a worker's
-    pending APPROVAL_REQUEST, open the SAME durable run's approval so durable state
-    reflects WAITING_APPROVAL before any human decision (and after a restart, on the
-    next poll, without a click). Idempotent; never breaks the read."""
+def _interactive_status_durable(run_id: str, events: "List[kb.Event]") -> "Optional[str]":
+    """Interactive status with the ``awaiting_approval`` signal made DURABLE-AUTHORITATIVE
+    (D2 P1). A worker's approval request lives in kanban only as transport; it must not
+    be PUBLISHED as pending unless the sole RunStore authority has accepted it.
+
+    This INGESTS the pending request into the durable store under the fenced authority
+    and then publishes from the authority's answer:
+      * accepted  -> ``awaiting_approval`` (durable holds WAITING_APPROVAL);
+      * unavailable (authority lost/absent) -> explicit ``unknown`` — never a
+        kanban-derived pending that would invite a human decision the authority has
+        not accepted (the P1 lie);
+      * none / not-accepted -> suppress the kanban signal (fall back to base status),
+        so a durably-decided or non-openable request is not shown as pending.
+    Flag-off / standalone: unchanged kanban behaviour."""
+    base = _rc.interactive_status(events)
+    if base != _rc.AWAITING_APPROVAL:
+        return base  # only the approval signal is durable-gated
+    _dip = _durable_ingress_active()
+    if _dip is None:
+        return base  # feature off / standalone: kanban behaviour unchanged
     try:
-        _dip = _durable_ingress_active()
-        if _dip is None:
-            return
-        _dip.reconcile_pending_approval(
+        result = _dip.reconcile_pending_approval(
             run_id, pending_approval_id=_open_approval_id(events)
         )
-    except Exception:  # a projection must never break a status/events read
-        pass
+    except Exception:  # never break a read; an errored ingest cannot confirm pending
+        return _DURABLE_UNKNOWN_STATUS
+    if result == _dip.PROJECTION_ACCEPTED:
+        return _rc.AWAITING_APPROVAL
+    if result == _dip.PROJECTION_UNAVAILABLE:
+        return _DURABLE_UNKNOWN_STATUS
+    return None  # none / not-accepted: not durably pending -> base status
+
+
+def rebuild_kanban_approval_projection(conn, run_id: str) -> int:
+    """Rebuild the kanban approval transport projection FROM the canonical durable
+    RunStore (D2 P1 rebuildability): append any APPROVAL_REQUEST / APPROVAL_DECISION
+    the durable store records but kanban is missing. Proves kanban is a rebuildable
+    projection of the authority, not a second authority. Returns the number of events
+    rebuilt; a no-op when durable ingress is off. Idempotent."""
+    _dip = _durable_ingress_active()
+    if _dip is None:
+        return 0
+    kevents = kb.list_events(conn, run_id)
+    have_req = {(e.payload or {}).get("approval_id") for e in kevents
+                if e.kind == _rc.APPROVAL_REQUEST}
+    have_dec = {(e.payload or {}).get("approval_id") for e in kevents
+                if e.kind == _rc.APPROVAL_DECISION}
+    rebuilt = 0
+    for de in _dip.durable_approval_events(run_id):
+        aid = de.get("approval_id")
+        if de["kind"] == "request" and aid not in have_req:
+            kb._append_event(conn, run_id, _rc.APPROVAL_REQUEST, {"approval_id": aid})
+            have_req.add(aid)
+            rebuilt += 1
+        elif de["kind"] == "decision" and aid not in have_dec:
+            kb._append_event(conn, run_id, _rc.APPROVAL_DECISION,
+                             {"approval_id": aid, "decision": de["decision"],
+                              "by": "rebuild-from-runstore"})
+            have_dec.add(aid)
+            rebuilt += 1
+    return rebuilt
 
 
 def _ensure_kanban_decision(conn, task_id, approval_id, decision, by, events) -> None:
@@ -2055,8 +2113,8 @@ async def runtime_run_detail(
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
             task = _load_owned_task(conn, run_id, identity)
             events = kb.list_events(conn, task.id)
-            # D2 gap 1: project a pending worker approval request into durable state.
-            _maybe_project_durable_approval(run_id, events)
+            # D2 P1: _run_detail derives awaiting_approval from the durable authority
+            # (ingest-then-publish); no separate fire-and-forget projection.
             return _run_detail(conn, task, cancelled=_is_cancelled(events))
 
     return await run_in_threadpool(_detail)
@@ -2083,14 +2141,13 @@ async def runtime_run_events(
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
             task = _load_owned_task(conn, run_id, identity)
             all_events = kb.list_events(conn, task.id)
-            # D2 gap 1: project a pending worker approval request into durable state.
-            _maybe_project_durable_approval(run_id, all_events)
             cancelled = _is_cancelled(all_events)
             fresh = [e for e in all_events if e.id > after][:limit]
             cursor = fresh[-1].id if fresh else after
             status = _run_status(
                 task, cancelled=cancelled,
-                interactive=_interactive_status(all_events),
+                # D2 P1: awaiting_approval only if the durable authority accepted it.
+                interactive=_interactive_status_durable(run_id, all_events),
             )
         return {
             "events": [_event_projection(run_id, e) for e in fresh],

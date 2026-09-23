@@ -216,6 +216,72 @@ def test_authority_loss_fails_closed(enabled):
         dip.prior_approval_decision("t_al", "ap1")
 
 
+# ------- P1: reconcile is truthful (typed result, never a false pending) ------ #
+def test_reconcile_result_accepted(enabled):
+    dip.acquire_ingress_authority()
+    _admit(run_id="t_ra")
+    assert dip.reconcile_pending_approval("t_ra", pending_approval_id="ap1") == \
+        dip.PROJECTION_ACCEPTED
+    assert dip.get_ingress_authority().get_run("t_ra")["state"] == RunState.WAITING_APPROVAL.value
+    assert dip.reconcile_pending_approval("t_ra", pending_approval_id="ap1") == \
+        dip.PROJECTION_ACCEPTED  # idempotent: already-open also ACCEPTED
+
+
+def test_reconcile_result_none_when_nothing_or_decided(enabled):
+    dip.acquire_ingress_authority()
+    _admit(run_id="t_rn")
+    assert dip.reconcile_pending_approval("t_rn", pending_approval_id=None) == dip.PROJECTION_NONE
+    dip.open_managed_approval("t_rn", approval_id="ap1")
+    dip.decide_managed_approval("t_rn", approval_id="ap1", decision="approve", **_SCOPE)
+    assert dip.reconcile_pending_approval("t_rn", pending_approval_id="ap1") == dip.PROJECTION_NONE
+
+
+def test_reconcile_result_unavailable_on_loss(enabled):
+    dip.acquire_ingress_authority()
+    _admit(run_id="t_ru")
+    dip._on_lost("advisory lock lost")
+    # a lost authority MUST report UNAVAILABLE, never silently succeed (the P1 lie)
+    assert dip.reconcile_pending_approval("t_ru", pending_approval_id="ap1") == \
+        dip.PROJECTION_UNAVAILABLE
+
+
+def test_reconcile_result_unavailable_when_disabled(monkeypatch):
+    monkeypatch.delenv("YOUTAB_AGENT_DURABLE_INGRESS", raising=False)
+    dip.reset_for_tests()
+    assert dip.reconcile_pending_approval("t_x", pending_approval_id="ap1") == \
+        dip.PROJECTION_UNAVAILABLE
+
+
+def test_reconcile_no_poll_leaves_durable_not_pending(enabled):
+    """Without an observation (no reconcile), the durable run is NOT falsely pending;
+    the request lives only in kanban until the authority accepts it."""
+    dip.acquire_ingress_authority()
+    _admit(run_id="t_npoll")
+    assert dip.get_ingress_authority().get_run("t_npoll")["state"] == RunState.QUEUED.value
+
+
+def test_reconcile_after_restart_before_first_observation(enabled):
+    dip.acquire_ingress_authority()
+    _admit(run_id="t_rst")
+    dip.reset_for_tests()               # restart BEFORE any observation
+    dip.acquire_ingress_authority()     # takeover: prior nonterminal -> UNKNOWN
+    auth = dip.get_ingress_authority()
+    assert auth.get_run("t_rst")["state"] == RunState.UNKNOWN.value  # not a false pending
+    assert dip.reconcile_pending_approval("t_rst", pending_approval_id="ap1") == \
+        dip.PROJECTION_ACCEPTED         # first observation ingests under new authority
+    assert auth.get_run("t_rst")["state"] == RunState.WAITING_APPROVAL.value
+
+
+def test_durable_approval_events_source_for_rebuild(enabled):
+    dip.acquire_ingress_authority()
+    _admit(run_id="t_de")
+    dip.open_managed_approval("t_de", approval_id="ap1")
+    dip.decide_managed_approval("t_de", approval_id="ap1", decision="deny", **_SCOPE)
+    evs = dip.durable_approval_events("t_de")
+    assert {"kind": "request", "approval_id": "ap1"} in evs
+    assert {"kind": "decision", "approval_id": "ap1", "decision": "deny"} in evs
+
+
 # --------------------------------------------------------------- disabled ---- #
 def test_seams_fail_closed_when_disabled(monkeypatch):
     monkeypatch.delenv("YOUTAB_AGENT_DURABLE_INGRESS", raising=False)

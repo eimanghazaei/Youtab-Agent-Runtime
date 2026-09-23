@@ -1249,3 +1249,81 @@ def test_decision_projection_repaired_on_retry(managed_durable, monkeypatch):
     finally:
         conn.close()
     assert len(kdec2) == 1  # exactly one transport decision after repair
+
+
+# ── D2 P1: pending approval is durable-authoritative on the product surface ───
+def test_no_poll_no_false_durable_pending_then_ingest_on_read(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    # NO poll yet: the durable run is not falsely pending (the request is kanban-only)
+    assert dip.get_ingress_authority().get_run(run_id)["state"] == "QUEUED"
+    # the status read INGESTS before publishing, and only then reports awaiting_approval
+    r = _get_run(client, run_id)
+    assert r.status_code == 200
+    assert r.json()["status"] == "awaiting_approval"
+    assert dip.get_ingress_authority().get_run(run_id)["state"] == "WAITING_APPROVAL"
+
+
+def test_authority_loss_status_is_unknown_not_pending(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    assert _get_run(client, run_id).json()["status"] == "awaiting_approval"
+    # the sole authority is lost: a status read must NOT keep inviting a decision
+    dip._on_lost("simulated advisory-lock loss")
+    r = _get_run(client, run_id)
+    assert r.status_code == 200
+    assert r.json()["status"] == "unknown"          # explicit, not awaiting_approval
+    e = _get_events(client, run_id)
+    assert e.json()["status"] == "unknown" and e.json()["terminal"] is False
+
+
+def test_status_unknown_never_shown_as_pending_without_durable_accept(managed_durable):
+    """A pending kanban request whose durable open cannot be confirmed is published as
+    'unknown', never as a kanban-derived awaiting_approval (the P1 lie)."""
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    dip._on_lost("lost before first poll")
+    assert _get_run(client, run_id).json()["status"] == "unknown"
+
+
+def test_rebuild_kanban_approval_projection_from_runstore(managed_durable):
+    """Kanban is a rebuildable projection: with the approval history ONLY in the
+    durable RunStore, rebuild restores the kanban transport events."""
+    from youtab_agent_cli.web_routers import runtime as _rt
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    # drive the durable authority directly (as the server would), WITHOUT writing the
+    # kanban approval transport events — modelling a lost/rebuilt kanban projection.
+    row = dip.get_ingress_authority().get_run(run_id)  # exact admitted scope
+    dip.open_managed_approval(run_id, approval_id="ap1")
+    dip.decide_managed_approval(run_id, approval_id="ap1", decision="approve",
+                                tenant_id=row["tenant_id"], workspace_id=row["workspace_id"],
+                                principal_id=row["principal_id"])
+    conn = kb.connect(db_path=db_path)
+    try:
+        before = [e for e in kb.list_events(conn, run_id)
+                  if e.kind in (_rc_d2.APPROVAL_REQUEST, _rc_d2.APPROVAL_DECISION)]
+        assert before == []  # kanban has no approval transport events
+        rebuilt = _rt.rebuild_kanban_approval_projection(conn, run_id)
+        assert rebuilt == 2  # request + decision rebuilt from the RunStore
+        kinds = {(e.kind, (e.payload or {}).get("approval_id"),
+                  (e.payload or {}).get("decision"))
+                 for e in kb.list_events(conn, run_id)
+                 if e.kind in (_rc_d2.APPROVAL_REQUEST, _rc_d2.APPROVAL_DECISION)}
+        assert (_rc_d2.APPROVAL_REQUEST, "ap1", None) in kinds
+        assert (_rc_d2.APPROVAL_DECISION, "ap1", "approve") in kinds
+        # idempotent: a second rebuild adds nothing
+        assert _rt.rebuild_kanban_approval_projection(conn, run_id) == 0
+    finally:
+        conn.close()
