@@ -23,14 +23,16 @@ const HEX64 = /^[0-9a-f]{64}$/
 //   pyinstaller 6.22.3 (win32/x64); entry youtab_agent_cli.main via
 //   sidecar_main.py (loopback-only enforced).
 //   ⚠ The PyInstaller onedir freeze is NOT bit-reproducible (clean builds on the
-//   same pinned toolchain gave 54e4823b…, 0b2ba35d…, 60933699…, 83823e99… and
-//   13f2ad93…), so this anchor is a per-RELEASE attestation of one specific
-//   frozen bundle — re-pin it (and rebuild the installer) on every sidecar
-//   build. Re-pinned for the Runtime lanes-integration packaged build that
-//   INCLUDES the attachment-persistence fix (3eac0af5) frozen into run_agent.py
-//   (toolchain unchanged: python 3.12.10, uv 0.8.17, pyinstaller 6.22.3).
+//   same pinned toolchain gave 54e4823b…, 0b2ba35d…, 60933699…, 83823e99…,
+//   13f2ad93… and 976c5255…), so this anchor is a per-RELEASE attestation of one
+//   specific frozen bundle — re-pin it (and rebuild the installer) on every
+//   sidecar build. Re-pinned for the Runtime lanes-integration packaged build
+//   that INCLUDES both the attachment-persistence fix (3eac0af5) and the
+//   prompt-close durability fix (ab33b500, tui_gateway commit-before-complete)
+//   frozen into the backend (toolchain unchanged: python 3.12.10, uv 0.8.17,
+//   pyinstaller 6.22.3).
 export const TRUSTED_SIDECAR_ROOT_DIGEST: string | null =
-  '13f2ad93d08bf3b5368248294ed30d347e3b0276bf45ce3bdf61d792114704fb'
+  '976c52559466a09e1c18ade59c63a04db85e35f0924828b8c4f20318523c5233'
 
 /**
  * Resolve the effective trust anchor: an operator/CI env override (must be a
