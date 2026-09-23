@@ -341,6 +341,10 @@ jobs:
           # not bit-reproducible; the committed per-release Electron anchor stays
           # unchanged and release packaging still enforces it fail-closed.
           YOUTAB_AGENT_SIDECAR_CI_BUILD_DIGEST: ${{ steps.sidecar_build.outputs.digest }}
+          # test:desktop:all runs npm run pack. Qualify only this unpacked CI
+          # package against the sidecar built above; release dist stays pinned.
+          YOUTAB_AGENT_SIDECAR_CI_QUALIFICATION: "1"
+          YOUTAB_AGENT_SIDECAR_TRUSTED_DIGEST: ${{ steps.sidecar_build.outputs.digest }}
         run: npm run check
 
   # Windows portability gate (WAVE-23). The wake-word job already runs ON

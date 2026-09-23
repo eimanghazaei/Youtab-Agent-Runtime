@@ -52,12 +52,15 @@ if (dist && fs.existsSync(distBinary(dist))) {
 // extraResources → <resourcesPath>/backend-sidecar so the packaged app runs the
 // backend without a system Python/uv.
 //
-// TWO EXPLICIT MODES (fail-closed by default):
-//   • RELEASE / qualification (default): the sidecar bundle, manifest.json,
+// THREE EXPLICIT MODES (fail-closed by default):
+//   • RELEASE (default): the sidecar bundle, manifest.json,
 //     sbom.json and sidecar-root-digest.txt MUST be present, and the bundle's
 //     recomputed root digest MUST equal the committed digest AND the embedded
 //     Electron trust anchor. Any gap aborts the build — a production installer
 //     can never silently ship a shell-only package.
+//   • CI qualification: GitHub Actions may package only an unpacked --dir app
+//     from the sidecar built in this job. Its captured digest must match the
+//     digest file, bundle bytes and runtime override. This is not a release.
 //   • DEVELOPER (opt-in only): pass --allow-no-sidecar (or set
 //     YOUTAB_AGENT_DESKTOP_ALLOW_NO_SIDECAR=1) to package without the sidecar,
 //     e.g. for a UI-only local build. Never used by dist:*.
@@ -71,6 +74,7 @@ const passthrough = process.argv.slice(2)
 const allowNoSidecar =
   passthrough.includes("--allow-no-sidecar") || process.env.YOUTAB_AGENT_DESKTOP_ALLOW_NO_SIDECAR === "1"
 const sidecarPassthrough = passthrough.filter((a) => a !== "--allow-no-sidecar")
+const ciQualification = process.env.YOUTAB_AGENT_SIDECAR_CI_QUALIFICATION === "1"
 
 const sidecarOutDir = path.resolve("build/backend-sidecar")
 const sidecarBundle = path.join(sidecarOutDir, "dist/youtab-backend")
@@ -109,9 +113,21 @@ async function enforceSidecar() {
   const anchorMatch = anchorSrc.match(/TRUSTED_SIDECAR_ROOT_DIGEST[^'"]*['"]([0-9a-f]{64})['"]/)
   const anchor = anchorMatch ? anchorMatch[1] : null
   if (!anchor) abort("Electron trust anchor TRUSTED_SIDECAR_ROOT_DIGEST is not pinned (null)")
-  if (anchor !== actual) abort(`Electron trust anchor ${anchor} != bundle digest ${actual}`)
-
-  console.log(`[run-electron-builder] sidecar integrity OK — root digest ${actual} matches committed + trust anchor`)
+  if (ciQualification) {
+    if (process.env.CI !== "true" || process.env.GITHUB_ACTIONS !== "true" ||
+        !sidecarPassthrough.includes("--dir")) {
+      abort("CI qualification requires GitHub Actions and unpacked --dir packaging")
+    }
+    const captured = parseTrustedDigest(process.env.YOUTAB_AGENT_SIDECAR_CI_BUILD_DIGEST)
+    const runtimeOverride = parseTrustedDigest(process.env.YOUTAB_AGENT_SIDECAR_TRUSTED_DIGEST)
+    if (!captured || captured !== actual || runtimeOverride !== actual) {
+      abort("CI qualification digest must match the captured build, bundle and runtime override")
+    }
+    console.log(`[run-electron-builder] CI-only unpacked qualification: sidecar root digest ${actual} matches this build`)
+  } else {
+    if (anchor !== actual) abort(`Electron trust anchor ${anchor} != bundle digest ${actual}`)
+    console.log(`[run-electron-builder] sidecar integrity OK — root digest ${actual} matches committed + trust anchor`)
+  }
 
   // Append the sidecar to extraResources by writing a COMPLETE merged config
   // file and pointing electron-builder at it. (CLI array-index overrides like
@@ -133,6 +149,7 @@ async function enforceSidecar() {
 }
 
 if (allowNoSidecar) {
+  if (ciQualification) abort("CI qualification cannot omit the sidecar")
   console.warn("[run-electron-builder] --allow-no-sidecar: DEVELOPER package WITHOUT a bundled backend (shell-only).")
 } else {
   await enforceSidecar()
