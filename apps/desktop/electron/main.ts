@@ -174,7 +174,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
-import { resolvePackagedSidecarBackend } from './sidecar-backend'
+import { canUseDeveloperSourceOverride, resolvePackagedSidecarBackend } from './sidecar-backend'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -3816,13 +3816,13 @@ function createActiveBackend(backendArgs) {
 }
 
 function resolveYoutabBackend(backendArgs) {
-  // 1. Explicit override -- YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT points at a developer
-  //    checkout. Honour it as-is (no bootstrap; the user is driving).
+  // 1. Development-only source override. A packaged app must verify and run
+  //    its compiled sidecar; a process environment variable cannot bypass it.
   const overrideRoot =
     process.env.YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT &&
     path.resolve(process.env.YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT)
 
-  if (overrideRoot && isYoutabSourceRoot(overrideRoot)) {
+  if (canUseDeveloperSourceOverride(IS_PACKAGED, overrideRoot, isYoutabSourceRoot)) {
     const backend = createPythonBackend(overrideRoot, `Youtab source at ${overrideRoot}`, backendArgs)
 
     if (backend) {
@@ -3838,8 +3838,7 @@ function resolveYoutabBackend(backendArgs) {
   //     unverifiable bundle returns a 'sidecar-refused' backend that ensureRuntime
   //     surfaces as a visible boot failure instead of silently downgrading.
   //     Dev mode (isPackaged=false) returns null → the source/venv chain below.
-  //     An explicit YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT override (step 1) still
-  //     wins so a developer can drive a packaged build against a checkout.
+  //     Source overrides are only honored in development (step 1).
   const sidecarBackend = resolvePackagedSidecarBackend(backendArgs, {
     isPackaged: IS_PACKAGED,
     resourcesPath: process.resourcesPath,

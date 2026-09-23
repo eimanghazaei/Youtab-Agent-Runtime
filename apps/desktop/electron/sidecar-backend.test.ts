@@ -7,13 +7,21 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { resolvePackagedSidecarBackend } from './sidecar-backend'
+import { canUseDeveloperSourceOverride, resolvePackagedSidecarBackend } from './sidecar-backend'
+import { TRUSTED_SIDECAR_ROOT_DIGEST } from './sidecar-trusted-digest'
 
 const DIGEST = 'a'.repeat(64)
 const ARGS = ['serve', '--host', '127.0.0.1', '--port', '0']
 
 test('dev mode (not packaged) returns null → existing source/venv chain', () => {
   assert.equal(resolvePackagedSidecarBackend(ARGS, { isPackaged: false }), null)
+})
+
+test('a source-root override cannot bypass the bundled sidecar in a packaged app', () => {
+  const validRoot = () => true
+  assert.equal(canUseDeveloperSourceOverride(true, '/trusted-looking/source', validRoot), false)
+  assert.equal(canUseDeveloperSourceOverride(false, '/trusted-looking/source', validRoot), true)
+  assert.equal(canUseDeveloperSourceOverride(false, undefined, validRoot), false)
 })
 
 test('packaged + verified bundle → command backend with serve args and no argv secret', () => {
@@ -49,6 +57,23 @@ test('packaged + tampered bundle → sidecar-refused (fail closed)', () => {
   assert.equal(b!.kind, 'sidecar-refused')
   assert.equal((b as any).sidecarRefusal.reason, 'digest-mismatch')
   assert.equal((b as any).command, null)
+})
+
+test('packaged sidecar ignores an environment-supplied replacement digest', () => {
+  const replacement = 'b'.repeat(64)
+
+  const b = resolvePackagedSidecarBackend(ARGS, {
+    isPackaged: true,
+    resourcesPath: '/app/resources',
+    platform: 'linux',
+    fileExists: () => true,
+    env: { YOUTAB_AGENT_SIDECAR_TRUSTED_DIGEST: replacement },
+    computeDigest: () => replacement
+  })
+
+  assert.equal(b!.kind, 'sidecar-refused')
+  assert.equal((b as any).sidecarRefusal.reason, 'digest-mismatch')
+  assert.equal((b as any).sidecarRefusal.expected, TRUSTED_SIDECAR_ROOT_DIGEST)
 })
 
 test('packaged + missing bundle but anchor pinned → sidecar-refused (release must ship it)', () => {

@@ -14,7 +14,7 @@
 // Composed from the pure sidecar modules so it is unit-testable without Electron.
 import { decideSidecarLaunch, type SidecarLaunchDecision } from './sidecar-integrity'
 import { resolveSidecarPaths } from './sidecar-resolve'
-import { resolveTrustedSidecarDigest } from './sidecar-trusted-digest'
+import { TRUSTED_SIDECAR_ROOT_DIGEST } from './sidecar-trusted-digest'
 
 export interface SidecarBackendDeps {
   isPackaged: boolean
@@ -22,10 +22,11 @@ export interface SidecarBackendDeps {
   repoRoot?: string | null
   platform?: NodeJS.Platform
   fileExists?: (p: string) => boolean
-  /** Trust anchor (defaults to the embedded/env-resolved value). */
+  /** Test injection; production defaults to the embedded trust anchor. */
   trustedDigest?: string | null
   /** Injectable digest computation (defaults to the real bundle walk). */
   computeDigest?: (dir: string) => string
+  /** Retained for caller compatibility; cannot override packaged trust. */
   env?: NodeJS.ProcessEnv
 }
 
@@ -55,6 +56,14 @@ export interface SidecarRefusedBackend {
 
 export type SidecarBackend = SidecarCommandBackend | SidecarRefusedBackend
 
+export function canUseDeveloperSourceOverride(
+  isPackaged: boolean,
+  overrideRoot: string | undefined,
+  isSourceRoot: (root: string) => boolean
+): boolean {
+  return !isPackaged && !!overrideRoot && isSourceRoot(overrideRoot)
+}
+
 /**
  * Resolve the packaged sidecar backend, or null to fall through to the caller's
  * normal runtime-resolution chain (dev mode, or a packaged build that ships no
@@ -75,7 +84,9 @@ export function resolvePackagedSidecarBackend(backendArgs: string[], deps: Sidec
     platform: deps.platform
   })
 
-  const trustedDigest = deps.trustedDigest !== undefined ? deps.trustedDigest : resolveTrustedSidecarDigest(deps.env)
+  // A packaged app must not accept an environment-supplied replacement for
+  // the compiled sidecar digest. Developer tests may inject trustedDigest.
+  const trustedDigest = deps.trustedDigest !== undefined ? deps.trustedDigest : TRUSTED_SIDECAR_ROOT_DIGEST
 
   // No resolvable path (packaged without a resourcesPath): only fail closed if
   // a trust anchor is pinned (a release build expected a sidecar); otherwise
