@@ -1,0 +1,43 @@
+# CodeQL security-and-quality analysis with a local SARIF gate.
+# GitHub Code Scanning uploads are unavailable for this repository. The job
+# must fail on a missing SARIF, malformed SARIF, or unsuppressed finding rather
+# than reporting a green check after an upload/configuration error.
+name: CodeQL local gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "27 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-and-quality
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        with:
+          category: "/language:${{ matrix.language }}"
+          upload: never
+          upload-database: false
+          output: results
+      - name: Fail on CodeQL findings or missing SARIF
+        run: python scripts/youtab/codeql_sarif_gate.py results
