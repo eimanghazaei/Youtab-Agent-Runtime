@@ -1,38 +1,20 @@
-# CodeQL dataflow SAST (WAVE-27, advisory).
-#
-# The existing `python-security` gate runs ruff's flake8-bandit S-rules
-# (scripts/youtab/sast_gate.py) — a fast, single-file, pattern-based linter. It
-# does NOT do interprocedural taint tracking, so a source→sink flow that crosses
-# functions or modules (untrusted input reaching a subprocess/eval/SQL/SSRF sink)
-# is invisible to it. CodeQL closes that gap with real dataflow analysis over the
-# whole Python and JavaScript trees.
-#
-# ADVISORY, not required: this is a NEW workflow in its own file, deliberately
-# NOT added to the `main-required-gates` ruleset and NOT a job in youtab-ci.yml,
-# so it never blocks a PR and does not change the set of check contexts the
-# wake-word promotion gate mirrors (that gate reads youtab-ci.yml only). Making
-# it a required status is a separate Owner decision once it has run clean.
-#
-# Every third-party action is pinned to a 40-hex commit SHA, matching
-# scripts/youtab/dependency_gate.py, which scans EVERY file under
-# .github/workflows/ (this one included) and fails the required python-security
-# job on any un-pinned `uses:`. The checkout/setup SHAs are the exact ones
-# youtab-ci.yml already uses; the codeql-action SHA is github/codeql-action tag
-# v3 (6f5948dfacef28e207b48d0905cf90c03365536d).
-name: CodeQL
+# CodeQL security-and-quality analysis with a reviewed existing-debt baseline.
+# GitHub Code Scanning uploads are unavailable for this repository. The job
+# must fail on a missing SARIF, malformed SARIF, or new unsuppressed finding rather
+# than reporting a green check after an upload/configuration error.
+name: CodeQL no-new-findings gate
 
 on:
   push:
     branches: [main]
   pull_request:
   schedule:
-    # Weekly, so a newly-published advisory is caught even with no code change.
     - cron: "27 3 * * 1"
   workflow_dispatch:
 
 permissions:
   contents: read
-  security-events: write
+  actions: read
 
 jobs:
   analyze:
@@ -46,20 +28,43 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Record changed source paths
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git diff --name-only -z "$BASE_SHA" HEAD > changed-files.bin
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            echo "Pull request base commit unavailable; cannot verify changed-file extraction" >&2
+            exit 1
+          elif git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --name-only -z HEAD^ HEAD > changed-files.bin
+          else
+            : > changed-files.bin
+          fi
       - name: Initialize CodeQL
         uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3
         with:
           languages: ${{ matrix.language }}
           queries: security-and-quality
-      # continue-on-error: the SARIF upload step reports alerts into the
-      # repository's Code Scanning view, which requires GitHub code scanning /
-      # Advanced Security to be ENABLED on the repo — an Owner/org setting. Until
-      # then the upload returns "Resource not accessible by integration" and the
-      # analysis (which runs fine) would otherwise mark this advisory workflow
-      # red. Kept non-fatal so it never masquerades as a required failure;
-      # enabling code scanning surfaces the alerts (PENDING_OWNER_ACTION).
       - name: Perform CodeQL analysis
-        continue-on-error: true
         uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
         with:
           category: "/language:${{ matrix.language }}"
+          upload: never
+          upload-database: false
+          output: results
+      - name: Preserve SARIF for finding triage
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codeql-sarif-${{ matrix.language }}-${{ github.sha }}
+          path: results/*.sarif
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Fail on new CodeQL findings or missing SARIF
+        run: python scripts/youtab/codeql_sarif_gate.py results scripts/youtab/codeql_baselines/${{ matrix.language }}.json changed-files.bin

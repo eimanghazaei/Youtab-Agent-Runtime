@@ -87,7 +87,14 @@ def _run_lifecycle_child(mode):
     with tempfile.TemporaryDirectory() as tmp:
         log = os.path.join(tmp, "backend-lifecycle.log")
         code = _LIFECYCLE_CHILD.format(here=here, log=log, mode=mode)
-        proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
         with open(log, encoding="utf-8") as fh:
             return proc.returncode, fh.read()
 

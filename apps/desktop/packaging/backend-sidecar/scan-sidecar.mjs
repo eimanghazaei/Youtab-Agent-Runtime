@@ -12,9 +12,10 @@
 //
 // Usage: node apps/desktop/packaging/backend-sidecar/scan-sidecar.mjs
 //
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { collectBundleTree, validateBundleLinks, validateBundleTree } from './root-digest.mjs'
 
 // EICAR test signature (must never be present). Split so this source file does
 // not itself contain the full trigger string.
@@ -31,15 +32,17 @@ const devPaths = [/C:\\Users\\eiman/i, /[\\/]rt-px-dep[\\/]/i, /AppData[\\/]Loca
 // secret-ish content
 const secretPat = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /xox[baprs]-[0-9A-Za-z-]+/, /ghp_[0-9A-Za-z]{20,}/, /AKIA[0-9A-Z]{16}/, /aws_secret_access_key/i, /["']?(api[_-]?key|secret|token|password)["']?\s*[:=]\s*["'][A-Za-z0-9/_+.=-]{16,}["']/]
 // forbidden attribution
-const attribPat = [/Co-Authored-By:\s*Claude/i, /Generated with \[?Claude/i, /anthropic\.com/i]
+const attribPat = [/Co-Authored-By:\s*Claude/i, /Generated with \[?Claude/i]
+const maxScanBytes = 8 * 1024 * 1024
 
-function walk(d, acc = []) {
-  for (const n of readdirSync(d)) {
-    const p = join(d, n)
-    statSync(p).isDirectory() ? walk(p, acc) : acc.push(p)
+function containsAttributionDomain(text) {
+  // Scan host-like tokens in arbitrary text; this does not authorize a URL.
+  // Exact terminal labels avoid mistaking lookalikes for the attribution host.
+  for (const match of text.matchAll(/[A-Za-z0-9.-]+/g)) {
+    const labels = match[0].replace(/^\.+|\.+$/g, '').toLowerCase().split('.')
+    if (labels.at(-2) === 'anthropic' && labels.at(-1) === 'com') return true
   }
-
-  return acc
+  return false
 }
 
 /**
@@ -47,10 +50,23 @@ function walk(d, acc = []) {
  * Pure (no process exit, no file writes) so it is unit-testable.
  */
 export function scanBundle(bundleRoot) {
-  const files = walk(bundleRoot)
   const findings = []
   const add = (severity, rule, file, detail) =>
     findings.push({ severity, rule, file: relative(bundleRoot, file).split('\\').join('/'), detail })
+  let tree
+  try {
+    // The digest builder and scanner share one static-tree policy. Symlinks
+    // are aliases to existing physical paths, never directories to recurse.
+    tree = collectBundleTree(bundleRoot)
+  } catch (error) {
+    add('high', 'unsafe-bundle-tree', bundleRoot, String(error))
+    return { scanned_files: 0, findings, findings_by_severity: { high: 1 } }
+  }
+  const { files, links, rootReal } = tree
+  for (const link of links) {
+    const name = basename(link.path)
+    if (badNames.some(re => re.test(name))) add('high', 'forbidden-filename', link.path, name)
+  }
 
   for (const f of files) {
     const name = basename(f)
@@ -60,17 +76,34 @@ export function scanBundle(bundleRoot) {
     }
 
     let buf
+    let fd
 
     try {
-      const st = statSync(f)
+      // Keep metadata and content on the same opened file. O_NOFOLLOW stops a
+      // symlink from redirecting the scan outside the bundle between steps.
+      fd = openSync(f, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+      const st = fstatSync(fd)
 
-      if (st.size > 8 * 1024 * 1024) {
+      if (!st.isFile() || st.size > maxScanBytes) {
         continue
       }
 
-      buf = readFileSync(f)
+      buf = Buffer.alloc(st.size)
+      let offset = 0
+      while (offset < st.size) {
+        const count = readSync(fd, buf, offset, st.size - offset, null)
+        if (count === 0) throw new Error('file shortened during scan')
+        offset += count
+      }
+      const after = fstatSync(fd)
+      if (after.size !== st.size || after.mtimeMs !== st.mtimeMs || !lstatSync(f).isFile()) {
+        throw new Error('file changed during scan')
+      }
     } catch {
+      add('high', 'scan-unreadable', f, 'file could not be scanned safely')
       continue
+    } finally {
+      if (fd !== undefined) closeSync(fd)
     }
 
     // skip obvious binaries for content scan (but still name-checked above)
@@ -89,6 +122,16 @@ export function scanBundle(bundleRoot) {
     for (const re of secretPat) if (re.test(text)) add('high', 'secret-material', f, re.source.slice(0, 40))
     for (const re of devPaths) if (re.test(text)) add('high', 'machine-local-path', f, re.source)
     for (const re of attribPat) if (re.test(text)) add('medium', 'forbidden-attribution', f, re.source)
+    if (containsAttributionDomain(text)) {
+      add('medium', 'forbidden-attribution', f, 'anthropic.com')
+    }
+  }
+
+  try {
+    validateBundleLinks(links, rootReal)
+    validateBundleTree(tree, bundleRoot)
+  } catch (error) {
+    add('high', 'unsafe-bundle-tree', bundleRoot, String(error))
   }
 
   const findings_by_severity = findings.reduce((a, f) => ((a[f.severity] = (a[f.severity] || 0) + 1), a), {})

@@ -4,9 +4,9 @@
 //
 // Run: npx vitest run --project electron packaging/backend-sidecar/scan-sidecar.test.mjs
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { afterEach, test } from 'vitest'
 
 import { EICAR, blockingCount, scanBundle } from './scan-sidecar.mjs'
@@ -75,6 +75,93 @@ test('POSITIVE: forbidden AI/Claude attribution is flagged', () => {
   const attribution = 'Co-Authored' + '-By: ' + 'Claude Opus (noreply@' + 'anthropic' + '.com)'
   const r = scanBundle(fixture({ 'notice.txt': attribution }))
   assert.ok(rules(r).includes('forbidden-attribution'))
+})
+
+test('POSITIVE: case-insensitive attribution host substring is flagged', () => {
+  const r = scanBundle(fixture({ 'notice.txt': 'reference: HTTPS://docs.AnThRoPiC.CoM/legal' }))
+  assert.ok(r.findings.some(x => x.rule === 'forbidden-attribution' && x.detail === 'anthropic.com'))
+})
+
+test('POSITIVE: attribution host at sentence boundary is flagged', () => {
+  const r = scanBundle(fixture({ 'notice.txt': 'noreply@anthropic.com. End of notice.' }))
+  assert.ok(r.findings.some(x => x.rule === 'forbidden-attribution' && x.detail === 'anthropic.com'))
+})
+
+test('NEGATIVE: attribution lookalike host labels do not match', () => {
+  const r = scanBundle(fixture({
+    'notice.txt': 'xanthropic.com anthropic.com.evil anthropic.company -anthropic.com'
+  }))
+  assert.equal(r.findings.filter(x => x.rule === 'forbidden-attribution').length, 0)
+})
+
+test('POSITIVE: in-bundle file and directory symlinks remain valid without duplicate traversal', () => {
+  const root = fixture({ 'nested/key.txt': '-----BEGIN OPENSSH PRIVATE KEY-----\nabc' })
+  try {
+    symlinkSync('nested/key.txt', join(root, 'key-alias.txt'))
+    symlinkSync('nested', join(root, 'nested-alias'), 'dir')
+  } catch (error) {
+    if (error.code === 'EPERM') return // Windows without symlink privilege
+    throw error
+  }
+  const r = scanBundle(root)
+  assert.equal(r.scanned_files, 1)
+  assert.equal(r.findings.filter(x => x.rule === 'secret-material').length, 1)
+  assert.equal(r.findings.filter(x => x.rule === 'unsafe-symlink').length, 0)
+})
+
+test('POSITIVE: a symlink cannot redirect content scanning outside the bundle', () => {
+  const outside = fixture({ 'secret.txt': 'ordinary content' })
+  const root = fixture({ 'safe.txt': 'ordinary content' })
+  try {
+    symlinkSync(relative(root, join(outside, 'secret.txt')), join(root, 'redirect.txt'))
+  } catch (error) {
+    if (error.code === 'EPERM') return // Windows without symlink privilege
+    throw error
+  }
+  const r = scanBundle(root)
+  assert.ok(r.findings.some(x => x.rule === 'unsafe-bundle-tree'))
+  assert.ok(blockingCount(r.findings) > 0)
+})
+
+test('POSITIVE: dangling and cyclic symlinks are blocking', () => {
+  const root = fixture({ 'safe.txt': 'ordinary content' })
+  try {
+    symlinkSync('missing.txt', join(root, 'dangling.txt'))
+    symlinkSync('cycle-b.txt', join(root, 'cycle-a.txt'))
+    symlinkSync('cycle-a.txt', join(root, 'cycle-b.txt'))
+  } catch (error) {
+    if (error.code === 'EPERM') return // Windows without symlink privilege
+    throw error
+  }
+  const r = scanBundle(root)
+  assert.ok(r.findings.some(x => x.rule === 'unsafe-bundle-tree'))
+  assert.ok(blockingCount(r.findings) > 0)
+})
+
+test('POSITIVE: directory symlink back to bundle root is blocking', () => {
+  const root = fixture({ 'nested/safe.txt': 'ordinary content' })
+  try {
+    symlinkSync('..', join(root, 'nested', 'back'), 'dir')
+  } catch (error) {
+    if (error.code === 'EPERM') return
+    throw error
+  }
+  const r = scanBundle(root)
+  assert.ok(r.findings.some(x => x.rule === 'unsafe-bundle-tree'))
+  assert.ok(blockingCount(r.findings) > 0)
+})
+
+test('POSITIVE: absolute symlink inside build root is blocking because it cannot relocate', () => {
+  const root = fixture({ 'target.txt': 'ordinary content' })
+  try {
+    symlinkSync(join(root, 'target.txt'), join(root, 'absolute-alias.txt'))
+  } catch (error) {
+    if (error.code === 'EPERM') return
+    throw error
+  }
+  const r = scanBundle(root)
+  assert.ok(r.findings.some(x => x.rule === 'unsafe-bundle-tree'))
+  assert.ok(blockingCount(r.findings) > 0)
 })
 
 test('NEGATIVE: public CA bundle .pem is NOT flagged by extension', () => {
