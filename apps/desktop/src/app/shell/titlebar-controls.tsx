@@ -9,6 +9,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+import { iconSize, Moon, Sun } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import {
@@ -18,6 +19,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { useTheme } from '@/themes/context'
 
 import { appViewForPath, isOverlayView, SETTINGS_ROUTE } from '../routes'
 
@@ -45,7 +47,12 @@ export type SetTitlebarToolGroup = (id: string, tools: readonly TitlebarTool[], 
 interface TitlebarControlsProps extends ComponentProps<'div'> {
   leftTools?: readonly TitlebarTool[]
   tools?: readonly TitlebarTool[]
-  onOpenSettings: () => void
+  /**
+   * Kept for API compatibility with existing call sites — the Settings gear now
+   * lives in the bottom-left ProfileRail (next to Home), not the titlebar, so
+   * this handler is no longer wired to a titlebar control here.
+   */
+  onOpenSettings?: () => void
 }
 
 /**
@@ -94,7 +101,7 @@ function useModifierHeld(): boolean {
   return held
 }
 
-export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
+export function TitlebarControls({ leftTools = [], tools = [] }: TitlebarControlsProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
@@ -102,6 +109,18 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const sidebarOpen = useStore($sidebarOpen)
+  const { renderedMode, setMode } = useTheme()
+
+  // Day/Night quick toggle. Keyed off the *rendered* mode (what's actually on
+  // screen) so the glyph always matches the canvas: Sun while dark (click → day),
+  // Moon while light (click → night). Flips the existing theme mode setter — no
+  // new theme logic, just a one-click surface for `setMode`.
+  const isDark = renderedMode === 'dark'
+
+  const toggleDayNight = () => {
+    triggerHaptic('open')
+    setMode(isDark ? 'light' : 'dark')
+  }
 
   const toggleHaptics = () => {
     if (!hapticsMuted) {
@@ -161,6 +180,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // Static system tools — always pinned to the screen's right edge.
   const systemTools: TitlebarTool[] = [
     {
+      icon: isDark ? <Sun className={iconSize.md} /> : <Moon className={iconSize.md} />,
+      id: 'day-night',
+      label: isDark ? t.titlebar.switchToDayMode : t.titlebar.switchToNightMode,
+      onSelect: toggleDayNight
+    },
+    {
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
       // LayoutGlyph) — the mod-click telegraphs itself before it happens.
@@ -195,16 +220,6 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       onSelect: () => {
         triggerHaptic('open')
         navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
-      }
-    },
-    {
-      actionId: 'nav.settings',
-      icon: <Codicon name="settings-gear" />,
-      id: 'settings',
-      label: t.titlebar.openSettings,
-      onSelect: () => {
-        triggerHaptic('open')
-        onOpenSettings()
       }
     }
   ]

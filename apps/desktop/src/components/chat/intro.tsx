@@ -146,6 +146,9 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
 
 const WORDMARK = 'YOUTAB AGENT'
 
+// Fixed intro subtitle (overrides the rotating intro-copy taglines).
+const SUBTITLE = 'Welcome to Youtab Agent Runtime - please drop a file path or give Youtab a task.'
+
 function resolveCopy(personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)
 
@@ -158,7 +161,7 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 
 export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
-  const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
+  const copy = { ...resolveCopy(personality, mountSeed + (seed ?? 0)), body: SUBTITLE }
 
   return (
     <div
@@ -168,7 +171,7 @@ export function Intro({ personality, seed }: IntroProps) {
       <div className="w-full min-w-0">
         <p
           aria-label={WORDMARK}
-          className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
+          className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-sans font-bold uppercase leading-[0.9] tracking-[0.02em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
           style={{ '--fit-min': '2.75rem' } as CSSProperties}
         >
           <span>

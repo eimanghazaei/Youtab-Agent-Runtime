@@ -12,12 +12,12 @@ export function Backdrop() {
   }
 
   return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 z-2 opacity-[0.025] mix-blend-difference">
+    <div aria-hidden className="youtab-backdrop pointer-events-none absolute inset-0 z-2 opacity-10">
       <img
         alt=""
-        className="h-[160dvh] w-auto min-w-dvw object-cover object-left-top [filter:invert(var(--backdrop-invert-mul,1))]"
+        className="h-full w-full object-cover object-center"
         fetchPriority="low"
-        src={assetPath('ds-assets/filler-bg0.jpg')}
+        src={assetPath('ds-assets/youtab-bull-bg.jpg')}
       />
     </div>
   )

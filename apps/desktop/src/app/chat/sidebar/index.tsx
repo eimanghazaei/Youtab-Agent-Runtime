@@ -24,6 +24,7 @@ import {
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
+import { FileStack, MessageCircle, Puzzle, SquarePen } from '@/lib/icons'
 import { comboTokens } from '@/lib/keybinds/combo'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
@@ -145,28 +146,28 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
     label: '',
-    icon: props => <Codicon name="robot" {...props} />,
+    icon: props => <SquarePen {...props} />,
     action: 'new-session',
     keybindActionId: 'session.new'
   },
   {
     id: 'skills',
     label: '',
-    icon: props => <Codicon name="symbol-misc" {...props} />,
+    icon: props => <Puzzle {...props} />,
     route: SKILLS_ROUTE,
     keybindActionId: 'nav.skills'
   },
   {
     id: 'messaging',
     label: '',
-    icon: props => <Codicon name="comment" {...props} />,
+    icon: props => <MessageCircle {...props} />,
     route: MESSAGING_ROUTE,
     keybindActionId: 'nav.messaging'
   },
   {
     id: 'artifacts',
     label: '',
-    icon: props => <Codicon name="files" {...props} />,
+    icon: props => <FileStack {...props} />,
     route: ARTIFACTS_ROUTE,
     keybindActionId: 'nav.artifacts'
   }

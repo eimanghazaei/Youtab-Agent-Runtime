@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
-    <meta name="theme-color" content="#0a0a0a" />
+    <meta name="theme-color" content="#041c1c" />
     <link rel="icon" type="image/png" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="shortcut icon" href="/apple-touch-icon.png" />
@@ -19,9 +19,11 @@
         let bg = localStorage.getItem('youtab-boot-background')
         let scheme = localStorage.getItem('youtab-boot-color-scheme')
         if (!bg) {
-          const dark = window.matchMedia('(prefers-color-scheme: dark)').matches
-          bg = dark ? '#111111' : '#f7f7f7'
-          scheme = dark ? 'dark' : 'light'
+          // Fresh install has no stored boot colors yet: pre-paint the Youtab
+          // Teal (LENS_0) canvas that matches the Web Platform default, so the
+          // first frame is the themed dark teal rather than a white/grey flash.
+          bg = '#041c1c'
+          scheme = 'dark'
         }
         document.documentElement.style.backgroundColor = bg
         if (scheme === 'dark' || scheme === 'light') {
