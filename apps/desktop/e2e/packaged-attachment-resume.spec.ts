@@ -106,6 +106,37 @@ function durableUserTurnRecovered(
   }
 }
 
+/** Count durable user messages carrying the caption (for the no-duplicate check). */
+function durableCaptionTurnCount(youtabHome: string): number {
+  const dbPath = path.join(youtabHome, 'state.db')
+  if (!fs.existsSync(dbPath)) return 0
+  let db: DatabaseSync | null = null
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true })
+    const row = db
+      .prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'user' AND content LIKE ?")
+      .get(`%${CAPTION}%`) as { n?: number } | undefined
+    return row ? Number(row.n) : 0
+  } catch {
+    return 0
+  } finally {
+    try { db?.close() } catch { /* ignore */ }
+  }
+}
+
+/** Does the on-disk crash-recovery marker file hold at least one turn entry?
+ * (tui_gateway/turn_marker.py: <home>/desktop/interrupted_turns.json). */
+function crashMarkerHasEntry(youtabHome: string): boolean {
+  const p = path.join(youtabHome, 'desktop', 'interrupted_turns.json')
+  if (!fs.existsSync(p)) return false
+  try {
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'))
+    return data && typeof data === 'object' && Object.keys(data).length > 0
+  } catch {
+    return false
+  }
+}
+
 /** Count live frozen-backend processes owned by the packaged app. */
 function bundledBackendProcessCount(): number {
   try {
@@ -369,5 +400,77 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     expect(recoveredText, 'prompt-close relaunch: no [screenshot] placeholder').not.toContain('[screenshot]')
     expect(recoveredText, 'prompt-close relaunch: no literal @image: leak').not.toContain('@image:')
     await page2.screenshot({ path: testInfo.outputPath('packaged-promptclose-relaunch.png') })
+  })
+
+  // FAULT-INJECTED durability across the REAL handler/finalizer + a process
+  // relaunch: force the transcript commit to FAIL on the first turn (env seam,
+  // exercised in the frozen backend), then prove the turn is NOT falsely acked
+  // durable, its crash-recovery marker SURVIVES the prompt close, and a relaunch
+  // (fault off) recovers + commits the turn exactly once (no duplicate).
+  test('injected commit failure keeps the recovery marker; relaunch recovers once (no duplicate)', async ({}, testInfo) => {
+    test.skip(!packagedBinaryExists(), 'requires the packaged binary — run npm run dist:win first')
+    test.slow()
+    test.setTimeout(600_000)
+
+    mock = await startMockServer()
+    sandbox = createSandbox('packaged-attach-fault')
+    writeMockProviderConfig(sandbox.youtabHome, mock.url, undefined, NATIVE_IMAGE_CONFIG)
+    writeEnvFile(sandbox.youtabHome)
+
+    // Launch 1 with the commit fault armed (fail the first transcript commit).
+    ;({ app } = await launchPackagedAppRealBackend(sandbox, {
+      YOUTAB_AGENT_GATEWAY_TEST_PERSIST_FAULT: '1',
+    }))
+    const page1 = await app.firstWindow()
+    await waitForAppReady({ page: page1, app } as never, 240_000)
+
+    const composer = await focusComposer(page1)
+    await composer.type(CAPTION, { delay: 10 })
+    await pasteImage(page1)
+    await page1.locator('[data-slot="composer-attachments"]').waitFor({ state: 'visible', timeout: 30_000 })
+    await page1.keyboard.press('Enter')
+    // The turn reaches a terminal frame (the commit failed → recoverable error).
+    await expect
+      .poll(() => page1.getByRole('button', { name: 'Stop' }).count(), { timeout: 180_000 })
+      .toBe(0)
+
+    // The failed commit must NOT be falsely durable, and the on-disk crash
+    // marker must be preserved (the recovery carrier that survives a process
+    // death — not the in-memory retained turn).
+    expect(
+      durableUserTurnRecovered(sandbox.youtabHome),
+      'a failed commit must NOT be falsely persisted as durable',
+    ).toBe(false)
+    await expect
+      .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), { timeout: 30_000, message: 'crash-recovery marker must be preserved on a failed commit' })
+      .toBe(true)
+
+    // Prompt close the whole tree; the on-disk marker must survive it.
+    await closePackagedApp(app)
+    app = null
+    await expect.poll(() => bundledBackendProcessCount(), { timeout: 20_000 }).toBe(0)
+    expect(
+      crashMarkerHasEntry(sandbox.youtabHome),
+      'the crash-recovery marker must survive the prompt close',
+    ).toBe(true)
+
+    // Relaunch WITHOUT the fault: session.resume finds the marker and re-runs
+    // the turn, which now commits. It must commit EXACTLY ONCE (no duplicate)
+    // and clear the marker once durable.
+    ;({ app } = await launchPackagedAppRealBackend(sandbox))
+    const page2 = await app.firstWindow()
+    await waitForAppReady({ page: page2, app } as never, 240_000)
+    await expect
+      .poll(() => durableCaptionTurnCount(sandbox!.youtabHome), {
+        timeout: 180_000,
+        intervals: [2000, 3000, 5000],
+        message: 'relaunch must recover + durably commit the turn exactly once',
+      })
+      .toBe(1)
+    // Marker retired once the recovery turn committed durably.
+    await expect
+      .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), { timeout: 60_000, message: 'marker must be retired after a durable recovery commit' })
+      .toBe(false)
+    await page2.screenshot({ path: testInfo.outputPath('packaged-fault-recovery.png') })
   })
 })

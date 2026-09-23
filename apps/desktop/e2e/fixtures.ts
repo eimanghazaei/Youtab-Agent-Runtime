@@ -582,12 +582,13 @@ export interface PackagedAppFixture {
  */
 export async function launchPackagedAppRealBackend(
   sandbox: Sandbox,
+  extraEnv: Record<string, string> = {},
 ): Promise<{ app: ElectronApplication; page: Page }> {
   if (!packagedBinaryExists()) {
     throw new Error(`Built app binary not found: ${PACKAGED_BINARY_PATH}. Run 'npm run dist:win' first.`)
   }
 
-  const env = buildAppEnv(sandbox)
+  const env = buildAppEnv(sandbox, extraEnv)
   // Use the packaged binary's OWN bundled renderer + bundled sidecar backend,
   // not the dev checkout: without the root override, main.ts resolves the
   // packaged sidecar (IS_PACKAGED) instead of a dev venv/source.
