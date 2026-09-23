@@ -37,7 +37,13 @@ services:
     environment:
       # Require the PostgreSQL durable RunStore backend (fail-closed in server mode).
       - YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND=postgres
-      - YOUTAB_AGENT_DURABLE_PG_DSN=postgresql://youtab:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/durable
+      # libpq KEYWORD conninfo (NOT a URL) so a password with URI-special chars
+      # (@ : / ? # [ ]) is used verbatim and needs no percent-encoding. Caveat: a
+      # password containing a SPACE or a single-quote must be wrapped/escaped per
+      # libpq rules (password='pass word'); passwords without those work as-is.
+      # (A URL DSN — postgresql://youtab:<pw>@postgres:5432/durable — also works
+      # but then <pw> MUST be percent-encoded.)
+      - YOUTAB_AGENT_DURABLE_PG_DSN=host=postgres port=5432 dbname=durable user=youtab password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
     depends_on:
       postgres:
         condition: service_healthy

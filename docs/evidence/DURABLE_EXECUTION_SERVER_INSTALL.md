@@ -42,6 +42,18 @@ can report healthy. Error messages never include the DSN/credentials.
 - Desktop/local: unchanged — the SQLite backend needs no extra; PostgreSQL is
   never imposed on the desktop installer.
 
+## Passwords with URI-special characters (@ : / ? # [ ])
+`YOUTAB_AGENT_DURABLE_PG_DSN` is passed to psycopg, which accepts BOTH forms:
+- **libpq keyword conninfo** (the compose default): `host=postgres port=5432
+  dbname=durable user=youtab password=<pw>` — the password is verbatim, no
+  percent-encoding. Caveat: a password with a space or single-quote must be
+  libpq-quoted (`password='pa ss'`).
+- **URL DSN**: `postgresql://youtab:<pw>@postgres:5432/durable` — `<pw>` MUST be
+  percent-encoded (a raw `@`/`:`/`/`/`#` mis-parses; verified in
+  `tests/durable_execution/test_p5_dsn_special_chars.py`).
+Live-verified: a password `p@ss:w/rd#1` connects via the keyword form and via a
+percent-encoded URL, and FAILS raw-unencoded in a URL DSN.
+
 ## Server startup
 The shipped server runs `gateway run` (docker-compose `command: ["gateway","run"]`);
 the api_server constructs the run store via `create_run_store()` (env-driven) at
