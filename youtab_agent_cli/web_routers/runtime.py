@@ -2076,7 +2076,7 @@ def ingest_worker_approval_request(conn, run_id: str, *, approval_id: str,
         ("effect_digest", effect_digest), ("action", action), ("mode", mode),
         ("authorization_id", authorization_id), ("checkpoint_digest", checkpoint_digest),
         ("arguments_digest", arguments_digest), ("command_id", command_id),
-    ) if v is not None}
+    )}
     _dip.open_managed_approval(run_id, approval_id=approval_id, payload=payload or None)
     # kanban is a projection of the fenced RunStore — derive it from durable.
     rebuild_kanban_approval_projection(conn, run_id)
@@ -3055,11 +3055,8 @@ def _binding_conflict(prev: "Dict[str, Any]", new: "Dict[str, Any]") -> bool:
     """True if a persisted request binding differs from a new request for the SAME
     approval_id. Any recorded field that changed (including one now missing) is a
     conflict — a changed binding must never silently rebind, even after a decision."""
-    for f in _APPROVAL_BINDING_FIELDS:
-        pv = prev.get(f)
-        if pv is not None and pv != new.get(f):
-            return True
-    return False
+    return not prev.get("binding_complete", False) or any(
+        prev.get(f) != new.get(f) for f in _APPROVAL_BINDING_FIELDS)
 
 
 @router.post("/api/runtime/worker/v1/runs/{run_id}/approval-request")
@@ -3109,14 +3106,15 @@ async def worker_request_approval(
             run_id, authorization_id, effect_digest):
         raise HTTPException(status_code=422, detail={"error": "approval_id_mismatch"})
 
-    def _attest(status: str, extra: "Dict[str, Any]") -> "Dict[str, Any]":
+    def _attest(status: str, binding: "Dict[str, Any]",
+                extra: "Dict[str, Any]") -> "Dict[str, Any]":
         out = {"run_id": run_id, "approval_id": approval_id, "durable": True,
-               "state": status, "effect_digest": effect_digest,
-               "authorization_id": new_binding["authorization_id"],
-               "action": new_binding["action"], "mode": new_binding["mode"],
-               "checkpoint_digest": new_binding["checkpoint_digest"],
-               "arguments_digest": new_binding["arguments_digest"],
-               "command_id": new_binding["command_id"]}
+               "state": status, "effect_digest": binding["effect_digest"],
+               "authorization_id": binding["authorization_id"],
+               "action": binding["action"], "mode": binding["mode"],
+               "checkpoint_digest": binding["checkpoint_digest"],
+               "arguments_digest": binding["arguments_digest"],
+               "command_id": binding["command_id"]}
         out.update(extra)
         return out
 
@@ -3131,13 +3129,13 @@ async def worker_request_approval(
                                     detail={"error": "approval_binding_conflict"})
             prior = _dip.prior_approval_decision(run_id, approval_id)
             if prior is not None:  # decided, same binding — replay the decision
-                return _attest(_approval_status_for_decision(prior), {"decision": prior})
-            # Idempotent: the RunStore already holds THIS approval open. (No UNKNOWN
-            # re-open — ensure_running does not revive UNKNOWN, so an UNKNOWN run's open
-            # raises InvalidTransition below → 409.)
-            state = _dip.durable_run_state(run_id)
-            if existing and state.get("available") and state.get("state") == "WAITING_APPROVAL":
-                return _attest("waiting_approval", {})
+                if not existing:
+                    raise HTTPException(status_code=409,
+                                        detail={"error": "approval_binding_conflict"})
+                return _attest(_approval_status_for_decision(prior), existing[-1],
+                               {"decision": prior})
+            # Even an apparent replay must enter the fenced store transaction:
+            # this read can race another worker's open or a decision.
             with kb.connect_closing(board=RUNTIME_BOARD) as conn:
                 ingest_worker_approval_request(
                     conn, run_id, approval_id=approval_id,
@@ -3148,12 +3146,20 @@ async def worker_request_approval(
                     arguments_digest=new_binding["arguments_digest"],
                     command_id=new_binding["command_id"],
                 )
-            return _attest("waiting_approval", {})
+            committed = [d for d in _dip.durable_approval_events(run_id)
+                         if d["kind"] == "request" and d["approval_id"] == approval_id]
+            if not committed or _binding_conflict(committed[-1], new_binding):
+                raise HTTPException(status_code=503,
+                                    detail={"error": "approval_commit_unverifiable"})
+            return _attest("waiting_approval", committed[-1], {})
         except _dip.AuthorityLost:
             raise HTTPException(status_code=503,
                                 detail={"error": "run_authority_unavailable"})
         except _dip.ApprovalAlreadyOpen:
             raise HTTPException(status_code=409, detail={"error": "another_approval_open"})
+        except _dip.ApprovalBindingConflict:
+            raise HTTPException(status_code=409,
+                                detail={"error": "approval_binding_conflict"})
         except _dip.InvalidTransition:
             # run is not openable (terminal / UNKNOWN / not RUNNING) — never revived.
             raise HTTPException(status_code=409, detail={"error": "run_not_openable"})

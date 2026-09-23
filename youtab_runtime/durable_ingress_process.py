@@ -63,6 +63,7 @@ from youtab_runtime.durable_ingress import (
 )
 from youtab_runtime.durable_run_store import (
     ApprovalAlreadyOpen,
+    ApprovalBindingConflict,
     EffectAlreadyClaimed,
     EffectClaimRefused,
     InvalidTransition,
@@ -427,10 +428,15 @@ def durable_approval_events(run_id: str) -> List[Dict[str, Any]]:
         if k == "approval_request":
             p = ev.get("payload") or {}
             out.append({"kind": "request", "approval_id": aid,
+                        "binding_complete": all(f in p for f in (
+                            "effect_digest", "action", "mode", "authorization_id",
+                            "checkpoint_digest", "arguments_digest", "command_id")),
                         "effect_digest": p.get("effect_digest"),
                         "action": p.get("action"), "mode": p.get("mode"),
                         "authorization_id": p.get("authorization_id"),
-                        "checkpoint_digest": p.get("checkpoint_digest")})
+                        "checkpoint_digest": p.get("checkpoint_digest"),
+                        "arguments_digest": p.get("arguments_digest"),
+                        "command_id": p.get("command_id")})
         elif k in kinds:
             out.append({"kind": "decision", "approval_id": aid, "decision": kinds[k]})
     return out

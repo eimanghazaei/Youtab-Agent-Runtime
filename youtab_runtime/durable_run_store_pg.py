@@ -30,6 +30,7 @@ from youtab_runtime.durable_run_authority import (
 from youtab_runtime.durable_run_store import (
     _TRANSITIONS,
     TERMINAL_STATES,
+    ApprovalBindingConflict,
     DurableRunError,
     IdempotencyConflict,
     InvalidTransition,
@@ -443,6 +444,11 @@ class PostgresRunStore:
                         d = raw if isinstance(raw, dict) else json.loads(raw or "{}")
                         open_id = (d or {}).get("approval_id")
                     if open_id == approval_id:
+                        expected = {**(payload or {}), "approval_id": approval_id,
+                                    "state": RunState.WAITING_APPROVAL.value}
+                        if d != expected:
+                            raise ApprovalBindingConflict(
+                                f"approval {approval_id} has a different durable binding")
                         cur.execute("SELECT * FROM runs WHERE run_id=%s", (run_id,))
                         row = self._row(cur, cur.fetchone())
                         assert row is not None
@@ -455,6 +461,15 @@ class PostgresRunStore:
                     raise InvalidTransition(
                         f"cannot open approval from {cur_state.value} (expected RUNNING)"
                     )
+                cur.execute(
+                    "SELECT payload FROM run_events WHERE run_id=%s AND kind='approval_request'",
+                    (run_id,),
+                )
+                for (raw,) in cur.fetchall():
+                    prior_payload = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+                    if prior_payload.get("approval_id") == approval_id:
+                        raise InvalidTransition(
+                            f"approval {approval_id} has already been opened")
                 now = time.time()
                 cur.execute(
                     "UPDATE runs SET state=%s, updated_at=%s WHERE run_id=%s AND state='RUNNING'",
