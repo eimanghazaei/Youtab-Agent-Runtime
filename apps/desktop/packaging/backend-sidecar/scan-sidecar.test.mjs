@@ -87,7 +87,6 @@ test('POSITIVE: in-bundle file and directory symlinks remain valid without dupli
   try {
     symlinkSync(join(root, 'nested', 'key.txt'), join(root, 'key-alias.txt'))
     symlinkSync(join(root, 'nested'), join(root, 'nested-alias'), 'dir')
-    symlinkSync(root, join(root, 'self-alias'), 'dir')
   } catch (error) {
     if (error.code === 'EPERM') return // Windows without symlink privilege
     throw error
@@ -108,7 +107,7 @@ test('POSITIVE: a symlink cannot redirect content scanning outside the bundle', 
     throw error
   }
   const r = scanBundle(root)
-  assert.ok(r.findings.some(x => x.file === 'redirect.txt' && x.rule === 'unsafe-symlink'))
+  assert.ok(r.findings.some(x => x.rule === 'unsafe-bundle-tree'))
   assert.ok(blockingCount(r.findings) > 0)
 })
 
@@ -123,7 +122,20 @@ test('POSITIVE: dangling and cyclic symlinks are blocking', () => {
     throw error
   }
   const r = scanBundle(root)
-  assert.equal(r.findings.filter(x => x.rule === 'unsafe-symlink').length, 3)
+  assert.ok(r.findings.some(x => x.rule === 'unsafe-bundle-tree'))
+  assert.ok(blockingCount(r.findings) > 0)
+})
+
+test('POSITIVE: directory symlink back to bundle root is blocking', () => {
+  const root = fixture({ 'nested/safe.txt': 'ordinary content' })
+  try {
+    symlinkSync(root, join(root, 'nested', 'back'), 'dir')
+  } catch (error) {
+    if (error.code === 'EPERM') return
+    throw error
+  }
+  const r = scanBundle(root)
+  assert.ok(r.findings.some(x => x.rule === 'unsafe-bundle-tree'))
   assert.ok(blockingCount(r.findings) > 0)
 })
 
