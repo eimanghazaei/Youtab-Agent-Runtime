@@ -6,9 +6,28 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath, reviewList } from './git-review-ops'
+import { gitFor, readBoundedSample, repoStatus, resolveRenamePath, reviewList } from './git-review-ops'
 
 const tempDirs: string[] = []
+
+test('readBoundedSample continues after short reads and stops at the cap', async () => {
+  const source = Buffer.from('one\ntwo\nthree')
+
+  const positions: number[] = []
+  const handle = {
+    async read(target: Buffer, offset: number, length: number, position: number) {
+      positions.push(position)
+
+      const bytesRead = source.copy(target, offset, position, position + Math.min(length, 2))
+
+      return { bytesRead }
+    }
+  }
+
+  assert.equal((await readBoundedSample(handle, 100)).toString(), source.toString())
+  assert.deepEqual(positions, [0, 2, 4, 6, 8, 10, 12, 13])
+  assert.equal((await readBoundedSample(handle, 4)).toString(), 'one\nt')
+})
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {

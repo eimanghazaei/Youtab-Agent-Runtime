@@ -18,6 +18,23 @@ const COMMIT_CONTEXT_UNTRACKED_MAX = 80
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 
+async function readBoundedSample(handle, maxBytes) {
+  const sample = Buffer.alloc(maxBytes + 1)
+  let total = 0
+
+  while (total < sample.length) {
+    const { bytesRead } = await handle.read(sample, total, sample.length - total, total)
+
+    if (bytesRead === 0) {
+      break
+    }
+
+    total += bytesRead
+  }
+
+  return sample.subarray(0, total)
+}
+
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
 // to — aren't found. Augment PATH with the resolved gh dir + the common
@@ -113,14 +130,11 @@ async function untrackedInsertions(cwd, relPath) {
 
       // A file can grow after stat; read at most one byte past the cap from
       // this same handle and treat an oversized result as binary/unknown.
-      const sample = Buffer.alloc(UNTRACKED_LINE_COUNT_MAX_BYTES + 1)
-      const { bytesRead } = await handle.read(sample, 0, sample.length, 0)
+      const buf = await readBoundedSample(handle, UNTRACKED_LINE_COUNT_MAX_BYTES)
 
-      if (bytesRead > UNTRACKED_LINE_COUNT_MAX_BYTES) {
+      if (buf.length > UNTRACKED_LINE_COUNT_MAX_BYTES) {
         return 0
       }
-
-      const buf = sample.subarray(0, bytesRead)
 
       if (buf.includes(0)) {
         return 0
@@ -710,6 +724,7 @@ export {
   branchBase,
   fileDiffVsHead,
   gitFor,
+  readBoundedSample,
   repoStatus,
   resolveRenamePath,
   reviewCommit,
