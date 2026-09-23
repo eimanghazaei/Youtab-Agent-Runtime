@@ -19,6 +19,9 @@ import os
 import pytest
 
 from youtab_runtime.durable_ingress import (
+    ApprovalAlreadyDecided,
+    ApprovalNotOpen,
+    ApprovalScopeMismatch,
     AuthorityLost,
     DurableRunStateAuthority,
     IdempotencyConflict,
@@ -34,9 +37,17 @@ _IDENT = dict(
     agent_id="agent-x",
 )
 
+_SCOPE = dict(tenant_id="t1", workspace_id="w1", principal_id="t1:u1")
+
 
 def _authority(tmp_path, name="durable_runs.db"):
     return DurableRunStateAuthority(backend="sqlite", db_path=tmp_path / name)
+
+
+def _open_approval(a, rid):
+    """Simulate the (held, D1) worker path opening an approval: move the run into
+    WAITING_APPROVAL on the fenced store. strict=False is the adapter-mirror path."""
+    a.store.set_state(rid, RunState.WAITING_APPROVAL, strict=False, kind="approval_request")
 
 
 # ---------------------------------------------------------------- positive --- #
@@ -79,42 +90,33 @@ def test_get_run_and_event_projection(tmp_path):
         a.release()
 
 
-def test_approve_records_once_decision_nonterminal(tmp_path):
+def test_approve_open_transitions_running_single_use(tmp_path):
     a = _authority(tmp_path)
     a.acquire()
     try:
         rid = a.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
-        out = a.record_approval_decision(rid, approval_id="ap1", decision="approve")
+        _open_approval(a, rid)
+        out = a.decide_approval(rid, approval_id="ap1", decision="approve", **_SCOPE)
         assert out["choice"] == "once" and out["decision"] == "approve"
-        assert a.get_run(rid)["state"] == RunState.QUEUED.value  # not terminal
-        assert any(e["kind"] == "approval_decision" for e in a.get_events(rid))
+        assert a.get_run(rid)["state"] == RunState.RUNNING.value  # approval consumed
+        # single-use: the approval is no longer open -> a replay is refused
+        with pytest.raises(ApprovalNotOpen):
+            a.decide_approval(rid, approval_id="ap1", decision="approve", **_SCOPE)
     finally:
         a.release()
 
 
-def test_deny_is_durable_terminal_zero_effect(tmp_path):
+def test_deny_open_is_durable_terminal_zero_effect(tmp_path):
     a = _authority(tmp_path)
     a.acquire()
     try:
         rid = a.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
-        out = a.record_approval_decision(rid, approval_id="ap1", decision="deny")
+        _open_approval(a, rid)
+        out = a.decide_approval(rid, approval_id="ap1", decision="deny", **_SCOPE)
         assert out["choice"] == "deny"
         row = a.get_run(rid)
         assert row["state"] == RunState.CANCELLED.value  # durable denied outcome
         assert not row.get("result_ref")  # no fabricated result/receipt
-    finally:
-        a.release()
-
-
-def test_approval_idempotent_by_approval_id(tmp_path):
-    a = _authority(tmp_path)
-    a.acquire()
-    try:
-        rid = a.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
-        a.record_approval_decision(rid, approval_id="ap1", decision="deny")
-        again = a.record_approval_decision(rid, approval_id="ap1", decision="approve")
-        assert again["already_decided"] is True
-        assert again["decision"] == "deny"  # ORIGINAL decision stands
     finally:
         a.release()
 
@@ -137,8 +139,62 @@ def test_approval_rejects_non_approve_deny(tmp_path, bad):
     a.acquire()
     try:
         rid = a.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
-        with pytest.raises(ValueError):
-            a.record_approval_decision(rid, approval_id="ap1", decision=bad)
+        _open_approval(a, rid)
+        with pytest.raises(ValueError):  # session|always|unknown never widen v1
+            a.decide_approval(rid, approval_id="ap1", decision=bad, **_SCOPE)
+    finally:
+        a.release()
+
+
+def test_approval_unknown_run_refused(tmp_path):
+    a = _authority(tmp_path)
+    a.acquire()
+    try:
+        with pytest.raises(ApprovalNotOpen):
+            a.decide_approval("no-such-run", approval_id="ap1", decision="approve", **_SCOPE)
+    finally:
+        a.release()
+
+
+def test_approval_closed_not_open_refused(tmp_path):
+    """A run that is NOT WAITING_APPROVAL (here: QUEUED) has no open approval."""
+    a = _authority(tmp_path)
+    a.acquire()
+    try:
+        rid = a.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
+        with pytest.raises(ApprovalNotOpen):
+            a.decide_approval(rid, approval_id="ap1", decision="approve", **_SCOPE)
+    finally:
+        a.release()
+
+
+def test_approval_replayed_after_decision_refused(tmp_path):
+    a = _authority(tmp_path)
+    a.acquire()
+    try:
+        rid = a.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
+        _open_approval(a, rid)
+        a.decide_approval(rid, approval_id="ap1", decision="deny", **_SCOPE)
+        # replayed/second decision on the now-terminal run: refused, no re-consume
+        with pytest.raises((ApprovalNotOpen, ApprovalAlreadyDecided)):
+            a.decide_approval(rid, approval_id="ap1", decision="approve", **_SCOPE)
+    finally:
+        a.release()
+
+
+def test_approval_foreign_scope_refused(tmp_path):
+    a = _authority(tmp_path)
+    a.acquire()
+    try:
+        rid = a.create_run(idempotency_key="k1", request_digest="d1", **_IDENT).row["run_id"]
+        _open_approval(a, rid)
+        with pytest.raises(ApprovalScopeMismatch):
+            a.decide_approval(
+                rid, approval_id="ap1", decision="approve",
+                tenant_id="t1", workspace_id="w1", principal_id="t1:INTRUDER",
+            )
+        # the run is untouched by the foreign attempt
+        assert a.get_run(rid)["state"] == RunState.WAITING_APPROVAL.value
     finally:
         a.release()
 
