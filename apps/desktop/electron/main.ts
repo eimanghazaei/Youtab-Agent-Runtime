@@ -175,6 +175,7 @@ import {
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
 import { canUseDeveloperSourceOverride, resolvePackagedSidecarBackend } from './sidecar-backend'
+import { openBackendStdioLog } from './backend-stdio-log'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -8508,8 +8509,23 @@ async function startYoutab() {
       throw new Error('Youtab backend start was superseded by a newer connection attempt.')
     }
 
-    youtabProcess.stdout.on('data', rememberLog)
-    youtabProcess.stderr.on('data', rememberLog)
+    // Synchronous per-pid record of spawn, raw stdio and exit: the buffered
+    // desktop log can lose its tail on close, and a vanished backend must
+    // always leave its last output and exit status on disk.
+    const stdioLog = openBackendStdioLog(path.dirname(DESKTOP_LOG_PATH), youtabProcess.pid)
+    stdioLog.event(`spawned pid=${youtabProcess.pid} via ${backend.label}`)
+    rememberLog(`Youtab backend pid=${youtabProcess.pid} spawned`)
+    youtabProcess.stdout.on('data', chunk => {
+      stdioLog.output('stdout', chunk)
+      rememberLog(chunk)
+    })
+    youtabProcess.stderr.on('data', chunk => {
+      stdioLog.output('stderr', chunk)
+      rememberLog(chunk)
+    })
+    youtabProcess.once('exit', (code, signal) => {
+      stdioLog.event(`exited pid=${youtabProcess.pid} code=${code} signal=${signal}`)
+    })
     let backendReady = false
     let rejectBackendStart = null
 
@@ -8549,7 +8565,8 @@ async function startYoutab() {
         return
       }
 
-      rememberLog(`Youtab backend exited (${signal || code})`)
+      rememberLog(`Youtab backend pid=${youtabProcess.pid} exited (${signal || code})`)
+      flushDesktopLogBufferSync()
       sendBackendExit({ code, signal })
 
       if (!backendReady) {

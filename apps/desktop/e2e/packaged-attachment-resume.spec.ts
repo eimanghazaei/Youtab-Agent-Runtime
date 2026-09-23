@@ -27,6 +27,7 @@ import {
   writeEnvFile,
   writeMockProviderConfig,
 } from './fixtures'
+import { BackendSentinel } from './backend-sentinel'
 import { startMockServer } from './mock-server'
 import { type ElectronApplication, expect, type Page, test } from './test'
 
@@ -239,8 +240,32 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
   let mock: Awaited<ReturnType<typeof startMockServer>> | null = null
   let app: ElectronApplication | null = null
   let sandbox: Sandbox | null = null
+  let sentinel: BackendSentinel | null = null
+
+  // Pin the bundled backend of the launch that just became ready.
+  async function watchBackend(): Promise<void> {
+    sentinel = await BackendSentinel.attach(sandbox!.youtabHome, PACKAGED_BINARY_PATH)
+  }
+
+  // An intentional close ends the watch; an earlier backend exit fails here
+  // with the backend's own lifecycle/stdio evidence.
+  function releaseBackend(label: string): void {
+    const watched = sentinel
+    sentinel = null
+    try {
+      watched?.assertAlive(label)
+    } finally {
+      watched?.stop()
+    }
+  }
 
   test.afterEach(async () => {
+    let backendError: unknown = null
+    try {
+      releaseBackend('test end')
+    } catch (error) {
+      backendError = error
+    }
     if (app) await closePackagedApp(app).catch(() => undefined)
     app = null
     if (mock) await mock.close().catch(() => undefined)
@@ -251,6 +276,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     if (sandbox && !process.env.YOUTAB_E2E_KEEP_SANDBOX) sandbox.cleanup()
     else if (sandbox) console.log(`[e2e] kept sandbox: ${sandbox.youtabHome}`)
     sandbox = null
+    if (backendError) throw backendError
   })
 
   test('paste → submit → thumbnail → close tree → relaunch → thumbnail survives', async ({}, testInfo) => {
@@ -268,6 +294,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     ;({ app } = await launchPackagedAppRealBackend(sandbox))
     const page1 = await app.firstWindow()
     await waitForAppReady({ page: page1, app } as never, 240_000)
+    await watchBackend()
 
     // The app reached ready with NO dev-root override, so its backend is the
     // packaged bundled sidecar (resolveYoutabBackend's IS_PACKAGED branch), and
@@ -317,6 +344,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       .toBe(true)
 
     // ── Full process-tree close (app + bundled sidecar) ───────────────
+    releaseBackend('before close')
     await closePackagedApp(app)
     app = null
     await expect
@@ -327,6 +355,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     ;({ app } = await launchPackagedAppRealBackend(sandbox))
     const page2 = await app.firstWindow()
     await waitForAppReady({ page: page2, app } as never, 240_000)
+    await watchBackend()
 
     const row = sessionRow(page2)
     // Generous: a cold packaged relaunch boots the real bundled backend and
@@ -347,6 +376,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await assertRendersThumbnail(page2, 'packaged relaunch')
     await page2.screenshot({ path: testInfo.outputPath('packaged-relaunch.png') })
 
+    releaseBackend('before close')
     await closePackagedApp(app)
     app = null
     await expect
@@ -376,6 +406,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     ;({ app } = await launchPackagedAppRealBackend(sandbox))
     const page1 = await app.firstWindow()
     await waitForAppReady({ page: page1, app } as never, 240_000)
+    await watchBackend()
 
     const composer = await focusComposer(page1)
     await composer.type(CAPTION, { delay: 10 })
@@ -394,9 +425,11 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
         message: 'turn must reach idle (Stop affordance cleared) before we close',
       })
       .toBe(0)
+    sentinel?.assertAlive('turn idle')
 
     // Close PROMPTLY — no state.db poll, no settle wait. If the acknowledgement
     // boundary is correct, the acknowledged turn is already durable.
+    releaseBackend('before close')
     await closePackagedApp(app)
     app = null
     await expect
@@ -407,6 +440,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     ;({ app } = await launchPackagedAppRealBackend(sandbox))
     const page2 = await app.firstWindow()
     await waitForAppReady({ page: page2, app } as never, 240_000)
+    await watchBackend()
 
     // PRIMARY (deterministic): the completed turn — caption AND its @image:
     // attachment ref — SURVIVED the prompt close and is durable in the profile
@@ -480,6 +514,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     }))
     const page1 = await app.firstWindow()
     await waitForAppReady({ page: page1, app } as never, 240_000)
+    await watchBackend()
 
     const composer = await focusComposer(page1)
     await composer.type(CAPTION, { delay: 10 })
@@ -491,6 +526,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await expect
       .poll(() => page1.getByRole('button', { name: 'Stop' }).count(), { timeout: 180_000 })
       .toBe(0)
+    sentinel?.assertAlive('turn idle')
 
     // The user turn (caption + @image ref) IS durable — the session is
     // recoverable/visible — but the turn did NOT durably COMPLETE: no assistant
@@ -509,6 +545,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       .toBe(true)
 
     // Prompt close the whole tree; the on-disk marker must survive it.
+    releaseBackend('before close')
     await closePackagedApp(app)
     app = null
     await expect.poll(() => bundledBackendProcessCount(), { timeout: 20_000 }).toBe(0)
@@ -525,6 +562,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     ;({ app } = await launchPackagedAppRealBackend(sandbox))
     const page2 = await app.firstWindow()
     await waitForAppReady({ page: page2, app } as never, 240_000)
+    await watchBackend()
     const row = sessionRow(page2)
     // Generous: a cold packaged relaunch boots the real bundled backend and
     // then fetches the session list; under sequential-suite load that surfacing
@@ -579,6 +617,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     ;({ app } = await launchPackagedAppRealBackend(sandbox))
     const page1 = await app.firstWindow()
     await waitForAppReady({ page: page1, app } as never, 240_000)
+    await watchBackend()
     await expect
       .poll(() => backendProcessPaths().some(isPackagedSidecarPath), {
         timeout: 60_000,
@@ -595,6 +634,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await expect
       .poll(() => page1.getByRole('button', { name: 'Stop' }).count(), { timeout: 180_000 })
       .toBe(0)
+    sentinel?.assertAlive('turn idle')
 
     await expect
       .poll(() => page1.evaluate(() => document.body.innerText), {
@@ -611,6 +651,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     expect(fs.statSync(dbPath).isDirectory(), 'the SessionDB must have stayed unavailable').toBe(true)
     await page1.screenshot({ path: testInfo.outputPath('packaged-no-sessiondb.png') })
 
+    releaseBackend('before close')
     await closePackagedApp(app)
     app = null
     await expect.poll(() => bundledBackendProcessCount(), { timeout: 20_000 }).toBe(0)

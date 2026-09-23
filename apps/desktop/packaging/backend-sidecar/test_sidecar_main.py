@@ -62,6 +62,54 @@ def run():
     _check("no explicit host not refused", True)
 
 
+_LIFECYCLE_CHILD = """
+import sys
+sys.path.insert(0, {here!r})
+import sidecar_main as sm
+lc = sm._Lifecycle({log!r})
+lc.install(["serve", "--port", "0"])
+mode = {mode!r}
+def main():
+    if mode == "os_exit":
+        import os
+        os._exit(3)
+    if mode == "system_exit":
+        raise SystemExit(4)
+lc.run(main)
+"""
+
+
+def _run_lifecycle_child(mode):
+    import subprocess
+    import tempfile
+
+    here = os.path.dirname(os.path.abspath(__file__))
+    with tempfile.TemporaryDirectory() as tmp:
+        log = os.path.join(tmp, "backend-lifecycle.log")
+        code = _LIFECYCLE_CHILD.format(here=here, log=log, mode=mode)
+        proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        with open(log, encoding="utf-8") as fh:
+            return proc.returncode, fh.read()
+
+
+def run_lifecycle():
+    # Every way the backend can end itself must leave a pid-stamped record with
+    # the stack that ended it; only an external kill leaves nothing after start.
+    rc, text = _run_lifecycle_child("os_exit")
+    _check("os._exit keeps its exit code", rc == 3)
+    _check("start recorded with pid/ppid", " pid=" in text and " ppid=" in text and "start" in text)
+    _check("os._exit recorded with caller stack", "os._exit code=3" in text and "def main" not in text and "main" in text)
+
+    rc, text = _run_lifecycle_child("system_exit")
+    _check("SystemExit keeps its exit code", rc == 4)
+    _check("SystemExit recorded with traceback", "SystemExit code=4" in text and "Traceback" in text)
+    _check("atexit recorded on interpreter exit", "atexit" in text)
+
+    rc, text = _run_lifecycle_child("return")
+    _check("normal return recorded", rc == 0 and "main-returned" in text)
+
+
 if __name__ == "__main__":
     run()
+    run_lifecycle()
     print("ALL_SIDECAR_MAIN_TESTS_PASSED")

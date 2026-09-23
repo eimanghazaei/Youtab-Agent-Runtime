@@ -77,11 +77,112 @@ def _enforce_loopback_only(argv) -> None:
         raise SystemExit(NON_LOOPBACK_REFUSED_EXIT)
 
 
+class _Lifecycle:
+    """Append-only process lifecycle record for the packaged backend.
+
+    A desktop sidecar that disappears must leave evidence of HOW: a Python exit
+    (``SystemExit``/``os._exit``/uncaught exception, with its stack), a native
+    fault (``faulthandler``), or nothing at all, which means it was terminated
+    from outside. Records carry pid/ppid and never argv values beyond the
+    command name, so no secret reaches the file.
+    """
+
+    def __init__(self, path):
+        self.path = path
+        self._fault_file = None
+
+    def write(self, event, detail=""):
+        import os
+        import time
+
+        line = (
+            f"{time.strftime('%Y-%m-%dT%H:%M:%S')}.{int(time.time() * 1000) % 1000:03d} "
+            f"pid={os.getpid()} ppid={os.getppid()} {event}"
+        )
+        if detail:
+            line += "\n" + detail.rstrip()
+        try:
+            with open(self.path, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except OSError:
+            pass
+
+    def install(self, argv):
+        import atexit
+        import faulthandler
+        import os
+        import threading
+        import traceback
+
+        command = next((a for a in argv if not a.startswith("-")), "")
+        self.write("start", f"command={command!r} frozen={bool(getattr(sys, 'frozen', False))}")
+        try:
+            self._fault_file = open(self.path, "a", encoding="utf-8")
+            faulthandler.enable(file=self._fault_file, all_threads=True)
+        except (OSError, RuntimeError, ValueError):
+            self._fault_file = None
+
+        atexit.register(lambda: self.write("atexit"))
+
+        real_exit = os._exit
+
+        def _recorded_exit(code):
+            self.write(f"os._exit code={code}", "".join(traceback.format_stack()))
+            real_exit(code)
+
+        os._exit = _recorded_exit
+
+        previous_hook = threading.excepthook
+
+        def _thread_hook(args):
+            self.write(
+                f"thread-exception thread={getattr(args.thread, 'name', '?')}",
+                "".join(traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)),
+            )
+            previous_hook(args)
+
+        threading.excepthook = _thread_hook
+
+    def run(self, main):
+        import traceback
+
+        try:
+            main()
+        except SystemExit as exc:
+            self.write(f"SystemExit code={exc.code!r}", "".join(traceback.format_exc()))
+            raise
+        except BaseException:
+            self.write("uncaught-exception", traceback.format_exc())
+            raise
+        self.write("main-returned")
+
+
+def _lifecycle_log_path():
+    import os
+
+    try:
+        from youtab_constants import get_youtab_home
+
+        logs = get_youtab_home() / "logs"
+        os.makedirs(logs, exist_ok=True)
+        return str(logs / "backend-lifecycle.log")
+    except Exception:
+        return None
+
+
 if __name__ == "__main__":
     # Refuse a non-loopback bind before importing/booting the CLI, so no socket
     # is ever created and no readiness line is emitted on a rejected host.
     _enforce_loopback_only(sys.argv[1:])
 
+    _log_path = _lifecycle_log_path()
+    _lifecycle = _Lifecycle(_log_path) if _log_path else None
+    if _lifecycle is not None:
+        _lifecycle.install(sys.argv[1:])
+
     from youtab_agent_cli.main import main
 
-    main()
+    if _lifecycle is not None:
+        _lifecycle.run(main)
+    else:
+        main()
