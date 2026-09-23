@@ -168,6 +168,7 @@ function SidebarSessionRowImpl({
         )}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+          data-session-id={session.id}
           // Middle-click = open in a new tab (browser muscle memory). Swallow
           // the mousedown so Chromium doesn't enter autoscroll mode.
           onAuxClick={event => {

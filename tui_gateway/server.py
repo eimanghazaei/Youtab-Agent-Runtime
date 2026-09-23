@@ -6930,27 +6930,6 @@ def _retire_turn_marker(session: dict, *keys: str) -> None:
             clear_turn_marker(home, key)
 
 
-_persist_fault_injected = 0
-
-
-def _maybe_inject_persist_fault() -> None:
-    """TEST-ONLY durability fault injection. When the env var
-    ``YOUTAB_AGENT_GATEWAY_TEST_PERSIST_FAULT`` is a positive int N, raise on the
-    first N transcript-commit attempts in THIS process, so the persist/ack
-    failure path can be exercised through the REAL turn handler + finalizer (incl.
-    the packaged frozen backend). Absent/unset in production — a normal launch
-    never sets it, so this is inert. A fresh process resets the counter, so a
-    relaunch without the env var commits normally (the retry path)."""
-    global _persist_fault_injected
-    try:
-        budget = int(os.environ.get("YOUTAB_AGENT_GATEWAY_TEST_PERSIST_FAULT", "") or "0")
-    except (TypeError, ValueError):
-        budget = 0
-    if budget > 0 and _persist_fault_injected < budget:
-        _persist_fault_injected += 1
-        raise RuntimeError(
-            "injected transcript-commit fault (YOUTAB_AGENT_GATEWAY_TEST_PERSIST_FAULT)"
-        )
 
 
 def _finalize_turn_ack(
@@ -6991,16 +6970,27 @@ def _finalize_turn_ack(
     if agent is not None and hasattr(agent, "_persist_session"):
         snapshot = getattr(agent, "_session_messages", None)
         if snapshot:
+            # A commit fails EITHER by raising OR by returning False — the DB
+            # flush swallows a per-row write error (to keep the turn alive) and
+            # reports it via the return value, so relying on "did not raise"
+            # would falsely ack a silent partial write as durable and retire the
+            # recovery marker. Treat both the same: not durably committed.
+            persist_exc: Optional[Exception] = None
             try:
-                _maybe_inject_persist_fault()
-                agent._persist_session(snapshot)
+                flushed = agent._persist_session(snapshot)
             except Exception as exc:  # noqa: BLE001
+                flushed = False
+                persist_exc = exc
+            if flushed is False:
                 committed = False
                 if status != "error":
+                    _detail = (
+                        f"({type(persist_exc).__name__})" if persist_exc is not None
+                        else "(session store write failed)"
+                    )
                     persist_failed_detail = (
                         "The turn completed but could not be saved to the session "
-                        "store; it is preserved for retry on reconnect. "
-                        f"({type(exc).__name__})"
+                        f"store; it is preserved for retry on reconnect. {_detail}"
                     )
                     status = "error"
                     payload["status"] = "error"
@@ -7358,7 +7348,14 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
         rendered = ""
     if rendered:
         payload["rendered"] = rendered
-    _retire_turn_marker(session)
+    # Do NOT retire the crash-recovery marker here. This frame closes a turn
+    # that died by EXCEPTION (e.g. a transcript-commit failure), so the turn
+    # was never durably committed. Marker ownership follows durability, not the
+    # emission of a terminal frame: the caller's ``finally`` retires the marker
+    # only when ``turn_durably_committed`` is set (never on this path), so a
+    # process death after this frame still auto-continues from the marker on
+    # ``session.resume``. Retiring here unconditionally previously deleted the
+    # only recovery carrier for an uncommitted, crash-closed turn.
     _emit("message.complete", sid, payload)
 
 

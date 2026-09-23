@@ -79,6 +79,48 @@ def test_persist_failure_downgrades_keeps_marker_and_reports_uncommitted(tmp_pat
     assert not clear_marker.called    # marker preserved for reconnect/resume
 
 
+def test_persist_returns_false_downgrades_keeps_marker(tmp_path):
+    """Silent partial write: ``_persist_session`` RETURNS False (the DB flush
+    swallowed a per-row append error to keep the turn alive) rather than
+    raising. This MUST be treated identically to a raise — not durably
+    committed, downgraded to a recoverable error, marker preserved — or a
+    dropped transcript row would be falsely acked as durable and lose its
+    recovery marker."""
+    session = _session(tmp_path)
+    agent = MagicMock()
+    agent._session_messages = [{"role": "user", "content": "hello"}]
+    agent._persist_session = MagicMock(return_value=False)
+    payload = {"text": "hi", "status": "complete"}
+    with patch.object(gw, "clear_turn_marker") as clear_marker:
+        status, retained, committed = gw._finalize_turn_ack(
+            session, agent, "sess-key-001", "complete", payload,
+            {"final_response": "hi"}, "hi",
+        )
+    assert status == "error"
+    assert committed is False
+    assert retained is True
+    assert payload["status"] == "error"
+    assert payload["recoverable"] is True
+    assert "could not be saved" in payload["error"]
+    assert not clear_marker.called
+
+
+def test_persist_returns_true_commits_and_retires_marker(tmp_path):
+    """A truthful full-commit report (True) acks + retires the marker."""
+    session = _session(tmp_path)
+    agent = MagicMock()
+    agent._session_messages = [{"role": "user", "content": "hello"}]
+    agent._persist_session = MagicMock(return_value=True)
+    with patch.object(gw, "clear_turn_marker") as clear_marker:
+        status, retained, committed = gw._finalize_turn_ack(
+            session, agent, "sess-key-001", "complete", {"text": "hi", "status": "complete"},
+            {"final_response": "hi"}, "hi",
+        )
+    assert status == "complete"
+    assert committed is True
+    assert clear_marker.called
+
+
 def test_already_error_turn_persist_failure_keeps_marker(tmp_path):
     """An already-error turn whose best-effort persist ALSO fails must keep its
     marker too (Codex): the transcript is not durable, so recovery must remain."""
@@ -153,22 +195,22 @@ def test_no_session_messages_is_committed_and_retires_marker(tmp_path):
     assert clear_marker.called
 
 
-def test_persist_fault_seam_inert_without_env(monkeypatch):
-    """The test-only fault seam is inert unless its env var is a positive int."""
-    monkeypatch.delenv("YOUTAB_AGENT_GATEWAY_TEST_PERSIST_FAULT", raising=False)
-    gw._maybe_inject_persist_fault()  # no raise
-    monkeypatch.setenv("YOUTAB_AGENT_GATEWAY_TEST_PERSIST_FAULT", "0")
-    gw._maybe_inject_persist_fault()  # no raise
-
-
-def test_persist_fault_seam_fires_when_enabled(monkeypatch):
-    monkeypatch.setattr(gw, "_persist_fault_injected", 0)
-    monkeypatch.setenv("YOUTAB_AGENT_GATEWAY_TEST_PERSIST_FAULT", "1")
-    raised = False
-    try:
-        gw._maybe_inject_persist_fault()
-    except RuntimeError:
-        raised = True
-    assert raised
-    # budget of 1 consumed → next call is inert (the retry path succeeds)
-    gw._maybe_inject_persist_fault()
+def test_terminal_turn_error_preserves_marker(tmp_path):
+    """Exception path (Codex): the terminal-error frame must NOT retire the
+    crash-recovery marker. A turn that died by exception (e.g. a transcript
+    commit that raised) never durably committed, so the marker must survive for
+    ``session.resume`` to auto-continue it — marker ownership follows durability,
+    not the emission of a terminal frame. The caller's ``finally`` (gated on
+    ``turn_durably_committed``, never set on this path) is the sole retirer."""
+    session = _session(tmp_path)
+    session["agent"] = None
+    session["cols"] = 80
+    with patch.object(gw, "clear_turn_marker") as clear_marker, patch.object(
+        gw, "_emit"
+    ) as emit:
+        gw._emit_terminal_turn_error("sid-1", session, RuntimeError("disk full"))
+    assert not clear_marker.called   # marker preserved on the exception path
+    # A terminal, recoverable message.complete frame is still emitted.
+    frames = [c.args[0] for c in emit.call_args_list if c.args]
+    assert "message.complete" in frames
+    assert isinstance(session["inflight_turn"], dict)  # retained for resume

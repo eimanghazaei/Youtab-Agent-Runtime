@@ -48,7 +48,13 @@ async function transcriptText(page: Page): Promise<string> {
 }
 
 function sessionRow(page: Page) {
-  return page.locator('[data-slot="sidebar"] button').filter({ hasText: CAPTION }).first()
+  // Select the session row by its stable session-id hook, NOT by label text:
+  // the sidebar row shows the auto-generated session TITLE (e.g. the
+  // assistant's first line), which is nondeterministic and is NOT the caption,
+  // so matching by CAPTION races title generation. The row body button carries
+  // data-session-id (session-row.tsx). The suite uses a single session, so the
+  // first such row is the one under test.
+  return page.locator('[data-slot="sidebar"] [data-session-id]').first()
 }
 
 async function assertRendersThumbnail(page: Page, label: string): Promise<void> {
@@ -106,7 +112,15 @@ function durableUserTurnRecovered(
   }
 }
 
-/** Count durable user messages carrying the caption (for the no-duplicate check). */
+// The crash-recovery continuation the gateway synthesizes on resume is a
+// DISTINCT user record that embeds the original prompt so the model re-answers
+// it (tui_gateway/server.py _AUTO_CONTINUE_NOTE_PREFIX). It is not a duplicate
+// of the user's turn, so the no-duplicate check must exclude it — otherwise a
+// legitimate recovery note reads as a duplicated turn.
+const AUTO_CONTINUE_NOTE_PREFIX = '[System note: Your previous turn was interrupted mid-run'
+
+/** Count durable GENUINE user turns carrying the caption — excluding the
+ * crash-recovery continuation note — for the no-duplicate-record check. */
 function durableCaptionTurnCount(youtabHome: string): number {
   const dbPath = path.join(youtabHome, 'state.db')
   if (!fs.existsSync(dbPath)) return 0
@@ -114,8 +128,30 @@ function durableCaptionTurnCount(youtabHome: string): number {
   try {
     db = new DatabaseSync(dbPath, { readOnly: true })
     const row = db
-      .prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'user' AND content LIKE ?")
-      .get(`%${CAPTION}%`) as { n?: number } | undefined
+      .prepare(
+        "SELECT COUNT(*) AS n FROM messages WHERE role = 'user' AND content LIKE ? AND content NOT LIKE ?",
+      )
+      .get(`%${CAPTION}%`, `${AUTO_CONTINUE_NOTE_PREFIX}%`) as { n?: number } | undefined
+    return row ? Number(row.n) : 0
+  } catch {
+    return 0
+  } finally {
+    try { db?.close() } catch { /* ignore */ }
+  }
+}
+
+/** Count durable ASSISTANT messages in the profile's state.db — the turn's
+ * COMPLETION. Zero means the completion never persisted (the turn did not
+ * durably complete); >=1 after recovery means the re-run committed the reply. */
+function durableAssistantReplyCount(youtabHome: string): number {
+  const dbPath = path.join(youtabHome, 'state.db')
+  if (!fs.existsSync(dbPath)) return 0
+  let db: DatabaseSync | null = null
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true })
+    const row = db
+      .prepare("SELECT COUNT(*) AS n FROM messages WHERE role = 'assistant'")
+      .get() as { n?: number } | undefined
     return row ? Number(row.n) : 0
   } catch {
     return 0
@@ -201,7 +237,11 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     app = null
     if (mock) await mock.close().catch(() => undefined)
     mock = null
-    if (sandbox) sandbox.cleanup()
+    // Diagnostic affordance (inert by default): keep the disposable profile on
+    // disk for post-mortem inspection of state.db / interrupted_turns.json /
+    // logs when investigating a failure. Never set in CI.
+    if (sandbox && !process.env.YOUTAB_E2E_KEEP_SANDBOX) sandbox.cleanup()
+    else if (sandbox) console.log(`[e2e] kept sandbox: ${sandbox.youtabHome}`)
     sandbox = null
   })
 
@@ -281,7 +321,11 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await waitForAppReady({ page: page2, app } as never, 240_000)
 
     const row = sessionRow(page2)
-    await row.waitFor({ state: 'visible', timeout: 60_000 })
+    // Generous: a cold packaged relaunch boots the real bundled backend and
+    // then fetches the session list; under sequential-suite load that surfacing
+    // can exceed 60s. Durability itself is proven deterministically in state.db
+    // before this UI wait, so this only sizes the reopen latency (not a retry).
+    await row.waitFor({ state: 'visible', timeout: 180_000 })
     await row.click()
     await page2.waitForFunction(
       ([expected, surfaceSelector]: [string, string]) => {
@@ -373,27 +417,21 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     // concern the durable-poll test's strict thumbnail assertion already covers;
     // this test's subject is prompt-close durability + session recovery.)
     const row = sessionRow(page2)
-    await row.waitFor({ state: 'visible', timeout: 60_000 })
-    // Cold-reopen transcript hydration can lose a single click to a race, so
-    // re-open until the caption hydrates (bounded). This absorbs the desktop
-    // reopen-hydration timing; it does not mask persistence (that is the
-    // deterministic durable assertion above).
-    const captionInViewport = async () =>
-      page2.evaluate((surfaceSelector) => {
-        const surfaces = document.querySelectorAll(surfaceSelector)
-        const text = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? ''
-        return text
-      }, SURFACE)
+    // Generous: a cold packaged relaunch boots the real bundled backend and
+    // then fetches the session list; under sequential-suite load that surfacing
+    // can exceed 60s. Durability itself is proven deterministically in state.db
+    // before this UI wait, so this only sizes the reopen latency (not a retry).
+    await row.waitFor({ state: 'visible', timeout: 180_000 })
+    // ONE normal reopen — a single click. A single click reliably drives
+    // session.resume (open-session → route → useRouteResume → resumeSession,
+    // which awaits a concurrent prefetch + session.resume before painting); the
+    // cold-reopen gap is a visible session loader, not a dropped resume. We wait
+    // generously for that in-flight hydration to complete instead of re-clicking:
+    // re-clicking would mask reopen LATENCY as success, which the customer-admin
+    // path must not rely on.
+    await row.click()
     await expect
-      .poll(
-        async () => {
-          if (!(await captionInViewport()).includes(CAPTION)) {
-            await row.click().catch(() => undefined)
-          }
-          return await captionInViewport()
-        },
-        { timeout: 120_000, intervals: [1000, 2000, 3000], message: 'reopened session must hydrate the recovered turn' },
-      )
+      .poll(() => transcriptText(page2), { timeout: 120_000, message: 'one reopen must hydrate the recovered turn' })
       .toContain(CAPTION)
     const recoveredText = await transcriptText(page2)
     expect(recoveredText, 'prompt-close relaunch: caption recovered in the UI').toContain(CAPTION)
@@ -402,12 +440,22 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await page2.screenshot({ path: testInfo.outputPath('packaged-promptclose-relaunch.png') })
   })
 
-  // FAULT-INJECTED durability across the REAL handler/finalizer + a process
-  // relaunch: force the transcript commit to FAIL on the first turn (env seam,
-  // exercised in the frozen backend), then prove the turn is NOT falsely acked
-  // durable, its crash-recovery marker SURVIVES the prompt close, and a relaunch
-  // (fault off) recovers + commits the turn exactly once (no duplicate).
-  test('injected commit failure keeps the recovery marker; relaunch recovers once (no duplicate)', async ({}, testInfo) => {
+  // FAULT-INJECTED durability across the REAL turn handler + a process relaunch.
+  //
+  // The fault is injected at the REAL durable-write chokepoint the whole handler
+  // routes message writes through (run_agent._flush_messages_to_session_db_unlocked),
+  // not the gateway finalizer — faulting only the finalizer would miss the
+  // incremental mid-turn flushes that already made the transcript durable. The
+  // `assistant` mode models a process death while the turn's COMPLETION is being
+  // persisted: the inbound user turn (flushed before the LLM call) stays durable
+  // — so the session stays sidebar-visible and RESUMABLE — but the assistant
+  // reply never lands and the crash-recovery marker is preserved. On a normal
+  // reopen after relaunch, session.resume auto-continues the interrupted turn and
+  // commits it exactly once (no duplicate). This is a realistic recoverable
+  // crash; a total-persistence failure that loses even the user turn would leave
+  // a 0-message session that the sidebar hides (min_message_count=1) — a separate
+  // narrow orphan window, not this recoverable path, and NOT claimed here.
+  test('completion-commit failure keeps the marker; a normal reopen after relaunch recovers the turn once (no duplicate)', async ({}, testInfo) => {
     test.skip(!packagedBinaryExists(), 'requires the packaged binary — run npm run dist:win first')
     test.slow()
     test.setTimeout(600_000)
@@ -417,9 +465,10 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     writeMockProviderConfig(sandbox.youtabHome, mock.url, undefined, NATIVE_IMAGE_CONFIG)
     writeEnvFile(sandbox.youtabHome)
 
-    // Launch 1 with the commit fault armed (fail the first transcript commit).
+    // Launch 1 with the completion-commit fault armed: the assistant reply's
+    // durable write fails; the earlier user-turn write is untouched.
     ;({ app } = await launchPackagedAppRealBackend(sandbox, {
-      YOUTAB_AGENT_GATEWAY_TEST_PERSIST_FAULT: '1',
+      YOUTAB_AGENT_TEST_PERSIST_FAULT: 'assistant',
     }))
     const page1 = await app.firstWindow()
     await waitForAppReady({ page: page1, app } as never, 240_000)
@@ -429,20 +478,26 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await pasteImage(page1)
     await page1.locator('[data-slot="composer-attachments"]').waitFor({ state: 'visible', timeout: 30_000 })
     await page1.keyboard.press('Enter')
-    // The turn reaches a terminal frame (the commit failed → recoverable error).
+    // The turn reaches a terminal frame (the completion commit failed → the turn
+    // closes recoverable, Stop affordance cleared).
     await expect
       .poll(() => page1.getByRole('button', { name: 'Stop' }).count(), { timeout: 180_000 })
       .toBe(0)
 
-    // The failed commit must NOT be falsely durable, and the on-disk crash
-    // marker must be preserved (the recovery carrier that survives a process
-    // death — not the in-memory retained turn).
+    // The user turn (caption + @image ref) IS durable — the session is
+    // recoverable/visible — but the turn did NOT durably COMPLETE: no assistant
+    // reply landed. The on-disk crash marker is the recovery carrier that
+    // survives a process death (NOT the in-memory retained turn).
     expect(
       durableUserTurnRecovered(sandbox.youtabHome),
-      'a failed commit must NOT be falsely persisted as durable',
-    ).toBe(false)
+      'the user turn must be durable so the session stays recoverable',
+    ).toBe(true)
+    expect(
+      durableAssistantReplyCount(sandbox.youtabHome),
+      'the completion commit failed, so no assistant reply may be durable yet',
+    ).toBe(0)
     await expect
-      .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), { timeout: 30_000, message: 'crash-recovery marker must be preserved on a failed commit' })
+      .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), { timeout: 30_000, message: 'crash-recovery marker must be preserved when the completion did not commit' })
       .toBe(true)
 
     // Prompt close the whole tree; the on-disk marker must survive it.
@@ -454,23 +509,44 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       'the crash-recovery marker must survive the prompt close',
     ).toBe(true)
 
-    // Relaunch WITHOUT the fault: session.resume finds the marker and re-runs
-    // the turn, which now commits. It must commit EXACTLY ONCE (no duplicate)
-    // and clear the marker once durable.
+    // Relaunch WITHOUT the fault. The session is sidebar-visible (its user turn
+    // persisted), so the customer-admin's ONE normal reopen — a single click on
+    // the session row — is the whole recovery trigger: it drives session.resume,
+    // which auto-continues the interrupted turn from the marker; the re-run now
+    // commits the completion.
     ;({ app } = await launchPackagedAppRealBackend(sandbox))
     const page2 = await app.firstWindow()
     await waitForAppReady({ page: page2, app } as never, 240_000)
+    const row = sessionRow(page2)
+    // Generous: a cold packaged relaunch boots the real bundled backend and
+    // then fetches the session list; under sequential-suite load that surfacing
+    // can exceed 60s. Durability itself is proven deterministically in state.db
+    // before this UI wait, so this only sizes the reopen latency (not a retry).
+    await row.waitFor({ state: 'visible', timeout: 180_000 })
+    await row.click()
+
+    // Recovery: the re-run durably commits an assistant reply, the caption user
+    // turn stays SINGLE (no duplicate row), and the marker is retired once the
+    // recovery commit is durable.
     await expect
-      .poll(() => durableCaptionTurnCount(sandbox!.youtabHome), {
+      .poll(() => durableAssistantReplyCount(sandbox!.youtabHome), {
         timeout: 180_000,
         intervals: [2000, 3000, 5000],
-        message: 'relaunch must recover + durably commit the turn exactly once',
+        message: 'a normal reopen must auto-continue + durably commit the recovered turn',
       })
-      .toBe(1)
-    // Marker retired once the recovery turn committed durably.
+      .toBeGreaterThanOrEqual(1)
+    expect(
+      durableCaptionTurnCount(sandbox.youtabHome),
+      'recovery must not duplicate the user turn',
+    ).toBe(1)
     await expect
       .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), { timeout: 60_000, message: 'marker must be retired after a durable recovery commit' })
       .toBe(false)
+    // The reopened UI surfaces the recovered turn (requirement: one normal reopen
+    // displays the saved turn + attachment).
+    await expect
+      .poll(() => transcriptText(page2), { timeout: 120_000, message: 'reopened session must display the recovered caption' })
+      .toContain(CAPTION)
     await page2.screenshot({ path: testInfo.outputPath('packaged-fault-recovery.png') })
   })
 })
