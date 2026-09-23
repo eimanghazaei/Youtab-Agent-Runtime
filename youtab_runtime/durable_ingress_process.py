@@ -43,13 +43,15 @@ web-server lifespan wires the hard process fail-stop via the ``on_lost`` hook.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import logging
 import os
 import threading
-from typing import Any, Callable, Dict, Optional
+import time
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from youtab_runtime.durable_ingress import (
     ApprovalNotOpen,
@@ -78,7 +80,9 @@ _DB_PATH_ENV = "YOUTAB_AGENT_DURABLE_DB_PATH"
 _SERVICE_SECRET_ENV = "YOUTAB_AGENT_RUNTIME_SERVICE_SECRET"
 # Optional explicit self-URL the launcher hands the worker for the callback endpoint.
 _SELF_URL_ENV = "YOUTAB_AGENT_RUNTIME_SELF_URL"
-_WORKER_CAP_LABEL = b"youtab.worker-approval-cap.v1"
+_WORKER_CAP_LABEL = b"youtab.worker-approval-cap.v2"
+# Default capability TTL (seconds) when the admitted run carries no execution deadline.
+_CAP_DEFAULT_TTL = 24 * 3600
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -92,6 +96,14 @@ PROJECTION_ACCEPTED = "accepted"
 PROJECTION_NONE = "none"
 PROJECTION_UNAVAILABLE = "unavailable"
 PROJECTION_NOT_ACCEPTED = "not_accepted"
+
+# Run states in which a per-run worker capability is REVOKED (the endpoint refuses):
+# terminal, cancelling, and the terminal-uncertain UNKNOWN/RECONCILIATION_REQUIRED.
+_CAP_INACTIVE_STATES = frozenset({
+    RunState.SUCCEEDED.value, RunState.FAILED.value, RunState.CANCELLED.value,
+    RunState.CANCELLING.value, RunState.UNKNOWN.value,
+    RunState.RECONCILIATION_REQUIRED.value,
+})
 
 # One authority per process. Guarded by ``_lock`` for the acquire race only; the
 # store itself is internally fenced and concurrency-safe for writes.
@@ -116,6 +128,7 @@ __all__ = [
     "durable_approval_events",
     "mint_worker_capability",
     "verify_worker_capability",
+    "authorize_worker_capability",
     "worker_ingress_base_url",
     "PROJECTION_ACCEPTED",
     "PROJECTION_NONE",
@@ -408,7 +421,9 @@ def durable_approval_events(run_id: str) -> List[Dict[str, Any]]:
             p = ev.get("payload") or {}
             out.append({"kind": "request", "approval_id": aid,
                         "effect_digest": p.get("effect_digest"),
-                        "action": p.get("action"), "mode": p.get("mode")})
+                        "action": p.get("action"), "mode": p.get("mode"),
+                        "authorization_id": p.get("authorization_id"),
+                        "checkpoint_digest": p.get("checkpoint_digest")})
         elif k in kinds:
             out.append({"kind": "decision", "approval_id": aid, "decision": kinds[k]})
     return out
@@ -467,28 +482,137 @@ def _worker_cap_secret() -> Optional[bytes]:
     return hmac.new(secret.encode("utf-8"), _WORKER_CAP_LABEL, hashlib.sha256).digest()
 
 
+def _b64u(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode("ascii")
+
+
+def _b64u_dec(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+
+def _cap_sign(payload: Dict[str, Any], key: bytes) -> str:
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    sig = hmac.new(key, body, hashlib.sha256).digest()
+    return _b64u(body) + "." + _b64u(sig)
+
+
 def mint_worker_capability(run_id: str) -> Optional[str]:
     """Mint the per-run worker capability the launcher carries to the worker
-    (``build_worker_invocation`` env). Run-bound HMAC: unforgeable without the derived
-    key, and it authorizes ONLY that ``run_id``'s worker-only approval endpoints.
-    Returns None when durable ingress is off or no service secret is configured."""
+    (``build_worker_invocation`` env).
+
+    v2: a SIGNED token whose payload BINDS the admitted run's scope
+    (tenant/principal/workspace), the current authority ``epoch`` and an expiry, read
+    from the LIVE durable run. Unforgeable without the derived key; it authorizes ONLY
+    this run's worker-only endpoints, only while the same authority epoch holds (a
+    takeover bumps the epoch and revokes it), and only until expiry. The endpoint
+    additionally re-checks scope/epoch/state against the live run at each call
+    (revocation on cancel/terminal/UNKNOWN). Returns None when durable ingress is off,
+    no service secret is configured, or the run is not admitted/authority absent.
+
+    NOT YET bound: the admitted signed-grant command_id (grant-identity binding). That
+    is staged (R1 NO-GO) — it needs the create path to persist the grant command_id on
+    the durable run and a cross-owner canonical-id agreement.
+    """
     if not ingress_enabled():
         return None
     key = _worker_cap_secret()
-    if key is None or not run_id:
+    if key is None or not run_id or _lost_reason is not None:
         return None
-    return hmac.new(key, run_id.encode("utf-8"), hashlib.sha256).hexdigest()
+    auth = _authority
+    if auth is None or not auth.ready():
+        return None
+    try:
+        row = auth.get_run(run_id)
+        epoch = auth.epoch
+    except Exception:  # noqa: BLE001 — never raise from minting
+        return None
+    if row is None:
+        return None
+    deadline = row.get("execution_deadline")
+    exp = float(deadline) if deadline else time.time() + _CAP_DEFAULT_TTL
+    payload = {
+        "v": 2, "run_id": run_id, "tenant": row.get("tenant_id"),
+        "principal": row.get("principal_id"), "workspace": row.get("workspace_id"),
+        "epoch": int(epoch), "exp": exp,
+    }
+    return _cap_sign(payload, key)
+
+
+def _decode_capability(run_id: str, cap: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Verify the token signature, run_id binding and expiry (stateless). Returns the
+    claims dict, or None. Does NOT check live scope/epoch/state — see
+    :func:`authorize_worker_capability`."""
+    if not cap or not run_id:
+        return None
+    key = _worker_cap_secret()
+    if key is None:
+        return None
+    try:
+        body_b64, sig_b64 = str(cap).split(".", 1)
+        body = _b64u_dec(body_b64)
+        sig = _b64u_dec(sig_b64)
+    except Exception:  # noqa: BLE001 — malformed token
+        return None
+    expected = hmac.new(key, body, hashlib.sha256).digest()
+    if not hmac.compare_digest(expected, sig):
+        return None
+    try:
+        claims = json.loads(body)
+    except Exception:  # noqa: BLE001
+        return None
+    if claims.get("v") != 2 or claims.get("run_id") != run_id:
+        return None
+    try:
+        if float(claims.get("exp") or 0) <= time.time():
+            return None  # expired
+    except (TypeError, ValueError):
+        return None
+    return claims
 
 
 def verify_worker_capability(run_id: str, cap: Optional[str]) -> bool:
-    """Constant-time verify a presented per-run worker capability binds to ``run_id``.
-    Rejects arbitrary clients (no/wrong cap) and a capability minted for another run."""
-    if not cap or not run_id:
-        return False
-    expected = mint_worker_capability(run_id)
-    if expected is None:
-        return False
-    return hmac.compare_digest(expected, str(cap))
+    """Stateless integrity check: valid signature, matching run_id, not expired.
+    Rejects arbitrary clients (no/wrong cap) and a cap minted for another run. Callers
+    that mutate/read run state MUST use :func:`authorize_worker_capability`, which also
+    enforces live scope/epoch/state revocation."""
+    return _decode_capability(run_id, cap) is not None
+
+
+def authorize_worker_capability(run_id: str, cap: Optional[str]) -> Tuple[bool, str]:
+    """Full per-call authorization for a worker-only endpoint. Verifies the token
+    (signature/run_id/expiry) AND re-checks it against the LIVE durable run:
+      * scope (tenant/principal/workspace) in the token must equal the run's;
+      * the token epoch must equal the CURRENT authority epoch (a takeover revokes it);
+      * the run must not be terminal/CANCELLED/UNKNOWN (cancel/reconcile revokes it).
+    Returns (ok, reason). reason is one of: ok | unauthorized_worker |
+    run_authority_unavailable | run_not_found | run_not_active. Fail-closed.
+    """
+    if _lost_reason is not None:
+        return (False, "run_authority_unavailable")
+    claims = _decode_capability(run_id, cap)
+    if claims is None:
+        return (False, "unauthorized_worker")
+    auth = _authority
+    if auth is None or not auth.ready():
+        return (False, "run_authority_unavailable")
+    try:
+        row = auth.get_run(run_id)
+        epoch = auth.epoch
+    except Exception:  # noqa: BLE001
+        return (False, "run_authority_unavailable")
+    if row is None:
+        return (False, "run_not_found")
+    if (claims.get("tenant"), claims.get("principal"), claims.get("workspace")) != (
+        row.get("tenant_id"), row.get("principal_id"), row.get("workspace_id")
+    ):
+        return (False, "unauthorized_worker")  # scope drift
+    if int(claims.get("epoch") or -1) != int(epoch):
+        return (False, "unauthorized_worker")  # superseded by a takeover (revoked)
+    state = row.get("state")
+    if state in _CAP_INACTIVE_STATES:
+        return (False, "run_not_active")  # cancelled/terminal/UNKNOWN -> revoked
+    return (True, "ok")
 
 
 def worker_ingress_base_url() -> Optional[str]:

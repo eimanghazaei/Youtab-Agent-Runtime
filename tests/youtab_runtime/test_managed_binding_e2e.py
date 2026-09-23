@@ -1096,7 +1096,9 @@ def test_worker_endpoint_ingests_durable_first_and_derives_kanban(managed_durabl
     run_id = _durable_run(client)
     r = _worker_ingest(client, run_id, "ap1", effect="eff-1")
     assert r.status_code == 200, r.text
-    assert r.json()["status"] == "pending" and r.json()["effect_digest"] == "eff-1"
+    body = r.json()
+    assert body["durable"] is True and body["state"] == "waiting_approval"
+    assert body["effect_digest"] == "eff-1"  # attests the full binding
     # durable holds the request FIRST (WAITING_APPROVAL), scoped to the admitted run
     row = dip.get_ingress_authority().get_run(run_id)
     assert row["state"] == "WAITING_APPROVAL"
@@ -1138,14 +1140,14 @@ def test_worker_endpoint_idempotent_same_effect_conflict_diff_effect(managed_dur
     client, db_path = managed_durable
     run_id = _durable_run(client)
     assert _worker_ingest(client, run_id, "ap1", effect="eff-1").status_code == 200
-    # same id + same effect -> idempotent pending, exactly one durable request
-    assert _worker_ingest(client, run_id, "ap1", effect="eff-1").json()["status"] == "pending"
+    # same id + same effect -> idempotent, exactly one durable request
+    assert _worker_ingest(client, run_id, "ap1", effect="eff-1").json()["state"] == "waiting_approval"
     reqs = [e for e in dip.get_ingress_authority().get_events(run_id)
             if e["kind"] == "approval_request"]
     assert len(reqs) == 1
-    # same id + DIFFERENT effect -> 409 conflict
+    # same id + DIFFERENT effect (changed binding) -> 409 conflict
     r = _worker_ingest(client, run_id, "ap1", effect="eff-2")
-    assert r.status_code == 409 and r.json()["detail"]["error"] == "approval_effect_conflict"
+    assert r.status_code == 409 and r.json()["detail"]["error"] == "approval_binding_conflict"
 
 
 def test_worker_endpoint_authority_loss_503_no_pending(managed_durable):
@@ -1153,8 +1155,9 @@ def test_worker_endpoint_authority_loss_503_no_pending(managed_durable):
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
+    cap = _worker_cap(run_id)  # mint BEFORE loss (a lost authority mints nothing)
     dip._on_lost("simulated advisory-lock loss")
-    r = _worker_ingest(client, run_id, "ap1")
+    r = _worker_ingest(client, run_id, "ap1", cap=cap)
     assert r.status_code == 503 and r.json()["detail"]["error"] == "run_authority_unavailable"
 
 
@@ -1184,18 +1187,33 @@ def test_worker_read_pending_then_decided(managed_durable):
     assert _worker_read(client, run_id, "nope").json()["status"] == "absent"
 
 
-def test_worker_read_unknown_after_restart(managed_durable):
+def test_restart_after_ambiguous_prior_refuses_reopen_no_second_effect(managed_durable):
+    """Finding 1: after a restart the prior WAITING_APPROVAL run reconciles to UNKNOWN
+    (terminal-uncertain). A worker re-requesting the SAME approval must be REFUSED — no
+    UNKNOWN->RUNNING revival, no second durable open, no user-visible pending — until a
+    validated checkpoint + resume fence (staged) proves resume is safe."""
     import youtab_runtime.durable_ingress_process as dip
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
     assert _worker_ingest(client, run_id, "ap1").status_code == 200
+    before = [e for e in dip.get_ingress_authority().get_events(run_id)
+              if e["kind"] == "approval_request"]
+
     dip.reset_for_tests()
     dip.acquire_ingress_authority()  # takeover -> prior WAITING_APPROVAL becomes UNKNOWN
-    assert _worker_read(client, run_id, "ap1").json()["status"] == "unknown"
-    # the worker re-requests after restart (no user click); it re-opens durably
-    assert _worker_ingest(client, run_id, "ap1").status_code == 200
-    assert _worker_read(client, run_id, "ap1").json()["status"] == "pending"
+    assert dip.get_ingress_authority().get_run(run_id)["state"] == "UNKNOWN"
+
+    # re-request is refused (run is inactive/UNKNOWN); the read is refused too.
+    r = _worker_ingest(client, run_id, "ap1")
+    assert r.status_code == 409 and r.json()["detail"]["error"] == "run_not_active"
+    assert _worker_read(client, run_id, "ap1").status_code == 409
+    # no RUNNING revival, and no second durable open was recorded
+    row = dip.get_ingress_authority().get_run(run_id)
+    assert row["state"] == "UNKNOWN"
+    after = [e for e in dip.get_ingress_authority().get_events(run_id)
+             if e["kind"] == "approval_request"]
+    assert len(after) == len(before)  # no second effect / re-open
 
 
 def test_worker_ingest_is_keyed_not_a_scan(managed_durable):

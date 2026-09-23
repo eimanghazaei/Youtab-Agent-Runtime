@@ -213,46 +213,104 @@ def test_create_task_ex_default_id_still_generated(tmp_path):
 
 
 # ── per-run worker capability + launcher carry (D2 producer boundary auth) ────
-def test_worker_capability_mint_verify_roundtrip(tmp_path, monkeypatch):
-    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_INGRESS", "1")
-    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", "s3cr3t-strong-value")
-    cap = dip.mint_worker_capability("t_run1")
-    assert cap and dip.verify_worker_capability("t_run1", cap) is True
-    # run-bound: a cap for one run must not authorize another
-    assert dip.verify_worker_capability("t_run2", cap) is False
-    # arbitrary / empty caps are rejected
-    assert dip.verify_worker_capability("t_run1", "nope") is False
-    assert dip.verify_worker_capability("t_run1", None) is False
-    # the broad service secret itself is NOT a capability
-    assert dip.verify_worker_capability("t_run1", "s3cr3t-strong-value") is False
+# A strong (>=43 char) service secret so the derived worker-cap key is available.
+_STRONG_SECRET = "test-only-strong-runtime-service-secret-000000000"
 
 
-def test_worker_capability_none_without_secret_or_flag(monkeypatch):
+def test_worker_capability_binds_scope_epoch_and_revokes(tmp_path, monkeypatch):
     monkeypatch.setenv("YOUTAB_AGENT_DURABLE_INGRESS", "1")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "sqlite")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_DB_PATH", str(tmp_path / "cap.db"))
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", _STRONG_SECRET)
+    dip.reset_for_tests()
+    dip.acquire_ingress_authority()
+    try:
+        rid = dip.admit_managed_run(run_id="t_r1", idempotency_key="k1",
+                                    request_digest="d1", **_IDENT).row["run_id"]
+        cap = dip.mint_worker_capability(rid)
+        assert cap and dip.verify_worker_capability(rid, cap) is True
+        ok, reason = dip.authorize_worker_capability(rid, cap)
+        assert ok is True and reason == "ok"
+        # cross-run: a cap minted for another run is refused
+        assert dip.verify_worker_capability("t_other", cap) is False
+        assert dip.authorize_worker_capability("t_other", cap)[0] is False
+        # arbitrary / service-secret / empty caps are rejected
+        assert dip.authorize_worker_capability(rid, "nope")[1] == "unauthorized_worker"
+        assert dip.authorize_worker_capability(rid, _STRONG_SECRET)[1] == "unauthorized_worker"
+        assert dip.authorize_worker_capability(rid, None)[1] == "unauthorized_worker"
+        # revocation: a cancelled/terminal run refuses the (still-signed) cap
+        dip.get_ingress_authority().store.set_state(rid, RunState.CANCELLED, strict=False)
+        assert dip.authorize_worker_capability(rid, cap) == (False, "run_not_active")
+    finally:
+        dip.reset_for_tests()
+
+
+def test_worker_capability_revoked_by_epoch_takeover(tmp_path, monkeypatch):
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_INGRESS", "1")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "sqlite")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_DB_PATH", str(tmp_path / "cap.db"))
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", _STRONG_SECRET)
+    dip.reset_for_tests()
+    dip.acquire_ingress_authority()
+    rid = dip.admit_managed_run(run_id="t_r1", idempotency_key="k1",
+                                request_digest="d1", **_IDENT).row["run_id"]
+    cap = dip.mint_worker_capability(rid)
+    dip.reset_for_tests()                 # takeover: a new instance, new epoch
+    dip.acquire_ingress_authority()
+    try:
+        # the old cap embeds the prior epoch -> refused after the takeover (revoked);
+        # the run is also reconciled to UNKNOWN, itself an inactive state.
+        assert dip.authorize_worker_capability(rid, cap)[0] is False
+    finally:
+        dip.reset_for_tests()
+
+
+def test_worker_capability_none_without_secret_or_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_INGRESS", "1")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "sqlite")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_DB_PATH", str(tmp_path / "cap.db"))
     monkeypatch.delenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", raising=False)
-    assert dip.mint_worker_capability("t_run1") is None          # no secret
-    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", "x-strong-secret")
+    dip.reset_for_tests()
+    dip.acquire_ingress_authority()
+    try:
+        dip.admit_managed_run(run_id="t_r1", idempotency_key="k1",
+                              request_digest="d1", **_IDENT)
+        assert dip.mint_worker_capability("t_r1") is None          # no secret
+    finally:
+        dip.reset_for_tests()
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", _STRONG_SECRET)
     monkeypatch.delenv("YOUTAB_AGENT_DURABLE_INGRESS", raising=False)
-    assert dip.mint_worker_capability("t_run1") is None          # flag off
+    assert dip.mint_worker_capability("t_r1") is None              # flag off
 
 
 def test_build_worker_invocation_carries_capability(tmp_path, monkeypatch):
     monkeypatch.setenv("YOUTAB_AGENT_DURABLE_INGRESS", "1")
-    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", "launcher-strong-secret")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "sqlite")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_DB_PATH", str(tmp_path / "cap.db"))
+    monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SERVICE_SECRET", _STRONG_SECRET)
     monkeypatch.setenv("YOUTAB_AGENT_RUNTIME_SELF_URL", "http://127.0.0.1:9/")
     from pathlib import Path
 
     from youtab_agent_cli import kanban_db as kb
-    conn = kb.connect(Path(tmp_path) / "kanban.db")
+    dip.reset_for_tests()
+    dip.acquire_ingress_authority()
     try:
-        tid = kb.create_task(conn, title="t", assignee="default",
-                             created_by="u", tenant="t1")
-        task = kb.get_task(conn, tid)
+        # the durable run must be admitted before the launcher can mint its cap
+        dip.admit_managed_run(run_id="t_launch", idempotency_key="k1",
+                              request_digest="d1", **_IDENT)
+        conn = kb.connect(Path(tmp_path) / "kanban.db")
+        try:
+            kb.create_task_ex(conn, title="t", assignee="default", created_by="u",
+                              tenant="t1", task_id="t_launch")
+            task = kb.get_task(conn, "t_launch")
+        finally:
+            conn.close()
+        env, _cmd = kb.build_worker_invocation(task, str(tmp_path / "ws"))
+        assert dip.authorize_worker_capability(
+            "t_launch", env.get("YOUTAB_AGENT_RUNTIME_WORKER_CAP"))[0] is True
+        assert env.get("YOUTAB_AGENT_RUNTIME_INGRESS_URL") == "http://127.0.0.1:9"
     finally:
-        conn.close()
-    env, _cmd = kb.build_worker_invocation(task, str(tmp_path / "ws"))
-    assert dip.verify_worker_capability(tid, env.get("YOUTAB_AGENT_RUNTIME_WORKER_CAP"))
-    assert env.get("YOUTAB_AGENT_RUNTIME_INGRESS_URL") == "http://127.0.0.1:9"
+        dip.reset_for_tests()
 
 
 def test_build_worker_invocation_no_capability_when_flag_off(tmp_path, monkeypatch):

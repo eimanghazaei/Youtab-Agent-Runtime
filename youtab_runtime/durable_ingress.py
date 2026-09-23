@@ -33,7 +33,6 @@ from typing import Any, Callable, Dict, List, Optional
 
 from youtab_runtime.durable_run_authority import AuthorityLost
 from youtab_runtime.durable_run_store import (
-    TERMINAL_STATES,
     ApprovalNotOpen,
     IdempotencyConflict,
     InvalidTransition,
@@ -148,6 +147,13 @@ class DurableRunStateAuthority:
         return self._authority.owner
 
     @property
+    def epoch(self) -> int:
+        """The current held authority epoch. Bumps on every takeover, so a token that
+        embeds it is invalidated by a takeover (revocation-on-supersede)."""
+        self._require_authority()
+        return int(self._authority.epoch)
+
+    @property
     def store(self) -> Any:
         return self._store
 
@@ -217,27 +223,31 @@ class DurableRunStateAuthority:
         return self._store.open_approval(run_id, approval_id=approval_id, payload=payload)
 
     def ensure_running(self, run_id: str) -> Optional[Dict[str, Any]]:
-        """Project a pre-decision run to RUNNING under the authority (idempotent).
+        """Project a FRESH executing run to RUNNING under the authority (idempotent).
 
-        A worker requesting approval implies the run is executing, but the durable
-        run is admitted QUEUED. Advance it along the validated path
+        A worker requesting approval on a not-yet-advanced run implies it is executing,
+        but the durable run is admitted QUEUED. Advance it along the validated path
         ``QUEUED -> CLAIMED -> RUNNING`` so an ``open_approval`` (whose from-state CAS
-        requires RUNNING) can proceed. Also reconciles ``UNKNOWN -> RUNNING`` for a
-        run whose prior owner died while an approval was pending: the gated effect has
-        NOT executed (it is exactly what is awaiting approval) and the decision stays
-        a single-use CAS, so re-awaiting after a takeover is safe and never
-        re-executes an effect — this is what makes the durable pending approval
-        visible after a restart WITHOUT a user click. Idempotent and race-tolerant:
-        an already-RUNNING/awaiting/terminal run is left as-is and a lost CAS is
-        swallowed. Never a second authority: these are the ONE store's fenced writes.
+        requires RUNNING) can proceed.
+
+        DELIBERATELY does NOT revive ``UNKNOWN``: UNKNOWN is terminal-uncertain (a prior
+        owner died with an indeterminate effect outcome), and this layer has no proof of
+        a validated pending-tool checkpoint or effect-ledger state that a re-open would be
+        safe. An UNKNOWN run is left UNKNOWN for reconciliation — never auto-revived to
+        RUNNING — so a restart can never silently re-open an approval or risk a second
+        effect. Safe resume from UNKNOWN requires the durable exact-effect checkpoint +
+        single-use resume fence (staged; R1 NO-GO until implemented).
+
+        Idempotent and race-tolerant: an already-RUNNING/awaiting/terminal/UNKNOWN run is
+        left as-is and a lost CAS is swallowed. These are the ONE store's fenced writes.
         """
         self._require_authority()
         row = self._store.get_run(run_id)
         if row is None:
             return None
         st = RunState(row["state"])
-        if st in TERMINAL_STATES or st in (RunState.RUNNING, RunState.WAITING_APPROVAL):
-            return row  # already running/awaiting or terminal — nothing to project
+        # Only a FRESH pre-execution run advances. UNKNOWN/terminal/awaiting/running are
+        # left untouched (UNKNOWN is NOT auto-revived — it needs reconciliation).
         if st == RunState.QUEUED:
             try:
                 self._store.set_state(run_id, RunState.CLAIMED, kind="claimed", strict=True)
@@ -245,7 +255,7 @@ class DurableRunStateAuthority:
                 pass
             row = self._store.get_run(run_id)
             st = RunState(row["state"]) if row else st
-        if st in (RunState.CLAIMED, RunState.UNKNOWN):
+        if st == RunState.CLAIMED:
             try:
                 self._store.set_state(run_id, RunState.RUNNING, kind="running", strict=True)
             except InvalidTransition:

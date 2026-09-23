@@ -2047,26 +2047,33 @@ def rebuild_kanban_approval_projection(conn, run_id: str) -> int:
 def ingest_worker_approval_request(conn, run_id: str, *, approval_id: str,
                                    effect_digest: "Optional[str]" = None,
                                    action: "Optional[str]" = None,
-                                   mode: "Optional[str]" = None) -> str:
+                                   mode: "Optional[str]" = None,
+                                   authorization_id: "Optional[str]" = None,
+                                   checkpoint_digest: "Optional[str]" = None) -> str:
     """Server-owned, durable-FIRST ingest of a worker's approval request (D2 P1).
 
     THE producer boundary the one-RunStore design requires: the request is committed
     under the fenced authority BEFORE it is published as pending, and the kanban
-    APPROVAL_REQUEST is DERIVED from that durable record (never the reverse). Bound to
-    the specific effect via ``effect_digest``/``action``/``mode`` recorded on the
-    durable request event. The worker never writes the durable store; it calls the
-    worker-only endpoint, which calls this. Fail-closed: if the authority cannot accept
-    the request (lost/absent), NO pending is published and NO kanban request is derived
-    (a failed durable open never surfaces as a pending approval). Idempotent (exact-id
-    re-open returns the existing open request). Returns the durable result
+    APPROVAL_REQUEST is DERIVED from that durable record (never the reverse). The FULL
+    effect binding (``authorization_id``/``action``/``mode``/``effect_digest`` and the
+    ``checkpoint_digest`` of the pending tool invocation) is recorded on the durable
+    request event so a replay with a changed binding is a conflict. The worker never
+    writes the durable store; it calls the worker-only endpoint, which calls this.
+    Fail-closed: if the authority cannot accept the request (lost/absent), NO pending is
+    published and NO kanban request is derived. Returns the durable result
     (``PROJECTION_*``), or ``"disabled"`` when durable ingress is off.
+
+    NOTE: only the checkpoint DIGEST is persisted here for binding; storing the full
+    validated pending-tool checkpoint blob and restart-safe park/resume from it is
+    STAGED (R1 NO-GO) — see the evidence contract.
     """
     _dip = _durable_ingress_active()
     if _dip is None:
         return "disabled"
-    payload = {k: v for k, v in
-               (("effect_digest", effect_digest), ("action", action), ("mode", mode))
-               if v is not None}
+    payload = {k: v for k, v in (
+        ("effect_digest", effect_digest), ("action", action), ("mode", mode),
+        ("authorization_id", authorization_id), ("checkpoint_digest", checkpoint_digest),
+    ) if v is not None}
     _dip.open_managed_approval(run_id, approval_id=approval_id, payload=payload or None)
     # kanban is a projection of the fenced RunStore — derive it from durable.
     rebuild_kanban_approval_projection(conn, run_id)
@@ -2982,22 +2989,48 @@ async def runtime_approve_run(
 # the request is committed to the fenced RunStore BEFORE any kanban projection, bound
 # to the run's admitted scope (cap -> run -> tenant/principal/workspace/agent) and to a
 # specific effect (approval_id + effect_digest + action + mode).
+_WORKER_AUTH_STATUS = {
+    "unauthorized_worker": 401,
+    "run_authority_unavailable": 503,
+    "run_not_found": 404,
+    "run_not_active": 409,
+}
+# The full effect-binding fields recorded on the durable request and compared on replay.
+_APPROVAL_BINDING_FIELDS = ("effect_digest", "action", "mode",
+                            "authorization_id", "checkpoint_digest")
+
+
 def _worker_dip_or_error(run_id: str, request: "Request"):
-    """Authorize a worker-only call: durable ingress enabled (else 404), a valid per-run
-    capability (else 401), and the fenced authority currently held (else 503). Returns
-    the durable_ingress_process module."""
+    """Authorize a worker-only call. Durable ingress must be enabled (else 404); the
+    per-run capability must be valid AND currently authorized against the LIVE run —
+    signature + run_id + expiry, scope (tenant/principal/workspace), the current
+    authority epoch (a takeover revokes it), and the run still active (cancel / terminal
+    / UNKNOWN revokes it). Returns the durable_ingress_process module or raises the
+    mapped fail-closed status."""
     _dip = _durable_ingress_active()
     if _dip is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
-    if not _dip.verify_worker_capability(run_id, request.headers.get("X-Youtab-Worker-Cap")):
-        raise HTTPException(status_code=401, detail={"error": "unauthorized_worker"})
-    if not _dip.ingress_ready():
-        raise HTTPException(status_code=503, detail={"error": "run_authority_unavailable"})
+    ok, reason = _dip.authorize_worker_capability(
+        run_id, request.headers.get("X-Youtab-Worker-Cap"))
+    if not ok:
+        raise HTTPException(status_code=_WORKER_AUTH_STATUS.get(reason, 401),
+                            detail={"error": reason})
     return _dip
 
 
 def _approval_status_for_decision(decision: str) -> str:
     return "approved" if decision == _rc.APPROVE else "denied"
+
+
+def _binding_conflict(prev: "Dict[str, Any]", new: "Dict[str, Any]") -> bool:
+    """True if a persisted request binding differs from a new request for the SAME
+    approval_id. Any recorded field that changed (including one now missing) is a
+    conflict — a changed binding must never silently rebind, even after a decision."""
+    for f in _APPROVAL_BINDING_FIELDS:
+        pv = prev.get(f)
+        if pv is not None and pv != new.get(f):
+            return True
+    return False
 
 
 @router.post("/api/runtime/worker/v1/runs/{run_id}/approval-request")
@@ -3007,60 +3040,81 @@ async def worker_request_approval(
 ):
     """Worker-only, durable-FIRST approval-request ingest (D2).
 
-    Auth: per-run ``X-Youtab-Worker-Cap`` (not the service secret). Body:
-    ``{approval_id, effect_digest, action?, mode?}``. Persists the request on the fenced
-    RunStore FIRST, then derives the kanban projection. Replay: same approval_id + same
-    effect_digest after the durable commit is idempotent (``pending``); a conflicting
-    effect_digest is 409; an already-decided approval returns its decision; a terminal /
-    non-openable run is 409; authority loss is 503; a failed durable open yields no
-    pending and no kanban projection (fail closed)."""
+    Auth: per-run ``X-Youtab-Worker-Cap`` bound to the run's scope/epoch/expiry and
+    re-checked against the live run (not the service secret). Body
+    ``{approval_id, effect_digest, action?, mode?, authorization_id?, checkpoint_digest?}``.
+    Persists the FULL binding on the fenced RunStore FIRST, then derives the kanban
+    projection, and the ``200`` attests the durable commit (``durable: true``) and the
+    binding. Replay of the SAME id+binding is idempotent; a CHANGED binding for the same
+    approval_id is 409 ``approval_binding_conflict`` — even after a decision; an
+    already-decided (same-binding) approval returns its decision; a non-openable/terminal/
+    UNKNOWN run is 409; authority loss/revocation is 503/409; a failed durable open yields
+    no pending and no kanban projection (fail closed).
+
+    NOTE (STAGED, R1 NO-GO): only the checkpoint DIGEST is bound here. The full validated
+    pending-tool checkpoint blob, restart-safe park/resume, and a single-use effect claim
+    at effect time are NOT implemented — see the evidence contract."""
     _dip = _worker_dip_or_error(run_id, request)
     body = await _json_body(request)
     approval_id = str(body.get("approval_id") or "").strip()
     effect_digest = str(body.get("effect_digest") or "").strip()
-    action = (str(body.get("action")).strip() if body.get("action") is not None else None)
-    mode = (str(body.get("mode")).strip() if body.get("mode") is not None else None)
+
+    def _opt(k):
+        v = body.get(k)
+        return str(v).strip() if v is not None else None
+
+    new_binding = {"effect_digest": effect_digest, "action": _opt("action"),
+                   "mode": _opt("mode"), "authorization_id": _opt("authorization_id"),
+                   "checkpoint_digest": _opt("checkpoint_digest")}
     if not approval_id:
         raise HTTPException(status_code=422, detail={"error": "approval_id_required"})
     if not effect_digest:
         raise HTTPException(status_code=422, detail={"error": "effect_digest_required"})
 
+    def _attest(status: str, extra: "Dict[str, Any]") -> "Dict[str, Any]":
+        out = {"run_id": run_id, "approval_id": approval_id, "durable": True,
+               "state": status, "effect_digest": effect_digest,
+               "authorization_id": new_binding["authorization_id"],
+               "action": new_binding["action"], "mode": new_binding["mode"],
+               "checkpoint_digest": new_binding["checkpoint_digest"]}
+        out.update(extra)
+        return out
+
     def _do() -> "Dict[str, Any]":
         try:
-            prior = _dip.prior_approval_decision(run_id, approval_id)
-            if prior is not None:  # already decided durably — replay the decision
-                return {"run_id": run_id, "approval_id": approval_id,
-                        "status": _approval_status_for_decision(prior), "decision": prior}
-            # A prior request for THIS id binds the effect: a different effect is a
-            # conflict (never silently rebound); the same effect is idempotent.
             existing = [d for d in _dip.durable_approval_events(run_id)
                         if d["kind"] == "request" and d["approval_id"] == approval_id]
-            if existing:
-                prev = existing[-1].get("effect_digest")
-                if prev is not None and prev != effect_digest:
-                    raise HTTPException(status_code=409,
-                                        detail={"error": "approval_effect_conflict"})
-            # If the RunStore already holds THIS approval open, it is idempotent — do
-            # not re-open. Otherwise (a fresh request, or a run reconciled to UNKNOWN
-            # after a takeover) open/RE-open it durable-FIRST, then derive kanban.
+            # FULL-binding conflict check FIRST — before any decision replay. A changed
+            # binding for the same approval_id is refused even after a decision.
+            if existing and _binding_conflict(existing[-1], new_binding):
+                raise HTTPException(status_code=409,
+                                    detail={"error": "approval_binding_conflict"})
+            prior = _dip.prior_approval_decision(run_id, approval_id)
+            if prior is not None:  # decided, same binding — replay the decision
+                return _attest(_approval_status_for_decision(prior), {"decision": prior})
+            # Idempotent: the RunStore already holds THIS approval open. (No UNKNOWN
+            # re-open — ensure_running does not revive UNKNOWN, so an UNKNOWN run's open
+            # raises InvalidTransition below → 409.)
             state = _dip.durable_run_state(run_id)
-            if state.get("available") and state.get("state") == "WAITING_APPROVAL" and existing:
-                return {"run_id": run_id, "approval_id": approval_id,
-                        "status": "pending", "effect_digest": effect_digest}
+            if existing and state.get("available") and state.get("state") == "WAITING_APPROVAL":
+                return _attest("waiting_approval", {})
             with kb.connect_closing(board=RUNTIME_BOARD) as conn:
                 ingest_worker_approval_request(
                     conn, run_id, approval_id=approval_id,
-                    effect_digest=effect_digest, action=action, mode=mode,
+                    effect_digest=effect_digest, action=new_binding["action"],
+                    mode=new_binding["mode"],
+                    authorization_id=new_binding["authorization_id"],
+                    checkpoint_digest=new_binding["checkpoint_digest"],
                 )
-            return {"run_id": run_id, "approval_id": approval_id,
-                    "status": "pending", "effect_digest": effect_digest}
+            return _attest("waiting_approval", {})
         except _dip.AuthorityLost:
             raise HTTPException(status_code=503,
                                 detail={"error": "run_authority_unavailable"})
         except _dip.ApprovalAlreadyOpen:
             raise HTTPException(status_code=409, detail={"error": "another_approval_open"})
         except _dip.InvalidTransition:
-            raise HTTPException(status_code=409, detail={"error": "run_terminal"})
+            # run is not openable (terminal / UNKNOWN / not RUNNING) — never revived.
+            raise HTTPException(status_code=409, detail={"error": "run_not_openable"})
 
     return await run_in_threadpool(_do)
 
@@ -3071,30 +3125,42 @@ async def worker_read_approval(
     approval_id: str,
     request: "Request",
 ):
-    """Worker-only authoritative decision read (D2). Auth: per-run capability. Returns
-    the durable decision status: ``approved``/``denied`` once decided; ``pending`` while
-    the RunStore holds an open request for this id; ``unknown`` if the run left
-    WAITING_APPROVAL without a decision (e.g. reconciled to UNKNOWN after a takeover);
-    ``absent`` if no such request. The RunStore is the sole authority — never kanban."""
+    """Worker-only authoritative decision read (D2). Auth: per-run capability re-checked
+    against the live run. Returns the durable decision + attestation:
+    ``approved``/``denied`` once decided; ``pending`` while the RunStore holds an open
+    request; ``unknown`` if the run left WAITING_APPROVAL without a decision (e.g.
+    reconciled to UNKNOWN after a takeover — the worker must fail closed); ``absent`` if
+    no such request. The RunStore is the sole authority.
+
+    A returned ``approved`` is NOT an effect fence: cancellation or authority loss
+    between this read and the effect is possible, so the worker MUST obtain a single-use
+    server-side effect claim and re-validate the signed grant + time before applying —
+    that claim endpoint is STAGED (R1 NO-GO)."""
     _dip = _worker_dip_or_error(run_id, request)
 
     def _do() -> "Dict[str, Any]":
         try:
+            reqs = [d for d in _dip.durable_approval_events(run_id)
+                    if d["kind"] == "request" and d["approval_id"] == approval_id]
             prior = _dip.prior_approval_decision(run_id, approval_id)
-            if prior is not None:
-                return {"run_id": run_id, "approval_id": approval_id,
-                        "status": _approval_status_for_decision(prior), "decision": prior}
-            requested = any(d["kind"] == "request" and d["approval_id"] == approval_id
-                            for d in _dip.durable_approval_events(run_id))
             state = _dip.durable_run_state(run_id)
         except _dip.AuthorityLost:
             raise HTTPException(status_code=503,
                                 detail={"error": "run_authority_unavailable"})
-        if not requested:
-            return {"run_id": run_id, "approval_id": approval_id, "status": "absent"}
-        if state.get("available") and state.get("state") == "WAITING_APPROVAL":
-            return {"run_id": run_id, "approval_id": approval_id, "status": "pending"}
-        return {"run_id": run_id, "approval_id": approval_id, "status": "unknown"}
+        binding = reqs[-1] if reqs else {}
+        run_state = (state.get("state") or "").lower() if state.get("available") else None
+        base = {"run_id": run_id, "approval_id": approval_id, "durable": True,
+                "run_state": run_state, "effect_digest": binding.get("effect_digest"),
+                "authorization_id": binding.get("authorization_id"),
+                "effect_fence": False}  # decision read is NOT a single-use effect fence
+        if prior is not None:
+            base.update({"status": _approval_status_for_decision(prior), "decision": prior})
+            return base
+        if not reqs:
+            base["status"] = "absent"
+            return base
+        base["status"] = "pending" if run_state == "waiting_approval" else "unknown"
+        return base
 
     return await run_in_threadpool(_do)
 

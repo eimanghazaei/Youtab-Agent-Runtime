@@ -153,7 +153,10 @@ def test_reconcile_noop_when_already_decided(enabled):
     assert dip.get_ingress_authority().get_run("t_dd")["state"] == RunState.RUNNING.value
 
 
-def test_pending_approval_visible_after_restart_without_click(enabled):
+def test_restart_does_not_revive_unknown_approval(enabled):
+    """Finding 1: after a restart, a prior pending run is UNKNOWN (terminal-uncertain).
+    reconcile must NOT revive it — no UNKNOWN->RUNNING, no re-open — until a validated
+    checkpoint + resume fence (staged) proves resume safe. Fail-closed."""
     dip.acquire_ingress_authority()
     _admit(run_id="t_re")
     dip.reconcile_pending_approval("t_re", pending_approval_id="ap1")  # -> WAITING_APPROVAL
@@ -162,14 +165,13 @@ def test_pending_approval_visible_after_restart_without_click(enabled):
     dip.acquire_ingress_authority()  # new epoch: reconcile prior nonterminal -> UNKNOWN
     auth = dip.get_ingress_authority()
     assert auth.get_run("t_re")["state"] == RunState.UNKNOWN.value
-    # a poll (NOT a user click) re-projects the durable pending approval
-    dip.reconcile_pending_approval("t_re", pending_approval_id="ap1")
-    row = auth.get_run("t_re")
-    assert row["state"] == RunState.WAITING_APPROVAL.value
-    assert (row["tenant_id"], row["workspace_id"], row["principal_id"]) == ("t1", "w1", "t1:u1")
-    # and the human decision then still applies (single-use CAS), no re-execution
-    dip.decide_managed_approval("t_re", approval_id="ap1", decision="approve", **_SCOPE)
-    assert auth.get_run("t_re")["state"] == RunState.RUNNING.value
+    # a re-observation must NOT re-open it; the run stays UNKNOWN (no RUNNING revival)
+    assert dip.reconcile_pending_approval("t_re", pending_approval_id="ap1") == \
+        dip.PROJECTION_NOT_ACCEPTED
+    assert auth.get_run("t_re")["state"] == RunState.UNKNOWN.value
+    # and a decision cannot consume it (it is not durably WAITING_APPROVAL)
+    with pytest.raises(ApprovalNotOpen):
+        dip.decide_managed_approval("t_re", approval_id="ap1", decision="approve", **_SCOPE)
 
 
 # ------------------------------------------------------------- cross-scope --- #
@@ -260,16 +262,17 @@ def test_reconcile_no_poll_leaves_durable_not_pending(enabled):
     assert dip.get_ingress_authority().get_run("t_npoll")["state"] == RunState.QUEUED.value
 
 
-def test_reconcile_after_restart_before_first_observation(enabled):
+def test_reconcile_after_restart_does_not_open_unknown(enabled):
     dip.acquire_ingress_authority()
     _admit(run_id="t_rst")
     dip.reset_for_tests()               # restart BEFORE any observation
     dip.acquire_ingress_authority()     # takeover: prior nonterminal -> UNKNOWN
     auth = dip.get_ingress_authority()
     assert auth.get_run("t_rst")["state"] == RunState.UNKNOWN.value  # not a false pending
+    # finding 1: UNKNOWN is terminal-uncertain — reconcile must NOT open it.
     assert dip.reconcile_pending_approval("t_rst", pending_approval_id="ap1") == \
-        dip.PROJECTION_ACCEPTED         # first observation ingests under new authority
-    assert auth.get_run("t_rst")["state"] == RunState.WAITING_APPROVAL.value
+        dip.PROJECTION_NOT_ACCEPTED
+    assert auth.get_run("t_rst")["state"] == RunState.UNKNOWN.value
 
 
 def test_durable_approval_events_source_for_rebuild(enabled):
