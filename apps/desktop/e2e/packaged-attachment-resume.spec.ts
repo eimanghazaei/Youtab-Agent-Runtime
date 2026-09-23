@@ -98,6 +98,24 @@ function bundledBackendProcessCount(): number {
   }
 }
 
+/** Full executable paths of live youtab-backend.exe processes (win32), so a test
+ * can prove the running backend was spawned from the PACKAGED resources tree and
+ * not a dev checkout. */
+function backendProcessPaths(): string[] {
+  if (process.platform !== 'win32') return []
+  try {
+    const out = execFileSync(
+      'powershell',
+      ['-NoProfile', '-Command',
+        "Get-CimInstance Win32_Process -Filter \"Name='youtab-backend.exe'\" | Select-Object -ExpandProperty ExecutablePath"],
+      { encoding: 'utf8' },
+    )
+    return out.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
 async function focusComposer(page: Page) {
   const composer = page.locator('[contenteditable="true"]').first()
   await composer.waitFor({ state: 'visible', timeout: 30_000 })
@@ -157,6 +175,16 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     // the bundled backend only launches when the integrity gate passes over the
     // shipped bundle (sidecar-refused otherwise surfaces a boot-failure overlay
     // that waitForAppReady would never clear).
+
+    // Process-path evidence: the live backend was spawned from the PACKAGED
+    // resources tree (…/release/win-unpacked/resources/backend-sidecar/…), never
+    // a dev checkout venv/source.
+    await expect
+      .poll(() => backendProcessPaths().some(p => /win-unpacked[\\/]+resources[\\/]+backend-sidecar/i.test(p)), {
+        timeout: 60_000,
+        message: 'the running backend must be the packaged bundled sidecar',
+      })
+      .toBe(true)
 
     // Attach + submit through the packaged UI so the BUNDLED backend persists.
     const composer = await focusComposer(page1)
@@ -224,5 +252,72 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
 
     // Diagnostics reference (redacted): the profile was isolated + disposable.
     expect(fs.existsSync(path.join(sandbox.youtabHome, 'state.db')), 'the profile persisted the session DB across launches').toBe(true)
+  })
+
+  // Regression for the acknowledgement boundary found during investigation: a
+  // user-visible COMPLETED turn (composer idle again) must be durable the moment
+  // the turn is acknowledged — closing promptly WITHOUT waiting on state.db must
+  // not lose the turn. This test deliberately does NOT poll the DB before the
+  // hard close; if the product loses the turn, the persistence/ack boundary must
+  // be fixed in product code, not by waiting here.
+  test('completed turn survives a PROMPT close (no durable-poll) then relaunch', async ({}, testInfo) => {
+    test.skip(!packagedBinaryExists(), 'requires the packaged binary — run npm run dist:win first')
+    test.slow()
+    test.setTimeout(600_000)
+
+    mock = await startMockServer()
+    sandbox = createSandbox('packaged-attach-promptclose')
+    writeMockProviderConfig(sandbox.youtabHome, mock.url, undefined, NATIVE_IMAGE_CONFIG)
+    writeEnvFile(sandbox.youtabHome)
+
+    ;({ app } = await launchPackagedAppRealBackend(sandbox))
+    const page1 = await app.firstWindow()
+    await waitForAppReady({ page: page1, app } as never, 240_000)
+
+    const composer = await focusComposer(page1)
+    await composer.type(CAPTION, { delay: 10 })
+    await pasteImage(page1)
+    await page1.locator('[data-slot="composer-attachments"]').waitFor({ state: 'visible', timeout: 30_000 })
+    await page1.keyboard.press('Enter')
+
+    // Wait for the turn to be USER-VISIBLY COMPLETE: the attached image rendered
+    // AND the turn is idle again (the "Stop" affordance is gone). This is the
+    // moment a user would consider the turn done and could close the app.
+    await page1.getByRole('button', { name: /open image/i }).first()
+      .waitFor({ state: 'visible', timeout: 180_000 })
+    await expect
+      .poll(() => page1.getByRole('button', { name: 'Stop' }).count(), {
+        timeout: 180_000,
+        message: 'turn must reach idle (Stop affordance cleared) before we close',
+      })
+      .toBe(0)
+
+    // Close PROMPTLY — no state.db poll, no settle wait. If the acknowledgement
+    // boundary is correct, the acknowledged turn is already durable.
+    await closePackagedApp(app)
+    app = null
+    await expect
+      .poll(() => bundledBackendProcessCount(), { timeout: 20_000 })
+      .toBe(0)
+
+    // Relaunch the same installation + profile and require the turn to be there.
+    ;({ app } = await launchPackagedAppRealBackend(sandbox))
+    const page2 = await app.firstWindow()
+    await waitForAppReady({ page: page2, app } as never, 240_000)
+
+    const row = sessionRow(page2)
+    await row.waitFor({ state: 'visible', timeout: 60_000 })
+    await row.click()
+    await page2.waitForFunction(
+      ([expected, surfaceSelector]: [string, string]) => {
+        const surfaces = document.querySelectorAll(surfaceSelector)
+        const text = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? ''
+        return text.includes(expected)
+      },
+      [CAPTION, SURFACE] as [string, string],
+      { timeout: 30_000 },
+    )
+    await assertRendersThumbnail(page2, 'prompt-close relaunch')
+    await page2.screenshot({ path: testInfo.outputPath('packaged-promptclose-relaunch.png') })
   })
 })
