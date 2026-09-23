@@ -14,6 +14,7 @@ test('readBoundedSample continues after short reads and stops at the cap', async
   const source = Buffer.from('one\ntwo\nthree')
 
   const positions: number[] = []
+
   const handle = {
     async read(target: Buffer, offset: number, length: number, position: number) {
       positions.push(position)
