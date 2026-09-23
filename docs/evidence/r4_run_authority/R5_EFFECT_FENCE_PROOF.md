@@ -7,11 +7,47 @@ push/PR/merge/deploy/install. ADR number pending coordination (do NOT reuse ADR-
 
 | Item | Value |
 |---|---|
-| Source SHA | `ac7bb5b1ebcb351dc132b3fd238c98b47a81d3ea` (on durable branch, over R5-analysis `514a02dba`) |
-| Image | `youtab-agent-runtime:r5-ac7bb5b1e`, Id `sha256:ce121bdd60625116b6171a0aa198dd2e9ed9865180e01e92146e21ae9ac8fc63` |
+| Source SHA (review-hardened) | `2cf4cdf47aa09d07c2f9c1b3f9ba2bfb6e626d3b`, tree `192e6dcdd437f82beea10cc9a3cb7012738044fa` |
+| Image | `youtab-agent-runtime:r5-2cf4cdf47`, Id `sha256:7ef3318c20c0017a6fe427649ba794ddd95ed472d8d7687e5e78052ead44c352` |
 | Embedded SHA | `/opt/youtab/.youtab_agent_build_sha` == source SHA (provenance match) |
-| Build log | `docs/evidence/r4_run_authority/r5_image_build.log` (exit 0) |
+| Build log | `docs/evidence/r4_run_authority/r5fix_image_build.log` (exit 0) |
+| Prior (pre-review) source/image | `ac7bb5b1ebcb…` / `r5-ac7bb5b1e` (`sha256:ce121bdd…`) — superseded by the review fixes below |
 | Raw evidence | `docs/evidence/r4_run_authority/R5_LIVE_RAW.txt` |
+
+## Review fixes (R5_AC7_REVIEW_2026-09-23.md, sha256 C497F850…) — all four addressed
+Reviewed at `ac7bb5b1`; fixed at `2cf4cdf47`. Full durable suite **108 passed / 2
+skipped** on real PG; ruff clean. Tests in `tests/durable_execution/test_r5_effect_fence.py`.
+
+1. **Enumeration failure → never false containment.** Enumeration is factored into
+   `_enumerate_owned_descendants() -> (found, ok)`; a registry-snapshot or psutil
+   failure sets `enumeration_ok=False` → `contained=False`. Test:
+   `test_enumeration_failure_is_not_contained`.
+2. **Unknown identity → never an unguarded kill.** A target is signalled ONLY when
+   its start-time is known AND `_host_pid_is_ours` matches; a start-time-less
+   target is recorded `unidentified`, never signalled, and forces
+   `contained=False`. Test: `test_unknown_identity_is_never_killed_and_not_contained`
+   (a real live child with forced-`None` identity is NOT killed; `contained=False`).
+3. **Deadline bounds the WHOLE teardown.** `deadline_s` (default 8 s) spans all
+   sweeps + terminations + settle; when spent, no further target is signalled and
+   `contained=False` (`budget_exceeded`); `elapsed_s` is returned (worst-case
+   overrun ≤ one in-flight `_terminate_host_pid` timeout). Test:
+   `test_budget_exceeded_is_not_contained_and_does_not_signal` (deadline 0 → no
+   signal, child alive, `elapsed_s ≤ 2s`).
+4. **Child-spawn race → repeat sweep.** The reap loops enumerate→signal until a
+   clean sweep finds no live owned descendant (or the deadline). A child spawned
+   during teardown is caught next sweep; a killed process cannot spawn more, so
+   the live set strictly shrinks and converges. Test:
+   `test_child_spawn_race_is_caught_by_resweep` (a pid injected on sweep 2 is
+   caught; `sweeps≥2`, both pids `verified_dead`, `contained=True`).
+
+Re-proved on the fix image `r5-2cf4cdf47`:
+- POSIX in-container real detached child: `contained=True enumeration_ok=True
+  targets=1 signalled=[…] verified_dead=[…] sweeps=2 elapsed=0.103s` — effect
+  sentinel NOT written.
+- Live gateway fail-stop on real PG authority loss: `effect-descendant reap on
+  fail-stop: contained=True targets=0 … enumeration_ok=True sweeps=1 elapsed=0.009s
+  platform=posix` → restart → epoch 2 → run UNKNOWN. (`contained=True` here is
+  truthful, not vacuous: enumeration SUCCEEDED and found no descendant.)
 
 ## What was built (single hook, no second reaper)
 `ProcessRegistry.reap_effect_descendants()` in `tools/process_registry.py` — the
