@@ -906,3 +906,84 @@ def test_F_refusal_constructs_no_client_and_makes_no_network(managed_deferred, t
     # Belt-and-suspenders explicit assertions (the crux of scenario F).
     assert not net_s.exists()
     assert not client_s.exists()
+
+
+# ── D1: durable single-authority admission on the REAL managed route ──────────
+# These prove that with YOUTAB_AGENT_DURABLE_INGRESS on, the product create path
+# admits through the ONE fenced owner-stamped durable RunStore FIRST (the sole
+# idempotency/lifecycle authority) and kanban mirrors the SAME run id as execution
+# transport only — no second id and no second dedup. The worker is a no-op spawn
+# (managed_deferred style) so the assertions are race-free.
+
+@pytest.fixture()
+def managed_durable(tmp_path, monkeypatch):
+    import youtab_runtime.durable_ingress_process as dip
+
+    db_path = _install_managed_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_INGRESS", "1")
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "sqlite")
+    monkeypatch.setenv(
+        "YOUTAB_AGENT_DURABLE_DB_PATH", str(tmp_path / "durable_runs.db")
+    )
+    dip.reset_for_tests()
+
+    def _noop_spawn(task, workspace, *, board=None):
+        return os.getpid()  # alive pid: dispatcher never respawns; nothing executes
+
+    with _build_client(_noop_spawn) as c:
+        yield c, db_path
+    runtime.stop_dispatcher()
+    runtime._spawn_override = None
+    runtime._nonce_store = None
+    runtime._grant_boundary = None
+    dip.reset_for_tests()
+
+
+def test_durable_create_pins_kanban_to_durable_run_id(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    _, header = _mint_grant()
+    r = _create(client, grant_header=header, idempotency="dur-k1")
+    assert r.status_code == 200, r.text
+    run_id = r.json()["run_id"]
+
+    # the ONE durable authority owns the run, owner-stamped and QUEUED
+    auth = dip.get_ingress_authority()
+    row = auth.get_run(run_id)
+    assert row is not None and row["lease_owner"], row
+    assert row["run_id"] == run_id
+    # kanban mirrors the SAME id (execution transport only) — no second id
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, run_id) is not None
+    finally:
+        conn.close()
+
+
+def test_durable_idempotent_replay_same_run_single_row(managed_durable):
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, _ = managed_durable
+    _, h1 = _mint_grant()
+    r1 = _create(client, grant_header=h1, task="same body", idempotency="dur-k2")
+    assert r1.status_code == 200, r1.text
+    _, h2 = _mint_grant()  # fresh grant nonce; SAME idempotency key + SAME body
+    r2 = _create(client, grant_header=h2, task="same body", idempotency="dur-k2")
+    assert r2.status_code == 200, r2.text
+    assert r1.json()["run_id"] == r2.json()["run_id"]  # ORIGINAL run returned
+
+    # exactly one durable run for the scoped key (the replay created no 2nd run)
+    auth = dip.get_ingress_authority()
+    assert auth.get_run(r1.json()["run_id"]) is not None
+
+
+def test_durable_same_key_different_body_conflicts_409(managed_durable):
+    client, _ = managed_durable
+    _, h1 = _mint_grant()
+    r1 = _create(client, grant_header=h1, task="body one", idempotency="dur-k3")
+    assert r1.status_code == 200, r1.text
+    _, h2 = _mint_grant()  # SAME key, DIFFERENT request body -> conflict
+    r2 = _create(client, grant_header=h2, task="body two", idempotency="dur-k3")
+    assert r2.status_code == 409, r2.text
+    assert r2.json()["detail"]["error"] == "idempotency_key_conflict"

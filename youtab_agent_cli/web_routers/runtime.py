@@ -2405,29 +2405,91 @@ async def runtime_create_run(
             if grant_manifest is not None:
                 kb._append_event(conn, rid, _GRANT_MANIFEST_EVENT, grant_manifest)
 
+    # D1 single-authority admission (opt-in). When the durable ingress is enabled,
+    # the ONE fenced, owner-stamped durable RunStore — NOT kanban — is the sole
+    # run-state/idempotency authority: admit HERE first (principal-scoped key +
+    # request digest), pin the canonical run id, and let kanban mirror that SAME id
+    # as execution transport only (idempotency_key=None -> no second dedup). Only
+    # managed runs carry the tenant/workspace/principal scope the durable key needs;
+    # standalone keeps the unchanged kanban path.
+    _durable_admit = None
+    if _is_managed:
+        try:
+            from youtab_runtime import durable_ingress_process as _dip
+        except Exception:  # pragma: no cover - the durable module must import
+            _dip = None
+        if _dip is not None and _dip.ingress_enabled():
+            _req_digest = _dip.request_digest_for({
+                "agent": agent, "task": task_text, "engine": engine or None,
+                "goal_mode": goal_mode, "skills": skills,
+                "max_runtime_seconds": max_runtime,
+                "model_override": model_override,
+                "provider_override": provider_override,
+                "limits": run_limits.to_dict() if run_limits else None,
+            })
+            try:
+                _durable_admit = _dip.admit_managed_run(
+                    run_id=kb._new_task_id(),
+                    tenant_id=identity.tenant,
+                    workspace_id=identity.workspace,
+                    principal_id=f"{identity.tenant}:{identity.user}",
+                    agent_id=agent,
+                    idempotency_key=identity.idempotency_key,
+                    request_digest=_req_digest,
+                    execution_deadline=(
+                        time.time() + max_runtime if max_runtime else None
+                    ),
+                )
+            except _dip.IdempotencyConflict:
+                # Same Idempotency-Key, DIFFERENT request body: refuse, never a
+                # silent reuse of the first run under a mismatched request.
+                raise HTTPException(
+                    status_code=409, detail={"error": "idempotency_key_conflict"}
+                )
+            except _dip.AuthorityLost:
+                # The single run authority is absent/lost -> fail closed. No
+                # non-durable admit and no false-ready; Recreate rollout / restart.
+                raise HTTPException(
+                    status_code=503, detail={"error": "run_authority_unavailable"}
+                )
+
+    _ctx_kwargs = dict(
+        title=title,
+        body=task_text,
+        assignee=agent,
+        created_by=identity.user,
+        tenant=identity.tenant,
+        skills=skills,
+        goal_mode=goal_mode,
+        max_runtime_seconds=max_runtime,
+        max_retries=_task_max_retries,
+        model_override=model_override,
+        provider_override=provider_override,
+        board=RUNTIME_BOARD,
+        # Authoritative dedicated correlation column (canonical v1). The
+        # session_id write below stays UNCHANGED as the legacy overload.
+        correlation_id=identity.correlation_id,
+        session_id=identity.correlation_id,
+        # Persist binding/grant/mode atomically with the row (see hook).
+        on_created=_persist_run_metadata,
+    )
     with kb.connect_closing(board=RUNTIME_BOARD) as conn:
-        run_id, created = kb.create_task_ex(
-            conn,
-            title=title,
-            body=task_text,
-            assignee=agent,
-            created_by=identity.user,
-            tenant=identity.tenant,
-            idempotency_key=identity.idempotency_key,
-            skills=skills,
-            goal_mode=goal_mode,
-            max_runtime_seconds=max_runtime,
-            max_retries=_task_max_retries,
-            model_override=model_override,
-            provider_override=provider_override,
-            board=RUNTIME_BOARD,
-            # Authoritative dedicated correlation column (canonical v1). The
-            # session_id write below stays UNCHANGED as the legacy overload.
-            correlation_id=identity.correlation_id,
-            session_id=identity.correlation_id,
-            # Persist binding/grant/mode atomically with the row (see hook).
-            on_created=_persist_run_metadata,
-        )
+        if _durable_admit is not None:
+            # The durable authority already decided create-vs-dedup and owns the id
+            # + idempotency. Kanban mirrors the SAME id as execution transport only.
+            run_id = _durable_admit.row["run_id"]
+            created = _durable_admit.created
+            if created:
+                # idempotency_key=None: kanban performs no second dedup. task_id
+                # pins the mirror to the durable run id. On a dedup hit the mirror
+                # already exists (created on the first admit), so skip re-creation.
+                kb.create_task_ex(
+                    conn, idempotency_key=None, task_id=run_id, **_ctx_kwargs
+                )
+        else:
+            run_id, created = kb.create_task_ex(
+                conn, idempotency_key=identity.idempotency_key, **_ctx_kwargs
+            )
         # WAVE-30H #8 + Batch2 #F4: on an idempotent hit the run already exists with
         # its persisted binding; a caller pinning an expected digest must have it match
         # the EXISTING run's binding — else a replayed Idempotency-Key could attach the
