@@ -6223,11 +6223,13 @@ class APIServerAdapter(BasePlatformAdapter):
         NOT report such a run as ordinary "running".
         """
         store = getattr(self, "_run_store", None)
-        if store is None or not os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+        if not os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
             return
+        if store is None:
+            raise RuntimeError("durable startup reconciliation requires a run store")
         reconcile = getattr(store, "reconcile_dead_owner", None)
         if reconcile is None:
-            return
+            raise RuntimeError("durable startup reconciliation unsupported")
         try:
             my_pid = os.getpid()
             # This process owns nothing at startup, so any pid != mine is a dead
@@ -6240,6 +6242,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
         except Exception:
             logger.warning("startup run reconcile failed", exc_info=True)
+            raise
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""

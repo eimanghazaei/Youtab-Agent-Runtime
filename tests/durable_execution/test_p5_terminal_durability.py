@@ -139,6 +139,19 @@ def test_startup_reconcile_store_failure_fails_closed(monkeypatch):
         adapter._reconcile_orphaned_runs_on_startup()
 
 
+@pytest.mark.parametrize(
+    "store, message",
+    [(None, "requires a run store"), (object(), "reconciliation unsupported")],
+)
+def test_startup_reconcile_missing_authority_fails_closed(monkeypatch, store, message):
+    monkeypatch.delenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", raising=False)
+    adapter = _adapter()
+    monkeypatch.setenv("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND", "postgres")
+    adapter._run_store = store
+    with pytest.raises(RuntimeError, match=message):
+        adapter._reconcile_orphaned_runs_on_startup()
+
+
 def test_startup_does_not_reconcile_another_live_instance(monkeypatch, tmp_path):
     """A second server sharing the store must not mark a live owner's run UNKNOWN."""
     from youtab_runtime.durable_run_store import RunIdentity, RunState, SqliteRunStore
