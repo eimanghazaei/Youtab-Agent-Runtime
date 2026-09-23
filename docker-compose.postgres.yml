@@ -1,0 +1,46 @@
+# PROPOSED production override — durable RunStore on PostgreSQL (pending Master
+# coordination of the shared deployment contract). This file is ADDITIVE and does
+# NOT modify the shared docker-compose.yml. Opt in explicitly:
+#
+#   POSTGRES_PASSWORD=... \
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+#
+# It makes the server REQUIRE PostgreSQL: the gateway selects the postgres
+# RunStore backend, and a missing/unreachable PostgreSQL makes the store
+# construction fail closed at startup (no silent SQLite fallback), so the service
+# cannot become healthy or accept a /v1/runs run. Desktop/local installs that do
+# NOT use this override keep the default SQLite backend.
+#
+# No secret is embedded: POSTGRES_PASSWORD is read from the host environment.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: youtab-durable-pg
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=youtab
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      - POSTGRES_DB=durable
+    networks:
+      - youtab-runtime
+    volumes:
+      - youtab-durable-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U youtab -d durable"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  youtab-agent-runtime:
+    environment:
+      # Require the PostgreSQL durable RunStore backend (fail-closed in server mode).
+      - YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND=postgres
+      - YOUTAB_AGENT_DURABLE_PG_DSN=postgresql://youtab:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/durable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  youtab-durable-pgdata:

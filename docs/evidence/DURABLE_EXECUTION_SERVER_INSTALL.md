@@ -48,6 +48,30 @@ the api_server constructs the run store via `create_run_store()` (env-driven) at
 startup. To run the server on PostgreSQL: set the two env vars above before
 `gateway run`.
 
+## Verdict
+**PostgreSQL component VERIFIED; production deployment path OPEN.** The dependency
+is locked, the backend is implemented and tested on real PG16, and backend
+selection is fail-closed. What is NOT yet proven end-to-end: a built server IMAGE
+booted against a fresh PostgreSQL with `/v1/runs` exercised through the running
+service. That requires the shared deployment contract (below) to be adopted with
+Master and a provider configured — deployment/pre-prod is Owner/Master-side.
+
+## Production deployment contract (PROPOSED — pending Master coordination)
+- `docker-compose.postgres.yml` (additive override; the shared `docker-compose.yml`
+  is NOT modified). Adds a `postgres` service and sets, on the gateway service,
+  `YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND=postgres` +
+  `YOUTAB_AGENT_DURABLE_PG_DSN=postgresql://youtab:${POSTGRES_PASSWORD}@postgres:5432/durable`
+  with `depends_on: postgres: service_healthy`. No secret embedded.
+- Boot: `POSTGRES_PASSWORD=… docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d`.
+- Fail-closed at the service level: with backend=postgres and PostgreSQL
+  missing/unreachable, the run-store construction raises at api_server startup —
+  the gateway service cannot become healthy (health probe fails) or accept a
+  `/v1/runs` run. The default `docker-compose.yml` (no override) keeps SQLite for
+  explicitly local/single-node use.
+- The api_server (`/v1/runs`) itself is off unless `API_SERVER_KEY`/`API_SERVER_HOST`
+  are set (existing contract) and a provider is configured — those are the
+  pre-deploy prerequisites the deployment contract must pin with Master.
+
 ## Scope / OPEN
 - SQLite qualified single-node (local correctness); PostgreSQL qualified on a real
   PG16 instance (server durability). Multi-host distributed execution beyond a
