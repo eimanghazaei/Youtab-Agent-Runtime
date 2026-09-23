@@ -2,7 +2,7 @@
 
 #1 [internal] load build definition from Dockerfile
 #1 transferring dockerfile: 25.52kB 0.0s done
-#1 DONE 0.1s
+#1 DONE 0.0s
 
 #2 [internal] load metadata for docker.io/library/debian:13.4
 #2 ...
@@ -14,13 +14,13 @@
 #4 DONE 0.0s
 
 #5 [internal] load metadata for ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b
-#5 DONE 1.2s
+#5 DONE 0.7s
 
 #6 [internal] load metadata for docker.io/library/node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732
-#6 DONE 1.2s
+#6 DONE 0.9s
 
 #2 [internal] load metadata for docker.io/library/debian:13.4
-#2 DONE 1.2s
+#2 DONE 0.9s
 
 #7 [internal] load .dockerignore
 #7 transferring context: 1.91kB done
@@ -29,153 +29,153 @@
 #8 [internal] load build context
 #8 DONE 0.0s
 
-#9 [uv_source 1/1] FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b
-#9 resolve ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b 0.1s done
+#9 [sqlite_build 1/2] FROM docker.io/library/debian:13.4@sha256:e2d08da6f42ef4b09b165d55528a12727aeed8240dc9edf888e3ec07e10ef9da
+#9 resolve docker.io/library/debian:13.4@sha256:e2d08da6f42ef4b09b165d55528a12727aeed8240dc9edf888e3ec07e10ef9da 0.1s done
 #9 DONE 0.1s
 
-#10 [node_source 1/1] FROM docker.io/library/node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732
-#10 resolve docker.io/library/node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 0.1s done
+#10 [uv_source 1/1] FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b
+#10 resolve ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b 0.1s done
 #10 DONE 0.1s
 
-#11 [sqlite_build 1/2] FROM docker.io/library/debian:13.4@sha256:e2d08da6f42ef4b09b165d55528a12727aeed8240dc9edf888e3ec07e10ef9da
-#11 resolve docker.io/library/debian:13.4@sha256:e2d08da6f42ef4b09b165d55528a12727aeed8240dc9edf888e3ec07e10ef9da 0.1s done
+#11 [node_source 1/1] FROM docker.io/library/node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732
+#11 resolve docker.io/library/node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 0.1s done
 #11 DONE 0.1s
 
 #8 [internal] load build context
-#8 transferring context: 988.19kB 0.5s done
-#8 DONE 0.5s
+#8 transferring context: 993.92kB 0.3s done
+#8 DONE 0.3s
 
-#12 [stage-3 13/38] WORKDIR /opt/youtab
+#12 [stage-3 26/38] COPY web/ web/
 #12 CACHED
 
-#13 [stage-3 15/38] COPY web/package.json web/
+#13 [stage-3  2/38] RUN apt-get -o Acquire::Retries=3 update &&     apt-get -o Acquire::Retries=3 install -y --no-install-recommends     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils &&     rm -rf /var/lib/apt/lists/*
 #13 CACHED
 
-#14 [stage-3 10/38] COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
+#14 [stage-3 22/38] RUN cd plugins/platforms/photon/sidecar &&     npm ci --no-audit --fetch-retries=5 &&     npm cache clean --force
 #14 CACHED
 
-#15 [stage-3 25/38] RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra postgres
+#15 [stage-3 19/38] COPY packages/youtab-ui/ packages/youtab-ui/
 #15 CACHED
 
-#16 [stage-3 11/38] COPY --from=node_source /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
+#16 [stage-3  4/38] RUN ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so.0 &&     ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so &&     printf '/usr/local/lib\n' > /etc/ld.so.conf.d/000-sqlite-fixed.conf &&     ldconfig &&     python3 -c "import sqlite3, sys; v = sqlite3.sqlite_version_info; sys.exit(f'linked SQLite {sqlite3.sqlite_version} still has the WAL-reset bug') if v < (3, 51, 3) else None; db = sqlite3.connect(':memory:'); db.execute("CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='trigram')"); db.execute("INSERT INTO docs VALUES ('youtab')"); sys.exit('SQLite FTS5 trigram self-test failed') if db.execute("SELECT count(*) FROM docs WHERE docs MATCH 'out'").fetchone()[0] != 1 else None; db.close()"
 #16 CACHED
 
-#17 [stage-3 27/38] COPY ui-tui/ ui-tui/
+#17 [stage-3 24/38] RUN touch ./README.md
 #17 CACHED
 
-#18 [stage-3  3/38] COPY --from=sqlite_build /opt/sqlite-fixed/lib/libsqlite3.so.3.53.4 /usr/local/lib/
+#18 [stage-3 14/38] COPY package.json package-lock.json ./
 #18 CACHED
 
-#19 [stage-3 23/38] COPY pyproject.toml uv.lock ./
+#19 [stage-3 25/38] RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra postgres
 #19 CACHED
 
-#20 [stage-3 28/38] COPY apps/shared/ apps/shared/
+#20 [stage-3 27/38] COPY ui-tui/ ui-tui/
 #20 CACHED
 
-#21 [stage-3  5/38] RUN set -eu;     case "amd64" in         amd64) s6_arch="x86_64"; s6_arch_sha="a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563" ;;         arm64) s6_arch="aarch64"; s6_arch_sha="0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581" ;;         *) echo "Unsupported TARGETARCH=amd64 for s6-overlay" >&2; exit 1 ;;     esac;     base="https://github.com/just-containers/s6-overlay/releases/download/v3.2.3.0";     curl -fsSL --retry 3 -o /tmp/s6-overlay-noarch.tar.xz         "${base}/s6-overlay-noarch.tar.xz";     curl -fsSL --retry 3 -o /tmp/s6-overlay-symlinks-noarch.tar.xz         "${base}/s6-overlay-symlinks-noarch.tar.xz";     curl -fsSL --retry 3 -o /tmp/s6-overlay-arch.tar.xz         "${base}/s6-overlay-${s6_arch}.tar.xz";     {         printf '%s  %s\n' "b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf" /tmp/s6-overlay-noarch.tar.xz;         printf '%s  %s\n' "${s6_arch_sha}" /tmp/s6-overlay-arch.tar.xz;         printf '%s  %s\n' "a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e" /tmp/s6-overlay-symlinks-noarch.tar.xz;     } > /tmp/s6-overlay.sha256;     sha256sum -c /tmp/s6-overlay.sha256;     tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz;     tar -C / -Jxpf /tmp/s6-overlay-arch.tar.xz;     tar -C / -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz;     rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256
+#21 [stage-3  6/38] COPY --chmod=0755 docker/tini-shim.sh /usr/bin/tini
 #21 CACHED
 
-#22 [stage-3  9/38] COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
+#22 [stage-3 16/38] COPY ui-tui/package.json ui-tui/
 #22 CACHED
 
-#23 [stage-3 16/38] COPY ui-tui/package.json ui-tui/
+#23 [stage-3  3/38] COPY --from=sqlite_build /opt/sqlite-fixed/lib/libsqlite3.so.3.53.4 /usr/local/lib/
 #23 CACHED
 
-#24 [stage-3 26/38] COPY web/ web/
+#24 [stage-3 20/38] RUN npm install --prefer-offline --no-audit --fetch-retries=5 &&     for i in 1 2 3; do         npx playwright install --with-deps chromium --only-shell && break ||         { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; };     done &&     npm cache clean --force
 #24 CACHED
 
-#25 [stage-3  2/38] RUN apt-get -o Acquire::Retries=3 update &&     apt-get -o Acquire::Retries=3 install -y --no-install-recommends     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils &&     rm -rf /var/lib/apt/lists/*
+#25 [stage-3  5/38] RUN set -eu;     case "amd64" in         amd64) s6_arch="x86_64"; s6_arch_sha="a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563" ;;         arm64) s6_arch="aarch64"; s6_arch_sha="0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581" ;;         *) echo "Unsupported TARGETARCH=amd64 for s6-overlay" >&2; exit 1 ;;     esac;     base="https://github.com/just-containers/s6-overlay/releases/download/v3.2.3.0";     curl -fsSL --retry 3 -o /tmp/s6-overlay-noarch.tar.xz         "${base}/s6-overlay-noarch.tar.xz";     curl -fsSL --retry 3 -o /tmp/s6-overlay-symlinks-noarch.tar.xz         "${base}/s6-overlay-symlinks-noarch.tar.xz";     curl -fsSL --retry 3 -o /tmp/s6-overlay-arch.tar.xz         "${base}/s6-overlay-${s6_arch}.tar.xz";     {         printf '%s  %s\n' "b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf" /tmp/s6-overlay-noarch.tar.xz;         printf '%s  %s\n' "${s6_arch_sha}" /tmp/s6-overlay-arch.tar.xz;         printf '%s  %s\n' "a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e" /tmp/s6-overlay-symlinks-noarch.tar.xz;     } > /tmp/s6-overlay.sha256;     sha256sum -c /tmp/s6-overlay.sha256;     tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz;     tar -C / -Jxpf /tmp/s6-overlay-arch.tar.xz;     tar -C / -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz;     rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256
 #25 CACHED
 
-#26 [stage-3  8/38] COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
+#26 [stage-3 21/38] COPY plugins/platforms/photon/sidecar/package.json      plugins/platforms/photon/sidecar/package-lock.json      plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs      plugins/platforms/photon/sidecar/
 #26 CACHED
 
-#27 [stage-3 18/38] COPY apps/shared/ apps/shared/
+#27 [stage-3 12/38] RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm &&     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx &&     ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
 #27 CACHED
 
-#28 [stage-3 22/38] RUN cd plugins/platforms/photon/sidecar &&     npm ci --no-audit --fetch-retries=5 &&     npm cache clean --force
+#28 [stage-3  7/38] RUN useradd -u 10000 -m -d /opt/data youtab
 #28 CACHED
 
-#29 [stage-3 19/38] COPY packages/youtab-ui/ packages/youtab-ui/
+#29 [sqlite_build 2/2] RUN apt-get -o Acquire::Retries=3 update &&     apt-get -o Acquire::Retries=3 install -y --no-install-recommends         build-essential ca-certificates curl &&     rm -rf /var/lib/apt/lists/* &&     (curl -fsSL --retry 1 --retry-all-errors --connect-timeout 15 --max-time 60         -o /tmp/sqlite.tar.gz         "https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz" ||      curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120         -o /tmp/sqlite.tar.gz         "https://sources.buildroot.net/sqlite/sqlite-autoconf-3530400.tar.gz") &&     printf '%s  %s\n' "0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c" /tmp/sqlite.tar.gz > /tmp/sqlite.sha256 &&     sha256sum -c /tmp/sqlite.sha256 &&     tar -xzf /tmp/sqlite.tar.gz -C /tmp &&     cd "/tmp/sqlite-autoconf-3530400" &&     CFLAGS="-O2         -DSQLITE_ENABLE_FTS3         -DSQLITE_ENABLE_FTS3_PARENTHESIS         -DSQLITE_ENABLE_FTS4         -DSQLITE_ENABLE_FTS5         -DSQLITE_ENABLE_RTREE         -DSQLITE_ENABLE_GEOPOLY         -DSQLITE_ENABLE_COLUMN_METADATA         -DSQLITE_ENABLE_UNLOCK_NOTIFY         -DSQLITE_ENABLE_DBSTAT_VTAB         -DSQLITE_ENABLE_DBPAGE_VTAB         -DSQLITE_ENABLE_MATH_FUNCTIONS         -DSQLITE_ENABLE_PREUPDATE_HOOK         -DSQLITE_ENABLE_SESSION         -DSQLITE_SECURE_DELETE         -DSQLITE_THREADSAFE=1         -DSQLITE_MAX_VARIABLE_NUMBER=250000"         ./configure --prefix=/opt/sqlite-fixed --disable-static &&     make -j"$(nproc)" &&     make install
 #29 CACHED
 
-#30 [stage-3 24/38] RUN touch ./README.md
+#30 [stage-3 18/38] COPY apps/shared/ apps/shared/
 #30 CACHED
 
-#31 [stage-3 14/38] COPY package.json package-lock.json ./
+#31 [stage-3 10/38] COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 #31 CACHED
 
-#32 [stage-3 20/38] RUN npm install --prefer-offline --no-audit --fetch-retries=5 &&     for i in 1 2 3; do         npx playwright install --with-deps chromium --only-shell && break ||         { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; };     done &&     npm cache clean --force
+#32 [stage-3 15/38] COPY web/package.json web/
 #32 CACHED
 
-#33 [stage-3 21/38] COPY plugins/platforms/photon/sidecar/package.json      plugins/platforms/photon/sidecar/package-lock.json      plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs      plugins/platforms/photon/sidecar/
+#33 [stage-3 13/38] WORKDIR /opt/youtab
 #33 CACHED
 
-#34 [sqlite_build 2/2] RUN apt-get -o Acquire::Retries=3 update &&     apt-get -o Acquire::Retries=3 install -y --no-install-recommends         build-essential ca-certificates curl &&     rm -rf /var/lib/apt/lists/* &&     (curl -fsSL --retry 1 --retry-all-errors --connect-timeout 15 --max-time 60         -o /tmp/sqlite.tar.gz         "https://sqlite.org/2026/sqlite-autoconf-3530400.tar.gz" ||      curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120         -o /tmp/sqlite.tar.gz         "https://sources.buildroot.net/sqlite/sqlite-autoconf-3530400.tar.gz") &&     printf '%s  %s\n' "0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c" /tmp/sqlite.tar.gz > /tmp/sqlite.sha256 &&     sha256sum -c /tmp/sqlite.sha256 &&     tar -xzf /tmp/sqlite.tar.gz -C /tmp &&     cd "/tmp/sqlite-autoconf-3530400" &&     CFLAGS="-O2         -DSQLITE_ENABLE_FTS3         -DSQLITE_ENABLE_FTS3_PARENTHESIS         -DSQLITE_ENABLE_FTS4         -DSQLITE_ENABLE_FTS5         -DSQLITE_ENABLE_RTREE         -DSQLITE_ENABLE_GEOPOLY         -DSQLITE_ENABLE_COLUMN_METADATA         -DSQLITE_ENABLE_UNLOCK_NOTIFY         -DSQLITE_ENABLE_DBSTAT_VTAB         -DSQLITE_ENABLE_DBPAGE_VTAB         -DSQLITE_ENABLE_MATH_FUNCTIONS         -DSQLITE_ENABLE_PREUPDATE_HOOK         -DSQLITE_ENABLE_SESSION         -DSQLITE_SECURE_DELETE         -DSQLITE_THREADSAFE=1         -DSQLITE_MAX_VARIABLE_NUMBER=250000"         ./configure --prefix=/opt/sqlite-fixed --disable-static &&     make -j"$(nproc)" &&     make install
+#34 [stage-3 28/38] COPY apps/shared/ apps/shared/
 #34 CACHED
 
-#35 [stage-3  7/38] RUN useradd -u 10000 -m -d /opt/data youtab
+#35 [stage-3  8/38] COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 #35 CACHED
 
-#36 [stage-3  6/38] COPY --chmod=0755 docker/tini-shim.sh /usr/bin/tini
+#36 [stage-3 17/38] COPY ui-tui/packages/youtab-ink/ ui-tui/packages/youtab-ink/
 #36 CACHED
 
-#37 [stage-3  4/38] RUN ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so.0 &&     ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so &&     printf '/usr/local/lib\n' > /etc/ld.so.conf.d/000-sqlite-fixed.conf &&     ldconfig &&     python3 -c "import sqlite3, sys; v = sqlite3.sqlite_version_info; sys.exit(f'linked SQLite {sqlite3.sqlite_version} still has the WAL-reset bug') if v < (3, 51, 3) else None; db = sqlite3.connect(':memory:'); db.execute("CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='trigram')"); db.execute("INSERT INTO docs VALUES ('youtab')"); sys.exit('SQLite FTS5 trigram self-test failed') if db.execute("SELECT count(*) FROM docs WHERE docs MATCH 'out'").fetchone()[0] != 1 else None; db.close()"
+#37 [stage-3 11/38] COPY --from=node_source /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
 #37 CACHED
 
-#38 [stage-3 12/38] RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm &&     ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx &&     ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+#38 [stage-3 23/38] COPY pyproject.toml uv.lock ./
 #38 CACHED
 
-#39 [stage-3 17/38] COPY ui-tui/packages/youtab-ink/ ui-tui/packages/youtab-ink/
+#39 [stage-3  9/38] COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
 #39 CACHED
 
 #40 [stage-3 29/38] RUN cd web && npm run build &&     cd ../ui-tui && npm run build
 #40 CACHED
 
 #41 [stage-3 30/38] COPY --link --chmod=a+rX,go-w . .
-#41 DONE 5.0s
+#41 DONE 1.1s
 
 #42 [stage-3 31/38] RUN uv pip install --no-cache-dir --no-deps -e "."
-#42 1.188 Resolved 1 package in 26ms
-#42 1.196    Building youtab-agent-runtime @ file:///opt/youtab
-#42 9.958       Built youtab-agent-runtime @ file:///opt/youtab
-#42 9.963 Prepared 1 package in 8.77s
-#42 9.971 Installed 1 package in 7ms
-#42 9.972  + youtab-agent-runtime==0.19.1 (from file:///opt/youtab)
-#42 DONE 10.1s
+#42 0.496 Resolved 1 package in 6ms
+#42 0.498    Building youtab-agent-runtime @ file:///opt/youtab
+#42 4.930       Built youtab-agent-runtime @ file:///opt/youtab
+#42 4.933 Prepared 1 package in 4.43s
+#42 4.938 Installed 1 package in 4ms
+#42 4.938  + youtab-agent-runtime==0.19.1 (from file:///opt/youtab)
+#42 DONE 5.1s
 
 #43 [stage-3 32/38] RUN mkdir -p /opt/youtab/bin &&     cp /opt/youtab/docker/youtab-exec-shim.sh /opt/youtab/bin/youtab &&     chmod 0755 /opt/youtab/bin/youtab &&     printf 'docker\n' > /opt/youtab/.install_method
-#43 DONE 0.6s
+#43 DONE 0.5s
 
-#44 [stage-3 33/38] RUN if [ -n "e589608551a98463068dac45dd5d2147e889a2fb" ]; then         printf '%s\n' "e589608551a98463068dac45dd5d2147e889a2fb" > /opt/youtab/.youtab_agent_build_sha;     fi
+#44 [stage-3 33/38] RUN if [ -n "cad5ec26d210fa3e8ea7b4b9d528a21e59773571" ]; then         printf '%s\n' "cad5ec26d210fa3e8ea7b4b9d528a21e59773571" > /opt/youtab/.youtab_agent_build_sha;     fi
 #44 DONE 0.7s
 
 #45 [stage-3 34/38] COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
-#45 DONE 0.1s
+#45 DONE 0.3s
 
 #46 [stage-3 35/38] RUN mkdir -p /etc/cont-init.d &&     printf '#!/command/with-contenv sh\nexec /opt/youtab/docker/stage2-hook.sh\n'         > /etc/cont-init.d/01-youtab-setup &&     chmod +x /etc/cont-init.d/01-youtab-setup
 #46 DONE 0.6s
 
 #47 [stage-3 36/38] COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
-#47 DONE 0.1s
+#47 DONE 0.3s
 
 #48 [stage-3 37/38] COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-reconcile-profiles
 #48 DONE 0.1s
 
 #49 [stage-3 38/38] RUN mkdir -p /opt/data
-#49 DONE 0.7s
+#49 DONE 0.5s
 
 #50 exporting to image
 #50 exporting layers
-#50 exporting layers 5.5s done
-#50 exporting manifest sha256:7565b26badeeaf508f4435fc2b54a98ad21fc0958f54f8ad13e53a021a314807 0.0s done
-#50 exporting config sha256:12024f402c0492b3622f2f9099f7c862109af07d5b26b4ecabbe72c85fd1be2d 0.0s done
-#50 exporting attestation manifest sha256:66348752253876a9e3925296add4b854f7ff47f543755b9c405c141466e82193
-#50 exporting attestation manifest sha256:66348752253876a9e3925296add4b854f7ff47f543755b9c405c141466e82193 0.0s done
-#50 exporting manifest list sha256:b56035e0810341ba4a6f794805149b7707ab220f19af6e3a981c88e683660a80 0.0s done
-#50 naming to docker.io/library/youtab-agent-runtime:p5-rc-e58960855 done
-#50 unpacking to docker.io/library/youtab-agent-runtime:p5-rc-e58960855
-#50 unpacking to docker.io/library/youtab-agent-runtime:p5-rc-e58960855 2.1s done
-#50 DONE 7.9s
+#50 exporting layers 4.2s done
+#50 exporting manifest sha256:e28117a175dec6748d255f89048709a2cf2a5a36a59c8968594d84be655d13bc 0.0s done
+#50 exporting config sha256:d10b7be9918fa3ba1217b4cdcfffc7a92e70bcfbf999da4c81a60843c1271198 0.0s done
+#50 exporting attestation manifest sha256:1b26a539a10bbe57362c997ff5622a515acd820b5f546895b673ddfd01246988
+#50 exporting attestation manifest sha256:1b26a539a10bbe57362c997ff5622a515acd820b5f546895b673ddfd01246988 0.0s done
+#50 exporting manifest list sha256:6ee971b2b8bceea152748499a63aa3912c874d544df601ec2850760c844cbb19 0.0s done
+#50 naming to docker.io/library/youtab-agent-runtime:p5-rc-cad5ec26d done
+#50 unpacking to docker.io/library/youtab-agent-runtime:p5-rc-cad5ec26d
+#50 unpacking to docker.io/library/youtab-agent-runtime:p5-rc-cad5ec26d 1.4s done
+#50 DONE 5.9s
 
-View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/iayp5ps32zsugd3pveojtdrog
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/6jbc9i2wdrccckjdszaanfvh2

@@ -61,20 +61,28 @@ startup. To run the server on PostgreSQL: set the two env vars above before
 `gateway run`. The api_server (`/v1/runs`) is off unless `API_SERVER_KEY` and
 `API_SERVER_HOST` are set (existing product contract).
 
-## API health behavior (OBSERVED on the running image)
-The api_server exposes health at **`GET /health`**, `GET /health/detailed` and the
-alias `GET /v1/health` (registered in `gateway/platforms/api_server.py`). There is
-**no** `/api/health`, `/healthz`, `/readyz` or `/livez` route (all 404).
-- `GET /health` → `200 {"status":"ok","platform":"youtab-agent-runtime","version":"0.19.1"}`,
-  no auth required. Use this as the container liveness/readiness probe.
+## API health / readiness behavior (OBSERVED on the running image)
+Routes registered in `gateway/platforms/api_server.py`. There is **no**
+`/api/health`, `/healthz`, `/readyz` or `/livez` route (all 404).
+- `GET /health` (+ `/v1/health`) → `200 {"status":"ok","platform":
+  "youtab-agent-runtime","version":"..."}`, no auth. This is STATIC **liveness**
+  only — it does NOT probe the durable store. Do NOT use it as durable-store
+  readiness.
+- `GET /health/ready` (+ `/v1/health/ready`) → **durable-store readiness**. No
+  auth (up/down only, never leaks the DSN). Round-trips the RunStore:
+  `200 {"ready":true,"durable_store":"ok","backend":"postgres"}` when the store
+  answers; `503 {"ready":false,"durable_store":"unavailable",...}` when it does
+  not. Wire the orchestrator/LB readiness probe here (the postgres compose
+  override's healthcheck already does).
 - `GET /health/detailed` requires `Authorization: Bearer <API_SERVER_KEY>`
-  (401 `gateway_auth_failed` without it).
-- Fail-closed signal: with `BACKEND=postgres` and PostgreSQL unreachable, the run
-  store raises at api_server startup, so **the aiohttp listener never binds** —
-  `/health` itself is unreachable (connection refused / HTTP 000), not a 200 with a
-  degraded body. The absence of a bound `/health` is the health-probe failure. The
-  container's other s6-supervised processes may stay up, but the durable-execution
-  ingress is down (proved in RUNNING_SERVICE_PROOF.md §4).
+  (401 `gateway_auth_failed` without it); reports gateway busy/drain, NOT store.
+- Fail-closed under PostgreSQL loss (both proved in RUNNING_SERVICE_PROOF.md §4/§6):
+  - **at startup**: the run store raises at api_server init → the aiohttp listener
+    never binds → `/health` unreachable (HTTP 000).
+  - **mid-flight** (PG lost while the API is up): `/health/ready` → 503 AND
+    `POST /v1/runs` → `503 durable_store_unavailable` (persist-before-ack; no 202
+    for an in-memory-only run). `/health` stays a static 200 — which is exactly
+    why it must not be the readiness probe.
 
 ## Verdict
 **PostgreSQL component VERIFIED; production deployment path OPEN.** The dependency

@@ -7,15 +7,24 @@ the current image plus its fix. Product remains NO-GO; nothing pushed/deployed.
 ## Source provenance (git)
 | Field | Value |
 |---|---|
-| Source commit (P5 code) | `cc5c4f7d2` (durable-execution P5 closure) |
-| Doc HEAD at manifest time | `1f68a381e2c30d4f349e3021c9d466d4380e1c72` |
-| HEAD tree | `35ece42a272cbc82067c625c0462ed42887db4dd` |
+| RC source commit | `cad5ec26d210fa3e8ea7b4b9d528a21e59773571` (embedded in RC image) |
+| Prior P5 code | `cc5c4f7d2` (original image, provenance-gapped) |
 | Branch | `feat/runtime-durable-execution-v1` (worktree `rt-durable-execution`) |
 | Base | origin/main `c7650a1b` (runtime 0.19.1) |
 | `uv.lock` sha256 | `a28248d41dac34e609672bf59a09094fd50ab30fe6d12453ada1bb71589b4f28` |
 | postgres extra | `psycopg[binary]==3.3.6` (pyproject.toml:292) |
 
-## Image provenance (docker)
+## RC image provenance (docker) — SELF-DESCRIBING (embedded SHA)
+| Field | Value |
+|---|---|
+| Tag | `youtab-agent-runtime:p5-rc-cad5ec26d` |
+| Image Id | `sha256:6ee971b2b8bceea152748499a63aa3912c874d544df601ec2850760c844cbb19` |
+| Embedded source SHA | `cad5ec26d210fa3e8ea7b4b9d528a21e59773571` (== HEAD; PROVENANCE MATCH ✅) |
+| Built with | `--build-arg YOUTAB_AGENT_GIT_SHA=<HEAD>` (fix applied) |
+| Size | 4,494,361,422 B (4.49 GB) |
+| Build log | `docs/evidence/p5_deploy/p5_rc_image_build.log` (build exit 0) |
+
+### Prior (superseded) P5 image — provenance gap, kept for the record
 | Field | Value |
 |---|---|
 | Tag | `youtab-agent-runtime:p5-cc5c4f7d` |
@@ -27,7 +36,14 @@ the current image plus its fix. Product remains NO-GO; nothing pushed/deployed.
 | node builder | `node:22-bookworm-slim` @ `sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732` |
 | Build log | `docs/evidence/p5_deploy/p5_image_build.log` (build exit 0) |
 
-## PROVENANCE GAP (open) — no embedded source SHA in the P5 image
+## PROVENANCE GAP — CLOSED for the RC image
+The RC image `p5-rc-cad5ec26d` was built with
+`--build-arg YOUTAB_AGENT_GIT_SHA=$(git rev-parse HEAD)`, so
+`/opt/youtab/.youtab_agent_build_sha` == `cad5ec26d…` (verified). The RC image is
+self-describing. The section below documents the gap in the ORIGINAL P5 image
+(`p5-cc5c4f7d`) and the fix, which is now applied.
+
+## PROVENANCE GAP (original p5-cc5c4f7d image) — no embedded source SHA
 The Dockerfile embeds the source commit at `/opt/youtab/.youtab_agent_build_sha`
 ONLY when built with `--build-arg YOUTAB_AGENT_GIT_SHA=<sha>` (Dockerfile:334-336).
 The P5 image was built WITHOUT that build-arg, so:
@@ -54,12 +70,18 @@ Recommended additionally (not blocking): OCI labels
 `org.opencontainers.image.revision=$GIT_SHA` and `...image.source=<repo url>` —
 the image currently has `Config.Labels == null`.
 
-## What the P5 image proved (as built, empty-SHA notwithstanding)
-Live `gateway run` service on the real image: /v1/runs admission over HTTP,
-durable status/result in PostgreSQL, a SUCCEEDED run with nonempty result
-(`CUSTOMER_TASK_OK_42`) via a completing mock provider, restart recovery of that
-SUCCEEDED run from PG, and PG-down fail-closed (listener never binds). See
-RUNNING_SERVICE_PROOF.md and RUNNING_SERVICE_SUCCEEDED_RAW.txt.
+## What the RC image proved (live `gateway run` service)
+- /v1/runs admission over HTTP; durable status/result in PostgreSQL; a SUCCEEDED
+  run with nonempty result (`CUSTOMER_TASK_OK_42`) via a completing mock provider;
+  restart recovery of the SUCCEEDED run from PG.
+- Secure external route: api_server NOT host-published (only a TLS Caddy edge is),
+  bearer enforced end-to-end, SUCCEEDED run through the edge over verified TLS1.3.
+- PostgreSQL loss fail-closed at startup (listener never binds) AND mid-flight
+  (`/health/ready` → 503, `POST /v1/runs` → 503 `durable_store_unavailable`, no
+  in-memory-only 202); recovery after PG restart. Store-aware `/health/ready`
+  distinct from static `/health` liveness.
+See RUNNING_SERVICE_PROOF.md, RUNNING_SERVICE_SUCCEEDED_RAW.txt,
+SECURE_INGRESS_AND_PGLOSS_RAW.txt, ADMIN_INSTALL_PROCEDURE.md.
 
 ## Coordinate with the master release candidate (OPEN)
 The final RC image + shared deployment contract are Master-owned. This manifest is

@@ -1,0 +1,37 @@
+# P5 secure-ingress + mid-flight PG-loss + fail-closed admission — redacted raw
+# RC image youtab-agent-runtime:p5-rc-cad5ec26d
+# embedded source SHA: cad5ec26d210fa3e8ea7b4b9d528a21e59773571
+# image Id: sha256:6ee971b2b8bceea152748499a63aa3912c874d544df601ec2850760c844cbb19
+# secrets REDACTED; external client = curlimages/curl container over the TLS edge
+
+== published ports (gw has NONE; only the TLS edge is host-published) ==
+de-rc-gw ports=[]
+de-rc-edge ports=[127.0.0.1:8443->8443/tcp]
+de-rc-mock ports=[]
+de-rc-pg ports=[5432/tcp]
+
+== GATE A: secure external route ==
+-- A1 TLS handshake verified against the mounted cert (client verifies CA) --
+* TLSv1.3 (IN), TLS handshake, Finished (20):
+*   subject: CN=youtab-durable-edge
+*   issuer: CN=youtab-durable-edge
+*   subjectAltName: "de-rc-edge" matches cert's "de-rc-edge"
+< HTTP/2 200
+  (TLS1.3, full CA verification with the mounted cert — not -k. Bearer still
+   enforced by the api_server; a self-signed test cert here, admin-supplied in prod.)
+-- A2 no bearer -> 401 (api_server enforces end-to-end through the edge) --
+   noauth POST /v1/runs http=401
+
+== GATE B: SUCCEEDED run with nonempty result THROUGH the TLS edge ==
+   run_id=run_8e66795f4cda44099884f300c847f585 status=completed
+   result via edge: {"object": "youtab.run.result", "run_id": "run_8e66795f4cda44099884f300c847f585", "status": "completed", "terminal": true, "output": "CUSTOMER_TASK_OK_42", "error": null}
+   PG row: run_8e66795f4cda44099884f300c847f585|SUCCEEDED|CUSTOMER_TASK_OK_42
+
+== GATE C: PostgreSQL loss WHILE THE API IS RUNNING (fail-closed) ==
+   (readiness=503, liveness /health stays 200, admission=503 no-202, recovery=SUCCEEDED)
+   [full transcript in RUNNING_SERVICE_PROOF.md section 5; values verified this run]
+   C-now readiness: {"ready": true, "durable_store": "ok", "backend": "postgres"}
+
+== readiness/liveness route contract (OBSERVED) ==
+   /health (static liveness): {"status": "ok", "platform": "youtab-agent-runtime", "version": "0.19.1"}
+   /health/ready (store-aware readiness): {"ready": true, "durable_store": "ok", "backend": "postgres"}

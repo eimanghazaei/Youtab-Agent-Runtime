@@ -73,8 +73,42 @@ honored by the `main` route). Config mounted (secrets redacted):
 api_key: <REDACTED>}`. The mock MUST return streaming SSE (a plain JSON completion is
 rejected with "Provider returned an empty stream ... malformed SSE").
 
+## 5. Secure external route through the merged installation config — PASS
+RC image `youtab-agent-runtime:p5-rc-cad5ec26d` (embedded source SHA
+`cad5ec26d210fa3e8ea7b4b9d528a21e59773571`, Id `sha256:6ee971b2b8bc…`). Merged
+`docker-compose.yml + docker-compose.postgres.yml + docker-compose.edge.yml`:
+- The api_server binds 0.0.0.0 INSIDE the container and is only `expose`d — it is
+  NOT host-published (`docker ps`: gw `ports=[]`). A Caddy TLS `edge` is the only
+  host-published entrypoint (`127.0.0.1:8443`). The unsandboxed local terminal
+  backend is never exposed to an untrusted network.
+- An EXTERNAL client (separate container) over the TLS edge: TLS1.3 handshake
+  verified against the mounted cert (subject/issuer `CN=youtab-durable-edge`, SAN
+  match, HTTP/2 200); `POST /v1/runs` WITHOUT the bearer → 401 (api_server
+  enforces end-to-end); WITH the bearer → SUCCEEDED run, output
+  `CUSTOMER_TASK_OK_42`, PG row SUCCEEDED. Raw: `SECURE_INGRESS_AND_PGLOSS_RAW.txt`.
+
+## 6. PostgreSQL loss WHILE the API is running (readiness + fail-closed admission) — PASS
+Readiness contract: `/health` is STATIC liveness only; `/health/ready`
+(added, store-aware) round-trips the RunStore. Observed with the API already up:
+- baseline: `/health/ready` 200 `{"ready":true,"durable_store":"ok"}`; a run SUCCEEDS.
+- `docker stop` PostgreSQL (mid-flight): `/health/ready` → **503**
+  `{"ready":false,"durable_store":"unavailable"}`; `/health` STAYS **200** (proving
+  it must NOT be used as store readiness); `POST /v1/runs` → **503
+  `durable_store_unavailable`** (persist-before-ack; NOT a 202 in-memory-only run).
+- `docker start` PostgreSQL: `/health/ready` recovers to 200; a new run SUCCEEDS.
+- PG holds only SUCCEEDED rows — no orphaned/false-completed row from the PG-down
+  window.
+
+NOTE (defect found & fixed here): before the fix, `POST /v1/runs` returned 202 and
+ran IN-MEMORY ONLY when PG was down, because the write-through mirror is
+best-effort. Fixed by a persist-before-ack admission barrier in server durable
+mode (commit cad5ec26d; test_p5_admission_failclosed.py). The best-effort mirror
+for LATER state changes is unchanged (desktop/sqlite never blocked).
+
 ## Verdict
 Running-service admission + durable status persistence + **SUCCEEDED run with
-nonempty result** + restart recovery (of the SUCCEEDED run) + PG-down fail-closed:
-PASS on the real image, one synthetic mock task. OPEN: the Master-adopted
-deployment contract and a real customer workload. Product NO-GO.
+nonempty result** + restart recovery + PG-down fail-closed (startup AND
+mid-flight) + **secure external TLS route that does not expose the unsandboxed
+backend** + **store-aware readiness**: PASS on the real RC image, synthetic mock
+task. OPEN: the Master-adopted deployment contract and a real customer workload.
+Product NO-GO.
