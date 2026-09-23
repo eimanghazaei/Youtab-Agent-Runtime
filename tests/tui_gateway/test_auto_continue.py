@@ -443,3 +443,32 @@ def test_started_turn_recovery_is_not_projected_as_a_replay(emits, schedule_env,
 
     assert "replay" not in descriptor
     assert server._auto_continue_inflight(session, descriptor) is None
+
+
+def test_replay_projection_survives_a_replay_that_finishes_first(emits, marker_home, monkeypatch):
+    """Cold-resume race: the kickoff may complete (clearing inflight_turn)
+    before session.resume serializes its payload. The projection must be the
+    snapshot taken before the kickoff could run."""
+    monkeypatch.setattr(server.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda session, rid, timeout=30.0: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    def _finish_turn(rid, sid, session, text, **kw):
+        with session["history_lock"]:
+            server._clear_inflight_turn(session)
+            session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _finish_turn)
+    record_turn_start(
+        marker_home, "session-key", "describe this",
+        pending={"text": "describe this", "images": []},
+    )
+    session = _session()
+
+    descriptor = server._maybe_schedule_auto_continue("sid", session, "session-key")
+
+    assert session.get("inflight_turn") is None, "the replay already finished"
+    inflight = server._auto_continue_inflight(session, descriptor)
+    assert inflight is not None and inflight["user"] == "describe this"
+    assert "_inflight" not in descriptor, "the private snapshot must not reach the payload"

@@ -204,6 +204,20 @@ function crashMarkerPrompt(youtabHome: string): string {
   }
 }
 
+/** Provider main-turn invocations (tool-offering requests) whose last user
+ * message carries the caption: the external execution count for one turn. */
+function providerTurnCalls(server: { completionLog: Array<{ lastUser: string; tools: boolean }> }): number {
+  return server.completionLog.filter(r => r.tools && r.lastUser.includes(CAPTION)).length
+}
+
+function logProviderCalls(label: string, server: { completionLog: Array<{ lastUser: string; tools: boolean }> }): void {
+  const withCaption = server.completionLog.filter(r => r.lastUser.includes(CAPTION))
+  console.log(
+    `[e2e] ${label}: provider requests=${server.completionLog.length} ` +
+      `caption-bearing=${withCaption.length} main-turn=${providerTurnCalls(server)}`,
+  )
+}
+
 /** Count live frozen-backend processes owned by the packaged app. */
 function bundledBackendProcessCount(): number {
   try {
@@ -466,6 +480,8 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await expect
       .poll(() => transcriptText(page1), { timeout: 60_000, message: 'the assistant reply must be visible' })
       .toContain(MOCK_REPLY)
+    logProviderCalls('prompt-close turn', mock)
+    expect(providerTurnCalls(mock), 'one submitted prompt runs exactly one provider turn').toBe(1)
 
     // Close PROMPTLY — no state.db poll, no settle wait. If the acknowledgement
     // boundary is correct, the acknowledged turn is already durable.
@@ -636,6 +652,10 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await expect
       .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), { timeout: 60_000, message: 'marker must be retired after a durable recovery commit' })
       .toBe(false)
+    // A turn whose completion failed to commit is re-run on recovery: the
+    // provider is invoked twice by design (at-least-once, not exactly-once).
+    logProviderCalls('fault recovery', mock)
+    expect(providerTurnCalls(mock), 'original run + one recovery re-run').toBe(2)
     // The reopened UI surfaces the recovered turn (requirement: one normal reopen
     // displays the saved turn + attachment).
     await expect
@@ -741,6 +761,7 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       })
       .toBe(true)
     expect(mock.receivedPrompts.some(p => p.includes(CAPTION)), 'the turn must not have started yet').toBe(false)
+    expect(providerTurnCalls(mock), 'no provider turn before the close').toBe(0)
     const recorded = crashMarkerPrompt(sandbox.youtabHome)
     expect(recorded, 'the durable prompt keeps the caption').toContain(CAPTION)
     expect(recorded, 'the durable prompt keeps the attachment reference').toContain('@image:')
@@ -773,6 +794,8 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       .toBeGreaterThanOrEqual(1)
     expect(durableCaptionRowCount(sandbox.youtabHome), 'the prompt is recovered exactly once with its attachment').toBe(1)
     expect(durableCaptionTurnCount(sandbox.youtabHome), 'it is replayed as a genuine user turn, not a recovery note').toBe(1)
+    logProviderCalls('pre-turn replay', mock)
+    expect(providerTurnCalls(mock), 'the recovered prompt reaches the provider exactly once').toBe(1)
     await expect
       .poll(() => crashMarkerHasEntry(sandbox!.youtabHome), { timeout: 60_000, message: 'marker retired after the durable recovery' })
       .toBe(false)
@@ -781,5 +804,59 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
       .toContain(CAPTION)
     sentinel?.assertAlive('recovered')
     await page2.screenshot({ path: testInfo.outputPath('packaged-pre-turn-recovered.png') })
+  })
+  // R6 P1: when the accepted-prompt recovery record cannot be written, the
+  // bundled backend must REFUSE the prompt (visible "not accepted" error, no
+  // provider call, nothing acknowledged) instead of answering `streaming` with
+  // no durable trace. A file at <home>/desktop makes the marker journal
+  // unwritable; removing it and resubmitting proves the session is not wedged.
+  test('marker I/O failure refuses the prompt instead of acknowledging it', async ({}, testInfo) => {
+    test.skip(!packagedBinaryExists(), 'requires the packaged binary — run npm run dist:win first')
+    test.slow()
+    test.setTimeout(600_000)
+
+    mock = await startMockServer()
+    sandbox = createSandbox('packaged-marker-io-fail')
+    writeMockProviderConfig(sandbox.youtabHome, mock.url)
+    writeEnvFile(sandbox.youtabHome)
+    const blocker = path.join(sandbox.youtabHome, 'desktop')
+    fs.writeFileSync(blocker, 'not a directory')
+
+    ;({ app } = await launchPackagedAppRealBackend(sandbox))
+    const page1 = await app.firstWindow()
+    await waitForAppReady({ page: page1, app } as never, 240_000)
+    await watchBackend()
+
+    const composer = await focusComposer(page1)
+    await composer.type(CAPTION, { delay: 10 })
+    await page1.keyboard.press('Enter')
+
+    await expect
+      .poll(() => page1.evaluate(() => document.body.innerText), {
+        timeout: 60_000,
+        message: 'the refused prompt must be reported to the user',
+      })
+      .toContain('Prompt was not accepted')
+    expect(fs.statSync(blocker).isFile(), 'the journal stayed unwritable').toBe(true)
+    expect(providerTurnCalls(mock), 'a refused prompt never reaches the provider').toBe(0)
+    expect(durableCaptionTurnCount(sandbox.youtabHome), 'nothing was acknowledged as a turn').toBe(0)
+    sentinel?.assertAlive('refused')
+    await page1.screenshot({ path: testInfo.outputPath('packaged-marker-io-refused.png') })
+
+    // Storage recovers; the same session accepts and runs the next prompt.
+    fs.rmSync(blocker, { force: true })
+    const retry = await focusComposer(page1)
+    await retry.type(CAPTION, { delay: 10 })
+    await page1.keyboard.press('Enter')
+    await expect
+      .poll(() => providerTurnCalls(mock!), { timeout: 180_000, message: 'the retried prompt must run' })
+      .toBe(1)
+    await expect
+      .poll(() => transcriptText(page1), { timeout: 120_000, message: 'the retried reply must be visible' })
+      .toContain(MOCK_REPLY)
+    await expect
+      .poll(() => durableCaptionTurnCount(sandbox!.youtabHome), { timeout: 60_000 })
+      .toBe(1)
+    logProviderCalls('marker-io retry', mock)
   })
 })

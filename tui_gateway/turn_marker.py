@@ -85,6 +85,10 @@ def _store(path: Path, entries: dict[str, dict]) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(entries, f)
+            # A recovery record must survive power loss, not only a process
+            # exit: land the bytes before the rename publishes them.
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, path)
     except Exception:
         try:
@@ -102,6 +106,7 @@ def record_turn_start(
     attempts: int = 0,
     pending: dict[str, Any] | None = None,
     strict: bool = False,
+    reclaim_older_than: float | None = None,
 ) -> None:
     """Persist the marker for a turn that is about to run.
 
@@ -113,6 +118,11 @@ def record_turn_start(
     whose turn has not started: nothing ran, so recovery replays the original
     input instead of an "interrupted" note. Re-recording when the turn starts
     (without ``pending``) drops it.
+
+    ``reclaim_older_than`` (seconds): when the journal is full, markers older
+    than this can no longer be recovered (session.resume discards them), so
+    they are dropped to make room. Fresh markers are never evicted; a full
+    journal of fresh markers refuses the new one.
     """
     if not session_key or not prompt:
         if strict:
@@ -138,6 +148,12 @@ def record_turn_start(
         with _lock:
             path = _marker_path(home)
             entries = _prune(_load(path, strict=strict), now)
+            if session_key not in entries and len(entries) >= _MAX_ENTRIES and reclaim_older_than is not None:
+                entries = {
+                    key: value
+                    for key, value in entries.items()
+                    if now - float(value.get("started_at") or 0) <= reclaim_older_than
+                }
             if session_key not in entries and len(entries) >= _MAX_ENTRIES:
                 raise RuntimeError("durable turn-marker capacity reached")
             entries[session_key] = entry

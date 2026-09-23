@@ -6961,7 +6961,7 @@ def _record_accepted_turn(session: dict, text: Any) -> None:
     actually starts.
     """
     key = str(session.get("session_key") or "")
-    if not key or not isinstance(text, str):
+    if not isinstance(text, str):
         return
     try:
         # Record the transcript form: staged attachments join the prompt only
@@ -6970,8 +6970,11 @@ def _record_accepted_turn(session: dict, text: Any) -> None:
         images = list(session.get("attached_images") or [])
         prompt = _build_persist_message_with_image_refs(text, images) if images else text
         if not prompt.strip():
-            return
+            return  # nothing the user could lose
+        if not key:
+            raise ValueError("session has no durable key for its recovery marker")
         attempts = int(session.get("_auto_continue_attempt", 0) or 0)
+        enabled, freshness_secs, _max_attempts = _auto_continue_config()
         record_turn_start(
             _session_home(session),
             key,
@@ -6979,6 +6982,8 @@ def _record_accepted_turn(session: dict, text: Any) -> None:
             attempts=attempts,
             pending={"text": text, "images": images},
             strict=True,
+            # Markers resume would discard can make room; fresh ones never do.
+            reclaim_older_than=freshness_secs if enabled else 0.0,
         )
     except Exception:
         logger.error("could not durably accept turn for %s", key, exc_info=True)
@@ -7217,6 +7222,14 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             with session["history_lock"]:
                 session["running"] = False
 
+    descriptor = {"attempt": attempt, "interrupted_at": marker["started_at"]}
+    if pending is not None:
+        descriptor["replay"] = True
+        # Snapshot the projection BEFORE the kickoff can run: a fast replay may
+        # finish (and clear inflight_turn) before the resume payload is built.
+        with session["history_lock"]:
+            turn = session.get("inflight_turn")
+            descriptor["_inflight"] = dict(turn) if isinstance(turn, dict) else None
     threading.Thread(target=kickoff, daemon=True).start()
     logger.info(
         "auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago)",
@@ -7224,9 +7237,6 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
         attempt,
         age,
     )
-    descriptor = {"attempt": attempt, "interrupted_at": marker["started_at"]}
-    if pending is not None:
-        descriptor["replay"] = True
     return descriptor
 
 
@@ -7236,11 +7246,14 @@ def _auto_continue_inflight(session: dict | None, auto_continue: dict | None) ->
     A replayed first prompt is not in the transcript yet; without this the
     client resumes onto an empty chat and only the assistant reply appears.
     """
-    if not session or not auto_continue or not auto_continue.get("replay"):
+    if not auto_continue:
         return None
-    with session["history_lock"]:
-        turn = session.get("inflight_turn")
-        return dict(turn) if isinstance(turn, dict) else None
+    # Always strip the private snapshot so it never leaks into the payload's
+    # auto_continue descriptor.
+    snapshot = auto_continue.pop("_inflight", None)
+    if not session or not auto_continue.get("replay"):
+        return None
+    return dict(snapshot) if isinstance(snapshot, dict) else None
 
 
 def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:

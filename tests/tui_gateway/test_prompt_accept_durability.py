@@ -338,3 +338,50 @@ def test_accepted_marker_keeps_the_original_input_for_replay(tmp_path, monkeypat
 
     marker = read_turn_marker(tmp_path, "sess-accept-001")
     assert marker["pending"] == {"text": "E2E caption", "images": [str(image)]}
+
+
+def test_accepted_marker_is_fsynced_before_it_is_published(tmp_path, monkeypatch):
+    from tui_gateway import turn_marker
+
+    synced = []
+    real_fsync = turn_marker.os.fsync
+    monkeypatch.setattr(turn_marker.os, "fsync", lambda fd: (synced.append(fd), real_fsync(fd)))
+
+    _submit(monkeypatch, _session(tmp_path), "sid-fsync", "hello")
+
+    assert synced, "the recovery record must reach stable storage, not only the page cache"
+    assert read_turn_marker(tmp_path, "sess-accept-001") is not None
+
+
+def test_full_journal_reclaims_only_unrecoverable_markers(tmp_path, monkeypatch):
+    """Stale markers (past the auto-continue window) are discarded by resume
+    anyway, so they must not lock out new prompts; fresh ones are kept."""
+    import json
+
+    from tui_gateway import turn_marker
+
+    monkeypatch.setattr(turn_marker, "_MAX_ENTRIES", 2)
+    record_turn_start(tmp_path, "stale", "old prompt", strict=True)
+    record_turn_start(tmp_path, "fresh", "recent prompt", strict=True)
+    path = tmp_path / "desktop" / "interrupted_turns.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["stale"]["started_at"] -= 3600  # older than the 15-minute window
+    path.write_text(json.dumps(data), encoding="utf-8")
+    session = _session(tmp_path)
+
+    resp = _submit(monkeypatch, session, "sid-reclaim", "new prompt")
+
+    assert resp["result"] == {"status": "streaming"}
+    assert read_turn_marker(tmp_path, "stale") is None
+    assert read_turn_marker(tmp_path, "fresh")["prompt"] == "recent prompt"
+    assert read_turn_marker(tmp_path, "sess-accept-001")["prompt"] == "new prompt"
+
+
+def test_prompt_without_a_durable_session_key_is_refused(tmp_path, monkeypatch):
+    session = _session(tmp_path, session_key="")
+
+    resp = _submit(monkeypatch, session, "sid-no-key", "hello")
+
+    assert resp["error"]["code"] == 5030
+    assert session["running"] is False
+    assert _HeldThread.started == []
