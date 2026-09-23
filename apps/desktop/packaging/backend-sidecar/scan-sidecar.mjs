@@ -12,7 +12,7 @@
 //
 // Usage: node apps/desktop/packaging/backend-sidecar/scan-sidecar.mjs
 //
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readdirSync, readSync, writeFileSync } from 'node:fs'
 import { basename, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -31,12 +31,13 @@ const devPaths = [/C:\\Users\\eiman/i, /[\\/]rt-px-dep[\\/]/i, /AppData[\\/]Loca
 // secret-ish content
 const secretPat = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /xox[baprs]-[0-9A-Za-z-]+/, /ghp_[0-9A-Za-z]{20,}/, /AKIA[0-9A-Z]{16}/, /aws_secret_access_key/i, /["']?(api[_-]?key|secret|token|password)["']?\s*[:=]\s*["'][A-Za-z0-9/_+.=-]{16,}["']/]
 // forbidden attribution
-const attribPat = [/Co-Authored-By:\s*Claude/i, /Generated with \[?Claude/i, /anthropic\.com/i]
+const attribPat = [/Co-Authored-By:\s*Claude/i, /Generated with \[?Claude/i]
+const maxScanBytes = 8 * 1024 * 1024
 
 function walk(d, acc = []) {
   for (const n of readdirSync(d)) {
     const p = join(d, n)
-    statSync(p).isDirectory() ? walk(p, acc) : acc.push(p)
+    lstatSync(p).isDirectory() ? walk(p, acc) : acc.push(p)
   }
 
   return acc
@@ -60,17 +61,34 @@ export function scanBundle(bundleRoot) {
     }
 
     let buf
+    let fd
 
     try {
-      const st = statSync(f)
+      // Keep metadata and content on the same opened file. O_NOFOLLOW stops a
+      // symlink from redirecting the scan outside the bundle between steps.
+      fd = openSync(f, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+      const st = fstatSync(fd)
 
-      if (st.size > 8 * 1024 * 1024) {
+      if (!st.isFile() || st.size > maxScanBytes) {
         continue
       }
 
-      buf = readFileSync(f)
+      buf = Buffer.alloc(st.size)
+      let offset = 0
+      while (offset < st.size) {
+        const count = readSync(fd, buf, offset, st.size - offset, null)
+        if (count === 0) throw new Error('file shortened during scan')
+        offset += count
+      }
+      const after = fstatSync(fd)
+      if (after.size !== st.size || after.mtimeMs !== st.mtimeMs) {
+        throw new Error('file changed during scan')
+      }
     } catch {
+      add('high', 'scan-unreadable', f, 'file could not be scanned safely')
       continue
+    } finally {
+      if (fd !== undefined) closeSync(fd)
     }
 
     // skip obvious binaries for content scan (but still name-checked above)
@@ -89,6 +107,9 @@ export function scanBundle(bundleRoot) {
     for (const re of secretPat) if (re.test(text)) add('high', 'secret-material', f, re.source.slice(0, 40))
     for (const re of devPaths) if (re.test(text)) add('high', 'machine-local-path', f, re.source)
     for (const re of attribPat) if (re.test(text)) add('medium', 'forbidden-attribution', f, re.source)
+    if (text.toLowerCase().includes('anthropic.com')) {
+      add('medium', 'forbidden-attribution', f, 'anthropic.com')
+    }
   }
 
   const findings_by_severity = findings.reduce((a, f) => ((a[f.severity] = (a[f.severity] || 0) + 1), a), {})

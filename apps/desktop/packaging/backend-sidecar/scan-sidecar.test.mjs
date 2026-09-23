@@ -4,7 +4,7 @@
 //
 // Run: npx vitest run --project electron packaging/backend-sidecar/scan-sidecar.test.mjs
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, test } from 'vitest'
@@ -75,6 +75,25 @@ test('POSITIVE: forbidden AI/Claude attribution is flagged', () => {
   const attribution = 'Co-Authored' + '-By: ' + 'Claude Opus (noreply@' + 'anthropic' + '.com)'
   const r = scanBundle(fixture({ 'notice.txt': attribution }))
   assert.ok(rules(r).includes('forbidden-attribution'))
+})
+
+test('POSITIVE: case-insensitive attribution host substring is flagged', () => {
+  const r = scanBundle(fixture({ 'notice.txt': 'reference: HTTPS://docs.AnThRoPiC.CoM/legal' }))
+  assert.ok(r.findings.some(x => x.rule === 'forbidden-attribution' && x.detail === 'anthropic.com'))
+})
+
+test('POSITIVE: a symlink cannot redirect content scanning outside the bundle', () => {
+  const outside = fixture({ 'secret.txt': 'ordinary content' })
+  const root = fixture({ 'safe.txt': 'ordinary content' })
+  try {
+    symlinkSync(join(outside, 'secret.txt'), join(root, 'redirect.txt'))
+  } catch (error) {
+    if (error.code === 'EPERM') return // Windows without symlink privilege
+    throw error
+  }
+  const r = scanBundle(root)
+  assert.ok(r.findings.some(x => x.file === 'redirect.txt' && x.rule === 'scan-unreadable'))
+  assert.ok(blockingCount(r.findings) > 0)
 })
 
 test('NEGATIVE: public CA bundle .pem is NOT flagged by extension', () => {
