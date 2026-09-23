@@ -1037,10 +1037,24 @@ def _approve(client, run_id, approval_id, decision, *, grant_header,
     return client.post(path, content=body, headers=h)
 
 
+def _freeze_dispatcher():
+    """Stop the background ticker so approval ingest happens ONLY when a test drives
+    _tick() explicitly (deterministic; the noop-spawn fixture has nothing to run)."""
+    from youtab_agent_cli.web_routers import runtime as _rt
+    _rt.stop_dispatcher()
+
+
+def _tick():
+    """Drive ONE server-owned dispatcher tick — the poll-independent ingest boundary."""
+    from youtab_agent_cli.web_routers import runtime as _rt
+    _rt._dispatch_tick()
+
+
 def _durable_run(client):
     _, gh = _mint_grant()
     r = _create(client, grant_header=gh, idempotency=f"dur-appr-{uuid.uuid4().hex[:8]}")
     assert r.status_code == 200, r.text
+    _freeze_dispatcher()  # tests drive ingest via _tick() for determinism
     return r.json()["run_id"]
 
 
@@ -1164,20 +1178,27 @@ def _get_events(client, run_id, *, tenant=TENANT, user=USER):
                       headers=_headers(tenant, user))
 
 
-def test_status_read_projects_pending_approval(managed_durable):
+def test_tick_ingests_pending_before_publish_and_read_is_pure(managed_durable):
+    """The server-owned dispatcher tick — NOT a GET — persists the worker's request
+    into the fenced RunStore before it is published. A status read is a pure durable
+    reader: it does not itself ingest."""
     import youtab_runtime.durable_ingress_process as dip
 
     client, db_path = managed_durable
-    run_id = _durable_run(client)
+    run_id = _durable_run(client)  # dispatcher frozen
     auth = dip.get_ingress_authority()
-    assert auth.get_run(run_id)["state"] == "QUEUED"  # stale before any observation
     _worker_requests_approval_db(db_path, run_id, "ap1")
-    # a plain status read (no /approve, no click) projects the pending approval
-    assert _get_run(client, run_id).status_code == 200
+    # BEFORE the tick: durable not pending, and a GET does NOT ingest (pure read) —
+    # so it publishes the base status, never a kanban-derived awaiting_approval.
+    assert auth.get_run(run_id)["state"] == "QUEUED"
+    assert _get_run(client, run_id).json()["status"] != "awaiting_approval"
+    assert auth.get_run(run_id)["state"] == "QUEUED"   # the read did not write
+    # the server-owned tick ingests (no client poll), then the read publishes pending
+    _tick()
     row = auth.get_run(run_id)
     assert row["state"] == "WAITING_APPROVAL"
-    assert (row["tenant_id"], row["workspace_id"], row["principal_id"]) == \
-        (TENANT, row["workspace_id"], f"{TENANT}:{USER}")
+    assert (row["tenant_id"], row["principal_id"]) == (TENANT, f"{TENANT}:{USER}")
+    assert _get_run(client, run_id).json()["status"] == "awaiting_approval"
 
 
 def test_pending_approval_visible_after_restart_no_click(managed_durable):
@@ -1186,13 +1207,14 @@ def test_pending_approval_visible_after_restart_no_click(managed_durable):
     client, db_path = managed_durable
     run_id = _durable_run(client)
     _worker_requests_approval_db(db_path, run_id, "ap1")
-    assert _get_run(client, run_id).status_code == 200
+    _tick()  # server-owned ingest, no click
     assert dip.get_ingress_authority().get_run(run_id)["state"] == "WAITING_APPROVAL"
 
-    dip.reset_for_tests()  # simulate a process restart / authority handoff
-    # a poll (events read) after restart re-projects the durable pending approval;
-    # the takeover first reconciles the prior nonterminal run to UNKNOWN.
-    assert _get_events(client, run_id).status_code == 200
+    dip.reset_for_tests()   # process restart / authority handoff
+    dip.acquire_ingress_authority()  # takeover: prior nonterminal -> UNKNOWN
+    assert dip.get_ingress_authority().get_run(run_id)["state"] == "UNKNOWN"
+    # another server-owned tick after restart re-ingests it — still no user click
+    _tick()
     assert dip.get_ingress_authority().get_run(run_id)["state"] == "WAITING_APPROVAL"
 
 
@@ -1252,19 +1274,62 @@ def test_decision_projection_repaired_on_retry(managed_durable, monkeypatch):
 
 
 # ── D2 P1: pending approval is durable-authoritative on the product surface ───
-def test_no_poll_no_false_durable_pending_then_ingest_on_read(managed_durable):
+def test_no_poll_ingest_is_server_owned_not_client(managed_durable):
+    """With NO client poll at all, the server-owned tick persists the request into the
+    fenced RunStore; before it runs, durable is not falsely pending."""
     import youtab_runtime.durable_ingress_process as dip
 
     client, db_path = managed_durable
     run_id = _durable_run(client)
     _worker_requests_approval_db(db_path, run_id, "ap1")
-    # NO poll yet: the durable run is not falsely pending (the request is kanban-only)
-    assert dip.get_ingress_authority().get_run(run_id)["state"] == "QUEUED"
-    # the status read INGESTS before publishing, and only then reports awaiting_approval
-    r = _get_run(client, run_id)
-    assert r.status_code == 200
-    assert r.json()["status"] == "awaiting_approval"
+    assert dip.get_ingress_authority().get_run(run_id)["state"] == "QUEUED"  # not stale
+    _tick()  # server-owned, no client involved
     assert dip.get_ingress_authority().get_run(run_id)["state"] == "WAITING_APPROVAL"
+
+
+def test_events_withholds_request_until_durably_backed(managed_durable):
+    """A consumer must not SEE the APPROVAL_REQUEST event before its durable open; the
+    /events cursor holds at the un-backed request and delivers it once backed."""
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    _worker_requests_approval_db(db_path, run_id, "ap1")
+    before = _get_events(client, run_id).json()
+    kinds = [e.get("kind") for e in before["events"]]
+    assert _rc_d2.APPROVAL_REQUEST not in kinds       # withheld pre-ingest
+    assert before["status"] != "awaiting_approval"
+    _tick()                                            # server-owned durable ingest
+    after = _get_events(client, run_id).json()
+    kinds2 = [e.get("kind") for e in after["events"]]
+    assert _rc_d2.APPROVAL_REQUEST in kinds2           # surfaced once durably backed
+    assert after["status"] == "awaiting_approval"
+
+
+def test_crash_after_durable_commit_rebuilds_kanban_request(managed_durable):
+    """Process death AFTER the durable open but BEFORE the kanban projection: the next
+    server-owned tick rebuilds the kanban request from the RunStore (idempotent)."""
+    import youtab_runtime.durable_ingress_process as dip
+
+    client, db_path = managed_durable
+    run_id = _durable_run(client)
+    # durable is opened (committed) but the kanban request projection is missing.
+    dip.open_managed_approval(run_id, approval_id="ap1")
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert [e for e in kb.list_events(conn, run_id)
+                if e.kind == _rc_d2.APPROVAL_REQUEST] == []
+    finally:
+        conn.close()
+    # the tick's ingest boundary derives kanban from the durable record
+    from youtab_agent_cli.web_routers import runtime as _rt
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert _rt.rebuild_kanban_approval_projection(conn, run_id) == 1
+    finally:
+        conn.close()
+    # now durable-backed -> the request surfaces and status is awaiting_approval
+    after = _get_events(client, run_id).json()
+    assert _rc_d2.APPROVAL_REQUEST in [e.get("kind") for e in after["events"]]
+    assert after["status"] == "awaiting_approval"
 
 
 def test_authority_loss_status_is_unknown_not_pending(managed_durable):
@@ -1273,14 +1338,17 @@ def test_authority_loss_status_is_unknown_not_pending(managed_durable):
     client, db_path = managed_durable
     run_id = _durable_run(client)
     _worker_requests_approval_db(db_path, run_id, "ap1")
+    _tick()  # ingest -> durable WAITING_APPROVAL
     assert _get_run(client, run_id).json()["status"] == "awaiting_approval"
     # the sole authority is lost: a status read must NOT keep inviting a decision
     dip._on_lost("simulated advisory-lock loss")
     r = _get_run(client, run_id)
     assert r.status_code == 200
     assert r.json()["status"] == "unknown"          # explicit, not awaiting_approval
-    e = _get_events(client, run_id)
-    assert e.json()["status"] == "unknown" and e.json()["terminal"] is False
+    e = _get_events(client, run_id).json()
+    assert e["status"] == "unknown" and e["terminal"] is False
+    # and the request event is withheld once the authority can no longer back it
+    assert _rc_d2.APPROVAL_REQUEST not in [ev.get("kind") for ev in e["events"]]
 
 
 def test_status_unknown_never_shown_as_pending_without_durable_accept(managed_durable):

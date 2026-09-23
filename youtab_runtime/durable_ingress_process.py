@@ -103,6 +103,7 @@ __all__ = [
     "decide_managed_approval",
     "prior_approval_decision",
     "reconcile_pending_approval",
+    "durable_run_state",
     "durable_approval_events",
     "PROJECTION_ACCEPTED",
     "PROJECTION_NONE",
@@ -347,6 +348,28 @@ def reconcile_pending_approval(run_id: str, *, pending_approval_id: Optional[str
         if row is not None and row.get("state") == RunState.WAITING_APPROVAL.value:
             return PROJECTION_ACCEPTED
         return PROJECTION_NOT_ACCEPTED
+
+
+def durable_run_state(run_id: str) -> Dict[str, Any]:
+    """Pure READ of the durable run state for a truthful status publish — NO ingest,
+    NO write (the dispatcher-tick boundary owns ingest). Returns
+    ``{"available": False, "state": None}`` when the authority is lost/absent/not yet
+    acquired or the run is unknown to it (so the caller publishes ``unknown``, never a
+    kanban-derived pending); else ``{"available": True, "state": <RunState value>}``.
+    Deliberately does NOT lazily acquire the authority: a status read must not take the
+    exclusive run authority as a side effect."""
+    if _lost_reason is not None:
+        return {"available": False, "state": None}
+    auth = _authority  # never lazily acquire on a read path
+    if auth is None or not auth.ready():
+        return {"available": False, "state": None}
+    try:
+        row = auth.get_run(run_id)
+    except Exception:  # noqa: BLE001 — a read must never raise into the caller
+        return {"available": False, "state": None}
+    if row is None:
+        return {"available": False, "state": None}
+    return {"available": True, "state": row.get("state")}
 
 
 def durable_approval_events(run_id: str) -> List[Dict[str, Any]]:

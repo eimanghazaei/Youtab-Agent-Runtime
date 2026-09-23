@@ -337,6 +337,9 @@ def _dispatch_tick() -> None:
     try:
         with kb.connect_closing(board=RUNTIME_BOARD) as conn:
             kb.dispatch_once(conn, spawn_fn=_mode_aware_spawn, board=RUNTIME_BOARD)
+            # D2 P1: server-owned, poll-independent ingest of pending worker approval
+            # requests into the fenced RunStore before any client can publish them.
+            _ingest_pending_approval_requests(conn)
     except Exception as exc:  # noqa: BLE001 — a tick failure must not crash the loop
         _log.debug("runtime dispatcher tick failed: %s", exc)
 
@@ -1987,17 +1990,18 @@ def _durable_ingress_active() -> "Optional[Any]":
 
 def _interactive_status_durable(run_id: str, events: "List[kb.Event]") -> "Optional[str]":
     """Interactive status with the ``awaiting_approval`` signal made DURABLE-AUTHORITATIVE
-    (D2 P1). A worker's approval request lives in kanban only as transport; it must not
-    be PUBLISHED as pending unless the sole RunStore authority has accepted it.
+    (D2 P1). A worker's approval request lives in kanban only as transport; it is PUBLISHED
+    as pending ONLY if the sole RunStore authority has accepted it.
 
-    This INGESTS the pending request into the durable store under the fenced authority
-    and then publishes from the authority's answer:
-      * accepted  -> ``awaiting_approval`` (durable holds WAITING_APPROVAL);
-      * unavailable (authority lost/absent) -> explicit ``unknown`` — never a
-        kanban-derived pending that would invite a human decision the authority has
-        not accepted (the P1 lie);
-      * none / not-accepted -> suppress the kanban signal (fall back to base status),
-        so a durably-decided or non-openable request is not shown as pending.
+    This is a PURE READ of the durable state — it never ingests or writes (the
+    server-owned dispatcher-tick boundary owns ingest, so a status read is not a
+    GET-time reconciliation):
+      * durable WAITING_APPROVAL -> ``awaiting_approval``;
+      * authority lost/absent/unconfirmable -> explicit ``unknown`` — never a
+        kanban-derived pending that would invite a decision the authority has not
+        accepted (the P1 lie);
+      * durable not (yet) awaiting -> suppress the kanban signal (base status), so a
+        request not yet ingested, or already decided, is not shown as pending.
     Flag-off / standalone: unchanged kanban behaviour."""
     base = _rc.interactive_status(events)
     if base != _rc.AWAITING_APPROVAL:
@@ -2005,17 +2009,12 @@ def _interactive_status_durable(run_id: str, events: "List[kb.Event]") -> "Optio
     _dip = _durable_ingress_active()
     if _dip is None:
         return base  # feature off / standalone: kanban behaviour unchanged
-    try:
-        result = _dip.reconcile_pending_approval(
-            run_id, pending_approval_id=_open_approval_id(events)
-        )
-    except Exception:  # never break a read; an errored ingest cannot confirm pending
+    st = _dip.durable_run_state(run_id)  # pure read, no ingest
+    if not st["available"]:
         return _DURABLE_UNKNOWN_STATUS
-    if result == _dip.PROJECTION_ACCEPTED:
+    if st["state"] == "WAITING_APPROVAL":
         return _rc.AWAITING_APPROVAL
-    if result == _dip.PROJECTION_UNAVAILABLE:
-        return _DURABLE_UNKNOWN_STATUS
-    return None  # none / not-accepted: not durably pending -> base status
+    return None  # not durably awaiting -> base status
 
 
 def rebuild_kanban_approval_projection(conn, run_id: str) -> int:
@@ -2046,6 +2045,75 @@ def rebuild_kanban_approval_projection(conn, run_id: str) -> int:
             have_dec.add(aid)
             rebuilt += 1
     return rebuilt
+
+
+def ingest_worker_approval_request(conn, run_id: str, *, approval_id: str) -> str:
+    """Server-owned, durable-FIRST ingest of a worker's approval request (D2 P1).
+
+    THE producer boundary the one-RunStore design requires: the request is committed
+    under the fenced authority BEFORE it is published as pending, and the kanban
+    APPROVAL_REQUEST is DERIVED from that durable record (never the reverse). The
+    worker never writes the durable store; a worker producer — or, today, the
+    server-owned dispatcher-tick bridge that observes the worker's transport signal —
+    calls this. Fail-closed: if the authority cannot accept the request (lost/absent),
+    NO pending is published and NO kanban request is derived (a failed durable open
+    never surfaces as a pending approval). Idempotent. Returns the durable result
+    (``PROJECTION_*``), or ``"disabled"`` when durable ingress is off.
+    """
+    _dip = _durable_ingress_active()
+    if _dip is None:
+        return "disabled"
+    result = _dip.reconcile_pending_approval(run_id, pending_approval_id=approval_id)
+    if result == _dip.PROJECTION_ACCEPTED:
+        # kanban is a projection of the fenced RunStore — derive it from durable.
+        rebuild_kanban_approval_projection(conn, run_id)
+    return result
+
+
+# Bound the per-tick approval-ingest scan (active runs only). Opt-in + managed-only.
+_APPROVAL_INGEST_TICK_CAP = 200
+
+
+def _ingest_pending_approval_requests(conn) -> int:
+    """Server-owned, poll-INDEPENDENT ingest (D2 P1): on each dispatcher tick, persist
+    every worker-signalled pending approval into the fenced RunStore BEFORE any client
+    poll can publish it, then derive kanban from durable. Bounded and best-effort;
+    returns the count accepted. A no-op when durable ingress is off. This is the live
+    production caller of the ingest boundary — NOT a GET-time reconciliation."""
+    _dip = _durable_ingress_active()
+    if _dip is None:
+        return 0
+    try:
+        tasks = kb.list_tasks(conn, include_archived=False, order_by="created-desc")
+    except Exception:  # a tick failure must never crash the loop
+        return 0
+    accepted = 0
+    for t in tasks[:_APPROVAL_INGEST_TICK_CAP]:
+        if t.status in ("done", "archived"):
+            continue
+        try:
+            aid = _open_approval_id(kb.list_events(conn, t.id))
+            if aid is None:
+                continue
+            if ingest_worker_approval_request(conn, t.id, approval_id=aid) == \
+                    _dip.PROJECTION_ACCEPTED:
+                accepted += 1
+        except Exception:
+            continue
+    return accepted
+
+
+def _durable_backed_approval_ids(run_id: str) -> "Optional[set]":
+    """The approval_ids the fenced RunStore holds (request or decision) for a run, or
+    None when durable ingress is off. Raising authority access yields an EMPTY set so
+    an unconfirmable request is treated as NOT backed (withheld), never leaked."""
+    _dip = _durable_ingress_active()
+    if _dip is None:
+        return None
+    try:
+        return {d["approval_id"] for d in _dip.durable_approval_events(run_id)}
+    except Exception:
+        return set()
 
 
 def _ensure_kanban_decision(conn, task_id, approval_id, decision, by, events) -> None:
@@ -2142,8 +2210,25 @@ async def runtime_run_events(
             task = _load_owned_task(conn, run_id, identity)
             all_events = kb.list_events(conn, task.id)
             cancelled = _is_cancelled(all_events)
-            fresh = [e for e in all_events if e.id > after][:limit]
-            cursor = fresh[-1].id if fresh else after
+            window = [e for e in all_events if e.id > after][:limit]
+            # D2 P1: never surface an APPROVAL_REQUEST the fenced RunStore has not
+            # accepted — a consumer must not see a pending request before its durable
+            # open. Hold the cursor at the first un-backed request so it is delivered
+            # ONCE it is durably backed (the tick ingest / boundary), never skipped.
+            backed = _durable_backed_approval_ids(run_id)
+            if backed is not None:
+                gap = next((e.id for e in window
+                            if e.kind == _rc.APPROVAL_REQUEST
+                            and (e.payload or {}).get("approval_id") not in backed), None)
+                if gap is not None:
+                    fresh = [e for e in window if e.id < gap]
+                    cursor = gap - 1
+                else:
+                    fresh = window
+                    cursor = fresh[-1].id if fresh else after
+            else:
+                fresh = window
+                cursor = fresh[-1].id if fresh else after
             status = _run_status(
                 task, cancelled=cancelled,
                 # D2 P1: awaiting_approval only if the durable authority accepted it.
