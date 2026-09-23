@@ -316,7 +316,10 @@ beforeAll(() => {
     // One real copy of the 1527-file bundle, reused by the tamper / wrong-exe
     // tests so we mutate real bundle bytes rather than a synthetic stand-in.
     bundleCopy = mkTmp('sc-int-copy-')
-    cpSync(BUNDLE_DIR, path.join(bundleCopy, 'youtab-backend'), { recursive: true })
+    // Preserve relative PyInstaller symlinks exactly. cpSync's default can
+    // rewrite them to absolute build paths, which the integrity gate correctly
+    // refuses as nonportable before it reaches the tampered bytes.
+    cpSync(BUNDLE_DIR, path.join(bundleCopy, 'youtab-backend'), { recursive: true, verbatimSymlinks: true })
   }
 })
 
@@ -395,7 +398,7 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
   test('5: a wrong executable fails closed (digest mismatch)', () => {
     const wrong = mkTmp('sc-int-wrong-')
     const dir = path.join(wrong, 'youtab-backend')
-    cpSync(BUNDLE_DIR, dir, { recursive: true })
+    cpSync(BUNDLE_DIR, dir, { recursive: true, verbatimSymlinks: true })
     const trusted = rootDigestFromBundle(BUNDLE_DIR)
     // Replace the exe bytes with a different program's bytes.
     const exe = path.join(dir, process.platform === 'win32' ? 'youtab-backend.exe' : 'youtab-backend')

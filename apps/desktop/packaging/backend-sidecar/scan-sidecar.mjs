@@ -35,6 +35,16 @@ const secretPat = [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, /xox[baprs]-[0-9A-Za-z-
 const attribPat = [/Co-Authored-By:\s*Claude/i, /Generated with \[?Claude/i]
 const maxScanBytes = 8 * 1024 * 1024
 
+function containsAttributionDomain(text) {
+  // Scan host-like tokens in arbitrary text; this does not authorize a URL.
+  // Exact terminal labels avoid mistaking lookalikes for the attribution host.
+  for (const match of text.matchAll(/[A-Za-z0-9.-]+/g)) {
+    const labels = match[0].replace(/^\.+|\.+$/g, '').toLowerCase().split('.')
+    if (labels.at(-2) === 'anthropic' && labels.at(-1) === 'com') return true
+  }
+  return false
+}
+
 /**
  * Scan a bundle directory and return { scanned_files, findings, findings_by_severity }.
  * Pure (no process exit, no file writes) so it is unit-testable.
@@ -112,7 +122,7 @@ export function scanBundle(bundleRoot) {
     for (const re of secretPat) if (re.test(text)) add('high', 'secret-material', f, re.source.slice(0, 40))
     for (const re of devPaths) if (re.test(text)) add('high', 'machine-local-path', f, re.source)
     for (const re of attribPat) if (re.test(text)) add('medium', 'forbidden-attribution', f, re.source)
-    if (text.toLowerCase().includes('anthropic.com')) {
+    if (containsAttributionDomain(text)) {
       add('medium', 'forbidden-attribution', f, 'anthropic.com')
     }
   }
