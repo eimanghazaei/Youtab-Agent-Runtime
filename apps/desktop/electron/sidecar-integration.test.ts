@@ -142,9 +142,85 @@ function treeKill(pid: number): void {
   }
 }
 
-// The actual listening TCP socket addresses owned by a pid (real socket state,
-// not an HTTP probe). win32 uses Get-NetTCPConnection; elsewhere best-effort.
-function listenAddrsFor(pid: number): string[] {
+// Decode the kernel socket table for the backend's announced ephemeral port.
+// 0A is TCP LISTEN; all other states must be ignored.
+function parseProcListenAddrs(tables: Record<string, string>, port: number): string[] {
+  const addresses: string[] = []
+
+  for (const family of ['tcp', 'tcp6']) {
+    const table = tables[family] || ''
+
+    for (const line of table.split(/\r?\n/).slice(1)) {
+      const columns = line.trim().split(/\s+/)
+
+      if (columns.length < 4 || columns[3] !== '0A') {
+        continue // LISTEN
+      }
+
+      const [address, hexPort] = (columns[1] || '').split(':')
+
+      if (Number.parseInt(hexPort, 16) !== port) {
+        continue
+      }
+
+      if (family === 'tcp') {
+        const octets = address.match(/../g)?.reverse().map(hex => Number.parseInt(hex, 16))
+
+        if (octets?.length === 4) {
+          addresses.push(octets.join('.'))
+        }
+      } else if (address === '00000000000000000000000001000000') {
+        addresses.push('::1')
+      } else if (address === '00000000000000000000000000000000') {
+        addresses.push('::')
+      } else if (address) {
+        addresses.push(`tcp6:${address}`) // conservatively non-loopback
+      }
+    }
+  }
+
+  return addresses
+}
+
+// The actual listening TCP socket addresses (real socket state, not an HTTP
+// probe). Linux filters /proc/net by the OS-selected port announced by this
+// backend; Windows/macOS query the process directly.
+function listenAddrsFor(pid: number, port?: number): string[] {
+  if (process.platform === 'linux') {
+    if (!port) {
+      return []
+    }
+
+    const tables: Record<string, string> = {}
+
+    for (const family of ['tcp', 'tcp6']) {
+      try {
+        tables[family] = readFileSync(`/proc/net/${family}`, 'utf8')
+      } catch {
+        // A missing kernel table contributes no sockets.
+      }
+    }
+
+    return parseProcListenAddrs(tables, port)
+  }
+
+  if (process.platform === 'darwin') {
+    if (!port) {
+      return []
+    }
+
+    try {
+      const out = execFileSync('lsof', ['-nP', '-a', '-p', String(pid), `-iTCP:${port}`, '-sTCP:LISTEN', '-F', 'n'], {
+        encoding: 'utf8'
+      })
+
+      return out.split(/\r?\n/).filter(line => line.startsWith('n') && line.endsWith(`:${port}`))
+        .map(line => line.slice(1, -(`:${port}`.length)))
+    } catch {
+      return []
+    }
+  }
+
   if (process.platform !== 'win32') {
     return []
   }
@@ -168,6 +244,16 @@ function listenAddrsFor(pid: number): string[] {
     return []
   }
 }
+
+test('Linux socket table probe finds only LISTEN addresses on the announced port', () => {
+  const tables = {
+    tcp: 'sl local_address rem_address st\n 0: 0100007F:1F90 00000000:0000 0A\n 1: 00000000:1F91 00000000:0000 0A\n 2: 0100007F:1F90 00000000:0000 01',
+    tcp6: 'sl local_address rem_address st\n 0: 00000000000000000000000001000000:1F90 00000000000000000000000000000000:0000 0A'
+  }
+
+  assert.deepEqual(parseProcListenAddrs(tables, 8080), ['127.0.0.1', '::1'])
+  assert.deepEqual(parseProcListenAddrs(tables, 8081), ['0.0.0.0'])
+})
 
 function isLoopbackAddr(addr: string): boolean {
   const a = addr.replace(/^\[|\]$/g, '').toLowerCase()
@@ -259,14 +345,19 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
   })
 
   // 2
-  test('2: real bundle digest matches the pinned trust anchor → launch', () => {
+  test('2: real bundle digest matches the controlled build anchor → launch', () => {
     const actual = rootDigestFromBundle(BUNDLE_DIR)
-    assert.equal(actual, TRUSTED_SIDECAR_ROOT_DIGEST)
+    const expected = process.env.YOUTAB_AGENT_SIDECAR_CI_BUILD_DIGEST || TRUSTED_SIDECAR_ROOT_DIGEST
+
+    assert.match(expected || '', /^[0-9a-f]{64}$/)
+    assert.equal(readFileSync(path.join(DESKTOP_ROOT, 'build', 'backend-sidecar', 'sidecar-root-digest.txt'), 'utf8').trim(), expected)
+    assert.equal(JSON.parse(readFileSync(path.join(DESKTOP_ROOT, 'build', 'backend-sidecar', 'manifest.json'), 'utf8')).root_digest_sha256, expected)
+    assert.equal(actual, expected)
 
     const d = decideSidecarLaunch({
       bundlePresent: true,
       bundleDir: BUNDLE_DIR,
-      trustedDigest: TRUSTED_SIDECAR_ROOT_DIGEST
+      trustedDigest: expected
     })
 
     assert.equal(d.action, 'launch')
@@ -481,7 +572,7 @@ describe.skipIf(!HAVE_BUNDLE)('sidecar real-process integration', () => {
   test('17: loopback hosts (127.0.0.1, ::1) are accepted and the real socket is loopback-only', async () => {
     for (const host of ['127.0.0.1', '::1']) {
       const b = await startBackend({}, 30_000, host)
-      const addrs = listenAddrsFor(b.proc.pid!)
+      const addrs = listenAddrsFor(b.proc.pid!, b.port)
       assert.ok(addrs.length > 0, `no listening socket found for host ${host}`)
 
       for (const a of addrs) {

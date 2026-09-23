@@ -331,8 +331,16 @@ jobs:
       - name: Install exact JavaScript lock
         run: npm ci
       - name: Build frozen backend for packaged desktop test
-        run: node apps/desktop/packaging/backend-sidecar/build-sidecar.mjs
+        id: sidecar_build
+        run: |
+          node apps/desktop/packaging/backend-sidecar/build-sidecar.mjs
+          echo "digest=$(cat apps/desktop/build/backend-sidecar/sidecar-root-digest.txt)" >> "$GITHUB_OUTPUT"
       - name: Type, lint and workspace tests
+        env:
+          # Test-only snapshot of THIS controlled CI build. PyInstaller onedir is
+          # not bit-reproducible; the committed per-release Electron anchor stays
+          # unchanged and release packaging still enforces it fail-closed.
+          YOUTAB_AGENT_SIDECAR_CI_BUILD_DIGEST: ${{ steps.sidecar_build.outputs.digest }}
         run: npm run check
 
   # Windows portability gate (WAVE-23). The wake-word job already runs ON
