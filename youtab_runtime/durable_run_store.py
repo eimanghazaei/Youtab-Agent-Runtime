@@ -846,32 +846,27 @@ class SqliteRunStore:
 DurableRunStore = SqliteRunStore
 
 
-class PostgresRunStore:
-    """Server/enterprise backend placeholder — same RunStore contract.
+def _postgres_run_store(dsn: Optional[str] = None):
+    """Construct the real PostgreSQL backend (server/enterprise). Fail-closed:
+    raises if psycopg or a DSN is missing — never a silent SQLite fallback."""
+    import os as _os
 
-    Not implemented on this base: server deployment integration is a separate,
-    later work item. It is declared here so the typed interface and factory make
-    the backend choice explicit; SQLite must never be presented as multi-host
-    distributed-execution evidence.
-    """
-
-    def __init__(self, *args: Any, **kwargs: Any):
-        raise NotImplementedError(
-            "PostgresRunStore is not integrated on this base; use the SQLite "
-            "backend for local/desktop, and wire the Postgres backend when the "
-            "server persistence layer is integrated (same RunStore contract)."
-        )
+    from youtab_runtime.durable_run_store_pg import PostgresRunStore
+    return PostgresRunStore(dsn or _os.environ.get("YOUTAB_DURABLE_PG_DSN"))
 
 
-def create_run_store(backend: str = "sqlite", **kwargs: Any) -> RunStore:
+def create_run_store(backend: Optional[str] = None, **kwargs: Any) -> RunStore:
     """Select the single canonical run-store backend for this deployment.
 
-    ``sqlite`` -> local/offline Desktop; ``postgres`` -> server/enterprise.
-    Exactly one authoritative store per deployment — never both.
+    ``sqlite`` -> local/offline Desktop; ``postgres`` -> server/enterprise. The
+    backend may be forced via the ``YOUTAB_DURABLE_RUNSTORE_BACKEND`` env. Exactly
+    one authoritative store per deployment — never both, never a silent fallback.
     """
-    backend = (backend or "sqlite").lower()
+    import os as _os
+
+    backend = (backend or _os.environ.get("YOUTAB_DURABLE_RUNSTORE_BACKEND") or "sqlite").lower()
     if backend == "sqlite":
         return cast(RunStore, SqliteRunStore(**kwargs))
     if backend in ("postgres", "postgresql", "pg"):
-        return cast(RunStore, PostgresRunStore(**kwargs))
+        return cast(RunStore, _postgres_run_store(kwargs.get("dsn")))
     raise ValueError(f"unknown run-store backend: {backend!r}")

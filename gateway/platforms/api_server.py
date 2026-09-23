@@ -1240,9 +1240,17 @@ class APIServerAdapter(BasePlatformAdapter):
         # fan-out cache; get/events/result/restart are served from this store so
         # a client disconnect, HTTP timeout or backend restart never loses a run.
         try:
+            import os as _os
+
             from youtab_runtime.durable_run_store import create_run_store
-            self._run_store = create_run_store("sqlite")
-        except Exception:  # durable store must never block gateway startup
+            # Backend is env-driven (YOUTAB_DURABLE_RUNSTORE_BACKEND, default sqlite).
+            self._run_store = create_run_store()
+        except Exception:
+            # Fail CLOSED when a server backend was explicitly requested (never a
+            # silent SQLite fallback in server mode); only the default local
+            # sqlite path degrades gracefully so gateway startup is never blocked.
+            if _os.environ.get("YOUTAB_DURABLE_RUNSTORE_BACKEND"):
+                raise
             self._run_store = None
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
