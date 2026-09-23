@@ -73,9 +73,9 @@ honored by the `main` route). Config mounted (secrets redacted):
 api_key: <REDACTED>}`. The mock MUST return streaming SSE (a plain JSON completion is
 rejected with "Provider returned an empty stream ... malformed SSE").
 
-## 5. Secure external route through the merged installation config — PASS
-RC image `youtab-agent-runtime:p5-rc-cad5ec26d` (embedded source SHA
-`cad5ec26d210fa3e8ea7b4b9d528a21e59773571`, Id `sha256:6ee971b2b8bc…`). Merged
+## 5. Secure external route through the merged installation config — PASS (LOCAL admin only)
+RC image `youtab-agent-runtime:p5-rc-5b371ccb2` (embedded source SHA
+`5b371ccb2d7888b0b429b907f47d91b666ec31e8`, Id `sha256:4389e5f44e65…`). Merged
 `docker-compose.yml + docker-compose.postgres.yml + docker-compose.edge.yml`:
 - The api_server binds 0.0.0.0 INSIDE the container and is only `expose`d — it is
   NOT host-published (`docker ps`: gw `ports=[]`). A Caddy TLS `edge` is the only
@@ -86,6 +86,14 @@ RC image `youtab-agent-runtime:p5-rc-cad5ec26d` (embedded source SHA
   match, HTTP/2 200); `POST /v1/runs` WITHOUT the bearer → 401 (api_server
   enforces end-to-end); WITH the bearer → SUCCEEDED run, output
   `CUSTOMER_TASK_OK_42`, PG row SUCCEEDED. Raw: `SECURE_INGRESS_AND_PGLOSS_RAW.txt`.
+
+SCOPE: this qualifies the **local admin** case (`EDGE_BIND=127.0.0.1`, loopback).
+The **cross-host** case (an org workstation on another host, `EDGE_BIND=0.0.0.0`)
+is NOT qualified: TLS+Bearer authenticate/encrypt `/v1/runs` but do NOT sandbox
+the agent execution it dispatches (the terminal backend is `local`/unsandboxed —
+see the api_server startup warning). Cross-host requires the route tested from
+that host AND a sandboxed backend (or a constraint accepted by customer IT).
+OPEN. See ADMIN_INSTALL_PROCEDURE.md §4.
 
 ## 6. PostgreSQL loss WHILE the API is running (readiness + fail-closed admission) — PASS
 Readiness contract: `/health` is STATIC liveness only; `/health/ready`
@@ -103,12 +111,40 @@ NOTE (defect found & fixed here): before the fix, `POST /v1/runs` returned 202 a
 ran IN-MEMORY ONLY when PG was down, because the write-through mirror is
 best-effort. Fixed by a persist-before-ack admission barrier in server durable
 mode (commit cad5ec26d; test_p5_admission_failclosed.py). The best-effort mirror
-for LATER state changes is unchanged (desktop/sqlite never blocked).
+for LATER state changes is unchanged for local mode (desktop/sqlite never blocked).
+Server mode also fail-closes admission if `_run_store` is unexpectedly absent
+(commit 5b371ccb2).
 
-## Verdict
-Running-service admission + durable status persistence + **SUCCEEDED run with
-nonempty result** + restart recovery + PG-down fail-closed (startup AND
-mid-flight) + **secure external TLS route that does not expose the unsandboxed
-backend** + **store-aware readiness**: PASS on the real RC image, synthetic mock
-task. OPEN: the Master-adopted deployment contract and a real customer workload.
-Product NO-GO.
+## 7. PostgreSQL lost AFTER admission, BEFORE terminal persist — PASS (no false-durable completion)
+Fault window: a run is admitted and RUNNING is durably persisted, then PG is
+stopped WHILE the run is executing (a ~10s delayed mock provider widens the
+window), so the TERMINAL write fails. The best-effort mirror would otherwise let
+a client poll `completed`+output that DISAPPEARS after restart. Observed on the RC
+image (raw: `TERMINAL_DURABILITY_RAW.txt`):
+- during the fault, client `GET /v1/runs/{id}` → `reconciliation_required`,
+  `terminal:false`, `durable:false`, `pending_status:completed` — NOT a durable
+  completion; `/result` → `terminal:false`.
+- durable truth in PG: the run stayed `RUNNING`, `result_ref=NULL` (terminal never
+  written).
+- after `docker restart` (in-memory cache lost, PG back): `GET` → `running`
+  (served from store), `output:null`. No completed result appeared then vanished.
+Fix: commit 5b371ccb2 — `_mirror_run_state` returns success/failure and retries
+terminal writes in server mode; on failure `_set_run_status` reports
+reconciliation_required instead of a durable completion. Local/sqlite best-effort
+completion is unchanged (test_p5_terminal_durability.py).
+
+## Verdict (per gate)
+- Admission over HTTP + durable status/result + SUCCEEDED with nonempty result +
+  restart recovery: **PASS** (RC image, synthetic mock task).
+- PG-down fail-closed at startup AND mid-flight (readiness 503, admission 503,
+  no in-memory-only 202): **PASS**.
+- No false-durable terminal completion (PG lost after admission, before terminal
+  persist → reconciliation_required, nothing vanishes): **PASS**.
+- Store-aware readiness (`/health/ready`) distinct from static `/health`: **PASS**.
+- Secure external TLS route, LOCAL admin (loopback), backend not host-published:
+  **PASS**.
+- Cross-host org-workstation route (unsandboxed backend): **OPEN / NOT QUALIFIED**
+  (needs test-from-host + sandbox or IT-accepted constraint).
+- Master-adopted deployment contract + real customer workload: **OPEN**.
+
+**Product NO-GO.** All PASS results are one synthetic mock task on the RC image.

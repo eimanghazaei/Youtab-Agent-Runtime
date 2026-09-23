@@ -15,9 +15,20 @@
 #   * The Caddy `edge` service is the ONLY host-published entrypoint. It
 #     TLS-terminates and reverse-proxies to the api_server. Bearer auth
 #     (API_SERVER_KEY) is still enforced end-to-end by the api_server.
-#   * Publish the edge to a trusted interface. The default binds the host
-#     loopback (127.0.0.1:${EDGE_PORT}); set EDGE_BIND=0.0.0.0 only behind a
-#     firewall / on a trusted network.
+#
+# TWO NETWORK CASES — they are NOT the same qualification:
+#   (1) LOCAL ADMIN (default, EDGE_BIND=127.0.0.1): the edge is reachable only
+#       from the host loopback. This is the tested/qualified case.
+#   (2) ORGANIZATION WORKSTATION on ANOTHER HOST (EDGE_BIND=0.0.0.0): DO NOT
+#       enable this until BOTH hold, because /v1/runs dispatches agent work on
+#       the terminal backend and TLS+Bearer authenticate/encrypt but DO NOT
+#       sandbox that execution:
+#         (a) the route is tested from that other host, AND
+#         (b) the agent terminal backend is sandboxed (terminal.backend: docker)
+#             OR the exposure is explicitly constrained (firewall/allowlist/mTLS)
+#             and accepted in writing by customer IT.
+#       Until then, cross-host exposure is NOT qualified — keep the default
+#       loopback bind.
 
 services:
   youtab-agent-runtime:

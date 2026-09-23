@@ -7,22 +7,27 @@ the current image plus its fix. Product remains NO-GO; nothing pushed/deployed.
 ## Source provenance (git)
 | Field | Value |
 |---|---|
-| RC source commit | `cad5ec26d210fa3e8ea7b4b9d528a21e59773571` (embedded in RC image) |
+| RC source commit | `5b371ccb2d7888b0b429b907f47d91b666ec31e8` (embedded in RC image) |
 | Prior P5 code | `cc5c4f7d2` (original image, provenance-gapped) |
 | Branch | `feat/runtime-durable-execution-v1` (worktree `rt-durable-execution`) |
 | Base | origin/main `c7650a1b` (runtime 0.19.1) |
 | `uv.lock` sha256 | `a28248d41dac34e609672bf59a09094fd50ab30fe6d12453ada1bb71589b4f28` |
 | postgres extra | `psycopg[binary]==3.3.6` (pyproject.toml:292) |
 
-## RC image provenance (docker) — SELF-DESCRIBING (embedded SHA)
+## RC image provenance (docker) — SELF-DESCRIBING (embedded SHA), digest-pinnable
 | Field | Value |
 |---|---|
-| Tag | `youtab-agent-runtime:p5-rc-cad5ec26d` |
-| Image Id | `sha256:6ee971b2b8bceea152748499a63aa3912c874d544df601ec2850760c844cbb19` |
-| Embedded source SHA | `cad5ec26d210fa3e8ea7b4b9d528a21e59773571` (== HEAD; PROVENANCE MATCH ✅) |
-| Built with | `--build-arg YOUTAB_AGENT_GIT_SHA=<HEAD>` (fix applied) |
-| Size | 4,494,361,422 B (4.49 GB) |
+| Tag | `youtab-agent-runtime:p5-rc-5b371ccb2` |
+| Image Id (config digest) | `sha256:4389e5f44e657e264d66dd6e9d9828a46c88d9e967d4f5598aebca6f001076d3` |
+| Distribution tarball sha256 (`docker save`) | `844de14ce53ff0334b346942b5eb0d7b17542d786618d6c6ca87e7b7dd05a0bb` |
+| Registry repo digest | `<PUBLISHED_REPO_DIGEST>` — filled by Master at publish; customers pin `<repo>@sha256:<that>` |
+| Embedded source SHA | `5b371ccb2d7888b0b429b907f47d91b666ec31e8` (== HEAD; PROVENANCE MATCH ✅) |
+| Built with | `--build-arg YOUTAB_AGENT_GIT_SHA=<HEAD>` |
 | Build log | `docs/evidence/p5_deploy/p5_rc_image_build.log` (build exit 0) |
+
+Customer handoff pins the image by digest (registry repo digest, or the tarball
+sha256 for offline `docker load`) — see ADMIN_INSTALL_PROCEDURE.md. Superseded RC
+`p5-rc-cad5ec26d` was removed locally after the terminal-durability fix.
 
 ### Prior (superseded) P5 image — provenance gap, kept for the record
 | Field | Value |
@@ -80,8 +85,14 @@ the image currently has `Config.Labels == null`.
   (`/health/ready` → 503, `POST /v1/runs` → 503 `durable_store_unavailable`, no
   in-memory-only 202); recovery after PG restart. Store-aware `/health/ready`
   distinct from static `/health` liveness.
+- No false-durable terminal completion: PG lost after admission but before the
+  terminal write → client sees reconciliation_required (terminal=false), store
+  stays RUNNING, nothing vanishes after restart.
+- Secure external TLS route qualified for LOCAL admin (loopback); cross-host
+  exposure is OPEN (unsandboxed backend — TLS+Bearer are not a sandbox).
 See RUNNING_SERVICE_PROOF.md, RUNNING_SERVICE_SUCCEEDED_RAW.txt,
-SECURE_INGRESS_AND_PGLOSS_RAW.txt, ADMIN_INSTALL_PROCEDURE.md.
+SECURE_INGRESS_AND_PGLOSS_RAW.txt, TERMINAL_DURABILITY_RAW.txt,
+ADMIN_INSTALL_PROCEDURE.md.
 
 ## Coordinate with the master release candidate (OPEN)
 The final RC image + shared deployment contract are Master-owned. This manifest is
