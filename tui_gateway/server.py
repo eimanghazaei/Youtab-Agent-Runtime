@@ -6930,6 +6930,81 @@ def _retire_turn_marker(session: dict, *keys: str) -> None:
             clear_turn_marker(home, key)
 
 
+def _finalize_turn_ack(
+    session: dict,
+    agent: Any,
+    marker_key: str,
+    status: str,
+    payload: dict,
+    result: Any,
+    raw: Any,
+) -> tuple[str, bool]:
+    """Commit the session transcript BEFORE the client-observable completion ack,
+    then settle recovery state — enforcing durable-commit-happens-before-ack for
+    BOTH success and failure.
+
+    The desktop finalizes / goes idle on the ``message.complete`` frame the caller
+    emits right after this returns, so the turn must be durable first. We force a
+    synchronous, idempotent commit via the same marker-deduped ``_persist_session``
+    path the WS-disconnect flush uses (commit exactly once on retry, no duplicate
+    rows, no second store — transcript stays in the session DB). If a would-be-
+    SUCCESSFUL turn cannot be durably committed we do NOT acknowledge success:
+    it is downgraded to a RECOVERABLE error, the turn + its crash-recovery marker
+    are retained (so a reconnect/resume retries), and a truthful failure is
+    surfaced. An already-``error`` turn is retained regardless and its partial
+    state is persisted best-effort. The crash marker is retired ONLY once the
+    required commit has succeeded.
+
+    Returns ``(final_status, turn_error_retained)`` — ``final_status`` may have
+    been downgraded from ``complete`` to ``error`` when the commit failed.
+    """
+    persist_failed_detail: Optional[str] = None
+    if agent is not None and hasattr(agent, "_persist_session"):
+        snapshot = getattr(agent, "_session_messages", None)
+        if snapshot:
+            try:
+                agent._persist_session(snapshot)
+            except Exception as exc:  # noqa: BLE001
+                if status != "error":
+                    persist_failed_detail = (
+                        "The turn completed but could not be saved to the session "
+                        "store; it is preserved for retry on reconnect. "
+                        f"({type(exc).__name__})"
+                    )
+                    status = "error"
+                    payload["status"] = "error"
+
+    turn_error_retained = False
+    with session["history_lock"]:
+        if status == "error":
+            # Returned-error result (provider 4xx, budget, etc.) OR a
+            # would-be-success turn that failed to durably persist: retain the
+            # turn for resume replay instead of clearing it. If this terminal
+            # frame is lost to a disconnect, resume's inflight payload is the
+            # only carrier of the failure.
+            _fail_inflight_turn(
+                session,
+                persist_failed_detail
+                or (result.get("error") if isinstance(result, dict) else raw),
+            )
+            turn_error_retained = True
+        else:
+            _clear_inflight_turn(session)
+    if status == "error":
+        payload["error"] = str(
+            persist_failed_detail
+            or (result.get("error") if isinstance(result, dict) else "")
+            or raw
+        )
+        payload["recoverable"] = True
+    # Retire the crash-recovery marker ONLY once the required durable commit has
+    # succeeded — never before it, or a persist failure would leave the turn with
+    # no recovery path.
+    if persist_failed_detail is None:
+        _retire_turn_marker(session, marker_key)
+    return status, turn_error_retained
+
+
 def _auto_continue_note(prompt: str) -> str:
     # Same opening as the messaging gateway's recovery notes so transcript
     # tooling recognizes both. The original prompt is embedded because a hard
@@ -9404,41 +9479,13 @@ def _run_prompt_submit(
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
-            with session["history_lock"]:
-                if status == "error":
-                    # Returned-error result (provider 4xx, budget, etc.): retain
-                    # the failed turn for resume replay instead of clearing it.
-                    # If this terminal frame is lost to a disconnect, resume's
-                    # inflight payload is the only carrier of the failure.
-                    _fail_inflight_turn(
-                        session,
-                        result.get("error") if isinstance(result, dict) else raw,
-                    )
-                    turn_error_retained = True
-                else:
-                    _clear_inflight_turn(session)
-            if status == "error":
-                payload["error"] = str(
-                    (result.get("error") if isinstance(result, dict) else "") or raw
-                )
-                payload["recoverable"] = True
-            _retire_turn_marker(session, marker_key)
-            # Durability MUST happen-before the completion the client can observe:
-            # the desktop finalizes/goes idle on this ``message.complete`` frame,
-            # and a user who then closes the app promptly must not lose the turn.
-            # The in-turn persist inside ``run_conversation`` can lag the frame
-            # (esp. the first turn's session-row + attachment-message flush), so
-            # force a synchronous, idempotent commit of the session transcript
-            # here — the same marker-deduped ``_persist_session`` path the
-            # WS-disconnect flush uses (no duplicate rows, no second store). This
-            # closes the persist/acknowledgement-boundary race (prompt-close loss).
-            if agent is not None and hasattr(agent, "_persist_session"):
-                _durable_snapshot = getattr(agent, "_session_messages", None)
-                if _durable_snapshot:
-                    try:
-                        agent._persist_session(_durable_snapshot)
-                    except Exception:
-                        pass
+            # Durability happens-before the client-observable completion ack (for
+            # BOTH success and failure): commit the transcript, settle recovery
+            # state, and possibly downgrade a would-be-success turn that could not
+            # be persisted to a recoverable error — see _finalize_turn_ack.
+            status, turn_error_retained = _finalize_turn_ack(
+                session, agent, marker_key, status, payload, result, raw
+            )
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────
