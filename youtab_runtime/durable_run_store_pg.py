@@ -408,6 +408,73 @@ class PostgresRunStore:
             conn.commit()
             return row
 
+    def open_approval(self, run_id: str, *, approval_id: str,
+                      kind: str = "approval_request",
+                      payload: Optional[dict] = None) -> Dict[str, Any]:
+        """Atomically open an approval on a RUNNING run — expected-from-state (PG).
+
+        Advisory-fenced transaction: the run row is taken ``FOR UPDATE``; a
+        from-state CAS ``UPDATE ... WHERE state='RUNNING'`` (rowcount 1) moves it
+        to WAITING_APPROVAL and appends one ``approval_request`` event with
+        ``approval_id``. Exact-id retry while WAITING_APPROVAL is idempotent; a
+        different id raises ``ApprovalAlreadyOpen`` (pending id not replaced).
+        Mirrors the SqliteRunStore semantics; see it for the full contract."""
+        from youtab_runtime.durable_run_store import ApprovalAlreadyOpen
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a nonempty string")
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                self._fence(cur)
+                cur.execute("SELECT state FROM runs WHERE run_id=%s FOR UPDATE", (run_id,))
+                r = cur.fetchone()
+                if r is None:
+                    raise DurableRunError(f"run not found: {run_id}")
+                cur_state = RunState(r[0])
+                if cur_state == RunState.WAITING_APPROVAL:
+                    cur.execute(
+                        "SELECT payload FROM run_events WHERE run_id=%s AND kind='approval_request' "
+                        "ORDER BY seq DESC LIMIT 1",
+                        (run_id,),
+                    )
+                    ev = cur.fetchone()
+                    open_id = None
+                    if ev is not None:
+                        raw = ev[0]
+                        d = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+                        open_id = (d or {}).get("approval_id")
+                    if open_id == approval_id:
+                        cur.execute("SELECT * FROM runs WHERE run_id=%s", (run_id,))
+                        row = self._row(cur, cur.fetchone())
+                        assert row is not None
+                        conn.commit()
+                        return row
+                    raise ApprovalAlreadyOpen(
+                        f"run {run_id} already has a different open approval; not replacing it"
+                    )
+                if cur_state != RunState.RUNNING:
+                    raise InvalidTransition(
+                        f"cannot open approval from {cur_state.value} (expected RUNNING)"
+                    )
+                now = time.time()
+                cur.execute(
+                    "UPDATE runs SET state=%s, updated_at=%s WHERE run_id=%s AND state='RUNNING'",
+                    (RunState.WAITING_APPROVAL.value, now, run_id),
+                )
+                if cur.rowcount != 1:
+                    raise ApprovalAlreadyOpen(
+                        f"run {run_id} is no longer RUNNING (concurrent open)"
+                    )
+                self._append_event(
+                    cur, run_id, kind,
+                    {**(payload or {}), "approval_id": approval_id,
+                     "state": RunState.WAITING_APPROVAL.value},
+                )
+                cur.execute("SELECT * FROM runs WHERE run_id=%s", (run_id,))
+                row = self._row(cur, cur.fetchone())
+            assert row is not None
+            conn.commit()
+            return row
+
     def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState,
                              kind: str, payload: Optional[dict] = None,
                              result_ref: Optional[str] = None,

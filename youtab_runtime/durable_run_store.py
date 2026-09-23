@@ -112,6 +112,13 @@ class ApprovalNotOpen(DurableRunError):
     (single-use). Fails closed so a decision cannot be replayed or misbound."""
 
 
+class ApprovalAlreadyOpen(DurableRunError):
+    """The run already has a DIFFERENT open approval. A second open must not
+    replace the pending id or append another request — fails closed so the
+    originally issued approval id stays authoritative. (An exact-id retry is
+    idempotent and does NOT raise.)"""
+
+
 # --------------------------------------------------------------------------- #
 # Lane-1 effect-ledger boundary (typed Protocol; NEVER reimplemented here)
 # --------------------------------------------------------------------------- #
@@ -205,6 +212,8 @@ class RunStore(Protocol):
     def is_stop_requested(self, run_id: str, *, now: Optional[float] = ...) -> bool: ...
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]: ...
     def transition(self, run_id: str, to_state: RunState, **kw: Any) -> Dict[str, Any]: ...
+    def open_approval(self, run_id: str, *, approval_id: str, kind: str = ...,
+                      **kw: Any) -> Dict[str, Any]: ...
     def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState,
                              kind: str, **kw: Any) -> Dict[str, Any]: ...
     def set_state(self, run_id: str, to_state: RunState, *, strict: bool = ..., **kw: Any) -> Optional[Dict[str, Any]]: ...
@@ -610,6 +619,90 @@ class SqliteRunStore:
             raise
         finally:
             conn.close()
+
+    def open_approval(self, run_id: str, *, approval_id: str,
+                      kind: str = "approval_request",
+                      payload: Optional[dict] = None) -> Dict[str, Any]:
+        """Atomically open an approval on a RUNNING run — expected-from-state, single-open.
+
+        In ONE fenced ``BEGIN IMMEDIATE`` transaction the run moves
+        RUNNING -> WAITING_APPROVAL via a from-state CAS
+        (``WHERE state='RUNNING'``, rowcount 1) and exactly one
+        ``approval_request`` event carrying ``approval_id`` is appended. Unlike
+        generic ``transition()`` (which permits a same-state
+        WAITING_APPROVAL -> WAITING_APPROVAL no-op that would append a SECOND
+        request and silently re-home the authoritative id), a second open is
+        refused: an EXACT-id retry is IDEMPOTENT (returns the existing open
+        request, appends nothing); a DIFFERENT id raises ``ApprovalAlreadyOpen``
+        and never replaces the pending id.
+
+        ``approval_id`` must be a nonempty string (else ``ValueError``). Opening
+        from any state other than RUNNING or (idempotent) WAITING_APPROVAL raises
+        ``InvalidTransition`` (RUNNING is the only opener). generic transition
+        semantics are unchanged.
+        """
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("approval_id must be a nonempty string")
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._fence(conn)
+            r = conn.execute("SELECT state FROM runs WHERE run_id=?", (run_id,)).fetchone()
+            if r is None:
+                raise DurableRunError(f"run not found: {run_id}")
+            cur_state = RunState(r[0])
+            if cur_state == RunState.WAITING_APPROVAL:
+                # Already open: exact-id retry is idempotent; a different id is
+                # refused without replacing the pending id or appending an event.
+                open_id = self._latest_approval_id_locked(conn, run_id)
+                if open_id == approval_id:
+                    cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+                    row = self._row_to_dict(cur, cur.fetchone())
+                    conn.execute("COMMIT")
+                    return row
+                raise ApprovalAlreadyOpen(
+                    f"run {run_id} already has a different open approval; not replacing it"
+                )
+            if cur_state != RunState.RUNNING:
+                raise InvalidTransition(
+                    f"cannot open approval from {cur_state.value} (expected RUNNING)"
+                )
+            now = time.time()
+            upd = conn.execute(
+                "UPDATE runs SET state=?, updated_at=? WHERE run_id=? AND state='RUNNING'",
+                (RunState.WAITING_APPROVAL.value, now, run_id),
+            )
+            if upd.rowcount != 1:
+                raise ApprovalAlreadyOpen(
+                    f"run {run_id} is no longer RUNNING (concurrent open)"
+                )
+            self._append_event_locked(
+                conn, run_id, kind,
+                {**(payload or {}), "approval_id": approval_id,
+                 "state": RunState.WAITING_APPROVAL.value},
+            )
+            cur = conn.execute("SELECT * FROM runs WHERE run_id=?", (run_id,))
+            row = self._row_to_dict(cur, cur.fetchone())
+            conn.execute("COMMIT")
+            return row
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.close()
+
+    def _latest_approval_id_locked(self, conn, run_id: str) -> Optional[str]:
+        ev = conn.execute(
+            "SELECT payload FROM run_events WHERE run_id=? AND kind='approval_request' "
+            "ORDER BY seq DESC LIMIT 1",
+            (run_id,),
+        ).fetchone()
+        if ev is None:
+            return None
+        try:
+            return (json.loads(ev[0]) or {}).get("approval_id")
+        except Exception:
+            return None
 
     def decide_open_approval(self, run_id: str, *, approval_id: str, to_state: RunState,
                              kind: str, payload: Optional[dict] = None,
