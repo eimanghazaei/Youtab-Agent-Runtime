@@ -562,7 +562,15 @@ test.describe('packaged app: attachment persists across a full relaunch', () => 
     await page1.locator('[data-slot="composer-attachments"]').waitFor({ state: 'visible', timeout: 30_000 })
     await page1.keyboard.press('Enter')
     // The turn reaches a terminal frame (the completion commit failed → the turn
-    // closes recoverable, Stop affordance cleared).
+    // closes recoverable, Stop affordance cleared). No Stop button is also the
+    // state before the deferred agent build lets the turn start, so first
+    // require that the provider actually ran this prompt.
+    await expect
+      .poll(() => mock!.receivedPrompts.some(p => p.includes(CAPTION)), {
+        timeout: 180_000,
+        message: 'the bundled backend must run the turn before it can fail its commit',
+      })
+      .toBe(true)
     await expect
       .poll(() => page1.getByRole('button', { name: 'Stop' }).count(), { timeout: 180_000 })
       .toBe(0)
