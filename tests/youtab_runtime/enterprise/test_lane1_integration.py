@@ -343,6 +343,78 @@ def test_foreign_workspace_receipt_rejected(db_path, principal):
     assert conn.get_commit_receipt("run-1", principal, "ws-globex", op, "obj-1") is None
 
 
+def test_receipt_binds_business_key_and_request_revision(db_path, principal):
+    op = "crm.contact.update.commit"
+    conn, adapter, authority = _connector([op], db_path)
+    first = _req(op, principal, business_key="obj-1")
+    second = _req(op, principal, business_key="obj-2")
+    changed = _req(op, principal, business_key="obj-1", payload={
+        "business_key": "obj-1", "field": "status", "value": "closed",
+    })
+    receipts = []
+    for i, req in enumerate((first, second, changed)):
+        receipts.append(conn.execute(
+            req, authorization=_mint(authority, adapter, op, req,
+                                     authz_id=f"authz-multi-{i:08d}"),
+        ))
+    assert len({r.effect_id for r in receipts}) == 3
+    assert conn.get_commit_receipt("run-1", principal, "ws-acme", op, "obj-2")[
+        "effect_id"] == receipts[1].effect_id
+    # The same object was changed twice; an unqualified lookup is ambiguous.
+    assert conn.get_commit_receipt("run-1", principal, "ws-acme", op, "obj-1") is None
+    assert conn.get_commit_receipt(
+        "run-1", principal, "ws-acme", op, "obj-1",
+        request_digest=receipts[0].request_digest,
+    )["effect_id"] == receipts[0].effect_id
+    assert conn.get_commit_receipt(
+        "run-1", principal, "ws-acme", op, "obj-1",
+        request_digest=receipts[2].request_digest,
+    )["effect_id"] == receipts[2].effect_id
+    assert conn.get_commit_receipt(
+        "run-1", principal, "ws-acme", op, "obj-2",
+        request_digest=receipts[0].request_digest,
+    ) is None
+
+
+def test_reconcile_binds_exact_object_and_original_digest(db_path, principal):
+    op = "crm.contact.update.commit"
+    recon_op = "crm.effect.reconcile"
+    conn, adapter, authority = _connector([op, recon_op], db_path)
+    first = _req(op, principal, business_key="obj-1")
+    second = _req(op, principal, business_key="obj-2")
+    r1 = conn.execute(first, authorization=_mint(
+        authority, adapter, op, first, authz_id="authz-recon-00000001"))
+    r2 = conn.execute(second, authorization=_mint(
+        authority, adapter, op, second, authz_id="authz-recon-00000002"))
+    assert r1.effect_id != r2.effect_id
+
+    def reconcile(key, original_digest):
+        return conn.execute(_req(
+            recon_op, principal, business_key=key,
+            payload={"checked_operation_id": op, "business_key": key,
+                     "original_request_digest": original_digest},
+        ))
+
+    assert reconcile("obj-2", r2.request_digest).effect_id == r2.effect_id
+    assert reconcile("obj-1", r1.request_digest).effect_id == r1.effect_id
+    with pytest.raises(Lane1GovernedConnectorError):
+        reconcile("obj-2", r1.request_digest)
+    with pytest.raises(Lane1GovernedConnectorError):
+        reconcile("obj-1", "ignored")
+    assert len(_ledger.list_effects("run-1", principal, db_path=db_path)) == 2
+
+
+def test_business_key_mismatch_refused_before_effect(db_path, principal):
+    op = "crm.contact.update.commit"
+    conn, _, _ = _connector([op], db_path)
+    req = _req(op, principal, business_key="obj-1", payload={
+        "business_key": "obj-2", "field": "status", "value": "active",
+    })
+    with pytest.raises(Lane1GovernedConnectorError, match="business key binding"):
+        conn.execute(req)
+    assert _ledger.list_effects("run-1", principal, db_path=db_path) == []
+
+
 def test_retry_after_commit_single_winner(db_path, principal):
     op = "crm.contact.update.commit"
     conn, adapter, authority = _connector([op], db_path)
@@ -435,14 +507,15 @@ def test_reconcile_query_only(db_path, principal):
     ops = ["crm.contact.update.commit", "crm.effect.reconcile"]
     conn, adapter, authority = _connector(ops, db_path)
     creq = _req("crm.contact.update.commit", principal)
-    conn.execute(creq, authorization=_mint(authority, adapter,
-                                           "crm.contact.update.commit", creq))
+    commit_receipt = conn.execute(creq, authorization=_mint(
+        authority, adapter, "crm.contact.update.commit", creq))
     before = len(_ledger.list_effects("run-1", principal, db_path=db_path))
     recon = ConnectorRequest(
         capability_id="crm.effect.reconcile", run_id="run-1", principal=principal,
         raw_workspace="ws-acme", business_key="obj-1",
         payload={"checked_operation_id": "crm.contact.update.commit",
-                 "business_key": "obj-1", "original_request_digest": "x"})
+                 "business_key": "obj-1",
+                 "original_request_digest": commit_receipt.request_digest})
     r = conn.execute(recon)
     assert r.reconciled is True
     assert len(_ledger.list_effects("run-1", principal, db_path=db_path)) == before

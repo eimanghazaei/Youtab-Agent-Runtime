@@ -97,6 +97,9 @@ class Lane1GovernedConnector:
                 "(fail-closed until an approved Gateway SHA supplies it)"
             )
         cap.request_schema.validate_payload(req.payload, "input")
+        if ("business_key" in req.payload
+                and req.payload["business_key"] != req.business_key):
+            raise Lane1GovernedConnectorError("business key binding mismatch")
         # Invariant: a mutating (commit-class) capability MUST require approval.
         # A manifest that marks a commit operation approval_required=False would
         # turn per-effect signed authorization into a blanket standing grant —
@@ -241,6 +244,8 @@ class Lane1GovernedConnector:
                 correlation_id=req.correlation_id,
                 detail={
                     "operation_id": cap.operation_id, "workspace": ws.workspace,
+                    "capability_id": cap.capability_id,
+                    "business_key": req.business_key,
                     "authorization_id": authorization_id, "request_digest": request_digest,
                     "provenance": cap.provenance.value, "mutating": True,
                     "capability_version": cap.capability_version,
@@ -314,22 +319,49 @@ class Lane1GovernedConnector:
     def _reconcile(self, cap, ws, request_digest, req: ConnectorRequest) -> Receipt:
         checked_op = req.payload["checked_operation_id"]
         business_key = req.payload["business_key"]
-        # Recompute the committed effect identity to LOOK IT UP — query only.
-        prior = None
-        for rec in _ledger.list_effects(req.run_id, req.principal, db_path=self._db_path):
-            if rec.detail.get("operation_id") == checked_op and \
-                    rec.detail.get("workspace") == ws.workspace and \
-                    rec.effect_type == checked_op:
-                prior = rec
-                break
-        if prior is None:
+        original_digest = req.payload["original_request_digest"]
+        if (not original_digest or checked_op not in providers.OPERATIONS
+                or providers.operation_class(checked_op) != "commit"
+                or checked_op.split(".", 1)[0] != cap.operation_id.split(".", 1)[0]):
+            raise Lane1GovernedConnectorError("invalid commit identity for reconciliation")
+        commit_caps = [
+            item for item in self._manifest
+            if item.operation_id == checked_op and item.provider == cap.provider
+            and item.provenance == cap.provenance
+            and item.tenant_scope == req.principal.tenant
+            and item.workspace_scope == req.raw_workspace
+        ]
+        if len(commit_caps) != 1:
             raise Lane1GovernedConnectorError(
-                "no prior effect to reconcile (query-only)"
+                "no unique manifest capability for reconciliation"
             )
+        commit_cap = commit_caps[0]
+        # The request supplies the original commit digest. A run may contain
+        # several objects (or revisions of one object), so a first-match scan
+        # is never an authority to reconcile an arbitrary prior effect.
+        matches = [
+            rec for rec in _ledger.list_effects(
+                req.run_id, req.principal, db_path=self._db_path
+            )
+            if rec.effect_type == checked_op
+            and rec.detail.get("operation_id") == checked_op
+            and rec.detail.get("workspace") == ws.workspace
+            and rec.detail.get("business_key") == business_key
+            and rec.detail.get("request_digest") == original_digest
+            and rec.detail.get("capability_id") == commit_cap.capability_id
+            and rec.detail.get("capability_version") == commit_cap.capability_version
+            and rec.detail.get("provider") == cap.provider
+            and rec.detail.get("provenance") == cap.provenance.value
+        ]
+        if len(matches) != 1:
+            raise Lane1GovernedConnectorError(
+                "no unique prior effect to reconcile (query-only)"
+            )
+        prior = matches[0]
         recorded_digest = prior.detail.get("provider_result_digest")
         recon_payload = {
             "checked_operation_id": checked_op, "business_key": business_key,
-            "original_request_digest": prior.detail.get("request_digest", ""),
+            "original_request_digest": original_digest,
         }
         output = self._run_worker(cap, ws, req, request_digest, payload=recon_payload)
         evidence_matches = (
@@ -348,7 +380,8 @@ class Lane1GovernedConnector:
                 operation_digest=prior.target_scope_digest,
                 workspace_id=ws.workspace, outcome="succeeded",
                 result_digest=str(recorded_digest), provenance="reference",
-                capability=cap.capability_id,
+                capability=commit_cap.capability_id,
+                capability_version=commit_cap.capability_version,
                 recompute_reference=lambda: str(output.get("expected_digest")),
             )
             # No evidence -> leave it ambiguous (never blind-terminal).
@@ -365,22 +398,35 @@ class Lane1GovernedConnector:
 
     def get_commit_receipt(
         self, run_id: str, principal: Principal, raw_workspace: str,
-        capability_id: str, business_key: str,
+        capability_id: str, business_key: str, *, request_digest: Optional[str] = None,
     ) -> Optional[dict]:
         cap = self._manifest.get(capability_id)
+        if providers.operation_class(cap.operation_id) != "commit":
+            return None
+        if cap.tenant_scope != principal.tenant or cap.workspace_scope != raw_workspace:
+            return None
         ws = self._authority.canonicalize_workspace(principal.tenant, raw_workspace)
-        request_digest = providers.request_digest_of(
-            cap.operation_id, ws.workspace, business_key, {}
-        )
-        # Look up by principal+workspace-scoped scan (workspace folded into id).
-        for rec in _ledger.list_effects(run_id, principal, db_path=self._db_path):
-            if rec.effect_type == cap.operation_id and \
-                    rec.detail.get("workspace") == ws.workspace and \
-                    rec.detail.get("capability_version") == cap.capability_version:
-                return {
-                    "effect_id": rec.effect_id, "state": rec.state.value,
-                    "workspace_canonical": ws.workspace,
-                    "output": rec.detail.get("output", {}),
-                    "result_digest": rec.detail.get("result_digest"),
-                }
-        return None
+        matches = [
+            rec for rec in _ledger.list_effects(run_id, principal, db_path=self._db_path)
+            if rec.effect_type == cap.operation_id
+            and rec.detail.get("operation_id") == cap.operation_id
+            and rec.detail.get("workspace") == ws.workspace
+            and rec.detail.get("capability_id") == cap.capability_id
+            and rec.detail.get("capability_version") == cap.capability_version
+            and rec.detail.get("business_key") == business_key
+            and rec.detail.get("provider") == cap.provider
+            and rec.detail.get("provenance") == cap.provenance.value
+            and rec.detail.get("request_digest")
+            and (request_digest is None or rec.detail["request_digest"] == request_digest)
+        ]
+        # Without a digest, same-key revisions are ambiguous. Caller must
+        # select the exact signed request instead of receiving an arbitrary row.
+        if len(matches) != 1:
+            return None
+        rec = matches[0]
+        return {
+            "effect_id": rec.effect_id, "state": rec.state.value,
+            "workspace_canonical": ws.workspace,
+            "output": rec.detail.get("output", {}),
+            "result_digest": rec.detail.get("result_digest"),
+        }
