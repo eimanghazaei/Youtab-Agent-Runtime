@@ -9,9 +9,9 @@ this document.
 ## Image (pin by digest)
 | Field | Value |
 |---|---|
-| RC source SHA (embedded in image) | `5b371ccb2d7888b0b429b907f47d91b666ec31e8` |
-| Local image Id (config digest) | `sha256:4389e5f44e657e264d66dd6e9d9828a46c88d9e967d4f5598aebca6f001076d3` |
-| Distribution tarball sha256 (`docker save`) | `844de14ce53ff0334b346942b5eb0d7b17542d786618d6c6ca87e7b7dd05a0bb` |
+| RC source SHA (embedded in image) | `77b2b2c4b740ba256596cb4e4c7514dfcd5b42fe` |
+| Local image Id (config digest) | `sha256:8eefb02c101fcef5654cded0e3c3c285376c191ac93d50c10f4ce0e041bfe343` |
+| Distribution tarball sha256 (`docker save`) | `c0d1ceee98c61ce3cee6540d422cc966233f5bf6ce8da72e20b150b775b189ac` |
 | Registry repo digest | `<PUBLISHED_REPO_DIGEST>` — filled by Master at publish (`docker push` → the `repo@sha256:` digest). Pin THIS in compose. |
 
 Provenance: the image is self-describing — `docker run --rm --entrypoint sh
@@ -109,8 +109,14 @@ curl "$BASE/v1/runs/<run_id>/result" -H "Authorization: Bearer $API_SERVER_KEY"
   - mid-flight (PG lost while up): `/health/ready` → 503 AND `POST /v1/runs` →
     503 `durable_store_unavailable` (persist-before-ack; no in-memory-only 202);
   - terminal write lost (PG lost after admission, before result persist): the run
-    is reported `reconciliation_required` (terminal=false, durable=false), never a
-    durable `completed` that vanishes on restart.
+    is reported `reconciliation_required` (terminal=false, durable=false, no
+    output), never a durable `completed`; terminal SSE/result are emitted only
+    after the durable commit. After a restart the run is durable `unknown`
+    (discoverable, `recovered_from_store`), NOT silently `running`.
+- Unresolved-state recovery: `reconciliation_required` (in-flight commit failed)
+  and `unknown` (recovered after process death) are non-terminal and carry no
+  uncommitted result. An in-process run is NOT auto-resumed across process death —
+  verify side effects and re-submit if needed.
 
 ## 7. Rollback (ordinary — DATA PRESERVED)
 Stops and removes the containers/networks; the PostgreSQL volume (run history) is

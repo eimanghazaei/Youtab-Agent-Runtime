@@ -74,8 +74,8 @@ api_key: <REDACTED>}`. The mock MUST return streaming SSE (a plain JSON completi
 rejected with "Provider returned an empty stream ... malformed SSE").
 
 ## 5. Secure external route through the merged installation config — PASS (LOCAL admin only)
-RC image `youtab-agent-runtime:p5-rc-5b371ccb2` (embedded source SHA
-`5b371ccb2d7888b0b429b907f47d91b666ec31e8`, Id `sha256:4389e5f44e65…`). Merged
+RC image `youtab-agent-runtime:p5-rc-77b2b2c4b` (embedded source SHA
+`77b2b2c4b740ba256596cb4e4c7514dfcd5b42fe`, Id `sha256:8eefb02c101f…`). Merged
 `docker-compose.yml + docker-compose.postgres.yml + docker-compose.edge.yml`:
 - The api_server binds 0.0.0.0 INSIDE the container and is only `expose`d — it is
   NOT host-published (`docker ps`: gw `ports=[]`). A Caddy TLS `edge` is the only
@@ -115,31 +115,50 @@ for LATER state changes is unchanged for local mode (desktop/sqlite never blocke
 Server mode also fail-closes admission if `_run_store` is unexpectedly absent
 (commit 5b371ccb2).
 
-## 7. PostgreSQL lost AFTER admission, BEFORE terminal persist — PASS (no false-durable completion)
-Fault window: a run is admitted and RUNNING is durably persisted, then PG is
-stopped WHILE the run is executing (a ~10s delayed mock provider widens the
-window), so the TERMINAL write fails. The best-effort mirror would otherwise let
-a client poll `completed`+output that DISAPPEARS after restart. Observed on the RC
-image (raw: `TERMINAL_DURABILITY_RAW.txt`):
-- during the fault, client `GET /v1/runs/{id}` → `reconciliation_required`,
-  `terminal:false`, `durable:false`, `pending_status:completed` — NOT a durable
-  completion; `/result` → `terminal:false`.
-- durable truth in PG: the run stayed `RUNNING`, `result_ref=NULL` (terminal never
-  written).
-- after `docker restart` (in-memory cache lost, PG back): `GET` → `running`
-  (served from store), `output:null`. No completed result appeared then vanished.
-Fix: commit 5b371ccb2 — `_mirror_run_state` returns success/failure and retries
-terminal writes in server mode; on failure `_set_run_status` reports
-reconciliation_required instead of a durable completion. Local/sqlite best-effort
-completion is unchanged (test_p5_terminal_durability.py).
+## 7. PostgreSQL lost AFTER admission, BEFORE terminal persist — PASS (client-observable contract)
+RC image `youtab-agent-runtime:p5-rc-77b2b2c4b` (embedded SHA
+`77b2b2c4b740ba256596cb4e4c7514dfcd5b42fe`, Id `sha256:8eefb02c101f…`, tarball
+sha256 `c0d1ceee98c6…`). Fault: a run is admitted and RUNNING is durably
+persisted, then PG is stopped WHILE the run executes (a ~10–12s delayed mock
+widens the window) so the TERMINAL write fails. Proved over live HTTP + SSE
+through the TLS edge (raw: `TERMINAL_CONTRACT_RAW.txt`):
+- **pre-fault (happy path)**: `GET`/`/result` → `completed`, `output:CUSTOMER_TASK_OK_42`,
+  `terminal:true`; SSE `status.completed(SUCCEEDED)` durable then `run.completed`;
+  PG row SUCCEEDED. Terminal SSE + stable result appear only AFTER the durable commit.
+- **pre-restart (PG down, run finished in-memory)**: `GET` → `reconciliation_required`,
+  `durable:false`, `reconciliation_reason:terminal_durable_commit_failed`, and
+  **NO `output` field**; `/result` → `terminal:false`, **`output:null`** — the
+  uncommitted `CUSTOMER_TASK_OK_42` is withheld, not presented as a recoverable
+  result. Live SSE emits **`run.reconciliation_required`** and **no `run.completed`**.
+- **post-restart (in-memory lost, PG back)**: startup reconcile moves the orphaned
+  run (owner `pid:<dead>`) to durable **UNKNOWN**; `GET`/`/result` → **`unknown`**,
+  `output:null`, `recovered_from_store:true` — it does NOT regress to `running`.
+  PG durable row: `UNKNOWN`. Log: `startup reconcile: 1 abandoned run(s) moved to
+  UNKNOWN`.
+
+Recovery contract: `reconciliation_required` (in-flight, commit failed) and
+`unknown` (recovered after process death) are both non-terminal, discoverable
+states carrying no uncommitted result. An in-process run is NOT auto-resumed
+across process death; the operator/client reconciles (verify side effects,
+re-submit if needed).
+
+Fixes: `_mirror_run_state` returns success/failure and retries terminal writes in
+server mode; on failure `_set_run_status` strips uncommitted output and reports
+reconciliation_required (commit `77b2b2c4b`). All terminal paths commit-before-emit
+via `_emit_terminal`. Admission is owner-stamped (`store.admit`) and startup
+reconcile (`_reconcile_orphaned_runs_on_startup`) makes the unresolved state
+durable as UNKNOWN. Local/sqlite best-effort unchanged
+(test_p5_terminal_durability.py).
 
 ## Verdict (per gate)
 - Admission over HTTP + durable status/result + SUCCEEDED with nonempty result +
   restart recovery: **PASS** (RC image, synthetic mock task).
 - PG-down fail-closed at startup AND mid-flight (readiness 503, admission 503,
   no in-memory-only 202): **PASS**.
-- No false-durable terminal completion (PG lost after admission, before terminal
-  persist → reconciliation_required, nothing vanishes): **PASS**.
+- Client-observable terminal contract (PG lost after admission, before terminal
+  persist): **PASS** — no uncommitted output exposed (output withheld in
+  reconciliation_required); terminal SSE/result only after durable commit; after
+  restart the run is durable UNKNOWN (discoverable), not silently running.
 - Store-aware readiness (`/health/ready`) distinct from static `/health`: **PASS**.
 - Secure external TLS route, LOCAL admin (loopback), backend not host-published:
   **PASS**.
