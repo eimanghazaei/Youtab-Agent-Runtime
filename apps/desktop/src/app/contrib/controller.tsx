@@ -61,6 +61,7 @@ import { $statusbarVisible } from '@/store/statusbar-prefs'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
+import { registerEnterpriseGovernanceRoutes } from '../enterprise-governance-routes'
 import { startSessionDrag } from '../chat/session-drag'
 import {
   SessionTileCloseConfirm,
@@ -408,6 +409,10 @@ watchContributedPanes()
 // main.
 watchSessionTiles()
 watchRouteTiles()
+
+// Enterprise + Governance full pages join through the contribution registry,
+// like a plugin — a ROUTES_AREA page + a SIDEBAR_NAV_AREA row each.
+registerEnterpriseGovernanceRoutes()
 
 // Composer pop-out state is keyed by layout zone, so drop entries for zones the
 // user has since closed or merged away — otherwise a long-lived install keeps a
