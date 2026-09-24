@@ -9,6 +9,7 @@ import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
+import { SimorghOrbWorking } from '@/components/ui/simorgh-orb-working'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $backgroundResume } from '@/store/background-delegation'
@@ -48,6 +49,48 @@ const COMPACTION_LABEL = 'Summarizing thread'
 const HintText: FC<{ children: ReactNode }> = ({ children }) => (
   <span className={cn(SCAFFOLD_LABEL_CLASS, 'shimmer min-w-0 truncate')}>{children}</span>
 )
+
+// The slowly-spinning Simorgh "working" orb that replaces the old blue-square
+// placeholder in the live turn indicator. Decorative (the StatusRow carries the
+// accessible name); reuses the app's brand spin idiom and honors reduced motion.
+const IndicatorOrb: FC = () => (
+  <SimorghOrbWorking
+    aria-hidden="true"
+    className="inline-block size-3.5 shrink-0 text-midground/80 [animation-duration:6s] motion-safe:animate-spin"
+  />
+)
+
+/**
+ * Shared body for the two live per-turn indicators: the spinning orb, the
+ * "Youtab is thinking… / working…" phrase to the LEFT of the timer, an optional
+ * specific hint (tool verb / "Summarizing thread"), then the elapsed timer.
+ *
+ * Thinking vs working is distinguished by whether the stream exposes a named
+ * activity (`hint`): a drafting/running tool or compaction means the turn is
+ * actively *working*; otherwise it is still *thinking*. The `slot`/`elapsed`
+ * come from the caller so each indicator keeps its own timer semantics.
+ */
+const IndicatorBody: FC<{ elapsed: number; hint: string; slot: string }> = ({ elapsed, hint, slot }) => {
+  const { t } = useI18n()
+  const s = t.statusStack
+  const working = Boolean(hint)
+  const phrase = working ? s.working : s.thinking
+  // Accessible name without the trailing ellipsis (e.g. "Youtab is working").
+  const label = phrase.replace(/…$/u, '')
+
+  return (
+    <StatusRow data-slot={slot} label={label}>
+      <IndicatorOrb />
+      <HintText>{phrase}</HintText>
+      {hint && (
+        <span className={cn(SCAFFOLD_LABEL_CLASS, 'min-w-0 truncate text-(--conversation-scaffold-text)/70')}>
+          {hint}
+        </span>
+      )}
+      <ActivityTimerText seconds={elapsed} />
+    </StatusRow>
+  )
+}
 
 /** These indicators render inside whichever transcript mounted them, so every
  *  session-scoped signal comes from that surface's view — a tile must never
@@ -123,18 +166,11 @@ export const CenteredThreadSpinner: FC = () => {
 }
 
 export const ResponseLoadingIndicator: FC = () => {
-  const { t } = useI18n()
   const { compacting, drafting, turnTimerKey } = useThreadSessionStatus()
   const elapsed = useElapsedSeconds(true, turnTimerKey)
   const hint = useStatusHint(compacting, drafting)
 
-  return (
-    <StatusRow data-slot="aui_response-loading" label={hint || t.assistant.thread.loadingResponse}>
-      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
-      {hint && <HintText>{hint}</HintText>}
-      <ActivityTimerText seconds={elapsed} />
-    </StatusRow>
-  )
+  return <IndicatorBody elapsed={elapsed} hint={hint} slot="aui_response-loading" />
 }
 
 // Parked-background affordance: a top-level delegate_task runs in the
@@ -234,11 +270,5 @@ export const StreamStallIndicator: FC = () => {
     return null
   }
 
-  return (
-    <StatusRow data-slot="aui_stream-stall" label={hint || 'Youtab is thinking'}>
-      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
-      {hint && <HintText>{hint}</HintText>}
-      <ActivityTimerText seconds={elapsed} />
-    </StatusRow>
-  )
+  return <IndicatorBody elapsed={elapsed} hint={hint} slot="aui_stream-stall" />
 }

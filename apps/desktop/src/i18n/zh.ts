@@ -2288,6 +2288,8 @@ export const zh: Translations = {
     goalWaiting: '目标等待中',
     subagents: count => `${count} 个子代理`,
     todos: (done, total) => `任务 ${done}/${total}`,
+    thinking: 'Youtab 正在思考…',
+    working: 'Youtab 正在处理…',
     running: '运行中',
     stop: '停止',
     dismiss: '关闭',

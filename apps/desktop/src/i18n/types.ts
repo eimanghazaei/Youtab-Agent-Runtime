@@ -1745,6 +1745,8 @@ export interface Translations {
     goalWaiting: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
+    thinking: string
+    working: string
     running: string
     stop: string
     dismiss: string
