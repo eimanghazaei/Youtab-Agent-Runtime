@@ -61,7 +61,6 @@ import { $statusbarVisible } from '@/store/statusbar-prefs'
 
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
-import { registerEnterpriseGovernanceRoutes } from '../enterprise-governance-routes'
 import { startSessionDrag } from '../chat/session-drag'
 import {
   SessionTileCloseConfirm,
@@ -69,6 +68,7 @@ import {
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
+import { registerEnterpriseGovernanceRoutes } from '../enterprise-governance-routes'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
 
