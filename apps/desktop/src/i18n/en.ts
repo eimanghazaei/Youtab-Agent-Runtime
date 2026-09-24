@@ -2095,6 +2095,8 @@ export const en: Translations = {
     goalWaiting: 'Goal waiting',
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
     todos: (done, total) => `Tasks ${done}/${total}`,
+    thinking: 'Youtab is thinking…',
+    working: 'Youtab is working…',
     running: 'Running',
     stop: 'Stop',
     dismiss: 'Dismiss',

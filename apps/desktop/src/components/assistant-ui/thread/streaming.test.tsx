@@ -486,13 +486,22 @@ describe('assistant-ui streaming renderer', () => {
 
     const { container } = render(<StreamingHarness onControls={registerControls} />)
 
-    expect(screen.getByRole('status', { name: 'Youtab is loading a response' })).toBeTruthy()
+    // Pre-first-token: the live indicator is the spinning Simorgh orb with the
+    // "Youtab is thinking…" phrase (accessible name "Youtab is thinking"), and
+    // the elapsed timer sits alongside it — the old blue square is gone.
+    const indicator = screen.getByRole('status', { name: 'Youtab is thinking' })
+    expect(within(indicator).getByText('Youtab is thinking…')).toBeTruthy()
+    // The decorative orb (a spinning SVG) replaces the former square placeholder.
+    const orb = indicator.querySelector('svg')
+    expect(orb).toBeTruthy()
+    expect(orb?.getAttribute('class')).toContain('animate-spin')
+    expect(indicator.querySelector('.dither')).toBeNull()
 
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk')
     })
     expect(container.textContent).not.toContain('second chunk')
-    expect(screen.queryByRole('status', { name: 'Youtab is loading a response' })).toBeNull()
+    expect(screen.queryByRole('status', { name: 'Youtab is thinking' })).toBeNull()
 
     // Producer-gated, not wall-clock-gated: the old test slept 80ms and
     // assumed a 500ms timer could not fire before the assertion. On a loaded
