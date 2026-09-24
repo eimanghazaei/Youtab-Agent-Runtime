@@ -58,7 +58,6 @@ from agent.conversation_compression import (
     PREFLIGHT_COMPRESSION_STATUS_TEMPLATE,
 )
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
-from agent.credential_fingerprint import credential_cache_fingerprint
 from agent.i18n import t
 from youtab_agent_cli.config import cfg_get
 from youtab_agent_cli.fallback_config import get_fallback_chain
@@ -21545,6 +21544,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         warmth for correct memory attribution.
         """
         import hashlib, json as _j
+        from agent.credential_fingerprint import credential_cache_fingerprint
 
         # Fingerprint the FULL credential string instead of using a short
         # prefix. OAuth/JWT-style tokens frequently share a common prefix
