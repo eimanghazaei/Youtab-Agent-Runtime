@@ -1,5 +1,6 @@
 """Tests for banner toolset name normalization and skin color usage."""
 
+import hashlib
 from unittest.mock import patch
 
 from rich.console import Console
@@ -17,6 +18,37 @@ def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(cap
         banner.cprint("fallback text")
 
     assert capsys.readouterr().out == "fallback text\n"
+
+
+def test_banner_hides_internal_skill_categories_without_disabling_them():
+    """Internal skill groups stay available but are omitted from the banner."""
+    catalog = {
+        "autonomous-ai-agents": ["claude-code", "codex"],
+        "email": ["himalaya"],
+        "software-development": ["dogfood"],
+        "creative": ["architecture-diagram"],
+    }
+
+    visible = banner._get_banner_visible_skills(catalog)
+
+    assert visible == {"creative": ["architecture-diagram"]}
+    assert catalog["autonomous-ai-agents"] == ["claude-code", "codex"]
+
+
+def test_default_banner_uses_exact_youtab_logo_asset_and_ocean_blue_branding():
+    """The official PNG is bundled byte-for-byte; guessed logo art must not return."""
+    logo_bytes = banner.YOUTAB_LOGO_ASSET.read_bytes()
+    git_blob = hashlib.sha1(
+        f"blob {len(logo_bytes)}\0".encode() + logo_bytes,
+        usedforsecurity=False,
+    ).hexdigest()
+
+    assert banner.YOUTAB_LOGO_ASSET.name == "Youtab_AI_COS.PNG"
+    assert git_blob == "a4d0e65fbc7fe8789eaee2d9f1eca35feb4ed9c2"
+    assert banner.YOUTAB_RUNTIME_LOGO == "[bold #0096FF]Youtab RunTime[/]"
+    assert banner.YOUTAB_LOGO_HERO == ""
+    assert banner._render_youtab_logo(48).plain.strip()
+    assert banner.format_banner_version_label().startswith("Youtab RunTime v")
 
 
 
@@ -51,7 +83,7 @@ def test_build_welcome_banner_title_falls_back_when_no_tag():
         )
 
     raw = buf.getvalue()
-    assert "Youtab Agent Runtime v" in raw, "Version label missing from title"
+    assert "Youtab RunTime v" in raw, "Version label missing from title"
     assert "\x1b]8;" not in raw, "OSC-8 hyperlink should not be emitted without a tag"
 
 
