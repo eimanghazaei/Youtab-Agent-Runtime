@@ -43,7 +43,6 @@ Payment / credit exhaustion fallback:
 import contextlib
 import contextvars
 import functools
-import hashlib
 import inspect
 import json
 import logging
@@ -56,6 +55,8 @@ from pathlib import Path  # noqa: F401 — used by test mocks
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
+
+from agent.credential_fingerprint import credential_cache_fingerprint
 
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
@@ -6409,7 +6410,7 @@ def _runtime_cache_discriminator(field: str, value: Any) -> Any:
     if field == "api_key" and callable(value):
         return _CallableCacheDiscriminator(value)
     if field == "api_key" and isinstance(value, str) and value:
-        digest = hashlib.blake2b(value.encode("utf-8"), digest_size=16).digest()
+        digest = credential_cache_fingerprint(value)
         return ("api-key-digest", digest)
     return value
 

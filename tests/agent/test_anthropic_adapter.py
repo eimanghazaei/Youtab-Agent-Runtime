@@ -10,13 +10,15 @@ import pytest
 
 from agent.prompt_caching import apply_anthropic_cache_control
 from agent.anthropic_adapter import (
+    _base_url_needs_context_1m_beta,
     _is_azure_anthropic_endpoint,
+    _is_third_party_anthropic_endpoint,
+    _requires_bearer_auth,
     _is_oauth_token,
     _refresh_oauth_token,
     _to_plain_data,
     _write_claude_code_credentials,
     build_anthropic_client,
-    build_anthropic_bedrock_client,
     build_anthropic_kwargs,
     convert_messages_to_anthropic,
     convert_tools_to_anthropic,
@@ -46,6 +48,39 @@ class TestIsOAuthToken:
 
 
 class TestBuildAnthropicClient:
+
+    @pytest.mark.parametrize("base_url", [
+        "https://proxy.test/api.anthropic.com/anthropic",
+        "https://api.anthropic.com.attacker.test/anthropic",
+        "http://api.anthropic.com/v1",
+    ])
+    def test_deceptive_anthropic_url_is_third_party(self, base_url):
+        assert _is_third_party_anthropic_endpoint(base_url)
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-oat01-credential", base_url=base_url)
+            kwargs = mock_sdk.Anthropic.call_args.kwargs
+            assert kwargs["api_key"] == "sk-ant-oat01-credential"
+            assert "auth_token" not in kwargs
+
+    @pytest.mark.parametrize("base_url", [
+        "https://proxy.test/azure.com/anthropic",
+        "https://resource.openai.azure.com.attacker.test/anthropic",
+    ])
+    def test_deceptive_azure_url_gets_no_azure_auth_or_beta(self, base_url):
+        assert not _requires_bearer_auth(base_url)
+        assert not _base_url_needs_context_1m_beta(base_url)
+        assert not _is_azure_anthropic_endpoint(base_url)
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("custom-secret", base_url=base_url)
+            kwargs = mock_sdk.Anthropic.call_args.kwargs
+            assert kwargs["api_key"] == "custom-secret"
+            assert "auth_token" not in kwargs
+            assert "default_query" not in kwargs
+
+    def test_official_anthropic_hostname_with_untrusted_path_is_still_official(self):
+        assert not _is_third_party_anthropic_endpoint(
+            "https://api.anthropic.com/v1/azure.com"
+        )
 
 
     def test_api_key_uses_api_key(self):

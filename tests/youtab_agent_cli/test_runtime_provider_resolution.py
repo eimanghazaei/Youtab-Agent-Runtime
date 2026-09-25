@@ -1038,6 +1038,153 @@ class TestAzureAnthropicEnvVarHint:
         assert called["resolve_anthropic_token"] is True
         assert resolved["api_key"] == "token-from-resolver"
 
+    @pytest.mark.parametrize("base_url", [
+        "https://proxy.test/azure.com/anthropic",
+        "https://resource.services.ai.azure.com.attacker.test/anthropic",
+    ])
+    def test_deceptive_azure_config_cannot_take_implicit_credentials(
+        self, monkeypatch, base_url
+    ):
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "azure-secret")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-secret")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._cfg(base_url=base_url))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.resolve_anthropic_token",
+            lambda: pytest.fail("implicit Anthropic token was read for third-party host"),
+        )
+
+        with pytest.raises(rp.AuthError, match="third-party Anthropic endpoint"):
+            rp.resolve_runtime_provider(requested="anthropic")
+
+    def test_deceptive_azure_explicit_url_cannot_take_implicit_credentials(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "azure-secret")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.resolve_anthropic_token",
+            lambda: pytest.fail("implicit Anthropic token was read for third-party host"),
+        )
+
+        with pytest.raises(rp.AuthError, match="explicit API key"):
+            rp.resolve_runtime_provider(
+                requested="anthropic",
+                explicit_base_url="https://proxy.test/azure.com/anthropic",
+            )
+
+    def test_actual_azure_explicit_url_keeps_azure_key(self, monkeypatch):
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "azure-secret")
+        resolved = rp.resolve_runtime_provider(
+            requested="anthropic", explicit_base_url=self._AZURE_URL
+        )
+        assert resolved["api_key"] == "azure-secret"
+        assert resolved["source"] == "azure-explicit"
+
+    @pytest.mark.parametrize("base_url", [
+        "http://api.anthropic.com/v1",
+        "http://my-resource.services.ai.azure.com/anthropic",
+    ])
+    def test_http_official_config_rejects_implicit_credentials(
+        self, monkeypatch, base_url
+    ):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._cfg(base_url=base_url))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+        monkeypatch.setattr(
+            "agent.anthropic_adapter.resolve_anthropic_token",
+            lambda: pytest.fail("implicit token was read for HTTP endpoint"),
+        )
+        with pytest.raises(rp.AuthError, match="HTTPS is required"):
+            rp.resolve_runtime_provider(requested="anthropic")
+
+    @pytest.mark.parametrize("base_url", [
+        "http://api.anthropic.com/v1",
+        "http://my-resource.services.ai.azure.com/anthropic",
+    ])
+    def test_http_official_explicit_url_rejects_implicit_credentials(
+        self, monkeypatch, base_url
+    ):
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "azure-secret")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        with pytest.raises(rp.AuthError, match="HTTPS is required"):
+            rp.resolve_runtime_provider(
+                requested="anthropic", explicit_base_url=base_url
+            )
+
+    def test_explicit_third_party_url_keeps_explicit_key(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        resolved = rp.resolve_runtime_provider(
+            requested="anthropic",
+            explicit_base_url="https://proxy.test/anthropic",
+            explicit_api_key="proxy-secret",
+        )
+        assert resolved["api_key"] == "proxy-secret"
+        assert resolved["base_url"] == "https://proxy.test/anthropic"
+
+    def test_explicit_proxy_url_uses_key_bound_to_exact_config_url(self, monkeypatch):
+        monkeypatch.setenv("MY_PROXY_KEY", "proxy-secret")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(
+            rp, "_get_model_config",
+            lambda: self._cfg(
+                base_url="https://proxy.test/anthropic", key_env="MY_PROXY_KEY"
+            ),
+        )
+        resolved = rp.resolve_runtime_provider(
+            requested="anthropic",
+            explicit_base_url="https://proxy.test/anthropic",
+        )
+        assert resolved["api_key"] == "proxy-secret"
+
+        with pytest.raises(rp.AuthError, match="explicit API key"):
+            rp.resolve_runtime_provider(
+                requested="anthropic",
+                explicit_base_url="https://other.test/anthropic",
+            )
+
+    def test_third_party_config_uses_its_named_key_only(self, monkeypatch):
+        monkeypatch.setenv("AZURE_ANTHROPIC_KEY", "azure-secret")
+        monkeypatch.setenv("MY_PROXY_KEY", "proxy-secret")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(
+            rp, "_get_model_config",
+            lambda: self._cfg(
+                base_url="https://proxy.test/anthropic", key_env="MY_PROXY_KEY"
+            ),
+        )
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+        assert resolved["api_key"] == "proxy-secret"
+        assert resolved["base_url"] == "https://proxy.test/anthropic"
+
+    def test_third_party_inline_key_wins_conflicting_official_env(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "official-secret")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "anthropic")
+        monkeypatch.setattr(
+            rp, "_get_model_config",
+            lambda: self._cfg(
+                base_url="https://proxy.test/anthropic",
+                api_key="proxy-secret",
+                key_env="ANTHROPIC_API_KEY",
+            ),
+        )
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="anthropic")
+        assert resolved["api_key"] == "proxy-secret"
+
+        explicit = rp.resolve_runtime_provider(
+            requested="anthropic",
+            explicit_base_url="https://proxy.test/anthropic",
+        )
+        assert explicit["api_key"] == "proxy-secret"
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # custom_providers / providers normalizer — api_key_env alias for key_env
