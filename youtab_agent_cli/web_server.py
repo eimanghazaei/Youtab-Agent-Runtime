@@ -7946,25 +7946,34 @@ def delete_custom_endpoint(endpoint_id: str):
         raise HTTPException(status_code=500, detail="Failed to delete custom endpoint")
 
 
+def _provider_probe_url_error(reason) -> dict[str, str]:
+    """Return only fixed public text; URL/parser exceptions may contain secrets."""
+    from youtab_agent_cli.provider_probe import ProbeURLReason
+
+    if reason is ProbeURLReason.UNRESOLVABLE_HOST:
+        return {"error_code": "unresolvable_host", "message": "Endpoint host could not be resolved."}
+    if reason is ProbeURLReason.PROHIBITED_ADDRESS:
+        return {"error_code": "prohibited_address", "message": "Endpoint address is not allowed."}
+    if reason is ProbeURLReason.HTTPS_REQUIRED:
+        return {"error_code": "https_required", "message": "Public model endpoints must use HTTPS."}
+    return {"error_code": "invalid_url", "message": "Enter a valid endpoint URL without credentials or query."}
+
+
 @app.post("/api/providers/custom-endpoints/validate")
 async def validate_custom_endpoint(body: CustomEndpointUpdate):
     """Probe a custom endpoint by calling its OpenAI-compatible /models URL."""
-    import httpx
+    from youtab_agent_cli.provider_probe import InvalidProviderProbeURL, probe_provider_models
 
     base_url = (body.base_url or "").strip().rstrip("/")
     if not base_url:
         return {"ok": False, "reachable": True, "message": "Enter an endpoint URL first.", "models": []}
 
-    url = base_url + "/models"
-    headers = {"Accept": "application/json"}
-    if body.api_key and body.api_key.strip():
-        headers["Authorization"] = f"Bearer {body.api_key.strip()}"
-
     try:
-        with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
-            resp = client.get(url, headers=headers)
+        resp = probe_provider_models(base_url, body.api_key or "")
+    except InvalidProviderProbeURL as exc:
+        return {"ok": False, "reachable": False, "models": [], **_provider_probe_url_error(exc.reason)}
     except Exception:
-        return {"ok": False, "reachable": False, "message": f"Could not reach {url}.", "models": []}
+        return {"ok": False, "reachable": False, "message": "Could not reach the endpoint.", "models": []}
 
     if resp.status_code in (401, 403):
         return {"ok": False, "reachable": True, "message": "The endpoint rejected the API key.", "models": []}
@@ -7985,6 +7994,7 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     """
     _require_token(request)
     import httpx
+    from youtab_agent_cli.provider_probe import InvalidProviderProbeURL, probe_provider_models
 
     key = (body.key or "").strip()
     value = (body.value or "").strip()
@@ -7996,18 +8006,19 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # ids the endpoint advertises (OpenAI ``/v1/models`` shape) so the GUI can
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
-        url = value.rstrip("/") + "/models"
         # Send the optional API key so endpoints that require auth on
         # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
         # their models instead of returning an empty list behind a 401.
         api_key = (body.api_key or "").strip()
-        headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
         try:
-            with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
-                resp = client.get(url, headers=headers)
+            resp = probe_provider_models(value, api_key)
+            if resp.is_redirect:
+                return {"ok": False, "reachable": True, "message": "Endpoint redirected the model probe."}
             return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
+        except InvalidProviderProbeURL as exc:
+            return {"ok": False, "reachable": False, **_provider_probe_url_error(exc.reason)}
         except Exception:
-            return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}
+            return {"ok": False, "reachable": False, "message": "Could not reach the endpoint."}
 
     probe = _CREDENTIAL_PROBES.get(key)
     if not probe:
