@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests import _wincompat
 from tools.environments.local import (
     LocalEnvironment,
     _YOUTAB_AGENT_PROVIDER_ENV_BLOCKLIST,
@@ -491,6 +492,7 @@ class TestSanePathIncludesHomebrew:
         assert "/opt/homebrew/bin" in _SANE_PATH
 
 
+    @_wincompat.requires_posix
     def test_make_run_env_appends_homebrew_on_minimal_path(self):
         """When PATH is minimal, _make_run_env appends missing sane entries."""
         from tools.environments.local import _SANE_PATH, _make_run_env
@@ -503,6 +505,7 @@ class TestSanePathIncludesHomebrew:
             assert entry in path_entries
 
 
+    @_wincompat.requires_posix
     def test_make_run_env_real_launchd_path_gains_homebrew(self):
         """The literal macOS launchd PATH is the production trigger for #35613."""
         from tools.environments.local import _make_run_env
@@ -521,6 +524,10 @@ class TestSanePathIncludesHomebrew:
         from tools.environments.local import _make_run_env
         windows_env = {"Path": r"C:\Windows\System32;C:\Program Files\Git\bin"}
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        # Stub the git-bash bin-dir discovery: on a runner with Git installed it
+        # would prepend real mingw/usr dirs, changing Path — this test pins the
+        # key-casing (Path vs PATH), not the injected value.
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
         with patch.object(local_mod.os, "environ", windows_env):
             result = _make_run_env({})
         assert result["Path"] == windows_env["Path"]
@@ -562,6 +569,9 @@ class TestYoutabBinDirOnPath:
         self._reset_cache()
         local_mod._YOUTAB_AGENT_BIN_DIR = "/opt/youtab/bin"
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        # Simulating POSIX: force the ':' path separator so the ';' os.pathsep on
+        # a Windows host doesn't split the ':'-joined PATH into one entry.
+        monkeypatch.setattr(local_mod.os, "pathsep", ":")
         with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True):
             result = _make_run_env({})
         entries = result["PATH"].split(os.pathsep)

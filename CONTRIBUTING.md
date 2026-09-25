@@ -36,6 +36,28 @@ Related: #38284 covers the agent-side analog — Youtab itself checking existing
 
 ---
 
+## Review Gate: Independent Agent Review (required)
+
+Every PR is gated by **`Independent Agent Review`** before it may leave Draft, be
+merged, or be deployed. (This replaced Greptile on **2026-09-10** by Owner decision;
+Greptile is retired and no longer a gate — historical Greptile comments are preserved
+but carry no authority.)
+
+- The review is performed by an **independent** read-only agent — **not** the author/
+  implementer — that reviews the **complete diff**, bound to the **exact head SHA**.
+- Verdicts are `PROVEN | FAILED | NOT PROVEN | BLOCKED`. The gate passes **only** when
+  every required area is `PROVEN`, no Critical/High/Medium finding is unresolved,
+  relevant tests are green, no security control was weakened, no secret is exposed, and
+  the reviewed SHA equals the current remote head SHA. Otherwise it **fails closed**.
+- **Any new commit invalidates** the previous review; the gate returns to pending until
+  the new SHA is reviewed.
+- A green gate does **not** authorize merge/deploy — a separate exact-SHA Owner
+  authorization is always additionally required.
+
+Full policy: [`docs/governance/INDEPENDENT_AGENT_REVIEW.md`](docs/governance/INDEPENDENT_AGENT_REVIEW.md).
+
+---
+
 ## Should it be a Skill or a Tool?
 
 This is the most common question for new contributors. The answer is almost always **skill**.

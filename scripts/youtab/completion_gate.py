@@ -167,7 +167,7 @@ def git_files_changed(repo: Path, base: str) -> int | None:
     try:
         proc = subprocess.run(
             ["git", "diff", "--name-only", f"{base}...HEAD"],
-            shell=False, cwd=str(repo), capture_output=True, text=True, timeout=60,
+            shell=False, cwd=str(repo), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

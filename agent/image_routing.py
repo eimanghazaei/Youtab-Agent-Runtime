@@ -63,10 +63,20 @@ _IMAGE_EXTS = (
 _IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
 
 # Absolute / home-relative local image path. Matches the same shape gateway's
-# extract_local_files() uses: anchors to ``~/`` or ``/``, ignores matches inside
-# URLs (the ``(?<![/:\w.])`` lookbehind), and case-insensitive on the extension.
+# extract_local_files() uses: anchors to ``~/`` or ``/`` (POSIX) or a Windows
+# drive-letter root (``C:\`` / ``C:/``), ignores matches inside URLs (the
+# ``(?<![/:\w.])`` lookbehind), and is case-insensitive on the extension. The
+# candidate is only a *shape* match — extract_image_refs() still validates it
+# with ``os.path.isfile`` before attaching, so widening the shape to native
+# Windows paths cannot attach anything that is not a real local file.
 _LOCAL_IMAGE_PATH_RE = re.compile(
-    r"(?<![/:\w.])(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+\.(?:" + _IMAGE_EXT_PATTERN + r")\b",
+    r"(?<![/:\w.])"
+    r"(?:"
+    r"(?:~/|/)(?:[\w.\-]+/)*[\w.\-]+"              # POSIX absolute / home-relative
+    r"|"
+    r"[A-Za-z]:[\\/](?:[\w.\-]+[\\/])*[\w.\-]+"    # Windows drive-letter, \\ or / sep
+    r")"
+    r"\.(?:" + _IMAGE_EXT_PATTERN + r")\b",
     re.IGNORECASE,
 )
 

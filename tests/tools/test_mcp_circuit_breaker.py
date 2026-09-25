@@ -144,7 +144,7 @@ def test_circuit_breaker_half_opens_after_cooldown(monkeypatch, tmp_path):
             mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
         cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
 
-        handler = _make_tool_handler("srv", "tool1", 10.0)
+        handler = _make_tool_handler("srv", "tool1", 60.0)
 
         # Before cooldown: must short-circuit (no session call).
         result = handler({})
@@ -200,7 +200,7 @@ def test_circuit_breaker_reopens_on_probe_failure(monkeypatch, tmp_path):
             mcp_tool._server_breaker_opened_at["srv"] = fake_now[0]
         cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
 
-        handler = _make_tool_handler("srv", "tool1", 10.0)
+        handler = _make_tool_handler("srv", "tool1", 60.0)
 
         # Advance past cooldown, run probe, expect failure.
         fake_now[0] += cooldown + 1.0
@@ -256,7 +256,7 @@ def test_half_open_probe_on_dead_session_requests_reconnect(monkeypatch, tmp_pat
         # Advance past cooldown → next call is a half-open probe.
         fake_now[0] += cooldown + 1.0
 
-        handler = _make_tool_handler("srv", "tool1", 10.0)
+        handler = _make_tool_handler("srv", "tool1", 60.0)
         result = handler({})
         parsed = json.loads(result)
 
@@ -299,7 +299,7 @@ def test_half_open_dead_session_recovers_after_reconnect(monkeypatch, tmp_path):
         cooldown = getattr(mcp_tool, "_CIRCUIT_BREAKER_COOLDOWN_SEC", 60.0)
         fake_now[0] += cooldown + 1.0
 
-        handler = _make_tool_handler("srv", "tool1", 10.0)
+        handler = _make_tool_handler("srv", "tool1", 60.0)
 
         # Probe 1: transport down → reconnect requested, clean error.
         parsed = json.loads(handler({}))

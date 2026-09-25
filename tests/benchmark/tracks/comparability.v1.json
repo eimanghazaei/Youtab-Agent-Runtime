@@ -1,0 +1,44 @@
+{
+  "schema_version": "benchmark_comparability.v1",
+  "generated_label": "PRELIMINARY_NOT_RELEASE_EVIDENCE",
+  "description": "Machine-checkable comparability contract for the two benchmark tracks (WAVE-30C section 2). Both tracks MUST share every field in 'shared' (byte-identical), and may differ ONLY within each track file's 'per_track' section. Any other divergence invalidates the comparison. Validated by tests/benchmark/harness/tracks.validate_comparability and the benchmark-deterministic CI gate; no live provider call is involved.",
+  "tracks": ["A", "B"],
+  "shared": {
+    "output_schema_version": "benchmark.v1",
+    "taskbank_schema_version": "benchmark_tasks.v1",
+    "manifest_path": "tests/benchmark/tasks/manifest.json",
+    "manifest_sha256": "b3700061c4d5757ff16a932e6289fc93e21a37d2bbd242ffd62f70a08948107f",
+    "scenario_count": 49,
+    "scenario_id_set_sha256": "de1d7a186f0eb715ff9d09d2dc34b4495c9db919dfb9a51c2fa184c07b822066",
+    "family_count": 21,
+    "family_set_sha256": "0846a7e5368d6820694e4cd8bb169649d876524da397e9eefb5fde39d8038820",
+    "scoring": "state-based oracles (tests/benchmark/harness/oracles.py); Runner.verdict_matches_expected gate; identical for both tracks",
+    "shared_limits": {
+      "max_iterations": 8,
+      "max_requests": 392,
+      "max_retries": 1,
+      "max_concurrency": 1,
+      "max_total_tokens": 1000000,
+      "max_runtime_seconds": 7200,
+      "failure_threshold": 3
+    }
+  },
+  "per_track_section": "per_track",
+  "per_track_recorded_differences": [
+    "track",
+    "provider_name",
+    "model_name",
+    "credential_source",
+    "cost_model",
+    "max_cost_eur",
+    "campaign_budget",
+    "execution",
+    "mode",
+    "failover_policy"
+  ],
+  "comparability_rule": "A result set from Track A and a result set from Track B are comparable iff they were produced against the identical task bank (manifest_sha256 + scenario_id_set_sha256 + family_set_sha256), scored by the identical oracles, emitted under output_schema_version benchmark.v1, and run under identical shared_limits. Provider/model identity, credential source, cost model and the EUR budget are recorded per-track and are the ONLY sanctioned differences. Latency, throughput, failure and cost are measured and reported separately per track and never averaged across tracks.",
+  "notes": {
+    "track_a": "Local/ECO, zero cloud-API cost, excluded from the EUR 10 campaign budget; the exact model tag is Owner/registry-supplied (OWNER_MODEL_IDENTIFIER_REQUIRED) and 'Qwen 3.5 9B' is not a canonical identifier.",
+    "track_b": "One Owner-selected non-Anthropic cloud provider (OWNER_SELECTION_REQUIRED); file-based credential; bounded by the EUR 10 cumulative campaign ledger."
+  }
+}

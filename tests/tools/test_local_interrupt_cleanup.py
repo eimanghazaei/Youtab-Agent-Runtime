@@ -19,6 +19,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+from tests import _wincompat
 
 from tools.environments import local as local_mod
 from tools.environments.local import LocalEnvironment
@@ -65,6 +66,7 @@ def _wait_for_pgid_exit(pgid: int, timeout: float = 60.0) -> bool:
     return not _pgid_still_alive(pgid)
 
 
+@_wincompat.requires_os_attr("setsid")
 def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     """If the shell wrapper exits before cleanup, still kill its process group.
 
@@ -97,6 +99,7 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+@_wincompat.requires_os_attr("setsid")
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
     killed before the exception is re-raised."""

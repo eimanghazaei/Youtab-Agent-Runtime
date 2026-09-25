@@ -20,7 +20,13 @@ CASES = (
 def main() -> int:
     python = os.environ.get("YOUTAB_AGENT_PYTHON") or sys.executable
     command = [python, "-m", "pytest", "-q", *CASES]
-    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    # Decode pytest output as UTF-8 so a non-ASCII assertion message (or a test
+    # name) cannot make this gate crash with UnicodeDecodeError under the
+    # Windows locale codec (cp1252); errors="replace" keeps it robust (#52649).
+    completed = subprocess.run(
+        command, text=True, capture_output=True, check=False,
+        encoding="utf-8", errors="replace",
+    )
     result = {
         "schema_version": 1,
         "suite": "youtab-managed-owasp-smoke",

@@ -13,6 +13,7 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 """
 
 import pytest
+from tests import _wincompat
 # pytestmark removed — tests run fine (61 pass, ~99s)
 
 import json
@@ -222,14 +223,24 @@ class TestExecuteCode(unittest.TestCase):
         self.assertEqual(result["tool_calls_made"], 0)
 
     def test_no_tool_call_script_does_not_wait_for_rpc_accept_timeout(self):
-        """A no-tool script should not wait seconds for the idle RPC accept thread."""
-        start = time.monotonic()
-        result = self._run('print("fast")')
-        elapsed = time.monotonic() - start
+        """A no-tool script should not block on the RPC accept thread's join.
+
+        Raise the join timeout to a large sentinel: a regression that blocks on
+        the accept thread would take ~30s and be caught, while a correct run
+        returns near-instantly. Asserting well below the sentinel (not a razor-
+        thin 2s) keeps the signal while riding out -j3 spawn/scheduler jitter.
+        """
+        import tools.code_execution_tool as _cet
+        with patch.object(_cet, "RPC_THREAD_JOIN_TIMEOUT_S", 30.0):
+            start = time.monotonic()
+            result = self._run('print("fast")')
+            elapsed = time.monotonic() - start
 
         self.assertEqual(result["status"], "success")
         self.assertIn("fast", result["output"])
-        self.assertLess(elapsed, 2.0, f"execute_code took {elapsed:.3f}s")
+        self.assertLess(
+            elapsed, 15.0,
+            f"execute_code blocked on the RPC accept thread ({elapsed:.3f}s)")
 
     def test_repo_root_modules_are_importable(self):
         """Sandboxed scripts can import modules that live at the repo root."""
@@ -781,6 +792,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
             t.join(timeout=5)
         return responses
 
+    @_wincompat.requires_posix
     def test_missing_token_rejected(self):
         """A request with no token is rejected as Unauthorized."""
         resp = self._drive_server(

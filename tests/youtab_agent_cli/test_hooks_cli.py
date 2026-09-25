@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import io
 import json
+import shlex
+import sys
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +31,22 @@ def _hook_script(tmp_path: Path, body: str, name: str = "hook.sh") -> Path:
     p.write_text(body, encoding="utf-8")
     p.chmod(0o755)
     return p
+
+
+def _py_hook(tmp_path: Path, body: str, name: str = "hook.py") -> tuple[Path, str]:
+    """Write a Python hook and return ``(path, command)``.
+
+    The command is interpreter-prefixed with the running interpreter and each
+    token shlex-quoted so it (a) runs identically on POSIX and Windows — a bare
+    ``.sh`` cannot be exec'd on Windows, which has no shebang support — and
+    (b) survives the production runner's ``shlex.split`` (default POSIX mode,
+    which would otherwise strip the backslashes from an unquoted Windows path).
+    """
+    p = tmp_path / name
+    p.write_text(body, encoding="utf-8")
+    p.chmod(0o755)
+    command = f"{shlex.quote(sys.executable)} {shlex.quote(str(p))}"
+    return p, command
 
 
 def _run(sub_args: SimpleNamespace) -> str:
@@ -87,11 +105,14 @@ class TestHooksTest:
         scripts tested with `youtab hooks test` saw different top-level
         keys than at runtime, silently breaking in production."""
         capture = tmp_path / "captured.json"
-        script = _hook_script(
+        _script, command = _py_hook(
             tmp_path,
-            f"#!/usr/bin/env bash\ncat - > {capture}\nprintf '{{}}\\n'\n",
+            "import sys, pathlib\n"
+            f"pathlib.Path({str(capture)!r}).write_text("
+            "sys.stdin.read(), encoding='utf-8')\n"
+            "sys.stdout.write('{}\\n')\n",
         )
-        cfg = {"hooks": {"subagent_stop": [{"command": str(script)}]}}
+        cfg = {"hooks": {"subagent_stop": [{"command": command}]}}
         with patch("youtab_agent_cli.config.load_config", return_value=cfg):
             _run(SimpleNamespace(
                 hooks_action="test", event="subagent_stop",
@@ -112,16 +133,17 @@ class TestHooksTest:
         assert seen["tool_input"] is None
 
     def test_fires_real_subprocess_and_parses_block(self, tmp_path):
-        block_script = _hook_script(
+        _script, command = _py_hook(
             tmp_path,
-            "#!/usr/bin/env bash\n"
-            'printf \'{"decision": "block", "reason": "nope"}\\n\'\n',
-            name="block.sh",
+            "import json, sys\n"
+            "sys.stdout.write("
+            "json.dumps({'decision': 'block', 'reason': 'nope'}) + '\\n')\n",
+            name="block.py",
         )
         cfg = {
             "hooks": {
                 "pre_tool_call": [
-                    {"matcher": "terminal", "command": str(block_script)},
+                    {"matcher": "terminal", "command": command},
                 ],
             },
         }
@@ -159,7 +181,9 @@ class TestHooksDoctor:
 
     def test_flags_mtime_drift(self, tmp_path, monkeypatch):
         """Allowlist with older mtime than current -> drift warning."""
-        script = _hook_script(tmp_path, "#!/usr/bin/env bash\nprintf '{}\\n'\n")
+        _script, command = _py_hook(
+            tmp_path, "import sys; sys.stdout.write('{}\\n')\n"
+        )
 
         # Manually stash an allowlist entry with an old mtime
         from agent.shell_hooks import allowlist_path
@@ -168,14 +192,14 @@ class TestHooksDoctor:
             "approvals": [
                 {
                     "event": "on_session_start",
-                    "command": str(script),
+                    "command": command,
                     "approved_at": "2000-01-01T00:00:00Z",
                     "script_mtime_at_approval": "2000-01-01T00:00:00Z",
                 }
             ]
         }), encoding="utf-8")
 
-        cfg = {"hooks": {"on_session_start": [{"command": str(script)}]}}
+        cfg = {"hooks": {"on_session_start": [{"command": command}]}}
         with patch("youtab_agent_cli.config.load_config", return_value=cfg):
             out = _run(SimpleNamespace(hooks_action="doctor"))
         assert "modified since approval" in out

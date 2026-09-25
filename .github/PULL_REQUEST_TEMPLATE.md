@@ -36,6 +36,20 @@ Fixes #
 2. 
 3. 
 
+## Review gate — Independent Agent Review (required)
+
+<!-- Greptile was retired as a gate on 2026-09-10 (Owner decision). See
+docs/governance/INDEPENDENT_AGENT_REVIEW.md. -->
+
+This PR must pass the **`Independent Agent Review`** gate before it may leave Draft,
+be merged, or be deployed. The review is performed by an independent read-only agent
+(not the implementer), bound to the exact head SHA, and returns
+`PROVEN | FAILED | NOT PROVEN | BLOCKED`. Any new commit invalidates a prior review.
+A green gate does **not** authorize merge/deploy — a separate exact-SHA Owner
+authorization is always additionally required.
+
+- [ ] I understand this PR is gated by `Independent Agent Review` (SHA-bound, fail-closed)
+
 ## Checklist
 
 <!-- Complete these before requesting review. -->

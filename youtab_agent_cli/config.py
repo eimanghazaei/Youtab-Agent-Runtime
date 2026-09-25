@@ -827,6 +827,33 @@ def _secure_file(path):
             os.chmod(path, 0o600)
     except (OSError, NotImplementedError):
         pass
+    # WAVE-27 #7b: on Windows chmod(0o600) only toggles the read-only bit and
+    # provides no access control; a newly-written config.yaml/.env inherits the
+    # parent directory's broad DACL (which admits Administrators). Apply an
+    # owner-only *protected* DACL so secrets in this file (.env API keys etc.)
+    # are readable only by the current user + SYSTEM, and — unlike the previous
+    # best-effort swallow, which could leave a broadly-readable .env on disk if
+    # the apply failed — FAIL CLOSED: verify the DACL and, if it cannot be
+    # applied/verified (including because pywin32 is unavailable), remove the
+    # file and raise so the exposed secret never persists. Matches auth.py.
+    if os.name == "nt" and os.path.exists(str(path)):
+        from youtab_agent_cli import windows_acl
+
+        try:
+            if not windows_acl.pywin32_available():
+                raise OSError(
+                    "pywin32 unavailable: cannot apply an owner-only DACL to "
+                    f"secret file {os.fspath(path)!r}"
+                )
+            windows_acl.apply_owner_only_dacl(path)
+            if not windows_acl.verify_owner_only_dacl(path):
+                raise OSError("owner-only DACL verification failed")
+        except OSError:
+            try:
+                os.unlink(str(path))
+            except OSError:
+                pass
+            raise
 
 
 def _ensure_default_soul_md(home: Path) -> None:
@@ -3722,6 +3749,65 @@ def _sanitize_env_lines(lines: list) -> list:
     return sanitized
 
 
+def _write_env_lines_secure(env_path: Path, lines: list) -> None:
+    """Atomically write ``lines`` to ``env_path`` with the temp born owner-only.
+
+    WAVE-28 §6.1 — close the pre-tighten exposure window. The prior writers
+    used ``tempfile.mkstemp``, which creates the temp under the parent's broad
+    inherited DACL (Windows) / umask (POSIX), wrote the secret-bearing ``.env``
+    body into it, and only tightened *after* the atomic replace. On a multi-user
+    Windows host another user could read the temp during that window.
+
+    This routes the write through :func:`windows_acl.secure_write_secret_file`,
+    which creates the temp file EMPTY, applies and *verifies* an owner+SYSTEM-only
+    protected DACL (Windows) / ``O_EXCL`` at ``0o600`` (POSIX) BEFORE any secret
+    byte is written, and is fail-closed: if the secure create or DACL cannot be
+    applied/verified (including when pywin32 is unavailable), it raises and leaves
+    no plaintext behind — never a world-readable fallback. The protected security
+    descriptor / mode moves with the file across the same-directory atomic rename,
+    so ``env_path`` is owner-only from its first byte.
+
+    POSIX Docker-volume semantics are preserved: a pre-existing broader mode
+    (e.g. ``0640``) is re-applied to the FINAL file after the replace, so the
+    temp is still born ``0600`` (window closed) while the deployed file keeps the
+    operator's intended mode.
+    """
+    from youtab_agent_cli import windows_acl
+
+    content = "".join(lines)
+    original_mode = None
+    if os.name != "nt" and env_path.exists():
+        try:
+            original_mode = stat.S_IMODE(env_path.stat().st_mode)
+        except OSError:
+            pass
+
+    # Unique temp name in the same directory (atomic-rename target). O_EXCL in
+    # secure_write_secret_file makes creation race-safe regardless of the name.
+    tmp_path = env_path.parent / f".env_{os.getpid()}_{os.urandom(8).hex()}.tmp"
+    try:
+        windows_acl.secure_write_secret_file(tmp_path, content)
+        atomic_replace(str(tmp_path), env_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+    # Final file: preserve a POSIX Docker-volume mode if one existed; otherwise
+    # re-assert the fail-closed owner-only DACL (WAVE-27 #7b) — idempotent, since
+    # the born-owner-only temp already carried it across the rename.
+    if original_mode is not None and os.name != "nt":
+        try:
+            os.chmod(env_path, original_mode)
+        except OSError:
+            pass
+    else:
+        _secure_file(env_path)
+    invalidate_env_cache()
+
+
 def sanitize_env_file() -> int:
     """Read, sanitize, and rewrite ~/.youtab-agent-runtime/.env in place.
 
@@ -3733,8 +3819,6 @@ def sanitize_env_file() -> int:
         return 0
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
     with open(env_path, **read_kw) as f:
         original_lines = f.readlines()
 
@@ -3749,21 +3833,9 @@ def sanitize_env_file() -> int:
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
-    try:
-        with os.fdopen(fd, "w", **write_kw) as f:
-            f.writelines(sanitized)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
-    _secure_file(env_path)
-    invalidate_env_cache()
+    # Born owner-only: the sanitized .env still carries every secret, so the
+    # temp must never exist under a permissive DACL (WAVE-28 §6.1).
+    _write_env_lines_secure(env_path, sanitized)
     return fixes
 
 
@@ -3872,8 +3944,6 @@ def save_env_value(key: str, value: str):
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
     lines = []
     if env_path.exists():
         with open(env_path, **read_kw) as f:
@@ -3902,38 +3972,13 @@ def save_env_value(key: str, value: str):
             lines[-1] += "\n"
         lines.append(f"{key}={serialized_value}\n")
     
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-    # Preserve original permissions so Docker volume mounts aren't clobbered.
-    original_mode = None
-    if env_path.exists():
-        try:
-            original_mode = stat.S_IMODE(env_path.stat().st_mode)
-        except OSError:
-            pass
-    try:
-        with os.fdopen(fd, 'w', **write_kw) as f:
-            f.writelines(lines)
-            f.flush()
-            os.fsync(f.fileno())
-        atomic_replace(tmp_path, env_path)
-        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
-        # instead of letting _secure_file unconditionally tighten to 0600.
-        if original_mode is not None:
-            try:
-                os.chmod(env_path, original_mode)
-            except OSError:
-                pass
-        else:
-            _secure_file(env_path)
-    except BaseException:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    # Born owner-only, fail-closed, Docker-mode preserving (WAVE-28 §6.1): the
+    # secret-bearing temp is created with an owner-only protected DACL / 0o600
+    # BEFORE any byte is written, closing the pre-tighten exposure window that
+    # the previous mkstemp + tighten-after path left open on multi-user Windows.
+    _write_env_lines_secure(env_path, lines)
 
     os.environ[key] = value
-    invalidate_env_cache()
 
 
 def custom_endpoint_key_env(identity: str) -> str:
@@ -3983,8 +4028,6 @@ def remove_env_value(key: str) -> bool:
         return False
 
     read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
-    write_kw = {"encoding": "utf-8"}
-
     with open(env_path, **read_kw) as f:
         lines = f.readlines()
     lines = _sanitize_env_lines(lines)
@@ -3993,35 +4036,10 @@ def remove_env_value(key: str) -> bool:
     found = len(new_lines) < len(lines)
 
     if found:
-        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
-        # Preserve original permissions so Docker volume mounts aren't clobbered.
-        original_mode = None
-        try:
-            original_mode = stat.S_IMODE(env_path.stat().st_mode)
-        except OSError:
-            pass
-        try:
-            with os.fdopen(fd, 'w', **write_kw) as f:
-                f.writelines(new_lines)
-                f.flush()
-                os.fsync(f.fileno())
-            atomic_replace(tmp_path, env_path)
-            # Preserve the original file mode (e.g. 0640 for Docker volume
-            # mounts) instead of letting _secure_file unconditionally tighten
-            # to 0600. Mirrors save_env_value().
-            if original_mode is not None:
-                try:
-                    os.chmod(env_path, original_mode)
-                except OSError:
-                    pass
-            else:
-                _secure_file(env_path)
-        except BaseException:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
+        # Born owner-only, fail-closed, Docker-mode preserving (WAVE-28 §6.1) —
+        # mirrors save_env_value(): the rewritten .env still holds the remaining
+        # secrets, so its temp must never exist under a permissive DACL.
+        _write_env_lines_secure(env_path, new_lines)
 
     os.environ.pop(key, None)
     invalidate_env_cache()
@@ -4112,23 +4130,42 @@ def get_env_value_prefer_dotenv(key: str) -> Optional[str]:
     value — matching the credential-pool seeding path's behaviour.
     """
     env_vars = load_env()
-    val = env_vars.get(key)
-    if val:
-        return val
+    dotenv_val = env_vars.get(key)
+
+    # Provider-neutral file-based credential support (WAVE-30B §4): if
+    # ``<key>_FILE`` is set, load it with the hardened strict-tier loader. This
+    # covers every credential-bearing provider (auth._resolve_api_key_provider_secret
+    # funnels each api_key_env_var through here) without any provider-specific code.
+    from youtab_agent_cli import secret_file as _secret_file
+
+    _inline_present = bool(dotenv_val) or (key in os.environ)
+    _file_val = _secret_file.resolve_credential_file(key, inline_present=_inline_present)
+    if _file_val is not None:
+        return _file_val
+
+    if dotenv_val:
+        _secret_file.note_plaintext_credential(key)
+        return dotenv_val
     try:
         from agent.secret_scope import (
             UnscopedSecretError,
             get_secret as _get_secret,
         )
     except Exception:
-        return os.environ.get(key)
+        _val = os.environ.get(key)
+        if _val:
+            _secret_file.note_plaintext_credential(key)
+        return _val
 
     try:
-        return _get_secret(key)
+        _val = _get_secret(key)
     except UnscopedSecretError:
         raise
     except Exception:
-        return os.environ.get(key)
+        _val = os.environ.get(key)
+    if _val:
+        _secret_file.note_plaintext_credential(key)
+    return _val
 
 
 # =============================================================================

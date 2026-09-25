@@ -26,13 +26,13 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       background: "#0e0e12"               # App/base surface — the seed the TUI
                                           # status bar and the desktop GUI derive
                                           # their whole palette from (see below).
-      banner_border: "#CD7F32"            # Panel border color
-      banner_title: "#FFD700"             # Panel title text color
-      banner_accent: "#FFBF00"            # Section headers (Available Tools, etc.)
-      banner_dim: "#B8860B"               # Dim/muted text (separators, labels)
-      banner_text: "#FFF8DC"              # Body text (tool names, skill names)
-      ui_accent: "#FFBF00"               # General UI accent
-      ui_label: "#DAA520"                # UI labels (warm gold; teal clashed w/ default banner gold)
+      banner_border: "#0067C5"            # Panel border color
+      banner_title: "#0096FF"             # Panel title text color
+      banner_accent: "#33B8FF"            # Section headers (Available Tools, etc.)
+      banner_dim: "#5F91B8"               # Dim/muted text (separators, labels)
+      banner_text: "#D8F3FF"              # Body text (tool names, skill names)
+      ui_accent: "#0096FF"               # General UI accent
+      ui_label: "#72D4FF"                # UI labels (light Ocean Blue)
       ui_ok: "#4caf50"                   # Success indicators
       ui_error: "#ef5350"                # Error indicators
       ui_warn: "#ffa726"                 # Warning indicators
@@ -46,18 +46,18 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       syntax_number: "#FFF8DC"           # Code numbers; falls back to ui_text
       syntax_keyword: "#CD7F32"          # Code keywords; falls back to ui_border
       syntax_comment: "#CC9B1F"          # Code comments; falls back to banner_dim
-      prompt: "#FFF8DC"                  # Prompt text color
-      input_rule: "#CD7F32"              # Input area horizontal rule
-      response_border: "#FFD700"         # Response box border (ANSI)
+      prompt: "#D8F3FF"                  # Prompt text color
+      input_rule: "#0067C5"              # Input area horizontal rule
+      response_border: "#0096FF"         # Response box border (ANSI)
       status_bar_bg: "#1a1a2e"           # Status bar background
       status_bar_text: "#C0C0C0"         # Status bar default text
-      status_bar_strong: "#FFD700"       # Status bar highlighted text
+      status_bar_strong: "#33B8FF"       # Status bar highlighted text
       status_bar_dim: "#8B8682"          # Status bar separators/muted text
       status_bar_good: "#8FBC8F"         # Healthy context usage
-      status_bar_warn: "#FFD700"         # Warning context usage
+      status_bar_warn: "#33B8FF"         # Warning context usage
       status_bar_bad: "#FF8C00"          # High context usage
       status_bar_critical: "#FF6B6B"     # Critical context usage
-      session_label: "#DAA520"           # Session label color
+      session_label: "#72D4FF"           # Session label color
       session_border: "#8B8682"          # Session ID dim color
       status_bar_bg: "#1a1a2e"          # TUI status/usage bar background
       voice_status_bg: "#1a1a2e"        # TUI voice status background
@@ -94,7 +94,7 @@ All fields are optional. Missing values inherit from the ``default`` skin.
 
     # Branding: text strings used throughout the CLI
     branding:
-      agent_name: "Youtab Agent Runtime"          # Banner title, status display
+      agent_name: "Youtab RunTime"          # Banner title, status display
       welcome: "Welcome message"          # Shown at CLI startup
       goodbye: "Goodbye! ⚕"              # Shown on exit
       response_label: " ⚕ Youtab "       # Response box header label
@@ -118,8 +118,8 @@ USAGE
     from youtab_agent_cli.skin_engine import get_active_skin, list_skins, set_active_skin
 
     skin = get_active_skin()
-    print(skin.colors["banner_title"])    # "#FFD700"
-    print(skin.get_branding("agent_name"))  # "Youtab Agent Runtime"
+    print(skin.colors["banner_title"])    # "#0096FF"
+    print(skin.get_branding("agent_name"))  # "Youtab RunTime"
 
     set_active_skin("ares")               # Switch to built-in ares skin
     set_active_skin("mytheme")            # Switch to user skin from ~/.youtab-agent-runtime/skins/
@@ -127,7 +127,7 @@ USAGE
 BUILT-IN SKINS
 ==============
 
-- ``default`` — Classic Youtab gold/kawaii (the current look)
+- ``default`` — Youtab RunTime Ocean Blue branding
 - ``ares``    — Crimson/bronze war-god theme with custom spinner wings
 - ``mono``    — Clean grayscale monochrome
 - ``slate``   — Cool blue developer-focused theme
@@ -173,8 +173,8 @@ class SkinConfig:
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
-    banner_logo: str = ""    # Rich-markup ASCII art logo (replaces YOUTAB_AGENT_AGENT_LOGO)
-    banner_hero: str = ""    # Rich-markup hero art (replaces YOUTAB_AGENT_CADUCEUS)
+    banner_logo: str = ""    # Optional Rich-markup wordmark for custom skins
+    banner_hero: str = ""    # Optional Rich-markup hero for custom skins
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -201,81 +201,73 @@ class SkinConfig:
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
         "name": "default",
-        "description": "Classic Youtab — gold and kawaii",
-        # Dark-authored. Values match the TUI's DARK_THEME so the classic CLI
-        # and the TUI render the same Youtab gold.
+        "description": "Youtab RunTime — Ocean Blue",
+        # Dark-authored Ocean Blue palette shared by the classic CLI and TUI.
         "colors": {
-            "banner_border": "#CD7F32",
-            "banner_title": "#FFD700",
-            "banner_accent": "#FFBF00",
-            "banner_dim": "#B8860B",
-            "banner_text": "#FFF8DC",
-            "ui_accent": "#FFBF00",
-            "ui_label": "#DAA520",
+            "banner_border": "#0067C5",
+            "banner_title": "#0096FF",
+            "banner_accent": "#33B8FF",
+            "banner_dim": "#5F91B8",
+            "banner_text": "#D8F3FF",
+            "ui_accent": "#0096FF",
+            "ui_label": "#72D4FF",
             "ui_ok": "#4caf50",
             "ui_error": "#ef5350",
             "ui_warn": "#ffa726",
-            "prompt": "#FFF8DC",
-            "input_rule": "#CD7F32",
-            "response_border": "#FFD700",
-            "status_bar_bg": "#1a1a2e",
-            "status_bar_text": "#C0C0C0",
-            "status_bar_strong": "#FFD700",
-            "status_bar_dim": "#8A7A4A",
+            "prompt": "#D8F3FF",
+            "input_rule": "#0067C5",
+            "response_border": "#0096FF",
+            "status_bar_bg": "#10263A",
+            "status_bar_text": "#A6E9FF",
+            "status_bar_strong": "#33B8FF",
+            "status_bar_dim": "#5F91B8",
             "status_bar_good": "#8FBC8F",
-            "status_bar_warn": "#FFD700",
+            "status_bar_warn": "#33B8FF",
             "status_bar_bad": "#FF8C00",
             "status_bar_critical": "#FF6B6B",
-            "session_label": "#DAA520",
-            "session_border": "#8B8682",
-            "completion_menu_bg": "#1a1a2e",
-            "completion_menu_current_bg": "#333355",
-            "selection_bg": "#3a3a55",
-            "shell_dollar": "#4dabf7",
-            "voice_status_bg": "#1a1a2e",
+            "session_label": "#72D4FF",
+            "session_border": "#5F91B8",
+            "completion_menu_bg": "#10263A",
+            "completion_menu_current_bg": "#164F73",
+            "selection_bg": "#185D86",
+            "shell_dollar": "#72D4FF",
+            "voice_status_bg": "#10263A",
         },
-        # Light overlay (merged onto `colors`; dark mode renders the vivid
-        # block above untouched). The goldenrod ladder: on white, the vivid
-        # #FFD700/#FFBF00 read as glare and WCAG-darkened mustard (#867000)
-        # reads as mud — the sweet spot is the statusbar's goldenrod family
-        # (#B8860B/#DAA520): hue kept, saturation tamed, mid luminance.
-        # Hierarchy on white: ink body 8.9:1 > fade 5.2 > label 3.7 >
-        # muted 3.3 > title 2.7 > headers 2.4 (accents recede last, like
-        # slate's pastels — the raw-canon look, just not neon).
+        # Light-terminal companion palette with darker Ocean Blue foregrounds
+        # and pale blue surfaces for readable, consistent brand rendering.
         "light_colors": {
-            "banner_title": "#C8961E",
-            "banner_accent": "#D89B04",
-            "banner_dim": "#B8860B",
-            "banner_text": "#5C4718",
-            "ui_accent": "#D89B04",
-            "ui_label": "#A97E10",
+            "banner_title": "#0067C5",
+            "banner_accent": "#0077D8",
+            "banner_dim": "#3F6F9F",
+            "banner_text": "#12324A",
+            "ui_accent": "#0077D8",
+            "ui_label": "#0067C5",
             "ui_ok": "#2E7D32",
             "ui_error": "#C62828",
             "ui_warn": "#D97706",
-            "prompt": "#5C4718",
-            "response_border": "#C8961E",
-            "session_label": "#A97E10",
-            "status_bar_text": "#6F6F6F",
-            "status_bar_strong": "#C8961E",
-            "status_bar_dim": "#9A8A5A",
+            "prompt": "#12324A",
+            "response_border": "#0077D8",
+            "session_label": "#0067C5",
+            "status_bar_text": "#12324A",
+            "status_bar_strong": "#0067C5",
+            "status_bar_dim": "#3F6F9F",
             "status_bar_good": "#2E7D32",
-            "status_bar_warn": "#C8961E",
+            "status_bar_warn": "#0067C5",
             "status_bar_bad": "#C2410C",
             "status_bar_critical": "#B91C1C",
-            "shell_dollar": "#1E6FC0",
-            # Fills: flip the dark navy surfaces to light polarity.
-            "completion_menu_bg": "#F5F5F5",
-            "completion_menu_current_bg": "#E0D1BF",
-            "selection_bg": "#D4E4F7",
-            "status_bar_bg": "#F5F5F5",
-            "voice_status_bg": "#F5F5F5",
+            "shell_dollar": "#0067C5",
+            "completion_menu_bg": "#F3F9FC",
+            "completion_menu_current_bg": "#D6EBF7",
+            "selection_bg": "#C9E7F7",
+            "status_bar_bg": "#F3F9FC",
+            "voice_status_bg": "#F3F9FC",
         },
         "spinner": {
             # Empty = use hardcoded defaults in display.py
         },
         "branding": {
-            "agent_name": "Youtab Agent Runtime",
-            "welcome": "Welcome to Youtab Agent Runtime! Type your message or /help for commands.",
+            "agent_name": "Youtab RunTime",
+            "welcome": "Welcome to Youtab RunTime! Type your message or /help for commands.",
             "goodbye": "Goodbye! ⚕",
             "response_label": " ⚕ Youtab ",
             "prompt_symbol": "❯",

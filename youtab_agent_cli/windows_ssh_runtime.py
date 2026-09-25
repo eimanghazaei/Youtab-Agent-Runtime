@@ -79,19 +79,12 @@ def _system_sid():
 
 
 def _security_attributes():
-    ntsecuritycon, _, _, _, _, _, win32security = _win32()
-    owner = _current_sid()
-    acl = win32security.ACL()
-    for sid in (owner, _system_sid()):
-        acl.AddAccessAllowedAceEx(win32security.ACL_REVISION, 0, ntsecuritycon.FILE_ALL_ACCESS, sid)
-    descriptor = win32security.SECURITY_DESCRIPTOR()
-    descriptor.SetSecurityDescriptorOwner(owner, False)
-    descriptor.SetSecurityDescriptorDacl(True, acl, False)
-    # Protect the DACL so inheritable parent ACEs (%LOCALAPPDATA% grants) are not merged in.
-    descriptor.SetSecurityDescriptorControl(win32security.SE_DACL_PROTECTED, win32security.SE_DACL_PROTECTED)
-    attributes = win32security.SECURITY_ATTRIBUTES()
-    attributes.SECURITY_DESCRIPTOR = descriptor
-    return attributes
+    # WAVE-26 #7b: single source of truth for the owner-only protected DACL
+    # (current user + SYSTEM, SE_DACL_PROTECTED). Generalized into windows_acl so
+    # the credential/secret writers and this SSH runtime share one implementation.
+    from youtab_agent_cli import windows_acl
+
+    return windows_acl.build_owner_only_security_attributes()
 
 
 def _allowed_sids():

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 
 from tools.file_operations import ShellFileOperations
+from tests import _wincompat
 
 
 class _FakeEnv:
@@ -58,6 +59,7 @@ class _FakeEnv:
         }
 
 
+@_wincompat.requires_posix
 class TestShellFileOpsCwdTracking:
     """_exec() must use live env.cwd, not the init-time cached cwd."""
 

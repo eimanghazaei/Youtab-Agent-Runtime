@@ -268,10 +268,18 @@ class TestGitBashCoreutilsOnPath:
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         monkeypatch.setattr(local_mod, "_git_bash_bin_dirs_cache", None)
         monkeypatch.setattr(local_mod, "_find_bash", lambda: "/pg/bin/bash.exe")
-        existing = {"/pg/mingw64/bin", "/pg/usr/bin", "/pg/bin"}
+        # Build the existing-dir set the way production constructs candidates
+        # (os.path.join → backslashes on Windows) so the isdir probe matches.
+        existing = {
+            os.path.join("/pg", "mingw64", "bin"),
+            os.path.join("/pg", "usr", "bin"),
+            os.path.join("/pg", "bin"),
+        }
         monkeypatch.setattr(local_mod.os.path, "isdir", self._fake_isdir(existing))
 
-        dirs = _git_bash_bin_dirs()
+        # Normalize to forward slashes so the ordering assertions are
+        # separator-agnostic (production joins with os.sep on Windows).
+        dirs = [d.replace(os.sep, "/") for d in _git_bash_bin_dirs()]
 
         # usr/bin is the load-bearing coreutils dir; mingw64 precedes it.
         assert "/pg/usr/bin" in dirs

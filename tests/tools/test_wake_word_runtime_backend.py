@@ -48,6 +48,13 @@ from pathlib import Path
 
 import pytest
 
+# Import numpy now, under the real platform, so its import-time hugepage probe
+# (``if sys.platform == "linux": os.uname()``) runs before any test patches
+# ``sys.platform`` to "linux" via _platform() — otherwise wake_word's lazy
+# ``import numpy`` triggers that probe under the faked platform and raises
+# AttributeError (no os.uname on Windows).
+import numpy  # noqa: F401,E402
+
 import tools.wake_word as ww
 
 WAKEWORDS = Path(ww.__file__).parent / "wakewords"

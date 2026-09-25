@@ -44,7 +44,9 @@ def _expand_tilde(path: str) -> str:
     except Exception:
         home = None
     if home and (path == "~" or path.startswith("~/")):
-        return home if path == "~" else os.path.join(home, path[2:])
+        # ``home`` is the subprocess (POSIX) home; join with a forward slash so
+        # os.path.join doesn't splice a backslash into it on Windows.
+        return home if path == "~" else f"{home.rstrip('/')}/{path[2:]}"
     return os.path.expanduser(path)
 
 
@@ -429,8 +431,8 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             return None  # Inside the workspace — expected.
         except ValueError:
             return (
-                f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
-                f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
+                f"Relative path '{filepath}' resolved to '{resolved}', which is "
+                f"OUTSIDE the active workspace ('{root}'). The edit will land in "
                 f"a different directory than the terminal's cwd. If this is not "
                 f"intended (e.g. a git-worktree session writing into the main "
                 f"checkout), pass an absolute path under the workspace instead."
@@ -441,6 +443,14 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
 
 def _is_blocked_device_path(path: str) -> bool:
     """Return True for concrete device/fd paths that can hang reads."""
+    # Windows reserved devices (CON, NUL, COM1, \\.\PhysicalDrive0, ...) hang on
+    # read or expose raw hardware. Gated on Windows, where the OS resolves them;
+    # the predicate is platform-independent so the rule stays testable anywhere.
+    if os.name == "nt":
+        from tools.path_security import is_windows_reserved_device_path
+
+        if is_windows_reserved_device_path(path):
+            return True
     normalized = os.path.normpath(_expand_tilde(path))
     if normalized in _BLOCKED_DEVICE_PATHS:
         return True
@@ -475,6 +485,23 @@ def _is_blocked_device_path(path: str) -> bool:
     return False
 
 
+def _strip_extended_length_prefix(path: str) -> str:
+    r"""Drop a Windows verbatim/extended-length prefix from an OS-RESOLVED path.
+
+    ``os.readlink`` / ``os.path.realpath`` return the ``\\?\`` (or ``\\?\UNC\``)
+    verbatim form on Windows. That prefix is a path-length/normalization escape,
+    NOT a device, so it must be stripped before the reserved-device check runs
+    on an OS-generated path — otherwise an ordinary file behind a symlink is
+    falsely blocked. The device predicate still blocks a *caller*-supplied
+    ``\\?\`` (an evasion attempt); only OS-resolved paths are unwrapped here.
+    """
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[len("\\\\?\\UNC\\"):]
+    if path.startswith("\\\\?\\"):
+        return path[len("\\\\?\\"):]
+    return path
+
+
 def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> bool:
     """Return True if the path would hang the process (infinite output or blocking input).
 
@@ -499,7 +526,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
         if not os.path.isabs(target):
             target = os.path.join(os.path.dirname(current), target)
         target = os.path.normpath(target)
-        if _is_blocked_device_path(target):
+        if _is_blocked_device_path(_strip_extended_length_prefix(target)):
             return True
         if target in seen:
             break
@@ -510,7 +537,7 @@ def _is_blocked_device(filepath: str, base_dir: str | Path | None = None) -> boo
         resolved = os.path.normpath(os.path.realpath(normalized))
     except (OSError, ValueError):
         return False
-    if _is_blocked_device_path(resolved):
+    if _is_blocked_device_path(_strip_extended_length_prefix(resolved)):
         return True
     return False
 
@@ -600,14 +627,20 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
+    # The denylist is written with POSIX separators; on Windows os.path.normpath
+    # yields backslashes, so compare a forward-slash-normalized form or the
+    # ``/etc/...`` prefixes never match and the guard silently no-ops. This is a
+    # no-op on POSIX (os.sep is already "/").
+    resolved_fs = resolved.replace(os.sep, "/")
+    normalized_fs = normalized.replace(os.sep, "/")
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
+        if resolved_fs.startswith(prefix) or normalized_fs.startswith(prefix):
             return _err
-    if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
+    if resolved_fs in _SENSITIVE_EXACT_PATHS or normalized_fs in _SENSITIVE_EXACT_PATHS:
         return _err
     # Prevent agents from modifying the Youtab config file directly.
     # approvals.mode and other security settings live here; a malicious or

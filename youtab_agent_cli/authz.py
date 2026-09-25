@@ -407,6 +407,19 @@ ROUTE_SCOPES: Final[tuple[tuple[str, str], ...]] = (
     ("/api/messaging", MESSAGING_MANAGE),
     ("/api/plugins", PLUGIN_USE),
 
+    # AR-PROD-01 Agent Runtime product surface — a service-to-service contract
+    # (the youtab-ai-os gateway calls it with a service bearer), NOT a public or
+    # interactive surface. Held at OPS_MANAGE, mirroring the /api/gateway/drain
+    # service route above: a privileged, non-public scope. The real boundary is
+    # the endpoint itself — the non-interactive token seam (the `runtime-service`
+    # provider) 401s any request without the shared service bearer, and the
+    # router's `require_service_identity` dependency additionally enforces the
+    # `runtime` scope + the gateway-verified end-user identity headers, with
+    # signed + replay-protected commands on every mutation. On a loopback bind the
+    # operator resolves to Owner (who holds OPS_MANAGE); the token seam still
+    # requires the bearer. See youtab_agent_cli/web_routers/runtime.py.
+    ("/api/runtime/v1", OPS_MANAGE),
+
     # Nearest owning domain, by the same rule.
     ("/api/analytics", UI_READ),
     ("/api/logs", OPS_MANAGE),
