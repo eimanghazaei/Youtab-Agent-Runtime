@@ -1,0 +1,11 @@
+title = "Youtab Agent Runtime secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Pinned third-party Unsloth reference corpus; generated examples are not runtime credentials"
+paths = [
+  '''^optional-skills/mlops/training/unsloth/references/llms-full\.md$''',
+  '''^optional-skills/mlops/training/unsloth/references/llms-txt\.md$''',
+]

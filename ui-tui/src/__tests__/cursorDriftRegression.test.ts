@@ -46,14 +46,15 @@ const USER_REPORT_MESSAGE =
   'and you can see its multiline, new session. on a new bb/<xxx> branch investigate'
 
 describe('cursor-drift regression — composer cursorLayout matches Ink rendering', () => {
-  it('agrees with wrap-ansi at every typing-prefix of the user-reported message', () => {
+  it.each([40, 50, 55, 60, 65, 70, 80])(
+    'agrees with wrap-ansi at every typing-prefix at cols=%i',
+    cols => {
     // Walks the message char-by-char (mirroring what the TUI sees when a
     // user types). At every prefix, cursorLayout must place the cursor
     // exactly where wrap-ansi would render the end of the text.
     //
     // Pre-fix: this failed on most narrow widths because the hand-rolled
     // wrap algorithm broke at slightly different points than wrap-ansi.
-    for (const cols of [40, 50, 55, 60, 65, 70, 80]) {
       let acc = ''
 
       for (const ch of USER_REPORT_MESSAGE) {
@@ -61,14 +62,21 @@ describe('cursor-drift regression — composer cursorLayout matches Ink renderin
         const layout = cursorLayout(acc, acc.length, cols)
         const expected = wrapAnsiEnd(acc, cols)
 
-        expect(
-          layout,
-          `mismatch at cols=${cols}, len=${acc.length}, last-char=${JSON.stringify(ch)}, ` +
-            `tail=${JSON.stringify(acc.slice(-30))}`
-        ).toEqual(expected)
+        // Avoid thousands of assertion-framework calls in the successful
+        // path. Vitest 5's extra assertion bookkeeping made the full matrix
+        // exceed one shared 30s test budget on CI. The same every-prefix
+        // contract remains; a mismatch still gets the detailed assertion.
+        if (layout.line !== expected.line || layout.column !== expected.column) {
+          expect(
+            layout,
+            `mismatch at cols=${cols}, len=${acc.length}, last-char=${JSON.stringify(ch)}, ` +
+              `tail=${JSON.stringify(acc.slice(-30))}`
+          ).toEqual(expected)
+        }
       }
-    }
-  }, 30_000)
+    },
+    10_000
+  )
 
   it('keeps cursor on the same row when text exactly fills the terminal width', () => {
     // wrap-ansi does NOT push exact-fill text onto a phantom next line.

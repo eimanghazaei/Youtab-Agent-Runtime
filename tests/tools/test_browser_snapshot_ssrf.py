@@ -141,8 +141,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         assert result["success"] is True
         assert "snapshot" in result
 
-    def test_handles_eval_failure_gracefully(self, monkeypatch):
-        """If URL eval fails, snapshot should still succeed (fail-open)."""
+    def test_blocks_when_url_probe_fails(self, monkeypatch):
+        """A failed URL probe is not evidence that snapshot content is public."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
 
@@ -158,12 +158,12 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
-        # Should succeed — eval failure means we can't determine URL, fail-open
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "could not be verified" in result["error"]
 
 
-    def test_handles_eval_exception(self, monkeypatch):
-        """If URL eval raises an exception, snapshot should succeed."""
+    def test_blocks_when_url_probe_raises(self, monkeypatch):
+        """A probe exception must fail closed before content is returned."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
 
@@ -179,7 +179,8 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "could not be verified" in result["error"]
 
     def test_blocks_loopback_url(self, monkeypatch):
         """Loopback URLs (localhost) must be blocked."""
@@ -339,8 +340,8 @@ class TestBrowserVisionPrivateNetworkGuard:
         result = json.loads(result_raw)
         assert "private or internal address" not in result.get("error", "")
 
-    def test_handles_eval_failure_gracefully(self, monkeypatch):
-        """If URL eval fails, vision should still proceed (fail-open)."""
+    def test_blocks_when_url_probe_fails(self, monkeypatch):
+        """If URL eval fails, vision must not capture page content."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
 
@@ -357,10 +358,11 @@ class TestBrowserVisionPrivateNetworkGuard:
 
         result_raw = browser_browser_vision(question="what", task_id="test")
         result = json.loads(result_raw)
-        assert "private or internal address" not in result.get("error", "")
+        assert result["success"] is False
+        assert "could not be verified" in result["error"]
 
-    def test_handles_eval_exception(self, monkeypatch):
-        """If URL eval raises an exception, vision should still proceed."""
+    def test_blocks_when_url_probe_raises(self, monkeypatch):
+        """If URL eval raises, vision must not capture page content."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
 
@@ -377,4 +379,5 @@ class TestBrowserVisionPrivateNetworkGuard:
 
         result_raw = browser_browser_vision(question="what", task_id="test")
         result = json.loads(result_raw)
-        assert "private or internal address" not in result.get("error", "")
+        assert result["success"] is False
+        assert "could not be verified" in result["error"]

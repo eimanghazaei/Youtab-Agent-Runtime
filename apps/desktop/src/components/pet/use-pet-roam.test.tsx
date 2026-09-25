@@ -62,8 +62,8 @@ function installRaf() {
   const request = vi.fn((_callback: FrameRequestCallback) => 1)
   const cancel = vi.fn()
 
-  Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: request })
-  Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: cancel })
+  vi.stubGlobal('requestAnimationFrame', request)
+  vi.stubGlobal('cancelAnimationFrame', cancel)
 
   return { cancel, request }
 }
@@ -108,6 +108,7 @@ describe('usePetRoam RAF scheduling', () => {
 
   afterEach(() => {
     cleanup()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
     vi.restoreAllMocks()
     setVisibility(false)

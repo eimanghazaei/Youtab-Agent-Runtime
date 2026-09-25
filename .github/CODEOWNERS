@@ -1,0 +1,17 @@
+# Security-sensitive runtime policy and release controls require owner review.
+/.github/ @eimanghazaei
+/pyproject.toml @eimanghazaei
+/uv.lock @eimanghazaei
+/package.json @eimanghazaei
+/package-lock.json @eimanghazaei
+/**/package.json @eimanghazaei
+/**/package-lock.json @eimanghazaei
+/security/ @eimanghazaei
+/tools/approval.py @eimanghazaei
+/tools/browser_tool.py @eimanghazaei
+/tools/tirith_security.py @eimanghazaei
+/youtab_agent_cli/auth.py @eimanghazaei
+/youtab_agent_cli/authz.py @eimanghazaei
+/youtab_agent_cli/dashboard_auth/ @eimanghazaei
+/youtab_agent_cli/managed_scope.py @eimanghazaei
+/youtab_agent_cli/route_authz_registry.py @eimanghazaei

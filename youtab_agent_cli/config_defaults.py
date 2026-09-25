@@ -2026,7 +2026,9 @@ DEFAULT_CONFIG = {
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
-        "tirith_fail_open": True,
+        # Scanner failure becomes a human approval in local interactive use
+        # and a denial in unattended/managed use.
+        "tirith_fail_open": False,
         "website_blocklist": {
             "enabled": False,
             "domains": [],
@@ -2046,7 +2048,10 @@ DEFAULT_CONFIG = {
         # ``pip install`` for everything beyond the base set — appropriate
         # for restricted networks, audited environments, or air-gapped
         # systems where any runtime install is unacceptable.
-        "allow_lazy_installs": True,
+        # None selects the runtime-profile default: enabled for an unmanaged
+        # local process, disabled for cron, gateway and managed deployments.
+        # An operator may still set an explicit boolean.
+        "allow_lazy_installs": None,
     },
 
     "cron": {

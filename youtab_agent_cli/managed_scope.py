@@ -38,6 +38,10 @@ _CONFIG_CACHE: Dict[str, tuple] = {}
 _ENV_CACHE: Dict[str, tuple] = {}
 
 
+class ManagedScopeError(RuntimeError):
+    """Raised when an installed administrator policy cannot be trusted."""
+
+
 def _under_pytest() -> bool:
     """True when running inside the test suite.
 
@@ -81,15 +85,17 @@ def invalidate_managed_cache() -> None:
 def _cached_read(path: Path, cache: Dict[str, tuple], parse):
     """Shared (mtime_ns, size)-keyed read. Returns a deepcopy of the parsed value.
 
-    Returns ``None`` when the file is absent or fails to parse (fail-open). A
-    parse failure is logged LOUDLY — the admin needs to know their policy isn't
-    being applied — but never raises, so a malformed managed file can't brick
-    startup.
+    Returns ``None`` only when the file is absent. If an administrator created
+    the managed directory but a policy file is unreadable or malformed, startup
+    must fail closed rather than silently continuing with user-controlled
+    configuration.
     """
     try:
         st = path.stat()
-    except OSError:
-        return None  # absent
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise ManagedScopeError(f"managed policy is unreadable: {path}: {exc}") from exc
     key = (st.st_mtime_ns, st.st_size)
     path_key = str(path)
     with _CACHE_LOCK:
@@ -99,21 +105,16 @@ def _cached_read(path: Path, cache: Dict[str, tuple], parse):
     try:
         with open(path, encoding="utf-8") as f:
             parsed = parse(f)
-    except Exception as exc:  # noqa: BLE001 — fail-open, but LOUD
-        logger.warning(
-            "managed scope: failed to parse %s: %s — IGNORING this managed file. "
-            "Admin policy from this file is NOT being applied. Fix and restart.",
-            path,
-            exc,
-        )
-        return None
+    except Exception as exc:  # noqa: BLE001 — converted to a typed policy failure
+        logger.error("managed scope: failed to read or parse %s: %s", path, exc)
+        raise ManagedScopeError(f"managed policy is invalid: {path}: {exc}") from exc
     with _CACHE_LOCK:
         cache[path_key] = (key[0], key[1], copy.deepcopy(parsed))
     return parsed
 
 
 def load_managed_config() -> dict:
-    """Parsed managed config.yaml, or {} when absent/malformed (fail-open)."""
+    """Return managed config, failing closed when an installed file is invalid."""
     managed_dir = get_managed_dir()
     if managed_dir is None:
         return {}
@@ -122,16 +123,24 @@ def load_managed_config() -> dict:
         _CONFIG_CACHE,
         lambda f: yaml.safe_load(f) or {},
     )
-    return parsed if isinstance(parsed, dict) else {}
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ManagedScopeError("managed config.yaml root must be a mapping")
+    return parsed
 
 
 def load_managed_env() -> Dict[str, str]:
-    """Parsed managed .env (KEY=VALUE), or {} when absent (fail-open)."""
+    """Return managed environment, failing closed when its file is invalid."""
     managed_dir = get_managed_dir()
     if managed_dir is None:
         return {}
     parsed = _cached_read(managed_dir / ".env", _ENV_CACHE, _parse_env)
-    return parsed if isinstance(parsed, dict) else {}
+    if parsed is None:
+        return {}
+    if not isinstance(parsed, dict):
+        raise ManagedScopeError("managed .env must contain KEY=VALUE entries")
+    return parsed
 
 
 def apply_managed_overlay(config: dict) -> dict:
@@ -150,9 +159,9 @@ def apply_managed_overlay(config: dict) -> dict:
       * leaf-level deep-merge managed ON TOP, so managed wins per-leaf while
         sibling keys stay user-controlled.
 
-    Fail-open: returns ``config`` unchanged if no managed scope is present or on
-    any error — managed scope must never break a caller's startup. Mutates and
-    returns ``config`` (callers pass a dict they own).
+    Returns ``config`` unchanged when no managed policy is installed. Invalid
+    installed policy raises :class:`ManagedScopeError`, preventing startup with
+    administrator restrictions silently missing.
     """
     try:
         managed = load_managed_config()
@@ -172,7 +181,9 @@ def apply_managed_overlay(config: dict) -> dict:
             managed_expanded = dict(managed_expanded)
             managed_expanded["model"] = {"default": managed_expanded["model"]}
         return _deep_merge(config, managed_expanded)
-    except Exception:  # noqa: BLE001 — overlay must never break a caller
+    except ManagedScopeError:
+        raise
+    except Exception:  # noqa: BLE001 — implementation errors remain visible but compatible
         logger.warning("managed scope: failed to apply config overlay", exc_info=True)
         return config
 
@@ -181,10 +192,15 @@ def _parse_env(f) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for line in f:
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#"):
             continue
+        if "=" not in line:
+            raise ValueError("managed .env line must use KEY=VALUE syntax")
         key, _, value = line.partition("=")
-        out[key.strip()] = value.strip().strip("\"'")
+        key = key.strip()
+        if not key:
+            raise ValueError("managed .env key cannot be empty")
+        out[key] = value.strip().strip("\"'")
     return out
 
 

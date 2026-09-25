@@ -96,8 +96,8 @@ function installRaf() {
     frames.delete(id)
   })
 
-  Object.defineProperty(window, 'requestAnimationFrame', { configurable: true, value: request })
-  Object.defineProperty(window, 'cancelAnimationFrame', { configurable: true, value: cancel })
+  vi.stubGlobal('requestAnimationFrame', request)
+  vi.stubGlobal('cancelAnimationFrame', cancel)
 
   return {
     cancel,
@@ -141,8 +141,8 @@ describe('PetSprite RAF scheduling', () => {
 
   afterEach(() => {
     cleanup()
-    vi.useRealTimers()
     vi.unstubAllGlobals()
+    vi.useRealTimers()
     vi.restoreAllMocks()
     setVisibility(false)
     delete (window as unknown as { youtabDesktop?: unknown }).youtabDesktop

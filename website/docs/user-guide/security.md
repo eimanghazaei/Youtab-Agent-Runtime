@@ -682,12 +682,12 @@ security:
   tirith_enabled: true       # Enable/disable tirith scanning (default: true)
   tirith_path: "tirith"      # Path to tirith binary (default: PATH lookup)
   tirith_timeout: 5          # Subprocess timeout in seconds
-  tirith_fail_open: true     # Allow execution when tirith is unavailable (default: true)
+  tirith_fail_open: false    # Require approval/deny when tirith is unavailable (default)
 ```
 
-When `tirith_fail_open` is `true` (default), commands proceed if tirith is not installed or times out. Set to `false` in high-security environments to block commands when tirith is unavailable.
+When `tirith_fail_open` is `false` (the default), a local interactive session asks for human approval and an unattended session denies the command if Tirith is unavailable or times out. Setting it to `true` explicitly accepts fail-open execution.
 
-Tirith ships prebuilt binaries for Linux (x86_64 / aarch64) and macOS (x86_64 / arm64). On platforms with no prebuilt binary (Windows, etc.), tirith is silently skipped — pattern-matching guards still run, and the CLI does not surface an "unavailable" banner. To use tirith on Windows, run Youtab under WSL.
+Tirith ships prebuilt binaries for Linux (x86_64 / aarch64) and macOS (x86_64 / arm64). On platforms with no prebuilt binary (Windows, etc.), a local interactive session surfaces an approval request while cron, gateway, managed, and other unattended execution is denied. Pattern-matching guards continue to run. To use Tirith scanning on Windows, run Youtab under WSL.
 
 Tirith's verdict integrates with the approval flow: safe commands pass through, while both suspicious and blocked commands trigger user approval with the full tirith findings (severity, title, description, safer alternatives). Users can approve or deny — the default choice is deny to keep unattended scenarios secure.
 
@@ -783,7 +783,7 @@ The trade-off this fixes:
 How it works:
 
 1. A backend module calls `ensure("feature.name")` at the top of its first-import path.
-2. If the deps are missing, `ensure` checks `security.allow_lazy_installs` in `config.yaml` (default `true`) and runs a venv-scoped `pip install` for the allowlisted specs.
+2. If the deps are missing, `ensure` checks `security.allow_lazy_installs`. The profile-aware default enables an unmanaged local process and disables cron, gateway, and managed deployments; an explicit boolean overrides that default.
 3. If the install fails or the user has disabled lazy installs, the call raises `FeatureUnavailable` with the actual pip stderr and a pointer at `youtab tools`.
 
 Security guarantees enforced by `tools/lazy_deps.py`:

@@ -3148,32 +3148,9 @@ def browser_snapshot(
         # After any eval (browser_console) that may have changed location.href to a
         # private/internal address, the snapshot would expose private page content.
         # Re-check the current URL before returning the snapshot.
-        if (
-            not _is_local_backend()
-            and not _is_local_sidecar_key(effective_task_id)
-            and not _allow_private_urls()
-        ):
-            try:
-                _url_result = _run_browser_command(
-                    effective_task_id, "eval", ["window.location.href"],
-                    timeout=5, _engine_override="auto",
-                )
-                if _url_result.get("success"):
-                    _current_url = (
-                        _url_result.get("data", {}).get("result", "")
-                        .strip().strip('"').strip("'")
-                    )
-                    if _current_url and not _is_safe_url(_current_url):
-                        return json.dumps({
-                            "success": False,
-                            "error": (
-                                "Blocked: page URL targets a private or internal address "
-                                f"({_current_url}). This may have been caused by a "
-                                "JavaScript navigation via browser_console."
-                            ),
-                        }, ensure_ascii=False)
-            except Exception as _url_exc:
-                logger.debug("browser_snapshot: URL safety check failed (%s)", _url_exc)
+        blocked = _blocked_private_page_read(effective_task_id, "return a page snapshot")
+        if blocked is not None:
+            return blocked
 
         # Check if snapshot needs summarization
         if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
@@ -3460,6 +3437,23 @@ def _blocked_private_page_action(effective_task_id: str, action: str) -> Optiona
     }, ensure_ascii=False)
 
 
+def _blocked_private_page_read(effective_task_id: str, action: str) -> Optional[str]:
+    """Deny content reads unless an active SSRF guard proves the page public."""
+    if not _eval_ssrf_guard_active(effective_task_id):
+        return None
+    blocked_url = _current_page_private_url(effective_task_id)
+    if not blocked_url:
+        return None
+    if blocked_url == _UNVERIFIED_PAGE_URL:
+        reason = "the current page URL could not be verified"
+    else:
+        reason = f"page URL targets a private or internal address ({blocked_url})"
+    return json.dumps({
+        "success": False,
+        "error": f"Blocked: {reason}. Refusing to {action} in this browser mode.",
+    }, ensure_ascii=False)
+
+
 def browser_console(clear: bool = False, expression: Optional[str] = None, task_id: Optional[str] = None) -> str:
     """Get browser console messages and JavaScript errors, or evaluate JS in the page.
 
@@ -3577,31 +3571,37 @@ def _expression_targets_private_url(expression: str) -> Optional[str]:
     return None
 
 
+_UNVERIFIED_PAGE_URL = "<unverified-page-url>"
+
+
 def _current_page_private_url(effective_task_id: str) -> Optional[str]:
     """Return the current page URL when it targets a private/internal address.
 
     Reads ``window.location.href`` via a low-cost eval and returns it when the
     page has been navigated (e.g. via ``location.href = '...'`` in a prior
     eval) to an address the SSRF guard would reject.  Returns ``None`` when the
-    page is public, the URL can't be determined, or the check errors (fail-open
-    on probe failure, matching the snapshot/vision guards).
+    page is public. When the URL cannot be determined, returns a non-URL
+    sentinel so callers deny instead of treating a failed security probe as
+    proof that the page is public.
     """
     try:
         url_result = _run_browser_command(
             effective_task_id, "eval", ["window.location.href"],
             timeout=5, _engine_override="auto",
         )
-        if url_result.get("success"):
-            current_url = (
-                url_result.get("data", {}).get("result", "")
-                .strip().strip('"').strip("'")
-            )
-            if current_url and (
-                _is_always_blocked_url(current_url) or not _is_safe_url(current_url)
-            ):
-                return current_url
+        if not url_result.get("success"):
+            return _UNVERIFIED_PAGE_URL
+        current_url = (
+            url_result.get("data", {}).get("result", "")
+            .strip().strip('"').strip("'")
+        )
+        if not current_url:
+            return _UNVERIFIED_PAGE_URL
+        if _is_always_blocked_url(current_url) or not _is_safe_url(current_url):
+            return current_url
     except Exception as exc:
         logger.debug("_current_page_private_url: probe failed (%s)", exc)
+        return _UNVERIFIED_PAGE_URL
     return None
 
 
@@ -3811,18 +3811,11 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                         pass  # keep as string
                 # Post-eval page-URL recheck: if this (or a prior) eval
                 # navigated the page to a private address, withhold the result.
-                if _eval_ssrf_guard_active(effective_task_id):
-                    _blocked_url = _current_page_private_url(effective_task_id)
-                    if _blocked_url:
-                        return json.dumps({
-                            "success": False,
-                            "error": (
-                                "Blocked: page URL targets a private or internal "
-                                f"address ({_blocked_url}). This may have been "
-                                "caused by a JavaScript navigation via "
-                                "browser_console."
-                            ),
-                        }, ensure_ascii=False)
+                blocked = _blocked_private_page_read(
+                    effective_task_id, "return a JavaScript evaluation result"
+                )
+                if blocked is not None:
+                    return blocked
                 response = {
                     "success": True,
                     "result": _redact_browser_output(parsed),
@@ -3900,17 +3893,11 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     }
     # Post-eval page-URL recheck: if this (or a prior) eval navigated the page
     # to a private address, withhold the result (mirrors the supervisor path).
-    if _eval_ssrf_guard_active(effective_task_id):
-        _blocked_url = _current_page_private_url(effective_task_id)
-        if _blocked_url:
-            return json.dumps({
-                "success": False,
-                "error": (
-                    "Blocked: page URL targets a private or internal address "
-                    f"({_blocked_url}). This may have been caused by a "
-                    "JavaScript navigation via browser_console."
-                ),
-            }, ensure_ascii=False)
+    blocked = _blocked_private_page_read(
+        effective_task_id, "return a JavaScript evaluation result"
+    )
+    if blocked is not None:
+        return blocked
     return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False, default=str)
 
 
@@ -3919,9 +3906,8 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
 
     Camofox analogue of ``_current_page_private_url`` (evaluate endpoint instead
     of the agent-browser CLI).  Returns ``None`` when the page is public, the URL
-    can't be determined, or the probe errors (fail-open on probe failure,
-    matching the snapshot/vision guards — do not change to fail-closed without
-    also changing the sibling).
+    is public. A failed or empty probe returns the same deny sentinel as the
+    agent-browser path.
     """
     try:
         from tools.browser_camofox import _post
@@ -3932,10 +3918,13 @@ def _camofox_current_page_private_url(tab_id: str, user_id: str) -> Optional[str
         )
         current_url = str(data.get("result") if isinstance(data, dict) else data or "")
         current_url = current_url.strip().strip('"').strip("'")
-        if current_url and (_is_always_blocked_url(current_url) or not _is_safe_url(current_url)):
+        if not current_url:
+            return _UNVERIFIED_PAGE_URL
+        if _is_always_blocked_url(current_url) or not _is_safe_url(current_url):
             return current_url
     except Exception as exc:
         logger.debug("_camofox_current_page_private_url: probe failed (%s)", exc)
+        return _UNVERIFIED_PAGE_URL
     return None
 
 
@@ -4065,17 +4054,9 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
 
     if result.get("success"):
         # ── Private-network guard (sibling of snapshot/vision/eval guards) ──
-        if _eval_ssrf_guard_active(effective_task_id):
-            _blocked_url = _current_page_private_url(effective_task_id)
-            if _blocked_url:
-                return json.dumps({
-                    "success": False,
-                    "error": (
-                        "Blocked: page URL targets a private or internal address "
-                        f"({_blocked_url}). This may have been caused by a "
-                        "JavaScript navigation via browser_console."
-                    ),
-                }, ensure_ascii=False)
+        blocked = _blocked_private_page_read(effective_task_id, "return page images")
+        if blocked is not None:
+            return blocked
 
         data = result.get("data", {})
         raw_result = data.get("result", "[]")
@@ -4147,32 +4128,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     # After any eval (browser_console) that may have changed location.href to a
     # private/internal address, the screenshot would expose private page content
     # to the vision model.  Re-check the current URL before capturing anything.
-    if (
-        not _is_local_backend()
-        and not _is_local_sidecar_key(effective_task_id)
-        and not _allow_private_urls()
-    ):
-        try:
-            _url_result = _run_browser_command(
-                effective_task_id, "eval", ["window.location.href"],
-                timeout=5, _engine_override="auto",
-            )
-            if _url_result.get("success"):
-                _current_url = (
-                    _url_result.get("data", {}).get("result", "")
-                    .strip().strip('"').strip("'")
-                )
-                if _current_url and not _is_safe_url(_current_url):
-                    return json.dumps({
-                        "success": False,
-                        "error": (
-                            "Blocked: page URL targets a private or internal address "
-                            f"({_current_url}). This may have been caused by a "
-                            "JavaScript navigation via browser_console."
-                        ),
-                    }, ensure_ascii=False)
-        except Exception as _url_exc:
-            logger.debug("browser_vision: URL safety check failed (%s)", _url_exc)
+    blocked = _blocked_private_page_read(effective_task_id, "capture a screenshot")
+    if blocked is not None:
+        return blocked
 
     # Lightpanda has no graphical renderer — pre-route screenshots to Chrome
     # via the fallback helper instead of letting the normal path fail with a

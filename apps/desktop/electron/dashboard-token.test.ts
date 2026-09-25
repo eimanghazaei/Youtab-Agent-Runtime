@@ -21,6 +21,7 @@ import {
 test('extractInjectedDashboardToken reads the JSON-encoded dashboard token', () => {
   const html =
     '<script>window.__YOUTAB_AGENT_SESSION_TOKEN__="served-token";window.__YOUTAB_AGENT_BASE_PATH__=""</script>'
+
   assert.equal(extractInjectedDashboardToken(html), 'served-token')
 })
 
