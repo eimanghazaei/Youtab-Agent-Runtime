@@ -86,6 +86,7 @@ function fakeDesktop() {
   }
 
   return {
+    revalidateConnection: vi.fn(async () => ({ ok: true, rebuilt: false })),
     getConnection: vi.fn(async () => conn),
     getGatewayWsUrl: vi.fn(async () => conn.wsUrl),
     getBootProgress: vi.fn(async () => ({
@@ -199,6 +200,29 @@ async function advanceBackoff() {
 }
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
+  it('does not reconnect a dropped socket until main-process revalidation succeeds', async () => {
+    const desktop = fakeDesktop()
+    let allowed = false
+    desktop.revalidateConnection = vi.fn(async () => {
+      if (!allowed) { throw new Error('Inference refresh pending') }
+      return { ok: true, rebuilt: false }
+    })
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+    expect(desktop.revalidateConnection).toHaveBeenCalled()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    allowed = true
+    await advanceBackoff()
+    await flushAsync()
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForYoutab) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
     // startYoutab()'s remote branch awaits waitForYoutab() for 45s before it

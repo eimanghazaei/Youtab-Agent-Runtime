@@ -105,17 +105,16 @@ class TestOpenRouterParity:
 
 
 class TestYoutabParity:
-    """Youtab: product tags, reasoning, omit when disabled."""
+    """Youtab Gateway accepts only its documented chat fields."""
 
-    def test_tags(self, transport):
-        from agent.portal_tags import youtab_portal_tags
+    def test_gateway_chat_omits_portal_tags(self, transport):
         kw = transport.build_kwargs(
             model="hermes-3-llama-3.1-405b",
             messages=_simple_messages(),
             tools=None,
             provider_profile=get_provider_profile("youtab"),
         )
-        assert kw["extra_body"]["tags"] == youtab_portal_tags()
+        assert "extra_body" not in kw
 
 
 

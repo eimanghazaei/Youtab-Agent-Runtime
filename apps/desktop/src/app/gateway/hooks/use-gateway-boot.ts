@@ -148,7 +148,8 @@ export function useGatewayBoot({
         // whose 'exit' would clear the main process's cached descriptor — without
         // this the renderer re-dials the same dead endpoint forever and stays on
         // "Starting Youtab…". The probe is a no-op for a healthy or local backend.
-        await desktop.revalidateConnection?.().catch(() => undefined)
+        await desktop.revalidateConnection?.()
+        reconnectSecondaryGateways()
 
         const conn = await desktop.getConnection($activeGatewayProfile.get())
 
@@ -224,9 +225,11 @@ export function useGatewayBoot({
       clearReconnectTimer()
       reconnectAttempt = 0
       escalated = false
-      reconnectSecondaryGateways()
-
-      if (!gatewayOpen()) {
+      if (gatewayOpen()) {
+        void desktop.revalidateConnection?.().then(() => {
+          if (!cancelled) { reconnectSecondaryGateways() }
+        }).catch(() => undefined)
+      } else {
         void attemptReconnect()
       }
     }

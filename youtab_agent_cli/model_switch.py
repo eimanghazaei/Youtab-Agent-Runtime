@@ -1935,6 +1935,7 @@ def list_authenticated_providers(
     from youtab_agent_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
+        provider_model_ids,
         clear_provider_models_cache, get_curated_youtab_model_ids,
     )
 
@@ -2171,8 +2172,14 @@ def list_authenticated_providers(
         # /model picker sees the SAME list `youtab model` would build, with
         # disk caching to keep the picker open snappy. Falls back to the
         # curated static list when the live fetcher returns nothing.
-        model_ids = cached_provider_model_ids(youtab_id)
-        if not model_ids:
+        from youtab_agent_cli.auth import get_local_inference_token_state
+
+        exact_inference = youtab_id == "youtab" and (
+            get_local_inference_token_state() is not None
+            or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1"
+        )
+        model_ids = provider_model_ids(youtab_id) if exact_inference else cached_provider_model_ids(youtab_id)
+        if not model_ids and not exact_inference:
             model_ids = curated.get(youtab_id, [])
             if youtab_id in _MODELS_DEV_PREFERRED:
                 model_ids = _merge_with_models_dev(youtab_id, model_ids)
@@ -2184,7 +2191,7 @@ def list_authenticated_providers(
             configured = user_providers.get(youtab_id)
             if isinstance(configured, dict):
                 configured_models = _declared_model_ids(configured.get("models"))
-        model_ids = list(dict.fromkeys([*configured_models, *model_ids]))
+        model_ids = list(dict.fromkeys(model_ids if exact_inference else [*configured_models, *model_ids]))
         total = len(model_ids)
         if youtab_id in _UNCAPPED_PICKER_PROVIDERS:
             top = model_ids  # Aggregator: show full catalog regardless of max_models
@@ -2332,6 +2339,22 @@ def list_authenticated_providers(
             except Exception:
                 model_ids = curated.get(youtab_slug, []) or curated.get(pid, [])
         elif youtab_slug == "youtab":
+            from youtab_agent_cli.auth import get_local_inference_token_state
+
+            if (
+                get_local_inference_token_state() is not None
+                or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1"
+            ):
+                model_ids = provider_model_ids("youtab")
+                results.append({
+                    "slug": "youtab", "name": get_label("youtab"),
+                    "is_current": current_provider == "youtab", "is_user_defined": False,
+                    "models": model_ids, "total_models": len(model_ids), "source": "youtab",
+                })
+                seen_slugs.add(pid.lower())
+                seen_slugs.add(youtab_slug.lower())
+                _record_builtin_endpoint(youtab_slug)
+                continue
             # Youtab serves a large live /v1/models catalog (vendor-prefixed
             # models from many providers, returned alphabetically). The
             # `youtab model` picker deliberately shows ONLY the curated agentic

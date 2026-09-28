@@ -41,9 +41,32 @@ export interface NativePkcePair {
 export interface NativeTokenSet {
   accessToken: string
   refreshToken: string
+  inferenceAccessToken?: string
+  /** Local profiles whose inference credential follows this Gateway session. */
+  profiles?: string[]
   expiresAt: number
   provider: string
   userId: string
+}
+
+/** A renderer-supplied profile may only confirm the main process's selected profile. */
+export function resolveNativeProviderProfile(requested: unknown, selected: string | null): string {
+  const profile = selected || 'default'
+  if (requested != null && requested !== profile) {
+    throw new Error('Native provider profile does not match the selected Desktop profile')
+  }
+  return profile
+}
+
+/** Keep unreadable saved sessions in wake validation so they fail closed. */
+export function nativeProfileSessionKeys(
+  keys: string[],
+  load: (baseUrl: string) => NativeTokenSet | null
+): string[] {
+  return keys.filter(baseUrl => {
+    const tokens = load(baseUrl)
+    return !tokens || Boolean(tokens.profiles?.length)
+  })
 }
 
 /** base64url without `=` padding (RFC 7636 §4). */
@@ -176,20 +199,24 @@ export function parseLoopbackCallback(requestUrl: string, expectedState: string)
  * token so a malformed response fails loudly rather than storing junk.
  */
 export function parseTokenResponse(body: any): NativeTokenSet {
-  const accessToken = String(body?.access_token || '')
+  const accessToken = String(body?.access_token || body?.accessToken || '')
 
   if (!accessToken) {
     throw new Error('Gateway token response missing access_token')
   }
 
-  const expiresAt = Number(body?.expires_at)
+  const expiresAt = Number(body?.expires_at ?? body?.expiresAt)
 
   return {
     accessToken,
-    refreshToken: String(body?.refresh_token || ''),
+    refreshToken: String(body?.refresh_token || body?.refreshToken || ''),
+    inferenceAccessToken: String(body?.inference_access_token || body?.inferenceAccessToken || ''),
+    profiles: Array.isArray(body?.profiles)
+      ? body.profiles.filter((profile: unknown): profile is string => typeof profile === 'string')
+      : [],
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
     provider: String(body?.provider || ''),
-    userId: String(body?.user_id || '')
+    userId: String(body?.user_id || body?.userId || '')
   }
 }
 
@@ -209,6 +236,135 @@ export function tokenNeedsRefresh(
   }
 
   return nowSeconds >= tokens.expiresAt - skewSeconds
+}
+
+/** Deadline for replacing the profile token before Runtime's lifetime margin. */
+export function inferenceRefreshDelayMs(tokens: NativeTokenSet, nowSeconds: number): number {
+  if (!tokens.inferenceAccessToken) { return 0 }
+  try {
+    const payload = JSON.parse(Buffer.from(tokens.inferenceAccessToken.split('.')[1], 'base64url').toString('utf8'))
+    const expires = Number(payload.exp)
+    const issued = Number(payload.iat)
+    if (!Number.isFinite(expires) || expires <= nowSeconds) { return 0 }
+    const lifetime = Number.isFinite(issued) && issued < expires ? expires - issued : expires - nowSeconds
+    const margin = Math.min(Math.max(1, Math.floor(lifetime / 10)), 30, Math.max(0, lifetime - 1))
+    const accountDeadline = tokens.expiresAt > 0 ? tokens.expiresAt - 90 : expires
+    return Math.max(0, Math.floor((Math.min(expires - margin, accountDeadline) - nowSeconds) * 1000))
+  } catch {
+    return 0 // Malformed token must be refreshed, not treated as durable.
+  }
+}
+
+function unexpiredInferenceToken(tokens: NativeTokenSet, nowSeconds: number): string | null {
+  try {
+    const token = tokens.inferenceAccessToken || ''
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'))
+    return Number(payload.exp) > nowSeconds ? token : null
+  } catch {
+    return null
+  }
+}
+
+/** Serialize refresh and keep a rotated response in memory until every profile write succeeds. */
+export function createNativeRefreshCoordinator(deps: {
+  load: (baseUrl: string) => NativeTokenSet | null
+  exchange: (baseUrl: string, tokens: NativeTokenSet) => Promise<NativeTokenSet>
+  writeProfile: (profile: string, token: string | null) => Promise<void>
+  commit: (baseUrl: string, tokens: NativeTokenSet) => void
+  clear: (baseUrl: string) => void
+  now: () => number
+}) {
+  const inFlight = new Map<string, Promise<string | null>>()
+  const pending = new Map<string, NativeTokenSet>()
+
+  function discard(baseUrl: string) {
+    pending.delete(baseUrl)
+  }
+
+  async function wait(baseUrl: string): Promise<void> {
+    try {
+      await inFlight.get(baseUrl)
+    } catch {
+      // Login/logout still needs to proceed after a transient refresh error.
+    }
+  }
+
+  function ensure(baseUrl: string, force = false): Promise<string | null> {
+    const active = inFlight.get(baseUrl)
+    if (active) { return active }
+
+    const operation = (async () => {
+      const tokens = deps.load(baseUrl)
+      if (!tokens) { return null }
+      const now = deps.now()
+      const profileTokenNeedsRefresh = Boolean(tokens.profiles?.length)
+        && inferenceRefreshDelayMs(tokens, now) <= 0
+      if (!force && !pending.has(baseUrl) && !tokenNeedsRefresh(tokens, now)
+          && !profileTokenNeedsRefresh) { return tokens.accessToken }
+
+      if (!tokens.refreshToken) {
+        for (const profile of tokens.profiles || []) { await deps.writeProfile(profile, null) }
+        deps.clear(baseUrl)
+        return null
+      }
+
+      let rotated = pending.get(baseUrl)
+      if (!rotated) {
+        try {
+          rotated = await deps.exchange(baseUrl, tokens)
+        } catch (error: any) {
+          if (error?.statusCode !== 401) { throw error }
+          for (const profile of tokens.profiles || []) { await deps.writeProfile(profile, null) }
+          deps.clear(baseUrl)
+          return null
+        }
+        rotated.profiles = tokens.profiles
+        if (rotated.profiles?.length && !rotated.inferenceAccessToken) {
+          throw new Error('Gateway refresh omitted inference credential')
+        }
+        pending.set(baseUrl, rotated)
+      }
+      const updated: string[] = []
+      try {
+        for (const profile of rotated.profiles || []) {
+          await deps.writeProfile(profile, rotated.inferenceAccessToken!)
+          updated.push(profile)
+        }
+        deps.commit(baseUrl, rotated)
+      } catch (error) {
+        // A multi-profile write is not atomic; restore completed profiles to
+        // the previous usable credential (or clear an expired credential).
+        const previous = unexpiredInferenceToken(tokens, deps.now())
+        for (const profile of updated.reverse()) { await deps.writeProfile(profile, previous) }
+        throw error
+      }
+      pending.delete(baseUrl)
+      return rotated.accessToken
+    })()
+
+    inFlight.set(baseUrl, operation)
+    void operation.finally(() => {
+      if (inFlight.get(baseUrl) === operation) { inFlight.delete(baseUrl) }
+    }).catch(() => undefined)
+    return operation
+  }
+
+  return { discard, ensure, wait }
+}
+
+/** Renderer reconnect is released only after every profile session is revalidated. */
+export async function revalidateNativeSessionsBeforeResume(
+  baseUrls: string[],
+  load: (baseUrl: string) => NativeTokenSet | null,
+  ensure: (baseUrl: string) => Promise<string | null>,
+  reconnect: () => void
+): Promise<void> {
+  for (const baseUrl of baseUrls) {
+    const tokens = load(baseUrl)
+    if (!tokens?.profiles?.length) { throw new Error('Native session revalidation pending') }
+    if (!await ensure(baseUrl)) { throw new Error('Native session revalidation pending') }
+  }
+  reconnect()
 }
 
 export { NATIVE_FLOW_ID }

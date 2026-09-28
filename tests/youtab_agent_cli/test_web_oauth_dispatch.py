@@ -137,6 +137,20 @@ def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
     assert observed_homes == [profile_home]
 
 
+def test_youtab_catalog_advertises_native_gateway_flow():
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200
+    by_id = {entry["id"]: entry for entry in resp.json()["providers"]}
+    assert by_id["youtab"]["flow"] == "native_pkce"
+    assert by_id["youtab"]["native_base_url"] == "https://api.youtab.io"
+
+
+def test_youtab_legacy_local_oauth_start_fails_closed():
+    resp = client.post("/api/providers/oauth/youtab/start", headers=HEADERS)
+    assert resp.status_code == 400
+    assert "Unsupported flow" in resp.json()["detail"]
+
+
 def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypatch):
     from youtab_agent_cli import web_server as ws
 

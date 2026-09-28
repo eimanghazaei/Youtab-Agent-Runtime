@@ -1462,6 +1462,36 @@ def _resolve_azure_foundry_runtime(
     }
 
 
+def _resolve_profile_inference_runtime(
+    *, requested_provider: str, target_model: str,
+) -> Optional[Dict[str, Any]]:
+    """Resolve only the selected profile's Desktop-issued inference token."""
+    state = auth_mod.get_local_inference_token_state()
+    if state is None:
+        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+            raise AuthError(
+                "Desktop inference requires a profile Gateway credential; sign in to Youtab.",
+                provider="youtab",
+            )
+        return None
+    if not _agent_key_is_usable(state, auth_mod.inference_token_safety_seconds(state)):
+        raise AuthError(
+            "Profile inference credential expired; Desktop sign-in is required.",
+            provider="youtab",
+        )
+    from youtab_agent_cli.providers import youtab_api_mode
+
+    return {
+        "provider": "youtab",
+        "api_mode": youtab_api_mode(target_model),
+        "base_url": auth_mod.DEFAULT_YOUTAB_INFERENCE_URL,
+        "api_key": state["agent_key"],
+        "expires_at": state["agent_key_expires_at"],
+        "source": "profile_inference_token",
+        "requested_provider": requested_provider,
+    }
+
+
 def _resolve_explicit_runtime(
     *,
     provider: str,
@@ -1524,6 +1554,12 @@ def _resolve_explicit_runtime(
         }
 
     if provider == "youtab":
+        profile_inference = _resolve_profile_inference_runtime(
+            requested_provider=requested_provider,
+            target_model=target_model or model_cfg.get("default") or "",
+        )
+        if profile_inference is not None:
+            return profile_inference
         from youtab_agent_cli.providers import youtab_api_mode
 
         state = auth_mod.get_provider_auth_state("youtab") or {}
@@ -1539,7 +1575,7 @@ def _resolve_explicit_runtime(
             str(state.get("agent_key") or "").strip()
             if _agent_key_is_usable(
                 state,
-                max(60, env_int("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", 1800)),
+                auth_mod.inference_token_safety_seconds(state),
             )
             else ""
         )
@@ -1805,6 +1841,14 @@ def resolve_runtime_provider(
     if explicit_runtime:
         return explicit_runtime
 
+    if provider == "youtab":
+        profile_inference = _resolve_profile_inference_runtime(
+            requested_provider=requested_provider,
+            target_model=target_model or model_cfg.get("default") or "",
+        )
+        if profile_inference is not None:
+            return profile_inference
+
     should_use_pool = provider != "openrouter"
     if provider == "openrouter":
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
@@ -1844,12 +1888,12 @@ def resolve_runtime_provider(
         # expired/missing, refresh the selected pool entry before falling back
         # to singleton auth resolution.
         if provider == "youtab" and entry is not None:
-            min_ttl = max(60, env_int("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", 1800))
             youtab_state = {
                 "agent_key": getattr(entry, "agent_key", None),
                 "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
                 "scope": getattr(entry, "scope", None),
             }
+            min_ttl = auth_mod.inference_token_safety_seconds(youtab_state)
             if not _agent_key_is_usable(youtab_state, min_ttl):
                 logger.debug("Youtab pool entry agent_key expired/missing, refreshing selected pool entry")
                 try:

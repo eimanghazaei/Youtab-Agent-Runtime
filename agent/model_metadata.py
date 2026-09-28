@@ -563,7 +563,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "portal.qwen.ai": "qwen-oauth",
     "openrouter.ai": "openrouter",
     "generativelanguage.googleapis.com": "gemini",
-    "inference-api.youtab.io": "youtab",
+    "api.youtab.io": "youtab",
+    "inference-api.youtab.io": "youtab",  # classify historical cache entries
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot",
     # Enterprise Copilot endpoints look like api.enterprise.githubcopilot.com,

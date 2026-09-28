@@ -308,7 +308,7 @@ def _is_youtab_inference_route(provider: str, base_url: str) -> bool:
         return True
     base = str(base_url or "")
     return (
-        base_url_host_matches(base, "inference-api.youtab.io")
+        base_url_host_matches(base, "api.youtab.io")
     )
 
 

@@ -92,8 +92,14 @@ declare global {
       sshConfigHosts: () => Promise<DesktopSshHostsResult>
       sshResolveHost: (host: string) => Promise<DesktopSshResolveResult>
       probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
-      oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      oauthLoginConnectionConfig: (
+        remoteUrl: string,
+        options?: { nativeCapability?: boolean; profile?: null | string }
+      ) => Promise<DesktopOauthLoginResult>
+      oauthLogoutConnectionConfig: (
+        remoteUrl?: string,
+        options?: { nativeCapability?: boolean; profile?: null | string }
+      ) => Promise<DesktopOauthLogoutResult>
       // Youtab Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
       cloud: {

@@ -6,6 +6,7 @@ import { notify, notifyError } from '@/store/notifications'
 import type { ModelOptionProvider, OAuthProvider, OAuthStartResponse } from '@/types/youtab'
 import {
   cancelOAuthSession,
+  getApiRequestProfile,
   getGlobalModelOptions,
   getRecommendedDefaultModel,
   listOAuthProviders,
@@ -589,6 +590,23 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
   setFlow({ status: 'starting', provider })
 
   try {
+    if (provider.flow === 'native_pkce') {
+      if (!provider.native_base_url || !window.youtabDesktop?.oauthLoginConnectionConfig) {
+        throw new Error('Native Gateway sign-in is unavailable for this provider')
+      }
+      const result = await window.youtabDesktop.oauthLoginConnectionConfig(provider.native_base_url, {
+        nativeCapability: true,
+        profile: getApiRequestProfile()
+      })
+      if (!result.connected) {
+        throw new Error('Gateway sign-in did not complete')
+      }
+      setFlow({ status: 'success', provider })
+      await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
+        setFlow({ status: 'error', provider, message: providerResolutionFailure(reason) })
+      )
+      return
+    }
     const start = await startOAuthLogin(provider.id)
     const browserUrl = start.flow === 'device_code' ? start.verification_url : start.auth_url
     await openSignInUrl(browserUrl)

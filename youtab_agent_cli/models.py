@@ -1913,7 +1913,7 @@ def _resolve_openrouter_api_key() -> str:
     return os.getenv("OPENROUTER_API_KEY", "").strip()
 
 
-_DEFAULT_YOUTAB_INFERENCE_BASE = "https://inference-api.youtab.io"
+_DEFAULT_YOUTAB_INFERENCE_BASE = "https://api.youtab.io"
 
 
 def _resolve_youtab_pricing_credentials() -> tuple[str, str]:
@@ -1947,6 +1947,11 @@ def _resolve_youtab_pricing_credentials() -> tuple[str, str]:
 
     api_key = ""
     creds_base = ""
+    from youtab_agent_cli.auth import get_local_inference_token_state
+
+    local = get_local_inference_token_state()
+    if local is not None:
+        return (str(local.get("agent_key") or ""), _DEFAULT_YOUTAB_INFERENCE_BASE + "/v1")
     try:
         from youtab_agent_cli.auth import resolve_youtab_runtime_credentials
 
@@ -1981,7 +1986,7 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
     if normalized == "youtab":
         api_key, base_url = _resolve_youtab_pricing_credentials()
         if base_url:
-            # Youtab base_url typically looks like https://inference-api.youtab.io/v1
+            # Gateway inference base URL ends in /v1.
             # We need the part before /v1 for our fetch function
             stripped = base_url.rstrip("/")
             if stripped.endswith("/v1"):
@@ -2806,6 +2811,32 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "youtab":
+        from youtab_agent_cli.auth import (
+            DEFAULT_YOUTAB_INFERENCE_URL,
+            _agent_key_is_usable,
+            fetch_youtab_models,
+            get_local_inference_token_state,
+            inference_token_safety_seconds,
+        )
+
+        local = get_local_inference_token_state()
+        if local is not None:
+            if not _agent_key_is_usable(local, inference_token_safety_seconds(local)):
+                return []
+            try:
+                ids = fetch_youtab_models(
+                    api_key=local["agent_key"],
+                    inference_base_url=DEFAULT_YOUTAB_INFERENCE_URL,
+                    exact=True,
+                )
+                return [
+                    mid for mid in ids
+                    if not mid.lower().startswith(("anthropic/", "anthropic."))
+                ]
+            except Exception:
+                return []
+        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+            return []
         # Try live Youtab Portal /models endpoint
         try:
             from youtab_agent_cli.auth import fetch_youtab_models, resolve_youtab_runtime_credentials
@@ -4693,6 +4724,18 @@ def validate_requested_model(
             "recognized": False,
             "message": "Model names cannot contain spaces.",
         }
+
+    if normalized == "youtab":
+        from youtab_agent_cli.auth import get_local_inference_token_state
+
+        if get_local_inference_token_state() is not None:
+            admitted = requested in provider_model_ids("youtab", force_refresh=True)
+            return {
+                "accepted": admitted,
+                "persist": admitted,
+                "recognized": admitted,
+                "message": None if admitted else "Gateway Engine ID is unavailable.",
+            }
 
     if normalized == "lmstudio":
         from youtab_agent_cli.auth import AuthError

@@ -74,7 +74,7 @@ def is_youtab_inference_route(provider: str, base_url: str) -> bool:
     """True when the failing route is the Youtab-managed inference gateway."""
     if (provider or "").strip().lower() == "youtab":
         return True
-    return base_url_host_matches(str(base_url or ""), "inference-api.youtab.io")
+    return base_url_host_matches(str(base_url or ""), "api.youtab.io")
 
 
 def _youtab_billing_url() -> Optional[str]:

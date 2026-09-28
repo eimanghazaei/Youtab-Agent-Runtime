@@ -13,6 +13,8 @@ from youtab_agent_cli.auth import (
     AuthError,
     _agent_key_is_usable,
     _is_expiring,
+    get_local_inference_token_state,
+    inference_token_safety_seconds,
     get_provider_auth_state,
     resolve_youtab_runtime_credentials,
 )
@@ -94,6 +96,13 @@ def refresh_youtab_auth_keepalive_once(
     timeout_seconds: Optional[float] = None,
 ) -> bool:
     """Refresh Youtab auth once if credentials are configured."""
+    if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+        # Electron main owns profile token refresh. A Desktop child must never
+        # use the legacy OAuth pool or singleton refresh path.
+        local = get_local_inference_token_state()
+        return bool(
+            local and _agent_key_is_usable(local, inference_token_safety_seconds(local))
+        )
     min_key_ttl_seconds = max(60, int(min_key_ttl_seconds))
 
     pool_result = _refresh_selected_pool_entry(

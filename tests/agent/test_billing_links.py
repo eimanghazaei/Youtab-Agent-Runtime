@@ -19,7 +19,7 @@ from agent.billing_links import (
 
 def test_is_youtab_inference_route_helper():
     assert is_youtab_inference_route("youtab", "") is True
-    assert is_youtab_inference_route("", "https://inference-api.youtab.io/v1") is True
+    assert is_youtab_inference_route("", "https://api.youtab.io/v1") is True
     assert is_youtab_inference_route("openai", "https://api.openai.com/v1") is False
 
 

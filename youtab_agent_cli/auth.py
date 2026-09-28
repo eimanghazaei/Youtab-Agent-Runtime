@@ -73,7 +73,7 @@ AUTH_LOCK_TIMEOUT_SECONDS = 15.0
 
 # Youtab Portal defaults
 DEFAULT_YOUTAB_PORTAL_URL = "https://api.youtab.io"
-DEFAULT_YOUTAB_INFERENCE_URL = "https://inference-api.youtab.io/v1"
+DEFAULT_YOUTAB_INFERENCE_URL = "https://api.youtab.io/v1"
 DEFAULT_YOUTAB_CLIENT_ID = "youtab-cli"
 YOUTAB_INFERENCE_INVOKE_SCOPE = "inference:invoke"
 YOUTAB_BILLING_MANAGE_SCOPE = "billing:manage"
@@ -177,7 +177,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     "youtab": ProviderConfig(
         id="youtab",
         name="Youtab Portal",
-        auth_type="oauth_device_code",
+        auth_type="oauth_external",
         portal_base_url=DEFAULT_YOUTAB_PORTAL_URL,
         inference_base_url=DEFAULT_YOUTAB_INFERENCE_URL,
         client_id=DEFAULT_YOUTAB_CLIENT_ID,
@@ -5608,6 +5608,7 @@ def fetch_youtab_models(
     api_key: str,
     timeout_seconds: float = 15.0,
     verify: bool | str = True,
+    exact: bool = False,
 ) -> List[str]:
     """Fetch available model IDs from the Youtab inference API."""
     timeout = httpx.Timeout(timeout_seconds)
@@ -5639,7 +5640,7 @@ def fetch_youtab_models(
         if isinstance(model_id, str) and model_id.strip():
             mid = model_id.strip()
             # Skip Youtab models — they're not reliable for agentic tool-calling
-            if "youtab" in mid.lower():
+            if not exact and "youtab" in mid.lower():
                 continue
             model_ids.append(mid)
 
@@ -5669,6 +5670,87 @@ def _agent_key_is_usable(state: Dict[str, Any], min_ttl_seconds: int) -> bool:
         expires_at=state.get("agent_key_expires_at"),
         min_ttl_seconds=max(0, int(min_ttl_seconds)),
     )
+
+
+def inference_token_safety_seconds(state: Dict[str, Any]) -> int:
+    """Use a short clock margin bounded by this credential's own lifetime."""
+    lifetime = _coerce_ttl_seconds(state.get("agent_key_expires_in"))
+    if not lifetime:
+        obtained = _parse_iso_timestamp(state.get("agent_key_obtained_at"))
+        expires = _parse_iso_timestamp(state.get("agent_key_expires_at"))
+        if obtained is not None and expires is not None:
+            lifetime = max(0, int(expires - obtained))
+    if not lifetime:
+        claims = _decode_jwt_claims(state.get("agent_key"))
+        issued, expires = claims.get("iat"), claims.get("exp")
+        if isinstance(issued, (int, float)) and isinstance(expires, (int, float)):
+            lifetime = max(0, int(expires - issued))
+    if not lifetime:
+        return 0
+    return min(max(1, lifetime // 10), 30, max(0, lifetime - 1))
+
+
+def _is_profile_inference_token(token: str) -> bool:
+    """Check the dedicated resource profile before exposing a stored bearer."""
+    claims = _decode_jwt_claims(token)
+    issuer = claims.get("iss")
+    return bool(
+        claims.get("type") == "inference_access"
+        and isinstance(issuer, str)
+        and issuer.startswith("https://")
+        and claims.get("aud") == f"{issuer.rstrip('/')}/v1/inference"
+        and _youtab_invoke_jwt_status(token, min_ttl_seconds=0) is None
+    )
+
+
+def get_local_inference_token_state() -> Optional[Dict[str, Any]]:
+    """Read only the active profile's inference entry, never the global store."""
+    path = _auth_file_path()
+    with _auth_store_lock(target_path=path):
+        providers = _load_auth_store(path).get("providers")
+        state = providers.get("youtab") if isinstance(providers, dict) else None
+        if (
+            isinstance(state, dict)
+            and "agent_key" in state
+            and not state.get("access_token")
+            and not state.get("refresh_token")
+        ):
+            local = dict(state)
+            if local.get("agent_key") and not _is_profile_inference_token(local["agent_key"]):
+                # Keep the entry as a shadow so no global credential appears.
+                local["agent_key"] = ""
+            return local
+    return None
+
+
+def persist_profile_inference_token(token: Optional[str]) -> None:
+    """Replace the local Youtab entry without mirroring or OAuth refresh.
+
+    A blank local entry shadows global credentials after profile logout.
+    """
+    value = str(token or "").strip()
+    if value:
+        if not _is_profile_inference_token(value):
+            raise AuthError("Invalid inference credential (type, audience, scope, or expiry).", provider="youtab")
+        expires_at = _youtab_jwt_expires_at(value)
+        expires_epoch = _parse_iso_timestamp(expires_at)
+        if expires_epoch is None:
+            raise AuthError("Inference credential has no expiry.", provider="youtab")
+        now = datetime.now(timezone.utc)
+        state = {
+            "agent_key": value,
+            "agent_key_expires_at": expires_at,
+            "agent_key_expires_in": max(0, int(expires_epoch - now.timestamp())),
+            "agent_key_obtained_at": now.isoformat(),
+        }
+    else:
+        state = {
+            "agent_key": "",
+            "agent_key_expires_at": None,
+            "agent_key_expires_in": None,
+            "agent_key_obtained_at": None,
+        }
+    _persist_provider_state_to_store("youtab", state, _auth_file_path())
 
 
 def resolve_youtab_access_token(
@@ -6470,6 +6552,23 @@ def get_youtab_auth_status() -> Dict[str, Any]:
 
 def _compute_youtab_auth_status() -> Dict[str, Any]:
     """Uncached implementation of get_youtab_auth_status(). See that function."""
+    local = get_local_inference_token_state()
+    if local is not None:
+        usable = _agent_key_is_usable(local, inference_token_safety_seconds(local))
+        return {
+            "logged_in": usable,
+            "portal_base_url": DEFAULT_YOUTAB_PORTAL_URL,
+            "inference_base_url": DEFAULT_YOUTAB_INFERENCE_URL,
+            "access_expires_at": local.get("agent_key_expires_at"),
+            "agent_key_expires_at": local.get("agent_key_expires_at"),
+            "has_refresh_token": False,
+            "inference_credential_present": usable,
+            "credential_source": "profile_inference_token",
+            "source": "profile_inference_token",
+        }
+    if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+        return {"logged_in": False, "inference_credential_present": False,
+                "has_refresh_token": False, "source": "profile_inference_token"}
     state = get_provider_auth_state("youtab")
     if state:
         base_status = {
@@ -6538,6 +6637,24 @@ def get_youtab_auth_status_local() -> Dict[str, Any]:
     has not been terminally quarantined. It does not prove the refresh token
     is still accepted server-side — only a live resolve can do that.
     """
+    local = get_local_inference_token_state()
+    if local is not None:
+        usable = _agent_key_is_usable(local, inference_token_safety_seconds(local))
+        return {
+            "logged_in": usable,
+            "portal_base_url": DEFAULT_YOUTAB_PORTAL_URL,
+            "inference_base_url": DEFAULT_YOUTAB_INFERENCE_URL,
+            "access_token": None,
+            "access_expires_at": local.get("agent_key_expires_at"),
+            "agent_key_expires_at": local.get("agent_key_expires_at"),
+            "has_refresh_token": False,
+            "inference_credential_present": usable,
+            "credential_source": "profile_inference_token",
+            "source": "profile_inference_token",
+        }
+    if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+        return {"logged_in": False, "inference_credential_present": False,
+                "has_refresh_token": False, "source": "profile_inference_token"}
     try:
         state = get_provider_auth_state("youtab")
     except Exception:
@@ -8499,131 +8616,11 @@ def _youtab_device_code_login(
     on_verification: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, Any]:
     """Run the Youtab device-code flow and return full OAuth state without persisting."""
-    pconfig = PROVIDER_REGISTRY["youtab"]
-    portal_base_url = (
-        portal_base_url
-        or os.getenv("YOUTAB_AGENT_PORTAL_BASE_URL")
-        or os.getenv("YOUTAB_PORTAL_BASE_URL")
-        or pconfig.portal_base_url
-    ).rstrip("/")
-    requested_inference_url = (
-        inference_base_url
-        or os.getenv("YOUTAB_INFERENCE_BASE_URL")
-        or pconfig.inference_base_url
-    ).rstrip("/")
-    client_id = client_id or pconfig.client_id
-    scope = scope or pconfig.scope
-    timeout = httpx.Timeout(timeout_seconds)
-    verify: bool | str = False if insecure else (ca_bundle if ca_bundle else True)
-
-    if _is_remote_session():
-        open_browser = False
-
-    print(f"Starting Youtab login via {pconfig.name}...")
-    print(f"Portal: {portal_base_url}")
-    if insecure:
-        print("TLS verification: disabled (--insecure)")
-    elif ca_bundle:
-        print(f"TLS verification: custom CA bundle ({ca_bundle})")
-
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
-        device_data = _request_device_code(
-            client=client,
-            portal_base_url=portal_base_url,
-            client_id=client_id,
-            scope=scope,
-        )
-
-        verification_url = str(device_data["verification_uri_complete"])
-        user_code = str(device_data["user_code"])
-        expires_in = int(device_data["expires_in"])
-        interval = int(device_data["interval"])
-
-        print()
-        print("To continue:")
-        print(f"  1. Open: {verification_url}")
-        print(f"  2. If prompted, enter code: {user_code}")
-
-        if open_browser:
-            opened = webbrowser.open(verification_url)
-            if opened:
-                print("  (Opened browser for verification)")
-            else:
-                print("  Could not open browser automatically — use the URL above.")
-
-        # Surface the verification URL/code to an out-of-band consumer (e.g. the
-        # TUI gateway, whose stdout is a JSON-RPC pipe — a plain print() there is
-        # dropped). Fired AFTER the print/browser block and BEFORE polling blocks,
-        # so the consumer can render the link while we wait. Best-effort.
-        if on_verification is not None:
-            try:
-                on_verification(verification_url, user_code)
-            except Exception:
-                pass
-
-        effective_interval = max(1, min(interval, DEVICE_AUTH_POLL_INTERVAL_CAP_SECONDS))
-        print(f"Waiting for approval (polling every {effective_interval}s)...")
-
-        token_data = _poll_for_token(
-            client=client,
-            portal_base_url=portal_base_url,
-            client_id=client_id,
-            device_code=str(device_data["device_code"]),
-            expires_in=expires_in,
-            poll_interval=interval,
-        )
-
-    now = datetime.now(timezone.utc)
-    token_expires_in = _coerce_ttl_seconds(token_data.get("expires_in", 0))
-    expires_at = now.timestamp() + token_expires_in
-    resolved_inference_url = (
-        _optional_base_url(token_data.get("inference_base_url"))
-        or requested_inference_url
+    raise AuthError(
+        "Youtab device-code login is unavailable; use Desktop native Gateway sign-in.",
+        provider="youtab",
+        code="unsupported_device_code",
     )
-    if resolved_inference_url != requested_inference_url:
-        print(f"Using portal-provided inference URL: {resolved_inference_url}")
-
-    auth_state = {
-        "portal_base_url": portal_base_url,
-        "inference_base_url": resolved_inference_url,
-        "client_id": client_id,
-        "scope": token_data.get("scope") or scope,
-        "token_type": token_data.get("token_type", "Bearer"),
-        "access_token": token_data["access_token"],
-        "refresh_token": token_data.get("refresh_token"),
-        "obtained_at": now.isoformat(),
-        "expires_at": datetime.fromtimestamp(expires_at, tz=timezone.utc).isoformat(),
-        "expires_in": token_expires_in,
-        "tls": {
-            "insecure": verify is False,
-            "ca_bundle": verify if isinstance(verify, str) else None,
-        },
-        "agent_key": None,
-        "agent_key_id": None,
-        "agent_key_expires_at": None,
-        "agent_key_expires_in": None,
-        "agent_key_reused": None,
-        "agent_key_obtained_at": None,
-    }
-    try:
-        return refresh_youtab_oauth_from_state(
-            auth_state,
-            timeout_seconds=timeout_seconds,
-            force_refresh=False,
-        )
-    except AuthError as exc:
-        if exc.code == "subscription_required":
-            portal_url = auth_state.get(
-                "portal_base_url", DEFAULT_YOUTAB_PORTAL_URL
-            ).rstrip("/")
-            message = format_auth_error(exc)
-            print()
-            print(message)
-            print(f"  Subscribe here: {portal_url}/billing")
-            print()
-            print("After subscribing, run `youtab model` again to finish setup.")
-            raise SystemExit(1)
-        raise
 
 
 def youtab_token_has_billing_scope() -> bool:
@@ -8933,7 +8930,12 @@ def logout_command(args) -> None:
     should_reset_config = _should_reset_config_provider_on_logout(target)
     provider_name = get_auth_provider_display_name(target)
 
-    if clear_provider_auth(target) or should_reset_config:
+    cleared = clear_provider_auth(target)
+    if target == "youtab":
+        # Keep a local tombstone so a profile logout cannot expose a global
+        # Youtab credential through the legacy provider fallback.
+        persist_profile_inference_token(None)
+    if cleared or should_reset_config:
         if should_reset_config:
             _reset_config_provider()
         print(f"Logged out of {provider_name}.")

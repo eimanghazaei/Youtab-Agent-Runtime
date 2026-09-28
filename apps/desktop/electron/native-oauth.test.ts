@@ -14,17 +14,252 @@ import { test } from 'vitest'
 
 import {
   buildNativeAuthorizeUrl,
+  createNativeRefreshCoordinator,
   generatePkcePair,
   generateState,
+  inferenceRefreshDelayMs,
   NATIVE_FLOW_ID,
+  nativeProfileSessionKeys,
   nativeRefreshUrl,
   nativeTokenUrl,
   parseLoopbackCallback,
   parseTokenResponse,
   resolveLoginStrategy,
+  resolveNativeProviderProfile,
+  revalidateNativeSessionsBeforeResume,
   statusSupportsNativeFlow,
   tokenNeedsRefresh
 } from './native-oauth'
+
+test('native provider profile must match main-selected profile', () => {
+  assert.equal(resolveNativeProviderProfile(null, null), 'default')
+  assert.equal(resolveNativeProviderProfile('coder', 'coder'), 'coder')
+  assert.throws(() => resolveNativeProviderProfile('sibling', 'coder'), /does not match/)
+  assert.throws(() => resolveNativeProviderProfile('coder', null), /does not match/)
+  assert.throws(() => resolveNativeProviderProfile(42, 'coder'), /does not match/)
+})
+
+test('wake validation retains unreadable saved sessions', () => {
+  const keys = ['inference', 'unreadable', 'remote-only']
+  const tokens = parseTokenResponse({ access_token: 'AT' })
+  assert.deepEqual(nativeProfileSessionKeys(keys, key => {
+    if (key === 'unreadable') { return null }
+    return { ...tokens, profiles: key === 'inference' ? ['coder'] : [] }
+  }), ['inference', 'unreadable'])
+})
+
+test('remote-only native session follows account TTL without inference refresh', async () => {
+  const now = 2_000_000
+  let exchanges = 0
+  let saved = parseTokenResponse({
+    access_token: 'account-access', refresh_token: 'account-refresh',
+    expires_at: now + 600
+  })
+  const coordinator = createNativeRefreshCoordinator({
+    load: () => saved,
+    exchange: async () => {
+      exchanges++
+      return { ...saved, accessToken: 'rotated-account', expiresAt: now + 900 }
+    },
+    writeProfile: async () => { throw new Error('remote-only session has no profile credential') },
+    commit: (_baseUrl, tokens) => { saved = tokens },
+    clear: () => { throw new Error('unexpected clear') },
+    now: () => now
+  })
+  assert.equal(await coordinator.ensure('gateway'), 'account-access')
+  assert.equal(exchanges, 0)
+  assert.equal(await coordinator.ensure('gateway', true), 'rotated-account')
+  assert.equal(exchanges, 1)
+})
+
+function refreshFixture() {
+  let now = 2_000_000
+  const jwt = (iat: number, exp: number) =>
+    `header.${Buffer.from(JSON.stringify({ iat, exp })).toString('base64url')}.signature`
+  const oldToken = jwt(now - 800, now + 100)
+  const newToken = jwt(now, now + 900)
+  let saved = {
+    accessToken: 'old-account', refreshToken: 'old-refresh',
+    inferenceAccessToken: oldToken, profiles: ['default'],
+    expiresAt: now + 100, provider: 'youtab', userId: 'user'
+  }
+  const rotated = {
+    ...saved, accessToken: 'new-account', refreshToken: 'new-refresh',
+    inferenceAccessToken: newToken, expiresAt: now + 900
+  }
+  const writes: Array<[string, string | null]> = []
+  let exchanges = 0
+  let commits = 0
+  let exchange = async () => { exchanges++; return rotated }
+  let write = async (profile: string, token: string | null) => { writes.push([profile, token]) }
+  const coordinator = createNativeRefreshCoordinator({
+    load: () => saved,
+    exchange: () => exchange(),
+    writeProfile: (profile, token) => write(profile, token),
+    commit: (_baseUrl, tokens) => { commits++; saved = tokens as typeof saved },
+    clear: () => { throw new Error('unexpected clear') },
+    now: () => now
+  })
+  return {
+    coordinator, writes, oldToken, newToken, rotated,
+    get saved() { return saved },
+    get exchanges() { return exchanges },
+    get commits() { return commits },
+    setNow: (value: number) => { now = value },
+    setExchange: (fn: typeof exchange) => { exchange = fn },
+    setWrite: (fn: typeof write) => { write = fn }
+  }
+}
+
+test('scheduled refresh writes profile before committing rotated session', async () => {
+  const f = refreshFixture()
+  assert.equal(await f.coordinator.ensure('gateway', true), 'new-account')
+  assert.deepEqual(f.writes, [['default', f.newToken]])
+  assert.equal(f.exchanges, 1)
+  assert.equal(f.commits, 1)
+  assert.equal(f.saved.refreshToken, 'new-refresh')
+})
+
+test('network delay and concurrent callers share one refresh result', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  let exchanges = 0
+  let release!: (value: typeof f.rotated) => void
+  f.setExchange(() => { exchanges++; return new Promise(resolve => { release = resolve }) })
+  const first = f.coordinator.ensure('gateway')
+  const second = f.coordinator.ensure('gateway', true)
+  assert.strictEqual(first, second)
+  assert.equal(f.commits, 0)
+  release(f.rotated)
+  assert.deepEqual(await Promise.all([first, second]), ['new-account', 'new-account'])
+  assert.equal(exchanges, 1)
+  assert.equal(f.writes.length, 1)
+})
+
+test('one failed refresh retries without clearing still-valid profile token', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  let calls = 0
+  f.setExchange(async () => {
+    if (++calls === 1) { throw new Error('network unavailable') }
+    return f.rotated
+  })
+  await assert.rejects(f.coordinator.ensure('gateway'), /network unavailable/)
+  assert.equal(f.saved.inferenceAccessToken, f.oldToken)
+  assert.equal(f.commits, 0)
+  assert.equal(await f.coordinator.ensure('gateway'), 'new-account')
+  assert.equal(calls, 2)
+})
+
+test('profile write failure keeps old saved session and retries pending rotation once', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  let attempts = 0
+  f.setWrite(async (profile, token) => {
+    if (++attempts === 1) { throw new Error('profile write failed') }
+    f.writes.push([profile, token])
+  })
+  await assert.rejects(f.coordinator.ensure('gateway'), /profile write failed/)
+  assert.equal(f.commits, 0)
+  assert.equal(f.saved.refreshToken, 'old-refresh')
+  assert.equal(await f.coordinator.ensure('gateway'), 'new-account')
+  assert.equal(f.exchanges, 1)
+  assert.equal(f.saved.refreshToken, 'new-refresh')
+})
+
+test('second profile failure restores the first profile and does not commit', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  f.saved.profiles.push('sibling')
+  f.setWrite(async (profile, token) => {
+    f.writes.push([profile, token])
+    if (profile === 'sibling') { throw new Error('sibling write failed') }
+  })
+  await assert.rejects(f.coordinator.ensure('gateway'), /sibling write failed/)
+  assert.deepEqual(f.writes, [
+    ['default', f.newToken], ['sibling', f.newToken], ['default', f.oldToken]
+  ])
+  assert.equal(f.commits, 0)
+  assert.equal(f.saved.refreshToken, 'old-refresh')
+})
+
+test('refresh errors and coordinator state do not expose credential values', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  f.setExchange(async () => { throw new Error('network unavailable') })
+  await assert.rejects(f.coordinator.ensure('gateway'), error => {
+    assert.doesNotMatch(String(error), /old-refresh|old-account|header\./)
+    return true
+  })
+})
+
+test('wake before safety window reconnects without refresh; clock skew triggers refresh', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_000 - 100)
+  let reconnects = 0
+  await revalidateNativeSessionsBeforeResume(
+    ['gateway'], () => f.saved, key => f.coordinator.ensure(key), () => { reconnects++ }
+  )
+  assert.equal(f.exchanges, 0)
+  assert.equal(reconnects, 1)
+  f.setNow(2_000_000 + 80)
+  await revalidateNativeSessionsBeforeResume(
+    ['gateway'], () => f.saved, key => f.coordinator.ensure(key), () => { reconnects++ }
+  )
+  assert.equal(f.exchanges, 1)
+  assert.equal(reconnects, 2)
+})
+
+test('wake after timer deadline blocks reconnect until profile write completes', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  let finishWrite!: () => void
+  f.setWrite(() => new Promise(resolve => { finishWrite = resolve }))
+  let reconnects = 0
+  const wake = revalidateNativeSessionsBeforeResume(
+    ['gateway'], () => f.saved, key => f.coordinator.ensure(key), () => { reconnects++ }
+  )
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(reconnects, 0)
+  assert.equal(f.commits, 0)
+  finishWrite()
+  await wake
+  assert.equal(reconnects, 1)
+  assert.equal(f.commits, 1)
+})
+
+test('wake after expiry fails closed when refresh fails and does not reconnect', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_000 + 101)
+  f.setExchange(async () => { throw new Error('network unavailable') })
+  let reconnects = 0
+  await assert.rejects(revalidateNativeSessionsBeforeResume(
+    ['gateway'], () => f.saved, key => f.coordinator.ensure(key), () => { reconnects++ }
+  ), /network unavailable/)
+  assert.equal(reconnects, 0)
+  assert.equal(f.commits, 0)
+})
+
+test('missing session after failed wake never releases reconnect', async () => {
+  let reconnects = 0
+  await assert.rejects(revalidateNativeSessionsBeforeResume(
+    ['gateway'], () => null, async () => null, () => { reconnects++ }
+  ), /revalidation pending/)
+  assert.equal(reconnects, 0)
+})
+
+test('900-second inference token refreshes before Runtime lifetime margin', () => {
+  const now = 2_000_000
+  const payload = Buffer.from(JSON.stringify({ iat: now, exp: now + 900 })).toString('base64url')
+  const tokens = {
+    accessToken: 'account', refreshToken: 'refresh',
+    inferenceAccessToken: `header.${payload}.signature`,
+    expiresAt: now + 3600, provider: 'youtab', userId: 'user'
+  }
+  assert.equal(inferenceRefreshDelayMs(tokens, now), 870_000)
+  assert.equal(inferenceRefreshDelayMs(tokens, now + 875), 0)
+})
 
 // --- PKCE ---
 
@@ -163,6 +398,25 @@ test('parseTokenResponse maps a well-formed body', () => {
   assert.equal(t.expiresAt, 1893456000)
   assert.equal(t.provider, 'youtab')
   assert.equal(t.userId, 'u-1')
+})
+
+test('inference token and linked profiles survive safeStorage JSON restoration', () => {
+  const issued = parseTokenResponse({
+    access_token: 'account-access',
+    refresh_token: 'account-refresh',
+    inference_access_token: 'inference-only',
+    expires_at: 1893456000,
+    provider: 'youtab',
+    user_id: 'u-1'
+  })
+  issued.profiles = ['coder']
+  const restored = parseTokenResponse(JSON.parse(JSON.stringify(issued)))
+  assert.equal(restored.accessToken, 'account-access')
+  assert.equal(restored.refreshToken, 'account-refresh')
+  assert.equal(restored.inferenceAccessToken, 'inference-only')
+  assert.deepEqual(restored.profiles, ['coder'])
+  assert.equal(restored.expiresAt, 1893456000)
+  assert.equal(restored.userId, 'u-1')
 })
 
 test('parseTokenResponse throws on a missing access token', () => {
