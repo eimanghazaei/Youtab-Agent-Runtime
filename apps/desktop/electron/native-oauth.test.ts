@@ -23,9 +23,10 @@ import {
   generateState,
   inferenceRefreshDelayMs,
   NATIVE_FLOW_ID,
+  nativeProfileMutationFromApiResult,
   nativeProfileSessionKeys,
-  nativeResumeIpcResult,
   nativeRefreshUrl,
+  nativeResumeIpcResult,
   nativeTokenUrl,
   parseLoopbackCallback,
   parseTokenResponse,
@@ -149,6 +150,195 @@ test('native lifecycle synchronizes siblings and commits only after every bearer
   await lifecycle.login('gateway', 'one', next)
   assert.deepEqual(saved?.profiles, ['one', 'two'])
   assert.deepEqual(order, ['pause', 'wait', 'discard', 'one:new-i', 'two:new-i', 'store', 'schedule'])
+})
+
+test('failed same-account encrypted store keeps the old session and linked bearers', async () => {
+  const oldBearer = `h.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.s`
+  const previous = parseTokenResponse({ access_token: 'old', refresh_token: 'old-r', inference_access_token: oldBearer, user_id: 'user', profiles: ['one', 'two'] })
+  const next = parseTokenResponse({ access_token: 'new', refresh_token: 'new-r', inference_access_token: 'new-i', user_id: 'user' })
+  let saved: typeof previous | null = previous
+  const bearers = new Map([['one', oldBearer], ['two', oldBearer]])
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: () => { throw new Error('encrypted store unavailable') },
+    clear: () => { throw new Error('must retain previous session') },
+    writeProfile: async (profile, token) => {
+      if (token) { bearers.set(profile, token) } else { bearers.delete(profile) }
+    },
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  await assert.rejects(lifecycle.login('gateway', 'three', next), /encrypted store unavailable/)
+  assert.equal(saved, previous)
+  assert.equal(bearers.get('one'), oldBearer)
+  assert.equal(bearers.get('two'), oldBearer)
+  assert.equal(bearers.has('three'), false)
+})
+
+test('successful profile rename and delete update linked inventory without writing bearer files', async () => {
+  const tokens = parseTokenResponse({ access_token: 'account', refresh_token: 'refresh', inference_access_token: 'bearer', user_id: 'user', profiles: ['one', 'two'] })
+  let saved = tokens
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: (_baseUrl, next) => { saved = next },
+    clear: () => undefined,
+    writeProfile: async () => { throw new Error('must not recreate profile') },
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  const rename = nativeProfileMutationFromApiResult(
+    { method: 'PATCH', path: '/api/profiles/one', body: { new_name: 'Three' } },
+    { ok: true, name: 'Three' },
+    'local'
+  )
+  assert.deepEqual(rename, { oldName: 'one', newName: 'three' })
+  await lifecycle.relinkProfile('gateway', rename!.oldName, rename!.newName)
+  assert.deepEqual(saved.profiles, ['three', 'two'])
+  const deletion = nativeProfileMutationFromApiResult({ method: 'DELETE', path: '/api/profiles/two' }, { ok: true }, 'local')
+  assert.deepEqual(deletion, { oldName: 'two', newName: null })
+  await lifecycle.relinkProfile('gateway', deletion!.oldName, deletion!.newName)
+  assert.deepEqual(saved.profiles, ['three'])
+  assert.equal(nativeProfileMutationFromApiResult({ method: 'DELETE', path: '/api/profiles/three' }, { ok: false }, 'local'), null)
+  assert.equal(nativeProfileMutationFromApiResult({ method: 'PATCH', path: '/api/profiles/one', body: { new_name: 'Three' } }, { ok: true, name: 'Three' }, 'remote'), null)
+  assert.equal(nativeProfileMutationFromApiResult({ method: 'DELETE', path: '/api/profiles/two' }, { ok: true }, 'remote'), null)
+})
+
+test('confirmed profile mutation retargets pending refresh before a failed encrypted rewrite and retries', async () => {
+  const saved = parseTokenResponse({ access_token: 'account', refresh_token: 'refresh', inference_access_token: 'bearer', user_id: 'user', profiles: ['old'] })
+  const pending = ['old']
+  const order: string[] = []
+  const retries: Array<() => Promise<void>> = []
+  let failStore = true
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: (_baseUrl, tokens) => {
+      order.push(`store:${pending.join(',')}`)
+      if (failStore) { throw new Error('encrypted store unavailable') }
+      saved.profiles = tokens.profiles
+    },
+    clear: () => undefined,
+    writeProfile: async () => { throw new Error('must not write an old profile bearer') },
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    relinkPending: (_baseUrl, oldName, newName) => {
+      order.push('pending')
+      pending.splice(0, pending.length, ...pending.map(name => name === oldName ? newName : name).filter((name): name is string => name !== null))
+    },
+    savedSessionState: () => 'readable',
+    scheduleRelinkRetry: retry => { retries.push(retry) },
+    logRelinkFailure: () => { order.push('deferred') },
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  await lifecycle.relinkProfile('gateway', 'old', 'renamed')
+  assert.deepEqual(order, ['pending', 'store:renamed', 'deferred'])
+  assert.deepEqual(saved.profiles, ['old'])
+  assert.equal(lifecycle.isMutating('gateway'), true)
+  assert.equal(retries.length, 1)
+  failStore = false
+  await retries[0]()
+  assert.deepEqual(saved.profiles, ['renamed'])
+  assert.equal(lifecycle.isMutating('gateway'), false)
+})
+
+test('unreadable saved session keeps a confirmed profile mutation queued until readable', async () => {
+  const saved = parseTokenResponse({ access_token: 'account', refresh_token: 'refresh', user_id: 'user', profiles: ['old'] })
+  const retries: Array<() => Promise<void>> = []
+  let readable = false
+  let writes = 0
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => readable ? saved : null,
+    store: (_baseUrl, tokens) => { writes++; saved.profiles = tokens.profiles },
+    clear: () => undefined,
+    writeProfile: async () => undefined,
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    savedSessionState: () => readable ? 'readable' : 'unreadable',
+    scheduleRelinkRetry: retry => { retries.push(retry) },
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  await lifecycle.relinkProfile('gateway', 'old', null)
+  assert.equal(writes, 0)
+  assert.equal(lifecycle.isMutating('gateway'), true)
+  readable = true
+  await retries[0]()
+  assert.deepEqual(saved.profiles, [])
+  assert.equal(lifecycle.isMutating('gateway'), false)
+})
+
+test('overlapping confirmed profile mutations reconcile in order for one native session', async () => {
+  let saved = parseTokenResponse({ access_token: 'account', refresh_token: 'refresh', user_id: 'user', profiles: ['one'] })
+  const stored: string[][] = []
+  let release!: () => void
+  const firstWait = new Promise<void>(resolve => { release = resolve })
+  let waits = 0
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: (_baseUrl, tokens) => { saved = tokens; stored.push(tokens.profiles || []) },
+    clear: () => undefined,
+    writeProfile: async () => undefined,
+    pauseRefresh: () => undefined,
+    waitForRefresh: () => ++waits === 1 ? firstWait : Promise.resolve(),
+    discardPending: () => undefined,
+    savedSessionState: () => 'readable',
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  const first = lifecycle.relinkProfile('gateway', 'one', 'two')
+  const second = lifecycle.relinkProfile('gateway', 'two', 'three')
+  release()
+  await Promise.all([first, second])
+  assert.deepEqual(stored, [['two'], ['three']])
+  assert.deepEqual(saved.profiles, ['three'])
+})
+
+test('reconciliation retries are bounded and a fresh login releases the blocked session', async () => {
+  let saved = parseTokenResponse({ access_token: 'old', refresh_token: 'old-r', inference_access_token: 'old-i', user_id: 'user', profiles: ['old'] })
+  const retries: Array<() => Promise<void>> = []
+  const writes: string[] = []
+  let failStore = true
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: (_baseUrl, tokens) => {
+      if (failStore) { throw new Error('encrypted store unavailable') }
+      saved = tokens
+    },
+    clear: () => undefined,
+    writeProfile: async profile => { writes.push(profile) },
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    savedSessionState: () => 'readable',
+    scheduleRelinkRetry: retry => { retries.push(retry) },
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  await lifecycle.relinkProfile('gateway', 'old', 'renamed')
+  await retries[0]()
+  await retries[1]()
+  assert.equal(retries.length, 2)
+  assert.equal(lifecycle.isMutating('gateway'), true)
+  failStore = false
+  const next = parseTokenResponse({ access_token: 'new', refresh_token: 'new-r', inference_access_token: 'new-i', user_id: 'user' })
+  await lifecycle.login('gateway', 'renamed', next)
+  assert.deepEqual(writes, ['renamed'])
+  assert.deepEqual(saved.profiles, ['renamed'])
+  assert.equal(lifecycle.isMutating('gateway'), false)
 })
 
 test('native mutation blocks refresh access while an earlier refresh settles', async () => {
@@ -377,12 +567,14 @@ function refreshFixture() {
   let commits = 0
   let exchange = async () => { exchanges++; return rotated }
   let write = async (profile: string, token: string | null) => { writes.push([profile, token]) }
+  let validate = (_profiles: string[]) => undefined
   const coordinator = createNativeRefreshCoordinator({
     load: () => saved,
     exchange: () => exchange(),
     writeProfile: (profile, token) => write(profile, token),
     commit: (_baseUrl, tokens) => { commits++; saved = tokens as typeof saved },
     clear: () => { throw new Error('unexpected clear') },
+    validateProfiles: profiles => validate(profiles),
     now: () => now
   })
   return {
@@ -392,7 +584,8 @@ function refreshFixture() {
     get commits() { return commits },
     setNow: (value: number) => { now = value },
     setExchange: (fn: typeof exchange) => { exchange = fn },
-    setWrite: (fn: typeof write) => { write = fn }
+    setWrite: (fn: typeof write) => { write = fn },
+    setValidate: (fn: typeof validate) => { validate = fn }
   }
 }
 
@@ -436,6 +629,25 @@ test('one failed refresh retries without clearing still-valid profile token', as
   assert.equal(calls, 2)
 })
 
+test('stale deleted profile after restart and transient probe errors block before one-use refresh', async () => {
+  const f = refreshFixture()
+  f.saved.profiles = ['deleted']
+  f.setValidate(profiles => {
+    assert.deepEqual(profiles, ['deleted'])
+    throw new Error('linked profile missing')
+  })
+  await assert.rejects(f.coordinator.ensure('gateway'), /linked profile missing/)
+  f.setNow(2_000_080)
+  await assert.rejects(f.coordinator.ensure('gateway'), /linked profile missing/)
+  assert.equal(f.exchanges, 0)
+  assert.deepEqual(f.writes, [])
+  assert.equal(f.commits, 0)
+  f.setValidate(() => { throw new Error('transient filesystem error') })
+  await assert.rejects(f.coordinator.ensure('gateway'), /transient filesystem error/)
+  assert.equal(f.exchanges, 0)
+  assert.deepEqual(f.writes, [])
+})
+
 test('profile write failure keeps old saved session and retries pending rotation once', async () => {
   const f = refreshFixture()
   f.setNow(2_000_080)
@@ -452,6 +664,40 @@ test('profile write failure keeps old saved session and retries pending rotation
   assert.equal(f.saved.refreshToken, 'new-refresh')
 })
 
+test('profile rename retargets a pending one-use refresh without exchanging again', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  f.saved.profiles = ['old']
+  let failed = false
+  f.setWrite(async (profile, token) => {
+    f.writes.push([profile, token])
+    if (!failed && token === f.newToken) {
+      failed = true
+      throw new Error('profile write failed')
+    }
+  })
+  await assert.rejects(f.coordinator.ensure('gateway'), /profile write failed/)
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => f.saved,
+    store: (_baseUrl, tokens) => { Object.assign(f.saved, tokens) },
+    clear: () => { throw new Error('unexpected clear') },
+    writeProfile: async () => { throw new Error('unexpected bearer write') },
+    pauseRefresh: () => undefined,
+    waitForRefresh: baseUrl => f.coordinator.wait(baseUrl),
+    discardPending: () => undefined,
+    relinkPending: (baseUrl, oldName, newName) => f.coordinator.relinkPending(baseUrl, oldName, newName),
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  await lifecycle.relinkProfile('gateway', 'old', 'renamed')
+  assert.equal(await f.coordinator.ensure('gateway'), 'new-account')
+  assert.equal(f.exchanges, 1)
+  assert.equal(f.saved.refreshToken, 'new-refresh')
+  assert.deepEqual(f.saved.profiles, ['renamed'])
+  assert.deepEqual(f.writes.at(-1), ['renamed', f.newToken])
+})
+
 test('second profile failure restores the first profile and does not commit', async () => {
   const f = refreshFixture()
   f.setNow(2_000_080)
@@ -462,10 +708,31 @@ test('second profile failure restores the first profile and does not commit', as
   })
   await assert.rejects(f.coordinator.ensure('gateway'), /sibling write failed/)
   assert.deepEqual(f.writes, [
-    ['default', f.newToken], ['sibling', f.newToken], ['default', f.oldToken]
+    ['default', f.newToken], ['sibling', f.newToken], ['sibling', f.oldToken], ['default', f.oldToken]
   ])
   assert.equal(f.commits, 0)
   assert.equal(f.saved.refreshToken, 'old-refresh')
+})
+
+test('refresh rolls back a profile whose write persisted before timing out', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  f.saved.profiles.push('sibling')
+  const bearers = new Map([['default', f.oldToken], ['sibling', f.oldToken]])
+  let timedOut = false
+  f.setWrite(async (profile, token) => {
+    if (token) { bearers.set(profile, token) } else { bearers.delete(profile) }
+    if (profile === 'sibling' && token === f.newToken && !timedOut) {
+      timedOut = true
+      throw new Error('child timed out after persistence')
+    }
+  })
+  await assert.rejects(f.coordinator.ensure('gateway'), /child timed out/)
+  assert.equal(bearers.get('default'), f.oldToken)
+  assert.equal(bearers.get('sibling'), f.oldToken)
+  assert.equal(f.commits, 0)
+  assert.equal(await f.coordinator.ensure('gateway'), 'new-account')
+  assert.equal(f.exchanges, 1)
 })
 
 test('refresh errors and coordinator state do not expose credential values', async () => {

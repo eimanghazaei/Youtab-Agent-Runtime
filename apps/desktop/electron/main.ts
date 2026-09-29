@@ -147,9 +147,10 @@ import {
   createNativeRefreshCoordinator,
   createNativeSessionLifecycle,
   inferenceRefreshDelayMs,
+  nativeProfileMutationFromApiResult,
   nativeProfileSessionKeys,
-  nativeResumeIpcResult,
   nativeRefreshUrl,
+  nativeResumeIpcResult,
   type NativeTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
@@ -6259,6 +6260,20 @@ function _readNativeTokenStore(): Record<string, any> {
   }
 }
 
+function _nativeSavedSessionState(baseUrl: string): 'absent' | 'readable' | 'unreadable' {
+  let store: Record<string, any>
+  try {
+    const parsed = JSON.parse(fs.readFileSync(_nativeTokenStorePath(), 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { return 'unreadable' }
+    store = parsed
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') { return 'unreadable' }
+    return _nativeTokens.has(baseUrl) ? 'readable' : 'absent'
+  }
+  if (!Object.prototype.hasOwnProperty.call(store, baseUrl) && !_nativeTokens.has(baseUrl)) { return 'absent' }
+  return _loadNativeTokens(baseUrl) ? 'readable' : 'unreadable'
+}
+
 function _persistNativeTokens(baseUrl: string, tokens: NativeTokenSet | null) {
   const store = _readNativeTokenStore()
 
@@ -6327,8 +6342,26 @@ function _clearNativeTokens(baseUrl: string) {
   _persistNativeTokens(baseUrl, null)
 }
 
-async function writeProfileInferenceToken(profile: string, token: string | null): Promise<void> {
+function nativeProfileDirectoryExists(profile: string): boolean {
   if (profile !== 'default' && !PROFILE_NAME_RE.test(profile)) { throw new Error('Invalid profile') }
+  if (profile === 'default') { return true }
+  try {
+    return fs.statSync(path.join(YOUTAB_AGENT_HOME, 'profiles', profile)).isDirectory()
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') { return false }
+    throw error
+  }
+}
+
+function assertNativeProfileDirectory(profile: string) {
+  if (!nativeProfileDirectoryExists(profile)) {
+    throw Object.assign(new Error('Linked profile no longer exists. Sign in again in Settings → Gateway.'), { needsOauthLogin: true })
+  }
+}
+
+async function writeProfileInferenceToken(profile: string, token: string | null): Promise<void> {
+  if (!token && !nativeProfileDirectoryExists(profile)) { return }
+  assertNativeProfileDirectory(profile)
   const backend = await ensureRuntime(
     resolveYoutabBackend(['--profile', profile, 'auth', 'profile-inference-token', ...(token ? [] : ['--clear'])])
   )
@@ -6363,7 +6396,8 @@ function _scheduleNativeRefresh(baseUrl: string, tokens: NativeTokenSet) {
   if (tokens.logoutPending || !tokens.inferenceAccessToken || !tokens.profiles?.length || !tokens.refreshToken) { return }
   const delay = Math.max(1_000, inferenceRefreshDelayMs(tokens, Math.floor(Date.now() / 1000)))
   _nativeRefreshTimers.set(baseUrl, setTimeout(() => {
-    void ensureNativeAccessToken(baseUrl, true).catch(() => {
+    void ensureNativeAccessToken(baseUrl, true).catch((error: any) => {
+      if (error?.needsOauthLogin === true) { return }
       // Transient Gateway failure: retry without exposing credentials in logs.
       const pending = _nativeRefreshTimers.get(baseUrl)
       if (pending) { clearTimeout(pending) }
@@ -6406,6 +6440,7 @@ const nativeRefresh = createNativeRefreshCoordinator({
   writeProfile: writeProfileInferenceToken,
   commit: _storeNativeTokens,
   clear: _clearNativeTokens,
+  validateProfiles: profiles => { for (const profile of profiles) { assertNativeProfileDirectory(profile) } },
   now: () => Math.floor(Date.now() / 1000)
 })
 
@@ -6429,6 +6464,10 @@ const nativeSessionLifecycle = createNativeSessionLifecycle({
   pauseRefresh: pauseNativeRefresh,
   waitForRefresh: baseUrl => nativeRefresh.wait(baseUrl),
   discardPending: baseUrl => nativeRefresh.discard(baseUrl),
+  relinkPending: (baseUrl, oldName, newName) => nativeRefresh.relinkPending(baseUrl, oldName, newName),
+  savedSessionState: _nativeSavedSessionState,
+  scheduleRelinkRetry: (retry, delayMs) => { setTimeout(retry, delayMs) },
+  logRelinkFailure: () => rememberLog('[native-oauth] profile session reconciliation deferred after confirmed profile change'),
   scheduleRefresh: _scheduleNativeRefresh,
   revoke: async (baseUrl, refreshToken) => {
     await postJsonNoAuth(`${baseUrl}/v1/auth/logout`, { refresh_token: refreshToken }, { timeoutMs: 10_000 })
@@ -10275,6 +10314,18 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   return { ...(base as any), sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
 }
 
+async function reconcileNativeProfilesAfterApi(request, result, connection) {
+  const mutation = nativeProfileMutationFromApiResult(request, result, connection.mode)
+  if (!mutation) { return result }
+  const baseUrls = new Set([...Object.keys(_readNativeTokenStore()), ..._nativeTokens.keys()])
+  if (_nativeSavedSessionState(connection.baseUrl) === 'unreadable') { baseUrls.add(connection.baseUrl) }
+  for (const baseUrl of baseUrls) {
+    try { await nativeSessionLifecycle.relinkProfile(baseUrl, mutation.oldName, mutation.newName) }
+    catch { /* Reconciliation remains secondary to the confirmed backend mutation. */ }
+  }
+  return result
+}
+
 ipcMain.handle('youtab:api', async (_event, request) => {
   // Remote-profile session requests would otherwise hit the local primary off
   // each profile's on-disk state.db — fine for local profiles, but a remote
@@ -10323,27 +10374,30 @@ ipcMain.handle('youtab:api', async (_event, request) => {
     const restAuth = resolveOauthRestAuth(nativeAt)
 
     if (restAuth.kind === 'bearer') {
-      return fetchJson(url, null, {
+      const result = await fetchJson(url, null, {
         method: request?.method,
         body: request?.body,
         timeoutMs,
         bearer: restAuth.token
       })
+      return reconcileNativeProfilesAfterApi(request, result, connection)
     }
 
-    return fetchJsonViaOauthSession(url, {
+    const result = await fetchJsonViaOauthSession(url, {
       method: request?.method,
       body: request?.body,
       timeoutMs
     })
+    return reconcileNativeProfilesAfterApi(request, result, connection)
   }
 
-  return fetchJson(url, connection.token, {
+  const result = await fetchJson(url, connection.token, {
     method: request?.method,
     body: request?.body,
     upload: request?.upload,
     timeoutMs
   })
+  return reconcileNativeProfilesAfterApi(request, result, connection)
 })
 
 // One deduper per cross-window cue — the choke point every window shares. Main

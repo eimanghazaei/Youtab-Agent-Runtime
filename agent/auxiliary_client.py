@@ -773,6 +773,7 @@ auxiliary_is_youtab: bool = False
 _OPENROUTER_MODEL = "google/gemini-3.6-flash"
 _YOUTAB_MODEL = "google/gemini-3.6-flash"
 _YOUTAB_DEFAULT_BASE_URL = "https://api.youtab.io/v1"
+_YOUTAB_INFERENCE_HOSTS = ("api.youtab.io", "inference-api.youtab.io")
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_youtab_home() / "auth.json"
 
@@ -954,6 +955,11 @@ def _youtab_min_key_ttl_seconds() -> int:
         return max(60, int(os.getenv("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", "1800")))
     except (TypeError, ValueError):
         return 1800
+
+
+def _is_youtab_inference_host(base_url: str) -> bool:
+    """Recognize current and legacy Youtab inference endpoints by hostname."""
+    return any(base_url_host_matches(base_url, host) for host in _YOUTAB_INFERENCE_HOSTS)
 
 
 # ── Codex Responses → chat.completions adapter ─────────────────────────────
@@ -3853,7 +3859,7 @@ def _recoverable_pool_provider(
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized == "youtab":
         from youtab_agent_cli.auth import get_local_inference_token_state
-        if get_local_inference_token_state() is not None:
+        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" or get_local_inference_token_state() is not None:
             return None  # Desktop-owned inference tokens cannot enter the pool.
     if normalized not in {"", "auto", "custom"}:
         return normalized
@@ -3862,9 +3868,9 @@ def _recoverable_pool_provider(
         return "openai-codex"
     if base_url_host_matches(base, "openrouter.ai"):
         return "openrouter"
-    if base_url_host_matches(base, "api.youtab.io"):
+    if _is_youtab_inference_host(base):
         from youtab_agent_cli.auth import get_local_inference_token_state
-        if get_local_inference_token_state() is not None:
+        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" or get_local_inference_token_state() is not None:
             return None
         return "youtab"
     if base_url_host_matches(base, "api.anthropic.com"):
@@ -4190,6 +4196,10 @@ def _auth_refresh_provider_for_route(
     Copilot/Codex/Anthropic/Youtab routes too. (#20832)
     """
     normalized = _normalize_aux_provider(resolved_provider)
+    if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" and (
+        normalized == "youtab" or _is_youtab_inference_host(client_base_url)
+    ):
+        return ""
     if normalized and normalized != "auto":
         return normalized
     if base_url_host_matches(client_base_url, "api.githubcopilot.com"):
@@ -4198,7 +4208,7 @@ def _auth_refresh_provider_for_route(
         return "openai-codex"
     if base_url_host_matches(client_base_url, "api.anthropic.com"):
         return "anthropic"
-    if base_url_host_matches(client_base_url, "api.youtab.io"):
+    if _is_youtab_inference_host(client_base_url):
         return "youtab"
     return normalized
 
@@ -8296,7 +8306,7 @@ def call_llm(
         # known-good default). Only applies to Youtab-routed calls.
         _heal_is_youtab = (
             resolved_provider == "youtab"
-            or base_url_host_matches(_base_info, "api.youtab.io")
+            or _is_youtab_inference_host(_base_info)
         )
         if _is_model_not_found_error(first_err) and _heal_is_youtab:
             healed_model = _refresh_youtab_recommended_model(
@@ -8322,7 +8332,7 @@ def call_llm(
         # ── Youtab auth refresh parity with main agent ──────────────────
         client_is_youtab = (
             resolved_provider == "youtab"
-            or base_url_host_matches(_base_info, "api.youtab.io")
+            or _is_youtab_inference_host(_base_info)
         )
         if (
             _is_payment_error(first_err)
@@ -8939,7 +8949,7 @@ async def async_call_llm(
         # fresh Portal fetch and retry once with the current recommendation.
         _heal_is_youtab = (
             resolved_provider == "youtab"
-            or base_url_host_matches(_client_base, "api.youtab.io")
+            or _is_youtab_inference_host(_client_base)
         )
         if _is_model_not_found_error(first_err) and _heal_is_youtab:
             healed_model = _refresh_youtab_recommended_model(
@@ -8965,7 +8975,7 @@ async def async_call_llm(
         # ── Youtab auth refresh parity with main agent ──────────────────
         client_is_youtab = (
             resolved_provider == "youtab"
-            or base_url_host_matches(_client_base, "api.youtab.io")
+            or _is_youtab_inference_host(_client_base)
         )
         if (
             _is_payment_error(first_err)

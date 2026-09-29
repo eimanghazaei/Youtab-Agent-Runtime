@@ -1097,6 +1097,42 @@ class TestVisionClientFallback:
 
 class TestAuxiliaryPoolAwareness:
 
+    @pytest.mark.parametrize("base_url", [
+        "https://inference-api.youtab.io/v1",
+        "https://api.youtab.io/v1",
+    ])
+    def test_youtab_host_recovery_preserves_legacy_and_desktop_boundary(
+        self, base_url, monkeypatch,
+    ):
+        from agent.auxiliary_client import (
+            _auth_refresh_provider_for_route,
+            _recoverable_pool_provider,
+        )
+        from youtab_agent_cli import auth
+
+        monkeypatch.setattr(auth, "get_local_inference_token_state", lambda: None)
+        client = SimpleNamespace(base_url=base_url)
+        monkeypatch.delenv("YOUTAB_AGENT_DESKTOP", raising=False)
+        assert _recoverable_pool_provider("auto", client) == "youtab"
+        assert _auth_refresh_provider_for_route("auto", base_url) == "youtab"
+
+        monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
+        assert _recoverable_pool_provider("auto", client) is None
+        assert _recoverable_pool_provider("youtab", client) is None
+        assert _auth_refresh_provider_for_route("auto", base_url) == ""
+        assert _auth_refresh_provider_for_route("youtab", base_url) == ""
+
+    def test_youtab_lookalike_host_cannot_select_pool(self, monkeypatch):
+        from agent.auxiliary_client import (
+            _auth_refresh_provider_for_route,
+            _recoverable_pool_provider,
+        )
+
+        monkeypatch.delenv("YOUTAB_AGENT_DESKTOP", raising=False)
+        base_url = "https://api.youtab.io.attacker.test/v1"
+        assert _recoverable_pool_provider("auto", SimpleNamespace(base_url=base_url)) is None
+        assert _auth_refresh_provider_for_route("auto", base_url) == "auto"
+
     def test_youtab_pool_refresh_uses_configured_legacy_window(self, monkeypatch):
         from agent.auxiliary_client import _resolve_youtab_pool_runtime_api
 

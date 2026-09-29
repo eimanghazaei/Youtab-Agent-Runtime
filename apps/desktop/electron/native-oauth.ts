@@ -152,11 +152,26 @@ export function createNativeSessionLifecycle(deps: {
   pauseRefresh: (baseUrl: string) => void
   waitForRefresh: (baseUrl: string) => Promise<void>
   discardPending: (baseUrl: string) => void
+  relinkPending?: (baseUrl: string, oldName: string, newName: string | null) => void
+  savedSessionState?: (baseUrl: string) => 'absent' | 'readable' | 'unreadable'
+  scheduleRelinkRetry?: (retry: () => Promise<void>, delayMs: number) => void
+  logRelinkFailure?: () => void
   scheduleRefresh: (baseUrl: string, tokens: NativeTokenSet) => void
   revoke: (baseUrl: string, refreshToken: string) => Promise<void>
   logRevocationFailure: () => void
 }) {
   const mutating = new Set<string>()
+  const pendingRelinks = new Map<string, Array<{ oldName: string; newName: string | null }>>()
+  const relinking = new Map<string, Promise<void>>()
+  const relinkFailures = new Map<string, number>()
+
+  function currentProfiles(baseUrl: string, profiles: string[] | undefined): string[] {
+    let current = profiles || []
+    for (const { oldName, newName } of pendingRelinks.get(baseUrl) || []) {
+      current = current.map(name => name === oldName ? newName : name).filter((name): name is string => name !== null)
+    }
+    return [...new Set(current)]
+  }
 
   async function withMutation(baseUrl: string, action: () => Promise<void>) {
     if (mutating.has(baseUrl)) { throw new Error('Native session update already in progress') }
@@ -175,11 +190,26 @@ export function createNativeSessionLifecycle(deps: {
   async function login(baseUrl: string, selected: string, tokens: NativeTokenSet) {
     await withMutation(baseUrl, async () => {
       deps.discardPending(baseUrl)
-      const previous = deps.load(baseUrl)
-      tokens.profiles = await applyNativeLoginProfiles(previous, tokens, selected, deps.writeProfile, () => deps.clear(baseUrl))
+      const saved = deps.load(baseUrl)
+      const previous = saved ? { ...saved, profiles: currentProfiles(baseUrl, saved.profiles) } : null
+      const selectedProfiles = currentProfiles(baseUrl, [selected])
+      if (!selectedProfiles.length) { throw new Error('Selected profile was deleted. Choose another profile.') }
+      tokens.profiles = await applyNativeLoginProfiles(previous, tokens, selectedProfiles[0], deps.writeProfile, () => deps.clear(baseUrl))
       try {
         deps.store(baseUrl, tokens)
+        pendingRelinks.delete(baseUrl)
+        relinkFailures.delete(baseUrl)
       } catch (error) {
+        if (previous && previous.userId === tokens.userId && !previous.logoutPending) {
+          // The old encrypted session is still authoritative when its rewrite
+          // fails. Restore all linked bearers instead of signing out siblings.
+          const oldBearer = unexpiredInferenceToken(previous, Math.floor(Date.now() / 1000))
+          for (const profile of tokens.profiles) {
+            const restore = previous.profiles?.includes(profile) ? oldBearer : null
+            try { await deps.writeProfile(profile, restore) } catch { /* Preserve the store error. */ }
+          }
+          throw error
+        }
         // A failed encrypted-store commit must not leave a new bearer with an
         // old (or absent) refresh authority. Fail closed, including siblings.
         try { deps.clear(baseUrl) } catch { /* Continue clearing profile bearers. */ }
@@ -194,11 +224,14 @@ export function createNativeSessionLifecycle(deps: {
   async function logout(baseUrl: string, selected: string) {
     await withMutation(baseUrl, async () => {
       deps.discardPending(baseUrl)
-      const tokens = deps.load(baseUrl)
+      const saved = deps.load(baseUrl)
+      const tokens = saved ? { ...saved, profiles: currentProfiles(baseUrl, saved.profiles) } : null
       // Persist a fail-closed inventory before touching profile files. Failed
       // clears remain retryable across restarts without refreshing bearers.
       if (tokens && !tokens.logoutPending) { deps.store(baseUrl, { ...tokens, logoutPending: true }) }
       await clearNativeProfileCredentials(tokens, selected, () => deps.clear(baseUrl), deps.writeProfile)
+      pendingRelinks.delete(baseUrl)
+      relinkFailures.delete(baseUrl)
       if (tokens?.refreshToken) {
         try { await deps.revoke(baseUrl, tokens.refreshToken) }
         catch { deps.logRevocationFailure() }
@@ -206,7 +239,86 @@ export function createNativeSessionLifecycle(deps: {
     })
   }
 
-  return { isMutating: (baseUrl: string) => mutating.has(baseUrl), login, logout }
+  function flushProfileRelinks(baseUrl: string): Promise<void> {
+    const active = relinking.get(baseUrl)
+    if (active) { return active }
+    const operation = (async () => {
+      const queue = pendingRelinks.get(baseUrl)
+      while (queue?.length) {
+        const { oldName, newName } = queue[0]
+        await withMutation(baseUrl, async () => {
+          // A rotated one-use refresh may be waiting after a failed write.
+          // Retarget it before the encrypted-store write can fail.
+          deps.relinkPending?.(baseUrl, oldName, newName)
+          const sessionState = deps.savedSessionState?.(baseUrl)
+          if (sessionState === 'unreadable') {
+            throw new Error('Saved native session is unreadable')
+          }
+          const tokens = deps.load(baseUrl)
+          if (!tokens && sessionState === 'readable') {
+            throw new Error('Saved native session became unreadable')
+          }
+          if (tokens?.profiles?.includes(oldName)) {
+            const profiles = [...new Set(tokens.profiles.map(name => name === oldName ? newName : name).filter((name): name is string => name !== null))]
+            deps.store(baseUrl, { ...tokens, profiles })
+          }
+        })
+        queue.shift()
+      }
+      pendingRelinks.delete(baseUrl)
+      relinkFailures.delete(baseUrl)
+    })()
+    const handled = operation.catch(() => {
+      try { deps.logRelinkFailure?.() } catch { /* Keep the confirmed API result. */ }
+      const failures = (relinkFailures.get(baseUrl) || 0) + 1
+      relinkFailures.set(baseUrl, failures)
+      if (failures < 3) {
+        try { deps.scheduleRelinkRetry?.(() => flushProfileRelinks(baseUrl), 30_000) }
+        catch { /* The pending relink still blocks native refresh. */ }
+      }
+    }).finally(() => {
+      if (relinking.get(baseUrl) === handled) {
+        relinking.delete(baseUrl)
+        if (!relinkFailures.has(baseUrl) && pendingRelinks.get(baseUrl)?.length) {
+          void flushProfileRelinks(baseUrl)
+        }
+      }
+    })
+    relinking.set(baseUrl, handled)
+    return handled
+  }
+
+  function relinkProfile(baseUrl: string, oldName: string, newName: string | null): Promise<void> {
+    const queue = pendingRelinks.get(baseUrl) || []
+    queue.push({ oldName, newName })
+    pendingRelinks.set(baseUrl, queue)
+    return flushProfileRelinks(baseUrl)
+  }
+
+  return { isMutating: (baseUrl: string) => mutating.has(baseUrl) || pendingRelinks.has(baseUrl), login, logout, relinkProfile }
+}
+
+/** Read only successful profile mutations; the backend owns canonical names. */
+export function nativeProfileMutationFromApiResult(
+  request: { body?: { new_name?: unknown }; method?: string; path?: string } | null,
+  result: { name?: unknown; ok?: boolean } | null,
+  backendMode: string
+): { oldName: string; newName: string | null } | null {
+  // A remote backend's profile inventory does not rename/delete Desktop's
+  // local profile directories or their linked inference credentials.
+  if (backendMode !== 'local' || result?.ok !== true) { return null }
+  const method = String(request?.method || '').toUpperCase()
+  if (method !== 'PATCH' && method !== 'DELETE') { return null }
+  const match = String(request?.path || '').match(/^\/api\/profiles\/([^/?#]+)(?:[?#].*)?$/)
+  if (!match) { return null }
+  let oldName: string
+  try { oldName = decodeURIComponent(match[1]).trim().toLowerCase() }
+  catch { return null }
+  const valid = (name: string) => name !== 'default' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)
+  if (!valid(oldName)) { return null }
+  if (method === 'DELETE') { return { oldName, newName: null } }
+  const newName = String(result.name || request?.body?.new_name || '').trim().toLowerCase()
+  return valid(newName) ? { oldName, newName } : null
 }
 
 /** Settings sign-out clears the cookie partition even if native cleanup fails. */
@@ -444,6 +556,7 @@ export function createNativeRefreshCoordinator(deps: {
   writeProfile: (profile: string, token: string | null) => Promise<void>
   commit: (baseUrl: string, tokens: NativeTokenSet) => void
   clear: (baseUrl: string) => void
+  validateProfiles?: (profiles: string[]) => void
   now: () => number
 }) {
   const inFlight = new Map<string, Promise<string | null>>()
@@ -451,6 +564,12 @@ export function createNativeRefreshCoordinator(deps: {
 
   function discard(baseUrl: string) {
     pending.delete(baseUrl)
+  }
+
+  function relinkPending(baseUrl: string, oldName: string, newName: string | null) {
+    const tokens = pending.get(baseUrl)
+    if (!tokens?.profiles?.includes(oldName)) { return }
+    tokens.profiles = [...new Set(tokens.profiles.map(name => name === oldName ? newName : name).filter((name): name is string => name !== null))]
   }
 
   async function wait(baseUrl: string): Promise<void> {
@@ -472,6 +591,8 @@ export function createNativeRefreshCoordinator(deps: {
       const now = deps.now()
       const profileTokenNeedsRefresh = Boolean(tokens.profiles?.length)
         && inferenceRefreshDelayMs(tokens, now) <= 0
+      // Also fail closed for a still-valid account token after a CLI rename.
+      deps.validateProfiles?.(tokens.profiles || [])
       if (!force && !pending.has(baseUrl) && !tokenNeedsRefresh(tokens, now)
           && !profileTokenNeedsRefresh) { return tokens.accessToken }
 
@@ -500,15 +621,17 @@ export function createNativeRefreshCoordinator(deps: {
       const updated: string[] = []
       try {
         for (const profile of rotated.profiles || []) {
-          await deps.writeProfile(profile, rotated.inferenceAccessToken!)
           updated.push(profile)
+          await deps.writeProfile(profile, rotated.inferenceAccessToken!)
         }
         deps.commit(baseUrl, rotated)
       } catch (error) {
-        // A multi-profile write is not atomic; restore completed profiles to
-        // the previous usable credential (or clear an expired credential).
+        // A timed-out child may have persisted its write before rejecting.
+        // Restore every attempted profile, including that child.
         const previous = unexpiredInferenceToken(tokens, deps.now())
-        for (const profile of updated.reverse()) { await deps.writeProfile(profile, previous) }
+        for (const profile of updated.reverse()) {
+          try { await deps.writeProfile(profile, previous) } catch { /* Keep restoring siblings. */ }
+        }
         throw error
       }
       pending.delete(baseUrl)
@@ -522,7 +645,7 @@ export function createNativeRefreshCoordinator(deps: {
     return operation
   }
 
-  return { discard, ensure, wait }
+  return { discard, ensure, relinkPending, wait }
 }
 
 /** Renderer reconnect is released only after every profile session is revalidated. */
