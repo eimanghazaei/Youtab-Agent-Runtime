@@ -2771,7 +2771,10 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
-def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
+def provider_model_ids(
+    provider: Optional[str], *, force_refresh: bool = False,
+    _raise_youtab_fetch_error: bool = False,
+) -> list[str]:
     """Return the best known model catalog for a provider.
 
     Tries live API endpoints for providers that support them (Codex, Youtab),
@@ -2834,6 +2837,8 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     if not mid.lower().startswith(("anthropic/", "anthropic."))
                 ]
             except Exception:
+                if _raise_youtab_fetch_error:
+                    raise
                 return []
         if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
             return []
@@ -3203,7 +3208,31 @@ def cached_provider_model_ids(
         return list(entry["models"])
 
     # Cache miss / stale / forced refresh — call the live path.
-    live = provider_model_ids(normalized, force_refresh=force_refresh)
+    youtab_profile_catalog = False
+    if normalized == "youtab":
+        from youtab_agent_cli.auth import get_local_inference_token_state
+
+        youtab_profile_catalog = (
+            get_local_inference_token_state() is not None
+            or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1"
+        )
+    try:
+        live = provider_model_ids(
+            normalized,
+            force_refresh=force_refresh,
+            _raise_youtab_fetch_error=youtab_profile_catalog,
+        )
+    except Exception as error:
+        if not youtab_profile_catalog:
+            raise
+        from youtab_agent_cli.auth import AuthError
+
+        # Revoked/forbidden credentials and other rejected requests cannot use
+        # stale admission. Only transport or server failure may use the cache.
+        if isinstance(error, AuthError) and error.code == "models_fetch_rejected":
+            live = []
+        else:
+            live = None
     if live:
         cache[normalized] = {
             "fp": fp,
@@ -3213,9 +3242,13 @@ def cached_provider_model_ids(
         _save_provider_models_cache(cache)
         return list(live)
 
-    # Live fetch returned nothing. If we have a stale entry with the
-    # SAME fingerprint, prefer it over an empty result — stale data
-    # beats no data when the network is flaky.
+    if live == [] and youtab_profile_catalog:
+        if normalized in cache:
+            del cache[normalized]
+            _save_provider_models_cache(cache)
+        return []
+
+    # A failed live fetch can use stale IDs only with the same credential.
     if (
         isinstance(entry, dict)
         and entry.get("fp") == fp

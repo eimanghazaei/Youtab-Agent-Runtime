@@ -2,6 +2,8 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
+import { $notifications, clearNotifications } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -20,7 +22,7 @@ import { useGatewayBoot } from './use-gateway-boot'
 
 type Listener = (ev: unknown) => void
 let connectionApplied: null | (() => void) = null
-let powerResume: null | ((event?: { authChanged?: boolean; nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string } }) => void) = null
+let powerResume: null | ((event?: { authChanged?: boolean; nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string; profiles?: string[] } }) => void) = null
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -82,10 +84,11 @@ class FakeWebSocket {
   }
 }
 
-function fakeDesktop(authMode: 'oauth' | 'token' = 'token') {
+function fakeDesktop(authMode: 'oauth' | 'token' = 'token', mode?: 'local' | 'remote') {
   const conn = {
     authMode,
     baseUrl: 'https://vps.example.com',
+    mode,
     profile: 'default',
     token: 't',
     wsUrl: 'wss://vps.example.com/api/ws?token=t'
@@ -142,6 +145,7 @@ function Harness({
 const originalWebSocket = globalThis.WebSocket
 
 beforeEach(() => {
+  clearNotifications()
   // Drop any parked gateway left by a prior file/case (globalThis slot).
   const leftover = takeGatewaySurvivor()
 
@@ -317,6 +321,49 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.OPEN)
     expect($desktopBoot.get().error).toBeNull()
     expect(desktop.revalidateConnection).not.toHaveBeenCalled()
+  })
+
+  it('prompts local provider recovery for the linked live profile without closing its backend', async () => {
+    const desktop = fakeDesktop('token', 'local')
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => powerResume?.({ nativeRecovery: {
+      kind: 'transport', baseUrl: 'https://api.youtab.io', profiles: ['sibling']
+    } }))
+    expect($notifications.get()).toHaveLength(0)
+
+    act(() => powerResume?.({ nativeRecovery: {
+      kind: 'transport', baseUrl: 'https://api.youtab.io', profiles: ['default']
+    } }))
+    expect($notifications.get()[0]).toMatchObject({
+      id: 'native-provider-recovery:default',
+      kind: 'warning',
+      action: { label: 'Open Accounts' }
+    })
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.OPEN)
+    act(() => $notifications.get()[0].action?.onClick())
+    expect(window.location.hash).toBe('#/settings?tab=providers&pview=accounts')
+  })
+
+  it('routes exhausted relink recovery to the renamed live profile', async () => {
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = fakeDesktop('token', 'local')
+    render(<Harness />)
+    await flushAsync()
+    act(() => $activeGatewayProfile.set('renamed'))
+
+    act(() => powerResume?.({ nativeRecovery: {
+      kind: 'auth', baseUrl: 'https://api.youtab.io', profiles: ['old']
+    } }))
+    expect($notifications.get()).toHaveLength(0)
+
+    act(() => powerResume?.({ nativeRecovery: {
+      kind: 'auth', baseUrl: 'https://api.youtab.io', profiles: ['renamed']
+    } }))
+    expect($notifications.get()[0]).toMatchObject({ id: 'native-provider-recovery:renamed' })
+    expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.OPEN)
   })
 
   it('clears the sign-in recovery overlay after auth changes while the socket remains open', async () => {

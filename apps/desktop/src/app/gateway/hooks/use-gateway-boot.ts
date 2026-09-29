@@ -438,6 +438,22 @@ export function useGatewayBoot({
     const offPowerResume = desktop.onPowerResume?.(event => {
       if (event?.nativeRecovery) {
         const connection = $connection.get()
+        if (connection?.mode === 'local') {
+          const profile = normalizeProfileKey($activeGatewayProfile.get())
+          if (event.nativeRecovery.profiles?.includes(profile)) {
+            notify({
+              id: `native-provider-recovery:${profile}`,
+              kind: 'warning',
+              title: 'Youtab sign-in needs attention',
+              message: `The Youtab provider for ${profile} could not renew its session. Sign in again in Settings → Providers.`,
+              action: {
+                label: 'Open Accounts',
+                onClick: () => { window.location.hash = '#/settings?tab=providers&pview=accounts' }
+              }
+            })
+          }
+          return
+        }
         if (connection?.baseUrl !== event.nativeRecovery.baseUrl || connection.authMode !== 'oauth') { return }
         if (event.nativeRecovery.kind === 'auth') {
           reportReauthRequired(new GatewayReauthRequiredError('Native profile session needs sign-in'))

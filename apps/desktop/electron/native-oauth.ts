@@ -46,6 +46,8 @@ export interface NativeTokenSet {
   profiles?: string[]
   /** Encrypted retry inventory after an incomplete local sign-out. */
   logoutPending?: boolean
+  /** Rotated single-use refresh authority saved before profile bearers are updated. */
+  rotationPending?: boolean
   expiresAt: number
   provider: string
   userId: string
@@ -156,7 +158,7 @@ export function createNativeSessionLifecycle(deps: {
   savedSessionState?: (baseUrl: string) => 'absent' | 'readable' | 'unreadable'
   scheduleRelinkRetry?: (retry: () => Promise<void>, delayMs: number) => void
   logRelinkFailure?: () => void
-  onRelinkExhausted?: (baseUrl: string) => void
+  onRelinkExhausted?: (baseUrl: string, profiles: string[]) => void
   scheduleRefresh: (baseUrl: string, tokens: NativeTokenSet) => void
   revoke: (baseUrl: string, refreshToken: string) => Promise<void>
   logRevocationFailure: () => void
@@ -225,6 +227,9 @@ export function createNativeSessionLifecycle(deps: {
   /** Gateway Connections sign-in replaces account auth without linking a local provider profile. */
   async function replaceGatewaySession(baseUrl: string, tokens: NativeTokenSet) {
     await withMutation(baseUrl, async () => {
+      if (!tokens.refreshToken) {
+        throw new Error('Gateway native session omitted refresh credential')
+      }
       deps.discardPending(baseUrl)
       const saved = deps.load(baseUrl)
       const previous = saved ? { ...saved, profiles: currentProfiles(baseUrl, saved.profiles) } : null
@@ -307,7 +312,15 @@ export function createNativeSessionLifecycle(deps: {
         try { deps.scheduleRelinkRetry?.(() => flushProfileRelinks(baseUrl), 30_000) }
         catch { /* The pending relink still blocks native refresh. */ }
       } else if (failures === 3) {
-        try { deps.onRelinkExhausted?.(baseUrl) } catch { /* Keep the confirmed API result. */ }
+        try {
+          // The encrypted store can still hold the old name (or be unreadable)
+          // when its rewrite failed. Report the affected retargeted profiles
+          // from the confirmed rename queue, not the stale saved inventory.
+          const profiles = currentProfiles(
+            baseUrl, (pendingRelinks.get(baseUrl) || []).map(({ oldName }) => oldName)
+          )
+          deps.onRelinkExhausted?.(baseUrl, profiles)
+        } catch { /* Keep the confirmed API result. */ }
       }
     }).finally(() => {
       if (relinking.get(baseUrl) === handled) {
@@ -544,6 +557,7 @@ export function parseTokenResponse(body: any): NativeTokenSet {
       ? body.profiles.filter((profile: unknown): profile is string => typeof profile === 'string')
       : [],
     logoutPending: body?.logoutPending === true,
+    rotationPending: body?.rotationPending === true,
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
     provider: String(body?.provider || ''),
     userId: String(body?.user_id || body?.userId || '')
@@ -595,7 +609,7 @@ function unexpiredInferenceToken(tokens: NativeTokenSet, nowSeconds: number): st
   }
 }
 
-/** Serialize refresh and keep a rotated response in memory until every profile write succeeds. */
+/** Serialize refresh and durably retain a rotated response until profile writes succeed. */
 export function createNativeRefreshCoordinator(deps: {
   load: (baseUrl: string) => NativeTokenSet | null
   exchange: (baseUrl: string, tokens: NativeTokenSet) => Promise<NativeTokenSet>
@@ -639,7 +653,7 @@ export function createNativeRefreshCoordinator(deps: {
         && inferenceRefreshDelayMs(tokens, now) <= 0
       // Also fail closed for a still-valid account token after a CLI rename.
       deps.validateProfiles?.(tokens.profiles || [])
-      if (!force && !pending.has(baseUrl) && !tokenNeedsRefresh(tokens, now)
+      if (!force && !tokens.rotationPending && !pending.has(baseUrl) && !tokenNeedsRefresh(tokens, now)
           && !profileTokenNeedsRefresh) { return tokens.accessToken }
 
       if (!tokens.refreshToken) {
@@ -648,7 +662,12 @@ export function createNativeRefreshCoordinator(deps: {
         return null
       }
 
-      let rotated = pending.get(baseUrl)
+      const savedRotation = pending.get(baseUrl) || (tokens.rotationPending ? tokens : null)
+      // A restart can outlive the saved inference bearer. Refresh using the
+      // *new* saved refresh authority before replaying profile writes.
+      const staleRotation = savedRotation && (tokenNeedsRefresh(savedRotation, now)
+        || (savedRotation.profiles?.length && inferenceRefreshDelayMs(savedRotation, now) <= 0))
+      let rotated = staleRotation ? null : savedRotation
       if (!rotated) {
         try {
           rotated = await deps.exchange(baseUrl, tokens)
@@ -659,9 +678,18 @@ export function createNativeRefreshCoordinator(deps: {
           return null
         }
         rotated.profiles = tokens.profiles
+        if (!rotated.refreshToken) {
+          throw new Error('Gateway refresh omitted refresh credential')
+        }
         if (rotated.profiles?.length && !rotated.inferenceAccessToken) {
           throw new Error('Gateway refresh omitted inference credential')
         }
+        // The Gateway may already have consumed the old, single-use refresh
+        // token. Save the new authority in the existing encrypted session store
+        // before the fallible profile writes; the marker makes restart replay
+        // mandatory and prevents an incomplete rotation from being accepted.
+        rotated = { ...rotated, rotationPending: true }
+        deps.commit(baseUrl, rotated)
         pending.set(baseUrl, rotated)
       }
       const updated: string[] = []
@@ -670,7 +698,7 @@ export function createNativeRefreshCoordinator(deps: {
           updated.push(profile)
           await deps.writeProfile(profile, rotated.inferenceAccessToken!)
         }
-        deps.commit(baseUrl, rotated)
+        deps.commit(baseUrl, { ...rotated, rotationPending: false })
       } catch (error) {
         // A timed-out child may have persisted its write before rejecting.
         // Restore every attempted profile, including that child.

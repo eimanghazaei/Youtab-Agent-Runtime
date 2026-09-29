@@ -28,6 +28,7 @@ import {
   nativeProfileSessionKeys,
   nativeRefreshUrl,
   nativeResumeIpcResult,
+  type NativeTokenSet,
   nativeTokenUrl,
   parseLoopbackCallback,
   parseTokenResponse,
@@ -174,6 +175,28 @@ test('Connections native login stores a gateway-only session without writing a l
   await lifecycle.replaceGatewaySession('gateway', next)
   assert.deepEqual(saved?.profiles, [])
   assert.equal(saved?.refreshToken, 'new-r')
+  assert.equal(writes, 0)
+})
+
+test('Connections native login rejects an unrefreshable session before replacing saved credentials', async () => {
+  const previous = parseTokenResponse({ access_token: 'old', refresh_token: 'old-r', user_id: 'user' })
+  const next = parseTokenResponse({ access_token: 'new', user_id: 'user' })
+  let saved = previous
+  let writes = 0
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: (_baseUrl, tokens) => { saved = tokens },
+    clear: () => { throw new Error('must retain previous session') },
+    writeProfile: async () => { writes++ },
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  await assert.rejects(lifecycle.replaceGatewaySession('gateway', next), /omitted refresh credential/)
+  assert.equal(saved.refreshToken, 'old-r')
   assert.equal(writes, 0)
 })
 
@@ -398,7 +421,7 @@ test('reconciliation retries are bounded and a fresh login releases the blocked 
   const retries: Array<() => Promise<void>> = []
   const writes: string[] = []
   let failStore = true
-  const exhausted: string[] = []
+  const exhausted: Array<[string, string[]]> = []
   const lifecycle = createNativeSessionLifecycle({
     load: () => saved,
     store: (_baseUrl, tokens) => {
@@ -412,7 +435,7 @@ test('reconciliation retries are bounded and a fresh login releases the blocked 
     discardPending: () => undefined,
     savedSessionState: () => 'readable',
     scheduleRelinkRetry: retry => { retries.push(retry) },
-    onRelinkExhausted: baseUrl => { exhausted.push(baseUrl) },
+    onRelinkExhausted: (baseUrl, profiles) => { exhausted.push([baseUrl, profiles]) },
     scheduleRefresh: () => undefined,
     revoke: async () => undefined,
     logRevocationFailure: () => undefined
@@ -421,7 +444,7 @@ test('reconciliation retries are bounded and a fresh login releases the blocked 
   await retries[0]()
   await retries[1]()
   assert.equal(retries.length, 2)
-  assert.deepEqual(exhausted, ['gateway'])
+  assert.deepEqual(exhausted, [['gateway', ['renamed']]])
   assert.equal(lifecycle.isMutating('gateway'), true)
   failStore = false
   const next = parseTokenResponse({ access_token: 'new', refresh_token: 'new-r', inference_access_token: 'new-i', user_id: 'user' })
@@ -654,7 +677,7 @@ function refreshFixture() {
     `header.${Buffer.from(JSON.stringify({ iat, exp })).toString('base64url')}.signature`
   const oldToken = jwt(now - 800, now + 100)
   const newToken = jwt(now, now + 900)
-  let saved = {
+  let saved: NativeTokenSet = {
     accessToken: 'old-account', refreshToken: 'old-refresh',
     inferenceAccessToken: oldToken, profiles: ['default'],
     expiresAt: now + 100, provider: 'youtab', userId: 'user'
@@ -673,7 +696,7 @@ function refreshFixture() {
     load: () => saved,
     exchange: () => exchange(),
     writeProfile: (profile, token) => write(profile, token),
-    commit: (_baseUrl, tokens) => { commits++; saved = tokens as typeof saved },
+    commit: (_baseUrl, tokens) => { commits++; saved = tokens },
     clear: () => { throw new Error('unexpected clear') },
     validateProfiles: profiles => validate(profiles),
     now: () => now
@@ -690,13 +713,19 @@ function refreshFixture() {
   }
 }
 
-test('scheduled refresh writes profile before committing rotated session', async () => {
+test('scheduled refresh saves pending rotation before profile write and finalizes afterward', async () => {
   const f = refreshFixture()
+  f.setWrite(async (profile, token) => {
+    assert.equal(f.saved.rotationPending, true)
+    assert.equal(f.saved.refreshToken, 'new-refresh')
+    f.writes.push([profile, token])
+  })
   assert.equal(await f.coordinator.ensure('gateway', true), 'new-account')
   assert.deepEqual(f.writes, [['default', f.newToken]])
   assert.equal(f.exchanges, 1)
-  assert.equal(f.commits, 1)
+  assert.equal(f.commits, 2)
   assert.equal(f.saved.refreshToken, 'new-refresh')
+  assert.equal(f.saved.rotationPending, false)
 })
 
 test('network delay and concurrent callers share one refresh result', async () => {
@@ -749,7 +778,7 @@ test('stale deleted profile after restart and transient probe errors block befor
   assert.deepEqual(f.writes, [])
 })
 
-test('profile write failure keeps old saved session and retries pending rotation once', async () => {
+test('profile write failure saves rotated authority and retries pending rotation once', async () => {
   const f = refreshFixture()
   f.setNow(2_000_080)
   let attempts = 0
@@ -758,11 +787,92 @@ test('profile write failure keeps old saved session and retries pending rotation
     f.writes.push([profile, token])
   })
   await assert.rejects(f.coordinator.ensure('gateway'), /profile write failed/)
-  assert.equal(f.commits, 0)
-  assert.equal(f.saved.refreshToken, 'old-refresh')
+  assert.equal(f.commits, 1)
+  assert.equal(f.saved.refreshToken, 'new-refresh')
+  assert.equal(f.saved.rotationPending, true)
   assert.equal(await f.coordinator.ensure('gateway'), 'new-account')
   assert.equal(f.exchanges, 1)
   assert.equal(f.saved.refreshToken, 'new-refresh')
+  assert.equal(f.saved.rotationPending, false)
+})
+
+test('restart replays encrypted pending rotation without reusing consumed refresh token', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  f.setWrite(async () => { throw new Error('profile write failed') })
+  await assert.rejects(f.coordinator.ensure('gateway'), /profile write failed/)
+  const restored = parseTokenResponse(JSON.parse(JSON.stringify(f.saved)))
+  assert.equal(restored.rotationPending, true)
+  assert.equal(restored.refreshToken, 'new-refresh')
+  let saved = restored
+  let exchanges = 0
+  const writes: Array<[string, string | null]> = []
+  const restarted = createNativeRefreshCoordinator({
+    load: () => saved,
+    exchange: async () => { exchanges++; throw new Error('old refresh token was consumed') },
+    writeProfile: async (profile, token) => { writes.push([profile, token]) },
+    commit: (_baseUrl, tokens) => { saved = tokens },
+    clear: () => { throw new Error('must retain session') },
+    now: () => 2_000_080
+  })
+  assert.equal(await restarted.ensure('gateway'), 'new-account')
+  assert.equal(exchanges, 0)
+  assert.deepEqual(writes, [['default', f.newToken]])
+  assert.equal(saved.rotationPending, false)
+})
+
+test('startup revalidation waits for pending profile rotation before connection resumes', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  f.setWrite(async () => { throw new Error('profile write failed') })
+  await assert.rejects(f.coordinator.ensure('gateway'), /profile write failed/)
+  let saved = parseTokenResponse(JSON.parse(JSON.stringify(f.saved)))
+  let finishWrite!: () => void
+  let reconnects = 0
+  const restarted = createNativeRefreshCoordinator({
+    load: () => saved,
+    exchange: async () => { throw new Error('must replay saved rotation') },
+    writeProfile: () => new Promise<void>(resolve => { finishWrite = resolve }),
+    commit: (_baseUrl, tokens) => { saved = tokens },
+    clear: () => { throw new Error('must retain session') },
+    now: () => 2_000_080
+  })
+  const startup = revalidateNativeSessionsBeforeResume(
+    ['gateway'], () => saved, baseUrl => restarted.ensure(baseUrl), () => { reconnects++ }
+  )
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(reconnects, 0)
+  assert.equal(saved.rotationPending, true)
+  finishWrite()
+  await startup
+  assert.equal(reconnects, 1)
+  assert.equal(saved.rotationPending, false)
+})
+
+test('restart refreshes a stale pending rotation using the saved rotated credential', async () => {
+  const f = refreshFixture()
+  f.setNow(2_000_080)
+  f.setWrite(async () => { throw new Error('profile write failed') })
+  await assert.rejects(f.coordinator.ensure('gateway'), /profile write failed/)
+  let saved = parseTokenResponse(JSON.parse(JSON.stringify(f.saved)))
+  let exchangedWith = ''
+  const restarted = createNativeRefreshCoordinator({
+    load: () => saved,
+    exchange: async (_baseUrl, tokens) => {
+      exchangedWith = tokens.refreshToken
+      return { ...tokens, accessToken: 'newest-account', refreshToken: 'newest-refresh', expiresAt: 2_002_000,
+        inferenceAccessToken: `h.${Buffer.from(JSON.stringify({ iat: 2_000_901, exp: 2_002_000 })).toString('base64url')}.s` }
+    },
+    writeProfile: async () => undefined,
+    commit: (_baseUrl, tokens) => { saved = tokens },
+    clear: () => { throw new Error('must retain session') },
+    now: () => 2_000_901
+  })
+  assert.equal(await restarted.ensure('gateway'), 'newest-account')
+  assert.equal(exchangedWith, 'new-refresh')
+  assert.equal(saved.refreshToken, 'newest-refresh')
+  assert.equal(saved.rotationPending, false)
 })
 
 test('profile rename retargets a pending one-use refresh without exchanging again', async () => {
@@ -799,7 +909,7 @@ test('profile rename retargets a pending one-use refresh without exchanging agai
   assert.deepEqual(f.writes.at(-1), ['renamed', f.newToken])
 })
 
-test('second profile failure restores the first profile and does not commit', async () => {
+test('second profile failure restores the first profile and retains pending rotation', async () => {
   const f = refreshFixture()
   f.setNow(2_000_080)
   f.saved.profiles.push('sibling')
@@ -811,8 +921,9 @@ test('second profile failure restores the first profile and does not commit', as
   assert.deepEqual(f.writes, [
     ['default', f.newToken], ['sibling', f.newToken], ['sibling', f.oldToken], ['default', f.oldToken]
   ])
-  assert.equal(f.commits, 0)
-  assert.equal(f.saved.refreshToken, 'old-refresh')
+  assert.equal(f.commits, 1)
+  assert.equal(f.saved.refreshToken, 'new-refresh')
+  assert.equal(f.saved.rotationPending, true)
 })
 
 test('refresh rolls back a profile whose write persisted before timing out', async () => {
@@ -831,7 +942,7 @@ test('refresh rolls back a profile whose write persisted before timing out', asy
   await assert.rejects(f.coordinator.ensure('gateway'), /child timed out/)
   assert.equal(bearers.get('default'), f.oldToken)
   assert.equal(bearers.get('sibling'), f.oldToken)
-  assert.equal(f.commits, 0)
+  assert.equal(f.commits, 1)
   assert.equal(await f.coordinator.ensure('gateway'), 'new-account')
   assert.equal(f.exchanges, 1)
 })
@@ -875,11 +986,11 @@ test('wake after timer deadline blocks reconnect until profile write completes',
   await Promise.resolve()
   await Promise.resolve()
   assert.equal(reconnects, 0)
-  assert.equal(f.commits, 0)
+  assert.equal(f.commits, 1)
   finishWrite()
   await wake
   assert.equal(reconnects, 1)
-  assert.equal(f.commits, 1)
+  assert.equal(f.commits, 2)
 })
 
 test('wake after expiry fails closed when refresh fails and does not reconnect', async () => {

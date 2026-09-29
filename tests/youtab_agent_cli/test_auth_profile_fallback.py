@@ -233,6 +233,59 @@ def test_profile_gateway_catalog_uses_existing_cache_during_outage(profile_env, 
     assert len(calls) == 1
 
 
+def test_profile_gateway_catalog_empty_success_invalidates_cached_ids(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, tools_config, web_server, youtab_subscription
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+
+    # A successful empty catalog means the Engine is no longer admitted.
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: [])
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
+    assert models.cached_provider_model_ids("youtab") == []
+
+    monkeypatch.setattr(web_server, "load_config", lambda: {"model": {}})
+    monkeypatch.setattr(web_server, "save_config", lambda _value: pytest.fail("stale Engine saved"))
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda *_a, **_kw: [])
+    monkeypatch.setattr(youtab_subscription, "apply_youtab_managed_defaults", lambda *_a, **_kw: set())
+    with pytest.raises(Exception) as refused:
+        web_server._apply_model_assignment_sync("main", "youtab", "deepseek.v4_flash", "", "")
+    assert refused.value.status_code == 422
+
+
+def test_profile_gateway_catalog_rejected_request_invalidates_cached_ids(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(
+        auth.AuthError("forbidden", provider="youtab", code="models_fetch_rejected"),
+    ))
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
+    assert models.cached_provider_model_ids("youtab") == []
+
+
+@pytest.mark.parametrize("status, code", [(401, "models_fetch_rejected"),
+                                          (403, "models_fetch_rejected"),
+                                          (500, "models_fetch_failed")])
+def test_gateway_model_fetch_distinguishes_rejection_from_outage(monkeypatch, status, code):
+    from youtab_agent_cli import auth
+
+    class Client:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def get(self, *_args, **_kwargs):
+            return SimpleNamespace(status_code=status, json=lambda: {})
+
+    monkeypatch.setattr(auth.httpx, "Client", Client)
+    with pytest.raises(auth.AuthError) as rejected:
+        auth.fetch_youtab_models(inference_base_url="https://api.youtab.io/v1", api_key="redacted")
+    assert rejected.value.code == code
+
+
 def test_profile_proxy_uses_gateway_token_without_refresh(profile_env, monkeypatch):
     from youtab_agent_cli import auth
     from youtab_agent_cli.proxy.adapters import youtab_portal

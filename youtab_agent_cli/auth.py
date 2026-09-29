@@ -5625,7 +5625,11 @@ def fetch_youtab_models(
             description = str(err.get("error_description") or err.get("error") or description)
         except Exception as e:
             logger.debug("Could not parse error response JSON: %s", e)
-        raise AuthError(description, provider="youtab", code="models_fetch_failed")
+        # A rejected request is authoritative: callers must not substitute a
+        # stale admitted-model catalog for revoked or unauthorized access.
+        rejected = 400 <= response.status_code < 500 and response.status_code not in (408, 429)
+        code = "models_fetch_rejected" if rejected else "models_fetch_failed"
+        raise AuthError(description, provider="youtab", code=code)
 
     payload = response.json()
     data = payload.get("data")

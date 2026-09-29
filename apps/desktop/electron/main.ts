@@ -5191,7 +5191,7 @@ let powerResumeInFlight: Promise<void> | null = null
 let powerResumeRetry: NodeJS.Timeout | null = null
 let powerResumeRequiredSessions: string[] | null = null
 let powerResumeRetryCount = 0
-function notifyPowerResumeRenderer(authChanged = false, nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string }) {
+function notifyPowerResumeRenderer(authChanged = false, nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string; profiles?: string[] }) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     const { webContents } = mainWindow
     if (webContents && !webContents.isDestroyed()) {
@@ -6363,6 +6363,17 @@ function assertNativeProfileDirectory(profile: string) {
   }
 }
 
+function resolveLiveNativeProviderProfile(requested: unknown): string {
+  // The renderer can swap its live Gateway to another profile without changing
+  // active-profile.json (the primary backend's launch preference). Accept only
+  // a real profile in this Runtime home; never route a credential to an
+  // arbitrary renderer-supplied name or a missing profile.
+  const selected = typeof requested === 'string' ? requested : readEffectiveDesktopProfile()
+  const profile = resolveNativeProviderProfile(requested, selected)
+  assertNativeProfileDirectory(profile)
+  return profile
+}
+
 async function writeProfileInferenceToken(profile: string, token: string | null): Promise<void> {
   if (!token && !nativeProfileDirectoryExists(profile)) { return }
   assertNativeProfileDirectory(profile)
@@ -6398,16 +6409,19 @@ function _scheduleNativeRefresh(baseUrl: string, tokens: NativeTokenSet) {
   if (previous) { clearTimeout(previous) }
   _nativeRefreshTimers.delete(baseUrl)
   if (tokens.logoutPending || !tokens.inferenceAccessToken || !tokens.profiles?.length || !tokens.refreshToken) { return }
-  const delay = Math.max(1_000, inferenceRefreshDelayMs(tokens, Math.floor(Date.now() / 1000)))
+  // An encrypted rotated response can be restored after a crash while the
+  // profile file still has the old bearer. Replay that write on the next turn,
+  // regardless of the new JWT's (much later) normal refresh deadline.
+  const delay = tokens.rotationPending ? 0 : Math.max(1_000, inferenceRefreshDelayMs(tokens, Math.floor(Date.now() / 1000)))
   _nativeRefreshTimers.set(baseUrl, setTimeout(() => {
     void ensureNativeAccessToken(baseUrl, true).catch((error: any) => {
       if (error?.needsOauthLogin === true) {
-        notifyPowerResumeRenderer(false, { kind: 'auth', baseUrl })
+        notifyPowerResumeRenderer(false, { kind: 'auth', baseUrl, profiles: tokens.profiles })
         return
       }
       if (!_nativeRefreshRetries.failed(baseUrl)) {
         _nativeRefreshTimers.delete(baseUrl)
-        notifyPowerResumeRenderer(false, { kind: 'transport', baseUrl })
+        notifyPowerResumeRenderer(false, { kind: 'transport', baseUrl, profiles: tokens.profiles })
         return
       }
       // Transient Gateway failure: retry without exposing credentials in logs.
@@ -6462,6 +6476,20 @@ function ensureNativeAccessToken(baseUrl: string, forceRefresh = false): Promise
   return nativeRefresh.ensure(baseUrl, forceRefresh)
 }
 
+async function ensurePendingNativeProfileRotation(profile: string): Promise<void> {
+  const pending = Object.keys(_readNativeTokenStore()).filter(baseUrl => {
+    const tokens = _loadNativeTokens(baseUrl)
+    return tokens?.rotationPending && tokens.profiles?.includes(profile)
+  })
+  if (!pending.length) { return }
+  // Local inference must not resume with a stale profile bearer. The existing
+  // resume gate serializes the replay, fails closed on error, and lets the
+  // normal backend startup surface its recoverable boot failure.
+  await revalidateNativeSessionsBeforeResume(
+    pending, _loadNativeTokens, baseUrl => ensureNativeAccessToken(baseUrl), () => undefined
+  )
+}
+
 function pauseNativeRefresh(baseUrl: string) {
   const timer = _nativeRefreshTimers.get(baseUrl)
   if (timer) { clearTimeout(timer) }
@@ -6480,7 +6508,9 @@ const nativeSessionLifecycle = createNativeSessionLifecycle({
   savedSessionState: _nativeSavedSessionState,
   scheduleRelinkRetry: (retry, delayMs) => { setTimeout(retry, delayMs) },
   logRelinkFailure: () => rememberLog('[native-oauth] profile session reconciliation deferred after confirmed profile change'),
-  onRelinkExhausted: baseUrl => notifyPowerResumeRenderer(false, { kind: 'auth', baseUrl }),
+  onRelinkExhausted: (baseUrl, profiles) => notifyPowerResumeRenderer(false, {
+    kind: 'auth', baseUrl, profiles
+  }),
   scheduleRefresh: _scheduleNativeRefresh,
   revoke: async (baseUrl, refreshToken) => {
     await postJsonNoAuth(`${baseUrl}/v1/auth/logout`, { refresh_token: refreshToken }, { timeoutMs: 10_000 })
@@ -8255,6 +8285,8 @@ async function spawnPoolBackend(profile, entry) {
     }
   }
 
+  await ensurePendingNativeProfileRotation(profile)
+
   const token = crypto.randomBytes(32).toString('base64url')
 
   // Same update mutual exclusion as the primary window's waitForLocalStart
@@ -8548,6 +8580,7 @@ async function startYoutab() {
       ensureLocalRuntime: ensureRuntime,
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Youtab runtime', 28)
+        await ensurePendingNativeProfileRotation(primaryProfileKey())
 
         return resolveYoutabBackend(backendArgs)
       },
@@ -9543,7 +9576,11 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('youtab:connection', async (_event, profile) => ensureBackend(profile))
+ipcMain.handle('youtab:connection', async (_event, profile) => {
+  const requestedProfile = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  await ensurePendingNativeProfileRotation(requestedProfile)
+  return ensureBackend(profile)
+})
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
@@ -9904,7 +9941,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
     if (baseUrl !== normalizeRemoteBaseUrl(DEFAULT_YOUTAB_PORTAL_URL)) {
       throw new Error('Native provider login URL does not match the configured Gateway')
     }
-    const profile = resolveNativeProviderProfile(options.profile, readEffectiveDesktopProfile())
+    const profile = resolveLiveNativeProviderProfile(options.profile)
     const tokens = await runNativeLogin(baseUrl, {
       openExternal: url => shell.openExternal(url),
       postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
@@ -9976,7 +10013,7 @@ ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl, o
     if (baseUrl !== normalizeRemoteBaseUrl(DEFAULT_YOUTAB_PORTAL_URL)) {
       throw new Error('Native provider logout URL does not match the configured Gateway')
     }
-    const profile = resolveNativeProviderProfile(options.profile, readEffectiveDesktopProfile())
+    const profile = resolveLiveNativeProviderProfile(options.profile)
     await nativeSessionLifecycle.logout(baseUrl, profile)
     releasePowerResumeAfterAuthChange()
     return { ok: true, connected: false }
