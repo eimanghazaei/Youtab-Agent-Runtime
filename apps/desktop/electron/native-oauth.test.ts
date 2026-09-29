@@ -17,6 +17,7 @@ import {
   buildNativeAuthorizeUrl,
   clearGatewaySessionCredentials,
   clearNativeProfileCredentials,
+  completePendingNativeLogout,
   cookieFallbackAfterNativeError,
   createNativeRefreshCoordinator,
   createNativeRefreshRetryCounter,
@@ -811,6 +812,32 @@ for (const statusCode of [401, 403]) {
     assert.equal(saved, null)
   })
 }
+
+test('local startup continues after interrupted logout clears its saved session', async () => {
+  let saved = true
+  let started = false
+  const terminal = Object.assign(new Error('Sign in again'), { needsOauthLogin: true })
+  await completePendingNativeLogout('gateway', async () => {
+    assert.equal(saved, true)
+    saved = false
+    throw terminal
+  }, () => !saved)
+  started = true
+  assert.equal(started, true)
+  assert.equal(saved, false)
+  await assert.rejects(Promise.reject(terminal).catch(cookieFallbackAfterNativeError), error => {
+    assert.equal(error, terminal)
+    return true
+  })
+})
+
+test('local startup blocks when interrupted logout cleanup remains pending', async () => {
+  const terminal = Object.assign(new Error('clear failed'), { needsOauthLogin: true })
+  await assert.rejects(
+    completePendingNativeLogout('gateway', async () => { throw terminal }, () => false),
+    error => error === terminal
+  )
+})
 
 test('terminal refresh keeps auth rejection when cleanup inventory cannot be saved', async () => {
   const saved = refreshFixture().saved

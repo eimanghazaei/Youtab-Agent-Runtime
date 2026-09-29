@@ -2222,8 +2222,8 @@ def _youtab_portal_env_override() -> Optional[str]:
     Returns a trailing-slash-stripped non-empty string, or ``None`` when
     neither env var is set/blank.
     """
-    return _optional_base_url(
-        os.getenv("YOUTAB_AGENT_PORTAL_BASE_URL") or os.getenv("YOUTAB_PORTAL_BASE_URL")
+    return _optional_base_url(os.getenv("YOUTAB_AGENT_PORTAL_BASE_URL")) or _optional_base_url(
+        os.getenv("YOUTAB_PORTAL_BASE_URL")
     )
 
 
@@ -8668,66 +8668,12 @@ def step_up_youtab_billing_scope(
     timeout_seconds: float = 15.0,
     on_verification: Optional[Callable[[str, str], None]] = None,
 ) -> bool:
-    """Re-run the device flow requesting ``billing:manage`` and persist the result.
-
-    The lazy step-up (plan D-A): triggered when a billing endpoint returns
-    ``403 insufficient_scope``. Runs a fresh device-connect with
-    ``inference:invoke tool:invoke billing:manage`` on the scope. The user must be
-    an ADMIN/OWNER and select "Allow Remote Spending" in the portal for the minted
-    token to actually carry the scope; otherwise the server silently downscopes and this
-    returns False.
-
-    Reuses the held credential's portal/inference URLs + client_id so the step-up
-    targets the same deployment (incl. a preview via ``YOUTAB_AGENT_PORTAL_BASE_URL`` set
-    at the original login). Persists to the auth store + shared store + pool, exactly
-    like ``_login_youtab`` — but WITHOUT the model picker (this is a scope upgrade, not
-    a fresh login).
-
-    Returns True iff the new token carries ``billing:manage``.
-    """
-    prior = get_provider_auth_state("youtab") or {}
-    pconfig = PROVIDER_REGISTRY["youtab"]
-
-    # Build the step-up scope: existing scopes (if any) + billing:manage, deduped,
-    # order-stable. Fall back to the standard inference+tool+billing set.
-    _raw_scope = prior.get("scope")
-    prior_scope = _raw_scope if isinstance(_raw_scope, str) else ""
-    requested: list[str] = []
-    for tok in (prior_scope.split() or [YOUTAB_INFERENCE_INVOKE_SCOPE, "tool:invoke"]):
-        if tok and tok not in requested:
-            requested.append(tok)
-    if YOUTAB_BILLING_MANAGE_SCOPE not in requested:
-        requested.append(YOUTAB_BILLING_MANAGE_SCOPE)
-    scope = " ".join(requested)
-
-    auth_state = _youtab_device_code_login(
-        portal_base_url=prior.get("portal_base_url") or None,
-        inference_base_url=prior.get("inference_base_url") or None,
-        client_id=prior.get("client_id") or pconfig.client_id,
-        scope=scope,
-        open_browser=open_browser,
-        timeout_seconds=timeout_seconds,
-        on_verification=on_verification,
+    """Refuse the removed device grant without changing any credentials."""
+    raise AuthError(
+        "Remote Spending is unavailable for this connection.",
+        provider="youtab",
+        code="unsupported_connection",
     )
-
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
-        _save_provider_state(auth_store, "youtab", auth_state)
-        _save_auth_store(auth_store)
-
-    # Mirror to shared store + reseed the pool (best-effort), same as _login_youtab.
-    try:
-        _write_shared_youtab_state(auth_state)
-    except Exception:
-        pass
-    try:
-        _sync_youtab_pool_from_auth_store()
-    except Exception:
-        pass
-
-    granted = auth_state.get("scope")
-    return isinstance(granted, str) and YOUTAB_BILLING_MANAGE_SCOPE in granted.split()
-
 
 def _login_youtab(args, pconfig: ProviderConfig) -> None:
     """Youtab Portal device authorization flow."""

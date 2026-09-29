@@ -72,6 +72,25 @@ function normalizeRemoteBaseUrl(rawUrl) {
   return parsed.toString().replace(/\/+$/, '')
 }
 
+function resolvePortalBaseUrl(env = process.env) {
+  const raw = String(env.YOUTAB_AGENT_PORTAL_BASE_URL || '').trim()
+    || String(env.YOUTAB_PORTAL_BASE_URL || '').trim()
+    || 'https://api.youtab.io'
+  const parsed = new URL(raw)
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('Configured Youtab Portal URL is not a valid base URL.')
+  }
+  return normalizeRemoteBaseUrl(raw)
+}
+
+function requireNativePortalAuthority(rawUrl, env = process.env) {
+  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  if (baseUrl !== resolvePortalBaseUrl(env)) {
+    throw new Error('Native provider URL does not match the configured Gateway')
+  }
+  return baseUrl
+}
+
 function buildGatewayWsUrl(baseUrl, token) {
   const parsed = new URL(baseUrl)
   const wsScheme = parsed.protocol === 'https:' ? 'wss' : 'ws'
@@ -557,7 +576,9 @@ export {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  requireNativePortalAuthority,
   resolveAuthMode,
+  resolvePortalBaseUrl,
   resolveProfileBackendRoute,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,

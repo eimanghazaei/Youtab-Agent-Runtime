@@ -750,6 +750,25 @@ export function createNativeRefreshCoordinator(deps: {
   return { discard, ensure, relinkPending, wait }
 }
 
+/** Finish an interrupted logout before local startup reads profile credentials. */
+export async function completePendingNativeLogout(
+  baseUrl: string,
+  ensure: (baseUrl: string) => Promise<string | null>,
+  cleared: (baseUrl: string) => boolean
+): Promise<void> {
+  try {
+    await ensure(baseUrl)
+  } catch (error) {
+    // Remote callers still need the terminal reauth error. Local startup only
+    // accepts it after the saved session and cleanup inventory are gone.
+    if (!(typeof error === 'object' && error !== null
+      && (error as { needsOauthLogin?: unknown }).needsOauthLogin === true
+      && cleared(baseUrl))) {
+      throw error
+    }
+  }
+}
+
 /** Renderer reconnect is released only after every profile session is revalidated. */
 export async function revalidateNativeSessionsBeforeResume(
   baseUrls: string[],

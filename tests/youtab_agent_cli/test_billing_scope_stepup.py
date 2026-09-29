@@ -1,4 +1,4 @@
-"""Tests for the Phase 2b billing:manage scope step-up (auth.py)."""
+"""The removed Youtab device grant cannot step up Remote Spending."""
 
 from __future__ import annotations
 
@@ -6,8 +6,6 @@ import pytest
 
 import youtab_agent_cli.auth as auth
 from youtab_agent_cli.auth import (
-    YOUTAB_BILLING_MANAGE_SCOPE,
-    youtab_token_has_billing_scope,
     step_up_youtab_billing_scope,
 )
 
@@ -26,53 +24,16 @@ from youtab_agent_cli.auth import (
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def _stub_persist(monkeypatch):
-    """Neutralize the persistence side-effects so step-up tests are pure."""
-    monkeypatch.setattr(auth, "_auth_store_lock", lambda: _NullCtx())
-    monkeypatch.setattr(auth, "_load_auth_store", lambda: {})
-    monkeypatch.setattr(auth, "_save_provider_state", lambda *a, **kw: None)
-    monkeypatch.setattr(auth, "_save_auth_store", lambda *a, **kw: "auth.json")
-    monkeypatch.setattr(auth, "_write_shared_youtab_state", lambda *a, **kw: None)
-    monkeypatch.setattr(auth, "_sync_youtab_pool_from_auth_store", lambda: None)
+def test_step_up_refuses_without_device_flow_or_auth_store_mutation(monkeypatch):
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("device flow or credential mutation must not run")
 
-
-class _NullCtx:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def test_step_up_requests_billing_scope_and_reuses_prior_urls(monkeypatch, _stub_persist):
-    monkeypatch.setattr(
-        auth,
-        "get_provider_auth_state",
-        lambda p: {
-            "scope": "inference:invoke tool:invoke",
-            "portal_base_url": "https://preview.example.com",
-            "inference_base_url": "https://inf.example.com",
-            "client_id": "youtab-cli",
-        },
-    )
-    captured = {}
-
-    def _fake_login(**kw):
-        captured.update(kw)
-        # Simulate the admin ticking the box → token comes back WITH the scope.
-        return {"scope": "inference:invoke tool:invoke billing:manage", "access_token": "t"}
-
-    monkeypatch.setattr(auth, "_youtab_device_code_login", _fake_login)
-
-    granted = step_up_youtab_billing_scope()
-    assert granted is True
-    # Requested scope must include billing:manage, preserving prior scopes.
-    assert YOUTAB_BILLING_MANAGE_SCOPE in captured["scope"].split()
-    assert "inference:invoke" in captured["scope"].split()
-    # Reuses the prior credential's deployment URLs (so a preview stays a preview).
-    assert captured["portal_base_url"] == "https://preview.example.com"
-    assert captured["client_id"] == "youtab-cli"
+    monkeypatch.setattr(auth, "_youtab_device_code_login", forbidden)
+    monkeypatch.setattr(auth, "_save_auth_store", forbidden)
+    with pytest.raises(auth.AuthError) as exc:
+        step_up_youtab_billing_scope()
+    assert exc.value.code == "unsupported_connection"
+    assert "unavailable" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

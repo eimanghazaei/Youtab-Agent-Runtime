@@ -11,11 +11,37 @@ from __future__ import annotations
 import io
 import json
 import socket
+import time
 from contextlib import contextmanager
 
 import pytest
 
 from youtab_agent_cli import youtab_billing as nb
+
+
+def test_native_profile_remote_spending_refuses_before_cache_or_http(monkeypatch):
+    monkeypatch.setattr(nb, "native_remote_spending_unavailable", lambda: True)
+    monkeypatch.setattr(nb, "_token_cache", (time.time(), "old-account-token", "https://api.youtab.io"))
+    monkeypatch.setattr(nb.urllib.request, "urlopen", lambda *_a, **_kw: pytest.fail("billing HTTP must not run"))
+    for request in (
+        lambda: nb.get_billing_state(),
+        lambda: nb.post_charge(amount_usd="10", idempotency_key="test-key"),
+        lambda: nb.get_charge_status("charge-id"),
+        lambda: nb.patch_auto_top_up(enabled=True, threshold="10", top_up_amount="20"),
+    ):
+        with pytest.raises(nb.BillingError) as exc:
+            request()
+        assert exc.value.error == "unsupported_connection"
+        assert "unavailable" in str(exc.value)
+
+
+def test_native_billing_guard_recognizes_logout_shadow(monkeypatch):
+    import youtab_agent_cli.auth as auth
+
+    monkeypatch.setattr(auth, "get_local_inference_token_state", lambda: {"agent_key": ""})
+    assert nb.native_remote_spending_unavailable() is True
+    monkeypatch.setattr(auth, "get_local_inference_token_state", lambda: None)
+    assert nb.native_remote_spending_unavailable() is False
 
 
 class _FakeResp(io.BytesIO):

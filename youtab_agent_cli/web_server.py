@@ -10399,7 +10399,12 @@ def _build_oauth_catalog() -> list[Dict[str, Any]]:
         if entry["id"] in seen:
             continue
         seen.add(entry["id"])
-        rows.append(dict(entry))
+        row = dict(entry)
+        if row["id"] == "youtab":
+            from youtab_agent_cli.auth import _youtab_portal_env_override
+
+            row["native_base_url"] = _youtab_portal_env_override() or row["native_base_url"]
+        rows.append(row)
 
     # 2. Catalog accounts-providers not already covered — keeps the Accounts tab
     #    in lockstep with the `youtab model` universe (zero-edit for new plugins).

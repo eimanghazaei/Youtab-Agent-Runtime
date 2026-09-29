@@ -69,7 +69,9 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  requireNativePortalAuthority,
   resolveAuthMode,
+  resolvePortalBaseUrl,
   resolveProfileBackendRoute,
   resolveTestWsUrl,
   savedProfileSsh,
@@ -144,6 +146,7 @@ import {
 } from './native-auth-decisions'
 import {
   clearGatewaySessionCredentials,
+  completePendingNativeLogout,
   cookieFallbackAfterNativeError,
   createNativeRefreshCoordinator,
   createNativeRefreshRetryCounter,
@@ -6491,7 +6494,13 @@ async function ensurePendingNativeProfileState(profile: string): Promise<void> {
   // Complete interrupted terminal clears before any child can read a stale
   // bearer. A failed clear blocks local startup and uses the existing retry UI.
   for (const baseUrl of pending) {
-    if (_loadNativeTokens(baseUrl)?.logoutPending) { await ensureNativeAccessToken(baseUrl) }
+    if (_loadNativeTokens(baseUrl)?.logoutPending) {
+      await completePendingNativeLogout(
+        baseUrl,
+        value => ensureNativeAccessToken(value),
+        value => !Object.prototype.hasOwnProperty.call(_readNativeTokenStore(), value) && !_loadNativeTokens(value)
+      )
+    }
   }
   // Reuse the resume gate for interrupted rotations before inference resumes.
   await revalidateNativeSessionsBeforeResume(
@@ -6603,18 +6612,6 @@ async function freshGatewayWsUrl(profile) {
 //     portal's silent auto-approve (org member, existing session) and 302s back
 //     with that agent's session cookie — no prompt. Each agent still completes
 //     its own PKCE exchange; SSO removes the human click, not a security check.
-
-// Canonical Youtab portal base URL, overridable for staging/dev. Mirrors the CLI
-// convention (youtab_agent_cli/auth.py DEFAULT_YOUTAB_PORTAL_URL + the same env names)
-// so a single override flips every Youtab surface to the same portal.
-const DEFAULT_YOUTAB_PORTAL_URL = 'https://api.youtab.io'
-
-function resolvePortalBaseUrl() {
-  const raw =
-    process.env.YOUTAB_AGENT_PORTAL_BASE_URL || process.env.YOUTAB_PORTAL_BASE_URL || DEFAULT_YOUTAB_PORTAL_URL
-
-  return String(raw).trim().replace(/\/+$/, '')
-}
 
 // Whether the OAuth partition currently holds a live Youtab portal session — the
 // credential that powers both discovery and the silent cascade. The portal
@@ -9947,9 +9944,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
   // The local provider catalog is the capability source for provider login.
   // Keep the remote-connection /api/status probe below for its existing use.
   if (options?.nativeCapability === true) {
-    if (baseUrl !== normalizeRemoteBaseUrl(DEFAULT_YOUTAB_PORTAL_URL)) {
-      throw new Error('Native provider login URL does not match the configured Gateway')
-    }
+    requireNativePortalAuthority(baseUrl)
     const profile = resolveLiveNativeProviderProfile(options.profile)
     const tokens = await runNativeLogin(baseUrl, {
       openExternal: url => shell.openExternal(url),
@@ -10019,9 +10014,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
 ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl, options) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
   if (options?.nativeCapability === true) {
-    if (baseUrl !== normalizeRemoteBaseUrl(DEFAULT_YOUTAB_PORTAL_URL)) {
-      throw new Error('Native provider logout URL does not match the configured Gateway')
-    }
+    requireNativePortalAuthority(baseUrl)
     const profile = resolveLiveNativeProviderProfile(options.profile)
     await nativeSessionLifecycle.logout(baseUrl, profile)
     releasePowerResumeAfterAuthChange()

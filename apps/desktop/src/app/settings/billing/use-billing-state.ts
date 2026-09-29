@@ -197,6 +197,19 @@ export function deriveBillingView(
   const billing = stateResult.data
   const subscription = subscriptionResult?.ok ? subscriptionResult.data : null
 
+  if (billing.error === 'unsupported_connection' || subscription?.error === 'unsupported_connection') {
+    return {
+      notice: {
+        message: 'Remote Spending is unavailable for this connection.',
+        title: 'Remote Spending unavailable'
+      },
+      status: 'refusal',
+      summary: emptySummary(),
+      tiers: [],
+      usageRows: []
+    }
+  }
+
   if (!billing.logged_in || subscription?.logged_in === false) {
     return {
       notice: {

@@ -240,6 +240,13 @@ def _billing_not_logged_in(exc: Optional[BaseException] = None) -> "BillingAuthE
     return err
 
 
+def native_remote_spending_unavailable() -> bool:
+    """An inference-only profile has no Remote Spending account credential."""
+    from youtab_agent_cli.auth import get_local_inference_token_state
+
+    return get_local_inference_token_state() is not None
+
+
 def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
     """Return ``(access_token, portal_base_url)`` for billing calls.
 
@@ -255,6 +262,14 @@ def _resolve_token_and_base(*, use_cache: bool = True) -> tuple[str, str]:
     """
     global _token_cache
     import time as _time
+
+    # Check before the cache: a profile login or logout must never reuse an
+    # older account bearer for a billing operation.
+    if native_remote_spending_unavailable():
+        raise BillingError(
+            "Remote Spending is unavailable for this connection.",
+            error="unsupported_connection",
+        )
 
     if use_cache and _token_cache is not None:
         cached_at, token, base = _token_cache
