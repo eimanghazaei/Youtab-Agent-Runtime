@@ -5730,7 +5730,9 @@ def get_local_inference_token_state() -> Optional[Dict[str, Any]]:
 def persist_profile_inference_token(token: Optional[str]) -> None:
     """Replace the local Youtab entry without mirroring or OAuth refresh.
 
-    A blank local entry shadows global credentials after profile logout.
+    A blank profile entry shadows global credentials after profile logout.
+    A root-scoped clear removes only the inference entry, since the root has
+    no global credential to shadow.
     """
     value = str(token or "").strip()
     if value:
@@ -5748,6 +5750,21 @@ def persist_profile_inference_token(token: Optional[str]) -> None:
             "agent_key_obtained_at": now.isoformat(),
         }
     else:
+        if _global_auth_file_path() is None:
+            path = _auth_file_path()
+            with _auth_store_lock(target_path=path):
+                auth_store = _load_auth_store(path)
+                providers = auth_store.get("providers")
+                local = providers.get("youtab") if isinstance(providers, dict) else None
+                if (
+                    isinstance(local, dict)
+                    and "agent_key" in local
+                    and not local.get("access_token")
+                    and not local.get("refresh_token")
+                ):
+                    del providers["youtab"]
+                    _save_auth_store(auth_store, target_path=path)
+            return
         state = {
             "agent_key": "",
             "agent_key_expires_at": None,

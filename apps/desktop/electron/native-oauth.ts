@@ -646,23 +646,30 @@ export function createNativeRefreshCoordinator(deps: {
     }
   }
 
-  async function clearTerminalSession(baseUrl: string, tokens: NativeTokenSet): Promise<null> {
-    // Persist the cleanup inventory before touching any child. An interrupted
-    // clear cannot make the rejected refresh authority usable after restart.
-    if (!tokens.logoutPending) { deps.commit(baseUrl, { ...tokens, logoutPending: true }) }
-    let firstError: unknown = null
-    for (const profile of new Set(tokens.profiles || [])) {
-      try { await deps.writeProfile(profile, null) }
-      catch (error) { firstError ??= error }
+  async function clearTerminalSession(baseUrl: string, tokens: NativeTokenSet): Promise<never> {
+    try {
+      // Persist the cleanup inventory before touching any child. An interrupted
+      // clear cannot make the rejected refresh authority usable after restart.
+      if (!tokens.logoutPending) { deps.commit(baseUrl, { ...tokens, logoutPending: true }) }
+      let firstError: unknown = null
+      for (const profile of new Set(tokens.profiles || [])) {
+        try { await deps.writeProfile(profile, null) }
+        catch (error) { firstError ??= error }
+      }
+      if (firstError) { throw firstError }
+      if (tokens.refreshToken) {
+        try { await deps.revoke?.(baseUrl, tokens.refreshToken) }
+        catch { /* Local cleanup remains authoritative if remote revocation fails. */ }
+      }
+      deps.clear(baseUrl)
+      pending.delete(baseUrl)
+    } catch (error) {
+      // Even an interrupted clear follows a confirmed terminal rejection.
+      // Keep all REST/WS callers off the cookie fallback while cleanup retries.
+      if (error instanceof Error) { throw Object.assign(error, { needsOauthLogin: true }) }
+      throw Object.assign(new Error('Native session cleanup incomplete.'), { needsOauthLogin: true, cause: error })
     }
-    if (firstError) { throw firstError }
-    if (tokens.refreshToken) {
-      try { await deps.revoke?.(baseUrl, tokens.refreshToken) }
-      catch { /* Local cleanup remains authoritative if remote revocation fails. */ }
-    }
-    deps.clear(baseUrl)
-    pending.delete(baseUrl)
-    return null
+    throw Object.assign(new Error('Native session expired. Sign in again in Settings → Gateway.'), { needsOauthLogin: true })
   }
 
   function ensure(baseUrl: string, force = false): Promise<string | null> {
@@ -766,6 +773,14 @@ export async function revalidateNativeSessionsBeforeResume(
     }
   }
   reconnect()
+}
+
+/** A terminal native rejection must not turn into a cookie fallback. */
+export function cookieFallbackAfterNativeError(error: unknown): null {
+  if (typeof error === 'object' && error !== null && (error as { needsOauthLogin?: unknown }).needsOauthLogin === true) {
+    throw error
+  }
+  return null
 }
 
 /** Keep the auth marker intact across Electron's error-stripping IPC boundary. */

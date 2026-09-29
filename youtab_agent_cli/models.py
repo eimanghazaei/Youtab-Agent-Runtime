@@ -3113,11 +3113,32 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
+    # A profile inference bearer rotates without changing its account or
+    # workspace admission. Keep that catalog during a transient outage, while
+    # an account/workspace change still invalidates it. Malformed tokens retain
+    # the conservative file-mtime behavior below.
+    profile_identity = None
+    if provider == "youtab":
+        try:
+            from youtab_agent_cli.auth import _decode_jwt_claims, get_local_inference_token_state
+
+            local = get_local_inference_token_state()
+            token = local.get("agent_key") if local else None
+            claims = _decode_jwt_claims(token)
+            keys = ("iss", "aud", "sub", "principal_type", "tenant_id", "organization_id", "workspace_id", "scope")
+            if all(isinstance(claims.get(key), str) and claims[key] for key in keys):
+                profile_identity = json.dumps([claims[key] for key in keys], separators=(",", ":"))
+        except Exception:
+            pass
+
     # OAuth / external-file mtimes that change on re-auth
     try:
         from youtab_constants import get_youtab_home
         for rel in ("auth.json", "credentials.json"):
             p = get_youtab_home() / rel
+            if rel == "auth.json" and profile_identity is not None:
+                parts.append(f"{rel}#profile={profile_identity}")
+                continue
             try:
                 parts.append(f"{rel}@{p.stat().st_mtime_ns}")
             except FileNotFoundError:

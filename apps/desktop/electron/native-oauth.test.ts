@@ -17,6 +17,7 @@ import {
   buildNativeAuthorizeUrl,
   clearGatewaySessionCredentials,
   clearNativeProfileCredentials,
+  cookieFallbackAfterNativeError,
   createNativeRefreshCoordinator,
   createNativeRefreshRetryCounter,
   createNativeSessionLifecycle,
@@ -623,7 +624,10 @@ test('logout tombstone survives token-store serialization and finishes cleanup a
   })
   assert.equal(restored.logoutPending, true)
   assert.deepEqual(nativeProfileSessionKeys(['gateway'], () => restored), ['gateway'])
-  assert.equal(await coordinator.ensure('gateway'), null)
+  await assert.rejects(coordinator.ensure('gateway'), error => {
+    assert.equal((error as { needsOauthLogin?: boolean }).needsOauthLogin, true)
+    return true
+  })
   assert.deepEqual(cleared, ['one', 'two'])
   assert.deepEqual(revoked, ['old-r'])
   assert.equal(saved, null)
@@ -773,7 +777,11 @@ for (const statusCode of [401, 403]) {
       revoke: async (_baseUrl, refreshToken) => { revoked.push(refreshToken) },
       now: () => 2_000_000
     })
-    await assert.rejects(makeCoordinator(true).ensure('gateway', true), /child clear failed/)
+    await assert.rejects(makeCoordinator(true).ensure('gateway', true).catch(cookieFallbackAfterNativeError), error => {
+      assert.match((error as Error).message, /child clear failed/)
+      assert.equal((error as { needsOauthLogin?: boolean }).needsOauthLogin, true)
+      return true
+    })
     assert.deepEqual(writes, [['one', null], ['two', null]])
     assert.equal(saved?.logoutPending, true)
     assert.equal(exchanges, 1)
@@ -791,8 +799,48 @@ for (const statusCode of [401, 403]) {
     assert.equal(saved, null)
     assert.equal(exchanges, 1)
     assert.deepEqual(revoked, ['old-refresh'])
+
+    // A direct REST/WS caller and a scheduled refresh both need the tagged
+    // rejection after cleanup; null would silently choose cookie auth.
+    saved = { ...initial, profiles: ['one', 'two'] }
+    const direct = makeCoordinator(false)
+    await assert.rejects(direct.ensure('gateway', true).catch(cookieFallbackAfterNativeError), error => {
+      assert.equal((error as { needsOauthLogin?: boolean }).needsOauthLogin, true)
+      return true
+    })
+    assert.equal(saved, null)
   })
 }
+
+test('terminal refresh keeps auth rejection when cleanup inventory cannot be saved', async () => {
+  const saved = refreshFixture().saved
+  const coordinator = createNativeRefreshCoordinator({
+    load: () => saved,
+    exchange: async () => { throw Object.assign(new Error('rejected'), { statusCode: 401 }) },
+    writeProfile: async () => { throw new Error('must not clear without inventory') },
+    commit: () => { throw new Error('inventory write failed') },
+    clear: () => { throw new Error('must not clear session') },
+    now: () => 2_000_000
+  })
+  await assert.rejects(coordinator.ensure('gateway', true).catch(cookieFallbackAfterNativeError), error => {
+    assert.match((error as Error).message, /inventory write failed/)
+    assert.equal((error as { needsOauthLogin?: boolean }).needsOauthLogin, true)
+    return true
+  })
+})
+
+test('cookie fallback remains available when no native session was stored', async () => {
+  const coordinator = createNativeRefreshCoordinator({
+    load: () => null,
+    exchange: async () => { throw new Error('must not refresh') },
+    writeProfile: async () => { throw new Error('must not write') },
+    commit: () => { throw new Error('must not commit') },
+    clear: () => { throw new Error('must not clear') },
+    now: () => 0
+  })
+  assert.equal(await coordinator.ensure('gateway'), null)
+  assert.equal(cookieFallbackAfterNativeError(new Error('network unavailable')), null)
+})
 
 test('scheduled refresh saves pending rotation before profile write and finalizes afterward', async () => {
   const f = refreshFixture()

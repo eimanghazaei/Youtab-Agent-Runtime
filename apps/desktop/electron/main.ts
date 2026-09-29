@@ -144,6 +144,7 @@ import {
 } from './native-auth-decisions'
 import {
   clearGatewaySessionCredentials,
+  cookieFallbackAfterNativeError,
   createNativeRefreshCoordinator,
   createNativeRefreshRetryCounter,
   createNativeSessionLifecycle,
@@ -5072,7 +5073,7 @@ async function gatewayAuthProviders(baseUrl) {
 // answers before the SPA catch-all). `probeIsCredentialed` tells
 // waitForYoutabReady how to read a 401 — rejected session vs gated route.
 async function buildReadinessHealthProbe(baseUrl, authMode, token) {
-  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl).catch(() => null) : null
+  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl).catch(cookieFallbackAfterNativeError) : null
   const probeAuth = resolveReadinessProbeAuth(authMode, nativeAt, token)
 
   if (probeAuth.kind === 'bearer') {
@@ -6532,7 +6533,7 @@ const nativeSessionLifecycle = createNativeSessionLifecycle({
 // callers treat that as "needs re-login".
 async function mintGatewayWsTicket(baseUrl) {
   // Native flow: mint the ticket with the bearer token, no cookie involved.
-  const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
+  const nativeAt = await ensureNativeAccessToken(baseUrl).catch(cookieFallbackAfterNativeError)
 
   if (nativeAt) {
     const body = (await fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
@@ -7357,6 +7358,7 @@ async function buildRemoteConnection(
     try {
       ticket = await mintGatewayWsTicket(baseUrl)
     } catch (error) {
+      if ((error as { needsOauthLogin?: boolean } | null)?.needsOauthLogin === true) { throw error }
       throw gatewayTicketFailure(
         error,
         'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
@@ -7806,7 +7808,7 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
   if (conn.authMode === 'oauth') {
     // Native RFC 8252 flow: authenticate with the bearer token (cookieless)
     // when we hold one for this gateway; otherwise use the cookie partition.
-    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
+    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(cookieFallbackAfterNativeError)
 
     if (nativeAt) {
       return fetchJson(url, null, { ...opts, bearer: nativeAt })
@@ -10424,7 +10426,7 @@ ipcMain.handle('youtab:api', async (_event, request) => {
     // Native bearer first (cookieless). ensureNativeAccessToken transparently
     // refreshes a near-expiry AT via /auth/native/refresh; a null return means
     // no native session (resolveOauthRestAuth then selects the cookie path).
-    const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
+    const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(cookieFallbackAfterNativeError)
     const restAuth = resolveOauthRestAuth(nativeAt)
 
     if (restAuth.kind === 'bearer') {
