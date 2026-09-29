@@ -264,7 +264,7 @@ declare global {
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
       onConnectionApplied?: (callback: () => void) => () => void
-      onPowerResume?: (callback: (event?: { authChanged?: boolean }) => void) => () => void
+      onPowerResume?: (callback: (event?: { authChanged?: boolean; nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string } }) => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>

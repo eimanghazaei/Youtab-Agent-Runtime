@@ -12,6 +12,7 @@ authenticated only at the global root.
 from __future__ import annotations
 
 import json
+import os
 import time
 import base64
 import io
@@ -252,7 +253,7 @@ def test_gateway_engine_id_is_saved_without_alias_or_account_key(profile_env, mo
     from youtab_agent_cli import auth, models, web_server
 
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
-    monkeypatch.setattr(models, "provider_model_ids", lambda *_a, **_kw: ["deepseek.v4_flash"])
+    monkeypatch.setattr(models, "cached_provider_model_ids", lambda *_a, **_kw: ["deepseek.v4_flash"])
     monkeypatch.setattr(web_server, "_normalize_main_model_assignment",
                         lambda *_a: pytest.fail("Engine ID was normalized"))
     monkeypatch.setattr(web_server, "load_config", lambda: {
@@ -280,6 +281,37 @@ def test_gateway_engine_id_is_saved_without_alias_or_account_key(profile_env, mo
     from youtab_agent_cli.providers import youtab_api_mode
     with pytest.raises(ValueError, match="/v1/messages"):
         youtab_api_mode("anthropic.claude")
+
+
+def test_gateway_assignment_keeps_same_credential_catalog_during_outage(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, tools_config, web_server, youtab_subscription
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    monkeypatch.setattr(web_server, "load_config", lambda: {"model": {}})
+    saved = []
+    monkeypatch.setattr(web_server, "save_config", saved.append)
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda *_a, **_kw: [])
+    monkeypatch.setattr(youtab_subscription, "apply_youtab_managed_defaults", lambda *_a, **_kw: set())
+
+    result = web_server._apply_model_assignment_sync("main", "youtab", "deepseek.v4_flash", "", "")
+    assert result["model"] == "deepseek.v4_flash"
+    assert len(saved) == 1
+    with pytest.raises(Exception) as unknown:
+        web_server._apply_model_assignment_sync("main", "youtab", "unknown.engine", "", "")
+    assert unknown.value.status_code == 422
+    assert len(saved) == 1
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1800))
+    auth_path = profile_env["profile"] / "auth.json"
+    mtime = auth_path.stat().st_mtime_ns + 2_000_000_000
+    os.utime(auth_path, ns=(mtime, mtime))
+    with pytest.raises(Exception) as other_credential:
+        web_server._apply_model_assignment_sync("main", "youtab", "deepseek.v4_flash", "", "")
+    assert other_credential.value.status_code == 422
+    assert len(saved) == 1
 
 
 # ---------------------------------------------------------------------------

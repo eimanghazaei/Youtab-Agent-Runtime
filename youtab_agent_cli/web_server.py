@@ -6903,9 +6903,9 @@ def _apply_model_assignment_sync(
             raise HTTPException(status_code=422, detail="Desktop Gateway sign-in is required")
         if exact_inference:
             from youtab_agent_cli.auth import DEFAULT_YOUTAB_INFERENCE_URL
-            from youtab_agent_cli.models import provider_model_ids
+            from youtab_agent_cli.models import cached_provider_model_ids
 
-            if model not in provider_model_ids("youtab", force_refresh=True):
+            if model not in cached_provider_model_ids("youtab", force_refresh=True):
                 raise HTTPException(status_code=422, detail="Gateway Engine ID is unavailable")
             provider = "youtab"
             base_url = DEFAULT_YOUTAB_INFERENCE_URL

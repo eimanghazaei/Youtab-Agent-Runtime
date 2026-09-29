@@ -145,6 +145,7 @@ import {
 import {
   clearGatewaySessionCredentials,
   createNativeRefreshCoordinator,
+  createNativeRefreshRetryCounter,
   createNativeSessionLifecycle,
   inferenceRefreshDelayMs,
   nativeProfileMutationFromApiResult,
@@ -5190,11 +5191,11 @@ let powerResumeInFlight: Promise<void> | null = null
 let powerResumeRetry: NodeJS.Timeout | null = null
 let powerResumeRequiredSessions: string[] | null = null
 let powerResumeRetryCount = 0
-function notifyPowerResumeRenderer(authChanged = false) {
+function notifyPowerResumeRenderer(authChanged = false, nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string }) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     const { webContents } = mainWindow
     if (webContents && !webContents.isDestroyed()) {
-      webContents.send('youtab:power-resume', authChanged ? { authChanged: true } : undefined)
+      webContents.send('youtab:power-resume', authChanged ? { authChanged: true } : nativeRecovery ? { nativeRecovery } : undefined)
     }
   }
 }
@@ -6242,6 +6243,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // Backed by the encrypted on-disk store so it survives restarts.
 const _nativeTokens = new Map<string, NativeTokenSet>()
 const _nativeRefreshTimers = new Map<string, NodeJS.Timeout>()
+const _nativeRefreshRetries = createNativeRefreshRetryCounter()
 
 function _nativeTokenStorePath() {
   // Co-located with the connection config under userData; one JSON file mapping
@@ -6330,11 +6332,13 @@ function _nativeProfileSessionKeys(): string[] {
 function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
   _persistNativeTokens(baseUrl, tokens)
   _nativeTokens.set(baseUrl, tokens)
+  _nativeRefreshRetries.reset(baseUrl)
   _scheduleNativeRefresh(baseUrl, tokens)
 }
 
 function _clearNativeTokens(baseUrl: string) {
   nativeRefresh.discard(baseUrl)
+  _nativeRefreshRetries.reset(baseUrl)
   const timer = _nativeRefreshTimers.get(baseUrl)
   if (timer) { clearTimeout(timer) }
   _nativeRefreshTimers.delete(baseUrl)
@@ -6397,7 +6401,15 @@ function _scheduleNativeRefresh(baseUrl: string, tokens: NativeTokenSet) {
   const delay = Math.max(1_000, inferenceRefreshDelayMs(tokens, Math.floor(Date.now() / 1000)))
   _nativeRefreshTimers.set(baseUrl, setTimeout(() => {
     void ensureNativeAccessToken(baseUrl, true).catch((error: any) => {
-      if (error?.needsOauthLogin === true) { return }
+      if (error?.needsOauthLogin === true) {
+        notifyPowerResumeRenderer(false, { kind: 'auth', baseUrl })
+        return
+      }
+      if (!_nativeRefreshRetries.failed(baseUrl)) {
+        _nativeRefreshTimers.delete(baseUrl)
+        notifyPowerResumeRenderer(false, { kind: 'transport', baseUrl })
+        return
+      }
       // Transient Gateway failure: retry without exposing credentials in logs.
       const pending = _nativeRefreshTimers.get(baseUrl)
       if (pending) { clearTimeout(pending) }
@@ -6468,6 +6480,7 @@ const nativeSessionLifecycle = createNativeSessionLifecycle({
   savedSessionState: _nativeSavedSessionState,
   scheduleRelinkRetry: (retry, delayMs) => { setTimeout(retry, delayMs) },
   logRelinkFailure: () => rememberLog('[native-oauth] profile session reconciliation deferred after confirmed profile change'),
+  onRelinkExhausted: baseUrl => notifyPowerResumeRenderer(false, { kind: 'auth', baseUrl }),
   scheduleRefresh: _scheduleNativeRefresh,
   revoke: async (baseUrl, refreshToken) => {
     await postJsonNoAuth(`${baseUrl}/v1/auth/logout`, { refresh_token: refreshToken }, { timeoutMs: 10_000 })
@@ -9924,10 +9937,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
         postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
         rememberLog
       })
-
-      await nativeRefresh.wait(baseUrl)
-      nativeRefresh.discard(baseUrl)
-      _storeNativeTokens(baseUrl, tokens)
+      await nativeSessionLifecycle.replaceGatewaySession(baseUrl, tokens)
       // Confirmed sign-in — release the reauth latch so the next
       // startYoutab() re-dials instead of replaying the stale rejection.
       remoteReauthFailure = null

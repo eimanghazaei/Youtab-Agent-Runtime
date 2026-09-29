@@ -435,7 +435,20 @@ export function useGatewayBoot({
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
-    const offPowerResume = desktop.onPowerResume?.(event => reconnectNow(event?.authChanged === true))
+    const offPowerResume = desktop.onPowerResume?.(event => {
+      if (event?.nativeRecovery) {
+        const connection = $connection.get()
+        if (connection?.baseUrl !== event.nativeRecovery.baseUrl || connection.authMode !== 'oauth') { return }
+        if (event.nativeRecovery.kind === 'auth') {
+          reportReauthRequired(new GatewayReauthRequiredError('Native profile session needs sign-in'))
+        } else {
+          gateway.close()
+          reconnectNow()
+        }
+        return
+      }
+      reconnectNow(event?.authChanged === true)
+    })
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
 
     const onOnline = () => reconnectNow()

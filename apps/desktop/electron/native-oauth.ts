@@ -156,6 +156,7 @@ export function createNativeSessionLifecycle(deps: {
   savedSessionState?: (baseUrl: string) => 'absent' | 'readable' | 'unreadable'
   scheduleRelinkRetry?: (retry: () => Promise<void>, delayMs: number) => void
   logRelinkFailure?: () => void
+  onRelinkExhausted?: (baseUrl: string) => void
   scheduleRefresh: (baseUrl: string, tokens: NativeTokenSet) => void
   revoke: (baseUrl: string, refreshToken: string) => Promise<void>
   logRevocationFailure: () => void
@@ -221,6 +222,36 @@ export function createNativeSessionLifecycle(deps: {
     })
   }
 
+  /** Gateway Connections sign-in replaces account auth without linking a local provider profile. */
+  async function replaceGatewaySession(baseUrl: string, tokens: NativeTokenSet) {
+    await withMutation(baseUrl, async () => {
+      deps.discardPending(baseUrl)
+      const saved = deps.load(baseUrl)
+      const previous = saved ? { ...saved, profiles: currentProfiles(baseUrl, saved.profiles) } : null
+      const profiles = [...new Set(previous?.profiles || [])]
+      const sameAccount = Boolean(previous && !previous.logoutPending && previous.userId && previous.userId === tokens.userId)
+      if (sameAccount && profiles.length && !tokens.inferenceAccessToken) {
+        throw new Error('Gateway native session omitted inference credential for linked profiles')
+      }
+      const attempted: string[] = []
+      try {
+        for (const profile of profiles) {
+          attempted.push(profile)
+          await deps.writeProfile(profile, sameAccount ? tokens.inferenceAccessToken! : null)
+        }
+        deps.store(baseUrl, { ...tokens, profiles: sameAccount ? profiles : [] })
+        pendingRelinks.delete(baseUrl)
+        relinkFailures.delete(baseUrl)
+      } catch (error) {
+        const priorToken = previous && unexpiredInferenceToken(previous, Math.floor(Date.now() / 1000))
+        for (const profile of attempted.reverse()) {
+          try { await deps.writeProfile(profile, priorToken || null) } catch { /* Preserve the original failure. */ }
+        }
+        throw error
+      }
+    })
+  }
+
   async function logout(baseUrl: string, selected: string) {
     await withMutation(baseUrl, async () => {
       deps.discardPending(baseUrl)
@@ -275,6 +306,8 @@ export function createNativeSessionLifecycle(deps: {
       if (failures < 3) {
         try { deps.scheduleRelinkRetry?.(() => flushProfileRelinks(baseUrl), 30_000) }
         catch { /* The pending relink still blocks native refresh. */ }
+      } else if (failures === 3) {
+        try { deps.onRelinkExhausted?.(baseUrl) } catch { /* Keep the confirmed API result. */ }
       }
     }).finally(() => {
       if (relinking.get(baseUrl) === handled) {
@@ -295,7 +328,20 @@ export function createNativeSessionLifecycle(deps: {
     return flushProfileRelinks(baseUrl)
   }
 
-  return { isMutating: (baseUrl: string) => mutating.has(baseUrl) || pendingRelinks.has(baseUrl), login, logout, relinkProfile }
+  return { isMutating: (baseUrl: string) => mutating.has(baseUrl) || pendingRelinks.has(baseUrl), login, logout, relinkProfile, replaceGatewaySession }
+}
+
+/** Stop transient native refresh retries after a bounded failure streak. */
+export function createNativeRefreshRetryCounter(limit = 3) {
+  const failures = new Map<string, number>()
+  return {
+    failed(baseUrl: string): boolean {
+      const count = (failures.get(baseUrl) || 0) + 1
+      failures.set(baseUrl, count)
+      return count < limit
+    },
+    reset(baseUrl: string) { failures.delete(baseUrl) }
+  }
 }
 
 /** Read only successful profile mutations; the backend owns canonical names. */

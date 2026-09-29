@@ -20,7 +20,7 @@ import { useGatewayBoot } from './use-gateway-boot'
 
 type Listener = (ev: unknown) => void
 let connectionApplied: null | (() => void) = null
-let powerResume: null | ((event?: { authChanged?: boolean }) => void) = null
+let powerResume: null | ((event?: { authChanged?: boolean; nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string } }) => void) = null
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -82,9 +82,9 @@ class FakeWebSocket {
   }
 }
 
-function fakeDesktop() {
+function fakeDesktop(authMode: 'oauth' | 'token' = 'token') {
   const conn = {
-    authMode: 'token' as const,
+    authMode,
     baseUrl: 'https://vps.example.com',
     profile: 'default',
     token: 't',
@@ -270,6 +270,53 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('shows sign-in recovery when native profile reconciliation exhausts retries', async () => {
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = fakeDesktop('oauth')
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    act(() => powerResume?.({ nativeRecovery: { kind: 'auth', baseUrl: 'https://vps.example.com' } }))
+    expect($desktopBoot.get().error).toMatch(/Gateway sign-in required/i)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  it('moves exhausted native refresh transport failure into the existing reconnect recovery', async () => {
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = fakeDesktop('oauth')
+    render(<Harness />)
+    await flushAsync()
+    FakeWebSocket.mode = 'fail'
+
+    act(() => powerResume?.({ nativeRecovery: { kind: 'transport', baseUrl: 'https://vps.example.com' } }))
+    await flushAsync()
+    expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.CLOSED)
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
+
+    for (let i = 0; i < 7; i += 1) { await advanceBackoff() }
+    expect($desktopBoot.get().error).toMatch(/lost connection/i)
+  })
+
+  it.each([
+    ['a background Gateway', 'oauth', 'https://provider.example.com'],
+    ['a provider-only session at the same URL', 'token', 'https://vps.example.com']
+  ] as const)('ignores native recovery for %s', async (_label, authMode, baseUrl) => {
+    const desktop = fakeDesktop(authMode)
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    for (const kind of ['auth', 'transport'] as const) {
+      act(() => powerResume?.({ nativeRecovery: { kind, baseUrl } }))
+    }
+    await flushAsync()
+
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.OPEN)
+    expect($desktopBoot.get().error).toBeNull()
+    expect(desktop.revalidateConnection).not.toHaveBeenCalled()
   })
 
   it('clears the sign-in recovery overlay after auth changes while the socket remains open', async () => {

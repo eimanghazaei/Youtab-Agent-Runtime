@@ -18,6 +18,7 @@ import {
   clearGatewaySessionCredentials,
   clearNativeProfileCredentials,
   createNativeRefreshCoordinator,
+  createNativeRefreshRetryCounter,
   createNativeSessionLifecycle,
   generatePkcePair,
   generateState,
@@ -150,6 +151,92 @@ test('native lifecycle synchronizes siblings and commits only after every bearer
   await lifecycle.login('gateway', 'one', next)
   assert.deepEqual(saved?.profiles, ['one', 'two'])
   assert.deepEqual(order, ['pause', 'wait', 'discard', 'one:new-i', 'two:new-i', 'store', 'schedule'])
+})
+
+test('Connections native login stores a gateway-only session without writing a local profile', async () => {
+  const next = parseTokenResponse({ access_token: 'new', refresh_token: 'new-r', user_id: 'user' })
+  let saved: typeof next | null = null
+  let writes = 0
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: (_baseUrl, tokens) => { saved = tokens },
+    clear: () => undefined,
+    writeProfile: async () => { writes++ },
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  assert.deepEqual(next.profiles, [])
+  assert.equal(next.inferenceAccessToken, '')
+  await lifecycle.replaceGatewaySession('gateway', next)
+  assert.deepEqual(saved?.profiles, [])
+  assert.equal(saved?.refreshToken, 'new-r')
+  assert.equal(writes, 0)
+})
+
+test('Connections native login synchronizes only existing same-account linked profiles', async () => {
+  const previous = parseTokenResponse({ access_token: 'old', refresh_token: 'old-r', inference_access_token: 'old-i', user_id: 'user', profiles: ['one', 'two'] })
+  const next = parseTokenResponse({ access_token: 'new', refresh_token: 'new-r', inference_access_token: 'new-i', user_id: 'user' })
+  let saved = previous
+  const writes: Array<[string, string | null]> = []
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: (_baseUrl, tokens) => { saved = tokens },
+    clear: () => { throw new Error('must retain same-account session') },
+    writeProfile: async (profile, token) => { writes.push([profile, token]) },
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  await lifecycle.replaceGatewaySession('gateway', next)
+  assert.deepEqual(saved.profiles, ['one', 'two'])
+  assert.deepEqual(writes, [['one', 'new-i'], ['two', 'new-i']])
+  assert.equal(saved.refreshToken, 'new-r')
+  const noInference = parseTokenResponse({ access_token: 'other', refresh_token: 'other-r', user_id: 'user' })
+  await assert.rejects(lifecycle.replaceGatewaySession('gateway', noInference), /omitted inference credential/)
+  assert.equal(saved.refreshToken, 'new-r')
+  assert.deepEqual(writes, [['one', 'new-i'], ['two', 'new-i']])
+})
+
+test('Connections account switch clears old linked bearers and restores them if store fails', async () => {
+  const oldBearer = `h.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')}.s`
+  const previous = parseTokenResponse({ access_token: 'old', refresh_token: 'old-r', inference_access_token: oldBearer, user_id: 'old-user', profiles: ['one', 'two'] })
+  const next = parseTokenResponse({ access_token: 'new', refresh_token: 'new-r', user_id: 'new-user' })
+  let saved = previous
+  let failStore = true
+  const bearers = new Map([['one', oldBearer], ['two', oldBearer]])
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: (_baseUrl, tokens) => {
+      if (failStore) { throw new Error('encrypted store unavailable') }
+      saved = tokens
+    },
+    clear: () => { throw new Error('must keep old session until commit') },
+    writeProfile: async (profile, token) => {
+      if (token) { bearers.set(profile, token) } else { bearers.delete(profile) }
+    },
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  await assert.rejects(lifecycle.replaceGatewaySession('gateway', next), /encrypted store unavailable/)
+  assert.equal(saved.userId, 'old-user')
+  assert.equal(bearers.get('one'), oldBearer)
+  assert.equal(bearers.get('two'), oldBearer)
+  failStore = false
+  await lifecycle.replaceGatewaySession('gateway', next)
+  assert.equal(saved.userId, 'new-user')
+  assert.deepEqual(saved.profiles, [])
+  assert.equal(bearers.size, 0)
 })
 
 test('failed same-account encrypted store keeps the old session and linked bearers', async () => {
@@ -311,6 +398,7 @@ test('reconciliation retries are bounded and a fresh login releases the blocked 
   const retries: Array<() => Promise<void>> = []
   const writes: string[] = []
   let failStore = true
+  const exhausted: string[] = []
   const lifecycle = createNativeSessionLifecycle({
     load: () => saved,
     store: (_baseUrl, tokens) => {
@@ -324,6 +412,7 @@ test('reconciliation retries are bounded and a fresh login releases the blocked 
     discardPending: () => undefined,
     savedSessionState: () => 'readable',
     scheduleRelinkRetry: retry => { retries.push(retry) },
+    onRelinkExhausted: baseUrl => { exhausted.push(baseUrl) },
     scheduleRefresh: () => undefined,
     revoke: async () => undefined,
     logRevocationFailure: () => undefined
@@ -332,6 +421,7 @@ test('reconciliation retries are bounded and a fresh login releases the blocked 
   await retries[0]()
   await retries[1]()
   assert.equal(retries.length, 2)
+  assert.deepEqual(exhausted, ['gateway'])
   assert.equal(lifecycle.isMutating('gateway'), true)
   failStore = false
   const next = parseTokenResponse({ access_token: 'new', refresh_token: 'new-r', inference_access_token: 'new-i', user_id: 'user' })
@@ -339,6 +429,17 @@ test('reconciliation retries are bounded and a fresh login releases the blocked 
   assert.deepEqual(writes, ['renamed'])
   assert.deepEqual(saved.profiles, ['renamed'])
   assert.equal(lifecycle.isMutating('gateway'), false)
+})
+
+test('native refresh retries stop after a bounded streak and reset on session commit', () => {
+  const retries = createNativeRefreshRetryCounter()
+  assert.equal(retries.failed('gateway'), true)
+  assert.equal(retries.failed('gateway'), true)
+  assert.equal(retries.failed('gateway'), false)
+  assert.equal(retries.failed('gateway'), false)
+  assert.equal(retries.failed('other'), true)
+  retries.reset('gateway')
+  assert.equal(retries.failed('gateway'), true)
 })
 
 test('native mutation blocks refresh access while an earlier refresh settles', async () => {
