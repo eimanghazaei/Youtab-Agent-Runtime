@@ -20,6 +20,7 @@ import { useGatewayBoot } from './use-gateway-boot'
 
 type Listener = (ev: unknown) => void
 let connectionApplied: null | (() => void) = null
+let powerResume: null | ((event?: { authChanged?: boolean }) => void) = null
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -28,7 +29,7 @@ class FakeWebSocket {
   static CLOSED = 3
   // Flipped by the test: 'open' = next socket connects; 'fail' = next socket
   // errors (a dead remote). Mirrors a VPS going away after the first connect.
-  static mode: 'open' | 'fail' = 'open'
+  static mode: 'open' | 'fail' | 'hold' = 'open'
   static instances: FakeWebSocket[] = []
 
   readyState = 0
@@ -36,13 +37,13 @@ class FakeWebSocket {
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this)
+    if (FakeWebSocket.mode === 'hold') { return }
     const willOpen = FakeWebSocket.mode === 'open'
     // Resolve on the next microtask/macrotask so connect()'s promise wiring is
     // in place before open/error fires (matches real async socket handshake).
     setTimeout(() => {
       if (willOpen) {
-        this.readyState = FakeWebSocket.OPEN
-        this.emit('open', {})
+        this.open()
       } else {
         this.readyState = FakeWebSocket.CLOSED
         this.emit('error', {})
@@ -61,6 +62,11 @@ class FakeWebSocket {
   close() {
     this.readyState = FakeWebSocket.CLOSED
     this.emit('close', {})
+  }
+
+  open() {
+    this.readyState = FakeWebSocket.OPEN
+    this.emit('open', {})
   }
 
   // Force-drop an open socket, as a sleeping laptop / restarted remote would.
@@ -107,7 +113,10 @@ function fakeDesktop() {
         connectionApplied = null
       }
     }),
-    onPowerResume: vi.fn(() => () => undefined),
+    onPowerResume: vi.fn(callback => {
+      powerResume = callback
+      return () => { powerResume = null }
+    }),
     onWindowStateChanged: vi.fn(() => () => undefined),
     touchBackend: vi.fn(async () => undefined),
     profile: { get: vi.fn(async () => ({ profile: 'default' })) }
@@ -148,6 +157,7 @@ beforeEach(() => {
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
   connectionApplied = null
+  powerResume = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { youtabDesktop?: unknown }).youtabDesktop = fakeDesktop()
   $gatewayState.set('idle')
@@ -221,6 +231,117 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await advanceBackoff()
     await flushAsync()
     expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('surfaces the serialized native sign-in result without a generic reconnect error', async () => {
+    const desktop = fakeDesktop()
+    let signedIn = false
+    const ipcResult = JSON.parse(JSON.stringify({
+      error: 'Native session unavailable. Sign in again in Settings → Gateway.',
+      needsOauthLogin: true,
+      ok: false
+    }))
+    desktop.revalidateConnection = vi.fn(async () =>
+      signedIn ? { ok: true, rebuilt: false } : ipcResult
+    )
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+    expect($desktopBoot.get().error).toMatch(/Gateway sign-in required/i)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    const revalidations = desktop.revalidateConnection.mock.calls.length
+
+    for (let i = 0; i < 8; i += 1) { await advanceBackoff() }
+    expect(desktop.revalidateConnection).toHaveBeenCalledTimes(revalidations)
+    expect($desktopBoot.get().error).toMatch(/Gateway sign-in required/i)
+    expect($desktopBoot.get().error).not.toMatch(/connection lost/i)
+
+    act(() => powerResume?.())
+    await flushAsync()
+    expect(desktop.revalidateConnection).toHaveBeenCalledTimes(revalidations)
+
+    signedIn = true
+    act(() => powerResume?.({ authChanged: true }))
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('clears the sign-in recovery overlay after auth changes while the socket remains open', async () => {
+    const desktop = fakeDesktop()
+    let signedIn = false
+    desktop.revalidateConnection = vi.fn(async () => signedIn
+      ? { ok: true, rebuilt: false }
+      : JSON.parse(JSON.stringify({ ok: false, needsOauthLogin: true, error: 'Native session unavailable' })))
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+
+    act(() => powerResume?.())
+    await flushAsync()
+    expect($desktopBoot.get().error).toMatch(/Gateway sign-in required/i)
+
+    signedIn = true
+    act(() => powerResume?.({ authChanged: true }))
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('ignores stale revalidation when sign-in completes during a reconnect attempt', async () => {
+    const desktop = fakeDesktop()
+    let finishOldRevalidation!: (result: any) => void
+    desktop.revalidateConnection = vi.fn()
+      .mockImplementationOnce(() => new Promise(resolve => { finishOldRevalidation = resolve }))
+      .mockResolvedValue({ ok: true, rebuilt: false })
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+    expect(desktop.revalidateConnection).toHaveBeenCalledTimes(1)
+
+    act(() => powerResume?.({ authChanged: true }))
+    await act(async () => {
+      finishOldRevalidation(JSON.parse(JSON.stringify({
+        ok: false, needsOauthLogin: true, error: 'old native session expired'
+      })))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect(desktop.revalidateConnection).toHaveBeenCalledTimes(2)
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('closes a stale socket that opens after sign-in and dials again', async () => {
+    const desktop = fakeDesktop()
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+
+    FakeWebSocket.mode = 'hold'
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect($gatewayState.get()).not.toBe('open')
+
+    FakeWebSocket.mode = 'open'
+    act(() => powerResume?.({ authChanged: true }))
+    act(() => FakeWebSocket.instances[1].open())
+    await flushAsync()
+
+    expect(FakeWebSocket.instances[1].readyState).toBe(FakeWebSocket.CLOSED)
+    expect(FakeWebSocket.instances).toHaveLength(3)
+    expect($gatewayState.get()).toBe('open')
   })
 
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForYoutab) → app sits in the connecting combo, then fails', async () => {

@@ -183,6 +183,7 @@ def test_short_lived_token_margin_never_exceeds_own_lifetime(profile_env):
 
 def test_desktop_without_profile_token_never_uses_global_youtab(profile_env, monkeypatch):
     from youtab_agent_cli import auth, models, runtime_provider
+    from agent import auxiliary_client
     from youtab_agent_cli.proxy.adapters.youtab_portal import YoutabPortalAdapter
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
@@ -197,11 +198,38 @@ def test_desktop_without_profile_token_never_uses_global_youtab(profile_env, mon
         runtime_provider._resolve_profile_inference_runtime(
             requested_provider="youtab", target_model="deepseek.v4_flash",
         )
+    monkeypatch.setattr(auxiliary_client, "_resolve_youtab_pool_runtime_api",
+                        lambda **_kw: pytest.fail("Desktop borrowed a pooled credential"))
+    monkeypatch.setattr(auxiliary_client, "_read_youtab_auth",
+                        lambda: pytest.fail("Desktop borrowed a global credential"))
+    assert auxiliary_client._resolve_youtab_runtime_api() is None
+    assert auxiliary_client._try_youtab() == (None, None)
     proxy = YoutabPortalAdapter()
     assert not proxy.is_authenticated()
     assert proxy.allowed_paths == frozenset({"/chat/completions", "/models"})
     with pytest.raises(RuntimeError, match="sign-in is required"):
         proxy.get_credential()
+
+
+def test_profile_gateway_catalog_uses_existing_cache_during_outage(profile_env, monkeypatch):
+    from agent import auxiliary_client
+    from agent import youtab_rate_guard
+    from youtab_agent_cli import auth, models
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    calls = []
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: calls.append(1) or ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == ["deepseek.v4_flash"]
+    assert models.provider_model_ids("youtab", force_refresh=True) == []
+    client = object()
+    monkeypatch.setattr(youtab_rate_guard, "youtab_rate_limit_remaining", lambda: None)
+    monkeypatch.setattr(auxiliary_client, "_read_main_model", lambda: "deepseek.v4_flash")
+    monkeypatch.setattr(auxiliary_client, "_create_openai_client", lambda **_kwargs: client)
+    assert auxiliary_client._try_youtab() == (client, "deepseek.v4_flash")
+    assert len(calls) == 1
 
 
 def test_profile_proxy_uses_gateway_token_without_refresh(profile_env, monkeypatch):

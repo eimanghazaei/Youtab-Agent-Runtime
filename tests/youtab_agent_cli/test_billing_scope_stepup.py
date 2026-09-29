@@ -83,43 +83,11 @@ def test_step_up_requests_billing_scope_and_reuses_prior_urls(monkeypatch, _stub
 
 
 def test_device_login_fires_on_verification_before_polling(monkeypatch):
-    """on_verification(url, code) must fire BEFORE _poll_for_token (so the TUI
-    can render the link while the flow blocks waiting for approval)."""
-    order: list[str] = []
-
-    monkeypatch.setattr(
-        auth,
-        "_request_device_code",
-        lambda **kw: {
-            "verification_uri_complete": "https://portal.example/device?code=ABCD",
-            "user_code": "ABCD-1234",
-            "device_code": "dev",
-            "expires_in": 600,
-            "interval": 5,
-        },
-    )
-
-    def _fake_poll(**kw):
-        order.append("poll")
-        return {"access_token": "t", "scope": "inference:invoke", "expires_in": 3600}
-
-    monkeypatch.setattr(auth, "_poll_for_token", _fake_poll)
-
-    seen = {}
-
-    def _cb(url, code):
-        order.append("verify")
-        seen["url"] = url
-        seen["code"] = code
-
-    # We only assert the callback fires before polling. Post-poll token
-    # validation (JWT usability checks) is out of scope and may raise on the
-    # synthetic token — swallow it; the ordering assertion is what matters.
-    try:
-        auth._youtab_device_code_login(open_browser=False, on_verification=_cb)
-    except Exception:
-        pass
-
-    assert order[:2] == ["verify", "poll"], "callback must fire before polling"
-    assert seen["url"] == "https://portal.example/device?code=ABCD"
-    assert seen["code"] == "ABCD-1234"
+    """The removed device grant must reject before requesting or polling a code."""
+    calls: list[str] = []
+    monkeypatch.setattr(auth, "_request_device_code", lambda **kw: calls.append("request"))
+    monkeypatch.setattr(auth, "_poll_for_token", lambda **kw: calls.append("poll"))
+    with pytest.raises(auth.AuthError) as exc:
+        auth._youtab_device_code_login(open_browser=False)
+    assert exc.value.code == "unsupported_device_code"
+    assert calls == []

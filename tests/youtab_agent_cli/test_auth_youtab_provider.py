@@ -303,42 +303,11 @@ def test_removed_legacy_session_env_var_does_not_change_jwt_auth(tmp_path, monke
     payload = json.loads((youtab_home / "auth.json").read_text(encoding="utf-8"))
     assert payload["providers"]["youtab"]["agent_key"] == token
 
-    requested_scopes = []
-    login_token = _invoke_jwt(seconds=3600)
+    # A removed env switch cannot reactivate the unsupported device grant.
+    with pytest.raises(auth_mod.AuthError) as exc:
+        auth_mod._youtab_device_code_login(open_browser=False)
+    assert exc.value.code == "unsupported_device_code"
 
-    def _fake_request_device_code(*, client, portal_base_url, client_id, scope):
-        del client, portal_base_url, client_id
-        requested_scopes.append(scope)
-        return {
-            "device_code": "device",
-            "user_code": "user",
-            "verification_uri": "https://portal.example.com/device",
-            "verification_uri_complete": "https://portal.example.com/device?code=user",
-            "expires_in": 600,
-            "interval": 1,
-        }
-
-    def _fake_poll_for_token(**kwargs):
-        del kwargs
-        return {
-            "access_token": login_token,
-            "refresh_token": "refresh-token",
-            "expires_in": 900,
-            "scope": auth_mod.DEFAULT_YOUTAB_SCOPE,
-        }
-
-    monkeypatch.setattr(auth_mod, "_request_device_code", _fake_request_device_code)
-    monkeypatch.setattr(auth_mod, "_poll_for_token", _fake_poll_for_token)
-
-    result = auth_mod._youtab_device_code_login(
-        portal_base_url="https://portal.example.com",
-        inference_base_url="https://inference.example.com/v1",
-        open_browser=False,
-        timeout_seconds=1,
-    )
-
-    assert requested_scopes == [auth_mod.DEFAULT_YOUTAB_SCOPE]
-    assert result["agent_key"] == login_token
 
 
 def test_youtab_inference_auth_logs_do_not_include_secret_values(

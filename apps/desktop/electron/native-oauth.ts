@@ -44,14 +44,16 @@ export interface NativeTokenSet {
   inferenceAccessToken?: string
   /** Local profiles whose inference credential follows this Gateway session. */
   profiles?: string[]
+  /** Encrypted retry inventory after an incomplete local sign-out. */
+  logoutPending?: boolean
   expiresAt: number
   provider: string
   userId: string
 }
 
 /** A renderer-supplied profile may only confirm the main process's selected profile. */
-export function resolveNativeProviderProfile(requested: unknown, selected: string | null): string {
-  const profile = selected || 'default'
+export function resolveNativeProviderProfile(requested: unknown, selected: string | null, sticky = 'default'): string {
+  const profile = selected || sticky
   if (requested != null && requested !== profile) {
     throw new Error('Native provider profile does not match the selected Desktop profile')
   }
@@ -67,6 +69,175 @@ export function nativeProfileSessionKeys(
     const tokens = load(baseUrl)
     return !tokens || Boolean(tokens.profiles?.length)
   })
+}
+
+/** Stop wake retries for corrupt sessions; a new login or logout can release the gate. */
+export function shouldRetryNativeResume(
+  keys: string[],
+  load: (baseUrl: string) => NativeTokenSet | null,
+  attempts: number
+): boolean {
+  return attempts < 3 && keys.every(baseUrl => {
+    const tokens = load(baseUrl)
+    return tokens !== null && !tokens.logoutPending
+  })
+}
+
+/** Clear the old account before installing a different account's profile token. */
+export async function applyNativeLoginProfiles(
+  previous: NativeTokenSet | null,
+  next: NativeTokenSet,
+  selected: string,
+  writeProfile: (profile: string, token: string | null) => Promise<void>,
+  clearPrevious: () => void
+): Promise<string[]> {
+  if (!next.userId || !next.inferenceAccessToken) {
+    throw new Error('Gateway native session omitted account identity or inference credential')
+  }
+  if (!previous || previous.userId !== next.userId) {
+    const priorProfiles = [...new Set(previous?.profiles || [])]
+    const priorToken = previous && unexpiredInferenceToken(previous, Math.floor(Date.now() / 1000))
+    const attempted: string[] = []
+    try {
+      for (const profile of priorProfiles) {
+        attempted.push(profile)
+        await writeProfile(profile, null)
+      }
+    } catch (error) {
+      for (const profile of attempted.reverse()) {
+        try { await writeProfile(profile, priorToken || null) } catch { /* Keep restoring siblings. */ }
+      }
+      throw error
+    }
+    if (previous) {
+      try { clearPrevious() }
+      catch (error) {
+        for (const profile of priorProfiles.reverse()) {
+          try { await writeProfile(profile, priorToken || null) } catch { /* Keep restoring siblings. */ }
+        }
+        throw error
+      }
+    }
+    try {
+      await writeProfile(selected, next.inferenceAccessToken)
+    } catch (error) {
+      try { await writeProfile(selected, null) } catch { /* Preserve the original write error. */ }
+      throw error
+    }
+    return [selected]
+  }
+  const profiles = [...new Set([...(previous.profiles || []), selected])]
+  const updated: string[] = []
+  try {
+    for (const profile of profiles) {
+      updated.push(profile)
+      await writeProfile(profile, next.inferenceAccessToken)
+    }
+  } catch (error) {
+    const priorToken = unexpiredInferenceToken(previous, Math.floor(Date.now() / 1000))
+    for (const profile of updated.reverse()) {
+      try { await writeProfile(profile, priorToken) } catch { /* Original error remains actionable. */ }
+    }
+    throw error
+  }
+  return profiles
+}
+
+/** One mutation boundary for the saved session, profile bearers and refresh timer. */
+export function createNativeSessionLifecycle(deps: {
+  load: (baseUrl: string) => NativeTokenSet | null
+  store: (baseUrl: string, tokens: NativeTokenSet) => void
+  clear: (baseUrl: string) => void
+  writeProfile: (profile: string, token: string | null) => Promise<void>
+  pauseRefresh: (baseUrl: string) => void
+  waitForRefresh: (baseUrl: string) => Promise<void>
+  discardPending: (baseUrl: string) => void
+  scheduleRefresh: (baseUrl: string, tokens: NativeTokenSet) => void
+  revoke: (baseUrl: string, refreshToken: string) => Promise<void>
+  logRevocationFailure: () => void
+}) {
+  const mutating = new Set<string>()
+
+  async function withMutation(baseUrl: string, action: () => Promise<void>) {
+    if (mutating.has(baseUrl)) { throw new Error('Native session update already in progress') }
+    mutating.add(baseUrl)
+    deps.pauseRefresh(baseUrl)
+    try {
+      await deps.waitForRefresh(baseUrl)
+      await action()
+    } finally {
+      mutating.delete(baseUrl)
+      const current = deps.load(baseUrl)
+      if (current && !current.logoutPending) { deps.scheduleRefresh(baseUrl, current) }
+    }
+  }
+
+  async function login(baseUrl: string, selected: string, tokens: NativeTokenSet) {
+    await withMutation(baseUrl, async () => {
+      deps.discardPending(baseUrl)
+      const previous = deps.load(baseUrl)
+      tokens.profiles = await applyNativeLoginProfiles(previous, tokens, selected, deps.writeProfile, () => deps.clear(baseUrl))
+      try {
+        deps.store(baseUrl, tokens)
+      } catch (error) {
+        // A failed encrypted-store commit must not leave a new bearer with an
+        // old (or absent) refresh authority. Fail closed, including siblings.
+        try { deps.clear(baseUrl) } catch { /* Continue clearing profile bearers. */ }
+        for (const profile of tokens.profiles) {
+          try { await deps.writeProfile(profile, null) } catch { /* Surface commit failure. */ }
+        }
+        throw error
+      }
+    })
+  }
+
+  async function logout(baseUrl: string, selected: string) {
+    await withMutation(baseUrl, async () => {
+      deps.discardPending(baseUrl)
+      const tokens = deps.load(baseUrl)
+      // Persist a fail-closed inventory before touching profile files. Failed
+      // clears remain retryable across restarts without refreshing bearers.
+      if (tokens && !tokens.logoutPending) { deps.store(baseUrl, { ...tokens, logoutPending: true }) }
+      await clearNativeProfileCredentials(tokens, selected, () => deps.clear(baseUrl), deps.writeProfile)
+      if (tokens?.refreshToken) {
+        try { await deps.revoke(baseUrl, tokens.refreshToken) }
+        catch { deps.logRevocationFailure() }
+      }
+    })
+  }
+
+  return { isMutating: (baseUrl: string) => mutating.has(baseUrl), login, logout }
+}
+
+/** Settings sign-out clears the cookie partition even if native cleanup fails. */
+export async function clearGatewaySessionCredentials(
+  hasNativeSession: boolean,
+  logoutNative: () => Promise<void>,
+  clearOauthCookie: () => Promise<void>,
+  afterNativeChange: () => void
+): Promise<void> {
+  try {
+    if (hasNativeSession) { await logoutNative() }
+  } finally {
+    try { await clearOauthCookie() }
+    finally { if (hasNativeSession) { afterNativeChange() } }
+  }
+}
+
+/** Clear every linked bearer, retaining the saved inventory on any failure. */
+export async function clearNativeProfileCredentials(
+  tokens: NativeTokenSet | null,
+  selected: string,
+  clearSession: () => void,
+  writeProfile: (profile: string, token: string | null) => Promise<void>
+): Promise<void> {
+  let firstError: unknown = null
+  for (const profile of new Set([...(tokens?.profiles || []), selected])) {
+    try { await writeProfile(profile, null) }
+    catch (error) { firstError ??= error }
+  }
+  if (firstError) { throw firstError }
+  clearSession()
 }
 
 /** base64url without `=` padding (RFC 7636 §4). */
@@ -214,6 +385,7 @@ export function parseTokenResponse(body: any): NativeTokenSet {
     profiles: Array.isArray(body?.profiles)
       ? body.profiles.filter((profile: unknown): profile is string => typeof profile === 'string')
       : [],
+    logoutPending: body?.logoutPending === true,
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : 0,
     provider: String(body?.provider || ''),
     userId: String(body?.user_id || body?.userId || '')
@@ -296,6 +468,7 @@ export function createNativeRefreshCoordinator(deps: {
     const operation = (async () => {
       const tokens = deps.load(baseUrl)
       if (!tokens) { return null }
+      if (tokens.logoutPending) { return null }
       const now = deps.now()
       const profileTokenNeedsRefresh = Boolean(tokens.profiles?.length)
         && inferenceRefreshDelayMs(tokens, now) <= 0
@@ -361,10 +534,31 @@ export async function revalidateNativeSessionsBeforeResume(
 ): Promise<void> {
   for (const baseUrl of baseUrls) {
     const tokens = load(baseUrl)
-    if (!tokens?.profiles?.length) { throw new Error('Native session revalidation pending') }
-    if (!await ensure(baseUrl)) { throw new Error('Native session revalidation pending') }
+    if (!tokens?.profiles?.length || tokens.logoutPending) {
+      throw Object.assign(new Error('Native session unavailable. Sign in again in Settings → Gateway.'), { needsOauthLogin: true })
+    }
+    if (!await ensure(baseUrl)) {
+      throw Object.assign(new Error('Native session expired. Sign in again in Settings → Gateway.'), { needsOauthLogin: true })
+    }
   }
   reconnect()
+}
+
+/** Keep the auth marker intact across Electron's error-stripping IPC boundary. */
+export async function nativeResumeIpcResult(revalidate: () => Promise<void>) {
+  try {
+    await revalidate()
+    return { ok: true as const }
+  } catch (error) {
+    if (typeof error === 'object' && error !== null && (error as { needsOauthLogin?: unknown }).needsOauthLogin === true) {
+      return {
+        error: error instanceof Error ? error.message : 'Native session unavailable. Sign in again in Settings → Gateway.',
+        needsOauthLogin: true as const,
+        ok: false as const
+      }
+    }
+    throw error
+  }
 }
 
 export { NATIVE_FLOW_ID }

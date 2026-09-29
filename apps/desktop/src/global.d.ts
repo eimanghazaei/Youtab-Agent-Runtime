@@ -23,7 +23,10 @@ declare global {
       // re-dialing a dead remote forever. No-op for local backends (they
       // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
       // remote cache was dropped.
-      revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
+      revalidateConnection: () => Promise<
+        | { ok: true; rebuilt: boolean }
+        | { ok: false; needsOauthLogin: true; error: string }
+      >
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
@@ -261,7 +264,7 @@ declare global {
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
       onConnectionApplied?: (callback: () => void) => () => void
-      onPowerResume?: (callback: () => void) => () => void
+      onPowerResume?: (callback: (event?: { authChanged?: boolean }) => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>

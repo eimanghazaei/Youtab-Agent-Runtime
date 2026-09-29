@@ -47,7 +47,7 @@ class TestValidatorRules:
         """Sanity check: DEFAULT_YOUTAB_INFERENCE_URL must itself validate.
 
         If anyone retargets the default away from
-        ``inference-api.youtab.io``, they MUST update the allowlist
+        ``api.youtab.io``, they MUST update the allowlist
         in the same change — otherwise the allowlist would reject the
         Portal's own legitimate default and break every install.
         """

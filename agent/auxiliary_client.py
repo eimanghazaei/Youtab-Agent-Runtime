@@ -948,6 +948,14 @@ def _is_anthropic_compatible_host(url: str) -> bool:
         return False
 
 
+def _youtab_min_key_ttl_seconds() -> int:
+    """Preserve the configurable refresh window for legacy pooled credentials."""
+    try:
+        return max(60, int(os.getenv("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", "1800")))
+    except (TypeError, ValueError):
+        return 1800
+
+
 # ── Codex Responses → chat.completions adapter ─────────────────────────────
 # All auxiliary consumers call client.chat.completions.create(**kwargs) and
 # read response.choices[0].message.content. This adapter translates those
@@ -1874,8 +1882,7 @@ def _resolve_youtab_pool_runtime_api(*, force_refresh: bool = False) -> Optional
         "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
         "scope": getattr(entry, "scope", None),
     }
-    from youtab_agent_cli.auth import inference_token_safety_seconds
-    if force_refresh or not _agent_key_is_usable(state, inference_token_safety_seconds(state)):
+    if force_refresh or not _agent_key_is_usable(state, _youtab_min_key_ttl_seconds()):
         try:
             refreshed = pool.try_refresh_current()
         except Exception as exc:
@@ -1916,6 +1923,9 @@ def _resolve_youtab_runtime_api(*, force_refresh: bool = False) -> Optional[tupl
         if force_refresh or not _agent_key_is_usable(local, inference_token_safety_seconds(local)):
             return None  # Desktop owns refresh; never use pooled/global credentials.
         return local["agent_key"], DEFAULT_YOUTAB_INFERENCE_URL
+
+    if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+        return None
 
     pooled = _resolve_youtab_pool_runtime_api(force_refresh=force_refresh)
     if pooled is not None:
@@ -2209,7 +2219,7 @@ def _try_youtab(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
 
     from youtab_agent_cli.auth import get_local_inference_token_state
     local_inference = get_local_inference_token_state()
-    youtab = None if local_inference is not None else _read_youtab_auth()
+    youtab = None if local_inference is not None or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" else _read_youtab_auth()
     runtime = _resolve_youtab_runtime_api(force_refresh=False)
     if runtime is None and not youtab:
         logger.warning(
@@ -2235,9 +2245,9 @@ def _try_youtab(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     # or returns a null recommendation for this task type.
     model = _YOUTAB_MODEL
     if local_inference is not None:
-        from youtab_agent_cli.models import provider_model_ids
+        from youtab_agent_cli.models import cached_provider_model_ids
         model = _read_main_model()
-        if runtime is None or model not in provider_model_ids("youtab"):
+        if runtime is None or model not in cached_provider_model_ids("youtab"):
             return None, None
     else:
         try:

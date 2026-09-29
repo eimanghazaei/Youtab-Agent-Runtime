@@ -175,6 +175,12 @@ def auth_add_command(args) -> None:
         else:
             requested_type = AUTH_TYPE_OAUTH if provider in _OAUTH_CAPABLE_PROVIDERS else AUTH_TYPE_API_KEY
 
+    if provider == "youtab" and requested_type == AUTH_TYPE_OAUTH:
+        raise SystemExit(
+            "Youtab Desktop inference requires native Gateway sign-in. "
+            "The legacy device-code login is unavailable."
+        )
+
     pool = load_pool(provider)
 
     # Clear ALL suppressions for this provider — re-adding a credential is
@@ -246,12 +252,6 @@ def auth_add_command(args) -> None:
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
-
-    if provider == "youtab":
-        raise SystemExit(
-            "Youtab Desktop inference requires native Gateway sign-in. "
-            "The legacy device-code login is unavailable."
-        )
 
     if provider == "openai-codex":
         creds = auth_mod._codex_device_code_login()

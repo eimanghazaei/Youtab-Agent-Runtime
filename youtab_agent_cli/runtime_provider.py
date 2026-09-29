@@ -1575,7 +1575,7 @@ def _resolve_explicit_runtime(
             str(state.get("agent_key") or "").strip()
             if _agent_key_is_usable(
                 state,
-                auth_mod.inference_token_safety_seconds(state),
+                max(60, env_int("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", 1800)),
             )
             else ""
         )
@@ -1893,7 +1893,7 @@ def resolve_runtime_provider(
                 "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
                 "scope": getattr(entry, "scope", None),
             }
-            min_ttl = auth_mod.inference_token_safety_seconds(youtab_state)
+            min_ttl = max(60, env_int("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", 1800))
             if not _agent_key_is_usable(youtab_state, min_ttl):
                 logger.debug("Youtab pool entry agent_key expired/missing, refreshing selected pool entry")
                 try:

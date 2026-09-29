@@ -143,15 +143,19 @@ import {
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
 import {
+  clearGatewaySessionCredentials,
   createNativeRefreshCoordinator,
+  createNativeSessionLifecycle,
   inferenceRefreshDelayMs,
   nativeProfileSessionKeys,
+  nativeResumeIpcResult,
   nativeRefreshUrl,
   type NativeTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
   resolveNativeProviderProfile,
-  revalidateNativeSessionsBeforeResume
+  revalidateNativeSessionsBeforeResume,
+  shouldRetryNativeResume
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
@@ -5184,6 +5188,15 @@ function sendOpenFolderRequested() {
 let powerResumeInFlight: Promise<void> | null = null
 let powerResumeRetry: NodeJS.Timeout | null = null
 let powerResumeRequiredSessions: string[] | null = null
+let powerResumeRetryCount = 0
+function notifyPowerResumeRenderer(authChanged = false) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const { webContents } = mainWindow
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('youtab:power-resume', authChanged ? { authChanged: true } : undefined)
+    }
+  }
+}
 function sendPowerResume() {
   if (powerResumeInFlight) { return }
   powerResumeRequiredSessions ??= _nativeProfileSessionKeys()
@@ -5197,15 +5210,38 @@ function sendPowerResume() {
     baseUrl => ensureNativeAccessToken(baseUrl),
     () => {
       powerResumeRequiredSessions = null
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        const { webContents } = mainWindow
-        if (webContents && !webContents.isDestroyed()) { webContents.send('youtab:power-resume') }
-      }
+      powerResumeRetryCount = 0
+      notifyPowerResumeRenderer()
     }
   ).catch(() => {
-    // Stay disconnected after a failed wake check; retry without logging tokens.
-    powerResumeRetry = setTimeout(sendPowerResume, 30_000)
+    // Stay disconnected and require reauthentication for unreadable state.
+    powerResumeRetryCount++
+    if (shouldRetryNativeResume(powerResumeRequiredSessions || [], _loadNativeTokens, powerResumeRetryCount)) {
+      powerResumeRetry = setTimeout(sendPowerResume, 30_000)
+    } else {
+      // Renderer revalidation stays gated, but must get a wake signal so its
+      // bounded reconnect path can surface the Settings recovery affordance.
+      notifyPowerResumeRenderer()
+    }
   }).finally(() => { powerResumeInFlight = null })
+}
+
+function releasePowerResumeAfterAuthChange() {
+  powerResumeRequiredSessions = null
+  powerResumeRetryCount = 0
+  if (powerResumeRetry) { clearTimeout(powerResumeRetry) }
+  powerResumeRetry = null
+  if (powerResumeInFlight) {
+    void powerResumeInFlight.finally(() => {
+      if (powerResumeRetry) { clearTimeout(powerResumeRetry) }
+      powerResumeRetry = null
+      powerResumeRequiredSessions = null
+      powerResumeRetryCount = 0
+      notifyPowerResumeRenderer(true)
+    }).catch(() => undefined)
+  } else {
+    notifyPowerResumeRenderer(true)
+  }
 }
 
 let powerResumeRegistered = false
@@ -6324,7 +6360,7 @@ function _scheduleNativeRefresh(baseUrl: string, tokens: NativeTokenSet) {
   const previous = _nativeRefreshTimers.get(baseUrl)
   if (previous) { clearTimeout(previous) }
   _nativeRefreshTimers.delete(baseUrl)
-  if (!tokens.inferenceAccessToken || !tokens.profiles?.length || !tokens.refreshToken) { return }
+  if (tokens.logoutPending || !tokens.inferenceAccessToken || !tokens.profiles?.length || !tokens.refreshToken) { return }
   const delay = Math.max(1_000, inferenceRefreshDelayMs(tokens, Math.floor(Date.now() / 1000)))
   _nativeRefreshTimers.set(baseUrl, setTimeout(() => {
     void ensureNativeAccessToken(baseUrl, true).catch(() => {
@@ -6374,8 +6410,31 @@ const nativeRefresh = createNativeRefreshCoordinator({
 })
 
 function ensureNativeAccessToken(baseUrl: string, forceRefresh = false): Promise<string | null> {
+  if (nativeSessionLifecycle.isMutating(baseUrl)) { return Promise.resolve(null) }
+  if (_loadNativeTokens(baseUrl)?.logoutPending) { return Promise.resolve(null) }
   return nativeRefresh.ensure(baseUrl, forceRefresh)
 }
+
+function pauseNativeRefresh(baseUrl: string) {
+  const timer = _nativeRefreshTimers.get(baseUrl)
+  if (timer) { clearTimeout(timer) }
+  _nativeRefreshTimers.delete(baseUrl)
+}
+
+const nativeSessionLifecycle = createNativeSessionLifecycle({
+  load: _loadNativeTokens,
+  store: _storeNativeTokens,
+  clear: _clearNativeTokens,
+  writeProfile: writeProfileInferenceToken,
+  pauseRefresh: pauseNativeRefresh,
+  waitForRefresh: baseUrl => nativeRefresh.wait(baseUrl),
+  discardPending: baseUrl => nativeRefresh.discard(baseUrl),
+  scheduleRefresh: _scheduleNativeRefresh,
+  revoke: async (baseUrl, refreshToken) => {
+    await postJsonNoAuth(`${baseUrl}/v1/auth/logout`, { refresh_token: refreshToken }, { timeoutMs: 10_000 })
+  },
+  logRevocationFailure: () => rememberLog('[native-oauth] remote logout unavailable after local cleanup')
+})
 
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
 // Prefers a native bearer token (cookieless RFC 8252 flow) when present,
@@ -6925,6 +6984,20 @@ function readActiveDesktopProfile() {
   }
 
   return null
+}
+
+function readEffectiveDesktopProfile(): string {
+  const selected = readActiveDesktopProfile()
+  if (selected) { return selected }
+  try {
+    const name = fs.readFileSync(path.join(YOUTAB_AGENT_HOME, 'active_profile'), 'utf8').trim()
+    if (!name || name === 'default') { return 'default' }
+    if (!PROFILE_NAME_RE.test(name)) { throw new Error('Invalid active Youtab profile') }
+    return name
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') { return 'default' }
+    throw error
+  }
 }
 
 function writeActiveDesktopProfile(name) {
@@ -9431,9 +9504,10 @@ ipcMain.handle('youtab:connection:revalidate', async () => {
   // The renderer also reconnects on visibility/network events. Reuse this
   // existing reconnect boundary so those paths cannot bypass wake refresh.
   const requiredSessions = powerResumeRequiredSessions ?? _nativeProfileSessionKeys()
-  await revalidateNativeSessionsBeforeResume(
+  const nativeResume = await nativeResumeIpcResult(() => revalidateNativeSessionsBeforeResume(
     requiredSessions, _loadNativeTokens, baseUrl => ensureNativeAccessToken(baseUrl), () => undefined
-  )
+  ))
+  if (!nativeResume.ok) { return nativeResume }
   const connectionPromise = backendConnectionState.getPromise()
 
   if (!connectionPromise) {
@@ -9778,7 +9852,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
     if (baseUrl !== normalizeRemoteBaseUrl(DEFAULT_YOUTAB_PORTAL_URL)) {
       throw new Error('Native provider login URL does not match the configured Gateway')
     }
-    const profile = resolveNativeProviderProfile(options.profile, readActiveDesktopProfile())
+    const profile = resolveNativeProviderProfile(options.profile, readEffectiveDesktopProfile())
     const tokens = await runNativeLogin(baseUrl, {
       openExternal: url => shell.openExternal(url),
       postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
@@ -9787,20 +9861,9 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
     if (!tokens.refreshToken || !tokens.inferenceAccessToken) {
       throw new Error('Gateway native session omitted required credentials')
     }
-    await nativeRefresh.wait(baseUrl)
-    nativeRefresh.discard(baseUrl)
-    await writeProfileInferenceToken(profile, tokens.inferenceAccessToken)
-    const previous = _loadNativeTokens(baseUrl)
-    if (previous?.userId && previous.userId !== tokens.userId) {
-      for (const priorProfile of previous.profiles || []) {
-        if (priorProfile !== profile) { await writeProfileInferenceToken(priorProfile, null) }
-      }
-    }
-    tokens.profiles = [
-      ...new Set([...(previous?.userId === tokens.userId ? previous.profiles || [] : []), profile])
-    ]
-    _storeNativeTokens(baseUrl, tokens)
+    await nativeSessionLifecycle.login(baseUrl, profile, tokens)
     remoteReauthFailure = null
+    releasePowerResumeAfterAuthChange()
     return { ok: true, baseUrl, connected: true }
   }
 
@@ -9829,6 +9892,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
       // Confirmed sign-in — release the reauth latch so the next
       // startYoutab() re-dials instead of replaying the stale rejection.
       remoteReauthFailure = null
+      releasePowerResumeAfterAuthChange()
 
       return { ok: true, baseUrl, connected: true }
     } catch (error) {
@@ -9852,6 +9916,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
   // flickering again on the next retry.
   if (connected) {
     remoteReauthFailure = null
+    releasePowerResumeAfterAuthChange()
   }
 
   return { ok: true, baseUrl, connected }
@@ -9862,26 +9927,18 @@ ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl, o
     if (baseUrl !== normalizeRemoteBaseUrl(DEFAULT_YOUTAB_PORTAL_URL)) {
       throw new Error('Native provider logout URL does not match the configured Gateway')
     }
-    const profile = resolveNativeProviderProfile(options.profile, readActiveDesktopProfile())
-    await nativeRefresh.wait(baseUrl)
-    const tokens = _loadNativeTokens(baseUrl)
-    for (const linkedProfile of new Set([...(tokens?.profiles || []), profile])) {
-      await writeProfileInferenceToken(linkedProfile, null)
-    }
-    if (tokens?.refreshToken) {
-      await postJsonNoAuth(`${baseUrl}/v1/auth/logout`, { refresh_token: tokens.refreshToken }, { timeoutMs: 10_000 })
-    }
-    _clearNativeTokens(baseUrl)
+    const profile = resolveNativeProviderProfile(options.profile, readEffectiveDesktopProfile())
+    await nativeSessionLifecycle.logout(baseUrl, profile)
+    releasePowerResumeAfterAuthChange()
     return { ok: true, connected: false }
   }
-  await clearOauthSession(baseUrl || undefined)
-
-  // Also drop any native (RFC 8252) bearer tokens for this gateway so a
-  // logout clears BOTH auth shapes.
-  if (baseUrl) {
-    await nativeRefresh.wait(baseUrl)
-    _clearNativeTokens(baseUrl)
-  }
+  const hadNativeSession = Boolean(baseUrl && Object.prototype.hasOwnProperty.call(_readNativeTokenStore(), baseUrl))
+  await clearGatewaySessionCredentials(
+    hadNativeSession,
+    () => nativeSessionLifecycle.logout(baseUrl, readEffectiveDesktopProfile()),
+    () => clearOauthSession(baseUrl || undefined),
+    releasePowerResumeAfterAuthChange
+  )
 
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT cookie, or a native token) so a logout that left any session

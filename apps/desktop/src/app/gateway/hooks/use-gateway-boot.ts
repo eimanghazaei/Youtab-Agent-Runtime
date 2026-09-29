@@ -1,4 +1,4 @@
-import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@youtab/agent-shared'
+import { GatewayReauthRequiredError, isGatewayReauthRequired, resolveGatewayWsUrl } from '@youtab/agent-shared'
 import { useEffect, useRef } from 'react'
 
 import type { YoutabConnection } from '@/global'
@@ -122,6 +122,8 @@ export function useGatewayBoot({
     // recovery overlay replaces the dead-end CONNECTING screen. Reset on a clean
     // open or a manual/wake-driven reconnect.
     let escalated = false
+    let authGeneration = 0
+    let retryAfterAuthChange = false
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
     // `connectionState` to a constant across the early-return guards (the state
@@ -135,12 +137,21 @@ export function useGatewayBoot({
       }
     }
 
+    const reportReauthRequired = (error: unknown, generation = authGeneration) => {
+      if (cancelled || generation !== authGeneration || !isGatewayReauthRequired(error) || reauthNotified) { return }
+      reauthNotified = true
+      notifyError(error, translateNow('boot.errors.gatewaySignInRequired'))
+      failDesktopBoot(translateNow('boot.errors.gatewaySignInRequired'))
+      escalated = true
+    }
+
     const attemptReconnect = async () => {
       if (cancelled || reconnecting || gatewayOpen() || $gatewaySwitching.get()) {
         return
       }
 
       reconnecting = true
+      const generation = authGeneration
 
       try {
         // Drop a stale REMOTE backend cache before re-dialing. After sleep/wake a
@@ -148,12 +159,16 @@ export function useGatewayBoot({
         // whose 'exit' would clear the main process's cached descriptor — without
         // this the renderer re-dials the same dead endpoint forever and stays on
         // "Starting Youtab…". The probe is a no-op for a healthy or local backend.
-        await desktop.revalidateConnection?.()
+        const revalidation = await desktop.revalidateConnection?.()
+        if (generation !== authGeneration) { return }
+        if (revalidation?.ok === false) {
+          throw new GatewayReauthRequiredError(revalidation.error)
+        }
         reconnectSecondaryGateways()
 
         const conn = await desktop.getConnection($activeGatewayProfile.get())
 
-        if (cancelled) {
+        if (cancelled || generation !== authGeneration) {
           return
         }
 
@@ -167,8 +182,13 @@ export function useGatewayBoot({
         // this reconnect loop. For local/token gateways the URL carries a
         // long-lived token and the re-mint is a cheap no-op.
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+        if (generation !== authGeneration) { return }
         await gateway.connect(wsUrl)
 
+        if (generation !== authGeneration) {
+          gateway.close()
+          return
+        }
         if (cancelled) {
           return
         }
@@ -185,26 +205,26 @@ export function useGatewayBoot({
         // again" message once instead of silently looping the backoff against a
         // ticket that can never succeed. Transport failures fall through to the
         // backoff in the finally block below.
-        if (!cancelled && isGatewayReauthRequired(err) && !reauthNotified) {
-          reauthNotified = true
-          notifyError(err, translateNow('boot.errors.gatewaySignInRequired'))
-        }
+        reportReauthRequired(err, generation)
       } finally {
         reconnecting = false
 
-        if (!cancelled && !gatewayOpen() && !$gatewaySwitching.get()) {
+        if (retryAfterAuthChange) {
+          retryAfterAuthChange = false
+          queueMicrotask(() => reconnectNow())
+        } else if (!cancelled && !gatewayOpen() && !$gatewaySwitching.get()) {
           if (reconnectAttempt >= RECONNECT_ESCALATE_AFTER && !escalated) {
             escalated = true
             failDesktopBoot(translateNow('boot.errors.gatewayConnectionLost'))
           }
 
-          scheduleReconnect()
+          if (!reauthNotified) { scheduleReconnect() }
         }
       }
     }
 
     function scheduleReconnect() {
-      if (cancelled || reconnecting || reconnectTimer !== null || gatewayOpen() || $gatewaySwitching.get()) {
+      if (cancelled || reauthNotified || reconnecting || reconnectTimer !== null || gatewayOpen() || $gatewaySwitching.get()) {
         return
       }
 
@@ -217,18 +237,32 @@ export function useGatewayBoot({
       }, delay)
     }
 
-    const reconnectNow = () => {
-      if (cancelled || !bootCompleted || $gatewaySwitching.get()) {
+    const reconnectNow = (authChanged = false) => {
+      if (authChanged) {
+        authGeneration++
+        reauthNotified = false
+      }
+      if (cancelled || reauthNotified || !bootCompleted || $gatewaySwitching.get()) {
         return
       }
 
       clearReconnectTimer()
       reconnectAttempt = 0
       escalated = false
+      if (reconnecting) {
+        if (authChanged) { retryAfterAuthChange = true }
+        return
+      }
       if (gatewayOpen()) {
-        void desktop.revalidateConnection?.().then(() => {
-          if (!cancelled) { reconnectSecondaryGateways() }
-        }).catch(() => undefined)
+        const generation = authGeneration
+        void desktop.revalidateConnection?.().then(result => {
+          if (generation !== authGeneration) { return }
+          if (result?.ok === false) { throw new GatewayReauthRequiredError(result.error) }
+          if (!cancelled) {
+            reconnectSecondaryGateways()
+            if (authChanged && gatewayOpen()) { completeDesktopBoot() }
+          }
+        }).catch(error => reportReauthRequired(error, generation))
       } else {
         void attemptReconnect()
       }
@@ -401,7 +435,7 @@ export function useGatewayBoot({
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
-    const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
+    const offPowerResume = desktop.onPowerResume?.(event => reconnectNow(event?.authChanged === true))
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
 
     const onOnline = () => reconnectNow()

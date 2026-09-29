@@ -2178,7 +2178,7 @@ def list_authenticated_providers(
             get_local_inference_token_state() is not None
             or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1"
         )
-        model_ids = provider_model_ids(youtab_id) if exact_inference else cached_provider_model_ids(youtab_id)
+        model_ids = cached_provider_model_ids(youtab_id)
         if not model_ids and not exact_inference:
             model_ids = curated.get(youtab_id, [])
             if youtab_id in _MODELS_DEV_PREFERRED:
@@ -2345,7 +2345,7 @@ def list_authenticated_providers(
                 get_local_inference_token_state() is not None
                 or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1"
             ):
-                model_ids = provider_model_ids("youtab")
+                model_ids = cached_provider_model_ids("youtab")
                 results.append({
                     "slug": "youtab", "name": get_label("youtab"),
                     "is_current": current_provider == "youtab", "is_user_defined": False,

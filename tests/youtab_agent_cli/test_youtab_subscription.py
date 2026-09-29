@@ -173,6 +173,20 @@ def test_apply_youtab_managed_defaults_writes_video_gen_config(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def test_tools_login_does_not_offer_removed_device_grant(monkeypatch, capsys):
+    import youtab_agent_cli.auth as auth
+
+    monkeypatch.setattr(auth, "_read_shared_youtab_state", lambda: None)
+    monkeypatch.setattr(
+        auth, "_youtab_device_code_login",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("device grant must not run")),
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: (_ for _ in ()).throw(AssertionError("no login prompt")))
+
+    assert ns._run_youtab_portal_login_only(capability="Firecrawl") is False
+    assert "CLI device login is unavailable" in capsys.readouterr().out
+
+
 
 
 

@@ -272,7 +272,7 @@ contextBridge.exposeInMainWorld('youtabDesktop', {
     return () => ipcRenderer.removeListener('youtab:connection:applied', listener)
   },
   onPowerResume: callback => {
-    const listener = () => callback()
+    const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('youtab:power-resume', listener)
 
     return () => ipcRenderer.removeListener('youtab:power-resume', listener)

@@ -2141,6 +2141,7 @@ def _migrate_stale_youtab_portal_url(providers: Dict[str, Any]) -> None:
 # user set it themselves).
 _ALLOWED_YOUTAB_INFERENCE_HOSTS: FrozenSet[str] = frozenset({
     "inference-api.youtab.io",
+    "api.youtab.io",
 })
 
 
@@ -5486,8 +5487,7 @@ def _try_import_shared_youtab_state(
 
     Returns ``None`` when no shared state is available or the rehydrate
     fails for any reason (expired refresh_token, portal unreachable,
-    etc.) — caller should then fall through to the normal device-code
-    flow.
+    etc.). The removed device-code flow is not a fallback.
     """
     try:
         with _youtab_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):

@@ -86,6 +86,33 @@ def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     assert resolved["source"] == "manual"
 
 
+def test_explicit_youtab_legacy_key_keeps_configured_refresh_window(monkeypatch):
+    token = _fake_invoke_jwt(ttl_seconds=1200)
+    monkeypatch.setattr(rp, "_resolve_profile_inference_runtime", lambda **_kw: None)
+    monkeypatch.setattr(rp.auth_mod, "get_provider_auth_state", lambda _provider: {
+        "agent_key": token, "scope": "inference:invoke",
+    })
+    refreshes = []
+
+    def refresh(**_kwargs):
+        refreshes.append(True)
+        return {"api_key": "refreshed-token", "base_url": "https://api.youtab.io/v1"}
+
+    monkeypatch.setattr(rp, "resolve_youtab_runtime_credentials", refresh)
+    args = {
+        "provider": "youtab", "requested_provider": "youtab",
+        "model_cfg": {"provider": "youtab", "default": "deepseek.v4_flash"},
+        "explicit_base_url": "https://api.youtab.io/v1",
+    }
+    monkeypatch.delenv("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", raising=False)
+    assert rp._resolve_explicit_runtime(**args)["api_key"] == "refreshed-token"
+    assert len(refreshes) == 1
+
+    monkeypatch.setenv("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", "600")
+    assert rp._resolve_explicit_runtime(**args)["api_key"] == token
+    assert len(refreshes) == 1
+
+
 def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     """When requested_provider is 'auto' and Qwen creds fail, fall through."""
     from youtab_agent_cli.auth import AuthError
