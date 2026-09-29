@@ -24,6 +24,7 @@ import {
   generateState,
   inferenceRefreshDelayMs,
   NATIVE_FLOW_ID,
+  nativeHttpResponseError,
   nativeProfileMutationFromApiResult,
   nativeProfileSessionKeys,
   nativeRefreshUrl,
@@ -114,6 +115,35 @@ test('logout clears every linked bearer and saved session before remote revocati
   })
   order.push('remote-revocation-failed')
   assert.deepEqual(order, ['clear-one', 'clear-two', 'clear-session', 'remote-revocation-failed'])
+})
+
+test('Gateway Connections logout with no linked profile leaves the selected local profile alone', async () => {
+  const tokens = parseTokenResponse({ access_token: 'account', refresh_token: 'refresh', profiles: [] })
+  const cleared: string[] = []
+  let saved: typeof tokens | null = tokens
+  const lifecycle = createNativeSessionLifecycle({
+    load: () => saved,
+    store: (_baseUrl, next) => { saved = next },
+    clear: () => { cleared.push('session'); saved = null },
+    writeProfile: async profile => { cleared.push(profile) },
+    pauseRefresh: () => undefined,
+    waitForRefresh: async () => undefined,
+    discardPending: () => undefined,
+    scheduleRefresh: () => undefined,
+    revoke: async () => undefined,
+    logRevocationFailure: () => undefined
+  })
+  await lifecycle.logout('gateway', null)
+  assert.deepEqual(cleared, ['session'])
+  assert.equal(saved, null)
+})
+
+test('native HTTP error preserves 401 and 403 status for terminal refresh handling', () => {
+  for (const statusCode of [401, 403]) {
+    const error = nativeHttpResponseError(statusCode, 'rejected')
+    assert.equal(error.statusCode, statusCode)
+    assert.match(error.message, new RegExp(`^${statusCode}: rejected$`))
+  }
 })
 
 test('failed sibling clear preserves saved inventory for another logout attempt', async () => {

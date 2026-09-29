@@ -8935,9 +8935,9 @@ def logout_command(args) -> None:
     provider_name = get_auth_provider_display_name(target)
 
     cleared = clear_provider_auth(target)
-    if target == "youtab":
-        # Keep a local tombstone so a profile logout cannot expose a global
-        # Youtab credential through the legacy provider fallback.
+    if target == "youtab" and _global_auth_file_path() is not None:
+        # Shadow the root credential only when this store actually has a
+        # global fallback. Root-scoped logout has no parent to shadow.
         persist_profile_inference_token(None)
     if cleared or should_reset_config:
         if should_reset_config:

@@ -257,7 +257,7 @@ export function createNativeSessionLifecycle(deps: {
     })
   }
 
-  async function logout(baseUrl: string, selected: string) {
+  async function logout(baseUrl: string, selected: string | null) {
     await withMutation(baseUrl, async () => {
       deps.discardPending(baseUrl)
       const saved = deps.load(baseUrl)
@@ -398,12 +398,12 @@ export async function clearGatewaySessionCredentials(
 /** Clear every linked bearer, retaining the saved inventory on any failure. */
 export async function clearNativeProfileCredentials(
   tokens: NativeTokenSet | null,
-  selected: string,
+  selected: string | null,
   clearSession: () => void,
   writeProfile: (profile: string, token: string | null) => Promise<void>
 ): Promise<void> {
   let firstError: unknown = null
-  for (const profile of new Set([...(tokens?.profiles || []), selected])) {
+  for (const profile of new Set([...(tokens?.profiles || []), ...(selected ? [selected] : [])])) {
     try { await writeProfile(profile, null) }
     catch (error) { firstError ??= error }
   }
@@ -562,6 +562,11 @@ export function parseTokenResponse(body: any): NativeTokenSet {
     provider: String(body?.provider || ''),
     userId: String(body?.user_id || body?.userId || '')
   }
+}
+
+/** Keep the HTTP status available to the native refresh rejection policy. */
+export function nativeHttpResponseError(statusCode: number, detail: string): Error & { statusCode: number } {
+  return Object.assign(new Error(`${statusCode}: ${detail}`), { statusCode })
 }
 
 /**

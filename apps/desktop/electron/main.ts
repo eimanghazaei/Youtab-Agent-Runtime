@@ -148,6 +148,7 @@ import {
   createNativeRefreshRetryCounter,
   createNativeSessionLifecycle,
   inferenceRefreshDelayMs,
+  nativeHttpResponseError,
   nativeProfileMutationFromApiResult,
   nativeProfileSessionKeys,
   nativeRefreshUrl,
@@ -4227,7 +4228,7 @@ function fetchJson(url, token, options: any = {}) {
           const text = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            reject(nativeHttpResponseError(res.statusCode || 500, text || res.statusMessage || ''))
 
             return
           }
@@ -10027,7 +10028,7 @@ ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl, o
   const hadNativeSession = Boolean(baseUrl && Object.prototype.hasOwnProperty.call(_readNativeTokenStore(), baseUrl))
   await clearGatewaySessionCredentials(
     hadNativeSession,
-    () => nativeSessionLifecycle.logout(baseUrl, readEffectiveDesktopProfile()),
+    () => nativeSessionLifecycle.logout(baseUrl, null),
     () => clearOauthSession(baseUrl || undefined),
     releasePowerResumeAfterAuthChange
   )

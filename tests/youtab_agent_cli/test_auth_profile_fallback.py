@@ -16,7 +16,6 @@ import os
 import time
 import base64
 import io
-from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -68,6 +67,41 @@ def _inference_jwt(
         "scope": scope, "exp": exp,
     }
     return f"{encode({'alg': 'RS256'})}.{encode(claims)}.signature"
+
+
+def test_root_logout_does_not_shadow_new_youtab_pool_credential(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, auth_commands
+    import youtab_constants
+
+    # Simulate the platform default away from the pytest real-store seat belt.
+    root = profile_env["global"].parent / "root-scope"
+    root.mkdir()
+    monkeypatch.setattr(youtab_constants, "_get_platform_default_youtab_home", lambda: root)
+    monkeypatch.delenv("YOUTAB_AGENT_HOME")
+    _write(root / "auth.json", _make_auth_store(providers={
+        "youtab": {"agent_key": "prior-root-credential"},
+    }))
+    auth.logout_command(SimpleNamespace(provider="youtab"))
+    assert auth.get_local_inference_token_state() is None
+
+    auth_commands.auth_add_command(SimpleNamespace(
+        provider="youtab", auth_type="api_key", api_key="test-api-key", label="new key",
+    ))
+    root_store = json.loads((root / "auth.json").read_text(encoding="utf-8"))
+    assert "youtab" not in root_store.get("providers", {})
+    assert root_store["credential_pool"]["youtab"][0]["access_token"] == "test-api-key"
+    assert auth.get_local_inference_token_state() is None
+
+
+def test_profile_logout_still_shadows_global_youtab_credential(profile_env):
+    from youtab_agent_cli import auth
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "youtab": {"agent_key": _inference_jwt(int(time.time()) + 900)},
+    }))
+    auth.logout_command(SimpleNamespace(provider="youtab"))
+    assert auth.get_local_inference_token_state()["agent_key"] == ""
+    assert auth.get_provider_auth_state("youtab")["agent_key"] == ""
 
 
 def test_profile_inference_token_is_local_and_resolves_gateway(profile_env, monkeypatch):
