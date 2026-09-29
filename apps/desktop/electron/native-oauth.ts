@@ -73,7 +73,7 @@ export function nativeProfileSessionKeys(
   })
 }
 
-/** Stop wake retries for corrupt sessions; a new login or logout can release the gate. */
+/** Retry saved cleanup briefly; corrupt sessions still require a new login or logout. */
 export function shouldRetryNativeResume(
   keys: string[],
   load: (baseUrl: string) => NativeTokenSet | null,
@@ -81,7 +81,7 @@ export function shouldRetryNativeResume(
 ): boolean {
   return attempts < 3 && keys.every(baseUrl => {
     const tokens = load(baseUrl)
-    return tokens !== null && !tokens.logoutPending
+    return tokens !== null
   })
 }
 
@@ -616,6 +616,7 @@ export function createNativeRefreshCoordinator(deps: {
   writeProfile: (profile: string, token: string | null) => Promise<void>
   commit: (baseUrl: string, tokens: NativeTokenSet) => void
   clear: (baseUrl: string) => void
+  revoke?: (baseUrl: string, refreshToken: string) => Promise<void>
   validateProfiles?: (profiles: string[]) => void
   now: () => number
 }) {
@@ -640,6 +641,25 @@ export function createNativeRefreshCoordinator(deps: {
     }
   }
 
+  async function clearTerminalSession(baseUrl: string, tokens: NativeTokenSet): Promise<null> {
+    // Persist the cleanup inventory before touching any child. An interrupted
+    // clear cannot make the rejected refresh authority usable after restart.
+    if (!tokens.logoutPending) { deps.commit(baseUrl, { ...tokens, logoutPending: true }) }
+    let firstError: unknown = null
+    for (const profile of new Set(tokens.profiles || [])) {
+      try { await deps.writeProfile(profile, null) }
+      catch (error) { firstError ??= error }
+    }
+    if (firstError) { throw firstError }
+    if (tokens.refreshToken) {
+      try { await deps.revoke?.(baseUrl, tokens.refreshToken) }
+      catch { /* Local cleanup remains authoritative if remote revocation fails. */ }
+    }
+    deps.clear(baseUrl)
+    pending.delete(baseUrl)
+    return null
+  }
+
   function ensure(baseUrl: string, force = false): Promise<string | null> {
     const active = inFlight.get(baseUrl)
     if (active) { return active }
@@ -647,7 +667,7 @@ export function createNativeRefreshCoordinator(deps: {
     const operation = (async () => {
       const tokens = deps.load(baseUrl)
       if (!tokens) { return null }
-      if (tokens.logoutPending) { return null }
+      if (tokens.logoutPending) { return clearTerminalSession(baseUrl, tokens) }
       const now = deps.now()
       const profileTokenNeedsRefresh = Boolean(tokens.profiles?.length)
         && inferenceRefreshDelayMs(tokens, now) <= 0
@@ -657,9 +677,7 @@ export function createNativeRefreshCoordinator(deps: {
           && !profileTokenNeedsRefresh) { return tokens.accessToken }
 
       if (!tokens.refreshToken) {
-        for (const profile of tokens.profiles || []) { await deps.writeProfile(profile, null) }
-        deps.clear(baseUrl)
-        return null
+        return clearTerminalSession(baseUrl, tokens)
       }
 
       const savedRotation = pending.get(baseUrl) || (tokens.rotationPending ? tokens : null)
@@ -672,10 +690,8 @@ export function createNativeRefreshCoordinator(deps: {
         try {
           rotated = await deps.exchange(baseUrl, tokens)
         } catch (error: any) {
-          if (error?.statusCode !== 401) { throw error }
-          for (const profile of tokens.profiles || []) { await deps.writeProfile(profile, null) }
-          deps.clear(baseUrl)
-          return null
+          if (error?.statusCode !== 401 && error?.statusCode !== 403) { throw error }
+          return clearTerminalSession(baseUrl, tokens)
         }
         rotated.profiles = tokens.profiles
         if (!rotated.refreshToken) {
@@ -731,7 +747,13 @@ export async function revalidateNativeSessionsBeforeResume(
 ): Promise<void> {
   for (const baseUrl of baseUrls) {
     const tokens = load(baseUrl)
-    if (!tokens?.profiles?.length || tokens.logoutPending) {
+    if (tokens?.logoutPending) {
+      // Resume may be the first opportunity to retry an interrupted clear.
+      // The tombstone still blocks reconnect even if cleanup succeeds.
+      try { await ensure(baseUrl) } catch { /* Keep the saved inventory for another retry. */ }
+      throw Object.assign(new Error('Native session unavailable. Sign in again in Settings → Gateway.'), { needsOauthLogin: true })
+    }
+    if (!tokens?.profiles?.length) {
       throw Object.assign(new Error('Native session unavailable. Sign in again in Settings → Gateway.'), { needsOauthLogin: true })
     }
     if (!await ensure(baseUrl)) {

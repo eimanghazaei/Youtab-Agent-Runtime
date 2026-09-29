@@ -6456,6 +6456,10 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
 // Return a valid native access token for baseUrl, refreshing via
 // /auth/native/refresh if the stored one is at/near expiry. Returns null when
 // there are no tokens or the refresh is terminally rejected (caller re-logins).
+async function revokeNativeSession(baseUrl: string, refreshToken: string): Promise<void> {
+  await postJsonNoAuth(`${baseUrl}/v1/auth/logout`, { refresh_token: refreshToken }, { timeoutMs: 10_000 })
+}
+
 const nativeRefresh = createNativeRefreshCoordinator({
   load: _loadNativeTokens,
   exchange: async (baseUrl, tokens) => parseTokenResponse(await postJsonNoAuth(
@@ -6466,27 +6470,31 @@ const nativeRefresh = createNativeRefreshCoordinator({
   writeProfile: writeProfileInferenceToken,
   commit: _storeNativeTokens,
   clear: _clearNativeTokens,
+  revoke: revokeNativeSession,
   validateProfiles: profiles => { for (const profile of profiles) { assertNativeProfileDirectory(profile) } },
   now: () => Math.floor(Date.now() / 1000)
 })
 
 function ensureNativeAccessToken(baseUrl: string, forceRefresh = false): Promise<string | null> {
   if (nativeSessionLifecycle.isMutating(baseUrl)) { return Promise.resolve(null) }
-  if (_loadNativeTokens(baseUrl)?.logoutPending) { return Promise.resolve(null) }
   return nativeRefresh.ensure(baseUrl, forceRefresh)
 }
 
-async function ensurePendingNativeProfileRotation(profile: string): Promise<void> {
+async function ensurePendingNativeProfileState(profile: string): Promise<void> {
   const pending = Object.keys(_readNativeTokenStore()).filter(baseUrl => {
     const tokens = _loadNativeTokens(baseUrl)
-    return tokens?.rotationPending && tokens.profiles?.includes(profile)
+    return (tokens?.rotationPending || tokens?.logoutPending) && tokens.profiles?.includes(profile)
   })
   if (!pending.length) { return }
-  // Local inference must not resume with a stale profile bearer. The existing
-  // resume gate serializes the replay, fails closed on error, and lets the
-  // normal backend startup surface its recoverable boot failure.
+  // Complete interrupted terminal clears before any child can read a stale
+  // bearer. A failed clear blocks local startup and uses the existing retry UI.
+  for (const baseUrl of pending) {
+    if (_loadNativeTokens(baseUrl)?.logoutPending) { await ensureNativeAccessToken(baseUrl) }
+  }
+  // Reuse the resume gate for interrupted rotations before inference resumes.
   await revalidateNativeSessionsBeforeResume(
-    pending, _loadNativeTokens, baseUrl => ensureNativeAccessToken(baseUrl), () => undefined
+    pending.filter(baseUrl => _loadNativeTokens(baseUrl)?.rotationPending),
+    _loadNativeTokens, baseUrl => ensureNativeAccessToken(baseUrl), () => undefined
   )
 }
 
@@ -6512,9 +6520,7 @@ const nativeSessionLifecycle = createNativeSessionLifecycle({
     kind: 'auth', baseUrl, profiles
   }),
   scheduleRefresh: _scheduleNativeRefresh,
-  revoke: async (baseUrl, refreshToken) => {
-    await postJsonNoAuth(`${baseUrl}/v1/auth/logout`, { refresh_token: refreshToken }, { timeoutMs: 10_000 })
-  },
+  revoke: revokeNativeSession,
   logRevocationFailure: () => rememberLog('[native-oauth] remote logout unavailable after local cleanup')
 })
 
@@ -8285,7 +8291,7 @@ async function spawnPoolBackend(profile, entry) {
     }
   }
 
-  await ensurePendingNativeProfileRotation(profile)
+  await ensurePendingNativeProfileState(profile)
 
   const token = crypto.randomBytes(32).toString('base64url')
 
@@ -8580,7 +8586,7 @@ async function startYoutab() {
       ensureLocalRuntime: ensureRuntime,
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Youtab runtime', 28)
-        await ensurePendingNativeProfileRotation(primaryProfileKey())
+        await ensurePendingNativeProfileState(primaryProfileKey())
 
         return resolveYoutabBackend(backendArgs)
       },
@@ -9578,7 +9584,7 @@ function createWindow() {
 
 ipcMain.handle('youtab:connection', async (_event, profile) => {
   const requestedProfile = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
-  await ensurePendingNativeProfileRotation(requestedProfile)
+  await ensurePendingNativeProfileState(requestedProfile)
   return ensureBackend(profile)
 })
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,

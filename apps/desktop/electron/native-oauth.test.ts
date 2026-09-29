@@ -572,24 +572,31 @@ test('native lifecycle keeps linked inventory if Settings logout cannot clear a 
   assert.equal(refreshSchedules, 0)
 })
 
-test('logout tombstone survives token-store serialization and blocks refresh after restart', async () => {
+test('logout tombstone survives token-store serialization and finishes cleanup after restart', async () => {
   const tokens = parseTokenResponse({
     access_token: 'old', refresh_token: 'old-r', inference_access_token: 'old-i',
     user_id: 'user', profiles: ['one', 'two']
   })
   const restored = parseTokenResponse(JSON.parse(JSON.stringify({ ...tokens, logoutPending: true })))
   let exchanges = 0
+  const cleared: string[] = []
+  const revoked: string[] = []
+  let saved: NativeTokenSet | null = restored
   const coordinator = createNativeRefreshCoordinator({
-    load: () => restored,
+    load: () => saved,
     exchange: async () => { exchanges++; throw new Error('must not refresh') },
-    writeProfile: async () => { throw new Error('must not write bearer') },
+    writeProfile: async (profile, token) => { assert.equal(token, null); cleared.push(profile) },
     commit: () => { throw new Error('must not commit') },
-    clear: () => { throw new Error('must not clear inventory') },
+    clear: () => { saved = null },
+    revoke: async (_baseUrl, refreshToken) => { revoked.push(refreshToken) },
     now: () => Math.floor(Date.now() / 1000)
   })
   assert.equal(restored.logoutPending, true)
   assert.deepEqual(nativeProfileSessionKeys(['gateway'], () => restored), ['gateway'])
   assert.equal(await coordinator.ensure('gateway'), null)
+  assert.deepEqual(cleared, ['one', 'two'])
+  assert.deepEqual(revoked, ['old-r'])
+  assert.equal(saved, null)
   assert.equal(exchanges, 0)
   await assert.rejects(revalidateNativeSessionsBeforeResume(
     ['gateway'], () => restored, () => coordinator.ensure('gateway'), () => { throw new Error('must not reconnect') }
@@ -642,7 +649,7 @@ test('unreadable native session stops retries until login replaces it', () => {
   tokens = parseTokenResponse({ access_token: 'account-access', profiles: ['coder'] })
   assert.equal(shouldRetryNativeResume([key], () => tokens, 1), true)
   tokens.logoutPending = true
-  assert.equal(shouldRetryNativeResume([key], () => tokens, 1), false)
+  assert.equal(shouldRetryNativeResume([key], () => tokens, 1), true)
   tokens.logoutPending = false
   assert.equal(shouldRetryNativeResume([key], () => tokens, 3), false)
 })
@@ -711,6 +718,50 @@ function refreshFixture() {
     setWrite: (fn: typeof write) => { write = fn },
     setValidate: (fn: typeof validate) => { validate = fn }
   }
+}
+
+for (const statusCode of [401, 403]) {
+  test(`terminal ${statusCode} refresh persists cleanup inventory and clears all linked profiles`, async () => {
+    const initial = refreshFixture().saved
+    let saved: NativeTokenSet | null = { ...initial, profiles: ['one', 'two'] }
+    let exchanges = 0
+    const writes: Array<[string, string | null]> = []
+    const revoked: string[] = []
+    const makeCoordinator = (failOne: boolean) => createNativeRefreshCoordinator({
+      load: () => saved,
+      exchange: async () => {
+        exchanges++
+        throw Object.assign(new Error('rejected'), { statusCode })
+      },
+      writeProfile: async (profile, token) => {
+        assert.equal(saved?.logoutPending, true)
+        writes.push([profile, token])
+        if (failOne && profile === 'one') { throw new Error('child clear failed') }
+      },
+      commit: (_baseUrl, tokens) => { saved = tokens },
+      clear: () => { saved = null },
+      revoke: async (_baseUrl, refreshToken) => { revoked.push(refreshToken) },
+      now: () => 2_000_000
+    })
+    await assert.rejects(makeCoordinator(true).ensure('gateway', true), /child clear failed/)
+    assert.deepEqual(writes, [['one', null], ['two', null]])
+    assert.equal(saved?.logoutPending, true)
+    assert.equal(exchanges, 1)
+    assert.deepEqual(revoked, [])
+
+    // A fresh coordinator simulates restart. It resumes the saved cleanup
+    // without ever sending the rejected refresh credential again.
+    writes.length = 0
+    const restarted = makeCoordinator(false)
+    await assert.rejects(revalidateNativeSessionsBeforeResume(
+      ['gateway'], () => saved, baseUrl => restarted.ensure(baseUrl),
+      () => { throw new Error('must not reconnect') }
+    ), /Sign in again/)
+    assert.deepEqual(writes, [['one', null], ['two', null]])
+    assert.equal(saved, null)
+    assert.equal(exchanges, 1)
+    assert.deepEqual(revoked, ['old-refresh'])
+  })
 }
 
 test('scheduled refresh saves pending rotation before profile write and finalizes afterward', async () => {
