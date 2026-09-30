@@ -1299,10 +1299,9 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
 
 
 def _save_youtab_login_state(auth_store: Dict[str, Any], state: Dict[str, Any]) -> None:
-    """Save a new CLI login without retaining a prior root Desktop bearer."""
+    """Save a new CLI login without retaining a prior Desktop bearer."""
     _save_provider_state(auth_store, "youtab", state)
-    if _global_auth_file_path() is None:
-        auth_store["providers"].pop("youtab_inference", None)
+    auth_store["providers"].pop("youtab_inference", None)
 
 
 def _save_provider_state_to_source(
@@ -5746,10 +5745,8 @@ def profile_inference_base_url(state: Dict[str, Any]) -> str:
 
 
 def _profile_inference_store_key() -> str:
-    # The default profile shares root auth.json with legacy CLI Youtab auth.
-    # Keep its Desktop-only bearer separate so replacing it cannot erase the
-    # existing account/refresh state. Named profiles already have their own file.
-    return "youtab_inference" if _global_auth_file_path() is None else "youtab"
+    # Both root and named profiles may already hold legacy CLI Youtab auth.
+    return "youtab_inference"
 
 
 def get_local_inference_token_state() -> Optional[Dict[str, Any]]:
@@ -5773,7 +5770,7 @@ def get_local_inference_token_state() -> Optional[Dict[str, Any]]:
 
 
 def persist_profile_inference_token(token: Optional[str]) -> None:
-    """Replace the local Youtab entry without mirroring or OAuth refresh.
+    """Replace the local Desktop inference entry without mirroring or OAuth refresh.
 
     A blank profile entry shadows global credentials after profile logout.
     A root-scoped clear removes only the inference entry, since the root has
@@ -8946,8 +8943,10 @@ def logout_command(args) -> None:
 
     cleared = clear_provider_auth(target)
     if target == "youtab":
-        # Named profiles shadow the root credential; the root removes only
-        # its separate Desktop inference entry.
+        # Explicit CLI logout also shadows the root legacy credential for a
+        # named profile; Desktop inference remains a separate local entry.
+        if _global_auth_file_path() is not None:
+            _persist_provider_state_to_store("youtab", {"agent_key": ""}, _auth_file_path())
         persist_profile_inference_token(None)
     if cleared or should_reset_config:
         if should_reset_config:

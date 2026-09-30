@@ -119,7 +119,7 @@ def test_profile_inference_token_is_local_and_resolves_gateway(profile_env, monk
                         lambda **_kw: pytest.fail("backend OAuth refresh was attempted"))
     auth.persist_profile_inference_token(token)
     local = json.loads((profile_env["profile"] / "auth.json").read_text(encoding="utf-8"))
-    state = local["providers"]["youtab"]
+    state = local["providers"]["youtab_inference"]
     assert state["agent_key"] == token
     assert state["agent_key_expires_at"].endswith("+00:00")
     assert set(state) == {
@@ -286,6 +286,25 @@ def test_default_profile_inference_write_preserves_existing_cli_youtab_session(p
         )
 
 
+def test_named_profile_inference_write_preserves_existing_cli_youtab_session(profile_env):
+    from youtab_agent_cli import auth
+
+    profile_file = profile_env["profile"] / "auth.json"
+    legacy = {"access_token": "named-account-token", "refresh_token": "named-refresh-token"}
+    _write(profile_file, _make_auth_store(providers={"youtab": legacy}))
+    token = _inference_jwt(int(time.time()) + 900)
+
+    auth.persist_profile_inference_token(token)
+    saved = json.loads(profile_file.read_text(encoding="utf-8"))["providers"]
+    assert saved["youtab"] == legacy
+    assert saved["youtab_inference"]["agent_key"] == token
+
+    auth.persist_profile_inference_token(None)
+    saved = json.loads(profile_file.read_text(encoding="utf-8"))["providers"]
+    assert saved["youtab"] == legacy
+    assert saved["youtab_inference"]["agent_key"] == ""
+
+
 def test_root_cli_account_switch_invalidates_previous_desktop_inference(profile_env, monkeypatch):
     from youtab_agent_cli import auth, runtime_provider
     import youtab_constants
@@ -362,8 +381,8 @@ def test_preexisting_account_key_is_shadowed_not_promoted(profile_env, monkeypat
         "youtab": {"agent_key": _inference_jwt(int(time.time()) + 900)},
     }))
     monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
-    assert auth.get_local_inference_token_state()["agent_key"] == ""
-    with pytest.raises(auth.AuthError, match="expired"):
+    assert auth.get_local_inference_token_state() is None
+    with pytest.raises(auth.AuthError, match="Desktop inference requires"):
         runtime_provider._resolve_profile_inference_runtime(
             requested_provider="youtab", target_model="deepseek.v4_flash",
         )

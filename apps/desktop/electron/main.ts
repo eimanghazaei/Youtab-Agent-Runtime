@@ -5196,11 +5196,11 @@ let powerResumeInFlight: Promise<void> | null = null
 let powerResumeRetry: NodeJS.Timeout | null = null
 let powerResumeRequiredSessions: string[] | null = null
 let powerResumeRetryCount = 0
-function notifyPowerResumeRenderer(authChanged = false, nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string; profiles?: string[] }) {
+function notifyPowerResumeRenderer(authChanged = false, nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string; profiles?: string[] }, authBaseUrl?: string) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     const { webContents } = mainWindow
     if (webContents && !webContents.isDestroyed()) {
-      webContents.send('youtab:power-resume', authChanged ? { authChanged: true } : nativeRecovery ? { nativeRecovery } : undefined)
+      webContents.send('youtab:power-resume', authChanged ? { authChanged: true, authBaseUrl } : nativeRecovery ? { nativeRecovery } : undefined)
     }
   }
 }
@@ -5233,7 +5233,7 @@ function sendPowerResume() {
   }).finally(() => { powerResumeInFlight = null })
 }
 
-function releasePowerResumeAfterAuthChange() {
+function releasePowerResumeAfterAuthChange(baseUrl: string) {
   powerResumeRequiredSessions = null
   powerResumeRetryCount = 0
   if (powerResumeRetry) { clearTimeout(powerResumeRetry) }
@@ -5244,10 +5244,10 @@ function releasePowerResumeAfterAuthChange() {
       powerResumeRetry = null
       powerResumeRequiredSessions = null
       powerResumeRetryCount = 0
-      notifyPowerResumeRenderer(true)
+      notifyPowerResumeRenderer(true, undefined, baseUrl)
     }).catch(() => undefined)
   } else {
-    notifyPowerResumeRenderer(true)
+    notifyPowerResumeRenderer(true, undefined, baseUrl)
   }
 }
 
@@ -9956,7 +9956,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
     }
     await nativeSessionLifecycle.login(baseUrl, profile, tokens)
     remoteReauthFailure = null
-    releasePowerResumeAfterAuthChange()
+    releasePowerResumeAfterAuthChange(baseUrl)
     return { ok: true, baseUrl, connected: true }
   }
 
@@ -9994,7 +9994,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
       // Confirmed sign-in — release the reauth latch so the next
       // startYoutab() re-dials instead of replaying the stale rejection.
       remoteReauthFailure = null
-      releasePowerResumeAfterAuthChange()
+      releasePowerResumeAfterAuthChange(baseUrl)
 
       return { ok: true, baseUrl, connected: true }
     }
@@ -10010,7 +10010,7 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
   // flickering again on the next retry.
   if (connected) {
     remoteReauthFailure = null
-    releasePowerResumeAfterAuthChange()
+    releasePowerResumeAfterAuthChange(baseUrl)
   }
 
   return { ok: true, baseUrl, connected }
@@ -10024,7 +10024,7 @@ ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl, o
       true,
       () => nativeSessionLifecycle.logout(baseUrl, profile),
       () => clearOauthSession(baseUrl, true),
-      releasePowerResumeAfterAuthChange
+      () => releasePowerResumeAfterAuthChange(baseUrl)
     )
     return { ok: true, connected: (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl) }
   }
@@ -10033,7 +10033,7 @@ ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl, o
     hadNativeSession,
     () => nativeSessionLifecycle.logout(baseUrl, null),
     () => clearOauthSession(baseUrl || undefined),
-    releasePowerResumeAfterAuthChange
+    () => releasePowerResumeAfterAuthChange(baseUrl)
   )
 
   // Report against the SAME liveness notion the Settings indicator uses

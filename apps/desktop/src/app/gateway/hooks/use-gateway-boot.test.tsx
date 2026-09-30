@@ -22,7 +22,7 @@ import { useGatewayBoot } from './use-gateway-boot'
 
 type Listener = (ev: unknown) => void
 let connectionApplied: null | (() => void) = null
-let powerResume: null | ((event?: { authChanged?: boolean; nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string; profiles?: string[] } }) => void) = null
+let powerResume: null | ((event?: { authChanged?: boolean; authBaseUrl?: string; nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string; profiles?: string[] } }) => void) = null
 
 // Minimal WebSocket stand-in implementing only what json-rpc-gateway.connect()
 // touches: readyState, add/removeEventListener('open'|'error'|'close'), close().
@@ -274,6 +274,37 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
+  })
+
+  it('re-mints a remote OAuth socket only when its session authority changes', async () => {
+    const desktop = fakeDesktop('oauth', 'remote')
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    act(() => powerResume?.({ authChanged: true, authBaseUrl: 'https://provider.example.com' }))
+    await flushAsync()
+    expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.OPEN)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    act(() => powerResume?.({ authChanged: true, authBaseUrl: 'https://vps.example.com' }))
+    await flushAsync()
+    expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.CLOSED)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+    expect(desktop.revalidateConnection).toHaveBeenCalled()
+    expect($gatewayState.get()).toBe('open')
+  })
+
+  it('keeps a local provider socket open after native provider auth changes', async () => {
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = fakeDesktop('token', 'local')
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => powerResume?.({ authChanged: true, authBaseUrl: 'https://vps.example.com' }))
+    await flushAsync()
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.OPEN)
   })
 
   it('shows sign-in recovery when native profile reconciliation exhausts retries', async () => {

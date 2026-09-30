@@ -463,6 +463,16 @@ export function useGatewayBoot({
         }
         return
       }
+      if (event?.authChanged && event.authBaseUrl) {
+        const connection = $connection.get()
+        if (connection?.mode === 'remote' && connection.authMode === 'oauth' && connection.baseUrl === event.authBaseUrl) {
+          // A one-use WS ticket authenticates the old session for the life of
+          // this socket. Close it before minting a ticket for the new session.
+          gateway.close()
+          reconnectNow(true)
+          return
+        }
+      }
       reconnectNow(event?.authChanged === true)
     })
     const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
