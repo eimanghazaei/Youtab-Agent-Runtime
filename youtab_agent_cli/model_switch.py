@@ -2318,6 +2318,14 @@ def list_authenticated_providers(
                     has_creds = True
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
+        if not has_creds and youtab_slug == "youtab":
+            from youtab_agent_cli.auth import (
+                _agent_key_is_usable,
+                get_local_inference_token_state,
+                inference_token_safety_seconds,
+            )
+            local = get_local_inference_token_state()
+            has_creds = bool(local and _agent_key_is_usable(local, inference_token_safety_seconds(local)))
         if not has_creds:
             continue
 

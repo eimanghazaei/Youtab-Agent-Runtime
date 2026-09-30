@@ -305,6 +305,23 @@ def test_named_profile_inference_write_preserves_existing_cli_youtab_session(pro
     assert saved["youtab_inference"]["agent_key"] == ""
 
 
+def test_inference_only_profile_appears_in_model_picker(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, model_switch, models
+    import agent.models_dev as models_dev
+
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda: {})
+    monkeypatch.setattr(models, "cached_provider_model_ids", lambda provider, **_kw:
+                        ["deepseek.v4_flash"] if provider == "youtab" else [])
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+
+    rows = model_switch.list_authenticated_providers(current_provider="youtab")
+    youtab = [row for row in rows if row["slug"] == "youtab"]
+    assert len(youtab) == 1
+    assert youtab[0]["models"] == ["deepseek.v4_flash"]
+    auth.persist_profile_inference_token(None)
+    assert not any(row["slug"] == "youtab" for row in model_switch.list_authenticated_providers())
+
+
 def test_root_cli_account_switch_invalidates_previous_desktop_inference(profile_env, monkeypatch):
     from youtab_agent_cli import auth, runtime_provider
     import youtab_constants
