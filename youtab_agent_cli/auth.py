@@ -1300,8 +1300,18 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
 
 def _save_youtab_login_state(auth_store: Dict[str, Any], state: Dict[str, Any]) -> None:
     """Save a new CLI login without retaining a prior Desktop bearer."""
+    providers = auth_store.get("providers")
+    existing = providers.get("youtab_inference") if isinstance(providers, dict) else None
+    old_token = existing.get("agent_key") if isinstance(existing, dict) else None
+    old_claims = _decode_jwt_claims(old_token)
+    new_claims = _decode_jwt_claims(state.get("agent_key") or state.get("access_token"))
+    identity = ("iss", "sub", "tenant_id", "organization_id", "workspace_id")
+    same_identity = _is_profile_inference_token(old_token) and all(
+        old_claims.get(key) and old_claims[key] == new_claims.get(key) for key in identity
+    )
     _save_provider_state(auth_store, "youtab", state)
-    auth_store["providers"].pop("youtab_inference", None)
+    if not same_identity:
+        auth_store["providers"].pop("youtab_inference", None)
 
 
 def _save_provider_state_to_source(

@@ -332,6 +332,24 @@ def test_root_cli_account_switch_invalidates_previous_desktop_inference(profile_
         )
 
 
+def test_named_cli_same_account_login_keeps_desktop_inference(profile_env):
+    from youtab_agent_cli import auth
+
+    token = _inference_jwt(int(time.time()) + 900, subject="account-a")
+    auth.persist_profile_inference_token(token)
+    with auth._auth_store_lock():
+        store = auth._load_auth_store()
+        auth._save_youtab_login_state(store, {
+            "access_token": _inference_jwt(
+                int(time.time()) + 900, token_type="account_access", subject="account-a",
+            ),
+            "refresh_token": "new-cli-refresh",
+        })
+        auth._save_auth_store(store)
+
+    assert auth.get_local_inference_token_state()["agent_key"] == token
+
+
 def test_root_cli_refresh_keeps_current_desktop_inference(profile_env, monkeypatch):
     from youtab_agent_cli import auth
     import youtab_constants
