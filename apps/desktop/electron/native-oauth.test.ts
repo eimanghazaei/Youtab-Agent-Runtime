@@ -649,6 +649,17 @@ test('Settings logout clears OAuth cookies and resumes recovery after native cle
   assert.deepEqual(calls, ['native', 'cookie', 'wake'])
 })
 
+test('native provider sign-out clears the OAuth cookie after native session cleanup', async () => {
+  const calls: string[] = []
+  await clearGatewaySessionCredentials(
+    true,
+    async () => { calls.push('native') },
+    async () => { calls.push('cookie') },
+    () => { calls.push('wake') }
+  )
+  assert.deepEqual(calls, ['native', 'cookie', 'wake'])
+})
+
 test('encrypted-store commit failure removes the new profile bearer', async () => {
   const next = parseTokenResponse({ access_token: 'new', refresh_token: 'new-r', inference_access_token: 'new-i', user_id: 'user' })
   let bearer: string | null = null

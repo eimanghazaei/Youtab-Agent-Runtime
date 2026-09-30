@@ -10016,9 +10016,13 @@ ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl, o
   if (options?.nativeCapability === true) {
     requireNativePortalAuthority(baseUrl)
     const profile = resolveLiveNativeProviderProfile(options.profile)
-    await nativeSessionLifecycle.logout(baseUrl, profile)
-    releasePowerResumeAfterAuthChange()
-    return { ok: true, connected: false }
+    await clearGatewaySessionCredentials(
+      true,
+      () => nativeSessionLifecycle.logout(baseUrl, profile),
+      () => clearOauthSession(baseUrl),
+      releasePowerResumeAfterAuthChange
+    )
+    return { ok: true, connected: (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl) }
   }
   const hadNativeSession = Boolean(baseUrl && Object.prototype.hasOwnProperty.call(_readNativeTokenStore(), baseUrl))
   await clearGatewaySessionCredentials(
