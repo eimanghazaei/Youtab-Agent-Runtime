@@ -18,6 +18,7 @@ import {
   ensureGatewayForProfile,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
+  reconnectSecondaryGatewaysAfterAuthChange,
   reportPrimaryGatewayState,
   setPrimaryGateway,
   touchSecondaryGateways
@@ -464,6 +465,7 @@ export function useGatewayBoot({
         return
       }
       if (event?.authChanged && event.authBaseUrl) {
+        reconnectSecondaryGatewaysAfterAuthChange(event.authBaseUrl)
         const connection = $connection.get()
         if (connection?.mode === 'remote' && connection.authMode === 'oauth' && connection.baseUrl === event.authBaseUrl) {
           // A one-use WS ticket authenticates the old session for the life of

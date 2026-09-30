@@ -2,6 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
+import { closeSecondaryGateways, openGatewayForProfile } from '@/store/gateway'
 import { $notifications, clearNotifications } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
@@ -179,6 +180,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  closeSecondaryGateways()
   // Vitest keeps import.meta.hot truthy, so the boot effect's cleanup parks an
   // open gateway instead of tearing it down (the real HMR path). Drain + close
   // that survivor so the next test boots a fresh socket instead of adoptBoot().
@@ -305,6 +307,24 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await flushAsync()
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.OPEN)
+  })
+
+  it('re-mints open background OAuth sockets for the changed authority', async () => {
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = fakeDesktop('oauth', 'remote')
+    render(<Harness />)
+    await flushAsync()
+    const backgroundOpen = openGatewayForProfile('background')
+    await flushAsync()
+    await act(async () => backgroundOpen)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+
+    act(() => powerResume?.({ authChanged: true, authBaseUrl: 'https://vps.example.com' }))
+    await flushAsync()
+    expect(FakeWebSocket.instances[0].readyState).toBe(FakeWebSocket.CLOSED)
+    expect(FakeWebSocket.instances[1].readyState).toBe(FakeWebSocket.CLOSED)
+    expect(FakeWebSocket.instances).toHaveLength(4)
+    expect(FakeWebSocket.instances[2].readyState).toBe(FakeWebSocket.OPEN)
+    expect(FakeWebSocket.instances[3].readyState).toBe(FakeWebSocket.OPEN)
   })
 
   it('shows sign-in recovery when native profile reconciliation exhausts retries', async () => {

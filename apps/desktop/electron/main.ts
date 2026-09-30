@@ -5197,8 +5197,10 @@ let powerResumeRetry: NodeJS.Timeout | null = null
 let powerResumeRequiredSessions: string[] | null = null
 let powerResumeRetryCount = 0
 function notifyPowerResumeRenderer(authChanged = false, nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string; profiles?: string[] }, authBaseUrl?: string) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    const { webContents } = mainWindow
+  const windows = authChanged ? BrowserWindow.getAllWindows() : mainWindow ? [mainWindow] : []
+  for (const window of windows) {
+    if (window.isDestroyed()) { continue }
+    const { webContents } = window
     if (webContents && !webContents.isDestroyed()) {
       webContents.send('youtab:power-resume', authChanged ? { authChanged: true, authBaseUrl } : nativeRecovery ? { nativeRecovery } : undefined)
     }
