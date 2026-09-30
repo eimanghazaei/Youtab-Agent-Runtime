@@ -12,9 +12,12 @@ authenticated only at the global root.
 from __future__ import annotations
 
 import json
+import os
 import time
-from contextlib import contextmanager
+import base64
+import io
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -50,6 +53,658 @@ def profile_env(tmp_path, monkeypatch):
 
 def _write(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _inference_jwt(
+    exp: int, scope: str = "inference:invoke", token_type: str = "inference_access",
+    audience: str = "https://api.youtab.io/v1/inference",
+    subject: str = "user-a", workspace: str = "workspace-a",
+    issuer: str = "https://api.youtab.io",
+) -> str:
+    def encode(value: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+    claims = {
+        "iss": issuer, "aud": audience, "type": token_type,
+        "scope": scope, "exp": exp, "sub": subject,
+        "principal_type": "user", "tenant_id": "tenant-a",
+        "organization_id": "organization-a", "workspace_id": workspace,
+    }
+    return f"{encode({'alg': 'RS256'})}.{encode(claims)}.signature"
+
+
+def test_root_logout_does_not_shadow_new_youtab_pool_credential(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, auth_commands
+    import youtab_constants
+
+    # Simulate the platform default away from the pytest real-store seat belt.
+    root = profile_env["global"].parent / "root-scope"
+    root.mkdir()
+    monkeypatch.setattr(youtab_constants, "_get_platform_default_youtab_home", lambda: root)
+    monkeypatch.delenv("YOUTAB_AGENT_HOME")
+    _write(root / "auth.json", _make_auth_store(providers={
+        "youtab": {"agent_key": "prior-root-credential"},
+    }))
+    auth.logout_command(SimpleNamespace(provider="youtab"))
+    assert auth.get_local_inference_token_state() is None
+
+    auth_commands.auth_add_command(SimpleNamespace(
+        provider="youtab", auth_type="api_key", api_key="test-api-key", label="new key",
+    ))
+    root_store = json.loads((root / "auth.json").read_text(encoding="utf-8"))
+    assert "youtab" not in root_store.get("providers", {})
+    assert root_store["credential_pool"]["youtab"][0]["access_token"] == "test-api-key"
+    assert auth.get_local_inference_token_state() is None
+
+
+def test_profile_logout_still_shadows_global_youtab_credential(profile_env):
+    from youtab_agent_cli import auth
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "youtab": {"agent_key": _inference_jwt(int(time.time()) + 900)},
+    }))
+    auth.logout_command(SimpleNamespace(provider="youtab"))
+    assert auth.get_local_inference_token_state()["agent_key"] == ""
+    assert auth.get_provider_auth_state("youtab")["agent_key"] == ""
+
+
+def test_profile_inference_token_is_local_and_resolves_gateway(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, runtime_provider
+
+    token = _inference_jwt(int(time.time()) + 900)
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "youtab": {"access_token": "global-account-token"},
+    }))
+    monkeypatch.setattr(runtime_provider, "resolve_youtab_runtime_credentials",
+                        lambda **_kw: pytest.fail("backend OAuth refresh was attempted"))
+    auth.persist_profile_inference_token(token)
+    local = json.loads((profile_env["profile"] / "auth.json").read_text(encoding="utf-8"))
+    state = local["providers"]["youtab_inference"]
+    assert state["agent_key"] == token
+    assert state["agent_key_expires_at"].endswith("+00:00")
+    assert set(state) == {
+        "agent_key", "agent_key_expires_at", "agent_key_expires_in", "agent_key_obtained_at",
+    }
+    assert 0 < auth.inference_token_safety_seconds(state) < state["agent_key_expires_in"]
+    assert "global-account-token" in (profile_env["global"] / "auth.json").read_text(encoding="utf-8")
+    resolved = runtime_provider._resolve_profile_inference_runtime(
+        requested_provider="youtab", target_model="deepseek.v4_flash",
+    )
+    assert resolved["api_key"] == token
+    assert resolved["base_url"] == "https://api.youtab.io/v1"
+    assert resolved["api_mode"] == "chat_completions"
+    auth.persist_profile_inference_token(None)
+    assert auth.get_local_inference_token_state()["agent_key"] == ""
+    with pytest.raises(auth.AuthError, match="expired"):
+        runtime_provider._resolve_profile_inference_runtime(
+            requested_provider="youtab", target_model="deepseek.v4_flash",
+        )
+
+
+def test_staging_profile_uses_one_authority_for_models_chat_and_proxy(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, runtime_provider
+    from youtab_agent_cli.proxy.adapters.youtab_portal import YoutabPortalAdapter
+
+    staging = "https://staging.example.test"
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", staging)
+    token = _inference_jwt(
+        int(time.time()) + 900, issuer=staging, audience=f"{staging}/v1/inference",
+    )
+    auth.persist_profile_inference_token(token)
+    seen = []
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **kw: seen.append(kw) or ["deepseek.v4_flash"])
+    assert models.provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    assert seen[0]["inference_base_url"] == f"{staging}/v1"
+    assert seen[0]["api_key"] == token
+    resolved = runtime_provider._resolve_profile_inference_runtime(
+        requested_provider="youtab", target_model="deepseek.v4_flash",
+    )
+    assert resolved["base_url"] == f"{staging}/v1"
+    assert resolved["api_key"] == token
+    assert YoutabPortalAdapter().get_credential().base_url == f"{staging}/v1"
+    assert models._resolve_youtab_pricing_credentials() == (token, f"{staging}/v1")
+
+
+def test_blank_primary_portal_override_uses_secondary_for_profile(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, runtime_provider
+
+    staging = "https://secondary.example.test"
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "  ")
+    monkeypatch.setenv("YOUTAB_PORTAL_BASE_URL", f"{staging}/")
+    token = _inference_jwt(
+        int(time.time()) + 900, issuer=staging, audience=f"{staging}/v1/inference",
+    )
+    auth.persist_profile_inference_token(token)
+    assert runtime_provider._resolve_profile_inference_runtime(
+        requested_provider="youtab", target_model="deepseek.v4_flash",
+    )["base_url"] == f"{staging}/v1"
+
+
+def test_profile_token_cannot_cross_configured_gateway_authority(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, runtime_provider
+    from youtab_agent_cli.proxy.adapters.youtab_portal import YoutabPortalAdapter
+
+    staging = "https://staging.example.test"
+    token = _inference_jwt(
+        int(time.time()) + 900, issuer=staging, audience=f"{staging}/v1/inference",
+    )
+    with pytest.raises(auth.AuthError, match="does not match"):
+        auth.persist_profile_inference_token(token)
+    assert not (profile_env["profile"] / "auth.json").exists()
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", staging)
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: pytest.fail("cross-authority model request"))
+    assert models.provider_model_ids("youtab") == []
+    with pytest.raises(auth.AuthError, match="does not match"):
+        runtime_provider._resolve_profile_inference_runtime(
+            requested_provider="youtab", target_model="deepseek.v4_flash",
+        )
+    with pytest.raises(auth.AuthError, match="does not match"):
+        YoutabPortalAdapter().get_credential()
+
+
+@pytest.mark.parametrize("override", ["file:///tmp/gateway", "http://evil.example", "https://user:pass@evil.example", "https://staging.example.test/?token=x", "https://staging.example.test:bad"])
+def test_malformed_native_gateway_override_fails_closed(profile_env, monkeypatch, override):
+    from youtab_agent_cli import auth
+
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", override)
+    with pytest.raises(auth.AuthError, match="Invalid configured"):
+        auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    assert not (profile_env["profile"] / "auth.json").exists()
+
+
+def test_profile_inference_cli_writer_uses_stdin_without_echo(profile_env, monkeypatch, capsys):
+    from youtab_agent_cli import auth, auth_commands
+
+    token = _inference_jwt(int(time.time()) + 900)
+    monkeypatch.setattr("sys.stdin", io.StringIO(token))
+    auth_commands.auth_profile_inference_token_command(SimpleNamespace(clear=False))
+    assert auth.get_local_inference_token_state()["agent_key"] == token
+    assert token not in capsys.readouterr().out
+    auth_commands.auth_profile_inference_token_command(SimpleNamespace(clear=True))
+    assert auth.get_local_inference_token_state()["agent_key"] == ""
+
+
+def test_root_inference_cli_clear_removes_entry_without_shadowing_pool(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, auth_commands
+    import youtab_constants
+
+    root = profile_env["global"].parent / "root-scope"
+    root.mkdir()
+    monkeypatch.setattr(youtab_constants, "_get_platform_default_youtab_home", lambda: root)
+    monkeypatch.delenv("YOUTAB_AGENT_HOME")
+    _write(root / "auth.json", _make_auth_store(
+        pool={"youtab": [{"id": "existing", "access_token": "pooled-key"}]},
+        providers={"openrouter": {"access_token": "other-key"}},
+    ))
+    token = _inference_jwt(int(time.time()) + 900)
+    monkeypatch.setattr("sys.stdin", io.StringIO(token))
+    auth_commands.auth_profile_inference_token_command(SimpleNamespace(clear=False))
+    assert auth.get_local_inference_token_state()["agent_key"] == token
+
+    auth_commands.auth_profile_inference_token_command(SimpleNamespace(clear=True))
+    root_store = json.loads((root / "auth.json").read_text(encoding="utf-8"))
+    assert "youtab" not in root_store["providers"]
+    assert root_store["providers"]["openrouter"]["access_token"] == "other-key"
+    assert root_store["credential_pool"]["youtab"][0]["access_token"] == "pooled-key"
+    assert auth.get_local_inference_token_state() is None
+
+
+def test_default_profile_inference_write_preserves_existing_cli_youtab_session(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, runtime_provider
+    import youtab_constants
+
+    root = profile_env["global"].parent / "root-scope"
+    root.mkdir()
+    monkeypatch.setattr(youtab_constants, "_get_platform_default_youtab_home", lambda: root)
+    monkeypatch.delenv("YOUTAB_AGENT_HOME")
+    legacy = {"access_token": "existing-account-token", "refresh_token": "existing-refresh-token"}
+    _write(root / "auth.json", _make_auth_store(providers={"youtab": legacy}))
+
+    token = _inference_jwt(int(time.time()) + 900)
+    auth.persist_profile_inference_token(token)
+    saved = json.loads((root / "auth.json").read_text(encoding="utf-8"))["providers"]
+    assert saved["youtab"] == legacy
+    assert saved["youtab_inference"]["agent_key"] == token
+    assert "refresh_token" not in saved["youtab_inference"]
+    assert auth.get_local_inference_token_state()["agent_key"] == token
+    monkeypatch.setattr(runtime_provider, "resolve_youtab_runtime_credentials",
+                        lambda **_kw: pytest.fail("backend OAuth refresh was attempted"))
+    assert runtime_provider._resolve_profile_inference_runtime(
+        requested_provider="youtab", target_model="deepseek.v4_flash",
+    )["api_key"] == token
+
+    auth.persist_profile_inference_token(None)
+    saved = json.loads((root / "auth.json").read_text(encoding="utf-8"))["providers"]
+    assert saved == {"youtab": legacy}
+    assert auth.get_local_inference_token_state() is None
+    monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
+    with pytest.raises(auth.AuthError, match="Desktop inference requires"):
+        runtime_provider._resolve_profile_inference_runtime(
+            requested_provider="youtab", target_model="deepseek.v4_flash",
+        )
+
+
+def test_named_profile_inference_write_preserves_existing_cli_youtab_session(profile_env):
+    from youtab_agent_cli import auth
+
+    profile_file = profile_env["profile"] / "auth.json"
+    legacy = {"access_token": "named-account-token", "refresh_token": "named-refresh-token"}
+    _write(profile_file, _make_auth_store(providers={"youtab": legacy}))
+    token = _inference_jwt(int(time.time()) + 900)
+
+    auth.persist_profile_inference_token(token)
+    saved = json.loads(profile_file.read_text(encoding="utf-8"))["providers"]
+    assert saved["youtab"] == legacy
+    assert saved["youtab_inference"]["agent_key"] == token
+
+    auth.persist_profile_inference_token(None)
+    saved = json.loads(profile_file.read_text(encoding="utf-8"))["providers"]
+    assert saved["youtab"] == legacy
+    assert saved["youtab_inference"]["agent_key"] == ""
+
+
+def test_inference_only_profile_appears_in_model_picker(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, model_switch, models
+    import agent.models_dev as models_dev
+
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda: {})
+    monkeypatch.setattr(models, "cached_provider_model_ids", lambda provider, **_kw:
+                        ["deepseek.v4_flash"] if provider == "youtab" else [])
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+
+    rows = model_switch.list_authenticated_providers(current_provider="youtab")
+    youtab = [row for row in rows if row["slug"] == "youtab"]
+    assert len(youtab) == 1
+    assert youtab[0]["models"] == ["deepseek.v4_flash"]
+    auth.persist_profile_inference_token(None)
+    assert not any(row["slug"] == "youtab" for row in model_switch.list_authenticated_providers())
+
+
+def test_inference_store_lock_timeout_does_not_close_model_picker(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, model_switch
+    import agent.models_dev as models_dev
+
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda: {})
+    monkeypatch.setattr(auth, "get_local_inference_token_state", lambda: (_ for _ in ()).throw(
+        TimeoutError("Timed out waiting for auth store lock"),
+    ))
+    rows = model_switch.list_authenticated_providers()
+    assert not any(row["slug"] == "youtab" for row in rows)
+
+
+def test_root_cli_account_switch_invalidates_previous_desktop_inference(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, runtime_provider
+    import youtab_constants
+
+    root = profile_env["global"].parent / "root-scope"
+    root.mkdir()
+    monkeypatch.setattr(youtab_constants, "_get_platform_default_youtab_home", lambda: root)
+    monkeypatch.delenv("YOUTAB_AGENT_HOME")
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900, subject="account-a"))
+
+    with auth._auth_store_lock():
+        store = auth._load_auth_store()
+        auth._save_youtab_login_state(store, {
+            "access_token": "account-b-access", "refresh_token": "account-b-refresh",
+        })
+        auth._save_auth_store(store)
+
+    providers = json.loads((root / "auth.json").read_text(encoding="utf-8"))["providers"]
+    assert providers["youtab"]["access_token"] == "account-b-access"
+    assert "youtab_inference" not in providers
+    monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
+    with pytest.raises(auth.AuthError, match="Desktop inference requires"):
+        runtime_provider._resolve_profile_inference_runtime(
+            requested_provider="youtab", target_model="deepseek.v4_flash",
+        )
+
+
+def test_named_cli_same_account_login_keeps_desktop_inference(profile_env):
+    from youtab_agent_cli import auth
+
+    token = _inference_jwt(int(time.time()) + 900, subject="account-a")
+    auth.persist_profile_inference_token(token)
+    with auth._auth_store_lock():
+        store = auth._load_auth_store()
+        auth._save_youtab_login_state(store, {
+            "access_token": _inference_jwt(
+                int(time.time()) + 900, token_type="account_access", subject="account-a",
+            ),
+            "refresh_token": "new-cli-refresh",
+        })
+        auth._save_auth_store(store)
+
+    assert auth.get_local_inference_token_state()["agent_key"] == token
+
+
+def test_root_cli_refresh_keeps_current_desktop_inference(profile_env, monkeypatch):
+    from youtab_agent_cli import auth
+    import youtab_constants
+
+    root = profile_env["global"].parent / "root-scope"
+    root.mkdir()
+    monkeypatch.setattr(youtab_constants, "_get_platform_default_youtab_home", lambda: root)
+    monkeypatch.delenv("YOUTAB_AGENT_HOME")
+    token = _inference_jwt(int(time.time()) + 900)
+    auth.persist_profile_inference_token(token)
+
+    with auth._auth_store_lock():
+        store = auth._load_auth_store()
+        auth._save_provider_state(store, "youtab", {
+            "access_token": "refreshed-account-access", "refresh_token": "rotated-refresh",
+        })
+        auth._save_auth_store(store)
+
+    assert auth.get_local_inference_token_state()["agent_key"] == token
+
+
+def test_profile_inference_token_rejects_account_scope(profile_env):
+    from youtab_agent_cli import auth
+
+    with pytest.raises(auth.AuthError, match="Invalid inference credential"):
+        auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900, "account:read"))
+    with pytest.raises(auth.AuthError, match="type, audience, scope"):
+        auth.persist_profile_inference_token(_inference_jwt(
+            int(time.time()) + 900, token_type="account_access",
+        ))
+    with pytest.raises(auth.AuthError, match="type, audience, scope"):
+        auth.persist_profile_inference_token(_inference_jwt(
+            int(time.time()) + 900, audience="https://api.youtab.io/v1/account",
+        ))
+    assert not (profile_env["profile"] / "auth.json").exists()
+
+
+def test_preexisting_account_key_is_shadowed_not_promoted(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, runtime_provider
+
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "youtab": {"agent_key": _inference_jwt(
+            int(time.time()) + 900, token_type="account_access",
+        )},
+    }))
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "youtab": {"agent_key": _inference_jwt(int(time.time()) + 900)},
+    }))
+    monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
+    assert auth.get_local_inference_token_state() is None
+    with pytest.raises(auth.AuthError, match="Desktop inference requires"):
+        runtime_provider._resolve_profile_inference_runtime(
+            requested_provider="youtab", target_model="deepseek.v4_flash",
+        )
+
+
+def test_profile_model_catalog_uses_exact_gateway_ids_without_fallback(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models
+
+    token = _inference_jwt(int(time.time()) + 900)
+    auth.persist_profile_inference_token(token)
+    seen = []
+
+    def catalog(**kwargs):
+        seen.append(kwargs)
+        return ["deepseek.v4_flash", "anthropic/claude"]
+
+    monkeypatch.setattr(auth, "fetch_youtab_models", catalog)
+    assert models.provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    assert seen[0]["api_key"] == token
+    assert seen[0]["inference_base_url"] == "https://api.youtab.io/v1"
+    assert seen[0]["exact"] is True
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError()))
+    assert models.provider_model_ids("youtab") == []
+
+
+def test_short_lived_token_margin_never_exceeds_own_lifetime(profile_env):
+    from youtab_agent_cli import auth, runtime_provider
+
+    token = _inference_jwt(int(time.time()) + 12)
+    auth.persist_profile_inference_token(token)
+    state = auth.get_local_inference_token_state()
+    assert 0 <= auth.inference_token_safety_seconds(state) < state["agent_key_expires_in"]
+    assert runtime_provider._resolve_profile_inference_runtime(
+        requested_provider="youtab", target_model="deepseek.v4_flash",
+    )["api_key"] == token
+
+
+def test_desktop_without_profile_token_never_uses_global_youtab(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, runtime_provider
+    from agent import auxiliary_client
+    from youtab_agent_cli.proxy.adapters.youtab_portal import YoutabPortalAdapter
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "youtab": {"access_token": "global-account-token"},
+    }))
+    monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
+    monkeypatch.setattr(runtime_provider, "resolve_youtab_runtime_credentials",
+                        lambda **_kw: pytest.fail("legacy refresh was attempted"))
+    assert models.provider_model_ids("youtab") == []
+    assert auth.get_youtab_auth_status_local()["logged_in"] is False
+    with pytest.raises(auth.AuthError, match="profile Gateway credential"):
+        runtime_provider._resolve_profile_inference_runtime(
+            requested_provider="youtab", target_model="deepseek.v4_flash",
+        )
+    monkeypatch.setattr(auxiliary_client, "_resolve_youtab_pool_runtime_api",
+                        lambda **_kw: pytest.fail("Desktop borrowed a pooled credential"))
+    monkeypatch.setattr(auxiliary_client, "_read_youtab_auth",
+                        lambda: pytest.fail("Desktop borrowed a global credential"))
+    assert auxiliary_client._resolve_youtab_runtime_api() is None
+    assert auxiliary_client._try_youtab() == (None, None)
+    proxy = YoutabPortalAdapter()
+    assert not proxy.is_authenticated()
+    assert proxy.allowed_paths == frozenset({"/chat/completions", "/models"})
+    with pytest.raises(RuntimeError, match="sign-in is required"):
+        proxy.get_credential()
+
+
+def test_profile_gateway_catalog_uses_existing_cache_during_outage(profile_env, monkeypatch):
+    from agent import auxiliary_client
+    from agent import youtab_rate_guard
+    from youtab_agent_cli import auth, models
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    calls = []
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: calls.append(1) or ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == ["deepseek.v4_flash"]
+    assert models.provider_model_ids("youtab", force_refresh=True) == []
+    client = object()
+    monkeypatch.setattr(youtab_rate_guard, "youtab_rate_limit_remaining", lambda: None)
+    monkeypatch.setattr(auxiliary_client, "_read_main_model", lambda: "deepseek.v4_flash")
+    monkeypatch.setattr(auxiliary_client, "_create_openai_client", lambda **_kwargs: client)
+    assert auxiliary_client._try_youtab() == (client, "deepseek.v4_flash")
+    assert len(calls) == 1
+
+
+def test_gateway_authority_switch_cannot_validate_stale_profile_models(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "https://staging.example.test")
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: pytest.fail("foreign token sent to Gateway"))
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
+    assert models.cached_provider_model_ids("youtab") == []
+    assert models.validate_requested_model("deepseek.v4_flash", "youtab")["accepted"] is False
+
+
+def test_profile_auxiliary_uses_configured_gateway_and_rejects_mismatch(profile_env, monkeypatch):
+    from agent import auxiliary_client
+    from youtab_agent_cli import auth
+
+    production = _inference_jwt(int(time.time()) + 900)
+    auth.persist_profile_inference_token(production)
+    assert auxiliary_client._resolve_youtab_runtime_api() == (production, "https://api.youtab.io/v1")
+
+    staging = "https://staging.example.test"
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", staging)
+    with pytest.raises(auth.AuthError, match="does not match"):
+        auxiliary_client._resolve_youtab_runtime_api()
+    auth.persist_profile_inference_token(None)
+    staged = _inference_jwt(int(time.time()) + 900, issuer=staging, audience=f"{staging}/v1/inference")
+    auth.persist_profile_inference_token(staged)
+    assert auxiliary_client._resolve_youtab_runtime_api() == (staged, f"{staging}/v1")
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "http://evil.example")
+    with pytest.raises(auth.AuthError, match="Invalid configured"):
+        auxiliary_client._resolve_youtab_runtime_api()
+
+
+def test_profile_catalog_cache_survives_token_rotation_but_not_account_switch(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1200))
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == ["deepseek.v4_flash"]
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1200, subject="user-b"))
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
+
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1200))
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == ["deepseek.v4_flash"]
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1200, workspace="workspace-b"))
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
+
+
+def test_profile_gateway_catalog_empty_success_invalidates_cached_ids(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, tools_config, web_server, youtab_subscription
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+
+    # A successful empty catalog means the Engine is no longer admitted.
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: [])
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
+    assert models.cached_provider_model_ids("youtab") == []
+
+    monkeypatch.setattr(web_server, "load_config", lambda: {"model": {}})
+    monkeypatch.setattr(web_server, "save_config", lambda _value: pytest.fail("stale Engine saved"))
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda *_a, **_kw: [])
+    monkeypatch.setattr(youtab_subscription, "apply_youtab_managed_defaults", lambda *_a, **_kw: set())
+    with pytest.raises(Exception) as refused:
+        web_server._apply_model_assignment_sync("main", "youtab", "deepseek.v4_flash", "", "")
+    assert refused.value.status_code == 422
+
+
+def test_profile_gateway_catalog_rejected_request_invalidates_cached_ids(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(
+        auth.AuthError("forbidden", provider="youtab", code="models_fetch_rejected"),
+    ))
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
+    assert models.cached_provider_model_ids("youtab") == []
+
+
+@pytest.mark.parametrize("status, code", [(401, "models_fetch_rejected"),
+                                          (403, "models_fetch_rejected"),
+                                          (500, "models_fetch_failed")])
+def test_gateway_model_fetch_distinguishes_rejection_from_outage(monkeypatch, status, code):
+    from youtab_agent_cli import auth
+
+    class Client:
+        def __init__(self, **_kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def get(self, *_args, **_kwargs):
+            return SimpleNamespace(status_code=status, json=lambda: {})
+
+    monkeypatch.setattr(auth.httpx, "Client", Client)
+    with pytest.raises(auth.AuthError) as rejected:
+        auth.fetch_youtab_models(inference_base_url="https://api.youtab.io/v1", api_key="redacted")
+    assert rejected.value.code == code
+
+
+def test_profile_proxy_uses_gateway_token_without_refresh(profile_env, monkeypatch):
+    from youtab_agent_cli import auth
+    from youtab_agent_cli.proxy.adapters import youtab_portal
+
+    token = _inference_jwt(int(time.time()) + 900)
+    auth.persist_profile_inference_token(token)
+    monkeypatch.setattr(youtab_portal, "resolve_youtab_runtime_credentials",
+                        lambda **_kw: pytest.fail("backend OAuth refresh was attempted"))
+    proxy = youtab_portal.YoutabPortalAdapter()
+    assert proxy.allowed_paths == frozenset({"/chat/completions", "/models"})
+    credential = proxy.get_credential()
+    assert credential.bearer == token
+    assert credential.base_url == "https://api.youtab.io/v1"
+    assert proxy.get_retry_credential(failed_credential=credential, status_code=401) is None
+
+
+def test_gateway_engine_id_is_saved_without_alias_or_account_key(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, web_server
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(models, "cached_provider_model_ids", lambda *_a, **_kw: ["deepseek.v4_flash"])
+    monkeypatch.setattr(web_server, "_normalize_main_model_assignment",
+                        lambda *_a: pytest.fail("Engine ID was normalized"))
+    monkeypatch.setattr(web_server, "load_config", lambda: {
+        "model": {"provider": "youtab", "default": "old", "api_key": "old-account-key",
+                  "base_url": "https://inference-api.youtab.io/v1"},
+    })
+    saved = []
+    monkeypatch.setattr(web_server, "save_config", saved.append)
+    from youtab_agent_cli import tools_config, youtab_subscription
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda *_a, **_kw: [])
+    monkeypatch.setattr(youtab_subscription, "apply_youtab_managed_defaults",
+                        lambda *_a, **_kw: set())
+
+    result = web_server._apply_model_assignment_sync(
+        "main", "youtab", "deepseek.v4_flash", "", "",
+    )
+    assert result["model"] == "deepseek.v4_flash"
+    assert saved[0]["model"]["default"] == "deepseek.v4_flash"
+    assert saved[0]["model"]["base_url"] == "https://api.youtab.io/v1"
+    assert "api_key" not in saved[0]["model"]
+    with pytest.raises(Exception) as refused:
+        web_server._apply_model_assignment_sync("main", "youtab", "unknown.engine", "", "")
+    assert refused.value.status_code == 422
+    assert len(saved) == 1
+    from youtab_agent_cli.providers import youtab_api_mode
+    with pytest.raises(ValueError, match="/v1/messages"):
+        youtab_api_mode("anthropic.claude")
+
+
+def test_gateway_assignment_keeps_same_credential_catalog_during_outage(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, tools_config, web_server, youtab_subscription
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    monkeypatch.setattr(web_server, "load_config", lambda: {"model": {}})
+    saved = []
+    monkeypatch.setattr(web_server, "save_config", saved.append)
+    monkeypatch.setattr(tools_config, "_get_platform_tools", lambda *_a, **_kw: [])
+    monkeypatch.setattr(youtab_subscription, "apply_youtab_managed_defaults", lambda *_a, **_kw: set())
+
+    result = web_server._apply_model_assignment_sync("main", "youtab", "deepseek.v4_flash", "", "")
+    assert result["model"] == "deepseek.v4_flash"
+    assert len(saved) == 1
+    with pytest.raises(Exception) as unknown:
+        web_server._apply_model_assignment_sync("main", "youtab", "unknown.engine", "", "")
+    assert unknown.value.status_code == 422
+    assert len(saved) == 1
+
+    # A different account cannot inherit the prior account's cached Engine IDs.
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1800, subject="user-b"))
+    with pytest.raises(Exception) as other_credential:
+        web_server._apply_model_assignment_sync("main", "youtab", "deepseek.v4_flash", "", "")
+    assert other_credential.value.status_code == 422
+    assert len(saved) == 1
 
 
 # ---------------------------------------------------------------------------

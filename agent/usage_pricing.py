@@ -7,13 +7,13 @@ from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
-from utils import base_url_host_matches
+from utils import base_url_host_matches, base_url_hostname
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
 _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
-_YOUTAB_DEFAULT_BASE_URL = "https://inference-api.youtab.io/v1"
+_YOUTAB_DEFAULT_BASE_URL = "https://api.youtab.io/v1"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
 CostSource = Literal[
@@ -1005,7 +1005,7 @@ def resolve_billing_route(
         return BillingRoute(provider="openai-codex", model=model, base_url=base_url or "", billing_mode="subscription_included")
     if provider_name == "openrouter" or base_url_host_matches(base_url or "", "openrouter.ai"):
         return BillingRoute(provider="openrouter", model=model, base_url=base_url or "", billing_mode="official_models_api")
-    if provider_name == "youtab" or base_url_host_matches(base_url or "", "inference-api.youtab.io"):
+    if provider_name == "youtab" or base_url_hostname(base_url or "") in {"api.youtab.io", "inference-api.youtab.io"}:
         return BillingRoute(provider="youtab", model=model, base_url=base_url or _YOUTAB_DEFAULT_BASE_URL, billing_mode="official_models_api")
     if provider_name == "anthropic":
         return BillingRoute(provider="anthropic", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")

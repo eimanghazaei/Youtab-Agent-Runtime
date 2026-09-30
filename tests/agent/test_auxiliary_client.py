@@ -1097,6 +1097,85 @@ class TestVisionClientFallback:
 
 class TestAuxiliaryPoolAwareness:
 
+    @pytest.mark.parametrize("base_url", [
+        "https://inference-api.youtab.io/v1",
+        "https://api.youtab.io/v1",
+    ])
+    def test_youtab_host_recovery_preserves_legacy_and_desktop_boundary(
+        self, base_url, monkeypatch,
+    ):
+        from agent.auxiliary_client import (
+            _auth_refresh_provider_for_route,
+            _recoverable_pool_provider,
+        )
+        from youtab_agent_cli import auth
+
+        monkeypatch.setattr(auth, "get_local_inference_token_state", lambda: None)
+        client = SimpleNamespace(base_url=base_url)
+        monkeypatch.delenv("YOUTAB_AGENT_DESKTOP", raising=False)
+        assert _recoverable_pool_provider("auto", client) == "youtab"
+        assert _auth_refresh_provider_for_route("auto", base_url) == "youtab"
+
+        monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
+        assert _recoverable_pool_provider("auto", client) is None
+        assert _recoverable_pool_provider("youtab", client) is None
+        assert _auth_refresh_provider_for_route("auto", base_url) == ""
+        assert _auth_refresh_provider_for_route("youtab", base_url) == ""
+
+    def test_youtab_lookalike_host_cannot_select_pool(self, monkeypatch):
+        from agent.auxiliary_client import (
+            _auth_refresh_provider_for_route,
+            _recoverable_pool_provider,
+        )
+
+        monkeypatch.delenv("YOUTAB_AGENT_DESKTOP", raising=False)
+        base_url = "https://api.youtab.io.attacker.test/v1"
+        assert _recoverable_pool_provider("auto", SimpleNamespace(base_url=base_url)) is None
+        assert _auth_refresh_provider_for_route("auto", base_url) == "auto"
+
+    def test_youtab_pool_refresh_uses_configured_legacy_window(self, monkeypatch):
+        from agent.auxiliary_client import _resolve_youtab_pool_runtime_api
+
+        near_expiry = _jwt_with_claims({
+            "scope": "inference:invoke", "exp": int(time.time() + 1200),
+        })
+        refreshed = _jwt_with_claims({
+            "scope": "inference:invoke", "exp": int(time.time() + 3600),
+        })
+
+        class _Entry:
+            def __init__(self, token):
+                self.agent_key = token
+                self.agent_key_expires_at = "2099-01-01T00:00:00+00:00"
+                self.scope = "inference:invoke"
+                self.inference_base_url = "https://inference-api.youtab.io/v1"
+
+        class _Pool:
+            def __init__(self):
+                self.refreshed = False
+
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry(near_expiry)
+
+            def try_refresh_current(self):
+                self.refreshed = True
+                return _Entry(refreshed)
+
+        pool = _Pool()
+        monkeypatch.delenv("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", raising=False)
+        with patch("agent.auxiliary_client.load_pool", return_value=pool):
+            assert _resolve_youtab_pool_runtime_api()[0] == refreshed
+        assert pool.refreshed is True
+
+        pool = _Pool()
+        monkeypatch.setenv("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", "600")
+        with patch("agent.auxiliary_client.load_pool", return_value=pool):
+            assert _resolve_youtab_pool_runtime_api()[0] == near_expiry
+        assert pool.refreshed is False
+
     def test_try_youtab_refreshes_stale_pool_entry(self):
         stale_token = _jwt_with_claims({
             "scope": "inference:invoke",

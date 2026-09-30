@@ -550,19 +550,21 @@ def _is_youtab_portal_endpoint(base_url: str | None) -> bool:
     """Return True for Youtab Portal's Anthropic Messages route.
 
     Portal serves its ``anthropic/*`` catalog natively at
-    ``https://inference-api.youtab.io/v1/messages``.  Portal-specific
-    behaviours key off this: Bearer JWT auth, verbatim catalog model ids,
+    ``https://api.youtab.io/v1/messages`` (and the legacy inference host).
+    Portal-specific behaviours key off this: Bearer JWT auth, verbatim catalog model ids,
     and native thinking-signature replay.
 
     Trusted hosts only:
 
-    1. Prod hostname ``inference-api.youtab.io``
+    1. Prod hostnames ``api.youtab.io`` and ``inference-api.youtab.io``
     2. The operator-set ``YOUTAB_INFERENCE_BASE_URL`` hostname (staging/preview)
 
     Lookalikes such as ``inference-api.youtab.io.attacker.test`` are
     rejected (hostname match, not substring).
     """
-    if base_url_host_matches(base_url or "", "inference-api.youtab.io"):
+    if any(base_url_host_matches(base_url or "", host) for host in (
+        "api.youtab.io", "inference-api.youtab.io",
+    )):
         return True
     try:
         from youtab_agent_cli.auth import _youtab_inference_env_override

@@ -127,11 +127,27 @@ class TestOpenRouterProfile:
 
 
 class TestYoutabProfile:
-    def test_tags(self):
-        from agent.portal_tags import youtab_portal_tags
+    def test_gateway_chat_omits_unsupported_portal_fields(self):
         p = get_provider_profile("youtab")
-        body = p.build_extra_body()
-        assert body["tags"] == youtab_portal_tags()
+        assert p.build_extra_body(session_id="session") == {}
+        assert p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            supports_reasoning=True,
+        ) == ({}, {})
+
+    def test_configured_gateway_uses_governed_wire_without_legacy_fields(self, monkeypatch):
+        p = get_provider_profile("youtab")
+        staging = "https://staging.example.test/v1"
+        monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "https://staging.example.test")
+        assert p.build_extra_body(session_id="session") == {}
+        assert p.build_extra_body(session_id="session", base_url=staging) == {}
+        assert p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            supports_reasoning=True, base_url=staging,
+        ) == ({}, {})
+        for other in ("https://inference-api.youtab.io/v1", "https://child.staging.example.test/v1"):
+            assert "tags" in p.build_extra_body(session_id="session", base_url=other)
+
 
 
 
@@ -139,7 +155,7 @@ class TestYoutabProfile:
 
     def test_auth_type(self):
         p = get_provider_profile("youtab")
-        assert p.auth_type == "oauth_device_code"
+        assert p.auth_type == "oauth_external"
 
 
 

@@ -772,7 +772,8 @@ auxiliary_is_youtab: bool = False
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3.6-flash"
 _YOUTAB_MODEL = "google/gemini-3.6-flash"
-_YOUTAB_DEFAULT_BASE_URL = "https://inference-api.youtab.io/v1"
+_YOUTAB_DEFAULT_BASE_URL = "https://api.youtab.io/v1"
+_YOUTAB_INFERENCE_HOSTS = ("api.youtab.io", "inference-api.youtab.io")
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_youtab_home() / "auth.json"
 
@@ -949,10 +950,16 @@ def _is_anthropic_compatible_host(url: str) -> bool:
 
 
 def _youtab_min_key_ttl_seconds() -> int:
+    """Preserve the configurable refresh window for legacy pooled credentials."""
     try:
         return max(60, int(os.getenv("YOUTAB_AGENT_YOUTAB_MIN_KEY_TTL_SECONDS", "1800")))
     except (TypeError, ValueError):
         return 1800
+
+
+def _is_youtab_inference_host(base_url: str) -> bool:
+    """Recognize current and legacy Youtab inference endpoints by hostname."""
+    return any(base_url_host_matches(base_url, host) for host in _YOUTAB_INFERENCE_HOSTS)
 
 
 # ── Codex Responses → chat.completions adapter ─────────────────────────────
@@ -1913,6 +1920,19 @@ def _resolve_youtab_runtime_api(*, force_refresh: bool = False) -> Optional[tupl
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
     """
+    from youtab_agent_cli.auth import (
+        _agent_key_is_usable, get_local_inference_token_state,
+        inference_token_safety_seconds, profile_inference_base_url,
+    )
+    local = get_local_inference_token_state()
+    if local is not None:
+        if force_refresh or not _agent_key_is_usable(local, inference_token_safety_seconds(local)):
+            return None  # Desktop owns refresh; never use pooled/global credentials.
+        return local["agent_key"], profile_inference_base_url(local)
+
+    if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+        return None
+
     pooled = _resolve_youtab_pool_runtime_api(force_refresh=force_refresh)
     if pooled is not None:
         return pooled
@@ -2203,7 +2223,9 @@ def _try_youtab(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     except Exception:
         pass
 
-    youtab = _read_youtab_auth()
+    from youtab_agent_cli.auth import get_local_inference_token_state
+    local_inference = get_local_inference_token_state()
+    youtab = None if local_inference is not None or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" else _read_youtab_auth()
     runtime = _resolve_youtab_runtime_api(force_refresh=False)
     if runtime is None and not youtab:
         logger.warning(
@@ -2228,26 +2250,32 @@ def _try_youtab(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
     # _YOUTAB_MODEL (google/gemini-3-flash-preview) when the Portal is unreachable
     # or returns a null recommendation for this task type.
     model = _YOUTAB_MODEL
-    try:
-        from youtab_agent_cli.models import get_youtab_recommended_aux_model
-        recommended = get_youtab_recommended_aux_model(vision=vision)
-        if recommended:
-            model = recommended
+    if local_inference is not None:
+        from youtab_agent_cli.models import cached_provider_model_ids
+        model = _read_main_model()
+        if runtime is None or model not in cached_provider_model_ids("youtab"):
+            return None, None
+    else:
+        try:
+            from youtab_agent_cli.models import get_youtab_recommended_aux_model
+            recommended = get_youtab_recommended_aux_model(vision=vision)
+            if recommended:
+                model = recommended
+                logger.debug(
+                    "Auxiliary/%s: using Portal-recommended model %s",
+                    "vision" if vision else "text", model,
+                )
+            else:
+                logger.debug(
+                    "Auxiliary/%s: no Portal recommendation, falling back to %s",
+                    "vision" if vision else "text", model,
+                )
+        except Exception as exc:
             logger.debug(
-                "Auxiliary/%s: using Portal-recommended model %s",
-                "vision" if vision else "text", model,
+                "Auxiliary/%s: recommended-models lookup failed (%s); "
+                "falling back to %s",
+                "vision" if vision else "text", exc, model,
             )
-        else:
-            logger.debug(
-                "Auxiliary/%s: no Portal recommendation, falling back to %s",
-                "vision" if vision else "text", model,
-            )
-    except Exception as exc:
-        logger.debug(
-            "Auxiliary/%s: recommended-models lookup failed (%s); "
-            "falling back to %s",
-            "vision" if vision else "text", exc, model,
-        )
 
     if runtime is not None:
         api_key, base_url = runtime
@@ -2291,6 +2319,9 @@ def _refresh_youtab_recommended_model(
     still recommends the exact model that just 404'd and the default also
     matches it) — callers should then let the original error propagate.
     """
+    from youtab_agent_cli.auth import get_local_inference_token_state
+    if get_local_inference_token_state() is not None:
+        return None  # Exact Gateway Engine IDs may not be silently replaced.
     stale = (stale_model or "").strip().lower()
     fresh: Optional[str] = None
     try:
@@ -3826,6 +3857,10 @@ def _recoverable_pool_provider(
 ) -> Optional[str]:
     """Infer which provider pool can recover the current auxiliary client."""
     normalized = _normalize_aux_provider(resolved_provider)
+    if normalized == "youtab":
+        from youtab_agent_cli.auth import get_local_inference_token_state
+        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" or get_local_inference_token_state() is not None:
+            return None  # Desktop-owned inference tokens cannot enter the pool.
     if normalized not in {"", "auto", "custom"}:
         return normalized
     base = str(getattr(client, "base_url", "") or "")
@@ -3833,7 +3868,10 @@ def _recoverable_pool_provider(
         return "openai-codex"
     if base_url_host_matches(base, "openrouter.ai"):
         return "openrouter"
-    if base_url_host_matches(base, "inference-api.youtab.io"):
+    if _is_youtab_inference_host(base):
+        from youtab_agent_cli.auth import get_local_inference_token_state
+        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" or get_local_inference_token_state() is not None:
+            return None
         return "youtab"
     if base_url_host_matches(base, "api.anthropic.com"):
         return "anthropic"
@@ -4158,6 +4196,10 @@ def _auth_refresh_provider_for_route(
     Copilot/Codex/Anthropic/Youtab routes too. (#20832)
     """
     normalized = _normalize_aux_provider(resolved_provider)
+    if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" and (
+        normalized == "youtab" or _is_youtab_inference_host(client_base_url)
+    ):
+        return ""
     if normalized and normalized != "auto":
         return normalized
     if base_url_host_matches(client_base_url, "api.githubcopilot.com"):
@@ -4166,7 +4208,7 @@ def _auth_refresh_provider_for_route(
         return "openai-codex"
     if base_url_host_matches(client_base_url, "api.anthropic.com"):
         return "anthropic"
-    if base_url_host_matches(client_base_url, "inference-api.youtab.io"):
+    if _is_youtab_inference_host(client_base_url):
         return "youtab"
     return normalized
 
@@ -8264,7 +8306,7 @@ def call_llm(
         # known-good default). Only applies to Youtab-routed calls.
         _heal_is_youtab = (
             resolved_provider == "youtab"
-            or base_url_host_matches(_base_info, "inference-api.youtab.io")
+            or _is_youtab_inference_host(_base_info)
         )
         if _is_model_not_found_error(first_err) and _heal_is_youtab:
             healed_model = _refresh_youtab_recommended_model(
@@ -8290,7 +8332,7 @@ def call_llm(
         # ── Youtab auth refresh parity with main agent ──────────────────
         client_is_youtab = (
             resolved_provider == "youtab"
-            or base_url_host_matches(_base_info, "inference-api.youtab.io")
+            or _is_youtab_inference_host(_base_info)
         )
         if (
             _is_payment_error(first_err)
@@ -8907,7 +8949,7 @@ async def async_call_llm(
         # fresh Portal fetch and retry once with the current recommendation.
         _heal_is_youtab = (
             resolved_provider == "youtab"
-            or base_url_host_matches(_client_base, "inference-api.youtab.io")
+            or _is_youtab_inference_host(_client_base)
         )
         if _is_model_not_found_error(first_err) and _heal_is_youtab:
             healed_model = _refresh_youtab_recommended_model(
@@ -8933,7 +8975,7 @@ async def async_call_llm(
         # ── Youtab auth refresh parity with main agent ──────────────────
         client_is_youtab = (
             resolved_provider == "youtab"
-            or base_url_host_matches(_client_base, "inference-api.youtab.io")
+            or _is_youtab_inference_host(_client_base)
         )
         if (
             _is_payment_error(first_err)

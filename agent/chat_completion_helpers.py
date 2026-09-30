@@ -212,7 +212,8 @@ def _merge_youtab_portal_messages_extra_body(agent, anthropic_kwargs: dict) -> d
         if youtab_profile is not None:
             anthropic_kwargs.setdefault("extra_body", {}).update(
                 youtab_profile.build_extra_body(
-                    session_id=getattr(agent, "session_id", None)
+                    session_id=getattr(agent, "session_id", None),
+                    base_url=getattr(agent, "_anthropic_base_url", None),
                 )
             )
     except Exception as exc:  # noqa: BLE001 — never block a turn on tagging

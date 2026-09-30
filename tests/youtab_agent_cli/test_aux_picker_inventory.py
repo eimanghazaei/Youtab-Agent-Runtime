@@ -53,7 +53,7 @@ CONFIG = {
 def configured_home(tmp_path, monkeypatch):
     """A YOUTAB_AGENT_HOME with one ``providers:`` entry and one legacy
     ``custom_providers:`` entry, both credentialled via env."""
-    home = tmp_path / ".youtab-agent-runtime"
+    home = tmp_path / "isolated-youtab-home"
     home.mkdir()
     (home / "config.yaml").write_text(yaml.safe_dump(CONFIG), encoding="utf-8")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth } from '@/store/onboarding'
 import type { EnvVarInfo, OAuthProvider } from '@/types/youtab'
-import { disconnectOAuthProvider, listOAuthProviders } from '@/youtab'
+import { disconnectOAuthProvider, getApiRequestProfile, listOAuthProviders } from '@/youtab'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
@@ -415,7 +415,17 @@ export function ProvidersSettings({
     setDisconnecting(provider.id)
 
     try {
-      await disconnectOAuthProvider(provider.id)
+      if (provider.flow === 'native_pkce') {
+        if (!provider.native_base_url || !window.youtabDesktop?.oauthLogoutConnectionConfig) {
+          throw new Error('Native provider logout is unavailable')
+        }
+        await window.youtabDesktop.oauthLogoutConnectionConfig(provider.native_base_url, {
+          nativeCapability: true,
+          profile: getApiRequestProfile()
+        })
+      } else {
+        await disconnectOAuthProvider(provider.id)
+      }
       notify({
         durationMs: 3_000,
         kind: 'success',

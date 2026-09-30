@@ -25,6 +25,18 @@ def _call(method: str, params: dict) -> dict:
     return envelope["result"]
 
 
+def test_native_profile_billing_is_readable_but_remote_spending_unavailable(monkeypatch):
+    monkeypatch.setattr(nb, "native_remote_spending_unavailable", lambda: True)
+    monkeypatch.setattr(bv, "build_billing_state", lambda: pytest.fail("legacy billing must not be queried"))
+    for method in ("billing.state", "subscription.state"):
+        result = _call(method, {})
+        assert result == {"ok": True, "logged_in": False, "error": "unsupported_connection"}
+    result = _call("billing.step_up", {})
+    assert result["ok"] is False
+    assert result["error"] == "unsupported_connection"
+    assert result["granted"] is False
+
+
 # ---------------------------------------------------------------------------
 # billing.state
 # ---------------------------------------------------------------------------

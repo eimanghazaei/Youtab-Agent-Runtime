@@ -69,7 +69,9 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  requireNativePortalAuthority,
   resolveAuthMode,
+  resolvePortalBaseUrl,
   resolveProfileBackendRoute,
   resolveTestWsUrl,
   savedProfileSsh,
@@ -143,11 +145,24 @@ import {
   resolveReadinessProbeAuth
 } from './native-auth-decisions'
 import {
+  clearGatewaySessionCredentials,
+  completePendingNativeLogout,
+  cookieFallbackAfterNativeError,
+  createNativeRefreshCoordinator,
+  createNativeRefreshRetryCounter,
+  createNativeSessionLifecycle,
+  inferenceRefreshDelayMs,
+  nativeHttpResponseError,
+  nativeProfileMutationFromApiResult,
+  nativeProfileSessionKeys,
   nativeRefreshUrl,
+  nativeResumeIpcResult,
   type NativeTokenSet,
   parseTokenResponse,
   resolveLoginStrategy,
-  tokenNeedsRefresh
+  resolveNativeProviderProfile,
+  revalidateNativeSessionsBeforeResume,
+  shouldRetryNativeResume
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
@@ -4217,7 +4232,7 @@ function fetchJson(url, token, options: any = {}) {
           const text = Buffer.concat(chunks).toString('utf8')
 
           if ((res.statusCode || 500) >= 400) {
-            reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
+            reject(nativeHttpResponseError(res.statusCode || 500, text || res.statusMessage || ''))
 
             return
           }
@@ -5061,7 +5076,7 @@ async function gatewayAuthProviders(baseUrl) {
 // answers before the SPA catch-all). `probeIsCredentialed` tells
 // waitForYoutabReady how to read a 401 — rejected session vs gated route.
 async function buildReadinessHealthProbe(baseUrl, authMode, token) {
-  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl).catch(() => null) : null
+  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl).catch(cookieFallbackAfterNativeError) : null
   const probeAuth = resolveReadinessProbeAuth(authMode, nativeAt, token)
 
   if (probeAuth.kind === 'bearer') {
@@ -5177,18 +5192,65 @@ function sendOpenFolderRequested() {
 // Tell the renderer the machine just woke. Sleep silently drops the
 // renderer's WebSocket to the local backend; the renderer reconnects on this
 // signal so the chat composer doesn't stay stuck on "Starting Youtab...".
+let powerResumeInFlight: Promise<void> | null = null
+let powerResumeRetry: NodeJS.Timeout | null = null
+let powerResumeRequiredSessions: string[] | null = null
+let powerResumeRetryCount = 0
+function notifyPowerResumeRenderer(authChanged = false, nativeRecovery?: { kind: 'auth' | 'transport'; baseUrl: string; profiles?: string[] }, authBaseUrl?: string) {
+  const windows = authChanged ? BrowserWindow.getAllWindows() : mainWindow ? [mainWindow] : []
+  for (const window of windows) {
+    if (window.isDestroyed()) { continue }
+    const { webContents } = window
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('youtab:power-resume', authChanged ? { authChanged: true, authBaseUrl } : nativeRecovery ? { nativeRecovery } : undefined)
+    }
+  }
+}
 function sendPowerResume() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    return
+  if (powerResumeInFlight) { return }
+  powerResumeRequiredSessions ??= _nativeProfileSessionKeys()
+  if (powerResumeRetry) {
+    clearTimeout(powerResumeRetry)
+    powerResumeRetry = null
   }
+  powerResumeInFlight = revalidateNativeSessionsBeforeResume(
+    powerResumeRequiredSessions,
+    _loadNativeTokens,
+    baseUrl => ensureNativeAccessToken(baseUrl),
+    () => {
+      powerResumeRequiredSessions = null
+      powerResumeRetryCount = 0
+      notifyPowerResumeRenderer()
+    }
+  ).catch(() => {
+    // Stay disconnected and require reauthentication for unreadable state.
+    powerResumeRetryCount++
+    if (shouldRetryNativeResume(powerResumeRequiredSessions || [], _loadNativeTokens, powerResumeRetryCount)) {
+      powerResumeRetry = setTimeout(sendPowerResume, 30_000)
+    } else {
+      // Renderer revalidation stays gated, but must get a wake signal so its
+      // bounded reconnect path can surface the Settings recovery affordance.
+      notifyPowerResumeRenderer()
+    }
+  }).finally(() => { powerResumeInFlight = null })
+}
 
-  const { webContents } = mainWindow
-
-  if (!webContents || webContents.isDestroyed()) {
-    return
+function releasePowerResumeAfterAuthChange(baseUrl: string) {
+  powerResumeRequiredSessions = null
+  powerResumeRetryCount = 0
+  if (powerResumeRetry) { clearTimeout(powerResumeRetry) }
+  powerResumeRetry = null
+  if (powerResumeInFlight) {
+    void powerResumeInFlight.finally(() => {
+      if (powerResumeRetry) { clearTimeout(powerResumeRetry) }
+      powerResumeRetry = null
+      powerResumeRequiredSessions = null
+      powerResumeRetryCount = 0
+      notifyPowerResumeRenderer(true, undefined, baseUrl)
+    }).catch(() => undefined)
+  } else {
+    notifyPowerResumeRenderer(true, undefined, baseUrl)
   }
-
-  webContents.send('youtab:power-resume')
 }
 
 let powerResumeRegistered = false
@@ -5884,7 +5946,7 @@ async function hasLiveOauthSession(baseUrl) {
   return readLive()
 }
 
-async function clearOauthSession(baseUrl) {
+async function clearOauthSession(baseUrl, gatewayOnly = false) {
   const sess = getOauthSession()
 
   if (!sess) {
@@ -5894,7 +5956,7 @@ async function clearOauthSession(baseUrl) {
   try {
     const cookies = await sess.cookies.get(baseUrl ? { url: baseUrl } : {})
     await Promise.all(
-      cookies.map(c => {
+      cookies.filter(c => !gatewayOnly || cookiesHaveLiveSession([c])).map(c => {
         const scheme = c.secure ? 'https' : 'http'
         const cookieUrl = `${scheme}://${c.domain.replace(/^\./, '')}${c.path || '/'}`
 
@@ -6187,6 +6249,8 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // In-memory cache of decrypted native tokens, keyed by normalized base URL.
 // Backed by the encrypted on-disk store so it survives restarts.
 const _nativeTokens = new Map<string, NativeTokenSet>()
+const _nativeRefreshTimers = new Map<string, NodeJS.Timeout>()
+const _nativeRefreshRetries = createNativeRefreshRetryCounter()
 
 function _nativeTokenStorePath() {
   // Co-located with the connection config under userData; one JSON file mapping
@@ -6205,6 +6269,20 @@ function _readNativeTokenStore(): Record<string, any> {
   }
 }
 
+function _nativeSavedSessionState(baseUrl: string): 'absent' | 'readable' | 'unreadable' {
+  let store: Record<string, any>
+  try {
+    const parsed = JSON.parse(fs.readFileSync(_nativeTokenStorePath(), 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) { return 'unreadable' }
+    store = parsed
+  } catch (error: any) {
+    if (error?.code !== 'ENOENT') { return 'unreadable' }
+    return _nativeTokens.has(baseUrl) ? 'readable' : 'absent'
+  }
+  if (!Object.prototype.hasOwnProperty.call(store, baseUrl) && !_nativeTokens.has(baseUrl)) { return 'absent' }
+  return _loadNativeTokens(baseUrl) ? 'readable' : 'unreadable'
+}
+
 function _persistNativeTokens(baseUrl: string, tokens: NativeTokenSet | null) {
   const store = _readNativeTokenStore()
 
@@ -6217,12 +6295,10 @@ function _persistNativeTokens(baseUrl: string, tokens: NativeTokenSet | null) {
     delete store[baseUrl]
   }
 
-  try {
-    fs.mkdirSync(path.dirname(_nativeTokenStorePath()), { recursive: true })
-    fs.writeFileSync(_nativeTokenStorePath(), JSON.stringify(store), { mode: 0o600 })
-  } catch (error) {
-    rememberLog(`[native-oauth] failed to persist tokens: ${(error as Error).message}`)
-  }
+  fs.mkdirSync(path.dirname(_nativeTokenStorePath()), { recursive: true })
+  const temporary = `${_nativeTokenStorePath()}.tmp`
+  fs.writeFileSync(temporary, JSON.stringify(store), { mode: 0o600 })
+  fs.renameSync(temporary, _nativeTokenStorePath())
 }
 
 function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
@@ -6248,6 +6324,7 @@ function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
 
     const tokens = parseTokenResponse(JSON.parse(plaintext))
     _nativeTokens.set(baseUrl, tokens)
+    _scheduleNativeRefresh(baseUrl, tokens)
 
     return tokens
   } catch {
@@ -6255,14 +6332,114 @@ function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
   }
 }
 
+function _nativeProfileSessionKeys(): string[] {
+  return nativeProfileSessionKeys(Object.keys(_readNativeTokenStore()), _loadNativeTokens)
+}
+
 function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
-  _nativeTokens.set(baseUrl, tokens)
   _persistNativeTokens(baseUrl, tokens)
+  _nativeTokens.set(baseUrl, tokens)
+  _nativeRefreshRetries.reset(baseUrl)
+  _scheduleNativeRefresh(baseUrl, tokens)
 }
 
 function _clearNativeTokens(baseUrl: string) {
+  nativeRefresh.discard(baseUrl)
+  _nativeRefreshRetries.reset(baseUrl)
+  const timer = _nativeRefreshTimers.get(baseUrl)
+  if (timer) { clearTimeout(timer) }
+  _nativeRefreshTimers.delete(baseUrl)
   _nativeTokens.delete(baseUrl)
   _persistNativeTokens(baseUrl, null)
+}
+
+function nativeProfileDirectoryExists(profile: string): boolean {
+  if (profile !== 'default' && !PROFILE_NAME_RE.test(profile)) { throw new Error('Invalid profile') }
+  if (profile === 'default') { return true }
+  try {
+    return fs.statSync(path.join(YOUTAB_AGENT_HOME, 'profiles', profile)).isDirectory()
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') { return false }
+    throw error
+  }
+}
+
+function assertNativeProfileDirectory(profile: string) {
+  if (!nativeProfileDirectoryExists(profile)) {
+    throw Object.assign(new Error('Linked profile no longer exists. Sign in again in Settings → Gateway.'), { needsOauthLogin: true })
+  }
+}
+
+function resolveLiveNativeProviderProfile(requested: unknown): string {
+  // The renderer can swap its live Gateway to another profile without changing
+  // active-profile.json (the primary backend's launch preference). Accept only
+  // a real profile in this Runtime home; never route a credential to an
+  // arbitrary renderer-supplied name or a missing profile.
+  const selected = typeof requested === 'string' ? requested : readEffectiveDesktopProfile()
+  const profile = resolveNativeProviderProfile(requested, selected)
+  assertNativeProfileDirectory(profile)
+  return profile
+}
+
+async function writeProfileInferenceToken(profile: string, token: string | null): Promise<void> {
+  if (!token && !nativeProfileDirectoryExists(profile)) { return }
+  assertNativeProfileDirectory(profile)
+  const backend = await ensureRuntime(
+    resolveYoutabBackend(['--profile', profile, 'auth', 'profile-inference-token', ...(token ? [] : ['--clear'])])
+  )
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
+      cwd: resolveYoutabCwd(),
+      env: { ...process.env, YOUTAB_AGENT_HOME, ...backend.env },
+      shell: false,
+      stdio: ['pipe', 'ignore', 'ignore']
+    }))
+    const timer = setTimeout(() => {
+      child.kill()
+      reject(new Error('Profile credential update timed out'))
+    }, 15_000)
+    child.once('error', () => {
+      clearTimeout(timer)
+      reject(new Error('Profile credential update failed'))
+    })
+    child.once('close', code => {
+      clearTimeout(timer)
+      if (code === 0) { resolve() }
+      else { reject(new Error('Profile credential update failed')) }
+    })
+    child.stdin.end(token || '')
+  })
+}
+
+function _scheduleNativeRefresh(baseUrl: string, tokens: NativeTokenSet) {
+  const previous = _nativeRefreshTimers.get(baseUrl)
+  if (previous) { clearTimeout(previous) }
+  _nativeRefreshTimers.delete(baseUrl)
+  if (tokens.logoutPending || !tokens.inferenceAccessToken || !tokens.profiles?.length || !tokens.refreshToken) { return }
+  // An encrypted rotated response can be restored after a crash while the
+  // profile file still has the old bearer. Replay that write on the next turn,
+  // regardless of the new JWT's (much later) normal refresh deadline.
+  const delay = tokens.rotationPending ? 0 : Math.max(1_000, inferenceRefreshDelayMs(tokens, Math.floor(Date.now() / 1000)))
+  _nativeRefreshTimers.set(baseUrl, setTimeout(() => {
+    void ensureNativeAccessToken(baseUrl, true).catch((error: any) => {
+      if (error?.needsOauthLogin === true) {
+        notifyPowerResumeRenderer(false, { kind: 'auth', baseUrl, profiles: tokens.profiles })
+        return
+      }
+      if (!_nativeRefreshRetries.failed(baseUrl)) {
+        _nativeRefreshTimers.delete(baseUrl)
+        notifyPowerResumeRenderer(false, { kind: 'transport', baseUrl, profiles: tokens.profiles })
+        return
+      }
+      // Transient Gateway failure: retry without exposing credentials in logs.
+      const pending = _nativeRefreshTimers.get(baseUrl)
+      if (pending) { clearTimeout(pending) }
+      _nativeRefreshTimers.set(baseUrl, setTimeout(() => {
+        const current = _loadNativeTokens(baseUrl)
+        if (current) { _scheduleNativeRefresh(baseUrl, current) }
+      }, 30_000))
+    })
+  }, delay))
 }
 
 // True when we hold native bearer tokens for this gateway (the native-flow
@@ -6286,47 +6463,81 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
 // Return a valid native access token for baseUrl, refreshing via
 // /auth/native/refresh if the stored one is at/near expiry. Returns null when
 // there are no tokens or the refresh is terminally rejected (caller re-logins).
-async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> {
-  const tokens = _loadNativeTokens(baseUrl)
-
-  if (!tokens) {
-    return null
-  }
-
-  if (!tokenNeedsRefresh(tokens, Math.floor(Date.now() / 1000))) {
-    return tokens.accessToken
-  }
-
-  if (!tokens.refreshToken) {
-    // Access token expired and no RT to rotate — force re-login.
-    _clearNativeTokens(baseUrl)
-
-    return null
-  }
-
-  try {
-    const body = await postJsonNoAuth(
-      nativeRefreshUrl(baseUrl),
-      { refresh_token: tokens.refreshToken, provider: tokens.provider },
-      { timeoutMs: 10_000 }
-    )
-
-    const rotated = parseTokenResponse(body)
-    _storeNativeTokens(baseUrl, rotated)
-
-    return rotated.accessToken
-  } catch (error: any) {
-    // A 401 means the RT is dead (session_expired) — drop tokens so the UI
-    // prompts a fresh native login. A 503/transient keeps them for a retry.
-    if (error && error.statusCode === 401) {
-      _clearNativeTokens(baseUrl)
-
-      return null
-    }
-
-    throw error
-  }
+async function revokeNativeSession(baseUrl: string, refreshToken: string): Promise<void> {
+  await postJsonNoAuth(`${baseUrl}/v1/auth/logout`, { refresh_token: refreshToken }, { timeoutMs: 10_000 })
 }
+
+const nativeRefresh = createNativeRefreshCoordinator({
+  load: _loadNativeTokens,
+  exchange: async (baseUrl, tokens) => parseTokenResponse(await postJsonNoAuth(
+    nativeRefreshUrl(baseUrl),
+    { refresh_token: tokens.refreshToken, provider: tokens.provider },
+    { timeoutMs: 10_000 }
+  )),
+  writeProfile: writeProfileInferenceToken,
+  commit: _storeNativeTokens,
+  clear: _clearNativeTokens,
+  revoke: revokeNativeSession,
+  validateProfiles: profiles => { for (const profile of profiles) { assertNativeProfileDirectory(profile) } },
+  now: () => Math.floor(Date.now() / 1000)
+})
+
+function ensureNativeAccessToken(baseUrl: string, forceRefresh = false): Promise<string | null> {
+  if (nativeSessionLifecycle.isMutating(baseUrl)) {
+    return Promise.reject(Object.assign(new Error('Native session update in progress'), { noCookieFallback: true }))
+  }
+  return nativeRefresh.ensure(baseUrl, forceRefresh)
+}
+
+async function ensurePendingNativeProfileState(profile: string): Promise<void> {
+  const pending = Object.keys(_readNativeTokenStore()).filter(baseUrl => {
+    const tokens = _loadNativeTokens(baseUrl)
+    return (tokens?.rotationPending || tokens?.logoutPending) && tokens.profiles?.includes(profile)
+  })
+  if (!pending.length) { return }
+  // Complete interrupted terminal clears before any child can read a stale
+  // bearer. A failed clear blocks local startup and uses the existing retry UI.
+  for (const baseUrl of pending) {
+    if (_loadNativeTokens(baseUrl)?.logoutPending) {
+      await completePendingNativeLogout(
+        baseUrl,
+        value => ensureNativeAccessToken(value),
+        value => !Object.prototype.hasOwnProperty.call(_readNativeTokenStore(), value) && !_loadNativeTokens(value)
+      )
+    }
+  }
+  // Reuse the resume gate for interrupted rotations before inference resumes.
+  await revalidateNativeSessionsBeforeResume(
+    pending.filter(baseUrl => _loadNativeTokens(baseUrl)?.rotationPending),
+    _loadNativeTokens, baseUrl => ensureNativeAccessToken(baseUrl), () => undefined
+  )
+}
+
+function pauseNativeRefresh(baseUrl: string) {
+  const timer = _nativeRefreshTimers.get(baseUrl)
+  if (timer) { clearTimeout(timer) }
+  _nativeRefreshTimers.delete(baseUrl)
+}
+
+const nativeSessionLifecycle = createNativeSessionLifecycle({
+  load: _loadNativeTokens,
+  store: _storeNativeTokens,
+  clear: _clearNativeTokens,
+  writeProfile: writeProfileInferenceToken,
+  pauseRefresh: pauseNativeRefresh,
+  waitForRefresh: baseUrl => nativeRefresh.wait(baseUrl),
+  discardPending: baseUrl => nativeRefresh.discard(baseUrl),
+  relinkPending: (baseUrl, oldName, newName) => nativeRefresh.relinkPending(baseUrl, oldName, newName),
+  savedSessionState: _nativeSavedSessionState,
+  scheduleRelinkRetry: (retry, delayMs) => { setTimeout(retry, delayMs) },
+  logRelinkFailure: () => rememberLog('[native-oauth] profile session reconciliation deferred after confirmed profile change'),
+  onRelinkExhausted: (baseUrl, profiles) => notifyPowerResumeRenderer(false, {
+    kind: 'auth', baseUrl, profiles
+  }),
+  scheduleRefresh: _scheduleNativeRefresh,
+  revoke: revokeNativeSession,
+  logRevocationFailure: () => rememberLog('[native-oauth] remote logout unavailable after local cleanup')
+})
 
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
 // Prefers a native bearer token (cookieless RFC 8252 flow) when present,
@@ -6335,7 +6546,7 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
 // callers treat that as "needs re-login".
 async function mintGatewayWsTicket(baseUrl) {
   // Native flow: mint the ticket with the bearer token, no cookie involved.
-  const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
+  const nativeAt = await ensureNativeAccessToken(baseUrl).catch(cookieFallbackAfterNativeError)
 
   if (nativeAt) {
     const body = (await fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
@@ -6405,18 +6616,6 @@ async function freshGatewayWsUrl(profile) {
 //     portal's silent auto-approve (org member, existing session) and 302s back
 //     with that agent's session cookie — no prompt. Each agent still completes
 //     its own PKCE exchange; SSO removes the human click, not a security check.
-
-// Canonical Youtab portal base URL, overridable for staging/dev. Mirrors the CLI
-// convention (youtab_agent_cli/auth.py DEFAULT_YOUTAB_PORTAL_URL + the same env names)
-// so a single override flips every Youtab surface to the same portal.
-const DEFAULT_YOUTAB_PORTAL_URL = 'https://api.youtab.io'
-
-function resolvePortalBaseUrl() {
-  const raw =
-    process.env.YOUTAB_AGENT_PORTAL_BASE_URL || process.env.YOUTAB_PORTAL_BASE_URL || DEFAULT_YOUTAB_PORTAL_URL
-
-  return String(raw).trim().replace(/\/+$/, '')
-}
 
 // Whether the OAuth partition currently holds a live Youtab portal session — the
 // credential that powers both discovery and the silent cascade. The portal
@@ -6878,6 +7077,20 @@ function readActiveDesktopProfile() {
   return null
 }
 
+function readEffectiveDesktopProfile(): string {
+  const selected = readActiveDesktopProfile()
+  if (selected) { return selected }
+  try {
+    const name = fs.readFileSync(path.join(YOUTAB_AGENT_HOME, 'active_profile'), 'utf8').trim()
+    if (!name || name === 'default') { return 'default' }
+    if (!PROFILE_NAME_RE.test(name)) { throw new Error('Invalid active Youtab profile') }
+    return name
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') { return 'default' }
+    throw error
+  }
+}
+
 function writeActiveDesktopProfile(name) {
   const value = typeof name === 'string' ? name.trim() : ''
 
@@ -7146,6 +7359,7 @@ async function buildRemoteConnection(
     try {
       ticket = await mintGatewayWsTicket(baseUrl)
     } catch (error) {
+      if ((error as { needsOauthLogin?: boolean } | null)?.needsOauthLogin === true) { throw error }
       throw gatewayTicketFailure(
         error,
         'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.',
@@ -7595,7 +7809,7 @@ async function requestJsonForProfile(profile: string, path: string, method: stri
   if (conn.authMode === 'oauth') {
     // Native RFC 8252 flow: authenticate with the bearer token (cookieless)
     // when we hold one for this gateway; otherwise use the cookie partition.
-    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
+    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(cookieFallbackAfterNativeError)
 
     if (nativeAt) {
       return fetchJson(url, null, { ...opts, bearer: nativeAt })
@@ -8081,6 +8295,8 @@ async function spawnPoolBackend(profile, entry) {
     }
   }
 
+  await ensurePendingNativeProfileState(profile)
+
   const token = crypto.randomBytes(32).toString('base64url')
 
   // Same update mutual exclusion as the primary window's waitForLocalStart
@@ -8374,6 +8590,7 @@ async function startYoutab() {
       ensureLocalRuntime: ensureRuntime,
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Youtab runtime', 28)
+        await ensurePendingNativeProfileState(primaryProfileKey())
 
         return resolveYoutabBackend(backendArgs)
       },
@@ -9369,7 +9586,11 @@ function createWindow() {
   })
 }
 
-ipcMain.handle('youtab:connection', async (_event, profile) => ensureBackend(profile))
+ipcMain.handle('youtab:connection', async (_event, profile) => {
+  const requestedProfile = profile && String(profile).trim() ? String(profile).trim() : primaryProfileKey()
+  await ensurePendingNativeProfileState(requestedProfile)
+  return ensureBackend(profile)
+})
 // Reconnect-after-wake recovery. A REMOTE primary backend has no child process,
 // so the 'exit'/'error' handlers that would clear a dead connection promise never
 // fire — once the remote becomes unreachable across a sleep/wake the renderer
@@ -9379,6 +9600,13 @@ ipcMain.handle('youtab:connection', async (_event, profile) => ensureBackend(pro
 // not, we drop the cache so the next getConnection() rebuilds it. Local backends
 // self-heal via their child 'exit' handler, so we never touch them here.
 ipcMain.handle('youtab:connection:revalidate', async () => {
+  // The renderer also reconnects on visibility/network events. Reuse this
+  // existing reconnect boundary so those paths cannot bypass wake refresh.
+  const requiredSessions = powerResumeRequiredSessions ?? _nativeProfileSessionKeys()
+  const nativeResume = await nativeResumeIpcResult(() => revalidateNativeSessionsBeforeResume(
+    requiredSessions, _loadNativeTokens, baseUrl => ensureNativeAccessToken(baseUrl), () => undefined
+  ))
+  if (!nativeResume.ok) { return nativeResume }
   const connectionPromise = backendConnectionState.getPromise()
 
   if (!connectionPromise) {
@@ -9706,7 +9934,7 @@ ipcMain.handle('youtab:ssh-config:resolve', async (_event, host) => {
 })
 ipcMain.handle('youtab:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
 ipcMain.handle('youtab:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
-ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl) => {
+ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, options) => {
   // Capability-gated login (RFC 8252). Probe the gateway's public /api/status:
   //   - advertises "native_pkce" in auth_flows → run the system-browser +
   //     loopback + PKCE flow. No embedded webview, tokens held by the app
@@ -9716,6 +9944,25 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl) =>
   // This is the "observable ladder + compatibility fallback tied to an
   // identified older runtime" the desktop guide requires.
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+
+  // The local provider catalog is the capability source for provider login.
+  // Keep the remote-connection /api/status probe below for its existing use.
+  if (options?.nativeCapability === true) {
+    requireNativePortalAuthority(baseUrl)
+    const profile = resolveLiveNativeProviderProfile(options.profile)
+    const tokens = await runNativeLogin(baseUrl, {
+      openExternal: url => shell.openExternal(url),
+      postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
+      rememberLog
+    })
+    if (!tokens.refreshToken || !tokens.inferenceAccessToken) {
+      throw new Error('Gateway native session omitted required credentials')
+    }
+    await nativeSessionLifecycle.login(baseUrl, profile, tokens)
+    remoteReauthFailure = null
+    releasePowerResumeAfterAuthChange(baseUrl)
+    return { ok: true, baseUrl, connected: true }
+  }
 
   let statusBody: any = null
 
@@ -9729,27 +9976,31 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl) =>
   const strategy = resolveLoginStrategy(statusBody)
 
   if (strategy === 'native') {
+    let tokens: Awaited<ReturnType<typeof runNativeLogin>> | undefined
     try {
-      const tokens = await runNativeLogin(baseUrl, {
+      tokens = await runNativeLogin(baseUrl, {
         openExternal: url => shell.openExternal(url),
         postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
         rememberLog
       })
-
-      _storeNativeTokens(baseUrl, tokens)
-      // Confirmed sign-in — release the reauth latch so the next
-      // startYoutab() re-dials instead of replaying the stale rejection.
-      remoteReauthFailure = null
-
-      return { ok: true, baseUrl, connected: true }
     } catch (error) {
       rememberLog(
         `[native-oauth] native login failed (${
           error instanceof Error ? error.message : String(error)
         }); falling back to embedded flow`
       )
-      // Fall through to the embedded flow so a native-flow hiccup (blocked
-      // loopback, user closed the browser) still lets the user sign in.
+      // Only native acquisition failure may use the older embedded flow.
+    }
+    if (tokens) {
+      // A profile or encrypted-store commit failure must remain an error;
+      // cookie fallback could otherwise reconnect with the previous account.
+      await nativeSessionLifecycle.replaceGatewaySession(baseUrl, tokens)
+      // Confirmed sign-in — release the reauth latch so the next
+      // startYoutab() re-dials instead of replaying the stale rejection.
+      remoteReauthFailure = null
+      releasePowerResumeAfterAuthChange(baseUrl)
+
+      return { ok: true, baseUrl, connected: true }
     }
   }
 
@@ -9763,19 +10014,31 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl) =>
   // flickering again on the next retry.
   if (connected) {
     remoteReauthFailure = null
+    releasePowerResumeAfterAuthChange(baseUrl)
   }
 
   return { ok: true, baseUrl, connected }
 })
-ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl) => {
+ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl, options) => {
   const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
-  await clearOauthSession(baseUrl || undefined)
-
-  // Also drop any native (RFC 8252) bearer tokens for this gateway so a
-  // logout clears BOTH auth shapes.
-  if (baseUrl) {
-    _clearNativeTokens(baseUrl)
+  if (options?.nativeCapability === true) {
+    requireNativePortalAuthority(baseUrl)
+    const profile = resolveLiveNativeProviderProfile(options.profile)
+    await clearGatewaySessionCredentials(
+      true,
+      () => nativeSessionLifecycle.logout(baseUrl, profile),
+      () => clearOauthSession(baseUrl, true),
+      () => releasePowerResumeAfterAuthChange(baseUrl)
+    )
+    return { ok: true, connected: (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl) }
   }
+  const hadNativeSession = Boolean(baseUrl && Object.prototype.hasOwnProperty.call(_readNativeTokenStore(), baseUrl))
+  await clearGatewaySessionCredentials(
+    hadNativeSession,
+    () => nativeSessionLifecycle.logout(baseUrl, null),
+    () => clearOauthSession(baseUrl || undefined),
+    () => releasePowerResumeAfterAuthChange(baseUrl)
+  )
 
   // Report against the SAME liveness notion the Settings indicator uses
   // (AT-or-RT cookie, or a native token) so a logout that left any session
@@ -10112,6 +10375,18 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   return { ...(base as any), sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
 }
 
+async function reconcileNativeProfilesAfterApi(request, result, connection) {
+  const mutation = nativeProfileMutationFromApiResult(request, result, connection.mode)
+  if (!mutation) { return result }
+  const baseUrls = new Set([...Object.keys(_readNativeTokenStore()), ..._nativeTokens.keys()])
+  if (_nativeSavedSessionState(connection.baseUrl) === 'unreadable') { baseUrls.add(connection.baseUrl) }
+  for (const baseUrl of baseUrls) {
+    try { await nativeSessionLifecycle.relinkProfile(baseUrl, mutation.oldName, mutation.newName) }
+    catch { /* Reconciliation remains secondary to the confirmed backend mutation. */ }
+  }
+  return result
+}
+
 ipcMain.handle('youtab:api', async (_event, request) => {
   // Remote-profile session requests would otherwise hit the local primary off
   // each profile's on-disk state.db — fine for local profiles, but a remote
@@ -10156,31 +10431,34 @@ ipcMain.handle('youtab:api', async (_event, request) => {
     // Native bearer first (cookieless). ensureNativeAccessToken transparently
     // refreshes a near-expiry AT via /auth/native/refresh; a null return means
     // no native session (resolveOauthRestAuth then selects the cookie path).
-    const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
+    const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(cookieFallbackAfterNativeError)
     const restAuth = resolveOauthRestAuth(nativeAt)
 
     if (restAuth.kind === 'bearer') {
-      return fetchJson(url, null, {
+      const result = await fetchJson(url, null, {
         method: request?.method,
         body: request?.body,
         timeoutMs,
         bearer: restAuth.token
       })
+      return reconcileNativeProfilesAfterApi(request, result, connection)
     }
 
-    return fetchJsonViaOauthSession(url, {
+    const result = await fetchJsonViaOauthSession(url, {
       method: request?.method,
       body: request?.body,
       timeoutMs
     })
+    return reconcileNativeProfilesAfterApi(request, result, connection)
   }
 
-  return fetchJson(url, connection.token, {
+  const result = await fetchJson(url, connection.token, {
     method: request?.method,
     body: request?.body,
     upload: request?.upload,
     timeoutMs
   })
+  return reconcileNativeProfilesAfterApi(request, result, connection)
 })
 
 // One deduper per cross-window cue — the choke point every window shares. Main
@@ -11661,6 +11939,7 @@ app.on('open-url', (event, url) => {
 })
 
 app.whenReady().then(() => {
+  for (const baseUrl of Object.keys(_readNativeTokenStore())) { _loadNativeTokens(baseUrl) }
   const systemCa = installWindowsSystemCaTrust(tls)
 
   if (systemCa.applied) {

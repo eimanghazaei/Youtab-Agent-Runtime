@@ -171,6 +171,18 @@ describe('deriveBillingView', () => {
     expect(view.usageRows).toEqual([])
   })
 
+  it('does not offer legacy login or spending actions for a native inference-only session', () => {
+    const view = deriveBillingView(
+      okBilling({ ...loggedOutBillingState, error: 'unsupported_connection' }),
+      okSubscription(loggedOutSubscriptionState)
+    )
+    expect(view.status).toBe('refusal')
+    expect(view.notice).toMatchObject({ title: 'Remote Spending unavailable' })
+    expect(view.notice?.action).toBeUndefined()
+    expect(view.topupRow).toBeUndefined()
+    expect(view.plan).toBeUndefined()
+  })
+
   it('derives a refusal notice when billing.state is unavailable', () => {
     const view = deriveBillingView(endpointUnavailableBilling, okSubscription(todaySubscriptionState))
 

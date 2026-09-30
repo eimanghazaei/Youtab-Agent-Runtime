@@ -70,6 +70,10 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         "logout", help="Log out a provider and clear stored auth state"
     )
     auth_logout.add_argument("provider", help="Provider id")
+    auth_inference = auth_subparsers.add_parser(
+        "profile-inference-token", help="Update the current profile's inference credential from stdin"
+    )
+    auth_inference.add_argument("--clear", action="store_true", help="Clear and shadow the profile credential")
     auth_spotify = auth_subparsers.add_parser(
         "spotify", help="Authenticate Youtab with Spotify via PKCE"
     )

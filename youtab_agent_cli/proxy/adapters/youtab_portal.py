@@ -1,13 +1,13 @@
-"""Youtab Portal upstream adapter.
+"""Youtab upstream adapter using the selected profile's Gateway bearer.
 
-Reads the user's Youtab OAuth state from ``~/.youtab-agent-runtime/auth.json`` through the
-shared runtime resolver, validates or refreshes the inference JWT, then exposes
-the upstream base URL plus bearer for the proxy server to forward to.
+Existing non-Desktop Portal sessions retain their legacy resolver. Desktop
+profile inference tokens stay local and are refreshed only by Electron main.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from typing import Any, Dict, FrozenSet, Optional
 
@@ -16,6 +16,7 @@ from youtab_agent_cli.auth import (
     DEFAULT_YOUTAB_INFERENCE_URL,
     _load_auth_store,
     _auth_store_lock,
+    _agent_key_is_usable,
     _is_terminal_youtab_refresh_error,
     _youtab_inference_env_override,
     _quarantine_youtab_oauth_state,
@@ -23,15 +24,17 @@ from youtab_agent_cli.auth import (
     _save_auth_store,
     _validate_youtab_inference_url_from_network,
     _write_shared_youtab_state,
+    get_local_inference_token_state,
+    inference_token_safety_seconds,
+    profile_inference_base_url,
     resolve_youtab_runtime_credentials,
 )
 from youtab_agent_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
 
 logger = logging.getLogger(__name__)
 
-# Endpoints inference-api.youtab.io actually serves. Anything else
-# the proxy will reject with 404 — keeps stray clients from leaking weird
-# requests to the upstream.
+# Legacy non-Desktop upstream routes. The Gateway Desktop contract below is
+# limited to the two routes accepted by its inference-token resource.
 _ALLOWED_PATHS: FrozenSet[str] = frozenset(
     {
         "/chat/completions",
@@ -40,6 +43,7 @@ _ALLOWED_PATHS: FrozenSet[str] = frozenset(
         "/models",
     }
 )
+_GATEWAY_PATHS: FrozenSet[str] = frozenset({"/chat/completions", "/models"})
 
 
 class YoutabPortalAdapter(UpstreamAdapter):
@@ -60,9 +64,16 @@ class YoutabPortalAdapter(UpstreamAdapter):
 
     @property
     def allowed_paths(self) -> FrozenSet[str]:
+        if get_local_inference_token_state() is not None or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+            return _GATEWAY_PATHS
         return _ALLOWED_PATHS
 
     def is_authenticated(self) -> bool:
+        local = get_local_inference_token_state()
+        if local is not None:
+            return _agent_key_is_usable(local, inference_token_safety_seconds(local))
+        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+            return False
         state = self._read_state()
         if state is None:
             return False
@@ -85,6 +96,10 @@ class YoutabPortalAdapter(UpstreamAdapter):
         _ = failed_credential
         if status_code != 401:
             return None
+        if get_local_inference_token_state() is not None or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+            # Desktop alone rotates this short-lived token. Never refresh it
+            # through the legacy Portal OAuth path on a proxy retry.
+            return None
         logger.info("proxy: Youtab upstream rejected bearer; force-refreshing invoke JWT")
         return self._get_credential(
             force_refresh=True,
@@ -96,6 +111,19 @@ class YoutabPortalAdapter(UpstreamAdapter):
         force_refresh: bool = False,
     ) -> UpstreamCredential:
         with self._lock:
+            local = get_local_inference_token_state()
+            if local is not None:
+                if force_refresh or not _agent_key_is_usable(
+                    local, inference_token_safety_seconds(local)
+                ):
+                    raise RuntimeError("Profile inference credential is unavailable; Desktop sign-in is required")
+                return UpstreamCredential(
+                    bearer=local["agent_key"],
+                    base_url=profile_inference_base_url(local),
+                    expires_at=local.get("agent_key_expires_at"),
+                )
+            if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+                raise RuntimeError("Desktop Gateway sign-in is required")
             state = self._read_state()
             if state is None:
                 raise RuntimeError(

@@ -1,6 +1,24 @@
 from youtab_agent_cli import youtab_auth_keepalive as keepalive
 
 
+def test_desktop_keepalive_never_refreshes_backend_credentials(monkeypatch):
+    monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
+    monkeypatch.setattr(
+        keepalive, "get_local_inference_token_state", lambda: {"agent_key": ""}
+    )
+    monkeypatch.setattr(
+        keepalive,
+        "_refresh_selected_pool_entry",
+        lambda **_kw: (_ for _ in ()).throw(AssertionError("pool refresh")),
+    )
+    monkeypatch.setattr(
+        keepalive,
+        "resolve_youtab_runtime_credentials",
+        lambda **_kw: (_ for _ in ()).throw(AssertionError("singleton refresh")),
+    )
+    assert keepalive.refresh_youtab_auth_keepalive_once() is False
+
+
 def test_keepalive_refreshes_stale_pool_entry(monkeypatch):
     class _Entry:
         access_token = "pooled-access-token"

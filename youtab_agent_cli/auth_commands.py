@@ -175,6 +175,12 @@ def auth_add_command(args) -> None:
         else:
             requested_type = AUTH_TYPE_OAUTH if provider in _OAUTH_CAPABLE_PROVIDERS else AUTH_TYPE_API_KEY
 
+    if provider == "youtab" and requested_type == AUTH_TYPE_OAUTH:
+        raise SystemExit(
+            "Youtab Desktop inference requires native Gateway sign-in. "
+            "The legacy device-code login is unavailable."
+        )
+
     pool = load_pool(provider)
 
     # Clear ALL suppressions for this provider — re-adding a credential is
@@ -245,66 +251,6 @@ def auth_add_command(args) -> None:
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
-        return
-
-    if provider == "youtab":
-        # Codex-style auto-import: if a shared Youtab credential lives at
-        # <youtab-root>/shared/youtab_auth.json (written by any previous
-        # successful login), offer to import it instead of running the
-        # full device-code flow. This makes `youtab --profile <name>
-        # auth add youtab --type oauth` a one-tap operation for users who
-        # run multiple profiles.
-        shared = auth_mod._read_shared_youtab_state()
-        if shared:
-            try:
-                path = auth_mod._youtab_shared_store_path()
-            except RuntimeError:
-                path = None
-            print()
-            if path:
-                print(f"Found existing Youtab OAuth credentials at {path}")
-            else:
-                print("Found existing shared Youtab OAuth credentials")
-            try:
-                do_import = input("Import these credentials? [Y/n]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                do_import = "y"
-            if do_import in {"", "y", "yes"}:
-                print("Rehydrating Youtab session from shared credentials...")
-                rehydrated = auth_mod._try_import_shared_youtab_state(
-                    timeout_seconds=getattr(args, "timeout", None) or 15.0,
-                )
-                if rehydrated is not None:
-                    custom_label = (getattr(args, "label", None) or "").strip() or None
-                    entry = auth_mod.persist_youtab_credentials(rehydrated, label=custom_label)
-                    shown_label = entry.label if entry is not None else label_from_token(
-                        rehydrated.get("access_token", ""), _oauth_default_label(provider, 1),
-                    )
-                    print(f'Imported {provider} OAuth credentials: "{shown_label}"')
-                    return
-                # Rehydrate failed (expired refresh_token, portal down, etc.)
-                # — fall through to device-code flow.
-                print("Could not refresh shared credentials — falling back to device-code login.")
-
-        creds = auth_mod._youtab_device_code_login(
-            portal_base_url=getattr(args, "portal_url", None),
-            inference_base_url=getattr(args, "inference_url", None),
-            client_id=getattr(args, "client_id", None),
-            scope=getattr(args, "scope", None),
-            open_browser=not getattr(args, "no_browser", False),
-            timeout_seconds=getattr(args, "timeout", None) or 15.0,
-            insecure=bool(getattr(args, "insecure", False)),
-            ca_bundle=getattr(args, "ca_bundle", None),
-        )
-        # Honor `--label <name>` so youtab matches other providers' UX.  The
-        # helper embeds this into providers.youtab so that label_from_token
-        # doesn't overwrite it on every subsequent load_pool("youtab").
-        custom_label = (getattr(args, "label", None) or "").strip() or None
-        entry = auth_mod.persist_youtab_credentials(creds, label=custom_label)
-        shown_label = entry.label if entry is not None else label_from_token(
-            creds.get("access_token", ""), _oauth_default_label(provider, 1),
-        )
-        print(f'Saved {provider} OAuth device-code credentials: "{shown_label}"')
         return
 
     if provider == "openai-codex":
@@ -528,6 +474,20 @@ def auth_status_command(args) -> None:
 
 def auth_logout_command(args) -> None:
     auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
+
+
+def auth_profile_inference_token_command(args) -> None:
+    """Accept one short-lived inference JWT from stdin without echoing it."""
+    import sys
+
+    if getattr(args, "clear", False):
+        auth_mod.persist_profile_inference_token(None)
+    else:
+        token = sys.stdin.read(16385).strip()
+        if not token or len(token) > 16384:
+            raise SystemExit("Missing or oversized inference credential on stdin")
+        auth_mod.persist_profile_inference_token(token)
+    print("Profile inference credential updated")
 
 
 def auth_spotify_command(args) -> None:
@@ -794,6 +754,9 @@ def auth_command(args) -> None:
         return
     if action == "logout":
         auth_logout_command(args)
+        return
+    if action == "profile-inference-token":
+        auth_profile_inference_token_command(args)
         return
     if action == "spotify":
         auth_spotify_command(args)

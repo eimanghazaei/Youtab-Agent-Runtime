@@ -35,7 +35,9 @@ import {
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
+  requireNativePortalAuthority,
   resolveAuthMode,
+  resolvePortalBaseUrl,
   resolveProfileBackendRoute,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
@@ -326,6 +328,21 @@ test('pathWithGlobalRemoteProfile skips empty profile/path safely', () => {
 
 // --- normalizeRemoteBaseUrl ---
 
+test('native provider authority follows the configured Portal and rejects mismatches', () => {
+  assert.equal(resolvePortalBaseUrl({}), 'https://api.youtab.io')
+  assert.equal(requireNativePortalAuthority('https://api.youtab.io/', {}), 'https://api.youtab.io')
+  const staging = { YOUTAB_AGENT_PORTAL_BASE_URL: 'https://staging.example.test/' }
+  assert.equal(resolvePortalBaseUrl(staging), 'https://staging.example.test')
+  assert.equal(requireNativePortalAuthority('https://staging.example.test', staging), 'https://staging.example.test')
+  assert.equal(resolvePortalBaseUrl({ YOUTAB_PORTAL_BASE_URL: 'https://secondary.example.test/' }), 'https://secondary.example.test')
+  assert.equal(resolvePortalBaseUrl({ YOUTAB_AGENT_PORTAL_BASE_URL: '  ', YOUTAB_PORTAL_BASE_URL: 'https://secondary.example.test' }), 'https://secondary.example.test')
+  assert.throws(() => requireNativePortalAuthority('https://api.youtab.io', staging), /does not match/)
+  assert.throws(() => requireNativePortalAuthority('https://evil.example', staging), /does not match/)
+  assert.throws(() => resolvePortalBaseUrl({ YOUTAB_PORTAL_BASE_URL: 'file:///tmp/portal' }), /valid base URL/)
+  assert.throws(() => resolvePortalBaseUrl({ YOUTAB_PORTAL_BASE_URL: 'http://evil.example' }), /valid base URL/)
+  assert.equal(resolvePortalBaseUrl({ YOUTAB_PORTAL_BASE_URL: 'http://127.0.0.1:8080' }), 'http://127.0.0.1:8080')
+})
+
 test('normalizeRemoteBaseUrl strips trailing slashes, hash, and query', () => {
   assert.equal(normalizeRemoteBaseUrl('https://gw.example.com/'), 'https://gw.example.com')
   assert.equal(normalizeRemoteBaseUrl('https://gw.example.com/youtab/'), 'https://gw.example.com/youtab')
@@ -493,6 +510,7 @@ test('cookiesHaveLiveSession is false for empty values', () => {
 
 test('cookiesHaveLiveSession is false for unrelated cookies and non-arrays', () => {
   assert.equal(cookiesHaveLiveSession([{ name: 'other', value: 'x' }]), false)
+  assert.equal(cookiesHaveLiveSession([{ name: 'privy-token', value: 'cloud-session' }]), false)
   assert.equal(cookiesHaveLiveSession(null), false)
   assert.equal(cookiesHaveLiveSession(undefined), false)
   assert.equal(cookiesHaveLiveSession([]), false)

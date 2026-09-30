@@ -1168,9 +1168,8 @@ def ensure_youtab_portal_access(
     - does NOT run model selection, and
     - does NOT offer the bulk "enable for all tools" Tool Gateway prompt.
 
-    It only performs the Youtab Portal device-code OAuth (when the user isn't
-    already logged in) and refreshes entitlement, so the caller can enable the
-    single tool the user picked.
+    It may reuse an existing Portal session and refresh entitlement, so the
+    caller can enable the single tool the user picked.
 
     Entitlement is satisfied by paid service access OR a live free tool pool.
     When ``coverage_category`` is given (e.g. ``"fal"`` for image gen), the pool
@@ -1196,7 +1195,7 @@ def ensure_youtab_portal_access(
     if _entitled(info):
         return True
 
-    # If not logged in at all, run the device-code login (auth only).
+    # If not logged in at all, import an existing shared Portal session.
     if info is None or not info.logged_in:
         if not _run_youtab_portal_login_only(capability=capability):
             return False
@@ -1221,7 +1220,7 @@ def ensure_youtab_portal_access(
 
 
 def _run_youtab_portal_login_only(*, capability: str) -> bool:
-    """Run the Youtab Portal device-code OAuth and persist credentials only.
+    """Import an existing Portal session without offering the removed grant.
 
     No model selection, no provider switch, no Tool Gateway bulk prompt.
     Returns ``True`` on a successful login, ``False`` if the user declined or
@@ -1231,7 +1230,6 @@ def _run_youtab_portal_login_only(*, capability: str) -> bool:
         from youtab_agent_cli.auth import (
             _auth_store_lock,
             _load_auth_store,
-            _youtab_device_code_login,
             _read_shared_youtab_state,
             _save_auth_store,
             _save_provider_state,
@@ -1243,15 +1241,19 @@ def _run_youtab_portal_login_only(*, capability: str) -> bool:
         print(f"  Could not start Youtab Portal login: {exc}")
         return False
 
+    shared = _read_shared_youtab_state()
+    if not shared:
+        print(f"  {capability} requires an existing Youtab Portal session; CLI device login is unavailable.")
+        return False
     print()
-    print(f"  {capability} requires a Youtab Portal login.")
+    print(f"  {capability} requires an existing Youtab Portal session.")
     try:
-        proceed = input("  Log in to Youtab Portal now? [Y/n]: ").strip().lower()
+        proceed = input("  Import existing Youtab Portal credentials now? [Y/n]: ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         print()
         return False
     if proceed not in {"", "y", "yes"}:
-        print("  Skipped Youtab Portal login.")
+        print("  Skipped Youtab Portal credential import.")
         return False
 
     try:
@@ -1260,20 +1262,10 @@ def _run_youtab_portal_login_only(*, capability: str) -> bool:
         with _auth_store_lock():
             prior_active_provider = _load_auth_store().get("active_provider")
 
-        auth_state = None
-        shared = _read_shared_youtab_state()
-        if shared:
-            try:
-                do_import = input(
-                    "  Found existing Youtab OAuth credentials. Import them? [Y/n]: "
-                ).strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                do_import = "y"
-            if do_import in {"", "y", "yes"}:
-                auth_state = _try_import_shared_youtab_state(timeout_seconds=15.0)
-
+        auth_state = _try_import_shared_youtab_state(timeout_seconds=15.0)
         if auth_state is None:
-            auth_state = _youtab_device_code_login()
+            print("  Existing Youtab Portal credentials could not be refreshed.")
+            return False
 
         with _auth_store_lock():
             auth_store = _load_auth_store()
@@ -1292,10 +1284,6 @@ def _run_youtab_portal_login_only(*, capability: str) -> bool:
         return True
     except KeyboardInterrupt:
         print("\n  Login cancelled.")
-        return False
-    except SystemExit:
-        # _youtab_device_code_login raises SystemExit on subscription_required;
-        # it already printed billing guidance.
         return False
     except Exception as exc:
         print(f"  Youtab Portal login failed: {exc}")

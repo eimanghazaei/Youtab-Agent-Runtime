@@ -10,6 +10,7 @@ import {
   refreshOnboarding,
   requestDesktopOnboarding,
   saveOnboardingLocalEndpoint,
+  startProviderOAuth,
   submitOnboardingCode
 } from './onboarding'
 
@@ -45,6 +46,28 @@ function installApiMock(api: (request: { path: string }) => Promise<unknown>) {
     value: { api }
   })
 }
+
+it('uses the advertised native_pkce capability through the existing desktop login IPC', async () => {
+  const login = vi.fn().mockResolvedValue({ ok: true, connected: true, baseUrl: 'https://api.youtab.io' })
+  Object.defineProperty(window, 'youtabDesktop', {
+    configurable: true,
+    value: {
+      api: vi.fn().mockRejectedValue(new Error('model catalog unavailable')),
+      oauthLoginConnectionConfig: login
+    }
+  })
+  const selected = { ...provider('gateway'), flow: 'native_pkce' as const, native_base_url: 'https://api.youtab.io' }
+  await startProviderOAuth(selected, {
+    requestGateway: async method => {
+      if (method === 'reload.env') { return {} as never }
+      if (method === 'setup.status') { return { provider_configured: true } as never }
+      if (method === 'setup.runtime_check') { return { ok: true } as never }
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+  })
+  expect(login).toHaveBeenCalledWith('https://api.youtab.io', { nativeCapability: true, profile: null })
+  expect($desktopOnboarding.get().configured).toBe(true)
+})
 
 function emptyOpenRouterGateway(): OnboardingContext['requestGateway'] {
   return async method => {

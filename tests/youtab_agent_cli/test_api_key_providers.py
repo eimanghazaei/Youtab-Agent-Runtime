@@ -116,10 +116,10 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
 
-    def test_oauth_providers_unchanged(self):
-        """Ensure we didn't break the existing OAuth providers."""
+    def test_oauth_provider_contracts(self):
+        """Youtab Desktop uses native sign-in; other OAuth types stay intact."""
         assert "youtab" in PROVIDER_REGISTRY
-        assert PROVIDER_REGISTRY["youtab"].auth_type == "oauth_device_code"
+        assert PROVIDER_REGISTRY["youtab"].auth_type == "oauth_external"
         assert "openai-codex" in PROVIDER_REGISTRY
         assert PROVIDER_REGISTRY["openai-codex"].auth_type == "oauth_external"
 

@@ -6893,7 +6893,24 @@ def _apply_model_assignment_sync(
     if scope == "main":
         if not provider or not model:
             raise HTTPException(status_code=400, detail="provider and model required for main")
-        provider, model = _normalize_main_model_assignment(provider, model)
+        from youtab_agent_cli.auth import get_local_inference_token_state
+        exact_inference = provider.strip().lower() == "youtab" and get_local_inference_token_state() is not None
+        if (
+            provider.strip().lower() == "youtab"
+            and os.environ.get("YOUTAB_AGENT_DESKTOP") == "1"
+            and not exact_inference
+        ):
+            raise HTTPException(status_code=422, detail="Desktop Gateway sign-in is required")
+        if exact_inference:
+            from youtab_agent_cli.auth import DEFAULT_YOUTAB_INFERENCE_URL
+            from youtab_agent_cli.models import cached_provider_model_ids
+
+            if model not in cached_provider_model_ids("youtab", force_refresh=True):
+                raise HTTPException(status_code=422, detail="Gateway Engine ID is unavailable")
+            provider = "youtab"
+            base_url = DEFAULT_YOUTAB_INFERENCE_URL
+        else:
+            provider, model = _normalize_main_model_assignment(provider, model)
         providers_cfg = cfg.get("providers")
         provider_entry = providers_cfg.get(provider) if isinstance(providers_cfg, dict) else None
         if not base_url and isinstance(provider_entry, dict) and provider_entry.get("base_url"):
@@ -6901,6 +6918,11 @@ def _apply_model_assignment_sync(
         model_cfg = _apply_main_model_assignment(
             cfg.get("model", {}), provider, model, base_url, api_key
         )
+        if exact_inference:
+            # Only the protected profile auth store may hold the inference
+            # bearer; do not retain a legacy account key in model config.
+            model_cfg.pop("api_key", None)
+            model_cfg.pop("api", None)
         # Fall back to the provider entry's stored key only when the request
         # didn't carry one — same precedence as the base_url fill above. An
         # unconditional overwrite silently discards a key the caller is
@@ -6908,6 +6930,7 @@ def _apply_model_assignment_sync(
         # construction (#62269), so the stale key keeps authenticating.
         if (
             not api_key
+            and not exact_inference
             and isinstance(provider_entry, dict)
             and provider_entry.get("api_key")
         ):
@@ -10134,14 +10157,15 @@ def _copilot_acp_status() -> Dict[str, Any]:
 # synthetic ``claude-code`` subscription row.
 # ``flow`` describes the OAuth shape so the modal can pick the right UI:
 # ``pkce`` = open URL + paste callback code, ``device_code`` = show code +
-# verification URL + poll, ``external`` = read-only (delegated to a third-party
-# CLI like Claude Code or Qwen).
+# verification URL + poll, ``native_pkce`` = Desktop's existing Gateway
+# system-browser flow, ``external`` = read-only (delegated to a third-party CLI).
 _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
     {
         "id": "youtab",
         "name": "Youtab Portal",
-        "flow": "device_code",
-        "cli_command": "youtab auth add youtab",
+        "flow": "native_pkce",
+        "native_base_url": "https://api.youtab.io",
+        "cli_command": "",
         "docs_url": "https://api.youtab.io",
         "status_fn": None,  # dispatched via auth.get_youtab_auth_status
     },
@@ -10375,7 +10399,12 @@ def _build_oauth_catalog() -> list[Dict[str, Any]]:
         if entry["id"] in seen:
             continue
         seen.add(entry["id"])
-        rows.append(dict(entry))
+        row = dict(entry)
+        if row["id"] == "youtab":
+            from youtab_agent_cli.auth import _youtab_portal_env_override
+
+            row["native_base_url"] = _youtab_portal_env_override() or row["native_base_url"]
+        rows.append(row)
 
     # 2. Catalog accounts-providers not already covered — keeps the Accounts tab
     #    in lockstep with the `youtab model` universe (zero-edit for new plugins).
@@ -10432,6 +10461,7 @@ async def list_oauth_providers(profile: Optional[str] = None):
                 "id": p["id"],
                 "name": p["name"],
                 "flow": p["flow"],
+                "native_base_url": p.get("native_base_url"),
                 "cli_command": p["cli_command"],
                 "docs_url": p["docs_url"],
                 "disconnect_hint": disconnect_hint,
@@ -10791,63 +10821,14 @@ async def _start_device_code_flow(
     provider_id: str,
     profile: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Initiate a device-code flow (Youtab, OpenAI Codex, MiniMax, or xAI).
+    """Initiate a device-code flow (OpenAI Codex, MiniMax, or xAI).
 
     Calls the provider's device-auth endpoint via the existing CLI helpers,
     then spawns a background poller. Returns the user-facing display fields
     so the UI can render the verification page link + user code.
     """
     if provider_id == "youtab":
-        from youtab_agent_cli.auth import (
-            _request_device_code,
-            PROVIDER_REGISTRY,
-        )
-        import httpx
-        pconfig = PROVIDER_REGISTRY["youtab"]
-        portal_base_url = (
-            os.getenv("YOUTAB_AGENT_PORTAL_BASE_URL")
-            or os.getenv("YOUTAB_PORTAL_BASE_URL")
-            or pconfig.portal_base_url
-        ).rstrip("/")
-        client_id = pconfig.client_id
-        scope = pconfig.scope
-
-        def _do_youtab_device_request():
-            with httpx.Client(
-                timeout=httpx.Timeout(15.0),
-                headers={"Accept": "application/json"},
-            ) as client:
-                return (
-                    _request_device_code(
-                        client=client,
-                        portal_base_url=portal_base_url,
-                        client_id=client_id,
-                        scope=scope,
-                    ),
-                    scope,
-                )
-
-        device_data, effective_scope = await asyncio.get_running_loop().run_in_executor(
-            None, _do_youtab_device_request
-        )
-        sid, sess = _new_oauth_session("youtab", "device_code", profile=profile)
-        sess["device_code"] = str(device_data["device_code"])
-        sess["interval"] = int(device_data["interval"])
-        sess["expires_at"] = time.time() + int(device_data["expires_in"])
-        sess["portal_base_url"] = portal_base_url
-        sess["client_id"] = client_id
-        sess["scope"] = effective_scope
-        threading.Thread(
-            target=_youtab_poller, args=(sid,), daemon=True, name=f"oauth-poll-{sid[:6]}"
-        ).start()
-        return {
-            "session_id": sid,
-            "flow": "device_code",
-            "user_code": str(device_data["user_code"]),
-            "verification_url": str(device_data["verification_uri_complete"]),
-            "expires_in": int(device_data["expires_in"]),
-            "poll_interval": int(device_data["interval"]),
-        }
+        raise HTTPException(status_code=400, detail="Youtab uses Desktop native Gateway sign-in")
 
     if provider_id == "openai-codex":
         # Codex uses fixed OpenAI device-auth endpoints; reuse the helper.

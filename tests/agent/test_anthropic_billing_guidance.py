@@ -11,7 +11,14 @@ gives Anthropic-specific, actionable guidance (folds in PR #40073's UX).
 """
 from __future__ import annotations
 
-from agent.conversation_loop import _billing_or_entitlement_message
+from agent.conversation_loop import _billing_or_entitlement_message, _is_youtab_inference_route
+
+
+def test_youtab_conversation_classifies_only_exact_compatibility_hosts():
+    for host in ("api.youtab.io", "inference-api.youtab.io"):
+        assert _is_youtab_inference_route("custom", f"https://{host}/v1")
+        assert not _is_youtab_inference_route("custom", f"https://child.{host}/v1")
+        assert not _is_youtab_inference_route("custom", f"https://{host}.attacker.test/v1")
 
 
 def test_anthropic_subscription_exhausted_guidance():

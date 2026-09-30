@@ -1913,7 +1913,7 @@ def _resolve_openrouter_api_key() -> str:
     return os.getenv("OPENROUTER_API_KEY", "").strip()
 
 
-_DEFAULT_YOUTAB_INFERENCE_BASE = "https://inference-api.youtab.io"
+_DEFAULT_YOUTAB_INFERENCE_BASE = "https://api.youtab.io"
 
 
 def _resolve_youtab_pricing_credentials() -> tuple[str, str]:
@@ -1947,6 +1947,13 @@ def _resolve_youtab_pricing_credentials() -> tuple[str, str]:
 
     api_key = ""
     creds_base = ""
+    from youtab_agent_cli.auth import get_local_inference_token_state, profile_inference_base_url
+
+    local = get_local_inference_token_state()
+    if local is not None:
+        if not local.get("agent_key"):
+            return ("", "")
+        return (str(local.get("agent_key") or ""), profile_inference_base_url(local))
     try:
         from youtab_agent_cli.auth import resolve_youtab_runtime_credentials
 
@@ -1981,7 +1988,7 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
     if normalized == "youtab":
         api_key, base_url = _resolve_youtab_pricing_credentials()
         if base_url:
-            # Youtab base_url typically looks like https://inference-api.youtab.io/v1
+            # Gateway inference base URL ends in /v1.
             # We need the part before /v1 for our fetch function
             stripped = base_url.rstrip("/")
             if stripped.endswith("/v1"):
@@ -2766,7 +2773,10 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
-def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
+def provider_model_ids(
+    provider: Optional[str], *, force_refresh: bool = False,
+    _raise_youtab_fetch_error: bool = False,
+) -> list[str]:
     """Return the best known model catalog for a provider.
 
     Tries live API endpoints for providers that support them (Codex, Youtab),
@@ -2806,6 +2816,34 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "youtab":
+        from youtab_agent_cli.auth import (
+            _agent_key_is_usable,
+            fetch_youtab_models,
+            get_local_inference_token_state,
+            inference_token_safety_seconds,
+            profile_inference_base_url,
+        )
+
+        local = get_local_inference_token_state()
+        if local is not None:
+            if not _agent_key_is_usable(local, inference_token_safety_seconds(local)):
+                return []
+            try:
+                ids = fetch_youtab_models(
+                    api_key=local["agent_key"],
+                    inference_base_url=profile_inference_base_url(local),
+                    exact=True,
+                )
+                return [
+                    mid for mid in ids
+                    if not mid.lower().startswith(("anthropic/", "anthropic."))
+                ]
+            except Exception:
+                if _raise_youtab_fetch_error:
+                    raise
+                return []
+        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+            return []
         # Try live Youtab Portal /models endpoint
         try:
             from youtab_agent_cli.auth import fetch_youtab_models, resolve_youtab_runtime_credentials
@@ -3077,11 +3115,32 @@ def _credential_fingerprint(provider: str) -> str:
     except Exception:
         pass
 
+    # A profile inference bearer rotates without changing its account or
+    # workspace admission. Keep that catalog during a transient outage, while
+    # an account/workspace change still invalidates it. Malformed tokens retain
+    # the conservative file-mtime behavior below.
+    profile_identity = None
+    if provider == "youtab":
+        try:
+            from youtab_agent_cli.auth import _decode_jwt_claims, get_local_inference_token_state
+
+            local = get_local_inference_token_state()
+            token = local.get("agent_key") if local else None
+            claims = _decode_jwt_claims(token)
+            keys = ("iss", "aud", "sub", "principal_type", "tenant_id", "organization_id", "workspace_id", "scope")
+            if all(isinstance(claims.get(key), str) and claims[key] for key in keys):
+                profile_identity = json.dumps([claims[key] for key in keys], separators=(",", ":"))
+        except Exception:
+            pass
+
     # OAuth / external-file mtimes that change on re-auth
     try:
         from youtab_constants import get_youtab_home
         for rel in ("auth.json", "credentials.json"):
             p = get_youtab_home() / rel
+            if rel == "auth.json" and profile_identity is not None:
+                parts.append(f"{rel}#profile={profile_identity}")
+                continue
             try:
                 parts.append(f"{rel}@{p.stat().st_mtime_ns}")
             except FileNotFoundError:
@@ -3172,7 +3231,33 @@ def cached_provider_model_ids(
         return list(entry["models"])
 
     # Cache miss / stale / forced refresh — call the live path.
-    live = provider_model_ids(normalized, force_refresh=force_refresh)
+    youtab_profile_catalog = False
+    if normalized == "youtab":
+        from youtab_agent_cli.auth import get_local_inference_token_state
+
+        youtab_profile_catalog = (
+            get_local_inference_token_state() is not None
+            or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1"
+        )
+    try:
+        live = provider_model_ids(
+            normalized,
+            force_refresh=force_refresh,
+            _raise_youtab_fetch_error=youtab_profile_catalog,
+        )
+    except Exception as error:
+        if not youtab_profile_catalog:
+            raise
+        from youtab_agent_cli.auth import AuthError
+
+        # Revoked/forbidden credentials and other rejected requests cannot use
+        # stale admission. Only transport or server failure may use the cache.
+        if isinstance(error, AuthError) and error.code in {
+            "models_fetch_rejected", "profile_inference_authority_mismatch",
+        }:
+            live = []
+        else:
+            live = None
     if live:
         cache[normalized] = {
             "fp": fp,
@@ -3182,9 +3267,13 @@ def cached_provider_model_ids(
         _save_provider_models_cache(cache)
         return list(live)
 
-    # Live fetch returned nothing. If we have a stale entry with the
-    # SAME fingerprint, prefer it over an empty result — stale data
-    # beats no data when the network is flaky.
+    if live == [] and youtab_profile_catalog:
+        if normalized in cache:
+            del cache[normalized]
+            _save_provider_models_cache(cache)
+        return []
+
+    # A failed live fetch can use stale IDs only with the same credential.
     if (
         isinstance(entry, dict)
         and entry.get("fp") == fp
@@ -4693,6 +4782,18 @@ def validate_requested_model(
             "recognized": False,
             "message": "Model names cannot contain spaces.",
         }
+
+    if normalized == "youtab":
+        from youtab_agent_cli.auth import get_local_inference_token_state
+
+        if get_local_inference_token_state() is not None:
+            admitted = requested in provider_model_ids("youtab", force_refresh=True)
+            return {
+                "accepted": admitted,
+                "persist": admitted,
+                "recognized": admitted,
+                "message": None if admitted else "Gateway Engine ID is unavailable.",
+            }
 
     if normalized == "lmstudio":
         from youtab_agent_cli.auth import AuthError

@@ -84,7 +84,7 @@ from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from youtab_constants import PARTIAL_STREAM_STUB_ID
 from youtab_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
-from utils import base_url_host_matches, env_var_enabled
+from utils import base_url_host_matches, base_url_hostname, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -306,10 +306,7 @@ def _is_youtab_inference_route(provider: str, base_url: str) -> bool:
     provider = (provider or "").strip().lower()
     if provider == "youtab":
         return True
-    base = str(base_url or "")
-    return (
-        base_url_host_matches(base, "inference-api.youtab.io")
-    )
+    return base_url_hostname(str(base_url or "")) in {"api.youtab.io", "inference-api.youtab.io"}
 
 
 def _billing_or_entitlement_message(

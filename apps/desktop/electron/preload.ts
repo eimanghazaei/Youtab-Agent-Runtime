@@ -79,8 +79,10 @@ contextBridge.exposeInMainWorld('youtabDesktop', {
   sshConfigHosts: () => ipcRenderer.invoke('youtab:ssh-config:hosts'),
   sshResolveHost: host => ipcRenderer.invoke('youtab:ssh-config:resolve', host),
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('youtab:connection-config:probe', remoteUrl),
-  oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('youtab:connection-config:oauth-login', remoteUrl),
-  oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('youtab:connection-config:oauth-logout', remoteUrl),
+  oauthLoginConnectionConfig: (remoteUrl, options) =>
+    ipcRenderer.invoke('youtab:connection-config:oauth-login', remoteUrl, options),
+  oauthLogoutConnectionConfig: (remoteUrl, options) =>
+    ipcRenderer.invoke('youtab:connection-config:oauth-logout', remoteUrl, options),
   // Youtab Cloud: one portal login powers discovery + silent per-agent sign-in
   // (cloud-auto-discovery Phase 3).
   cloud: {
@@ -270,7 +272,7 @@ contextBridge.exposeInMainWorld('youtabDesktop', {
     return () => ipcRenderer.removeListener('youtab:connection:applied', listener)
   },
   onPowerResume: callback => {
-    const listener = () => callback()
+    const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('youtab:power-resume', listener)
 
     return () => ipcRenderer.removeListener('youtab:power-resume', listener)

@@ -1,6 +1,7 @@
 import { type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@youtab/agent-shared'
 import { atom } from 'nanostores'
 
+import type { YoutabConnection } from '@/global'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setGatewayState } from '@/store/session'
 import { YoutabGateway } from '@/youtab'
@@ -29,6 +30,8 @@ interface RegistryConfig {
 interface Secondary {
   profile: string
   gateway: YoutabGateway
+  connection: Pick<YoutabConnection, 'baseUrl' | 'authMode' | 'mode'> | null
+  authGeneration: number
   offEvent: () => void
   offState: () => void
   reconnectTimer: ReturnType<typeof setTimeout> | null
@@ -173,9 +176,17 @@ async function openSecondary(entry: Secondary): Promise<void> {
     return
   }
 
+  const generation = entry.authGeneration
   const conn = await desktop.getConnection(entry.profile)
+  if (generation !== entry.authGeneration) { return }
+  entry.connection = conn
   const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+  if (generation !== entry.authGeneration) { return }
   await entry.gateway.connect(wsUrl)
+  if (generation !== entry.authGeneration) {
+    entry.gateway.close()
+    return
+  }
   void desktop.touchBackend?.(entry.profile).catch(() => undefined)
 }
 
@@ -220,6 +231,8 @@ function createSecondary(profile: string): Secondary {
   const entry: Secondary = {
     profile,
     gateway,
+    connection: null,
+    authGeneration: 0,
     offEvent: () => {},
     offState: () => {},
     reconnectTimer: null,
@@ -327,6 +340,24 @@ export function reconnectSecondaryGateways(): void {
     }
 
     entry.reconnectAttempt = 0
+    clearTimer(entry)
+    void reconnectSecondary(entry)
+  }
+}
+
+// A one-use OAuth ticket keeps its original principal for an open socket.
+// Re-mint only secondaries connected to the changed remote authority.
+export function reconnectSecondaryGatewaysAfterAuthChange(baseUrl: string): void {
+  for (const entry of g.secondaries.values()) {
+    const conn = entry.connection
+    if (!entry.wantOpen || (conn && (conn.mode !== 'remote' || conn.authMode !== 'oauth' || conn.baseUrl !== baseUrl))) {
+      continue
+    }
+    // A first dial may still be waiting for getConnection(), with no authority
+    // metadata yet. Cancel that generation and re-resolve after the auth change.
+    entry.authGeneration++
+    entry.reconnectAttempt = 0
+    entry.gateway.close()
     clearTimer(entry)
     void reconnectSecondary(entry)
   }

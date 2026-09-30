@@ -415,6 +415,26 @@ def _model_flow_youtab(config, current_model="", args=None):
     )
     from youtab_agent_cli.youtab_subscription import prompt_enable_tool_gateway
 
+    from youtab_agent_cli.auth import (
+        DEFAULT_YOUTAB_INFERENCE_URL,
+        get_local_inference_token_state,
+    )
+
+    if get_local_inference_token_state() is not None or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+        from youtab_agent_cli.models import provider_model_ids
+
+        exact_ids = provider_model_ids("youtab", force_refresh=True)
+        if not exact_ids:
+            print("No admitted Gateway inference models are available for this profile.")
+            return
+        selected = _prompt_model_selection(exact_ids, current_model=current_model)
+        if selected not in exact_ids:
+            print("The selected model is not an admitted Gateway Engine ID.")
+            return
+        _update_config_for_provider("youtab", DEFAULT_YOUTAB_INFERENCE_URL, selected)
+        _save_model_choice(selected)
+        return
+
     state = get_provider_auth_state("youtab")
     if not state or not state.get("access_token"):
         print("Not logged into Youtab Portal. Starting login...")

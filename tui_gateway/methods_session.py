@@ -1918,6 +1918,10 @@ def _(rid, params: dict) -> dict:
     {ok:true, logged_in:false}. No scope required for this endpoint.
     """
     try:
+        from youtab_agent_cli.youtab_billing import native_remote_spending_unavailable
+
+        if native_remote_spending_unavailable():
+            return _ok(rid, {"ok": True, "logged_in": False, "error": "unsupported_connection"})
         from agent.billing_view import build_billing_state
 
         state = build_billing_state()
@@ -1949,6 +1953,10 @@ def _(rid, params: dict) -> dict:
     {ok:true, logged_in:false}. No scope required (read-only).
     """
     try:
+        from youtab_agent_cli.youtab_billing import native_remote_spending_unavailable
+
+        if native_remote_spending_unavailable():
+            return _ok(rid, {"ok": True, "logged_in": False, "error": "unsupported_connection"})
         from agent.subscription_view import build_subscription_state
 
         state = build_subscription_state()
@@ -2152,9 +2160,13 @@ def _(rid, params: dict) -> dict:
     pipe), and the browser is opened TUI-side via openExternalUrl — never with the
     gateway's headless webbrowser.open (hence open_browser=False).
     """
+    from youtab_agent_cli.youtab_billing import native_remote_spending_unavailable
+
+    if native_remote_spending_unavailable():
+        return _ok(rid, {"ok": False, "error": "unsupported_connection", "message": "Remote Spending is unavailable for this connection.", "granted": False})
     sid = params.get("session_id") or ""
     try:
-        from youtab_agent_cli.auth import step_up_youtab_billing_scope
+        from youtab_agent_cli.auth import AuthError, step_up_youtab_billing_scope
         from youtab_agent_cli.youtab_billing import BillingError
 
         def _on_verification(url: str, code: str) -> None:
@@ -2168,6 +2180,8 @@ def _(rid, params: dict) -> dict:
             open_browser=False, on_verification=_on_verification
         )
         return _ok(rid, {"ok": True, "granted": bool(granted)})
+    except AuthError as exc:
+        return _ok(rid, {"ok": False, "error": exc.code or "unsupported_connection", "message": str(exc), "granted": False})
     except BillingError as exc:
         # Route typed billing errors (e.g. session_revoked when the token expires
         # mid-device-flow) through the shared spine like the other write handlers,

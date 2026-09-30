@@ -29,7 +29,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from youtab_agent_cli.web_server import _SESSION_TOKEN, app
+from youtab_agent_cli.web_server import _SESSION_TOKEN, _build_oauth_catalog, app
 
 client = TestClient(app)
 HEADERS = {"X-Youtab-Session-Token": _SESSION_TOKEN}
@@ -135,6 +135,51 @@ def test_oauth_provider_status_uses_profile_query(tmp_path, monkeypatch):
 
     assert resp.status_code == 200, resp.text
     assert observed_homes == [profile_home]
+
+
+def test_youtab_catalog_advertises_native_gateway_flow(monkeypatch):
+    monkeypatch.delenv("YOUTAB_AGENT_PORTAL_BASE_URL", raising=False)
+    monkeypatch.delenv("YOUTAB_PORTAL_BASE_URL", raising=False)
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200
+    by_id = {entry["id"]: entry for entry in resp.json()["providers"]}
+    assert by_id["youtab"]["flow"] == "native_pkce"
+    assert by_id["youtab"]["native_base_url"] == "https://api.youtab.io"
+
+
+@pytest.mark.parametrize("env_name", ["YOUTAB_AGENT_PORTAL_BASE_URL", "YOUTAB_PORTAL_BASE_URL"])
+def test_youtab_native_catalog_uses_configured_portal(monkeypatch, env_name):
+    monkeypatch.delenv("YOUTAB_AGENT_PORTAL_BASE_URL", raising=False)
+    monkeypatch.delenv("YOUTAB_PORTAL_BASE_URL", raising=False)
+    monkeypatch.setenv(env_name, "https://staging.example.test/")
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200
+    by_id = {entry["id"]: entry for entry in resp.json()["providers"]}
+    assert by_id["youtab"]["flow"] == "native_pkce"
+    assert by_id["youtab"]["native_base_url"] == "https://staging.example.test"
+
+
+def test_youtab_native_catalog_ignores_blank_primary_override(monkeypatch):
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "  ")
+    monkeypatch.setenv("YOUTAB_PORTAL_BASE_URL", "https://secondary.example.test/")
+    resp = client.get("/api/providers/oauth", headers=HEADERS)
+    assert resp.status_code == 200
+    by_id = {entry["id"]: entry for entry in resp.json()["providers"]}
+    assert by_id["youtab"]["native_base_url"] == "https://secondary.example.test"
+
+
+def test_youtab_native_catalog_rejects_malformed_configured_authority(monkeypatch):
+    from youtab_agent_cli.auth import AuthError
+
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "https://user:pass@staging.example.test")
+    with pytest.raises(AuthError, match="Invalid configured"):
+        _build_oauth_catalog()
+
+
+def test_youtab_legacy_local_oauth_start_fails_closed():
+    resp = client.post("/api/providers/oauth/youtab/start", headers=HEADERS)
+    assert resp.status_code == 400
+    assert "Unsupported flow" in resp.json()["detail"]
 
 
 def test_oauth_start_stores_profile_for_background_completion(tmp_path, monkeypatch):

@@ -1,7 +1,7 @@
 """Youtab Portal ``anthropic/*`` models route on the native Messages wire.
 
 Portal serves its ``anthropic/*`` catalog at
-``https://inference-api.youtab.io/v1/messages`` alongside the
+``https://api.youtab.io/v1/messages`` (and the legacy inference host) alongside the
 OpenAI-compatible ``/v1/chat/completions`` used by everything else it proxies.
 These tests pin the contracts that make that routing correct:
 
@@ -24,6 +24,7 @@ from youtab_agent_cli import runtime_provider as rp
 from youtab_agent_cli.providers import youtab_api_mode
 
 PORTAL_URL = "https://inference-api.youtab.io/v1"
+CURRENT_PORTAL_URL = "https://api.youtab.io/v1"
 # Staging / preview hosts used via YOUTAB_INFERENCE_BASE_URL — not the prod
 # hostname, so Portal behaviour must key off provider=youtab.
 STAGING_URL = "https://ai.wildebeest-newton.ts.net/v1"
@@ -169,7 +170,8 @@ class TestPoolRuntimeResolution:
 class TestClientShape:
 
 
-    def test_lookalike_host_does_not_get_portal_treatment(self):
+    @pytest.mark.parametrize("portal_url", [PORTAL_URL, CURRENT_PORTAL_URL])
+    def test_lookalike_host_does_not_get_portal_treatment(self, portal_url):
         """Substring matching would hand a spoofed host the Portal JWT as a
         Bearer token. Hostname matching must reject it."""
         from agent.anthropic_adapter import (
@@ -177,19 +179,21 @@ class TestClientShape:
             _requires_bearer_auth,
         )
 
-        spoofed = "https://inference-api.youtab.io.attacker.test/v1"
+        spoofed = portal_url.replace(".youtab.io", ".youtab.io.attacker.test")
         assert not _is_youtab_portal_endpoint(spoofed)
         assert not _requires_bearer_auth(spoofed)
 
 
-    def test_portal_jwt_authenticates_with_bearer_not_x_api_key(self):
+    @pytest.mark.parametrize("portal_url", [PORTAL_URL, CURRENT_PORTAL_URL])
+    def test_portal_jwt_authenticates_with_bearer_not_x_api_key(self, portal_url):
         """Portal validates the OAuth invoke JWT as a Bearer credential, the
         same way its /chat/completions route does. Sending it as x-api-key
         (the adapter's third-party default) 401s."""
         from agent.anthropic_adapter import build_anthropic_client
 
-        client = build_anthropic_client("portal-invoke-jwt", PORTAL_URL)
+        client = build_anthropic_client("portal-invoke-jwt", portal_url)
 
+        assert str(client.base_url).rstrip("/") == portal_url.removesuffix("/v1")
         assert client.auth_token == "portal-invoke-jwt"
         assert client.api_key is None
 
@@ -230,6 +234,7 @@ class TestModelIdPassthrough:
             base_url=base_url,
         )
 
+    @pytest.mark.parametrize("portal_url", [PORTAL_URL, CURRENT_PORTAL_URL])
     @pytest.mark.parametrize(
         "model",
         [
@@ -238,10 +243,10 @@ class TestModelIdPassthrough:
             "anthropic/claude-haiku-4.5",
         ],
     )
-    def test_portal_receives_the_catalog_id_unchanged(self, model):
+    def test_portal_receives_the_catalog_id_unchanged(self, model, portal_url):
         """Portal routes on its own ``vendor/model`` ids. Stripping the prefix
         or hyphenating the dots makes the model unresolvable there."""
-        assert self._kwargs(model, PORTAL_URL)["model"] == model
+        assert self._kwargs(model, portal_url)["model"] == model
 
 
 
@@ -391,8 +396,9 @@ class TestPortalThinkingReplay:
             for b in assistant["content"]
         )
 
-    def test_portal_keeps_signed_thinking_on_the_latest_assistant_turn(self):
-        self._assert_thinking_kept(PORTAL_URL)
+    @pytest.mark.parametrize("portal_url", [PORTAL_URL, CURRENT_PORTAL_URL])
+    def test_portal_keeps_signed_thinking_on_the_latest_assistant_turn(self, portal_url):
+        self._assert_thinking_kept(portal_url)
 
     def test_staging_host_with_env_override_keeps_signed_thinking(
         self, monkeypatch
@@ -485,7 +491,8 @@ class TestAuxiliaryDualWire:
         assert extra.get("session_id") == "sess-sticky-aux"
 
 
-    def test_aux_create_forwards_portal_catalog_id_verbatim(self):
+    @pytest.mark.parametrize("portal_url", [PORTAL_URL, CURRENT_PORTAL_URL])
+    def test_aux_create_forwards_portal_catalog_id_verbatim(self, portal_url):
         """Regression: adapter must pass base_url into build_anthropic_kwargs.
 
         Without it the Portal carve-out never fires and
@@ -510,7 +517,7 @@ class TestAuxiliaryDualWire:
             MagicMock(name="anthropic-sdk"),
             "anthropic/claude-opus-4.8",
             "portal-invoke-jwt",
-            PORTAL_URL,
+            portal_url,
         )
         with patch(
             "agent.anthropic_adapter.create_anthropic_message",

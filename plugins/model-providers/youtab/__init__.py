@@ -10,9 +10,19 @@ from providers.base import ProviderProfile
 class YoutabProfile(ProviderProfile):
     """Youtab Portal — product tags, reasoning with Youtab-specific omission."""
 
+    def _uses_gateway_chat_wire(self, base_url: str | None) -> bool:
+        from youtab_agent_cli.auth import DEFAULT_YOUTAB_PORTAL_URL, _youtab_portal_env_override
+
+        gateway_base = (_youtab_portal_env_override() or DEFAULT_YOUTAB_PORTAL_URL) + "/v1"
+        return (base_url or gateway_base).rstrip("/").lower() == gateway_base.lower()
+
     def build_extra_body(
         self, *, session_id: str | None = None, **context
     ) -> dict[str, Any]:
+        if self._uses_gateway_chat_wire(context.get("base_url")):
+            # The governed Gateway chat schema rejects the former Portal
+            # tags, session_id and provider fields.
+            return {}
         body: dict[str, Any] = {"tags": youtab_portal_tags(session_id=session_id)}
         # Top-level session_id → provider sticky routing key. Pins every
         # turn of a session to the same upstream endpoint so explicit
@@ -56,6 +66,8 @@ class YoutabProfile(ProviderProfile):
         **context,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Youtab: passes full reasoning_config, but OMITS when disabled."""
+        if self._uses_gateway_chat_wire(context.get("base_url")):
+            return {}, {}
         extra_body = {}
         if supports_reasoning:
             if reasoning_config is not None:
@@ -76,12 +88,9 @@ youtab = YoutabProfile(
     display_name="Youtab B.V.",
     description="Youtab B.V. — Youtab model family",
     signup_url="https://youtab.io/",
-    fallback_models=(
-        "anthropic/claude-sonnet-5",
-        "openai/gpt-5.5",
-    ),
-    base_url="https://inference-api.youtab.io/v1",
-    auth_type="oauth_device_code",
+    fallback_models=(),
+    base_url="https://api.youtab.io/v1",
+    auth_type="oauth_external",
 )
 
 register_provider(youtab)

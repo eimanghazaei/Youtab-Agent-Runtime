@@ -32,7 +32,7 @@ def _patch_opencode_pool(monkeypatch, *, available: bool):
     monkeypatch.setattr(
         auth,
         "_load_auth_store",
-        lambda: {
+        lambda *_args, **_kwargs: {
             "version": 1,
             "providers": {},
             "active_provider": None,

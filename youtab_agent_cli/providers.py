@@ -20,6 +20,7 @@ Other modules import from this file.  No parallel registries.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -56,8 +57,8 @@ YOUTAB_AGENT_OVERLAYS: Dict[str, YoutabOverlay] = {
     ),
     "youtab": YoutabOverlay(
         transport="openai_chat",
-        auth_type="oauth_device_code",
-        base_url_override="https://inference-api.youtab.io/v1",
+        auth_type="oauth_external",
+        base_url_override="https://api.youtab.io/v1",
     ),
     "openai-codex": YoutabOverlay(
         transport="codex_responses",
@@ -614,20 +615,12 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
 
 
 def youtab_api_mode(model: str = "") -> str:
-    """Resolve the wire protocol for a Youtab Portal model.
+    """Reject Messages models on the Gateway profile; preserve hosted legacy wire."""
+    if str(model or "").strip().lower().startswith(("anthropic/", "anthropic.")):
+        from youtab_agent_cli.auth import get_local_inference_token_state
 
-    Portal serves its ``anthropic/*`` catalog on a native Anthropic Messages
-    route (``/v1/messages``) alongside the OpenAI-compatible
-    ``/v1/chat/completions`` used by every other model it proxies.  Claude
-    traffic goes to the native route so it gets Anthropic's own request shape
-    (inner-block ``cache_control`` breakpoints, thinking blocks) instead of the
-    OpenAI-wire translation.
-
-    When *model* is empty/unknown, defaults to ``chat_completions`` — the
-    historical Youtab transport — so callers that don't yet know the model
-    stay on the safer OpenAI-compatible path.
-    """
-    if str(model or "").strip().lower().startswith("anthropic/"):
+        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" or get_local_inference_token_state() is not None:
+            raise ValueError("Youtab Gateway does not support /v1/messages for anthropic/* models")
         return "anthropic_messages"
     return "chat_completions"
 
