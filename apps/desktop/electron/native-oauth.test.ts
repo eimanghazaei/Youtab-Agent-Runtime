@@ -880,6 +880,11 @@ test('cookie fallback remains available when no native session was stored', asyn
   assert.equal(cookieFallbackAfterNativeError(new Error('network unavailable')), null)
 })
 
+test('native session mutation cannot fall through to a legacy cookie', async () => {
+  const mutation = Object.assign(new Error('Native session update in progress'), { noCookieFallback: true })
+  await assert.rejects(Promise.reject(mutation).catch(cookieFallbackAfterNativeError), error => error === mutation)
+})
+
 test('scheduled refresh saves pending rotation before profile write and finalizes afterward', async () => {
   const f = refreshFixture()
   f.setWrite(async (profile, token) => {

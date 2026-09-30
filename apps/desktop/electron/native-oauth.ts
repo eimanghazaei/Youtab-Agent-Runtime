@@ -796,7 +796,10 @@ export async function revalidateNativeSessionsBeforeResume(
 
 /** A terminal native rejection must not turn into a cookie fallback. */
 export function cookieFallbackAfterNativeError(error: unknown): null {
-  if (typeof error === 'object' && error !== null && (error as { needsOauthLogin?: unknown }).needsOauthLogin === true) {
+  if (typeof error === 'object' && error !== null && (
+    (error as { needsOauthLogin?: unknown }).needsOauthLogin === true
+    || (error as { noCookieFallback?: unknown }).noCookieFallback === true
+  )) {
     throw error
   }
   return null

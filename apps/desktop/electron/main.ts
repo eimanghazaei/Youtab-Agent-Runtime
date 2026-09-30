@@ -6483,7 +6483,9 @@ const nativeRefresh = createNativeRefreshCoordinator({
 })
 
 function ensureNativeAccessToken(baseUrl: string, forceRefresh = false): Promise<string | null> {
-  if (nativeSessionLifecycle.isMutating(baseUrl)) { return Promise.resolve(null) }
+  if (nativeSessionLifecycle.isMutating(baseUrl)) {
+    return Promise.reject(Object.assign(new Error('Native session update in progress'), { noCookieFallback: true }))
+  }
   return nativeRefresh.ensure(baseUrl, forceRefresh)
 }
 

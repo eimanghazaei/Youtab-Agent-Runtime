@@ -322,6 +322,18 @@ def test_inference_only_profile_appears_in_model_picker(profile_env, monkeypatch
     assert not any(row["slug"] == "youtab" for row in model_switch.list_authenticated_providers())
 
 
+def test_inference_store_lock_timeout_does_not_close_model_picker(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, model_switch
+    import agent.models_dev as models_dev
+
+    monkeypatch.setattr(models_dev, "fetch_models_dev", lambda: {})
+    monkeypatch.setattr(auth, "get_local_inference_token_state", lambda: (_ for _ in ()).throw(
+        TimeoutError("Timed out waiting for auth store lock"),
+    ))
+    rows = model_switch.list_authenticated_providers()
+    assert not any(row["slug"] == "youtab" for row in rows)
+
+
 def test_root_cli_account_switch_invalidates_previous_desktop_inference(profile_env, monkeypatch):
     from youtab_agent_cli import auth, runtime_provider
     import youtab_constants

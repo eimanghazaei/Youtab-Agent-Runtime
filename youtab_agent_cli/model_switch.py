@@ -2324,8 +2324,12 @@ def list_authenticated_providers(
                 get_local_inference_token_state,
                 inference_token_safety_seconds,
             )
-            local = get_local_inference_token_state()
-            has_creds = bool(local and _agent_key_is_usable(local, inference_token_safety_seconds(local)))
+            try:
+                local = get_local_inference_token_state()
+                has_creds = bool(local and _agent_key_is_usable(local, inference_token_safety_seconds(local)))
+            except TimeoutError:
+                # Contention on this profile must not hide unrelated providers.
+                has_creds = False
         if not has_creds:
             continue
 
