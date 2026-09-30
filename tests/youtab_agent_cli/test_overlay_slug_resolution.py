@@ -50,7 +50,7 @@ def test_mapped_provider_credential_pool_visibility(monkeypatch):
     monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {"gemini": "google-ai-studio"})
     monkeypatch.setattr(
         "youtab_agent_cli.auth._load_auth_store",
-        lambda: {"providers": {}, "credential_pool": {"gemini": {"token": "fake"}}},
+        lambda path=None: {"providers": {}, "credential_pool": {"gemini": {"token": "fake"}}},
     )
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
 

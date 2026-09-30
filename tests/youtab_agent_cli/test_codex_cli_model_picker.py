@@ -79,7 +79,7 @@ def claude_code_only_env(tmp_path, monkeypatch):
     """Set up an environment where Anthropic credentials only exist in
     ~/.claude/.credentials.json (Claude Code) — not in env vars or Youtab
     auth store."""
-    youtab_home = tmp_path / ".youtab-agent-runtime"
+    youtab_home = tmp_path / "isolated-youtab-home"
     youtab_home.mkdir()
 
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(youtab_home))
