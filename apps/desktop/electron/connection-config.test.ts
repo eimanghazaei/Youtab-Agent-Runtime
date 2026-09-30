@@ -339,6 +339,8 @@ test('native provider authority follows the configured Portal and rejects mismat
   assert.throws(() => requireNativePortalAuthority('https://api.youtab.io', staging), /does not match/)
   assert.throws(() => requireNativePortalAuthority('https://evil.example', staging), /does not match/)
   assert.throws(() => resolvePortalBaseUrl({ YOUTAB_PORTAL_BASE_URL: 'file:///tmp/portal' }), /valid base URL/)
+  assert.throws(() => resolvePortalBaseUrl({ YOUTAB_PORTAL_BASE_URL: 'http://evil.example' }), /valid base URL/)
+  assert.equal(resolvePortalBaseUrl({ YOUTAB_PORTAL_BASE_URL: 'http://127.0.0.1:8080' }), 'http://127.0.0.1:8080')
 })
 
 test('normalizeRemoteBaseUrl strips trailing slashes, hash, and query', () => {

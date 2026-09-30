@@ -1947,11 +1947,13 @@ def _resolve_youtab_pricing_credentials() -> tuple[str, str]:
 
     api_key = ""
     creds_base = ""
-    from youtab_agent_cli.auth import get_local_inference_token_state
+    from youtab_agent_cli.auth import get_local_inference_token_state, profile_inference_base_url
 
     local = get_local_inference_token_state()
     if local is not None:
-        return (str(local.get("agent_key") or ""), _DEFAULT_YOUTAB_INFERENCE_BASE + "/v1")
+        if not local.get("agent_key"):
+            return ("", "")
+        return (str(local.get("agent_key") or ""), profile_inference_base_url(local))
     try:
         from youtab_agent_cli.auth import resolve_youtab_runtime_credentials
 
@@ -2815,11 +2817,11 @@ def provider_model_ids(
             return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "youtab":
         from youtab_agent_cli.auth import (
-            DEFAULT_YOUTAB_INFERENCE_URL,
             _agent_key_is_usable,
             fetch_youtab_models,
             get_local_inference_token_state,
             inference_token_safety_seconds,
+            profile_inference_base_url,
         )
 
         local = get_local_inference_token_state()
@@ -2829,7 +2831,7 @@ def provider_model_ids(
             try:
                 ids = fetch_youtab_models(
                     api_key=local["agent_key"],
-                    inference_base_url=DEFAULT_YOUTAB_INFERENCE_URL,
+                    inference_base_url=profile_inference_base_url(local),
                     exact=True,
                 )
                 return [

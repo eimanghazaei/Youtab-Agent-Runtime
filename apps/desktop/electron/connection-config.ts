@@ -77,7 +77,9 @@ function resolvePortalBaseUrl(env = process.env) {
     || String(env.YOUTAB_PORTAL_BASE_URL || '').trim()
     || 'https://api.youtab.io'
   const parsed = new URL(raw)
-  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
+  if (!['http:', 'https:'].includes(parsed.protocol)
+    || (parsed.protocol === 'http:' && !['localhost', '127.0.0.1'].includes(parsed.hostname))
+    || parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error('Configured Youtab Portal URL is not a valid base URL.')
   }
   return normalizeRemoteBaseUrl(raw)

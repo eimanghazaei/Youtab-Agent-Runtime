@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Optional
 
-from utils import base_url_host_matches
+from utils import base_url_host_matches, base_url_hostname
 
 
 @dataclass
@@ -74,7 +74,7 @@ def is_youtab_inference_route(provider: str, base_url: str) -> bool:
     """True when the failing route is the Youtab-managed inference gateway."""
     if (provider or "").strip().lower() == "youtab":
         return True
-    return base_url_host_matches(str(base_url or ""), "api.youtab.io")
+    return base_url_hostname(str(base_url or "")) in {"api.youtab.io", "inference-api.youtab.io"}
 
 
 def _youtab_billing_url() -> Optional[str]:

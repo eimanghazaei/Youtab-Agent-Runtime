@@ -2222,9 +2222,27 @@ def _youtab_portal_env_override() -> Optional[str]:
     Returns a trailing-slash-stripped non-empty string, or ``None`` when
     neither env var is set/blank.
     """
-    return _optional_base_url(os.getenv("YOUTAB_AGENT_PORTAL_BASE_URL")) or _optional_base_url(
+    value = _optional_base_url(os.getenv("YOUTAB_AGENT_PORTAL_BASE_URL")) or _optional_base_url(
         os.getenv("YOUTAB_PORTAL_BASE_URL")
     )
+    if value is None:
+        return None
+    try:
+        parsed = urlparse(value)
+        _ = parsed.port
+    except ValueError as exc:
+        raise AuthError("Invalid configured Youtab Portal URL.", provider="youtab") from exc
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or (parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1"})
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise AuthError("Invalid configured Youtab Portal URL.", provider="youtab")
+    return value
 
 
 def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
@@ -5707,6 +5725,19 @@ def _is_profile_inference_token(token: str) -> bool:
     )
 
 
+def profile_inference_base_url(state: Dict[str, Any]) -> str:
+    """Bind a profile inference bearer to the configured native Gateway."""
+    portal = _youtab_portal_env_override() or DEFAULT_YOUTAB_PORTAL_URL
+    issuer = _decode_jwt_claims(state.get("agent_key")).get("iss")
+    if issuer != portal:
+        raise AuthError(
+            "Profile inference credential does not match the configured Gateway.",
+            provider="youtab",
+            code="profile_inference_authority_mismatch",
+        )
+    return f"{portal}/v1"
+
+
 def get_local_inference_token_state() -> Optional[Dict[str, Any]]:
     """Read only the active profile's inference entry, never the global store."""
     path = _auth_file_path()
@@ -5738,6 +5769,7 @@ def persist_profile_inference_token(token: Optional[str]) -> None:
     if value:
         if not _is_profile_inference_token(value):
             raise AuthError("Invalid inference credential (type, audience, scope, or expiry).", provider="youtab")
+        profile_inference_base_url({"agent_key": value})
         expires_at = _youtab_jwt_expires_at(value)
         expires_epoch = _parse_iso_timestamp(expires_at)
         if expires_epoch is None:

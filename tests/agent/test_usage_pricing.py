@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
@@ -289,6 +291,14 @@ def test_google_and_vertex_routes_share_official_pricing_snapshot():
 
     assert all(route.provider == "google" for route in routes)
     assert all(route.billing_mode == "official_docs_snapshot" for route in routes)
+
+
+@pytest.mark.parametrize("host", ["api.youtab.io", "inference-api.youtab.io"])
+def test_youtab_usage_pricing_classifies_only_exact_compatibility_hosts(host):
+    route = resolve_billing_route("model", provider="custom", base_url=f"https://{host}/v1")
+    assert (route.provider, route.billing_mode) == ("youtab", "official_models_api")
+    for lookalike in (f"child.{host}", f"{host}.attacker.test"):
+        assert resolve_billing_route("model", provider="custom", base_url=f"https://{lookalike}/v1").provider != "youtab"
 
 
 def test_vertex_default_model_estimates_cached_usage(monkeypatch):

@@ -1484,7 +1484,7 @@ def _resolve_profile_inference_runtime(
     return {
         "provider": "youtab",
         "api_mode": youtab_api_mode(target_model),
-        "base_url": auth_mod.DEFAULT_YOUTAB_INFERENCE_URL,
+        "base_url": auth_mod.profile_inference_base_url(state),
         "api_key": state["agent_key"],
         "expires_at": state["agent_key_expires_at"],
         "source": "profile_inference_token",

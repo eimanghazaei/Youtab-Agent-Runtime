@@ -59,12 +59,13 @@ def _inference_jwt(
     exp: int, scope: str = "inference:invoke", token_type: str = "inference_access",
     audience: str = "https://api.youtab.io/v1/inference",
     subject: str = "user-a", workspace: str = "workspace-a",
+    issuer: str = "https://api.youtab.io",
 ) -> str:
     def encode(value: dict) -> str:
         return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
 
     claims = {
-        "iss": "https://api.youtab.io", "aud": audience, "type": token_type,
+        "iss": issuer, "aud": audience, "type": token_type,
         "scope": scope, "exp": exp, "sub": subject,
         "principal_type": "user", "tenant_id": "tenant-a",
         "organization_id": "organization-a", "workspace_id": workspace,
@@ -138,6 +139,79 @@ def test_profile_inference_token_is_local_and_resolves_gateway(profile_env, monk
         runtime_provider._resolve_profile_inference_runtime(
             requested_provider="youtab", target_model="deepseek.v4_flash",
         )
+
+
+def test_staging_profile_uses_one_authority_for_models_chat_and_proxy(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, runtime_provider
+    from youtab_agent_cli.proxy.adapters.youtab_portal import YoutabPortalAdapter
+
+    staging = "https://staging.example.test"
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", staging)
+    token = _inference_jwt(
+        int(time.time()) + 900, issuer=staging, audience=f"{staging}/v1/inference",
+    )
+    auth.persist_profile_inference_token(token)
+    seen = []
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **kw: seen.append(kw) or ["deepseek.v4_flash"])
+    assert models.provider_model_ids("youtab") == ["deepseek.v4_flash"]
+    assert seen[0]["inference_base_url"] == f"{staging}/v1"
+    assert seen[0]["api_key"] == token
+    resolved = runtime_provider._resolve_profile_inference_runtime(
+        requested_provider="youtab", target_model="deepseek.v4_flash",
+    )
+    assert resolved["base_url"] == f"{staging}/v1"
+    assert resolved["api_key"] == token
+    assert YoutabPortalAdapter().get_credential().base_url == f"{staging}/v1"
+    assert models._resolve_youtab_pricing_credentials() == (token, f"{staging}/v1")
+
+
+def test_blank_primary_portal_override_uses_secondary_for_profile(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, runtime_provider
+
+    staging = "https://secondary.example.test"
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "  ")
+    monkeypatch.setenv("YOUTAB_PORTAL_BASE_URL", f"{staging}/")
+    token = _inference_jwt(
+        int(time.time()) + 900, issuer=staging, audience=f"{staging}/v1/inference",
+    )
+    auth.persist_profile_inference_token(token)
+    assert runtime_provider._resolve_profile_inference_runtime(
+        requested_provider="youtab", target_model="deepseek.v4_flash",
+    )["base_url"] == f"{staging}/v1"
+
+
+def test_profile_token_cannot_cross_configured_gateway_authority(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models, runtime_provider
+    from youtab_agent_cli.proxy.adapters.youtab_portal import YoutabPortalAdapter
+
+    staging = "https://staging.example.test"
+    token = _inference_jwt(
+        int(time.time()) + 900, issuer=staging, audience=f"{staging}/v1/inference",
+    )
+    with pytest.raises(auth.AuthError, match="does not match"):
+        auth.persist_profile_inference_token(token)
+    assert not (profile_env["profile"] / "auth.json").exists()
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", staging)
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: pytest.fail("cross-authority model request"))
+    assert models.provider_model_ids("youtab") == []
+    with pytest.raises(auth.AuthError, match="does not match"):
+        runtime_provider._resolve_profile_inference_runtime(
+            requested_provider="youtab", target_model="deepseek.v4_flash",
+        )
+    with pytest.raises(auth.AuthError, match="does not match"):
+        YoutabPortalAdapter().get_credential()
+
+
+@pytest.mark.parametrize("override", ["file:///tmp/gateway", "http://evil.example", "https://user:pass@evil.example", "https://staging.example.test/?token=x", "https://staging.example.test:bad"])
+def test_malformed_native_gateway_override_fails_closed(profile_env, monkeypatch, override):
+    from youtab_agent_cli import auth
+
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", override)
+    with pytest.raises(auth.AuthError, match="Invalid configured"):
+        auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    assert not (profile_env["profile"] / "auth.json").exists()
 
 
 def test_profile_inference_cli_writer_uses_stdin_without_echo(profile_env, monkeypatch, capsys):

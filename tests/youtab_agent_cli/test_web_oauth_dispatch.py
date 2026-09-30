@@ -29,7 +29,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from youtab_agent_cli.web_server import _SESSION_TOKEN, app
+from youtab_agent_cli.web_server import _SESSION_TOKEN, _build_oauth_catalog, app
 
 client = TestClient(app)
 HEADERS = {"X-Youtab-Session-Token": _SESSION_TOKEN}
@@ -166,6 +166,14 @@ def test_youtab_native_catalog_ignores_blank_primary_override(monkeypatch):
     assert resp.status_code == 200
     by_id = {entry["id"]: entry for entry in resp.json()["providers"]}
     assert by_id["youtab"]["native_base_url"] == "https://secondary.example.test"
+
+
+def test_youtab_native_catalog_rejects_malformed_configured_authority(monkeypatch):
+    from youtab_agent_cli.auth import AuthError
+
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "https://user:pass@staging.example.test")
+    with pytest.raises(AuthError, match="Invalid configured"):
+        _build_oauth_catalog()
 
 
 def test_youtab_legacy_local_oauth_start_fails_closed():

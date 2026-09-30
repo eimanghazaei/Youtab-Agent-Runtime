@@ -26,6 +26,7 @@ from youtab_agent_cli.auth import (
     _write_shared_youtab_state,
     get_local_inference_token_state,
     inference_token_safety_seconds,
+    profile_inference_base_url,
     resolve_youtab_runtime_credentials,
 )
 from youtab_agent_cli.proxy.adapters.base import UpstreamAdapter, UpstreamCredential
@@ -118,7 +119,7 @@ class YoutabPortalAdapter(UpstreamAdapter):
                     raise RuntimeError("Profile inference credential is unavailable; Desktop sign-in is required")
                 return UpstreamCredential(
                     bearer=local["agent_key"],
-                    base_url=DEFAULT_YOUTAB_INFERENCE_URL,
+                    base_url=profile_inference_base_url(local),
                     expires_at=local.get("agent_key_expires_at"),
                 )
             if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
