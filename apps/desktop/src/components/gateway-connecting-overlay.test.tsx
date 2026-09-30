@@ -51,11 +51,9 @@ function resetStores() {
 beforeEach(resetStores)
 afterEach(cleanup)
 
-// The connecting overlay renders "CONN" + a scrambled tail inside one
-// uppercase span; match that node specifically so the recovery overlay's
+// Match the startup status specifically so the recovery overlay's
 // "Lost connection…" copy doesn't read as a false positive.
-const isConnectingShown = () =>
-  screen.queryAllByText((_, el) => /^CONN[/\\|\-_=+<>~:*A-Z]*$/.test(el?.textContent?.trim() ?? '')).length > 0
+const isConnectingShown = () => Boolean(screen.queryByRole('status', { name: 'Youtab trying to connect' }))
 
 const isRecoveryShown = () =>
   Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
@@ -181,9 +179,8 @@ describe('connecting overlay vs recovery surface', () => {
       progress: 10
     })
 
-    let container!: HTMLElement
     await act(async () => {
-      ;({ container } = render(<GatewayConnectingOverlay />))
+      render(<GatewayConnectingOverlay />)
     })
 
     // Exact heading text, no other title/intro wording added.
@@ -194,12 +191,13 @@ describe('connecting overlay vs recovery surface', () => {
     // --font-sans → --dt-font-sans).
     expect(heading.className).toContain('var(--youtab-ice-blue)')
     expect(heading.className).toContain('font-sans')
-    // The animated CONNECTING status node is still rendered alongside the
-    // heading (kept as a subordinate status indicator, not a title). Its glyphs
-    // scramble frame-to-frame, so assert the node exists rather than its text.
-    const status = container.querySelector('[class*="opacity-70"]')
+    // The stable status copy remains subordinate to the heading. Only its
+    // trailing dots animate, so users can read the message at every frame.
+    const status = screen.getByRole('status', { name: 'Youtab trying to connect' })
     expect(status).not.toBeNull()
     expect(status).not.toBe(heading)
+    expect(status.textContent).toBe('Youtab trying to connect…')
+    expect(status.querySelector('[class*="motion-safe:animate-pulse"]')).not.toBeNull()
   })
 
   it('FIX: once the prolonged reconnect raises a recoverable boot error, the recovery overlay takes over', async () => {

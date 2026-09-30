@@ -1,15 +1,10 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
-import { DecodeText } from '@/components/ui/decode-text'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $gatewayState } from '@/store/session'
-
-// Decode mechanics live in the shared <DecodeText> primitive
-// (components/ui/decode-text.tsx). "CONN" stays legible via prefix={4}.
-const TEXT = 'CONNECTING'
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
 const TEXT_OUT_MS = 360
@@ -156,14 +151,10 @@ export function GatewayConnectingOverlay() {
         <h1 className="text-center font-sans text-3xl font-semibold tracking-tight text-[color:var(--youtab-ice-blue)]">
           Youtab Agent Runtime
         </h1>
-        {/* CONNECTING is a status indicator, not a title — kept subordinate. */}
-        <DecodeText
-          active={phase === 'live' && (previewing || connecting)}
-          className="pl-[0.4em] text-sm tracking-[0.35em] text-(--theme-primary) opacity-70"
-          cursor
-          prefix={4}
-          text={TEXT}
-        />
+        {/* Keep the message legible throughout startup; animate only its dots. */}
+        <p aria-label="Youtab trying to connect" className="text-sm text-(--theme-primary) opacity-70" role="status">
+          Youtab trying to connect<span aria-hidden="true" className="motion-safe:animate-pulse">…</span>
+        </p>
       </div>
     </div>
   )
