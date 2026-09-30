@@ -510,6 +510,7 @@ test('cookiesHaveLiveSession is false for empty values', () => {
 
 test('cookiesHaveLiveSession is false for unrelated cookies and non-arrays', () => {
   assert.equal(cookiesHaveLiveSession([{ name: 'other', value: 'x' }]), false)
+  assert.equal(cookiesHaveLiveSession([{ name: 'privy-token', value: 'cloud-session' }]), false)
   assert.equal(cookiesHaveLiveSession(null), false)
   assert.equal(cookiesHaveLiveSession(undefined), false)
   assert.equal(cookiesHaveLiveSession([]), false)

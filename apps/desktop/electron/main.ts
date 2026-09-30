@@ -5944,7 +5944,7 @@ async function hasLiveOauthSession(baseUrl) {
   return readLive()
 }
 
-async function clearOauthSession(baseUrl) {
+async function clearOauthSession(baseUrl, gatewayOnly = false) {
   const sess = getOauthSession()
 
   if (!sess) {
@@ -5954,7 +5954,7 @@ async function clearOauthSession(baseUrl) {
   try {
     const cookies = await sess.cookies.get(baseUrl ? { url: baseUrl } : {})
     await Promise.all(
-      cookies.map(c => {
+      cookies.filter(c => !gatewayOnly || cookiesHaveLiveSession([c])).map(c => {
         const scheme = c.secure ? 'https' : 'http'
         const cookieUrl = `${scheme}://${c.domain.replace(/^\./, '')}${c.path || '/'}`
 
@@ -10019,7 +10019,7 @@ ipcMain.handle('youtab:connection-config:oauth-logout', async (_event, rawUrl, o
     await clearGatewaySessionCredentials(
       true,
       () => nativeSessionLifecycle.logout(baseUrl, profile),
-      () => clearOauthSession(baseUrl),
+      () => clearOauthSession(baseUrl, true),
       releasePowerResumeAfterAuthChange
     )
     return { ok: true, connected: (await hasLiveOauthSession(baseUrl)) || hasNativeSession(baseUrl) }
