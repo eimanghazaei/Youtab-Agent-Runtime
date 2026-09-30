@@ -1295,11 +1295,14 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
         auth_store["providers"] = {}
         providers = auth_store["providers"]
     providers[provider_id] = state
-    if provider_id == "youtab" and _global_auth_file_path() is None:
-        # A root-scoped CLI sign-in may switch accounts. Its new session must
-        # not leave the previous Desktop inference bearer authoritative.
-        providers.pop("youtab_inference", None)
     auth_store["active_provider"] = provider_id
+
+
+def _save_youtab_login_state(auth_store: Dict[str, Any], state: Dict[str, Any]) -> None:
+    """Save a new CLI login without retaining a prior root Desktop bearer."""
+    _save_provider_state(auth_store, "youtab", state)
+    if _global_auth_file_path() is None:
+        auth_store["providers"].pop("youtab_inference", None)
 
 
 def _save_provider_state_to_source(
@@ -6115,7 +6118,7 @@ def persist_youtab_credentials(
 
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        _save_provider_state(auth_store, "youtab", state)
+        _save_youtab_login_state(auth_store, state)
         _save_auth_store(auth_store)
 
     # Mirror to the shared store so a new profile can one-tap import
@@ -8782,7 +8785,7 @@ def _login_youtab(args, pconfig: ProviderConfig) -> None:
 
         with _auth_store_lock():
             auth_store = _load_auth_store()
-            _save_provider_state(auth_store, "youtab", auth_state)
+            _save_youtab_login_state(auth_store, auth_state)
             saved_to = _save_auth_store(auth_store)
 
         # Mirror to the shared store so other profiles can one-tap import

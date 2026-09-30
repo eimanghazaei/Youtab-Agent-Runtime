@@ -298,7 +298,7 @@ def test_root_cli_account_switch_invalidates_previous_desktop_inference(profile_
 
     with auth._auth_store_lock():
         store = auth._load_auth_store()
-        auth._save_provider_state(store, "youtab", {
+        auth._save_youtab_login_state(store, {
             "access_token": "account-b-access", "refresh_token": "account-b-refresh",
         })
         auth._save_auth_store(store)
@@ -311,6 +311,27 @@ def test_root_cli_account_switch_invalidates_previous_desktop_inference(profile_
         runtime_provider._resolve_profile_inference_runtime(
             requested_provider="youtab", target_model="deepseek.v4_flash",
         )
+
+
+def test_root_cli_refresh_keeps_current_desktop_inference(profile_env, monkeypatch):
+    from youtab_agent_cli import auth
+    import youtab_constants
+
+    root = profile_env["global"].parent / "root-scope"
+    root.mkdir()
+    monkeypatch.setattr(youtab_constants, "_get_platform_default_youtab_home", lambda: root)
+    monkeypatch.delenv("YOUTAB_AGENT_HOME")
+    token = _inference_jwt(int(time.time()) + 900)
+    auth.persist_profile_inference_token(token)
+
+    with auth._auth_store_lock():
+        store = auth._load_auth_store()
+        auth._save_provider_state(store, "youtab", {
+            "access_token": "refreshed-account-access", "refresh_token": "rotated-refresh",
+        })
+        auth._save_auth_store(store)
+
+    assert auth.get_local_inference_token_state()["agent_key"] == token
 
 
 def test_profile_inference_token_rejects_account_scope(profile_env):
