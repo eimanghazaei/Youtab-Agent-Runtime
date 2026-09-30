@@ -97,7 +97,7 @@ function fakeDesktop(authMode: 'oauth' | 'token' = 'token', mode?: 'local' | 're
 
   return {
     revalidateConnection: vi.fn(async () => ({ ok: true, rebuilt: false })),
-    getConnection: vi.fn(async () => conn),
+    getConnection: vi.fn(async (_profile?: string) => conn),
     getGatewayWsUrl: vi.fn(async () => conn.wsUrl),
     getBootProgress: vi.fn(async () => ({
       error: null,
@@ -325,6 +325,36 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(FakeWebSocket.instances).toHaveLength(4)
     expect(FakeWebSocket.instances[2].readyState).toBe(FakeWebSocket.OPEN)
     expect(FakeWebSocket.instances[3].readyState).toBe(FakeWebSocket.OPEN)
+  })
+
+  it('discards a first-opening secondary that started before the auth change', async () => {
+    const desktop = fakeDesktop('oauth', 'remote')
+    ;(window as { youtabDesktop?: unknown }).youtabDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+
+    const originalGetConnection = desktop.getConnection
+    const conn = await originalGetConnection('background')
+    let releaseOld!: (connection: typeof conn) => void
+    let firstBackground = true
+    desktop.getConnection = vi.fn(profile => {
+      if (profile === 'background' && firstBackground) {
+        firstBackground = false
+        return new Promise<typeof conn>(resolve => { releaseOld = resolve })
+      }
+      return originalGetConnection(profile)
+    })
+    const pendingOpen = openGatewayForProfile('background')
+    await act(async () => Promise.resolve())
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    act(() => powerResume?.({ authChanged: true, authBaseUrl: 'https://vps.example.com' }))
+    await flushAsync()
+    expect(FakeWebSocket.instances).toHaveLength(3)
+
+    releaseOld(conn)
+    await act(async () => pendingOpen)
+    expect(FakeWebSocket.instances).toHaveLength(3)
   })
 
   it('shows sign-in recovery when native profile reconciliation exhausts retries', async () => {

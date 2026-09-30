@@ -350,9 +350,11 @@ export function reconnectSecondaryGateways(): void {
 export function reconnectSecondaryGatewaysAfterAuthChange(baseUrl: string): void {
   for (const entry of g.secondaries.values()) {
     const conn = entry.connection
-    if (!entry.wantOpen || conn?.mode !== 'remote' || conn.authMode !== 'oauth' || conn.baseUrl !== baseUrl) {
+    if (!entry.wantOpen || (conn && (conn.mode !== 'remote' || conn.authMode !== 'oauth' || conn.baseUrl !== baseUrl))) {
       continue
     }
+    // A first dial may still be waiting for getConnection(), with no authority
+    // metadata yet. Cancel that generation and re-resolve after the auth change.
     entry.authGeneration++
     entry.reconnectAttempt = 0
     entry.gateway.close()
