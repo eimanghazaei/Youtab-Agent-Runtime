@@ -236,7 +236,8 @@ function notifyGatewayTools(tools: string[] | undefined) {
 // we had before, which works but is surprising. The confirm step is
 // opportunistic polish, not a hard requirement for onboarding.
 async function fetchProviderDefaultModel(
-  preferredSlugs: string[]
+  preferredSlugs: string[],
+  requireExactProvider = false
 ): Promise<null | { providerSlug: string; defaultModel: string }> {
   let options
 
@@ -258,7 +259,12 @@ async function fetchProviderDefaultModel(
   const lower = preferredSlugs.map(s => s.toLowerCase())
 
   const matched =
-    providers.find((p: ModelOptionProvider) => lower.includes(String(p.slug).toLowerCase())) ?? providers[0]
+    providers.find((p: ModelOptionProvider) => lower.includes(String(p.slug).toLowerCase())) ??
+    (requireExactProvider ? null : providers[0])
+
+  if (!matched) {
+    return null
+  }
 
   const models = matched.models ?? []
 
@@ -277,7 +283,7 @@ async function fetchProviderDefaultModel(
 
     if (recommended.model && models.map(String).includes(recommended.model)) {
       defaultModel = recommended.model
-    } else if (recommended.model) {
+    } else if (recommended.model && !requireExactProvider) {
       // Recommended model isn't in the curated options list (e.g. a Portal
       // free-recommendation the picker list didn't include); trust it anyway.
       defaultModel = recommended.model
@@ -305,14 +311,16 @@ async function completeWithModelConfirm(
   providerLabel: string,
   preferredSlugs: string[],
   onFail: (reason: null | string) => void,
-  // When true, a failing runtime check no longer blocks progression — the
-  // user is allowed through onboarding regardless. Used by the API-key path,
-  // where we intentionally don't validate the key (it blocked too many users).
-  ignoreRuntimeGate = false
-) {
+  requireExactProvider = false
+): Promise<null | string> {
   await ctx.requestGateway('reload.env').catch(() => undefined)
 
-  const defaults = await fetchProviderDefaultModel(preferredSlugs)
+  const defaults = await fetchProviderDefaultModel(preferredSlugs, requireExactProvider)
+  if (!defaults && requireExactProvider) {
+    const reason = `No model is available for ${providerLabel} after saving its credential.`
+    onFail(reason)
+    return reason
+  }
 
   if (defaults) {
     // Persist the chosen provider/model before the runtime gate so a stale
@@ -325,8 +333,17 @@ async function completeWithModelConfirm(
         model: defaults.defaultModel
       })
 
+      if (!res.ok) {
+        throw new Error(`Could not save the ${providerLabel} model assignment.`)
+      }
+
       notifyGatewayTools(res.gateway_tools)
-    } catch {
+    } catch (error) {
+      if (requireExactProvider) {
+        const reason = errMessage(error)
+        onFail(reason)
+        return reason
+      }
       // Persistence failed — still run the scoped runtime check below and
       // show the confirm card so the user can pick something explicitly.
     }
@@ -334,10 +351,9 @@ async function completeWithModelConfirm(
 
   const runtime = await checkRuntime(ctx, preferredSlugs[0])
 
-  if (!runtime.ready && !ignoreRuntimeGate) {
+  if (!runtime.ready) {
     onFail(runtime.reason)
-
-    return
+    return runtime.reason ?? 'Youtab could not resolve a usable provider.'
   }
 
   if (!defaults) {
@@ -346,7 +362,7 @@ async function completeWithModelConfirm(
     completeDesktopOnboarding()
     ctx.onCompleted?.()
 
-    return
+    return null
   }
 
   setFlow({
@@ -356,6 +372,7 @@ async function completeWithModelConfirm(
     label: providerLabel,
     saving: false
   })
+  return null
 }
 
 function providerResolutionFailure(reason: null | string) {
@@ -786,22 +803,25 @@ export async function saveOnboardingApiKey(
     return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx)
   }
 
-  // No key validation here on purpose: we previously live-probed the key and
-  // hard-blocked on a runtime check after saving, which rejected too many
-  // legitimate users (corporate proxies, regional blocks, flaky/rate-limited
-  // provider probes, self-hosted endpoints). We now save the value as-is and
-  // let the user proceed; an actually-bad key surfaces later at chat time.
+  // Do not live-probe the key: proxies, regional blocks and provider rate
+  // limits can reject legitimate users. Local model/credential resolution is
+  // still required before reporting that the provider is connected; a bad
+  // key itself surfaces at chat time.
   try {
     await setEnvVar(envKey, trimmed)
     // For API-key flows we don't have a definitive provider id (the
     // user picked which API key they're entering, but the corresponding
     // backend slug — e.g. OPENROUTER_API_KEY → "openrouter" — is the
     // env-key prefix stripped). Pass a couple of likely candidates;
-    // fetchProviderDefaultModel falls back to the first authenticated
-    // provider returned by /api/model/options if none match.
+    // Require an exact match: an unrelated provider row must not make a
+    // freshly saved DeepSeek key appear ready.
     const slugCandidates = [envKey.replace(/_API_KEY$/, '').toLowerCase(), label.toLowerCase()]
-    // ignoreRuntimeGate=true: never block onboarding on the runtime check.
-    await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
+    // A saved key alone is not a usable provider. The runtime check resolves
+    // local credentials/model assignment without probing the provider network.
+    const failure = await completeWithModelConfirm(ctx, label, slugCandidates, () => undefined, true)
+    if (failure) {
+      return { ok: false, message: providerResolutionFailure(failure) }
+    }
 
     return { ok: true }
   } catch (error) {

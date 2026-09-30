@@ -160,6 +160,52 @@ class TestProfileScopedMcp:
 
 
 class TestProfileScopedModel:
+    def test_deepseek_key_and_model_share_the_profile_runtime_home(
+        self, client, isolated_profiles
+    ):
+        """Desktop env/model writes must be visible to the profile child resolver."""
+        from youtab_constants import set_youtab_home_override, reset_youtab_home_override
+        from youtab_agent_cli.config import load_env
+        from youtab_agent_cli.runtime_provider import resolve_runtime_provider
+
+        profile_home = isolated_profiles["worker_beta"]
+        key_write = client.put(
+            "/api/env",
+            json={"key": "DEEPSEEK_API_KEY", "value": "test-deepseek-key-123", "profile": "worker_beta"},
+        )
+        assert key_write.status_code == 200
+        assert key_write.json()["ok"] is True
+
+        model_write = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "confirm_expensive_model": True,
+                "profile": "worker_beta",
+            },
+        )
+        assert model_write.status_code == 200
+        assert model_write.json()["ok"] is True
+        assert _cfg(profile_home)["model"]["provider"] == "deepseek"
+        assert _cfg(profile_home)["model"]["default"] == "deepseek-v4-flash"
+        profile_env = (profile_home / ".env").read_text(encoding="utf-8")
+        assert "DEEPSEEK_API_KEY=" in profile_env
+        assert all("=" in line for line in profile_env.splitlines() if line.strip())
+        default_env_path = isolated_profiles["default"] / ".env"
+        if default_env_path.exists():
+            assert "DEEPSEEK_API_KEY=" not in default_env_path.read_text(encoding="utf-8")
+
+        token = set_youtab_home_override(str(profile_home))
+        try:
+            assert load_env()["DEEPSEEK_API_KEY"] == "test-deepseek-key-123"
+            resolved = resolve_runtime_provider(requested="deepseek")
+            assert resolved["provider"] == "deepseek"
+            assert resolved["api_mode"] == "chat_completions"
+        finally:
+            reset_youtab_home_override(token)
+
     def test_model_set_main_scoped(self, client, isolated_profiles):
         resp = client.post(
             "/api/model/set",
