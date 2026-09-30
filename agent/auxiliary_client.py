@@ -1921,14 +1921,14 @@ def _resolve_youtab_runtime_api(*, force_refresh: bool = False) -> Optional[tupl
     or the credential pool.
     """
     from youtab_agent_cli.auth import (
-        DEFAULT_YOUTAB_INFERENCE_URL, _agent_key_is_usable,
-        get_local_inference_token_state, inference_token_safety_seconds,
+        _agent_key_is_usable, get_local_inference_token_state,
+        inference_token_safety_seconds, profile_inference_base_url,
     )
     local = get_local_inference_token_state()
     if local is not None:
         if force_refresh or not _agent_key_is_usable(local, inference_token_safety_seconds(local)):
             return None  # Desktop owns refresh; never use pooled/global credentials.
-        return local["agent_key"], DEFAULT_YOUTAB_INFERENCE_URL
+        return local["agent_key"], profile_inference_base_url(local)
 
     if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
         return None

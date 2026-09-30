@@ -11,9 +11,10 @@ class YoutabProfile(ProviderProfile):
     """Youtab Portal — product tags, reasoning with Youtab-specific omission."""
 
     def _uses_gateway_chat_wire(self, base_url: str | None) -> bool:
-        return (base_url or self.base_url).rstrip(
-            "/"
-        ).lower() == "https://api.youtab.io/v1"
+        from youtab_agent_cli.auth import DEFAULT_YOUTAB_PORTAL_URL, _youtab_portal_env_override
+
+        gateway_base = (_youtab_portal_env_override() or DEFAULT_YOUTAB_PORTAL_URL) + "/v1"
+        return (base_url or gateway_base).rstrip("/").lower() == gateway_base.lower()
 
     def build_extra_body(
         self, *, session_id: str | None = None, **context

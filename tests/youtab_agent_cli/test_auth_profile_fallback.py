@@ -369,6 +369,41 @@ def test_profile_gateway_catalog_uses_existing_cache_during_outage(profile_env, 
     assert len(calls) == 1
 
 
+def test_gateway_authority_switch_cannot_validate_stale_profile_models(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, models
+
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
+
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "https://staging.example.test")
+    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: pytest.fail("foreign token sent to Gateway"))
+    assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
+    assert models.cached_provider_model_ids("youtab") == []
+    assert models.validate_requested_model("deepseek.v4_flash", "youtab")["accepted"] is False
+
+
+def test_profile_auxiliary_uses_configured_gateway_and_rejects_mismatch(profile_env, monkeypatch):
+    from agent import auxiliary_client
+    from youtab_agent_cli import auth
+
+    production = _inference_jwt(int(time.time()) + 900)
+    auth.persist_profile_inference_token(production)
+    assert auxiliary_client._resolve_youtab_runtime_api() == (production, "https://api.youtab.io/v1")
+
+    staging = "https://staging.example.test"
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", staging)
+    with pytest.raises(auth.AuthError, match="does not match"):
+        auxiliary_client._resolve_youtab_runtime_api()
+    auth.persist_profile_inference_token(None)
+    staged = _inference_jwt(int(time.time()) + 900, issuer=staging, audience=f"{staging}/v1/inference")
+    auth.persist_profile_inference_token(staged)
+    assert auxiliary_client._resolve_youtab_runtime_api() == (staged, f"{staging}/v1")
+    monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "http://evil.example")
+    with pytest.raises(auth.AuthError, match="Invalid configured"):
+        auxiliary_client._resolve_youtab_runtime_api()
+
+
 def test_profile_catalog_cache_survives_token_rotation_but_not_account_switch(profile_env, monkeypatch):
     from youtab_agent_cli import auth, models
 

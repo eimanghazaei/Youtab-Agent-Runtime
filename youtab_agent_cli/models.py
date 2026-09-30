@@ -3252,7 +3252,9 @@ def cached_provider_model_ids(
 
         # Revoked/forbidden credentials and other rejected requests cannot use
         # stale admission. Only transport or server failure may use the cache.
-        if isinstance(error, AuthError) and error.code == "models_fetch_rejected":
+        if isinstance(error, AuthError) and error.code in {
+            "models_fetch_rejected", "profile_inference_authority_mismatch",
+        }:
             live = []
         else:
             live = None

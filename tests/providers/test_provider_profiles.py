@@ -135,6 +135,20 @@ class TestYoutabProfile:
             supports_reasoning=True,
         ) == ({}, {})
 
+    def test_configured_gateway_uses_governed_wire_without_legacy_fields(self, monkeypatch):
+        p = get_provider_profile("youtab")
+        staging = "https://staging.example.test/v1"
+        monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "https://staging.example.test")
+        assert p.build_extra_body(session_id="session") == {}
+        assert p.build_extra_body(session_id="session", base_url=staging) == {}
+        assert p.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"},
+            supports_reasoning=True, base_url=staging,
+        ) == ({}, {})
+        for other in ("https://inference-api.youtab.io/v1", "https://child.staging.example.test/v1"):
+            assert "tags" in p.build_extra_body(session_id="session", base_url=other)
+
+
 
 
 
