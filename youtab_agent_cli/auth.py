@@ -5738,12 +5738,19 @@ def profile_inference_base_url(state: Dict[str, Any]) -> str:
     return f"{portal}/v1"
 
 
+def _profile_inference_store_key() -> str:
+    # The default profile shares root auth.json with legacy CLI Youtab auth.
+    # Keep its Desktop-only bearer separate so replacing it cannot erase the
+    # existing account/refresh state. Named profiles already have their own file.
+    return "youtab_inference" if _global_auth_file_path() is None else "youtab"
+
+
 def get_local_inference_token_state() -> Optional[Dict[str, Any]]:
     """Read only the active profile's inference entry, never the global store."""
     path = _auth_file_path()
     with _auth_store_lock(target_path=path):
         providers = _load_auth_store(path).get("providers")
-        state = providers.get("youtab") if isinstance(providers, dict) else None
+        state = providers.get(_profile_inference_store_key()) if isinstance(providers, dict) else None
         if (
             isinstance(state, dict)
             and "agent_key" in state
@@ -5766,6 +5773,7 @@ def persist_profile_inference_token(token: Optional[str]) -> None:
     no global credential to shadow.
     """
     value = str(token or "").strip()
+    store_key = _profile_inference_store_key()
     if value:
         if not _is_profile_inference_token(value):
             raise AuthError("Invalid inference credential (type, audience, scope, or expiry).", provider="youtab")
@@ -5787,14 +5795,14 @@ def persist_profile_inference_token(token: Optional[str]) -> None:
             with _auth_store_lock(target_path=path):
                 auth_store = _load_auth_store(path)
                 providers = auth_store.get("providers")
-                local = providers.get("youtab") if isinstance(providers, dict) else None
+                local = providers.get(store_key) if isinstance(providers, dict) else None
                 if (
                     isinstance(local, dict)
                     and "agent_key" in local
                     and not local.get("access_token")
                     and not local.get("refresh_token")
                 ):
-                    del providers["youtab"]
+                    del providers[store_key]
                     _save_auth_store(auth_store, target_path=path)
             return
         state = {
@@ -5803,7 +5811,7 @@ def persist_profile_inference_token(token: Optional[str]) -> None:
             "agent_key_expires_in": None,
             "agent_key_obtained_at": None,
         }
-    _persist_provider_state_to_store("youtab", state, _auth_file_path())
+    _persist_provider_state_to_store(store_key, state, _auth_file_path())
 
 
 def resolve_youtab_access_token(
@@ -8930,9 +8938,9 @@ def logout_command(args) -> None:
     provider_name = get_auth_provider_display_name(target)
 
     cleared = clear_provider_auth(target)
-    if target == "youtab" and _global_auth_file_path() is not None:
-        # Shadow the root credential only when this store actually has a
-        # global fallback. Root-scoped logout has no parent to shadow.
+    if target == "youtab":
+        # Named profiles shadow the root credential; the root removes only
+        # its separate Desktop inference entry.
         persist_profile_inference_token(None)
     if cleared or should_reset_config:
         if should_reset_config:

@@ -251,6 +251,41 @@ def test_root_inference_cli_clear_removes_entry_without_shadowing_pool(profile_e
     assert auth.get_local_inference_token_state() is None
 
 
+def test_default_profile_inference_write_preserves_existing_cli_youtab_session(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, runtime_provider
+    import youtab_constants
+
+    root = profile_env["global"].parent / "root-scope"
+    root.mkdir()
+    monkeypatch.setattr(youtab_constants, "_get_platform_default_youtab_home", lambda: root)
+    monkeypatch.delenv("YOUTAB_AGENT_HOME")
+    legacy = {"access_token": "existing-account-token", "refresh_token": "existing-refresh-token"}
+    _write(root / "auth.json", _make_auth_store(providers={"youtab": legacy}))
+
+    token = _inference_jwt(int(time.time()) + 900)
+    auth.persist_profile_inference_token(token)
+    saved = json.loads((root / "auth.json").read_text(encoding="utf-8"))["providers"]
+    assert saved["youtab"] == legacy
+    assert saved["youtab_inference"]["agent_key"] == token
+    assert "refresh_token" not in saved["youtab_inference"]
+    assert auth.get_local_inference_token_state()["agent_key"] == token
+    monkeypatch.setattr(runtime_provider, "resolve_youtab_runtime_credentials",
+                        lambda **_kw: pytest.fail("backend OAuth refresh was attempted"))
+    assert runtime_provider._resolve_profile_inference_runtime(
+        requested_provider="youtab", target_model="deepseek.v4_flash",
+    )["api_key"] == token
+
+    auth.persist_profile_inference_token(None)
+    saved = json.loads((root / "auth.json").read_text(encoding="utf-8"))["providers"]
+    assert saved == {"youtab": legacy}
+    assert auth.get_local_inference_token_state() is None
+    monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
+    with pytest.raises(auth.AuthError, match="Desktop inference requires"):
+        runtime_provider._resolve_profile_inference_runtime(
+            requested_provider="youtab", target_model="deepseek.v4_flash",
+        )
+
+
 def test_profile_inference_token_rejects_account_scope(profile_env):
     from youtab_agent_cli import auth
 
