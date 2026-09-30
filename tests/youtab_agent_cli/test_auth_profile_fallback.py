@@ -286,6 +286,33 @@ def test_default_profile_inference_write_preserves_existing_cli_youtab_session(p
         )
 
 
+def test_root_cli_account_switch_invalidates_previous_desktop_inference(profile_env, monkeypatch):
+    from youtab_agent_cli import auth, runtime_provider
+    import youtab_constants
+
+    root = profile_env["global"].parent / "root-scope"
+    root.mkdir()
+    monkeypatch.setattr(youtab_constants, "_get_platform_default_youtab_home", lambda: root)
+    monkeypatch.delenv("YOUTAB_AGENT_HOME")
+    auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900, subject="account-a"))
+
+    with auth._auth_store_lock():
+        store = auth._load_auth_store()
+        auth._save_provider_state(store, "youtab", {
+            "access_token": "account-b-access", "refresh_token": "account-b-refresh",
+        })
+        auth._save_auth_store(store)
+
+    providers = json.loads((root / "auth.json").read_text(encoding="utf-8"))["providers"]
+    assert providers["youtab"]["access_token"] == "account-b-access"
+    assert "youtab_inference" not in providers
+    monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
+    with pytest.raises(auth.AuthError, match="Desktop inference requires"):
+        runtime_provider._resolve_profile_inference_runtime(
+            requested_provider="youtab", target_model="deepseek.v4_flash",
+        )
+
+
 def test_profile_inference_token_rejects_account_scope(profile_env):
     from youtab_agent_cli import auth
 

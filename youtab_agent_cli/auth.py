@@ -1295,6 +1295,10 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
         auth_store["providers"] = {}
         providers = auth_store["providers"]
     providers[provider_id] = state
+    if provider_id == "youtab" and _global_auth_file_path() is None:
+        # A root-scoped CLI sign-in may switch accounts. Its new session must
+        # not leave the previous Desktop inference bearer authoritative.
+        providers.pop("youtab_inference", None)
     auth_store["active_provider"] = provider_id
 
 
