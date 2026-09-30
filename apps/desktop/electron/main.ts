@@ -9972,12 +9972,24 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
   const strategy = resolveLoginStrategy(statusBody)
 
   if (strategy === 'native') {
+    let tokens: Awaited<ReturnType<typeof runNativeLogin>> | undefined
     try {
-      const tokens = await runNativeLogin(baseUrl, {
+      tokens = await runNativeLogin(baseUrl, {
         openExternal: url => shell.openExternal(url),
         postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
         rememberLog
       })
+    } catch (error) {
+      rememberLog(
+        `[native-oauth] native login failed (${
+          error instanceof Error ? error.message : String(error)
+        }); falling back to embedded flow`
+      )
+      // Only native acquisition failure may use the older embedded flow.
+    }
+    if (tokens) {
+      // A profile or encrypted-store commit failure must remain an error;
+      // cookie fallback could otherwise reconnect with the previous account.
       await nativeSessionLifecycle.replaceGatewaySession(baseUrl, tokens)
       // Confirmed sign-in — release the reauth latch so the next
       // startYoutab() re-dials instead of replaying the stale rejection.
@@ -9985,14 +9997,6 @@ ipcMain.handle('youtab:connection-config:oauth-login', async (_event, rawUrl, op
       releasePowerResumeAfterAuthChange()
 
       return { ok: true, baseUrl, connected: true }
-    } catch (error) {
-      rememberLog(
-        `[native-oauth] native login failed (${
-          error instanceof Error ? error.message : String(error)
-        }); falling back to embedded flow`
-      )
-      // Fall through to the embedded flow so a native-flow hiccup (blocked
-      // loopback, user closed the browser) still lets the user sign in.
     }
   }
 
