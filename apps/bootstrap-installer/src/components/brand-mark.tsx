@@ -9,7 +9,10 @@ export function BrandMark({ className, ...props }: React.ComponentProps<'span'>)
       <span
         aria-hidden="true"
         className="size-full bg-current"
-        style={{ mask: `url('${simorghOrbUrl}') center / contain no-repeat` }}
+        style={{
+          WebkitMask: `url('${simorghOrbUrl}') center / contain no-repeat`,
+          mask: `url('${simorghOrbUrl}') center / contain no-repeat`
+        }}
       />
     </span>
   )
