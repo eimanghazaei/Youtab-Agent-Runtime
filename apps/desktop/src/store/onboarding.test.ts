@@ -9,6 +9,7 @@ import {
   type OnboardingContext,
   refreshOnboarding,
   requestDesktopOnboarding,
+  retryOnboardingProviderDiscovery,
   saveOnboardingLocalEndpoint,
   startProviderOAuth,
   submitOnboardingCode
@@ -59,14 +60,58 @@ it('uses the advertised native_pkce capability through the existing desktop logi
   const selected = { ...provider('gateway'), flow: 'native_pkce' as const, native_base_url: 'https://api.youtab.io' }
   await startProviderOAuth(selected, {
     requestGateway: async method => {
-      if (method === 'reload.env') { return {} as never }
-      if (method === 'setup.status') { return { provider_configured: true } as never }
-      if (method === 'setup.runtime_check') { return { ok: true } as never }
+      if (method === 'reload.env') {
+        return {} as never
+      }
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+      if (method === 'setup.runtime_check') {
+        return { ok: true } as never
+      }
       throw new Error(`unexpected gateway method: ${method}`)
     }
   })
   expect(login).toHaveBeenCalledWith('https://api.youtab.io', { nativeCapability: true, profile: null })
   expect($desktopOnboarding.get().configured).toBe(true)
+})
+
+it.each([
+  ['404', () => Promise.reject(new Error('HTTP 404'))],
+  ['malformed response', () => Promise.resolve({ providers: null })],
+  ['temporary failure', () => Promise.reject(new Error('Connection timed out'))]
+])('keeps Youtab sign-in unavailable on provider discovery %s and recovers on retry', async (_case, firstResult) => {
+  const nativeLogin = vi.fn()
+
+  const api = vi
+    .fn()
+    .mockImplementationOnce(firstResult)
+    .mockResolvedValueOnce({
+      providers: [{ ...provider('youtab'), flow: 'native_pkce', native_base_url: 'https://api.youtab.io' }]
+    })
+
+  Object.defineProperty(window, 'youtabDesktop', {
+    configurable: true,
+    value: { api, oauthLoginConnectionConfig: nativeLogin }
+  })
+  $desktopOnboarding.set(baseState({ manual: true, requested: true }))
+
+  await refreshOnboarding({ requestGateway: vi.fn() })
+
+  expect($desktopOnboarding.get().flow).toMatchObject({
+    status: 'error',
+    message: expect.stringContaining('retry')
+  })
+  expect($desktopOnboarding.get().mode).toBe('oauth')
+  expect($desktopOnboarding.get().providers).toEqual([])
+  expect(api).toHaveBeenCalledTimes(1)
+  expect(nativeLogin).not.toHaveBeenCalled()
+
+  await retryOnboardingProviderDiscovery()
+
+  expect($desktopOnboarding.get().flow.status).toBe('idle')
+  expect($desktopOnboarding.get().providers?.[0]).toMatchObject({ id: 'youtab', flow: 'native_pkce' })
+  expect(api).toHaveBeenCalledTimes(2)
 })
 
 function emptyOpenRouterGateway(): OnboardingContext['requestGateway'] {

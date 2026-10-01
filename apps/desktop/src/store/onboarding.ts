@@ -376,15 +376,30 @@ async function refreshProviders() {
   providersRefreshPromise = (async () => {
     try {
       const { providers } = await listOAuthProviders()
-      patch({ mode: providers.length > 0 ? 'oauth' : 'apikey', providers })
+      const flow = $desktopOnboarding.get().flow
+      patch({
+        mode: providers.length > 0 ? 'oauth' : 'apikey',
+        providers,
+        ...(flow.status === 'error' && !flow.provider ? { flow: { status: 'idle' as const } } : {})
+      })
     } catch {
-      patch({ mode: 'apikey', providers: [] })
+      patch({
+        providers: [],
+        flow: {
+          status: 'error',
+          message: 'Could not load sign-in providers from the local Gateway. Check the connection and retry.'
+        }
+      })
     } finally {
       providersRefreshPromise = null
     }
   })()
 
   await providersRefreshPromise
+}
+
+export async function retryOnboardingProviderDiscovery() {
+  await refreshProviders()
 }
 
 export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
