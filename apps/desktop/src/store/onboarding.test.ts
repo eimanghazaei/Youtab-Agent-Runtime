@@ -11,10 +11,127 @@ import {
   refreshOnboarding,
   requestDesktopOnboarding,
   retryOnboardingProviderDiscovery,
+  saveOnboardingApiKey,
   saveOnboardingLocalEndpoint,
   startProviderOAuth,
   submitOnboardingCode
 } from './onboarding'
+
+describe('direct API-key provider setup', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  function gateway(ready: boolean): OnboardingContext['requestGateway'] {
+    return async (method, params) => {
+      if (method === 'reload.env') { return {} as never }
+      if (method === 'setup.status') { return { provider_configured: true } as never }
+      if (method === 'setup.runtime_check') {
+        expect(params).toEqual({ provider: 'deepseek' })
+        return { ok: ready, error: ready ? undefined : 'No inference provider configured.' } as never
+      }
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+  }
+
+  it('saves the exact DeepSeek model and advances only when runtime resolves it', async () => {
+    const paths: string[] = []
+    let assigned: unknown
+    installApiMock(async (request: { body?: unknown; path: string }) => {
+      paths.push(request.path)
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'deepseek', models: ['deepseek-chat'] }] }
+      }
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { provider: 'deepseek', model: 'anthropic/claude' }
+      }
+      if (request.path === '/api/model/set') {
+        assigned = request.body
+        return { ok: true, provider: 'deepseek', model: 'deepseek-chat' }
+      }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+
+    const result = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(true) })
+    expect(result).toEqual({ ok: true })
+    expect(paths).toContain('/api/model/set')
+    expect(assigned).toMatchObject({ scope: 'main', provider: 'deepseek', model: 'deepseek-chat' })
+    expect($desktopOnboarding.get().flow).toMatchObject({ status: 'confirming_model', providerSlug: 'deepseek' })
+  })
+
+  it('does not mark DeepSeek connected when model persistence fails', async () => {
+    installApiMock(async request => {
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'deepseek', models: ['deepseek-chat'] }] }
+      }
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { provider: 'deepseek', model: 'deepseek-chat' }
+      }
+      if (request.path === '/api/model/set') { throw new Error('write failed') }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+    const result = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(true) })
+    expect(result.ok).toBe(false)
+    expect($desktopOnboarding.get().configured).toBe(false)
+  })
+
+  it('rejects a model-set response that did not persist the assignment', async () => {
+    installApiMock(async request => {
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'deepseek', models: ['deepseek-chat'] }] }
+      }
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { provider: 'deepseek', model: 'deepseek-chat' }
+      }
+      if (request.path === '/api/model/set') { return { ok: false, confirm_required: true } }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+    const result = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(true) })
+    expect(result.ok).toBe(false)
+    expect($desktopOnboarding.get().configured).toBe(false)
+  })
+
+  it('rejects an unrelated anthropic model row and a failed runtime check', async () => {
+    let assignments = 0
+    installApiMock(async request => {
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'anthropic', models: ['anthropic/claude'] }] }
+      }
+      if (request.path === '/api/model/set') { assignments++; return { ok: true } }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+    const unrelated = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(true) })
+    expect(unrelated.ok).toBe(false)
+    expect(assignments).toBe(0)
+
+    installApiMock(async request => {
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'deepseek', models: ['deepseek-chat'] }] }
+      }
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { provider: 'deepseek', model: 'deepseek-chat' }
+      }
+      if (request.path === '/api/model/set') { return { ok: true, provider: 'deepseek', model: 'deepseek-chat' } }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+    const unresolved = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(false) })
+    expect(unresolved.ok).toBe(false)
+    expect(unresolved.message).toContain('cannot resolve a usable provider')
+    expect($desktopOnboarding.get().configured).toBe(false)
+  })
+})
 
 function provider(id: string, name = id): OAuthProvider {
   return {
