@@ -21,11 +21,16 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
+from urllib.parse import urlsplit
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +38,193 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = REPO_ROOT / "youtab_agent_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
+
+# Source needed by the existing Windows installer and Desktop build.  The
+# release archive is a committed product tree, not a copy of the developer's
+# checkout (which may contain local credentials, caches, tests or docs).
+RUNTIME_ARTIFACT_ROOTS = frozenset({
+    "acp_adapter", "agent", "apps", "assets", "config", "cron", "gateway",
+    "locales", "native", "optional-mcps", "optional-skills", "packages",
+    "plugins", "providers", "scripts", "security", "skills", "tools",
+    "tui_gateway", "ui-tui", "web", "youtab", "youtab_agent_cli",
+    "youtab_runtime",
+})
+RUNTIME_ARTIFACT_FILES = frozenset({
+    ".env.example", "cli-config.yaml.example", "LICENSE",
+    "THIRD_PARTY_NOTICES.md", "package.json", "package-lock.json",
+    "pyproject.toml", "setup.py", "uv.lock", "eslint.config.shared.mjs",
+})
+_SECRET_SUFFIXES = (".pem", ".p12", ".pfx", ".key", ".kdbx")
+_SECRET_NAMES = {"id_rsa", "id_ed25519", "credentials.json", "secrets.json", "auth.json"}
+_PRIVATE_KEY_BLOCK = re.compile(
+    rb"(?:^|[\r\n])[ \t]*-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----"
+)
+
+
+def _release_base_url(value: str) -> str:
+    url = urlsplit(value)
+    if (url.scheme != "https" or url.hostname != "api.youtab.io" or url.port is not None
+            or url.username is not None or url.password is not None
+            or url.query or url.fragment
+            or not re.fullmatch(r"/pilot-runtime-[0-9a-f]{32,}/releases/?", url.path)):
+        raise ValueError("release base must be an HTTPS api.youtab.io pilot path")
+    return value.rstrip("/")
+
+
+def _runtime_artifact_path_allowed(path: str) -> bool:
+    parts = path.split("/")
+    if not path or any(part in {"", ".", ".."} for part in parts):
+        return False
+    if any(part.startswith(".") and part != ".env.example" for part in parts):
+        return False
+    if path in {"tests-js/package.json", "apps/bootstrap-installer/package.json"}:
+        # npm ci resolves every declared workspace from the root lockfile.
+        return True
+    if path.startswith("apps/") and not path.startswith(("apps/desktop/", "apps/shared/")):
+        return False
+    if path.startswith("tests-js/"):
+        return False
+    if path.startswith("scripts/") and path != "scripts/install.ps1":
+        return False
+    if any(part in {"tests", "__pycache__", "node_modules", "e2e", "__tests__"} for part in parts):
+        return False
+    if any(part.endswith((".test.ts", ".test.tsx", "_test.py")) for part in parts):
+        return False
+    if any(part.startswith("test_") for part in parts):
+        return False
+    if path.endswith((".md", ".snap")) and path not in RUNTIME_ARTIFACT_FILES:
+        return False
+    return path in RUNTIME_ARTIFACT_FILES or parts[0] in RUNTIME_ARTIFACT_ROOTS or (
+        len(parts) == 1 and path.endswith(".py")
+    )
+
+
+def package_runtime_artifact(output_dir: Path, version: str,
+                             release_sequence: int, base_url: str) -> dict:
+    """Copy an exact committed Runtime package into a local static release root.
+
+    The caller publishes that root through the existing Nginx delivery path.
+    This function never invokes git push, GitHub, or a remote deployment.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", version):
+        raise ValueError("invalid artifact version")
+    if release_sequence < 1:
+        raise ValueError("release sequence must be positive")
+    base_url = _release_base_url(base_url)
+    output_dir = output_dir.resolve()
+    if output_dir == REPO_ROOT.resolve() or REPO_ROOT.resolve() in output_dir.parents:
+        raise ValueError("artifact output directory must be outside the source checkout")
+    status = git_result("status", "--porcelain", "--untracked-files=all")
+    if status.returncode != 0 or status.stdout.strip():
+        raise RuntimeError("runtime artifact requires a clean checkout")
+    head = git_result("rev-parse", "--verify", "HEAD^{commit}")
+    if head.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head.stdout.strip()):
+        raise RuntimeError("runtime artifact requires an exact Git commit")
+    source_sha = head.stdout.strip()
+    target_dir = output_dir / source_sha
+    artifact_name = f"youtab-runtime-{source_sha}.zip"
+    script_name = f"install-{source_sha}.ps1"
+    if target_dir.exists():
+        raise FileExistsError(f"immutable release already exists: {target_dir}")
+
+    latest_path = output_dir / "latest.json"
+    if latest_path.exists():
+        prior = json.loads(latest_path.read_text(encoding="utf-8"))
+        if not isinstance(prior, dict) or not isinstance(prior.get("release_sequence"), int):
+            raise RuntimeError("existing latest.json has no trusted release sequence")
+        if prior["release_sequence"] >= release_sequence:
+            raise RuntimeError("release sequence must increase; downgrades and republish are forbidden")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="youtab-release-", dir=output_dir) as tmp_name:
+        tmp = Path(tmp_name)
+        archive = tmp / "committed.zip"
+        with archive.open("wb") as out:
+            result = subprocess.run(
+                ["git", "archive", "--format=zip", "HEAD"],
+                cwd=REPO_ROOT, stdout=out, stderr=subprocess.PIPE,
+            )
+        if result.returncode != 0:
+            raise RuntimeError("git archive failed")
+        package = tmp / artifact_name
+        required = {"scripts/install.ps1", "pyproject.toml", "apps/desktop/package.json"}
+        included = set()
+        with zipfile.ZipFile(archive) as source, zipfile.ZipFile(package, "w") as dest:
+            for entry in source.infolist():
+                if entry.is_dir() or not _runtime_artifact_path_allowed(entry.filename):
+                    continue
+                mode = (entry.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    raise RuntimeError(f"release source contains a symlink: {entry.filename}")
+                basename = entry.filename.rsplit("/", 1)[-1].lower()
+                if basename in _SECRET_NAMES or basename.endswith(_SECRET_SUFFIXES):
+                    raise RuntimeError(f"release source contains a credential-like file: {entry.filename}")
+                # One deterministic top-level folder makes layout validation
+                # independent of the ZIP writer's directory entries.
+                name = f"youtab-runtime-{source_sha}/{entry.filename}"
+                info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+                info.external_attr = entry.external_attr
+                info.compress_type = zipfile.ZIP_DEFLATED
+                with source.open(entry) as src, dest.open(info, "w") as dst:
+                    overlap = b""
+                    for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                        window = overlap + chunk
+                        if _PRIVATE_KEY_BLOCK.search(window):
+                            raise RuntimeError(f"release source contains private-key material: {entry.filename}")
+                        dst.write(chunk)
+                        overlap = window[-128:]
+                included.add(entry.filename)
+        if not required.issubset(included):
+            raise RuntimeError(f"release package lacks required files: {sorted(required - included)}")
+        script_bytes = subprocess.run(
+            ["git", "show", "HEAD:scripts/install.ps1"], cwd=REPO_ROOT,
+            capture_output=True, check=True,
+        ).stdout
+        if not script_bytes:
+            raise RuntimeError("committed install.ps1 is empty")
+        (tmp / script_name).write_bytes(script_bytes)
+        sha256 = hashlib.sha256()
+        with package.open("rb") as reader:
+            for chunk in iter(lambda: reader.read(1024 * 1024), b""):
+                sha256.update(chunk)
+        digest = sha256.hexdigest()
+        manifest = {
+            "version": version,
+            "release_sequence": release_sequence,
+            "source_sha": source_sha,
+            "artifact_url": f"{base_url}/{source_sha}/{artifact_name}",
+            "sha256": digest,
+            "install_script_url": f"{base_url}/{source_sha}/{script_name}",
+            "install_script_sha256": hashlib.sha256(script_bytes).hexdigest(),
+            "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "platform": "windows",
+            "architecture": "x64",
+            "format": "zip",
+        }
+        (tmp / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+        # Same-volume rename publishes immutable files together. Never replace
+        # an existing version; the only mutable object is latest.json.
+        tmp_release = tmp / source_sha
+        tmp_release.mkdir()
+        shutil.move(str(package), str(tmp_release / artifact_name))
+        shutil.move(str(tmp / script_name), str(tmp_release / script_name))
+        shutil.move(str(tmp / "manifest.json"), str(tmp_release / "manifest.json"))
+        os.rename(tmp_release, target_dir)
+        latest = {
+            **manifest,
+            "manifest_url": f"{base_url}/{source_sha}/manifest.json",
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", prefix=".latest-", suffix=".tmp",
+            dir=output_dir, delete=False,
+        ) as latest_file:
+            latest_file.write(json.dumps(latest, sort_keys=True) + "\n")
+            latest_tmp = Path(latest_file.name)
+        try:
+            os.replace(latest_tmp, output_dir / "latest.json")
+        finally:
+            latest_tmp.unlink(missing_ok=True)
+    return manifest
 
 # ──────────────────────────────────────────────────────────────────────
 # Git email → GitHub username mapping
@@ -2464,6 +2656,16 @@ def generate_changelog(commits, tag_name, semver, repo_url="https://github.com/e
 
 def main():
     parser = argparse.ArgumentParser(description="Youtab Agent Runtime Release Tool")
+    parser.add_argument("--package-runtime", action="store_true",
+                        help="Prepare a clean exact-SHA Windows Runtime package for the static release channel")
+    parser.add_argument("--artifact-output-dir", type=Path,
+                        help="Local Nginx static release root for --package-runtime")
+    parser.add_argument("--artifact-version", type=str,
+                        help="Immutable version directory for --package-runtime")
+    parser.add_argument("--release-sequence", type=int,
+                        help="Strictly increasing approved release number for --package-runtime")
+    parser.add_argument("--artifact-base-url", type=str,
+                        help="Configured HTTPS api.youtab.io pilot release base")
     parser.add_argument("--bump", choices=["major", "minor", "patch"],
                         help="Which semver component to bump")
     parser.add_argument("--publish", action="store_true",
@@ -2475,6 +2677,18 @@ def main():
     parser.add_argument("--output", type=str,
                         help="Write changelog to file instead of stdout")
     args = parser.parse_args()
+
+    if args.package_runtime:
+        if (args.publish or args.bump or not args.artifact_output_dir
+                or not args.artifact_version or not args.release_sequence
+                or not args.artifact_base_url):
+            parser.error("--package-runtime requires output-dir, version, release-sequence, base-url; cannot use --publish or --bump")
+        manifest = package_runtime_artifact(
+            args.artifact_output_dir, args.artifact_version,
+            args.release_sequence, args.artifact_base_url,
+        )
+        print(f"Prepared immutable Runtime artifact {manifest['source_sha']} at {args.artifact_output_dir}")
+        return
 
     # Determine CalVer date
     if args.date:

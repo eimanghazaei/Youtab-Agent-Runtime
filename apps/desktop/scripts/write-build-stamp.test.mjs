@@ -81,6 +81,24 @@ test('resolveStamp falls back when neither CI nor git is available', () => {
     commit: FALLBACK_COMMIT,
     branch: FALLBACK_BRANCH,
     dirty: false,
-    source: 'fallback'
+    source: 'fallback',
+    releaseBaseUrl: null
   })
+})
+
+test('resolveStamp embeds only the configured fixed pilot release origin', () => {
+  const base = `https://api.youtab.io/pilot-runtime-${'a'.repeat(32)}/releases`
+  const stamp = resolveStamp({ env: { YOUTAB_AGENT_RELEASE_BASE_URL: base }, execFn: () => null })
+  assert.equal(stamp.releaseBaseUrl, base)
+  for (const invalid of [
+    `https://evil.example/pilot-runtime-${'a'.repeat(32)}/releases`,
+    'https://api.youtab.io/runtime/releases',
+    `${base}/../../other`,
+    `${base}?redirect=evil`
+  ]) {
+    assert.throws(
+      () => resolveStamp({ env: { YOUTAB_AGENT_RELEASE_BASE_URL: invalid }, execFn: () => null }),
+      /approved api.youtab.io pilot release path/
+    )
+  }
 })

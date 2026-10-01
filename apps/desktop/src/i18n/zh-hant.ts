@@ -62,6 +62,7 @@ export const zhHant = defineLocale({
   },
 
   boot: {
+    tryingToConnect: 'Youtab 正在嘗試連線',
     ready: 'Youtab Desktop 已就緒',
     desktopBootFailedWithMessage: message => `桌面啟動失敗：${message}`,
     steps: {

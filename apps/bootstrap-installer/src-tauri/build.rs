@@ -33,6 +33,28 @@ fn main() {
 
     let commit = resolve_commit_pin();
     let branch = resolve_branch_pin();
+    println!("cargo:rerun-if-env-changed=YOUTAB_AGENT_RELEASE_BASE_URL");
+    if std::env::var("PROFILE").as_deref() == Ok("release")
+        && std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+    {
+        assert!(commit.is_some(), "Windows release Setup requires an exact commit pin");
+        assert!(
+            std::env::var("YOUTAB_AGENT_RELEASE_BASE_URL").ok().is_some_and(|s| !s.is_empty()),
+            "Windows release Setup requires YOUTAB_AGENT_RELEASE_BASE_URL"
+        );
+    }
+    if let Ok(base) = std::env::var("YOUTAB_AGENT_RELEASE_BASE_URL") {
+        let base = base.trim_end_matches('/');
+        assert!(commit.is_some(), "customer release base requires an exact commit pin");
+        assert!(valid_pilot_release_base(base), "invalid customer release base URL");
+        println!("cargo:rustc-env=RELEASE_BASE_URL={base}");
+    }
+
+    // A pinned customer setup executes the script embedded in this binary.
+    // Refuse to label modified or mismatched script bytes as that commit.
+    if let Some(c) = &commit {
+        verify_bundled_install_script(c);
+    }
 
     if let Some(c) = &commit {
         println!("cargo:rustc-env=BUILD_PIN_COMMIT={c}");
@@ -187,4 +209,50 @@ fn short(commit: &str) -> &str {
     } else {
         commit
     }
+}
+
+fn verify_bundled_install_script(commit: &str) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let script = root.join("scripts/install.ps1");
+    println!("cargo:rerun-if-changed={}", script.display());
+
+    let head = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD^{commit}"])
+        .current_dir(&root)
+        .output()
+        .expect("pinned setup build requires a Git checkout");
+    assert!(
+        head.status.success(),
+        "pinned setup build requires a resolvable HEAD"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&head.stdout).trim(),
+        commit,
+        "pinned setup build commit must equal checkout HEAD"
+    );
+
+    let committed = Command::new("git")
+        .args(["show", "HEAD:scripts/install.ps1"])
+        .current_dir(&root)
+        .output()
+        .expect("reading committed install.ps1");
+    assert!(
+        committed.status.success(),
+        "committed install.ps1 is unavailable"
+    );
+    let local = std::fs::read(&script).expect("reading bundled install.ps1");
+    assert_eq!(
+        local, committed.stdout,
+        "pinned setup build refuses modified install.ps1"
+    );
+}
+
+fn valid_pilot_release_base(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix("https://api.youtab.io/pilot-runtime-") else {
+        return false;
+    };
+    let Some(entropy) = rest.strip_suffix("/releases") else {
+        return false;
+    };
+    entropy.len() >= 32 && entropy.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }

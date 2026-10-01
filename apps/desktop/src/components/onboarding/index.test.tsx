@@ -1,8 +1,10 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/youtab'
+
+import { FlowPanel } from './flow'
 
 import { Picker } from '.'
 
@@ -124,4 +126,23 @@ describe('onboarding Picker', () => {
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
   })
+})
+
+it('retries a failed provider catalog load without invoking a legacy sign-in flow', async () => {
+  const api = vi.fn().mockResolvedValue({ providers: [provider('youtab', 'Youtab Portal')] })
+
+  Object.defineProperty(window, 'youtabDesktop', { configurable: true, value: { api } })
+  setProviders([])
+  $desktopOnboarding.set({
+    ...$desktopOnboarding.get(),
+    flow: { status: 'error', message: 'Could not load sign-in providers. Retry.' }
+  })
+
+  render(<FlowPanel ctx={ctx} flow={$desktopOnboarding.get().flow} leaving={false} onBegin={() => undefined} />)
+  fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+
+  await waitFor(() => expect($desktopOnboarding.get().providers?.[0]?.id).toBe('youtab'))
+  expect($desktopOnboarding.get().flow.status).toBe('idle')
+  expect(api).toHaveBeenCalledWith(expect.objectContaining({ path: '/api/providers/oauth' }))
+  expect(api).toHaveBeenCalledTimes(1)
 })
