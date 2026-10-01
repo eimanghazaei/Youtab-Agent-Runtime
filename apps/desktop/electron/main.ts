@@ -47,7 +47,15 @@ import {
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
-import { runBootstrap } from './bootstrap-runner'
+import {
+  classifyPilotReleaseUpdate,
+  fetchApprovedPilotRelease,
+  hasPendingRuntimeInstall,
+  isPackagedWindowsCustomerMode,
+  pendingRuntimeInstallMarker,
+  runBootstrap,
+  trustedPilotReleaseBaseUrl
+} from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
 import {
   authModeFromStatus,
@@ -268,6 +276,7 @@ const DEV_SERVER = process.env.YOUTAB_AGENT_DESKTOP_DEV_SERVER
 const IS_PACKAGED = app.isPackaged || Boolean(process.env.YOUTAB_AGENT_DESKTOP_IS_PACKAGED)
 const IS_MAC = process.platform === 'darwin'
 const IS_WINDOWS = process.platform === 'win32'
+const PACKAGED_WINDOWS_CUSTOMER = isPackagedWindowsCustomerMode(IS_WINDOWS, IS_PACKAGED)
 const IS_WSL = isWslEnvironment()
 // Truthful macOS kernel major (Tahoe = 25). Product version lies (16 vs 26) per
 // build SDK, so gate Tahoe workarounds on Darwin instead.
@@ -473,7 +482,7 @@ function loadInstallStamp() {
   // sees a stamp without needing a packaged build.
   const candidates = [
     process.resourcesPath ? path.join(process.resourcesPath, 'install-stamp.json') : null,
-    path.join(APP_ROOT, 'build', 'install-stamp.json')
+    IS_PACKAGED ? null : path.join(APP_ROOT, 'build', 'install-stamp.json')
   ].filter(Boolean)
 
   for (const p of candidates) {
@@ -497,6 +506,7 @@ function loadInstallStamp() {
           builtAt: parsed.builtAt || null,
           dirty: Boolean(parsed.dirty),
           source: parsed.source || null,
+          releaseBaseUrl: parsed.releaseBaseUrl || null,
           path: p
         })
       }
@@ -2369,10 +2379,11 @@ function writeZoomState(zoomLevel) {
 
 // Match the backend's source resolution but bias toward a real git checkout.
 // Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_YOUTAB_AGENT_ROOT.
-// YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT always wins so devs can pin a worktree.
+// The explicit source override is developer-only; packaged Windows installs
+// stay on the customer artifact path regardless of inherited environment.
 function resolveUpdateRoot() {
   const candidates = [
-    process.env.YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT &&
+    !PACKAGED_WINDOWS_CUSTOMER && process.env.YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT &&
       path.resolve(process.env.YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT),
     !IS_PACKAGED && isYoutabSourceRoot(SOURCE_REPO_ROOT) ? SOURCE_REPO_ROOT : null,
     isYoutabSourceRoot(ACTIVE_YOUTAB_AGENT_ROOT) ? ACTIVE_YOUTAB_AGENT_ROOT : null
@@ -2457,6 +2468,43 @@ async function resolveHealedBranch(updateRoot, branch) {
 }
 
 async function checkUpdates() {
+  if (PACKAGED_WINDOWS_CUSTOMER) {
+    const marker = readBootstrapMarker()
+    let release
+    let updateState
+
+    try {
+      // The packaged build stamp is the URL authority; the installed marker
+      // must agree and cannot redirect discovery to another release source.
+      const base = trustedPilotReleaseBaseUrl(INSTALL_STAMP?.releaseBaseUrl, marker?.releaseBaseUrl)
+      release = await fetchApprovedPilotRelease(base)
+      updateState = classifyPilotReleaseUpdate(marker, release)
+    } catch (error) {
+      return {
+        supported: true,
+        error: 'release-metadata-unavailable',
+        message: error instanceof Error ? error.message : 'Approved release metadata is unavailable.',
+        fetchedAt: Date.now()
+      }
+    }
+
+    const behind = updateState === 'available' ? 1 : 0
+    return {
+      supported: true,
+      branch: 'release',
+      currentSha: marker.pinnedCommit,
+      targetSha: release.source_sha,
+      currentVersion: marker.version || null,
+      targetVersion: release.version,
+      behind,
+      updateAvailable: behind > 0,
+      commits: [],
+      dirty: false,
+      youtabRoot: ACTIVE_YOUTAB_AGENT_ROOT,
+      fetchedAt: Date.now()
+    }
+  }
+
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
@@ -2846,6 +2894,17 @@ async function applyUpdates(opts = {}) {
   updateInFlight = true
 
   try {
+    const customerRelease = PACKAGED_WINDOWS_CUSTOMER
+    if (customerRelease) {
+      const status = await checkUpdates()
+      if (status.error) {
+        return { ok: false, error: status.error, message: status.message }
+      }
+      if (!status.updateAvailable) {
+        return { ok: true, upToDate: true }
+      }
+    }
+
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
@@ -2859,6 +2918,9 @@ async function applyUpdates(opts = {}) {
     }
 
     if (!updater) {
+      if (customerRelease) {
+        return { ok: false, error: 'setup-missing', message: 'Youtab Setup is missing. Reinstall using the current official Youtab Setup.' }
+      }
       // No staged updater binary — this is a CLI-installed user (they ran
       // `youtab desktop`, never the Tauri installer that self-copies
       // youtab-setup.exe into YOUTAB_AGENT_HOME). They DO have a working `youtab`
@@ -2900,10 +2962,10 @@ async function applyUpdates(opts = {}) {
     })
     repairMacUpdaterHelper(updater)
 
-    const updateRoot = resolveUpdateRoot()
+    const updateRoot = customerRelease ? ACTIVE_YOUTAB_AGENT_ROOT : resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
-    const branch = await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    const updaterArgs = ['--update', '--branch', branch]
+    const branch = customerRelease ? null : await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+    const updaterArgs = customerRelease ? ['--update'] : ['--update', '--branch', branch]
     const targetApp = IS_MAC ? runningAppBundle() : null
 
     if (targetApp) {
@@ -3025,12 +3087,14 @@ async function handOffWindowsBootstrapRecovery(reason) {
     return false
   }
 
-  const updateRoot = resolveUpdateRoot()
+  const customerRelease = PACKAGED_WINDOWS_CUSTOMER
+  const updateRoot = customerRelease ? ACTIVE_YOUTAB_AGENT_ROOT : resolveUpdateRoot()
   const { branch: configuredBranch } = readDesktopUpdateConfig()
-
-  const branch = directoryExists(path.join(updateRoot, '.git'))
-    ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    : configuredBranch || DEFAULT_UPDATE_BRANCH
+  const branch = customerRelease
+    ? null
+    : directoryExists(path.join(updateRoot, '.git'))
+      ? await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
+      : configuredBranch || DEFAULT_UPDATE_BRANCH
 
   const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
   const venvYoutab = path.join(venvBin, IS_WINDOWS ? 'youtab.exe' : 'youtab')
@@ -3047,9 +3111,12 @@ async function handOffWindowsBootstrapRecovery(reason) {
     fileExists(venvYoutab) ||
     fileExists(path.join(updateRoot, '.youtab-agent-runtime-bootstrap-complete'))
 
-  const updaterArgs = chooseUpdaterArgs(haveRealInstall, branch)
+  const updaterArgs = customerRelease || reason === 'repair' ? ['--repair'] : chooseUpdaterArgs(haveRealInstall, branch)
 
-  await releaseBackendLockForUpdate(updateRoot)
+  const lock = await releaseBackendLockForUpdate(updateRoot)
+  if (!lock.unlocked) {
+    return false
+  }
 
   const child = spawnUpdaterProcess(updater, updaterArgs, {
     cwd: YOUTAB_AGENT_HOME,
@@ -3823,13 +3890,31 @@ function createActiveBackend(backendArgs) {
 }
 
 function resolveYoutabBackend(backendArgs) {
-  // 1. Explicit override -- YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT points at a developer
-  //    checkout. Honour it as-is (no bootstrap; the user is driving).
+  // The Setup transaction has not committed CURRENT yet. Do not probe, import,
+  // or launch code from that tree; hand repair to the same staged Setup.
+  if (PACKAGED_WINDOWS_CUSTOMER && hasPendingRuntimeInstall(ACTIVE_YOUTAB_AGENT_ROOT)) {
+    return {
+      kind: 'bootstrap-needed',
+      label: 'Youtab install transaction pending; Setup recovery required',
+      command: null,
+      args: backendArgs,
+      bootstrap: true,
+      env: {},
+      shell: false,
+      activeRoot: ACTIVE_YOUTAB_AGENT_ROOT,
+      installStamp: INSTALL_STAMP,
+      isPackaged: IS_PACKAGED,
+      platform: process.platform
+    }
+  }
+
+  // 1. Explicit developer override -- packaged Windows installs never trust
+  //    inherited environment to switch back to a source checkout.
   const overrideRoot =
     process.env.YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT &&
     path.resolve(process.env.YOUTAB_AGENT_DESKTOP_YOUTAB_AGENT_ROOT)
 
-  if (overrideRoot && isYoutabSourceRoot(overrideRoot)) {
+  if (!PACKAGED_WINDOWS_CUSTOMER && overrideRoot && isYoutabSourceRoot(overrideRoot)) {
     const backend = createPythonBackend(overrideRoot, `Youtab source at ${overrideRoot}`, backendArgs)
 
     if (backend) {
@@ -4001,7 +4086,32 @@ function resolveYoutabBackend(backendArgs) {
   }
 }
 
+async function recoverPendingRuntimeInstall() {
+  if (PACKAGED_WINDOWS_CUSTOMER && hasPendingRuntimeInstall(ACTIVE_YOUTAB_AGENT_ROOT)) {
+    rememberLog(`[bootstrap] pending install transaction at ${pendingRuntimeInstallMarker(ACTIVE_YOUTAB_AGENT_ROOT)}; requesting Setup repair`)
+    if (await handOffWindowsBootstrapRecovery('pending-install')) {
+      const handedOff: Error & { isBootstrapFailure?: boolean; bootstrapHandedOff?: boolean } = new Error(
+        'Youtab install recovery was handed off to Youtab Setup. The desktop will restart when recovery completes.'
+      )
+      handedOff.isBootstrapFailure = true
+      handedOff.bootstrapHandedOff = true
+      bootstrapFailure = handedOff
+      throw handedOff
+    }
+    const error: Error & { isBootstrapFailure?: boolean } = new Error(
+      'An unverified Youtab install transaction is pending, and staged Youtab Setup repair is unavailable.'
+    )
+    error.isBootstrapFailure = true
+    bootstrapFailure = error
+    throw error
+  }
+}
+
 async function ensureRuntime(backend) {
+  // Recheck after resolution: Setup may have begun a transaction while the
+  // Desktop was waiting for the local start gate.
+  await recoverPendingRuntimeInstall()
+
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
 
@@ -4031,6 +4141,10 @@ async function ensureRuntime(backend) {
       throw handoffError
     }
 
+    if (PACKAGED_WINDOWS_CUSTOMER) {
+      throw new Error('Youtab Setup recovery is unavailable. Reinstall using the current official Youtab Setup.')
+    }
+
     // Eagerly flip the bootstrap UI state to 'active' so the renderer
     // shows the install overlay BEFORE the runner finishes fetching the
     // manifest (which on slow networks can take tens of seconds and would
@@ -4057,6 +4171,7 @@ async function ensureRuntime(backend) {
       installStamp: backend.installStamp,
       activeRoot: backend.activeRoot,
       sourceRepoRoot: SOURCE_REPO_ROOT,
+      customerMode: PACKAGED_WINDOWS_CUSTOMER,
       youtabHome: YOUTAB_AGENT_HOME,
       logRoot: path.join(YOUTAB_AGENT_HOME, 'logs'),
       abortSignal: bootstrapAbortController.signal,
@@ -8295,6 +8410,7 @@ async function spawnPoolBackend(profile, entry) {
     }
   }
 
+  await recoverPendingRuntimeInstall()
   await ensurePendingNativeProfileState(profile)
 
   const token = crypto.randomBytes(32).toString('base64url')
@@ -8590,6 +8706,7 @@ async function startYoutab() {
       ensureLocalRuntime: ensureRuntime,
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Youtab runtime', 28)
+        await recoverPendingRuntimeInstall()
         await ensurePendingNativeProfileState(primaryProfileKey())
 
         return resolveYoutabBackend(backendArgs)
@@ -9851,6 +9968,21 @@ ipcMain.handle('youtab:bootstrap:repair', async () => {
   // marker in that case stranded the app in first-run setup with no way back
   // (#72166). The explicit flag carries the intent instead.
   rememberLog('[bootstrap] repair requested by renderer; forcing reinstall + clearing latched failure')
+
+  if (PACKAGED_WINDOWS_CUSTOMER) {
+    if (!resolveUpdaterBinary()) {
+      const error = 'Youtab Setup is missing. Reinstall using the current official Youtab Setup.'
+      dialog.showErrorBox('Youtab repair unavailable', error)
+      return { ok: false, error }
+    }
+    const handedOff = await handOffWindowsBootstrapRecovery('repair')
+    if (!handedOff) {
+      const error = 'Youtab repair could not safely start. Close other Youtab processes and retry.'
+      dialog.showErrorBox('Youtab repair unavailable', error)
+      return { ok: false, error }
+    }
+    return { ok: true, handedOff: true }
+  }
 
   bootstrapRepairRequested = true
   bootstrapFailure = null
