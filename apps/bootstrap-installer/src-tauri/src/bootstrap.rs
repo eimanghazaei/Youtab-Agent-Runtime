@@ -33,8 +33,23 @@ use crate::AppState;
 /// cancellation, and early returns.
 struct InstallSwap {
     current: PathBuf,
-    backup: Option<PathBuf>,
     committed: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallJournal {
+    schema: u32,
+    had_old: bool,
+    setup: Option<SetupJournal>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetupJournal {
+    replace: bool,
+    previous_sha256: Option<String>,
+    required_sha256: String,
 }
 
 impl InstallSwap {
@@ -48,13 +63,97 @@ impl InstallSwap {
         Ok(parent.join(format!(".youtab-runtime-install-{suffix}")))
     }
 
+    #[cfg(test)]
     fn write_pending(current: &Path, had_old: bool) -> Result<()> {
+        Self::write_journal(current, &InstallJournal { schema: 2, had_old, setup: None })
+    }
+
+    fn write_journal(current: &Path, journal: &InstallJournal) -> Result<()> {
         use std::io::Write;
         let path = Self::marker_path(current, "pending")?;
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
             .with_context(|| format!("creating transaction marker {}", path.display()))?;
-        file.write_all(if had_old { b"old\n" } else { b"fresh\n" })?;
+        file.write_all(&serde_json::to_vec(journal)?)?;
         file.sync_all()?;
+        Ok(())
+    }
+
+    fn read_journal(current: &Path) -> Result<InstallJournal> {
+        let bytes = std::fs::read(Self::marker_path(current, "pending")?)?;
+        // Replay transactions left by the previous Runtime-only implementation.
+        let journal = match bytes.as_slice() {
+            b"old\n" | b"old" => InstallJournal { schema: 2, had_old: true, setup: None },
+            b"fresh\n" | b"fresh" => InstallJournal { schema: 2, had_old: false, setup: None },
+            _ => serde_json::from_slice::<InstallJournal>(&bytes)?,
+        };
+        let hash_valid = |hash: &str| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+        if journal.schema != 2 || journal.setup.as_ref().is_some_and(|setup|
+            !hash_valid(&setup.required_sha256) ||
+            setup.previous_sha256.as_ref().is_some_and(|hash| !hash_valid(hash)) ||
+            (!setup.replace && setup.previous_sha256.as_ref() != Some(&setup.required_sha256))) {
+            return Err(anyhow!("invalid Runtime/Setup transaction journal"));
+        }
+        Ok(journal)
+    }
+
+    fn setup_paths(current: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        let target = crate::paths::installer_dest_in(current.parent().context("install root has no parent")?);
+        let name = target.file_name().unwrap().to_string_lossy();
+        Ok((target.clone(), target.with_file_name(format!("{name}.new-staged")),
+            target.with_file_name(format!("{name}.old-backup"))))
+    }
+
+    fn remove_setup_file(path: &Path) -> Result<()> {
+        if path.exists() {
+            if !std::fs::symlink_metadata(path)?.is_file() {
+                return Err(anyhow!("Setup transaction path is not a regular file"));
+            }
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    fn restore_path(current: &Path, backup: &Path, had_old: bool, directory: bool) -> Result<()> {
+        let failed = current.with_file_name(format!("{}.failed-recovery", current.file_name().unwrap().to_string_lossy()));
+        if backup.exists() || !had_old {
+            if failed.exists() && current.exists() {
+                return Err(anyhow!("ambiguous failed recovery directory/file; backup retained"));
+            }
+            if current.exists() {
+                std::fs::rename(current, &failed).with_context(|| "moving failed install out of active path")?;
+            }
+            if backup.exists() {
+                // A failed rename leaves backup + journal + failed path intact;
+                // the next recovery retries instead of deleting the old install.
+                std::fs::rename(backup, current).with_context(|| "restoring previous install")?;
+            }
+        } else if !current.exists() {
+            return Err(anyhow!("previous install and its backup are both absent"));
+        }
+        // Also retry cleanup when restoring the backup succeeded but deleting
+        // the failed replacement was interrupted on the previous recovery.
+        if failed.exists() {
+            if directory { std::fs::remove_dir_all(failed)?; }
+            else { Self::remove_setup_file(&failed)?; }
+        }
+        Ok(())
+    }
+
+    fn restore_setup(current: &Path, setup: &SetupJournal) -> Result<()> {
+        let (target, staged, backup) = Self::setup_paths(current)?;
+        if !setup.replace {
+            crate::paths::verify_installer(&target, &setup.required_sha256)?;
+            return Ok(());
+        }
+        if let Some(previous) = &setup.previous_sha256 {
+            crate::paths::verify_installer(if backup.exists() { &backup } else { &target }, previous)
+                .context("previous Setup identity could not be verified; backups retained")?;
+        }
+        Self::restore_path(&target, &backup, setup.previous_sha256.is_some(), false)?;
+        if let Some(previous) = &setup.previous_sha256 {
+            crate::paths::verify_installer(&target, previous)?;
+        }
+        Self::remove_setup_file(&staged)?;
         Ok(())
     }
 
@@ -65,44 +164,49 @@ impl InstallSwap {
         let pending = Self::marker_path(current, "pending")?;
         let committed = Self::marker_path(current, "committed")?;
         let backup = Self::backup_path(current)?;
+        let (_, setup_staged, setup_backup) = Self::setup_paths(current)?;
         if !pending.exists() {
-            if backup.exists() || committed.exists() {
+            if backup.exists() || setup_staged.exists() || setup_backup.exists() {
                 return Err(anyhow!("orphaned Runtime transaction state requires review"));
             }
+            // Journal removal is the last cleanup step before deleting this
+            // latch. A crash between them must not strand a verified install.
+            Self::remove_setup_file(&committed)?;
             return Ok(());
         }
-        let state = std::fs::read_to_string(&pending)?.trim().to_string();
-        if state != "old" && state != "fresh" {
-            return Err(anyhow!("invalid Runtime transaction marker"));
-        }
+        let journal = Self::read_journal(current)?;
         if committed.exists() {
+            if std::fs::read(&committed)? != b"verified\n" || !current.is_dir() {
+                return Err(anyhow!("invalid committed transaction; backups retained"));
+            }
+            if let Some(setup) = &journal.setup {
+                let (target, _, _) = Self::setup_paths(current)?;
+                crate::paths::verify_installer(&target, &setup.required_sha256)
+                    .context("committed Setup verification failed; backups retained")?;
+            }
             if backup.exists() {
                 std::fs::remove_dir_all(&backup).with_context(|| "cleaning verified old Runtime")?;
             }
-            std::fs::remove_file(committed)?;
+            Self::remove_setup_file(&setup_backup)?;
+            Self::remove_setup_file(&setup_staged)?;
             std::fs::remove_file(pending)?;
+            std::fs::remove_file(committed)?;
             return Ok(());
         }
-        if backup.exists() || state == "fresh" {
-            let failed = current.with_file_name(format!("{}.failed-recovery", current.file_name().unwrap().to_string_lossy()));
-            if failed.exists() {
-                return Err(anyhow!("prior failed Runtime recovery directory exists"));
-            }
-            if current.exists() {
-                std::fs::rename(current, &failed).with_context(|| "moving interrupted Runtime out of active path")?;
-            }
-            if backup.exists() {
-                std::fs::rename(&backup, current).with_context(|| "restoring interrupted Runtime backup")?;
-            }
-            if failed.exists() { let _ = std::fs::remove_dir_all(failed); }
+        if let Some(setup) = &journal.setup {
+            Self::restore_setup(current, setup)?;
         }
-        // state=old + no backup means the process died before backup rename;
-        // CURRENT is still the original install and must remain untouched.
+        Self::restore_path(current, &backup, journal.had_old, true)?;
         std::fs::remove_file(pending)?;
         Ok(())
     }
 
+    #[cfg(test)]
     fn promote(current: &Path, staged: &Path) -> Result<Self> {
+        Self::promote_with_setup(current, staged, None)
+    }
+
+    fn promote_with_setup(current: &Path, staged: &Path, setup_source: Option<&Path>) -> Result<Self> {
         let parent = current.parent().context("install root has no parent")?;
         let staged_parent = staged.parent().context("staging root has no parent")?;
         let prefix = format!("{}.new-", current.file_name().unwrap().to_string_lossy());
@@ -111,26 +215,58 @@ impl InstallSwap {
             return Err(anyhow!("invalid staged Runtime directory"));
         }
         let backup_path = Self::backup_path(current)?;
-        if backup_path.exists() || Self::marker_path(current, "pending")?.exists() {
+        let (setup_target, setup_staged, setup_backup) = Self::setup_paths(current)?;
+        if backup_path.exists() || Self::marker_path(current, "pending")?.exists()
+            || Self::marker_path(current, "committed")?.exists() || setup_staged.exists() || setup_backup.exists() {
             return Err(anyhow!("previous Runtime transaction requires recovery"));
         }
         let had_old = current.exists();
-        Self::write_pending(current, had_old)?;
-        let backup = if had_old {
+        let setup = setup_source.map(|source| -> Result<SetupJournal> {
+            let required_sha256 = crate::paths::installer_sha256(source)?;
+            let previous_sha256 = if setup_target.exists() {
+                Some(crate::paths::installer_sha256(&setup_target)?)
+            } else { None };
+            let same = match (source.canonicalize(), setup_target.canonicalize()) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => source == setup_target,
+            };
+            Ok(SetupJournal { replace: !same, previous_sha256, required_sha256 })
+        }).transpose()?;
+        Self::write_journal(current, &InstallJournal { schema: 2, had_old, setup })?;
+        // Own rollback BEFORE any copy or active-path mutation. The same
+        // journal covers partial staging, Runtime promotion, and Setup rename.
+        let swap = Self { current: current.to_path_buf(), committed: false };
+        let journal = Self::read_journal(current)?;
+        if let Some(setup) = &journal.setup {
+            if setup.replace {
+                crate::paths::stage_installer(setup_source.unwrap(), &setup_staged, &setup.required_sha256)?;
+            } else {
+                crate::paths::verify_installer(&setup_target, &setup.required_sha256)?;
+            }
+        }
+        if had_old {
             let backup = backup_path;
             std::fs::rename(current, &backup).with_context(|| "backing up current Runtime install")?;
-            Some(backup)
-        } else {
-            None
-        };
-        if let Err(err) = std::fs::rename(staged, current) {
-            if let Some(ref backup) = backup {
-                std::fs::rename(backup, current).with_context(|| "restoring old Runtime after promotion failure")?;
-            }
-            std::fs::remove_file(Self::marker_path(current, "pending")?)?;
-            return Err(anyhow!("promoting staged Runtime failed: {err}"));
         }
-        Ok(Self { current: current.to_path_buf(), backup, committed: false })
+        std::fs::rename(staged, current).with_context(|| "promoting staged Runtime")?;
+        Ok(swap)
+    }
+
+    fn install_setup(&mut self) -> Result<()> {
+        let journal = Self::read_journal(&self.current)?;
+        if let Some(setup) = &journal.setup {
+            let (target, staged, backup) = Self::setup_paths(&self.current)?;
+            if setup.replace {
+                crate::paths::verify_installer(&staged, &setup.required_sha256)?;
+                if let Some(previous) = &setup.previous_sha256 {
+                    crate::paths::verify_installer(&target, previous)?;
+                    std::fs::rename(&target, &backup).context("backing up previous Setup")?;
+                }
+                std::fs::rename(staged, &target).context("promoting verified Setup")?;
+            }
+            crate::paths::verify_installer(&target, &setup.required_sha256)?;
+        }
+        Ok(())
     }
 
     fn rollback(&mut self) -> Result<()> {
@@ -141,17 +277,20 @@ impl InstallSwap {
     }
 
     fn commit(&mut self) -> Result<()> {
+        let journal = Self::read_journal(&self.current)?;
+        if let Some(setup) = &journal.setup {
+            let (target, _, _) = Self::setup_paths(&self.current)?;
+            crate::paths::verify_installer(&target, &setup.required_sha256)
+                .context("required Setup missing or invalid; install cannot complete")?;
+        }
         let marker = Self::marker_path(&self.current, "committed")?;
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&marker)?;
         use std::io::Write;
         file.write_all(b"verified\n")?;
         file.sync_all()?;
+        drop(file);
         self.committed = true;
-        if let Some(ref backup) = self.backup {
-            std::fs::remove_dir_all(backup).with_context(|| "removing old Runtime after verified install")?;
-        }
-        std::fs::remove_file(marker)?;
-        std::fs::remove_file(Self::marker_path(&self.current, "pending")?)?;
+        Self::recover(&self.current)?;
         Ok(())
     }
 }
@@ -1081,7 +1220,9 @@ async fn run_bootstrap(
                         let info = ArtifactInstallInfo::from_stage_data(data, &pin, base)?;
                         ensure_replacement_not_downgrade(&install_root, &info)?;
                         crate::update::require_install_locks_free(&install_root).await?;
-                        let swap = InstallSwap::promote(&install_root, &info.staged)?;
+                        let setup_source = std::env::current_exe().context("locating running Setup")?;
+                        let mut swap = InstallSwap::promote_with_setup(&install_root, &info.staged, Some(&setup_source))?;
+                        swap.install_setup()?;
                         artifact_info = Some(info);
                         install_swap = Some(swap);
                     }
@@ -1154,16 +1295,15 @@ async fn run_bootstrap(
         swap.commit()?;
     }
 
-    // Copy ourselves to YOUTAB_AGENT_HOME/youtab-setup.exe so the desktop app can
-    // re-invoke us with `--update` and shortcuts have a stable target. This is
-    // a one-shot install concern; an `--update` re-invocation no-ops because
-    // we're already running from that path. Best-effort — a failure here must
-    // not fail an otherwise-successful install.
-    if let Err(err) = crate::paths::copy_self_to_youtab_home() {
+    // Artifact installs stage and verify Setup within the joint transaction.
+    // Preserve the existing development/legacy installation behavior.
+    if release_base.is_none() {
+      if let Err(err) = crate::paths::copy_self_to_youtab_home() {
         tracing::warn!(?err, "failed to copy installer into YOUTAB_AGENT_HOME (non-fatal)");
         emit_log(&format!(
             "[bootstrap] warning: could not stage updater binary: {err}"
         ));
+      }
     }
 
     emit_event(
@@ -1596,5 +1736,199 @@ mod tests {
             })).unwrap()).unwrap();
         assert!(ensure_replacement_not_downgrade(&current, &next).is_err());
         let _ = std::fs::remove_dir_all(parent);
+    }
+
+    fn setup_swap_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let parent = unique_tmp_dir(label);
+        let current = parent.join("youtab-agent-runtime");
+        let staged = parent.join("youtab-agent-runtime.new-test");
+        let source = parent.join("downloaded-setup.exe");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(current.join("old.txt"), b"old-runtime").unwrap();
+        std::fs::write(staged.join("new.txt"), b"new-runtime").unwrap();
+        std::fs::write(&source, b"new-setup-fixture").unwrap();
+        std::fs::write(crate::paths::installer_dest_in(&parent), b"old-setup-fixture").unwrap();
+        (parent, current, staged, source)
+    }
+
+    #[test]
+    fn setup_staging_success_commits_both_verified_paths() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-success");
+        let (target, setup_stage, setup_backup) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"old-setup-fixture");
+        assert_eq!(std::fs::read(&setup_stage).unwrap(), b"new-setup-fixture");
+        swap.install_setup().unwrap();
+        swap.commit().unwrap();
+        assert!(current.join("new.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), std::fs::read(source).unwrap());
+        assert!(!setup_stage.exists());
+        assert!(!setup_backup.exists());
+        assert!(!InstallSwap::backup_path(&current).unwrap().exists());
+        InstallSwap::recover(&current).unwrap();
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_copy_and_verification_failure_preserves_existing_pair() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-copy-fail");
+        let (target, setup_stage, _) = InstallSwap::setup_paths(&current).unwrap();
+        // Missing source fails before either active path is touched.
+        assert!(InstallSwap::promote_with_setup(&current, &staged, Some(&parent.join("missing"))).is_err());
+        assert!(current.join("old.txt").exists());
+        // The low-level copy never truncates an existing staging path.
+        std::fs::write(&setup_stage, b"partial-copy").unwrap();
+        let expected = crate::paths::installer_sha256(&source).unwrap();
+        assert!(crate::paths::stage_installer(&source, &setup_stage, &expected).is_err());
+        assert_eq!(std::fs::read(&setup_stage).unwrap(), b"partial-copy");
+        std::fs::remove_file(&setup_stage).unwrap();
+        // A copied file whose bytes fail verification remains journal-owned.
+        InstallSwap::write_journal(&current, &InstallJournal {
+            schema: 2, had_old: true, setup: Some(SetupJournal {
+                replace: true,
+                previous_sha256: Some(crate::paths::installer_sha256(&target).unwrap()),
+                required_sha256: "0".repeat(64),
+            }),
+        }).unwrap();
+        assert!(crate::paths::stage_installer(&source, &setup_stage, &"0".repeat(64)).is_err());
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        assert!(!setup_stage.exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_verification_failure_after_runtime_promotion_restores_both() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-verify-fail");
+        let (target, setup_stage, _) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        std::fs::write(&setup_stage, b"corrupt").unwrap();
+        assert!(swap.install_setup().is_err());
+        assert!(swap.commit().is_err());
+        swap.rollback().unwrap();
+        assert!(current.join("old.txt").exists());
+        assert!(!current.join("new.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_recovery_after_both_promotions_restores_prior_install() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-crash");
+        let (target, _, _) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        swap.install_setup().unwrap();
+        std::mem::forget(swap);
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        InstallSwap::recover(&current).unwrap();
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_missing_or_corrupt_after_promotion_never_commits() {
+        for missing in [true, false] {
+            let (parent, current, staged, source) = setup_swap_fixture("setup-final-verify");
+            let (target, _, _) = InstallSwap::setup_paths(&current).unwrap();
+            let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+            swap.install_setup().unwrap();
+            if missing { std::fs::remove_file(&target).unwrap(); }
+            else { std::fs::write(&target, b"corrupt").unwrap(); }
+            assert!(swap.commit().is_err());
+            swap.rollback().unwrap();
+            assert!(current.join("old.txt").exists());
+            assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+            std::fs::remove_dir_all(parent).unwrap();
+        }
+    }
+
+    #[test]
+    fn setup_running_from_stable_path_is_verified_without_self_replacement() {
+        let (parent, current, staged, _) = setup_swap_fixture("setup-self");
+        let (target, setup_stage, setup_backup) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&target)).unwrap();
+        assert!(!setup_stage.exists());
+        swap.install_setup().unwrap();
+        swap.commit().unwrap();
+        assert!(!setup_backup.exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_fresh_install_failure_removes_both_unverified_paths() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-fresh");
+        let (target, _, _) = InstallSwap::setup_paths(&current).unwrap();
+        std::fs::remove_dir_all(&current).unwrap();
+        std::fs::remove_file(&target).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        swap.install_setup().unwrap();
+        swap.rollback().unwrap();
+        assert!(!current.exists());
+        assert!(!target.exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_recovery_between_backup_and_promotion_restores_prior_pair() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-rename-crash");
+        let (target, _, backup) = InstallSwap::setup_paths(&current).unwrap();
+        let swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        std::fs::rename(&target, &backup).unwrap();
+        std::mem::forget(swap);
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_committed_crash_retries_cleanup_without_reverting_verified_pair() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-commit-crash");
+        let (target, _, backup) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        swap.install_setup().unwrap();
+        std::fs::write(InstallSwap::marker_path(&current, "committed").unwrap(), b"verified\n").unwrap();
+        std::mem::forget(swap);
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("new.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"new-setup-fixture");
+        assert!(!backup.exists());
+        assert!(!InstallSwap::backup_path(&current).unwrap().exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_legacy_runtime_only_journal_remains_recoverable() {
+        let (parent, current, _, _) = setup_swap_fixture("setup-legacy-journal");
+        std::fs::write(InstallSwap::marker_path(&current, "pending").unwrap(), b"old\n").unwrap();
+        std::fs::rename(&current, InstallSwap::backup_path(&current).unwrap()).unwrap();
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(crate::paths::installer_dest_in(&parent)).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn setup_windows_lock_fails_closed_then_recovery_retries_after_unlock() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (parent, current, staged, source) = setup_swap_fixture("setup-windows-lock");
+        let (target, _, _) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&target).unwrap();
+        assert!(swap.install_setup().is_err());
+        assert!(swap.commit().is_err());
+        assert!(swap.rollback().is_err());
+        assert!(InstallSwap::backup_path(&current).unwrap().exists());
+        assert!(InstallSwap::marker_path(&current, "pending").unwrap().exists());
+        drop(lock);
+        swap.rollback().unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
     }
 }

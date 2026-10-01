@@ -124,8 +124,6 @@ def package_runtime_artifact(output_dir: Path, version: str,
     target_dir = output_dir / source_sha
     artifact_name = f"youtab-runtime-{source_sha}.zip"
     script_name = f"install-{source_sha}.ps1"
-    artifact_path = target_dir / artifact_name
-    manifest_path = target_dir / "manifest.json"
     if target_dir.exists():
         raise FileExistsError(f"immutable release already exists: {target_dir}")
 

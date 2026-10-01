@@ -39,6 +39,7 @@ futures = "0.3"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10.9"
 
 # HTTP — rustls so we don't need OpenSSL on the build box
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
