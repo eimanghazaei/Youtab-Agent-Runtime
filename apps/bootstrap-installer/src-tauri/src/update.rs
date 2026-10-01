@@ -114,7 +114,7 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
 /// `acquire` therefore REFUSES when a live foreign owner holds it rather than
 /// overwriting — the pre-fix clobber is what let a dashboard `youtab update`
 /// keep running while install-mode bootstrap rewrote the tree underneath it.
-struct UpdateMarkerGuard {
+pub(crate) struct UpdateMarkerGuard {
     path: PathBuf,
     /// False when a live foreign updater already owns the marker: we hold no
     /// claim, so `Drop` must not delete their marker.
@@ -201,6 +201,12 @@ fn pid_is_alive(pid: u32) -> bool {
 }
 
 impl UpdateMarkerGuard {
+    pub(crate) fn acquire_for_install(youtab_home: &Path) -> anyhow::Result<Self> {
+        let marker = youtab_home.join(".youtab-agent-runtime-update-in-progress");
+        Self::acquire(marker).map_err(|owner| {
+            anyhow::anyhow!("another Youtab update holds the install lock (PID {})", owner.pid)
+        })
+    }
     /// Claim the marker, or report the live updater that already owns it.
     ///
     /// Writing is best-effort: a write failure must NOT abort the update (the
@@ -252,6 +258,9 @@ impl Drop for UpdateMarkerGuard {
 }
 
 async fn run_update(app: AppHandle) -> Result<()> {
+    if let Some(base) = option_env!("RELEASE_BASE_URL") {
+        return run_artifact_update(app, base).await;
+    }
     let youtab_home = crate::paths::youtab_home();
     let install_root = youtab_home.join("youtab-agent-runtime");
 
@@ -632,6 +641,117 @@ async fn run_update(app: AppHandle) -> Result<()> {
     Ok(())
 }
 
+async fn run_artifact_update(app: AppHandle, base: &str) -> Result<()> {
+    let home = crate::paths::youtab_home();
+    let root = home.join("youtab-agent-runtime");
+    let lock = UpdateMarkerGuard::acquire_for_install(&home)?;
+    crate::bootstrap::recover_artifact_transaction(&root)?;
+    let approved = approved_artifact_target(base, &root).await?;
+    if !approved.is_newer {
+        emit(&app, BootstrapEvent::Complete {
+            install_root: root.to_string_lossy().into_owned(), marker: Some(approved.installed_marker),
+        });
+        return Ok(());
+    }
+    crate::bootstrap::run_artifact_update(app.clone(), approved.sha, lock).await?;
+    if let Err(err) = crate::bootstrap::launch_youtab_desktop(app.clone(), root.to_string_lossy().into_owned()).await {
+        emit_log(&app, None, LogStream::Stderr, &format!("[update] launch after verified install failed: {err}"));
+    }
+    exit_after_success(&app);
+    Ok(())
+}
+
+pub(crate) struct ApprovedArtifactTarget {
+    pub sha: String,
+    pub is_newer: bool,
+    installed_marker: serde_json::Value,
+}
+
+pub(crate) async fn approved_artifact_target(base: &str, root: &Path) -> Result<ApprovedArtifactTarget> {
+    let marker_path = root.join(".youtab-agent-runtime-bootstrap-complete");
+    let marker: serde_json::Value = serde_json::from_slice(&std::fs::read(&marker_path)?)?;
+    if marker.get("releaseBaseUrl").and_then(serde_json::Value::as_str) != Some(base) {
+        return Err(anyhow!("installed Runtime is not bound to this artifact channel"));
+    }
+    let installed_sequence = marker.get("releaseSequence")
+        .and_then(serde_json::Value::as_u64).filter(|n| *n > 0)
+        .ok_or_else(|| anyhow!("legacy Runtime install has no release sequence; use a new Setup to migrate"))?;
+    let installed_sha = marker.get("pinnedCommit").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("installed Runtime has no exact source SHA"))?;
+    if installed_sha.len() != 40 || !installed_sha.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        return Err(anyhow!("installed Runtime marker has invalid exact source SHA"));
+    }
+    let installed_hash = marker.get("artifactSha256").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("installed Runtime has no artifact hash"))?;
+    if !release_hash(&marker, "artifactSha256") {
+        return Err(anyhow!("installed Runtime marker has invalid artifact hash"));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()?;
+    let latest: serde_json::Value = read_release_json(&client, &format!("{base}/latest.json")).await?;
+    let target_sha = release_sha(&latest)?;
+    let manifest_url = format!("{base}/{target_sha}/manifest.json");
+    if latest.get("manifest_url").and_then(serde_json::Value::as_str) != Some(manifest_url.as_str()) {
+        return Err(anyhow!("latest release points outside its immutable manifest"));
+    }
+    let immutable = read_release_json(&client, &manifest_url).await?;
+    for key in ["version", "release_sequence", "source_sha", "artifact_url", "sha256",
+        "install_script_url", "install_script_sha256", "created_at", "platform", "architecture", "format"] {
+        if latest.get(key) != immutable.get(key) {
+            return Err(anyhow!("latest and immutable release disagree on {key}"));
+        }
+    }
+    let expected_archive = format!("{base}/{target_sha}/youtab-runtime-{target_sha}.zip");
+    let expected_script = format!("{base}/{target_sha}/install-{target_sha}.ps1");
+    if immutable.get("artifact_url").and_then(serde_json::Value::as_str) != Some(expected_archive.as_str())
+        || immutable.get("install_script_url").and_then(serde_json::Value::as_str) != Some(expected_script.as_str())
+        || immutable.get("platform").and_then(serde_json::Value::as_str) != Some("windows")
+        || immutable.get("architecture").and_then(serde_json::Value::as_str) != Some("x64")
+        || immutable.get("format").and_then(serde_json::Value::as_str) != Some("zip")
+        || !release_hash(&immutable, "sha256") || !release_hash(&immutable, "install_script_sha256") {
+        return Err(anyhow!("immutable Runtime release has invalid artifact metadata"));
+    }
+    let next_sequence = immutable.get("release_sequence").and_then(serde_json::Value::as_u64)
+        .filter(|n| *n > 0).ok_or_else(|| anyhow!("invalid release sequence"))?;
+    if next_sequence < installed_sequence {
+        return Err(anyhow!("Runtime artifact downgrade is forbidden"));
+    }
+    if next_sequence == installed_sequence {
+        if target_sha != installed_sha || immutable["sha256"].as_str() != Some(installed_hash) {
+            return Err(anyhow!("release sequence was reused for different content"));
+        }
+    }
+    Ok(ApprovedArtifactTarget {
+        sha: target_sha.to_string(), is_newer: next_sequence > installed_sequence,
+        installed_marker: marker,
+    })
+}
+
+fn release_sha(value: &serde_json::Value) -> Result<&str> {
+    let sha = value.get("source_sha").and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("release lacks source_sha"))?;
+    if sha.len() != 40 || !sha.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err(anyhow!("release source_sha must be an exact lowercase SHA"));
+    }
+    Ok(sha)
+}
+
+fn release_hash(value: &serde_json::Value, key: &str) -> bool {
+    value.get(key).and_then(serde_json::Value::as_str)
+        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+}
+
+async fn read_release_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value> {
+    let response = client.get(url).send().await?.error_for_status()?;
+    let bytes = response.bytes().await?;
+    if bytes.len() > 64 * 1024 {
+        return Err(anyhow!("release metadata exceeds size limit"));
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 /// Ask the app to exit, with a hard `process::exit` fallback for a native
 /// event loop that ignores the graceful request. Without it a finished updater
 /// can linger as a live pid forever.
@@ -698,6 +818,23 @@ pub(crate) async fn wait_for_install_locks_free(install_root: &Path, app: &AppHa
                 );
             }
             return;
+        }
+        tokio::time::sleep(DESKTOP_EXIT_POLL).await;
+    }
+}
+
+/// Artifact replacement must not move a live install tree. Wait for the
+/// Desktop handoff using the same lock probes as the existing updater, but
+/// refuse rather than killing an unrelated Youtab process by image name.
+pub(crate) async fn require_install_locks_free(install_root: &Path) -> anyhow::Result<()> {
+    let targets = install_lock_probe_paths(install_root);
+    let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
+    loop {
+        if locked_paths(&targets).is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(anyhow::anyhow!("Youtab still holds install files; close it before retrying"));
         }
         tokio::time::sleep(DESKTOP_EXIT_POLL).await;
     }

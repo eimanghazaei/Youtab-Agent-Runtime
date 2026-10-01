@@ -106,6 +106,23 @@ pub async fn resolve(
     pin: &Pin,
     emit_log: &impl Fn(&str),
 ) -> Result<ResolvedScript> {
+    // A customer artifact build has one trusted script and one exact Runtime
+    // commit. Never allow a process environment override or GitHub fallback
+    // to change the executable install instructions for that build.
+    if option_env!("RELEASE_BASE_URL").is_some() {
+        let bytes = bundled_ps1_for_pin(kind, pin, option_env!("BUILD_PIN_COMMIT"))?
+            .ok_or_else(|| anyhow!("customer Setup requires an exact bundled Windows install script"))?;
+        let commit = pin.commit.as_deref().expect("validated bundled commit");
+        let cached = cached_path(kind, commit);
+        cache_bundled_script(kind, &cached, bytes)?;
+        return Ok(ResolvedScript {
+            path: cached,
+            source: ScriptSource::Bundled,
+            commit: pin.commit.clone(),
+            branch: pin.branch.clone(),
+        });
+    }
+
     // 1. Dev shortcut.
     if let Ok(repo_root) = std::env::var("YOUTAB_AGENT_SETUP_DEV_REPO_ROOT") {
         let candidate = PathBuf::from(repo_root)

@@ -3164,7 +3164,11 @@ function Install-Desktop {
     # even though this PowerShell session can, (2) ZIP/init trees that still
     # lack a HEAD after a failed post-extract fetch. Without it the desktop
     # pack dies with "could not determine git commit" (#50823).
-    if (-not $env:GITHUB_SHA) {
+    if ($script:CustomerReleaseMode) {
+        # The archive has no .git directory.  Bind the Desktop stamp to the
+        # exact SHA already validated against the immutable release manifest.
+        $env:GITHUB_SHA = $Commit
+    } elseif (-not $env:GITHUB_SHA) {
         if ($Commit) {
             $env:GITHUB_SHA = $Commit
         } else {
@@ -3768,6 +3772,10 @@ $InstallStages += @(
 function Stage-Uv               { if (-not (Install-Uv))     { throw "uv installation failed" } }
 function Stage-Python           { Resolve-UvCmd; if (-not (Test-Python))    { throw "Python $PythonVersion not available" } }
 function Stage-Git              {
+    if ($script:CustomerReleaseMode) {
+        $script:_StageSkippedReason = "Git is not required for an exact-SHA artifact install"
+        return
+    }
     if (-not (Install-Git)) {
         if ($script:GitInstallFailureReason) { throw $script:GitInstallFailureReason }
         throw "Git not available and auto-install failed -- install from https://git-scm.com/download/win then re-run"

@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,279 @@ use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
 use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
 use crate::powershell::{self, StreamSink};
 use crate::AppState;
+
+/// The existing Setup process is outside the install tree, so it can own the
+/// whole-tree swap while each PowerShell provisioning stage runs at the final
+/// path. Dropping an uncommitted swap restores the prior install on errors,
+/// cancellation, and early returns.
+struct InstallSwap {
+    current: PathBuf,
+    backup: Option<PathBuf>,
+    committed: bool,
+}
+
+impl InstallSwap {
+    fn backup_path(current: &Path) -> Result<PathBuf> {
+        let parent = current.parent().context("install root has no parent")?;
+        Ok(parent.join(format!("{}.old-backup", current.file_name().unwrap().to_string_lossy())))
+    }
+
+    fn marker_path(current: &Path, suffix: &str) -> Result<PathBuf> {
+        let parent = current.parent().context("install root has no parent")?;
+        Ok(parent.join(format!(".youtab-runtime-install-{suffix}")))
+    }
+
+    fn write_pending(current: &Path, had_old: bool) -> Result<()> {
+        use std::io::Write;
+        let path = Self::marker_path(current, "pending")?;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
+            .with_context(|| format!("creating transaction marker {}", path.display()))?;
+        file.write_all(if had_old { b"old\n" } else { b"fresh\n" })?;
+        file.sync_all()?;
+        Ok(())
+    }
+
+    /// Replay an interrupted Setup transaction before starting a new one.
+    /// A committed marker means verification finished and only backup cleanup
+    /// was interrupted; a pending marker restores the previous install.
+    fn recover(current: &Path) -> Result<()> {
+        let pending = Self::marker_path(current, "pending")?;
+        let committed = Self::marker_path(current, "committed")?;
+        let backup = Self::backup_path(current)?;
+        if !pending.exists() {
+            if backup.exists() || committed.exists() {
+                return Err(anyhow!("orphaned Runtime transaction state requires review"));
+            }
+            return Ok(());
+        }
+        let state = std::fs::read_to_string(&pending)?.trim().to_string();
+        if state != "old" && state != "fresh" {
+            return Err(anyhow!("invalid Runtime transaction marker"));
+        }
+        if committed.exists() {
+            if backup.exists() {
+                std::fs::remove_dir_all(&backup).with_context(|| "cleaning verified old Runtime")?;
+            }
+            std::fs::remove_file(committed)?;
+            std::fs::remove_file(pending)?;
+            return Ok(());
+        }
+        if backup.exists() || state == "fresh" {
+            let failed = current.with_file_name(format!("{}.failed-recovery", current.file_name().unwrap().to_string_lossy()));
+            if failed.exists() {
+                return Err(anyhow!("prior failed Runtime recovery directory exists"));
+            }
+            if current.exists() {
+                std::fs::rename(current, &failed).with_context(|| "moving interrupted Runtime out of active path")?;
+            }
+            if backup.exists() {
+                std::fs::rename(&backup, current).with_context(|| "restoring interrupted Runtime backup")?;
+            }
+            if failed.exists() { let _ = std::fs::remove_dir_all(failed); }
+        }
+        // state=old + no backup means the process died before backup rename;
+        // CURRENT is still the original install and must remain untouched.
+        std::fs::remove_file(pending)?;
+        Ok(())
+    }
+
+    fn promote(current: &Path, staged: &Path) -> Result<Self> {
+        let parent = current.parent().context("install root has no parent")?;
+        let staged_parent = staged.parent().context("staging root has no parent")?;
+        let prefix = format!("{}.new-", current.file_name().unwrap().to_string_lossy());
+        let name = staged.file_name().context("staging root has no name")?.to_string_lossy();
+        if staged_parent != parent || !name.starts_with(&prefix) || staged.is_symlink() || !staged.is_dir() {
+            return Err(anyhow!("invalid staged Runtime directory"));
+        }
+        let backup_path = Self::backup_path(current)?;
+        if backup_path.exists() || Self::marker_path(current, "pending")?.exists() {
+            return Err(anyhow!("previous Runtime transaction requires recovery"));
+        }
+        let had_old = current.exists();
+        Self::write_pending(current, had_old)?;
+        let backup = if had_old {
+            let backup = backup_path;
+            std::fs::rename(current, &backup).with_context(|| "backing up current Runtime install")?;
+            Some(backup)
+        } else {
+            None
+        };
+        if let Err(err) = std::fs::rename(staged, current) {
+            if let Some(ref backup) = backup {
+                std::fs::rename(backup, current).with_context(|| "restoring old Runtime after promotion failure")?;
+            }
+            std::fs::remove_file(Self::marker_path(current, "pending")?)?;
+            return Err(anyhow!("promoting staged Runtime failed: {err}"));
+        }
+        Ok(Self { current: current.to_path_buf(), backup, committed: false })
+    }
+
+    fn rollback(&mut self) -> Result<()> {
+        if self.committed { return Ok(()); }
+        Self::recover(&self.current)?;
+        self.committed = true;
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        let marker = Self::marker_path(&self.current, "committed")?;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&marker)?;
+        use std::io::Write;
+        file.write_all(b"verified\n")?;
+        file.sync_all()?;
+        self.committed = true;
+        if let Some(ref backup) = self.backup {
+            std::fs::remove_dir_all(backup).with_context(|| "removing old Runtime after verified install")?;
+        }
+        std::fs::remove_file(marker)?;
+        std::fs::remove_file(Self::marker_path(&self.current, "pending")?)?;
+        Ok(())
+    }
+}
+
+pub(crate) fn recover_artifact_transaction(root: &Path) -> Result<()> {
+    InstallSwap::recover(root)
+}
+
+impl Drop for InstallSwap {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Err(err) = self.rollback() {
+                tracing::error!(?err, "CRITICAL: Runtime rollback failed; old backup retained");
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ArtifactInstallInfo {
+    staged: PathBuf,
+    source_sha: String,
+    artifact_sha256: String,
+    version: String,
+    release_sequence: u64,
+    release_base_url: String,
+}
+
+impl ArtifactInstallInfo {
+    fn from_stage_data(data: &serde_json::Value, pin: &Pin, base: &str) -> Result<Self> {
+        let string = |key: &str| -> Result<String> {
+            Ok(data.get(key).and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("repository stage missing {key}"))?.to_string())
+        };
+        let source_sha = string("source_sha")?;
+        if pin.commit.as_deref() != Some(source_sha.as_str()) {
+            return Err(anyhow!("repository stage source SHA differs from Setup pin"));
+        }
+        let artifact_sha256 = string("artifact_sha256")?;
+        if artifact_sha256.len() != 64 || !artifact_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(anyhow!("repository stage artifact SHA256 is invalid"));
+        }
+        let release_base_url = string("release_base_url")?;
+        if release_base_url != base {
+            return Err(anyhow!("repository stage release base differs from Setup build"));
+        }
+        let release_sequence = data.get("release_sequence")
+            .and_then(serde_json::Value::as_u64).filter(|n| *n > 0)
+            .ok_or_else(|| anyhow!("repository stage release sequence is invalid"))?;
+        Ok(Self {
+            staged: PathBuf::from(string("staged_install_dir")?),
+            source_sha,
+            artifact_sha256,
+            version: string("version")?,
+            release_sequence,
+            release_base_url,
+        })
+    }
+}
+
+fn ensure_replacement_not_downgrade(root: &Path, next: &ArtifactInstallInfo) -> Result<()> {
+    let path = root.join(".youtab-agent-runtime-bootstrap-complete");
+    if !path.exists() {
+        if root.exists() {
+            return Err(anyhow!("existing Runtime has no verified artifact marker; automatic replacement refused"));
+        }
+        return Ok(());
+    }
+    let old: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    if old.get("releaseBaseUrl").and_then(serde_json::Value::as_str)
+        != Some(next.release_base_url.as_str()) {
+        return Err(anyhow!("existing Runtime is bound to a different or legacy source"));
+    }
+    let old_sequence = old.get("releaseSequence").and_then(serde_json::Value::as_u64)
+        .filter(|n| *n > 0).ok_or_else(|| anyhow!("existing Runtime has no release sequence"))?;
+    let old_sha = old.get("pinnedCommit").and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+        .ok_or_else(|| anyhow!("existing Runtime has no valid source SHA"))?;
+    let old_hash = old.get("artifactSha256").and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+        .ok_or_else(|| anyhow!("existing Runtime has no valid artifact hash"))?;
+    if next.release_sequence < old_sequence {
+        return Err(anyhow!("Runtime artifact downgrade is forbidden"));
+    }
+    if next.release_sequence == old_sequence &&
+        (old_sha != next.source_sha || old_hash != next.artifact_sha256) {
+        return Err(anyhow!("release sequence was reused for different content"));
+    }
+    Ok(())
+}
+
+/// Exercise the installed backend's existing ready-file and /api/health path
+/// before retiring the prior install. The probe has its own empty home and
+/// never exposes the user's session or credentials to this synthetic server.
+async fn verify_installed_backend(install_root: &Path, youtab_home: &Path) -> Result<()> {
+    let cli = if cfg!(windows) {
+        install_root.join("venv/Scripts/youtab.exe")
+    } else {
+        install_root.join("venv/bin/youtab")
+    };
+    if !cli.is_file() {
+        return Err(anyhow!("installed Youtab CLI is absent"));
+    }
+    let probe_dir = youtab_home.join(format!(".setup-health-{}", std::process::id()));
+    std::fs::create_dir(&probe_dir).context("creating isolated backend probe home")?;
+    let ready = probe_dir.join("ready.json");
+    let mut child = tokio::process::Command::new(cli)
+        .args(["serve", "--host", "127.0.0.1", "--port", "0", "--no-open"])
+        .env("YOUTAB_AGENT_HOME", &probe_dir)
+        .env("YOUTAB_AGENT_DESKTOP_READY_FILE", &ready)
+        .current_dir(install_root)
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn().context("starting installed backend health probe")?;
+    let result = async {
+        let client = reqwest::Client::builder().timeout(Duration::from_secs(2)).no_proxy().build()?;
+        for _ in 0..150 {
+            if let Some(status) = child.try_wait()? {
+                return Err(anyhow!("installed backend exited before ready: {status}"));
+            }
+            if let Ok(bytes) = std::fs::read(&ready) {
+                let payload: serde_json::Value = serde_json::from_slice(&bytes)?;
+                let port = payload.get("port").and_then(serde_json::Value::as_u64)
+                    .filter(|n| (1..=65535).contains(n))
+                    .ok_or_else(|| anyhow!("backend ready file has invalid port"))?;
+                let url = format!("http://127.0.0.1:{port}/api/health");
+                if let Ok(response) = client.get(url).send().await {
+                    if response.status().is_success() {
+                        let body: serde_json::Value = serde_json::from_slice(&response.bytes().await?)?;
+                        if body.get("ok") == Some(&serde_json::Value::Bool(true)) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Err(anyhow!("installed backend did not pass /api/health within 30 seconds"))
+    }.await;
+    let _ = child.kill().await;
+    let waited = child.wait().await;
+    let _ = std::fs::remove_dir_all(&probe_dir);
+    waited.context("waiting for owned backend probe to stop")?;
+    result
+}
 
 // ---------------------------------------------------------------------------
 // Public Tauri commands
@@ -102,7 +376,20 @@ pub async fn start_bootstrap(
     let cancel_rx = Arc::new(Mutex::new(Some(cancel_rx)));
 
     tokio::spawn(async move {
-        let result = run_bootstrap(app_for_task.clone(), args_for_task, cancel_rx).await;
+        let result = run_requested_bootstrap(app_for_task.clone(), args_for_task, cancel_rx).await;
+
+        if let Err(err) = &result {
+            // A transaction failure may occur outside a PowerShell stage. The
+            // renderer needs a terminal event even when an inner stage did not
+            // emit one (for example, promotion or health verification).
+            emit_event(
+                &app_for_task,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: format!("{err:#}"),
+                },
+            );
+        }
 
         // Reflect terminal state into AppState so get_bootstrap_status()
         // can serve it after the task exits.
@@ -287,6 +574,14 @@ fn resolve_marker_commit(install_root: &Path, pin: &Pin) -> Option<String> {
 }
 
 fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<serde_json::Value> {
+    write_bootstrap_complete_marker_with_artifact(install_root, pin, None)
+}
+
+fn write_bootstrap_complete_marker_with_artifact(
+    install_root: &Path,
+    pin: &Pin,
+    artifact: Option<&ArtifactInstallInfo>,
+) -> Result<serde_json::Value> {
     use std::io::Write;
 
     let marker_path = crate::paths::likely_bootstrap_marker(install_root);
@@ -303,12 +598,20 @@ fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<ser
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default();
-    let marker = serde_json::json!({
+    let mut marker = serde_json::json!({
         "schemaVersion": 1,
         "pinnedCommit": resolve_marker_commit(install_root, pin),
         "pinnedBranch": pin.branch.clone(),
         "completedAtUnix": completed_at_unix,
     });
+    if let Some(info) = artifact {
+        let object = marker.as_object_mut().expect("marker is an object");
+        object.insert("version".into(), serde_json::json!(info.version));
+        object.insert("releaseSequence".into(), serde_json::json!(info.release_sequence));
+        object.insert("artifactSha256".into(), serde_json::json!(info.artifact_sha256));
+        object.insert("releaseBaseUrl".into(), serde_json::json!(info.release_base_url));
+        object.insert("installedAt".into(), serde_json::json!(completed_at_unix));
+    }
     let mut body = serde_json::to_vec_pretty(&marker)?;
     body.push(b'\n');
 
@@ -441,15 +744,77 @@ fn desktop_launch_command_std(
 // Bootstrap implementation
 // ---------------------------------------------------------------------------
 
+async fn run_requested_bootstrap(
+    app: AppHandle,
+    args: StartBootstrapArgs,
+    cancel_rx: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
+) -> Result<String> {
+    let repair = std::env::args().any(|arg| arg == "--repair" || arg == "--reinstall");
+    if repair {
+        if let Some(base) = option_env!("RELEASE_BASE_URL") {
+            let home = args.youtab_home.as_ref().map(PathBuf::from)
+                .unwrap_or_else(crate::paths::youtab_home);
+            let root = home.join("youtab-agent-runtime");
+            let lock = crate::update::UpdateMarkerGuard::acquire_for_install(&home)?;
+            InstallSwap::recover(&root)?;
+            if root.join(".youtab-agent-runtime-bootstrap-complete").exists() {
+                let approved = crate::update::approved_artifact_target(base, &root).await?;
+                return run_bootstrap(app, args, cancel_rx, Some(approved.sha), Some(lock)).await;
+            }
+            return run_bootstrap(app, args, cancel_rx, None, Some(lock)).await;
+        }
+    }
+    run_bootstrap(app, args, cancel_rx, None, None).await
+}
+
+pub(crate) async fn run_artifact_update(
+    app: AppHandle,
+    source_sha: String,
+    lock: crate::update::UpdateMarkerGuard,
+) -> Result<String> {
+    let (cancel_tx, cancel_rx) = mpsc::channel(1);
+    drop(cancel_tx);
+    run_bootstrap(
+        app,
+        StartBootstrapArgs { commit: None, branch: None, youtab_home: None, include_desktop: true },
+        Arc::new(Mutex::new(Some(cancel_rx))),
+        Some(source_sha),
+        Some(lock),
+    ).await
+}
+
 async fn run_bootstrap(
     app: AppHandle,
     args: StartBootstrapArgs,
     cancel_rx_holder: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
+    authorized_artifact_target: Option<String>,
+    preheld_lock: Option<crate::update::UpdateMarkerGuard>,
 ) -> Result<String> {
     let kind = ScriptKind::for_current_os();
+    let release_base = option_env!("RELEASE_BASE_URL");
+    if release_base.is_some() && !args.include_desktop {
+        return Err(anyhow!("customer artifact Setup requires the Desktop build stage"));
+    }
+    let youtab_home = args.youtab_home.clone()
+        .unwrap_or_else(|| crate::paths::youtab_home().to_string_lossy().into_owned());
+    let youtab_home_path = PathBuf::from(&youtab_home);
+    let install_root = youtab_home_path.join("youtab-agent-runtime");
+    let _install_lock = if release_base.is_some() {
+        let lock = match preheld_lock {
+            Some(lock) => lock,
+            None => crate::update::UpdateMarkerGuard::acquire_for_install(&youtab_home_path)?,
+        };
+        InstallSwap::recover(&install_root)?;
+        Some(lock)
+    } else {
+        None
+    };
+    let mut install_swap: Option<InstallSwap> = None;
+    let mut artifact_info: Option<ArtifactInstallInfo> = None;
 
     let pin = Pin {
-        commit: args.commit.or_else(|| option_env_string("BUILD_PIN_COMMIT")),
+        commit: authorized_artifact_target.clone()
+            .or(args.commit).or_else(|| option_env_string("BUILD_PIN_COMMIT")),
         branch: args.branch.or_else(|| option_env_string("BUILD_PIN_BRANCH")),
     };
 
@@ -478,7 +843,12 @@ async fn run_bootstrap(
     };
 
     // 1. Resolve install.ps1
-    let script = install_script::resolve(kind, &pin, &emit_log)
+    let script_pin = if authorized_artifact_target.is_some() {
+        Pin { commit: option_env_string("BUILD_PIN_COMMIT"), branch: None }
+    } else {
+        pin.clone()
+    };
+    let mut script = install_script::resolve(kind, &script_pin, &emit_log)
         .await
         .map_err(|e| {
             let msg = format!("resolve install script failed: {e:#}");
@@ -491,6 +861,12 @@ async fn run_bootstrap(
             );
             anyhow!(msg)
         })?;
+    if authorized_artifact_target.is_some() {
+        // Only the internal latest.json update path may target a new source
+        // SHA while retaining the install script trusted by this Setup build.
+        script.commit = pin.commit.clone();
+        script.branch = None;
+    }
 
     let source_note = match &script.source {
         ScriptSource::DevCheckout => "dev checkout",
@@ -698,6 +1074,18 @@ async fn run_bootstrap(
                 );
             }
             Some(frame) if frame.ok => {
+                if stage.name.eq_ignore_ascii_case("repository") {
+                    if let Some(base) = release_base {
+                        let data = frame.data.as_ref().ok_or_else(||
+                            anyhow!("artifact repository stage omitted its result data"))?;
+                        let info = ArtifactInstallInfo::from_stage_data(data, &pin, base)?;
+                        ensure_replacement_not_downgrade(&install_root, &info)?;
+                        crate::update::require_install_locks_free(&install_root).await?;
+                        let swap = InstallSwap::promote(&install_root, &info.staged)?;
+                        artifact_info = Some(info);
+                        install_swap = Some(swap);
+                    }
+                }
                 emit_event(
                     &app,
                     BootstrapEvent::Stage {
@@ -739,15 +1127,15 @@ async fn run_bootstrap(
     // 4. Resolve install_root. install.ps1 doesn't (yet) report this back
     // explicitly; we infer it from $YoutabHome which Stage-Repository clones
     // the repo INTO at $YoutabHome\youtab-agent-runtime. Mirrors youtab_constants.
-    let youtab_home = args
-        .youtab_home
-        .clone()
-        .unwrap_or_else(|| crate::paths::youtab_home().to_string_lossy().into_owned());
-    let install_root = PathBuf::from(&youtab_home).join("youtab-agent-runtime");
-
     // Marker publish is terminal for this run: a write failure must emit Failed
     // so the UI leaves the progress state (it does not poll get_bootstrap_status).
-    let marker = match write_bootstrap_complete_marker(&install_root, &pin) {
+    if install_swap.is_some() {
+        verify_installed_backend(&install_root, &youtab_home_path).await?;
+        if args.include_desktop && resolve_youtab_desktop_exe(&install_root).is_none() {
+            return Err(anyhow!("installed Desktop executable is absent after build"));
+        }
+    }
+    let marker = match write_bootstrap_complete_marker_with_artifact(&install_root, &pin, artifact_info.as_ref()) {
         Ok(marker) => marker,
         Err(err) => {
             let msg = format!("write bootstrap marker failed: {err:#}");
@@ -761,6 +1149,10 @@ async fn run_bootstrap(
             return Err(anyhow!(msg));
         }
     };
+
+    if let Some(swap) = install_swap.as_mut() {
+        swap.commit()?;
+    }
 
     // Copy ourselves to YOUTAB_AGENT_HOME/youtab-setup.exe so the desktop app can
     // re-invoke us with `--update` and shortcuts have a stable target. This is
@@ -867,6 +1259,10 @@ fn build_pin_args(script: &install_script::ResolvedScript) -> Vec<String> {
     if let Some(b) = &script.branch {
         out.push("-Branch".to_string());
         out.push(b.clone());
+    }
+    if let Some(base) = option_env!("RELEASE_BASE_URL") {
+        out.push("-ReleaseBaseUrl".to_string());
+        out.push(base.to_string());
     }
     out
 }
@@ -1116,5 +1512,89 @@ mod tests {
             "failed write must not leave a temp marker sibling either"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn install_swap_restores_old_tree_on_failure() {
+        let parent = unique_tmp_dir("swap-rollback");
+        let current = parent.join("youtab-agent-runtime");
+        let staged = parent.join("youtab-agent-runtime.new-test");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(current.join("old.txt"), b"old").unwrap();
+        std::fs::write(staged.join("new.txt"), b"new").unwrap();
+        let mut swap = InstallSwap::promote(&current, &staged).unwrap();
+        assert!(current.join("new.txt").exists());
+        swap.rollback().unwrap();
+        assert!(current.join("old.txt").exists());
+        assert!(!current.join("new.txt").exists());
+        assert!(!InstallSwap::marker_path(&current, "pending").unwrap().exists());
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn install_swap_recovers_crash_before_and_after_promotion() {
+        let parent = unique_tmp_dir("swap-crash");
+        let current = parent.join("youtab-agent-runtime");
+        let staged = parent.join("youtab-agent-runtime.new-test");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("old.txt"), b"old").unwrap();
+        InstallSwap::write_pending(&current, true).unwrap();
+        std::fs::rename(&current, InstallSwap::backup_path(&current).unwrap()).unwrap();
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("new.txt"), b"new").unwrap();
+        let swap = InstallSwap::promote(&current, &staged).unwrap();
+        std::mem::forget(swap); // simulate process death before verification
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert!(!current.join("new.txt").exists());
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn fresh_install_failure_removes_unverified_current() {
+        let parent = unique_tmp_dir("swap-fresh-failure");
+        let current = parent.join("youtab-agent-runtime");
+        let staged = parent.join("youtab-agent-runtime.new-test");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("new.txt"), b"new").unwrap();
+        let mut swap = InstallSwap::promote(&current, &staged).unwrap();
+        swap.rollback().unwrap();
+        assert!(!current.exists());
+        assert!(!InstallSwap::marker_path(&current, "pending").unwrap().exists());
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn artifact_replacement_rejects_downgrade_and_sequence_reuse() {
+        let parent = unique_tmp_dir("swap-sequence");
+        let current = parent.join("youtab-agent-runtime");
+        std::fs::create_dir_all(&current).unwrap();
+        let base = "https://api.youtab.io/pilot-runtime-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/releases";
+        let mut next = ArtifactInstallInfo {
+            staged: parent.join("unused"), source_sha: "b".repeat(40),
+            artifact_sha256: "c".repeat(64), version: "0.19.0".into(),
+            release_sequence: 1, release_base_url: base.into(),
+        };
+        std::fs::write(current.join(".youtab-agent-runtime-bootstrap-complete"),
+            serde_json::to_vec(&serde_json::json!({
+                "releaseBaseUrl": base, "releaseSequence": 2,
+                "pinnedCommit": "d".repeat(40), "artifactSha256": "e".repeat(64),
+            })).unwrap()).unwrap();
+        assert!(ensure_replacement_not_downgrade(&current, &next).is_err());
+        next.release_sequence = 2;
+        assert!(ensure_replacement_not_downgrade(&current, &next).is_err());
+        next.release_sequence = 3;
+        assert!(ensure_replacement_not_downgrade(&current, &next).is_ok());
+        std::fs::write(current.join(".youtab-agent-runtime-bootstrap-complete"),
+            serde_json::to_vec(&serde_json::json!({
+                "releaseBaseUrl": base, "releaseSequence": 2,
+                "pinnedCommit": "invalid", "artifactSha256": "e".repeat(64),
+            })).unwrap()).unwrap();
+        assert!(ensure_replacement_not_downgrade(&current, &next).is_err());
+        let _ = std::fs::remove_dir_all(parent);
     }
 }

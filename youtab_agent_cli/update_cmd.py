@@ -1928,6 +1928,24 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     Installs that can't honor non-default branches (e.g. Docker) surface a
     one-line notice instead of silently dropping the flag.
     """
+    artifact_marker = _m().PROJECT_ROOT / ".youtab-agent-runtime-bootstrap-complete"
+    if (not artifact_marker.exists()
+            and not (_m().PROJECT_ROOT / ".git").exists()
+            and (get_youtab_home() / "youtab-setup.exe").is_file()):
+        print("✗ No trusted installed source identity; update check stopped.")
+        sys.exit(2)
+    if artifact_marker.is_file():
+        try:
+            installed = json.loads(artifact_marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            print("✗ Installed Runtime marker is unreadable; update check stopped.")
+            sys.exit(2)
+        if installed.get("releaseBaseUrl") or not (_m().PROJECT_ROOT / ".git").exists():
+            if not installed.get("releaseBaseUrl"):
+                print("✗ Artifact update identity is missing; Git fallback refused.")
+                sys.exit(2)
+            print("Artifact update checks are handled by Youtab Desktop and Setup.")
+            return
     from youtab_agent_cli.config import detect_install_method, recommended_update_command_for_method
     method = detect_install_method(_m().PROJECT_ROOT)
     if method == "docker":
@@ -3148,6 +3166,34 @@ def _normalize_managed_eol(git_cmd, repo_root):
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    # Artifact installs have no Git checkout. Reuse the staged, out-of-tree
+    # Setup transaction; never fall into the legacy Git/ZIP updater here.
+    artifact_marker = _m().PROJECT_ROOT / ".youtab-agent-runtime-bootstrap-complete"
+    if (not artifact_marker.exists()
+            and not (_m().PROJECT_ROOT / ".git").exists()
+            and (get_youtab_home() / "youtab-setup.exe").is_file()):
+        print("✗ No trusted installed source identity; update stopped.")
+        sys.exit(2)
+    if artifact_marker.is_file():
+        try:
+            installed = json.loads(artifact_marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            print("✗ Installed Runtime marker is unreadable; update stopped.")
+            sys.exit(2)
+        if installed.get("releaseBaseUrl") or not (_m().PROJECT_ROOT / ".git").exists():
+            if not installed.get("releaseBaseUrl"):
+                print("✗ Artifact update identity is missing; Git fallback refused.")
+                sys.exit(2)
+            if not (_m()._is_windows() and installed.get("releaseSequence")):
+                print("✗ This artifact install cannot use the Git updater.")
+                sys.exit(2)
+            setup = get_youtab_home() / "youtab-setup.exe"
+            if not setup.is_file():
+                print("✗ Youtab Setup is missing; update stopped before changing the install.")
+                sys.exit(2)
+            subprocess.Popen([str(setup), "--update"], close_fds=True)
+            print("→ Handed update to Youtab Setup.")
+            return
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default))

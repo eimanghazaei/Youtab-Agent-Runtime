@@ -196,3 +196,22 @@ def test_bootstrap_marker_waits_for_setup_health_only_in_customer_mode(
     assert marker.exists() is not customer_mode
     if not customer_mode:
         assert json.loads(marker.read_text(encoding="utf-8"))["pinnedCommit"] == SHA
+
+
+def test_customer_artifact_git_stage_is_skipped(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env.update(YT_TEST_SCRIPT=str(SCRIPT), YT_TEST_INSTALL_DIR=str(tmp_path / "install"),
+               YT_TEST_SHA=SHA, YT_TEST_BASE=BASE)
+    command = (
+        "& $env:YT_TEST_SCRIPT -Stage git -NonInteractive -Json "
+        "-InstallDir $env:YT_TEST_INSTALL_DIR -Commit $env:YT_TEST_SHA "
+        "-ReleaseBaseUrl $env:YT_TEST_BASE"
+    )
+    result = subprocess.run([_powershell(), "-NoProfile", "-NonInteractive", "-Command", command],
+                            env=env, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    frames = [json.loads(line) for line in result.stdout.splitlines() if line.strip().startswith("{")]
+    assert len(frames) == 1
+    assert frames[0]["ok"] is True
+    assert frames[0]["skipped"] is True
+    assert "not required" in str(frames[0]["reason"])
