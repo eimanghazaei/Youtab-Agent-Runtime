@@ -12,9 +12,12 @@ import {
   classifyPilotReleaseUpdate,
   fetchApprovedPilotRelease,
   hasExistingGitCheckout,
+  hasPendingRuntimeInstall,
   installedAgentInstallScript,
   installRefForStamp,
+  isPackagedWindowsCustomerMode,
   isPinnedCommit,
+  pendingRuntimeInstallMarker,
   pilotReleaseBaseUrl,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
@@ -27,6 +30,25 @@ const ZERO_COMMIT = '0000000000000000000000000000000000000000'
 const RELEASE_BASE = `https://api.youtab.io/pilot-runtime-${'a'.repeat(32)}/releases`
 const RELEASE_SHA = 'b'.repeat(40)
 const RELEASE_HASH = 'c'.repeat(64)
+
+test('packaged Windows remains customer mode and detects the sibling install transaction marker', () => {
+  assert.equal(isPackagedWindowsCustomerMode(true, true), true)
+  assert.equal(isPackagedWindowsCustomerMode(true, false), false)
+  assert.equal(isPackagedWindowsCustomerMode(false, true), false)
+
+  const home = mkTmpHome()
+  const activeRoot = path.join(home, 'youtab-agent-runtime')
+  const marker = path.join(home, '.youtab-runtime-install-pending')
+
+  try {
+    assert.equal(pendingRuntimeInstallMarker(activeRoot), marker)
+    assert.equal(hasPendingRuntimeInstall(activeRoot), false)
+    fs.writeFileSync(marker, 'pending')
+    assert.equal(hasPendingRuntimeInstall(activeRoot), true)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
 
 function releaseFixture() {
   return {

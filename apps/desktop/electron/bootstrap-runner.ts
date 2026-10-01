@@ -49,6 +49,18 @@ const PILOT_RELEASE_PATH = /^\/pilot-runtime-[0-9a-f]{32,}\/releases$/
 const EXACT_SHA = /^[0-9a-f]{40}$/
 const EXACT_SHA256 = /^[0-9a-f]{64}$/
 
+function isPackagedWindowsCustomerMode(isWindows: boolean, isPackaged: boolean): boolean {
+  return isWindows && isPackaged
+}
+
+function pendingRuntimeInstallMarker(activeRoot: string): string {
+  return path.join(path.dirname(activeRoot), '.youtab-runtime-install-pending')
+}
+
+function hasPendingRuntimeInstall(activeRoot: string): boolean {
+  return fs.existsSync(pendingRuntimeInstallMarker(activeRoot))
+}
+
 /** The customer release origin is fixed; the high-entropy path is build-owned. */
 function pilotReleaseBaseUrl(value: unknown): string {
   if (typeof value !== 'string') {
@@ -1221,11 +1233,14 @@ export {
   classifyPilotReleaseUpdate,
   fetchApprovedPilotRelease,
   hasExistingGitCheckout,
+  hasPendingRuntimeInstall,
   installedAgentInstallScript,
   installRefForStamp,
+  isPackagedWindowsCustomerMode,
   isPinnedCommit,
   // Exposed for testability
   parseStageResult,
+  pendingRuntimeInstallMarker,
   pilotReleaseBaseUrl,
   resolveCheckoutHead,
   resolveInstallScript,
