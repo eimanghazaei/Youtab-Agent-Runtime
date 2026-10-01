@@ -135,21 +135,38 @@ that implements those specifications:
 cat > doc.html <<'HTML'
 <!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8">
-<style>body { font-family: "Noto Naskh Arabic", "Noto Sans Arabic", serif; font-size: 13pt; }</style>
+<style>
+  /* dir="rtl" alone gets the CHARACTERS right and the PAGE wrong: the shaper
+     reorders correctly while every block still aligns left. These three rules
+     are what make it read as a Persian document rather than a Persian-looking
+     English one. Each was added after seeing it fail in the raster. */
+  body { font-family: "Noto Naskh Arabic", "Noto Sans Arabic", serif; font-size: 13pt;
+         direction: rtl; text-align: right; }
+  h1, h2, h3, p, li, td, th { direction: rtl; text-align: right; }
+  ul, ol { direction: rtl; margin-right: 1.4em; margin-left: 0; padding-right: 0; }
+</style>
 </head><body>
   <h1>تحلیل معماری و هارنس سیمرغ</h1>
   <p>خروجی نهایی: BrainOutcome (ok | refused | failed | degraded)</p>
-  <table border="1"><tr><th>لایه</th><th>مسئولیت</th></tr></table>
+  <p>خط لولهٔ چهارمرحله‌ای: begin → prepare → decide → complete</p>
+  <!-- align="right" and NOT margin-left:auto — LibreOffice's HTML import
+       ignores the margin trick for tables and leaves the table at the left. -->
+  <table border="1" align="right"><tr><th>لایه</th><th>مسئولیت</th></tr></table>
 </body></html>
 HTML
 soffice --headless --norestore --convert-to pdf:writer_pdf_Export doc.html
 ```
 
-Verified output of exactly that input: joining forms correct, the damma in
-«میان‌بُری» sitting on its letter, `(ok | refused | failed | degraded)` balanced
-and in place with no LRM anchoring at all, `begin → prepare → decide → complete`
-reading left-to-right inside a right-to-left line, the table's first column on
-the right, and `NotoNaskhArabic` embedded as a subset. One cosmetic artifact
+Verified by rendering exactly that input and looking at the page: joining forms
+correct; the damma in «میان‌بُری» sitting on its letter; multi-line paragraphs
+with their lines in the right order; `begin → prepare → decide → complete` with
+the arrows pointing the way the source does; `COMPLETED، DEGRADED، FAILED،
+REFUSED` keeping its source order; `(ok | refused | failed | degraded)` balanced
+with no LRM anchoring at all; bullets and tables on the right;
+`NotoNaskhArabic` embedded as a subset.
+
+Every one of those is a defect that a hand-rolled reportlab pipeline produced on
+the same content, so none of them is hypothetical. One cosmetic artifact
 remains: a Latin parenthetical sometimes keeps a space before its closing
 bracket — check it in the raster if the document is formal.
 
