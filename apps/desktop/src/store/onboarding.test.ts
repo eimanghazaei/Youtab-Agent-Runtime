@@ -121,8 +121,9 @@ it.each(['awaiting_user', 'polling'] as const)('preserves a newer %s flow when c
   $desktopOnboarding.set(baseState())
   const pending = retryOnboardingProviderDiscovery()
   const selected = provider('example')
-  const start = { flow: status === 'polling' ? 'device_code' : 'pkce', session_id: 'fixture-session' }
-  const flow = { status, provider: selected, start, code: '', copied: false } as OnboardingFlow
+  const flow: OnboardingFlow = status === 'polling'
+    ? { status, provider: selected, copied: false, start: { flow: 'device_code', session_id: 'fixture-session', expires_in: 600, poll_interval: 5, user_code: 'fixture-code', verification_url: 'https://example.test/verify' } }
+    : { status, provider: selected, code: '', start: { flow: 'pkce', session_id: 'fixture-session', expires_in: 600, auth_url: 'https://example.test/authorize' } }
   $desktopOnboarding.set({ ...$desktopOnboarding.get(), flow })
   rejectCatalog(new Error('Connection timed out'))
   await pending
