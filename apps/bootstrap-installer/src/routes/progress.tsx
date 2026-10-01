@@ -64,7 +64,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
       <div className="flex shrink-0 items-start gap-4 px-6 pt-6 pb-4">
         <BrandMark className="size-11" />
         <div className="min-w-0">
-          <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+          <h2 className="youtab-display-title text-xl tracking-tight">{title}</h2>
           <p className="mt-1.5 text-sm text-muted-foreground">{description}</p>
         </div>
       </div>

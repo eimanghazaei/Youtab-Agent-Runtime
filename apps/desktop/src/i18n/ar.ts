@@ -55,6 +55,7 @@ export const ar = defineLocale({
     pathCopied: 'تم نسخ المسار'
   },
   boot: {
+    tryingToConnect: 'يحاول Youtab الاتصال',
     ready: 'Youtab Desktop جاهز',
     desktopBootFailedWithMessage: message => `فشل تشغيل سطح المكتب: ${message}`,
     steps: {

@@ -108,6 +108,7 @@ export interface Translations {
   }
 
   boot: {
+    tryingToConnect: string
     ready: string
     desktopBootFailedWithMessage: (message: string) => string
     steps: {

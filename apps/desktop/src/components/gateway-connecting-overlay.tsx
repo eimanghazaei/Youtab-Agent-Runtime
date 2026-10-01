@@ -1,15 +1,11 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
-import { DecodeText } from '@/components/ui/decode-text'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $gatewayState } from '@/store/session'
-
-// Decode mechanics live in the shared <DecodeText> primitive
-// (components/ui/decode-text.tsx). "CONN" stays legible via prefix={4}.
-const TEXT = 'CONNECTING'
 
 // Exit choreography (ms): text fades down + out, hold, then the overlay fades.
 const TEXT_OUT_MS = 360
@@ -40,6 +36,7 @@ function prefersReducedMotion(): boolean {
 }
 
 export function GatewayConnectingOverlay() {
+  const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)
@@ -151,19 +148,14 @@ export function GatewayConnectingOverlay() {
           leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
         )}
       >
-        {/* Startup heading — the app name in the Web Platform font (system sans
-            stack via --font-sans) and Youtab Ice Blue. */}
-        <h1 className="text-center font-sans text-3xl font-semibold tracking-tight text-[color:var(--youtab-ice-blue)]">
+        {/* Display face stays on the title; status text keeps the body font. */}
+        <h1 className="youtab-display-title text-center text-3xl tracking-tight text-[color:var(--youtab-ice-blue)]">
           Youtab Agent Runtime
         </h1>
-        {/* CONNECTING is a status indicator, not a title — kept subordinate. */}
-        <DecodeText
-          active={phase === 'live' && (previewing || connecting)}
-          className="pl-[0.4em] text-sm tracking-[0.35em] text-(--theme-primary) opacity-70"
-          cursor
-          prefix={4}
-          text={TEXT}
-        />
+        {/* Keep the message legible throughout startup; animate only its dots. */}
+        <p aria-label={t.boot.tryingToConnect} className="text-sm text-(--theme-primary) opacity-70" role="status">
+          {t.boot.tryingToConnect}<span aria-hidden="true" className="motion-safe:animate-pulse">…</span>
+        </p>
       </div>
     </div>
   )

@@ -62,6 +62,7 @@ export const ja = defineLocale({
   },
 
   boot: {
+    tryingToConnect: 'Youtab が接続を試みています',
     ready: 'Youtab Desktop の準備ができました',
     desktopBootFailedWithMessage: message => `デスクトップの起動に失敗しました: ${message}`,
     steps: {
