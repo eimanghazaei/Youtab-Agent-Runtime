@@ -7,6 +7,7 @@ import {
   $desktopOnboarding,
   type DesktopOnboardingState,
   type OnboardingContext,
+  type OnboardingFlow,
   refreshOnboarding,
   requestDesktopOnboarding,
   retryOnboardingProviderDiscovery,
@@ -112,6 +113,22 @@ it.each([
   expect($desktopOnboarding.get().flow.status).toBe('idle')
   expect($desktopOnboarding.get().providers?.[0]).toMatchObject({ id: 'youtab', flow: 'native_pkce' })
   expect(api).toHaveBeenCalledTimes(2)
+})
+
+it.each(['awaiting_user', 'polling'] as const)('preserves a newer %s flow when catalog discovery fails', async status => {
+  let rejectCatalog!: (error: Error) => void
+  installApiMock(() => new Promise((_resolve, reject) => { rejectCatalog = reject }))
+  $desktopOnboarding.set(baseState())
+  const pending = retryOnboardingProviderDiscovery()
+  const selected = provider('example')
+  const start = { flow: status === 'polling' ? 'device_code' : 'pkce', session_id: 'fixture-session' }
+  const flow = { status, provider: selected, start, code: '', copied: false } as OnboardingFlow
+  $desktopOnboarding.set({ ...$desktopOnboarding.get(), flow })
+  rejectCatalog(new Error('Connection timed out'))
+  await pending
+
+  expect($desktopOnboarding.get().flow).toBe(flow)
+  expect($desktopOnboarding.get().flow).toMatchObject({ start: { session_id: 'fixture-session' } })
 })
 
 function emptyOpenRouterGateway(): OnboardingContext['requestGateway'] {

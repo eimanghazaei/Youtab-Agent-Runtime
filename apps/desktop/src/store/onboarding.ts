@@ -383,12 +383,17 @@ async function refreshProviders() {
         ...(flow.status === 'error' && !flow.provider ? { flow: { status: 'idle' as const } } : {})
       })
     } catch {
+      const flow = $desktopOnboarding.get().flow
       patch({
         providers: [],
-        flow: {
-          status: 'error',
-          message: 'Could not load sign-in providers from the local Gateway. Check the connection and retry.'
-        }
+        ...(flow.status === 'idle' || (flow.status === 'error' && !flow.provider)
+          ? {
+              flow: {
+                status: 'error' as const,
+                message: 'Could not load sign-in providers from the local Gateway. Check the connection and retry.'
+              }
+            }
+          : {})
       })
     } finally {
       providersRefreshPromise = null
