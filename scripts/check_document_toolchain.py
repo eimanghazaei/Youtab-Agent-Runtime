@@ -120,6 +120,29 @@ def _resolve(value):
     return value.get_object() if hasattr(value, "get_object") else value
 
 
+def _font_descriptors(font) -> list:
+    """Every /FontDescriptor reachable from a page font, however it is nested.
+
+    A simple TrueType or Type1 font carries its descriptor directly. A Type0
+    (composite) font does not: the descriptor and its /FontFile2 live on the CID
+    font under /DescendantFonts, and LibreOffice emits exactly that shape for
+    embedded Arabic. Looking only at the top level therefore records a correctly
+    embedded Noto face as unembedded — and because the Dockerfile runs this check
+    during the build, that would stop the image building.
+    """
+    found = []
+    direct = _resolve(font.get("/FontDescriptor"))
+    if direct is not None:
+        found.append(direct)
+    descendants = _resolve(font.get("/DescendantFonts"))
+    for entry in descendants or []:
+        descendant = _resolve(entry)
+        descriptor = _resolve(descendant.get("/FontDescriptor")) if hasattr(descendant, "get") else None
+        if descriptor is not None:
+            found.append(descriptor)
+    return found
+
+
 def _check_embedded_arabic_font(pdf: Path) -> str:
     """At least one embedded font, and Arabic-script glyphs really on the page.
 
@@ -141,8 +164,10 @@ def _check_embedded_arabic_font(pdf: Path) -> str:
     described = []
     for name, ref in (fonts.items() if hasattr(fonts, "items") else []):
         font = _resolve(ref)
-        descriptor = _resolve(font.get("/FontDescriptor"))
-        embedded = bool(descriptor and any(k in descriptor for k in EMBEDDING_KEYS))
+        embedded = any(
+            any(key in descriptor for key in EMBEDDING_KEYS)
+            for descriptor in _font_descriptors(font)
+        )
         described.append((str(name), str(font.get("/BaseFont")), embedded))
     if not any(embedded for _n, _b, embedded in described):
         raise ToolchainError(

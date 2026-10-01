@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import zlib
 from pathlib import Path
 
 import pytest
@@ -378,6 +379,9 @@ def test_pdf_skill_forbids_a_verifier_derived_from_the_builder():
 sys.path.insert(0, str(REPO))
 from scripts.check_document_toolchain import (  # noqa: E402
     ToolchainError,
+    _check_embedded_arabic_font,
+    _font_descriptors,
+    _resolve,
     documented_recipe,
     missing_binaries,
     verify,
@@ -525,3 +529,114 @@ def test_the_node_document_generators_are_locked_not_merely_declared():
             f"{package} is not in package-lock.json, so the image build would "
             f"resolve it against the live npm registry instead of the lock"
         )
+
+
+# ---------------------------------------------------------------------------
+# Embedding detection, exercised without a toolchain.
+#
+# The render test above skips wherever LibreOffice is absent, which includes CI.
+# The embedding check does not need to skip: a PDF shaped like LibreOffice's
+# output can be built by hand, and that shape is precisely where the first two
+# versions of the check were wrong — once by not dereferencing the indirect
+# /Font, once by not following /DescendantFonts. Both would have stopped the
+# image building, so both are pinned here, in CI, with no binaries required.
+# ---------------------------------------------------------------------------
+
+_ARABIC_SAMPLE = "معماری"
+
+
+def _type0_pdf(path: Path, *, descendant_embedded: bool) -> Path:
+    """A minimal PDF whose page font is Type0 with a CID descendant.
+
+    LibreOffice emits this shape for embedded Arabic: the page font carries no
+    /FontDescriptor of its own — the descriptor and its /FontFile2 live on the
+    CID font under /DescendantFonts. Identity-H plus a /ToUnicode CMap so the
+    drawn glyph codes extract back as the Arabic characters.
+    """
+    cmap = (
+        "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n"
+        "/CMapName /Custom def /CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\n"
+        "endcodespacerange\n%d beginbfchar\n%s\nendbfchar\nendcmap\n"
+        "CMapName currentdict /CMap defineresource pop end end"
+    ) % (
+        len(_ARABIC_SAMPLE),
+        "\n".join("<%04X> <%04X>" % (i + 1, ord(c)) for i, c in enumerate(_ARABIC_SAMPLE)),
+    )
+    glyphs = "".join("%04X" % (i + 1) for i in range(len(_ARABIC_SAMPLE)))
+    content = ("BT /F1 18 Tf 400 700 Td <%s> Tj ET" % glyphs).encode("latin-1")
+    fontfile = zlib.compress(b"\x00\x01\x00\x00" + b"\x00" * 64)  # stand-in TTF bytes
+
+    descriptor = (
+        b"<< /Type /FontDescriptor /FontName /AAAAAA+NotoNaskhArabic /Flags 4 "
+        b"/ItalicAngle 0 /Ascent 1069 /Descent -293 /CapHeight 714 /StemV 80 "
+        b"/FontBBox [-1000 -300 2000 1100]"
+        + (b" /FontFile2 9 0 R" if descendant_embedded else b"")
+        + b" >>"
+    )
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] "
+        b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        b"<< /Length %d >>\nstream\n" % len(content) + content + b"\nendstream",
+        b"<< /Type /Font /Subtype /Type0 /BaseFont /AAAAAA+NotoNaskhArabic "
+        b"/Encoding /Identity-H /DescendantFonts [6 0 R] /ToUnicode 7 0 R >>",
+        b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /AAAAAA+NotoNaskhArabic "
+        b"/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> "
+        b"/FontDescriptor 8 0 R /DW 1000 >>",
+        b"<< /Length %d >>\nstream\n" % len(cmap.encode("latin-1"))
+        + cmap.encode("latin-1")
+        + b"\nendstream",
+        descriptor,
+        b"<< /Length %d /Length1 68 /Filter /FlateDecode >>\nstream\n" % len(fontfile)
+        + fontfile
+        + b"\nendstream",
+    ]
+
+    out = bytearray(b"%PDF-1.5\n")
+    offsets = []
+    for index, body in enumerate(objects, 1):
+        offsets.append(len(out))
+        out += b"%d 0 obj\n" % index + body + b"\nendobj\n"
+    xref = len(out)
+    out += b"xref\n0 %d\n0000000000 65535 f \n" % (len(objects) + 1)
+    for offset in offsets:
+        out += b"%010d 00000 n \n" % offset
+    out += b"trailer\n<< /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n" % (
+        len(objects) + 1,
+        xref,
+    )
+    path.write_bytes(bytes(out))
+    return path
+
+
+def test_the_fixture_really_hides_the_descriptor_on_the_descendant(tmp_path):
+    """Guard the guard: if the fixture degrades, the two tests below prove nothing."""
+    pdf = _type0_pdf(tmp_path / "type0.pdf", descendant_embedded=True)
+    from pypdf import PdfReader
+
+    page = PdfReader(str(pdf)).pages[0]
+    font = _resolve(_resolve(page["/Resources"])["/Font"])["/F1"]
+    font = _resolve(font)
+    assert str(font.get("/Subtype")) == "/Type0", font.get("/Subtype")
+    assert font.get("/FontDescriptor") is None, "the fixture must NOT carry a top-level descriptor"
+    assert len(_font_descriptors(font)) == 1, "the descriptor must be reachable only via /DescendantFonts"
+
+
+def test_embedding_is_detected_on_a_type0_descendant_font(tmp_path):
+    """LibreOffice's shape must count as embedded.
+
+    Reading only the top-level /FontDescriptor recorded a correctly embedded Noto
+    face as unembedded, and because the Dockerfile runs this check during the
+    build, that stopped the image building rather than shipping a bad image.
+    """
+    pdf = _type0_pdf(tmp_path / "type0.pdf", descendant_embedded=True)
+    faces = _check_embedded_arabic_font(pdf)
+    assert "NotoNaskhArabic" in faces and "embedded" in faces, faces
+
+
+def test_a_type0_font_without_a_font_file_is_still_rejected(tmp_path):
+    """The relaxation must not become "any Type0 font passes"."""
+    pdf = _type0_pdf(tmp_path / "type0-unembedded.pdf", descendant_embedded=False)
+    with pytest.raises(ToolchainError, match="no font is embedded"):
+        _check_embedded_arabic_font(pdf)
