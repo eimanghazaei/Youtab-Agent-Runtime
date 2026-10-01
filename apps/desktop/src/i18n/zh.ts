@@ -62,6 +62,7 @@ export const zh: Translations = {
   },
 
   boot: {
+    tryingToConnect: 'Youtab 正在尝试连接',
     ready: 'Youtab 桌面版已就绪',
     desktopBootFailedWithMessage: message => `桌面启动失败：${message}`,
     steps: {

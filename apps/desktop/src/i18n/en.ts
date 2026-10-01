@@ -62,6 +62,7 @@ export const en: Translations = {
   },
 
   boot: {
+    tryingToConnect: 'Youtab trying to connect',
     ready: 'Youtab Desktop is ready',
     desktopBootFailedWithMessage: message => `Desktop boot failed: ${message}`,
     steps: {

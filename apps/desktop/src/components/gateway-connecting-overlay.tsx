@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
@@ -35,6 +36,7 @@ function prefersReducedMotion(): boolean {
 }
 
 export function GatewayConnectingOverlay() {
+  const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)
@@ -151,8 +153,8 @@ export function GatewayConnectingOverlay() {
           Youtab Agent Runtime
         </h1>
         {/* Keep the message legible throughout startup; animate only its dots. */}
-        <p aria-label="Youtab trying to connect" className="text-sm text-(--theme-primary) opacity-70" role="status">
-          Youtab trying to connect<span aria-hidden="true" className="motion-safe:animate-pulse">…</span>
+        <p aria-label={t.boot.tryingToConnect} className="text-sm text-(--theme-primary) opacity-70" role="status">
+          {t.boot.tryingToConnect}<span aria-hidden="true" className="motion-safe:animate-pulse">…</span>
         </p>
       </div>
     </div>

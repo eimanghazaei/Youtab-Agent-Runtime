@@ -1,6 +1,8 @@
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { I18nProvider } from '@/i18n'
+import type { Locale } from '@/i18n/types'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -59,6 +61,29 @@ const isRecoveryShown = () =>
   Boolean(screen.queryByText(/use local gateway/i) || screen.queryByText(/retry/i) || screen.queryByText(/sign in/i))
 
 describe('connecting overlay vs recovery surface', () => {
+  it.each<[Locale, string]>([
+    ['en', 'Youtab trying to connect'],
+    ['zh', 'Youtab 正在尝试连接'],
+    ['zh-hant', 'Youtab 正在嘗試連線'],
+    ['ja', 'Youtab が接続を試みています'],
+    ['ar', 'يحاول Youtab الاتصال']
+  ])('localizes visible and accessible startup status for %s', async (locale, message) => {
+    setGatewayState('connecting')
+    $desktopBoot.set({ ...$desktopBoot.get(), running: true, visible: true, progress: 10 })
+
+    await act(async () => {
+      render(
+        <I18nProvider configClient={null} initialLocale={locale}>
+          <GatewayConnectingOverlay />
+        </I18nProvider>
+      )
+    })
+
+    const status = screen.getByRole('status', { name: message })
+    expect(status.textContent).toBe(`${message}…`)
+    expect(status.querySelector('[aria-hidden="true"]')?.textContent).toBe('…')
+  })
+
   it('hard initial-boot failure surfaces the recovery overlay (the working path)', async () => {
     // failDesktopBoot() ran: error set, gateway never opened.
     $desktopBoot.set({
