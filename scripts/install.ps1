@@ -3793,7 +3793,15 @@ function Stage-Desktop          { Install-DesktopVoiceDeps; Install-Desktop }
 function Stage-Path             { Set-PathVariable }
 function Stage-ConfigTemplates  { Copy-ConfigTemplates }
 function Stage-PlatformSdks     { Resolve-UvCmd; Install-PlatformSdks }
-function Stage-BootstrapMarker  { Write-BootstrapMarker }
+function Stage-BootstrapMarker  {
+    if ($script:CustomerReleaseMode) {
+        # Setup writes this only after the promoted install passes backend
+        # health; an earlier marker would falsely certify a failed install.
+        $script:_StageSkippedReason = "Youtab-Setup writes the marker after installed-backend health"
+        return
+    }
+    Write-BootstrapMarker
+}
 function Stage-Configure        { Invoke-SetupWizard }
 function Stage-Gateway          { Start-GatewayIfConfigured }
 

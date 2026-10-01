@@ -164,3 +164,35 @@ def test_bad_artifact_fails_closed_without_git_or_current_mutation(
     assert reason.lower() in str(frame["reason"]).lower()
     assert (current / "existing.txt").read_text(encoding="utf-8") == "unchanged"
     assert not list(tmp_path.glob("install.new-*"))
+
+
+@pytest.mark.parametrize("customer_mode", [True, False])
+def test_bootstrap_marker_waits_for_setup_health_only_in_customer_mode(
+    tmp_path: Path, customer_mode: bool
+) -> None:
+    install_dir = tmp_path / "install"
+    install_dir.mkdir()
+    env = os.environ.copy()
+    env.update(YT_TEST_SCRIPT=str(SCRIPT), YT_TEST_INSTALL_DIR=str(install_dir), YT_TEST_SHA=SHA, YT_TEST_BASE=BASE)
+    release_args = "-ReleaseBaseUrl $env:YT_TEST_BASE" if customer_mode else ""
+    command = (
+        "& $env:YT_TEST_SCRIPT -Stage bootstrap-marker -NonInteractive -Json "
+        "-InstallDir $env:YT_TEST_INSTALL_DIR -Commit $env:YT_TEST_SHA " + release_args
+    )
+    result = subprocess.run(
+        [_powershell(), "-NoProfile", "-NonInteractive", "-Command", command],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    frames = [json.loads(line) for line in result.stdout.splitlines() if line.strip().startswith("{")]
+    assert len(frames) == 1
+    assert frames[0]["ok"] is True
+    assert frames[0]["skipped"] is customer_mode
+    marker = install_dir / ".youtab-agent-runtime-bootstrap-complete"
+    assert marker.exists() is not customer_mode
+    if not customer_mode:
+        assert json.loads(marker.read_text(encoding="utf-8"))["pinnedCommit"] == SHA
