@@ -73,6 +73,57 @@ RUN apt-get -o Acquire::Retries=3 update && \
     ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
+# ---------- Document toolchain (own layer: large, and rarely changes) --------
+# The skills under skills/productivity/{pdf,docx,xlsx,powerpoint,ocr-and-documents}
+# each open with a Prerequisites block telling the agent to
+# `sudo apt install -y pandoc libreoffice poppler-utils qpdf`. None of those
+# binaries was in this image and `sudo` is not installed either, so every one of
+# those instructions failed at step one and an agent asked for a Word/Excel/PDF
+# deliverable fell back to improvising a pipeline inside its task workspace.
+# That is why document quality varied per run instead of being a property of the
+# product.
+#
+# Two of these are not conveniences:
+#
+#   * libreoffice is the only shaping-correct renderer here. It lays text out
+#     through HarfBuzz and ICU, so Arabic/Persian joining forms, mark placement
+#     (GPOS) and the UAX#9 bidi algorithm are applied by an engine that
+#     implements them — unlike reportlab, which draws glyphs in the order it is
+#     handed and therefore forces a caller to pre-shape and pre-reorder text by
+#     hand. Every Persian layout defect we have seen came out of that
+#     hand-rolled layer. soffice is additionally what the docx/xlsx/powerpoint
+#     skills already call for formula recalculation and validation.
+#   * poppler-utils provides pdftoppm, which is how a document is checked by
+#     LOOKING at it. The pdf skill already mandates this ("for anything visual
+#     … pdftoppm … inspect with vision_analyze") and could not obey. A
+#     text-layer check cannot see a mark landing beside its letter or a mirrored
+#     bracket; only a raster can.
+#
+# fonts-noto-core carries Noto Naskh Arabic and Noto Sans Arabic, so the image
+# can render Persian at all — it previously shipped NotoColorEmoji as its only
+# non-Latin face, which is why a run had to fetch its own font file before it
+# could draw a single Persian word.
+RUN apt-get -o Acquire::Retries=3 update && \
+    apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+    pandoc poppler-utils qpdf \
+    libreoffice-writer libreoffice-calc libreoffice-impress \
+    fontconfig fonts-noto-core fonts-dejavu-core fonts-liberation2 && \
+    rm -rf /var/lib/apt/lists/* && \
+    fc-cache -f && \
+    # Fail the build rather than ship an image whose skills cannot run. These
+    # four binaries are named in the skills' own prerequisites; a silent absence
+    # is what produced the defect this layer exists to remove.
+    for b in soffice pandoc pdftoppm pdftotext qpdf; do \
+        command -v "$b" >/dev/null || { echo "document toolchain incomplete: $b missing"; exit 1; }; \
+    done && \
+    # Asked of fontconfig by LANGUAGE rather than by font name: ":lang=fa" is
+    # the question that actually matters — "can this image render Persian at
+    # all" — and it keeps holding if the font package is later swapped for
+    # another with the same coverage. Written without `grep -q`, which SIGPIPEs
+    # its producer and makes the check fail under `set -o pipefail`.
+    test "$(fc-list :lang=fa --format='%{file}\n' | wc -l)" -gt 0 || \
+        { echo "no font with Persian coverage installed"; exit 1; }
+
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
 # public library name stable so both the system interpreter and the uv-created
 # venv resolve the replacement without changing Python import paths.

@@ -22,13 +22,24 @@ Use this skill whenever the user wants to do anything with PDF files: reading or
 
 ## Prerequisites
 
+Already installed in the Youtab runtime image — do not try to install them.
+`pypdf`, `pdfplumber` and `reportlab` ship in the `documents` extra; `pdftotext`,
+`pdftoppm`, `pdfimages`, `qpdf`, `soffice` and `pandoc` are baked into the image,
+along with fonts covering Arabic script. The image has no `sudo` and its venv is
+sealed, so an `apt install` or `pip install` here cannot work; if a binary really
+is missing, say so and stop rather than building a private virtualenv in the
+workspace.
+
+Elsewhere (desktop, macOS, a bare checkout):
+
 ```bash
 pip install pypdf pdfplumber reportlab
 which pdftotext || sudo apt install -y poppler-utils   # pdftotext, pdftoppm, pdfimages
 which qpdf || sudo apt install -y qpdf                 # CLI merge/split/decrypt
+which soffice || sudo apt install -y libreoffice       # complex-script rendering
 ```
 
-macOS: `brew install poppler qpdf`. OCR extras: `pip install pytesseract pdf2image` + `sudo apt install -y tesseract-ocr`.
+macOS: `brew install poppler qpdf libreoffice`. OCR extras: `pip install pytesseract pdf2image` + `sudo apt install -y tesseract-ocr`.
 
 > Script paths below are relative to this skill's directory. Form filling has its own workflow — read [forms.md](forms.md) and follow it. Advanced library usage (pypdfium2, pdf-lib) and troubleshooting: [reference.md](reference.md).
 
@@ -40,7 +51,8 @@ macOS: `brew install poppler qpdf`. OCR extras: `pip install pytesseract pdf2ima
 | Split PDFs | pypdf | One page per file |
 | Extract text | pdfplumber | `page.extract_text()` |
 | Extract tables | pdfplumber | `page.extract_tables()` |
-| Create PDFs | reportlab | Canvas or Platypus |
+| Create PDFs (Latin / LTR) | reportlab | Canvas or Platypus |
+| **Create PDFs containing Persian, Arabic, Hebrew, Urdu, Indic or Thai** | **soffice** | HTML/DOCX → `soffice --convert-to pdf` — see below. **Never reportlab.** |
 | Command-line merge/split | qpdf | `qpdf --empty --pages ...` |
 | OCR scanned PDFs | pytesseract | Convert to images first (or use `ocr-and-documents`) |
 | Fill PDF forms | see [forms.md](forms.md) | `scripts/fill_fillable_fields.py` etc. |
@@ -99,6 +111,56 @@ story = [Paragraph("Report Title", styles["Title"]), Spacer(1, 12),
          Paragraph("Page 2", styles["Heading1"])]
 doc.build(story)
 ```
+
+### Create PDFs containing Persian, Arabic, Hebrew, Urdu, Indic or Thai
+
+**Do not use reportlab for these, and do not reorder or reshape the text
+yourself.** reportlab draws glyphs in the order it is handed them. It does not
+run a shaping engine, so it will not pick Arabic joining forms, will not place a
+harakat on its letter (no GPOS), and does not implement the UAX#9 bidi
+algorithm. Using it for Persian forces you to pre-shape with `arabic_reshaper`,
+pre-reorder with `python-bidi`, break lines by hand and then hand-patch neutral
+characters with LRM/RLM marks. That path has been tried here and it produced,
+in one document: reversed word order wherever reportlab re-wrapped a line that
+was already in visual order, silently deleted vowel marks (`delete_harakat`
+defaults to True), and an unbalanced `(` flung to the start of a line. Each fix
+uncovered the next case — nested parentheses, `[ ] { } < >`, line-final
+neutrals — because the underlying algorithm was being re-implemented by hand.
+
+Use a shaping engine instead. `soffice` is in the image and lays out text
+through HarfBuzz and ICU, so joining, mark placement and bidi are done by code
+that implements those specifications:
+
+```bash
+cat > doc.html <<'HTML'
+<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<style>body { font-family: "Noto Naskh Arabic", "Noto Sans Arabic", serif; font-size: 13pt; }</style>
+</head><body>
+  <h1>تحلیل معماری و هارنس سیمرغ</h1>
+  <p>خروجی نهایی: BrainOutcome (ok | refused | failed | degraded)</p>
+  <table border="1"><tr><th>لایه</th><th>مسئولیت</th></tr></table>
+</body></html>
+HTML
+soffice --headless --norestore --convert-to pdf:writer_pdf_Export doc.html
+```
+
+Verified output of exactly that input: joining forms correct, the damma in
+«میان‌بُری» sitting on its letter, `(ok | refused | failed | degraded)` balanced
+and in place with no LRM anchoring at all, `begin → prepare → decide → complete`
+reading left-to-right inside a right-to-left line, the table's first column on
+the right, and `NotoNaskhArabic` embedded as a subset. One cosmetic artifact
+remains: a Latin parenthetical sometimes keeps a space before its closing
+bracket — check it in the raster if the document is formal.
+
+Set `dir="rtl"` on `<html>`, not only on `<body>`: the paragraph direction is
+what decides where neutral characters at a line edge land. For a Word
+deliverable, build the `.docx` (see the `docx` skill) and convert that same way —
+it goes through the same engine.
+
+Only two reasons to reach for reportlab on a complex-script job: stamping a
+watermark or filling a form field on an **existing** PDF. Both are page surgery
+on already-shaped glyphs, not text layout.
 
 **Subscripts/superscripts:** never use Unicode sub/superscript characters (₀₁₂, ⁰¹²) — the built-in fonts lack the glyphs and render solid black boxes. Use `<sub>`/`<super>` markup inside `Paragraph` objects: `Paragraph("H<sub>2</sub>O", styles['Normal'])`. For canvas-drawn text, adjust font size and position manually.
 
@@ -161,13 +223,52 @@ Read [forms.md](forms.md) first — it distinguishes fillable (AcroForm) PDFs fr
 - `page.extract_text()` returns `None` on image-only pages — guard with `or ""` and fall back to OCR.
 - pypdf preserves encryption flags: reading an encrypted PDF requires `PdfReader(path, password=...)` before pages are accessible.
 - reportlab coordinates are bottom-left origin, points (1/72″) — not top-left.
+- reportlab does no text shaping. For any complex script this means three
+  separate failures, all of which have been observed: a line it re-wraps is
+  reversed if the caller already put it in visual order (and `Frame` silently
+  takes 6pt of padding per side, so the usable width is 12pt narrower than the
+  frame width you passed — that alone is enough to trigger a re-wrap); vowel
+  marks are dropped by `arabic_reshaper` unless `delete_harakat=False`; and even
+  when preserved they are not positioned on their letter. Do not patch these —
+  use `soffice`, above.
+- A text-layer check cannot see any of that. Vowel marks share their letter's x
+  coordinate, so an extractor may report them either side of it, and a mirrored
+  bracket is still the right codepoint. Only the raster shows it.
 - When filling flat forms by annotation overlay, always render a validation image and check the placement before delivering.
 
 ## Verification
 
+These checks are the acceptance test for the document. Run all of them.
+
 1. Open the output with `PdfReader` and assert the expected page count.
 2. Re-extract text from the output (`pdftotext` or pdfplumber) and confirm the content you added is present.
-3. For anything visual (watermarks, filled forms, created reports): `pdftoppm -jpeg -r 100 output.pdf page` and inspect the images with `vision_analyze`.
+3. For anything visual (watermarks, filled forms, created reports) — and
+   **always** for a complex-script document: `pdftoppm -png -r 110 output.pdf page`
+   and inspect the images with `vision_analyze`. This is the only step that can
+   see a mark landing beside its letter, a mirrored bracket, or a line laid out
+   in the wrong order, and it is not optional because the earlier steps looked fine.
+4. Confirm the fonts are embedded subsets: `pdffonts output.pdf` — every face
+   used must show `emb yes`.
+
+**When these pass, the document is finished. Deliver it and stop.**
+
+That is a rule, not a suggestion, and it binds in both directions:
+
+* **Do not keep working after a pass.** Building an extra cross-check harness,
+  a local web server or a browser comparison *after* the acceptance checks
+  already passed is not diligence — it is unbounded scope, it is how a job that
+  was done in minutes ran for hours, and it ends with the agent trusting its own
+  improvised harness over the agreed one.
+* **Do not edit these checks to make them pass.** Loosening a threshold or
+  narrowing a condition after seeing a failure proves nothing; the result is a
+  pass the checks were changed to produce. If a check is genuinely wrong, say
+  so, show the output that demonstrates it, and leave it to the operator.
+* **Report a pass with its evidence.** Paste the actual command output — page
+  count, the extracted text, the `pdffonts` table, what the raster showed. The
+  sentence "all checks pass" on its own is a claim, not a result.
+* **If it still fails after two attempts and one polish, stop and report.**
+  Say which check failed and what the output was. A third attempt without new
+  information is guessing.
 
 ## Related skills
 
