@@ -29,7 +29,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use tauri::{AppHandle, Emitter};
 use tokio::io::BufReader;
 use tokio::process::Command;
@@ -648,6 +648,7 @@ async fn run_artifact_update(app: AppHandle, base: &str) -> Result<()> {
     crate::bootstrap::recover_artifact_transaction(&root)?;
     let approved = approved_artifact_target(base, &root).await?;
     if !approved.is_newer {
+        require_artifact_setup(&home, &std::env::current_exe()?)?;
         emit(&app, BootstrapEvent::Complete {
             install_root: root.to_string_lossy().into_owned(), marker: Some(approved.installed_marker),
         });
@@ -659,6 +660,12 @@ async fn run_artifact_update(app: AppHandle, base: &str) -> Result<()> {
     }
     exit_after_success(&app);
     Ok(())
+}
+
+fn require_artifact_setup(home: &Path, running: &Path) -> Result<()> {
+    let expected = crate::paths::installer_sha256(running)?;
+    crate::paths::verify_installer(&crate::paths::installer_dest_in(home), &expected)
+        .context("required Setup missing or invalid; update cannot complete")
 }
 
 pub(crate) struct ApprovedArtifactTarget {
@@ -1752,6 +1759,22 @@ mod tests {
             "original app contents must be intact after a failed swap"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn artifact_noop_update_requires_verified_stable_setup() {
+        let home = unique_tmp_dir("artifact-noop-setup");
+        let running = home.join("running-setup.exe");
+        let installed = crate::paths::installer_dest_in(&home);
+        std::fs::write(&running, b"running-setup-fixture").unwrap();
+        assert!(require_artifact_setup(&home, &running).is_err());
+        std::fs::write(&installed, b"partial").unwrap();
+        assert!(require_artifact_setup(&home, &running).is_err());
+        std::fs::write(&installed, b"running-setup-fixture").unwrap();
+        require_artifact_setup(&home, &running).unwrap();
+        // The normal update entrypoint runs from this stable path itself.
+        require_artifact_setup(&home, &installed).unwrap();
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[tokio::test]
