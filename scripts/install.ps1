@@ -22,6 +22,9 @@ param(
     # cloning the full default-branch history) and then `git checkout`s the
     # exact ref.  Precedence: Commit > Tag > Branch.
     [string]$Commit = "",
+    # Trusted release origin is supplied by Youtab-Setup, never inferred from
+    # an ambient environment variable or from downloaded metadata.
+    [string]$ReleaseBaseUrl = "",
     # Apply -Commit even when it would roll an existing install BACKWARDS.
     # Without this the repository stage skips a pin that is already an ancestor
     # of HEAD, so a stale baked-in BUILD_PIN_COMMIT can't downgrade a current
@@ -156,6 +159,31 @@ $NodeVersion = "22"
 # manifest schema, stage-name set semantics, or stdout JSON shape.  Adding a
 # new stage does NOT bump this -- drivers iterate the manifest dynamically.
 $InstallStageProtocolVersion = 1
+
+$script:CustomerReleaseMode = $PSBoundParameters.ContainsKey("ReleaseBaseUrl")
+function Assert-CustomerReleaseSource {
+    if (-not $script:CustomerReleaseMode) { return }
+    if ($ReleaseBaseUrl -cnotmatch '^https://api\.youtab\.io/pilot-runtime-[a-f0-9]{32,}/releases$') {
+        throw "Untrusted release base URL"
+    }
+    if ($Commit -cnotmatch '^[a-f0-9]{40}$') {
+        throw "Customer release mode requires an exact lowercase commit SHA"
+    }
+    # The Desktop build stamp consumes the same validated release origin.
+    $env:YOUTAB_AGENT_RELEASE_BASE_URL = $ReleaseBaseUrl
+}
+
+function Get-FileSha256 {
+    param([Parameter(Mandatory=$true)] [string]$Path)
+    $stream = [IO.File]::OpenRead($Path)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        return [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-', '').ToLowerInvariant()
+    } finally {
+        $hash.Dispose()
+        $stream.Dispose()
+    }
+}
 
 # ============================================================================
 # Helper functions
@@ -1407,7 +1435,133 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+function Install-RepositoryFromArtifact {
+    # The GUI owns promotion and rollback. This stage only creates a verified
+    # sibling tree; it must never modify the current installation.
+    $manifestUrl = "$ReleaseBaseUrl/$Commit/manifest.json"
+    $expectedArtifactUrl = "$ReleaseBaseUrl/$Commit/youtab-runtime-$Commit.zip"
+    $expectedScriptUrl = "$ReleaseBaseUrl/$Commit/install-$Commit.ps1"
+    $manifest = Invoke-RestMethod -Uri $manifestUrl -MaximumRedirection 0
+    if ($null -eq $manifest -or
+        -not ($manifest.source_sha -is [string]) -or
+        -not ($manifest.artifact_url -is [string]) -or
+        -not ($manifest.install_script_url -is [string]) -or
+        -not ($manifest.sha256 -is [string]) -or
+        -not ($manifest.install_script_sha256 -is [string]) -or
+        $manifest.source_sha -cne $Commit -or
+        $manifest.artifact_url -cne $expectedArtifactUrl -or
+        $manifest.install_script_url -cne $expectedScriptUrl -or
+        $manifest.sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        $manifest.install_script_sha256 -cnotmatch '^[a-f0-9]{64}$' -or
+        $manifest.platform -cne 'windows' -or
+        $manifest.architecture -cne 'x64' -or
+        $manifest.format -cne 'zip' -or
+        -not ($manifest.version -is [string]) -or
+        [string]::IsNullOrWhiteSpace($manifest.version) -or
+        -not ($manifest.created_at -is [string]) -or
+        $manifest.created_at -notmatch 'Z$' -or
+        -not (($manifest.release_sequence -is [int]) -or ($manifest.release_sequence -is [long])) -or
+        $manifest.release_sequence -le 0) {
+        throw "Release manifest does not match the pinned Windows artifact contract"
+    }
+
+    $installPath = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\', '/')
+    $stageDir = "$installPath.new-$([guid]::NewGuid().ToString('N'))"
+    $zipPath = "$stageDir.zip"
+    $rootPrefix = "youtab-runtime-$Commit/"
+    $stageCreated = $false
+    try {
+        New-Item -ItemType Directory -Path $stageDir -ErrorAction Stop | Out-Null
+        $stageCreated = $true
+        Invoke-WebRequest -Uri $expectedArtifactUrl -OutFile $zipPath -UseBasicParsing -MaximumRedirection 0
+        $actualHash = Get-FileSha256 -Path $zipPath
+        if ($actualHash -cne $manifest.sha256) {
+            throw "Runtime artifact SHA256 does not match the pinned manifest"
+        }
+
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        try {
+            $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+        } catch {
+            throw "Runtime artifact archive is malformed"
+        }
+        try {
+            $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+            if ($archive.Entries.Count -gt 100000) { throw "Runtime artifact has too many entries" }
+            [long]$expandedBytes = 0
+            foreach ($entry in $archive.Entries) {
+                $expandedBytes += $entry.Length
+                if ($expandedBytes -gt 4294967296) { throw "Runtime artifact exceeds the extraction size limit" }
+                $name = $entry.FullName
+                if (-not $name.StartsWith($rootPrefix, [StringComparison]::Ordinal)) {
+                    throw "Runtime artifact contains an unexpected archive root"
+                }
+                if ($name -match '[<>:"\\|?*\x00-\x1f]' -or $name.StartsWith('/')) {
+                    throw "Runtime artifact contains an unsafe entry name"
+                }
+                $relative = $name.Substring($rootPrefix.Length)
+                if (-not $relative) { continue }
+                $segments = $relative.TrimEnd('/').Split('/')
+                foreach ($segment in $segments) {
+                    if (-not $segment -or $segment -eq '.' -or $segment -eq '..' -or
+                        $segment.EndsWith('.') -or $segment.EndsWith(' ') -or
+                        $segment -match '^(?i:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$') {
+                        throw "Runtime artifact contains an unsafe path segment"
+                    }
+                }
+                if (-not $seen.Add($relative.TrimEnd('/'))) {
+                    throw "Runtime artifact contains duplicate case-insensitive paths"
+                }
+                $attributes = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$entry.ExternalAttributes), 0)
+                $mode = ($attributes -shr 16) -band 0xF000
+                if ($mode -eq 0xA000 -or ($attributes -band 0x400) -ne 0) {
+                    throw "Runtime artifact contains a symbolic link or reparse point"
+                }
+                $destination = [IO.Path]::GetFullPath((Join-Path $stageDir ($relative.Replace('/', [IO.Path]::DirectorySeparatorChar))))
+                if (-not $destination.StartsWith("$stageDir$([IO.Path]::DirectorySeparatorChar)", [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Runtime artifact entry escapes the staging directory"
+                }
+                if ($name.EndsWith('/')) {
+                    New-Item -ItemType Directory -Path $destination -Force | Out-Null
+                } else {
+                    New-Item -ItemType Directory -Path (Split-Path $destination) -Force | Out-Null
+                    [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $false)
+                }
+            }
+        } finally {
+            $archive.Dispose()
+        }
+        foreach ($required in @('scripts/install.ps1', 'pyproject.toml', 'apps/desktop/package.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $stageDir ($required.Replace('/', [IO.Path]::DirectorySeparatorChar))) -PathType Leaf)) {
+                throw "Runtime artifact is missing required layout file: $required"
+            }
+        }
+        $stagedScriptHash = Get-FileSha256 -Path (Join-Path $stageDir 'scripts/install.ps1')
+        if ($stagedScriptHash -cne $manifest.install_script_sha256) {
+            throw "Runtime artifact install script does not match the pinned manifest"
+        }
+        $script:_StageData = @{
+            staged_install_dir = $stageDir
+            source_sha = $Commit
+            artifact_sha256 = $actualHash
+            version = $manifest.version
+            release_sequence = $manifest.release_sequence
+            release_base_url = $ReleaseBaseUrl
+        }
+        Write-Success "Verified Runtime artifact staged for Setup promotion"
+    } catch {
+        if ($stageCreated) { Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue }
+        throw
+    } finally {
+        Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-Repository {
+    if ($script:CustomerReleaseMode) {
+        Install-RepositoryFromArtifact
+        return
+    }
     Write-Info "Installing to $InstallDir..."
 
     $didUpdate = $false
@@ -3688,6 +3842,7 @@ function Invoke-Stage {
     # being honest in the protocol contract.  Reset before each stage so
     # a prior stage's reason can never leak into a later stage's frame.
     $script:_StageSkippedReason = $null
+    $script:_StageData = $null
 
     $start = [DateTime]::UtcNow
     $result = @{
@@ -3701,6 +3856,7 @@ function Invoke-Stage {
     try {
         & $StageDef.Worker
         $result.ok = $true
+        if ($script:_StageData) { $result.data = $script:_StageData }
         if ($script:_StageSkippedReason) {
             $result.skipped = $true
             $result.reason  = $script:_StageSkippedReason
@@ -3715,7 +3871,7 @@ function Invoke-Stage {
             # In stage-driver mode every stage emits a JSON line so the
             # caller can stream progress.  In default interactive mode we
             # stay silent here (the worker already wrote human output).
-            $result | ConvertTo-Json -Compress | Write-Output
+            $result | ConvertTo-Json -Depth 5 -Compress | Write-Output
             # Tell the entry-point catch that we've already emitted a
             # frame for this failure (when $result.ok = $false), so it
             # doesn't double-emit a second JSON object and break the
@@ -3799,6 +3955,7 @@ function Main {
 # structured JSON error frame instead of a bare exception.
 
 try {
+    Assert-CustomerReleaseSource
     if ($Ensure -ne "") {
         if ($PSBoundParameters.ContainsKey("Stage")) {
             Write-Err "Cannot use -Ensure and -Stage simultaneously"
@@ -3856,6 +4013,9 @@ try {
 
     # Default: full install (today's behavior, plus optional -NonInteractive
     # and -Json layered on by the params above).
+    if ($script:CustomerReleaseMode) {
+        throw "Customer release mode requires Youtab-Setup stage promotion"
+    }
     Main
 } catch {
     if ($Json -or $Stage) {
