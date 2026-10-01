@@ -114,13 +114,21 @@ def _run_update_until_guard(args):
     Everything before the guard is stubbed; the guard firing is observed via
     SystemExit(2). The first statement AFTER the guard is
     ``git_dir = PROJECT_ROOT / ".git"`` — a PROJECT_ROOT sentinel whose
-    ``__truediv__`` raises marks 'guard passed'."""
+    ``__truediv__`` raises marks 'guard passed'. The earlier, read-only
+    artifact-install discovery is stubbed as a developer Git checkout."""
 
     class _PastGuard(Exception):
         pass
 
     class _RootSentinel:
-        def __truediv__(self, _other):
+        git_probe_seen = False
+
+        def __truediv__(self, other):
+            if other == ".youtab-agent-runtime-bootstrap-complete":
+                return SimpleNamespace(exists=lambda: False, is_file=lambda: False)
+            if other == ".git" and not self.git_probe_seen:
+                self.git_probe_seen = True
+                return SimpleNamespace(exists=lambda: True)
             raise _PastGuard
 
     with patch.object(cli_main, "_is_windows", return_value=True), patch.object(

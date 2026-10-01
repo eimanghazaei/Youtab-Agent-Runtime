@@ -130,19 +130,6 @@ export function isFallbackCommit(commit) {
 
 function main() {
   const stamp = resolveStamp()
-  if (!stamp || !stamp.commit) {
-    // Should not happen — fromFallback() always provides a commit.
-    console.error(
-      "[write-build-stamp] ERROR: could not determine git commit.\n" +
-        "  - $GITHUB_SHA not set\n" +
-        "  - `git rev-parse HEAD` failed at " +
-        REPO_ROOT +
-        "\n" +
-        "Packaged builds require a git ref to pin first-launch install.ps1\n" +
-        "against. Run from a git checkout or set $GITHUB_SHA explicitly."
-    )
-    process.exit(1)
-  }
 
   if (isFallbackCommit(stamp.commit)) {
     console.warn(
