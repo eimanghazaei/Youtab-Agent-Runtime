@@ -9,17 +9,124 @@ import {
   buildPinArgs,
   buildPosixPinArgs,
   cachedScriptPath,
+  classifyPilotReleaseUpdate,
+  fetchApprovedPilotRelease,
   hasExistingGitCheckout,
   installedAgentInstallScript,
   installRefForStamp,
   isPinnedCommit,
+  pilotReleaseBaseUrl,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  trustedPilotReleaseBaseUrl
 } from './bootstrap-runner'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
 const ZERO_COMMIT = '0000000000000000000000000000000000000000'
+const RELEASE_BASE = `https://api.youtab.io/pilot-runtime-${'a'.repeat(32)}/releases`
+const RELEASE_SHA = 'b'.repeat(40)
+const RELEASE_HASH = 'c'.repeat(64)
+
+function releaseFixture() {
+  return {
+    version: '0.19.2',
+    release_sequence: 2,
+    source_sha: RELEASE_SHA,
+    artifact_url: `${RELEASE_BASE}/${RELEASE_SHA}/youtab-runtime-${RELEASE_SHA}.zip`,
+    manifest_url: `${RELEASE_BASE}/${RELEASE_SHA}/manifest.json`,
+    sha256: RELEASE_HASH,
+    created_at: '2026-10-01T10:00:00Z',
+    platform: 'windows',
+    architecture: 'x64',
+    format: 'zip'
+  }
+}
+
+test('pilot release discovery verifies latest and exact immutable manifest on the fixed origin', async () => {
+  const release = releaseFixture()
+  const read = async url => {
+    if (url === `${RELEASE_BASE}/latest.json`) {
+      return { ...release, manifest_url: `${RELEASE_BASE}/${RELEASE_SHA}/manifest.json` }
+    }
+    assert.equal(url, `${RELEASE_BASE}/${RELEASE_SHA}/manifest.json`)
+    return release
+  }
+  assert.equal((await fetchApprovedPilotRelease(RELEASE_BASE, read)).source_sha, RELEASE_SHA)
+  assert.equal(
+    classifyPilotReleaseUpdate(
+      { pinnedCommit: 'd'.repeat(40), releaseSequence: 1, artifactSha256: 'e'.repeat(64) },
+      release
+    ),
+    'available'
+  )
+  assert.equal(
+    classifyPilotReleaseUpdate(
+      { pinnedCommit: RELEASE_SHA, releaseSequence: 2, artifactSha256: RELEASE_HASH },
+      release
+    ),
+    'current'
+  )
+})
+
+test('pilot release discovery rejects cross-origin, path escape, and mutable identity conflicts', async () => {
+  assert.throws(() => pilotReleaseBaseUrl(`https://evil.example/pilot-runtime-${'a'.repeat(32)}/releases`), /approved/)
+  assert.throws(() => pilotReleaseBaseUrl('https://api.youtab.io/runtime/releases'), /approved/)
+  assert.equal(trustedPilotReleaseBaseUrl(RELEASE_BASE, RELEASE_BASE), RELEASE_BASE)
+  assert.throws(
+    () => trustedPilotReleaseBaseUrl(RELEASE_BASE, `https://api.youtab.io/pilot-runtime-${'d'.repeat(32)}/releases`),
+    /does not match/
+  )
+  const release = releaseFixture()
+  await assert.rejects(
+    fetchApprovedPilotRelease(RELEASE_BASE, async () => ({
+      ...release,
+      manifest_url: 'https://evil.example/manifest.json'
+    })),
+    /escapes/
+  )
+  await assert.rejects(
+    fetchApprovedPilotRelease(RELEASE_BASE, async url =>
+      url.endsWith('latest.json')
+        ? { ...release, manifest_url: `${RELEASE_BASE}/${RELEASE_SHA}/manifest.json` }
+        : { ...release, sha256: 'f'.repeat(64) }
+    ),
+    /disagree/
+  )
+  assert.throws(
+    () =>
+      classifyPilotReleaseUpdate(
+        { pinnedCommit: RELEASE_SHA, releaseSequence: 3, artifactSha256: RELEASE_HASH },
+        release
+      ),
+    /downgrade/
+  )
+  assert.throws(
+    () =>
+      classifyPilotReleaseUpdate(
+        { pinnedCommit: 'd'.repeat(40), releaseSequence: 2, artifactSha256: RELEASE_HASH },
+        release
+      ),
+    /conflicts/
+  )
+  assert.throws(() => classifyPilotReleaseUpdate({ pinnedCommit: RELEASE_SHA }, release), /repair is required/)
+})
+
+test('packaged customer recovery cannot download or fall back to a GitHub install script', async () => {
+  let downloads = 0
+  await assert.rejects(
+    resolveInstallScript({
+      installStamp: { commit: RELEASE_SHA },
+      sourceRepoRoot: null,
+      youtabHome: path.join(os.tmpdir(), 'youtab-customer-no-fetch'),
+      emit: () => {},
+      customerMode: true,
+      _download: async () => { downloads++ }
+    }),
+    /staged Youtab Setup/
+  )
+  assert.equal(downloads, 0)
+})
 
 function mkTmpHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'youtab-bootstrap-test-'))

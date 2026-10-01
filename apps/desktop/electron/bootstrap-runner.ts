@@ -45,6 +45,196 @@ const IS_WINDOWS = process.platform === 'win32'
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
 const FALLBACK_COMMIT_RE = /^0{7,40}$/
 const FALLBACK_BRANCH = 'main'
+const PILOT_RELEASE_PATH = /^\/pilot-runtime-[0-9a-f]{32,}\/releases$/
+const EXACT_SHA = /^[0-9a-f]{40}$/
+const EXACT_SHA256 = /^[0-9a-f]{64}$/
+
+/** The customer release origin is fixed; the high-entropy path is build-owned. */
+function pilotReleaseBaseUrl(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new Error('Runtime release URL is missing')
+  }
+
+  const url = new URL(value)
+
+  if (
+    url.protocol !== 'https:' ||
+    url.hostname !== 'api.youtab.io' ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !PILOT_RELEASE_PATH.test(url.pathname.replace(/\/$/, ''))
+  ) {
+    throw new Error('Runtime release URL is not an approved pilot delivery path')
+
+  }
+
+  return url.origin + url.pathname.replace(/\/$/, '')
+}
+
+function trustedPilotReleaseBaseUrl(packagedBase: unknown, installedBase: unknown): string {
+  const base = pilotReleaseBaseUrl(packagedBase)
+
+  if (installedBase !== base) {
+    throw new Error('Installed Runtime release origin does not match the packaged Youtab build')
+  }
+
+  return base
+}
+
+function releaseUrl(value: unknown, expectedPrefix: string): string {
+  if (typeof value !== 'string') {
+    throw new Error('Runtime release metadata URL is missing')
+  }
+
+  const url = new URL(value)
+
+  if (
+    url.protocol !== 'https:' ||
+    url.origin !== 'https://api.youtab.io' ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !url.pathname.startsWith(expectedPrefix) ||
+    url.pathname.includes('%') ||
+    url.pathname.includes('..')
+  ) {
+    throw new Error('Runtime release metadata URL escapes the approved release path')
+
+  }
+
+  return url.href
+}
+
+function parsePilotRelease(value: any, base: string, isLatest: boolean) {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Runtime release metadata is malformed')
+  }
+
+  const { version, release_sequence, source_sha, artifact_url, sha256, created_at, platform, architecture, format } =
+    value
+  if (
+    typeof version !== 'string' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(version) ||
+    version.includes('..') ||
+    !Number.isSafeInteger(release_sequence) ||
+    release_sequence < 1 ||
+    typeof source_sha !== 'string' ||
+    !EXACT_SHA.test(source_sha) ||
+    typeof sha256 !== 'string' ||
+    !EXACT_SHA256.test(sha256) ||
+    typeof created_at !== 'string' ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(created_at) ||
+    !Number.isFinite(Date.parse(created_at)) ||
+    platform !== 'windows' ||
+    architecture !== 'x64' ||
+    format !== 'zip'
+  ) {
+    throw new Error('Runtime release metadata has invalid identity or platform fields')
+
+  }
+
+  const prefix = `${new URL(base).pathname}/${source_sha}/`
+  const expectedArchive = `${base}/${source_sha}/youtab-runtime-${source_sha}.zip`
+  if (releaseUrl(artifact_url, prefix) !== expectedArchive) {
+    throw new Error('Runtime archive URL does not match its immutable identity')
+  }
+  const manifestUrl = isLatest ? releaseUrl(value.manifest_url, prefix) : null
+  if (manifestUrl && manifestUrl !== `${base}/${source_sha}/manifest.json`) {
+    throw new Error('Runtime manifest URL does not match its immutable identity')
+  }
+  return {
+    version,
+    release_sequence,
+    source_sha,
+    artifact_url,
+    sha256,
+    created_at,
+    platform,
+    architecture,
+    format,
+    manifest_url: manifestUrl
+  }
+}
+
+function readReleaseJson(url: string): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { timeout: 10000 }, res => {
+      if (res.statusCode !== 200) {
+        res.resume()
+        reject(new Error(`Runtime release metadata returned HTTP ${res.statusCode}`))
+        return
+      }
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', chunk => {
+        body += chunk
+        if (body.length > 65536) {
+          req.destroy(new Error('Runtime release metadata exceeds size limit'))
+        }
+      })
+      res.on('end', () => {
+        try {
+          resolve(JSON.parse(body))
+        } catch {
+          reject(new Error('Runtime release metadata is not JSON'))
+        }
+      })
+    })
+    req.on('timeout', () => req.destroy(new Error('Runtime release metadata timed out')))
+    req.on('error', reject)
+  })
+}
+
+async function fetchApprovedPilotRelease(baseValue: unknown, readJson = readReleaseJson) {
+  const base = pilotReleaseBaseUrl(baseValue)
+  const latest = parsePilotRelease(await readJson(`${base}/latest.json`), base, true)
+  const immutable = parsePilotRelease(await readJson(latest.manifest_url!), base, false)
+  for (const field of [
+    'version',
+    'release_sequence',
+    'source_sha',
+    'artifact_url',
+    'sha256',
+    'created_at',
+    'platform',
+    'architecture',
+    'format'
+  ]) {
+    if (latest[field] !== immutable[field]) {
+      throw new Error('Runtime latest and immutable manifest disagree')
+    }
+  }
+  return latest
+}
+
+function classifyPilotReleaseUpdate(installed: any, latest: Awaited<ReturnType<typeof fetchApprovedPilotRelease>>) {
+  if (
+    !installed ||
+    typeof installed.pinnedCommit !== 'string' ||
+    !EXACT_SHA.test(installed.pinnedCommit) ||
+    !Number.isSafeInteger(installed.releaseSequence) ||
+    installed.releaseSequence < 1 ||
+    typeof installed.artifactSha256 !== 'string' ||
+    !EXACT_SHA256.test(installed.artifactSha256)
+  ) {
+    throw new Error('Installed Runtime release identity is missing; repair is required')
+  }
+
+  if (latest.release_sequence < installed.releaseSequence) {
+    throw new Error('Runtime release downgrade is blocked')
+  }
+  if (latest.release_sequence === installed.releaseSequence) {
+    if (latest.source_sha !== installed.pinnedCommit || latest.sha256 !== installed.artifactSha256) {
+      throw new Error('Runtime release identity conflicts with the installed release')
+    }
+    return 'current'
+  }
+  return 'available'
+}
 
 function isPinnedCommit(commit) {
   return typeof commit === 'string' && STAMP_COMMIT_RE.test(commit) && !FALLBACK_COMMIT_RE.test(commit)
@@ -319,8 +509,12 @@ async function resolveInstallScript({
   sourceRepoRoot,
   youtabHome,
   emit,
+  customerMode = false,
   _download = downloadInstallScript
 }) {
+  if (customerMode) {
+    throw new Error('Packaged customer recovery requires the staged Youtab Setup; install script download is disabled')
+  }
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
   //    without pushing. SOURCE_REPO_ROOT comes from main.ts (path.resolve
   //    of APP_ROOT/../..).
@@ -865,6 +1059,7 @@ async function runBootstrap(opts) {
     logRoot,
     onEvent,
     abortSignal,
+    customerMode = false,
     writeMarker // callback to write the bootstrap-complete marker; main.ts provides
   } = opts
 
@@ -927,7 +1122,7 @@ async function runBootstrap(opts) {
     }
 
     // 1. Resolve the platform installer.
-    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, youtabHome, emit })
+    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, youtabHome, emit, customerMode })
     const installerKind = scriptInfo.kind || 'powershell'
 
     // 2. Fetch manifest
@@ -1023,15 +1218,19 @@ export {
   buildPinArgs,
   buildPosixPinArgs,
   cachedScriptPath,
+  classifyPilotReleaseUpdate,
+  fetchApprovedPilotRelease,
   hasExistingGitCheckout,
   installedAgentInstallScript,
   installRefForStamp,
   isPinnedCommit,
   // Exposed for testability
   parseStageResult,
+  pilotReleaseBaseUrl,
   resolveCheckoutHead,
   resolveInstallScript,
   resolveLocalInstallScript,
   resolveMarkerPinnedCommit,
-  runBootstrap
+  runBootstrap,
+  trustedPilotReleaseBaseUrl
 }

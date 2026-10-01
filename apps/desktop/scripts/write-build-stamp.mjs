@@ -12,6 +12,7 @@
  *     "builtAt":       "<ISO 8601 UTC timestamp>",
  *     "dirty":         true|false,
  *     "source":        "ci" | "local" | "fallback"
+ *     "releaseBaseUrl": "https://api.youtab.io/pilot-runtime-<hex>/releases" | null
  *   }
  *
  * Source preference order:
@@ -107,7 +108,20 @@ export function resolveStamp({
   execFn = tryExec,
   fallbackBranch = FALLBACK_BRANCH
 } = {}) {
-  return fromCI(env) || fromLocalGit(repoRoot, execFn) || fromFallback(fallbackBranch)
+  const stamp = fromCI(env) || fromLocalGit(repoRoot, execFn) || fromFallback(fallbackBranch)
+  const rawBase = env.YOUTAB_AGENT_RELEASE_BASE_URL
+  let releaseBaseUrl = null
+  if (rawBase) {
+    const url = new URL(rawBase)
+    const pathname = url.pathname.replace(/\/$/, '')
+    if (
+      url.protocol !== 'https:' || url.hostname !== 'api.youtab.io' || url.port ||
+      url.username || url.password || url.search || url.hash ||
+      !/^\/pilot-runtime-[0-9a-f]{32,}\/releases$/.test(pathname)
+    ) throw new Error('YOUTAB_AGENT_RELEASE_BASE_URL must be an approved api.youtab.io pilot release path')
+    releaseBaseUrl = url.origin + pathname
+  }
+  return { ...stamp, releaseBaseUrl }
 }
 
 export function isFallbackCommit(commit) {
@@ -155,7 +169,8 @@ function main() {
     branch: stamp.branch,
     builtAt: new Date().toISOString(),
     dirty: stamp.dirty,
-    source: stamp.source
+    source: stamp.source,
+    releaseBaseUrl: stamp.releaseBaseUrl
   }
 
   mkdirSync(OUT_DIR, { recursive: true })
