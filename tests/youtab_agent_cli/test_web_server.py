@@ -311,9 +311,16 @@ class TestWebServerEndpoints:
 
 
 
-    def test_gateway_drain_bad_action_400(self):
+    def test_gateway_drain_disabled_without_secret_503(self):
+        # WAVE-21: the drain endpoint is service-token-only and fail-closed. With
+        # no valid drain secret configured, the handler's independent guard
+        # returns 503 drain_disabled BEFORE any action handling — a loopback
+        # session (not a drain-token request) can never drive a drain. The
+        # bad-action 400 path is covered, authenticated, in
+        # tests/youtab_runtime/test_drain_optout_and_verified_lifecycle.py.
         resp = self.client.post("/api/gateway/drain", json={"action": "explode"})
-        assert resp.status_code == 400
+        assert resp.status_code == 503
+        assert resp.json()["detail"]["error"] == "drain_disabled"
 
 
 

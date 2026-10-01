@@ -23,6 +23,11 @@ class TestSkinConfig:
         assert "banner_title" in skin.colors
         assert "banner_border" in skin.colors
         assert "agent_name" in skin.branding
+        assert skin.get_branding("agent_name") == "Youtab RunTime"
+        assert skin.get_color("banner_title") == "#0096FF"
+        assert skin.get_color("banner_border") == "#0067C5"
+        assert skin.banner_logo == ""
+        assert skin.banner_hero == ""
 
 
     def test_get_spinner_wings_empty_for_default(self):
@@ -115,7 +120,7 @@ class TestUserSkins:
         assert skin.get_branding("agent_name") == "Custom Agent"
         assert skin.tool_prefix == "▸"
         # Should inherit defaults for unspecified colors
-        assert skin.get_color("banner_border") == "#CD7F32"  # from default
+        assert skin.get_color("banner_border") == "#0067C5"  # from default
 
     def test_load_user_skin_invalid_section_types_fall_back_to_defaults(self, tmp_path, monkeypatch):
         from youtab_agent_cli.skin_engine import load_skin
@@ -142,8 +147,8 @@ class TestUserSkins:
         skin = load_skin("broken")
 
         assert skin.name == "broken"
-        assert skin.get_color("banner_title") == "#FFD700"
-        assert skin.get_branding("agent_name") == "Youtab Agent Runtime"
+        assert skin.get_color("banner_title") == "#0096FF"
+        assert skin.get_branding("agent_name") == "Youtab RunTime"
         assert skin.spinner.get("waiting_faces", []) == []
         assert skin.tool_emojis == {}
         assert skin.tool_prefix == "!"

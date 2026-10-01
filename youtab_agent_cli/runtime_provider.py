@@ -55,7 +55,24 @@ def _getenv(name: str, default: str = "") -> str:
     read ``os.environ``. Keeps the ``(name, default) -> str`` contract every
     call site here already relies on.
     """
+    # Provider-neutral file-based credential support (WAVE-30B §4): a custom
+    # provider whose ``key_env`` names e.g. DEEPSEEK_API_KEY transparently gains
+    # DEEPSEEK_API_KEY_FILE support here. Strict-tier; fail-closed on dual source.
+    if name:
+        from youtab_agent_cli import secret_file as _sf
+
+        _file_val = _sf.resolve_credential_file(
+            name, inline_present=bool(os.environ.get(name))
+        )
+        if _file_val is not None:
+            return _file_val
     val = _get_secret(name, default)
+    # A plaintext-environment credential warns once, and is REFUSED under
+    # live-benchmark mode (file-based delivery is mandatory) — WAVE-30B A#1.
+    if name and val and val != default:
+        from youtab_agent_cli import secret_file as _sf
+
+        _sf.note_plaintext_credential(name)
     return val if val is not None else default
 
 
@@ -574,6 +591,8 @@ def resolve_requested_provider(requested: Optional[str] = None) -> str:
     return "auto"
 
 
+
+
 def _try_resolve_from_custom_pool(
     base_url: str,
     provider_label: str,
@@ -688,12 +707,30 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
-            resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
-            # Fall back to inline api_key when key_env is absent or unresolvable
+            # Resolve the API key. Precedence: explicit file (api_key_file_env,
+            # a var holding the PATH to a strict-tier key file) > key_env (which
+            # itself gains <key_env>_FILE support via _getenv) > inline api_key.
+            from youtab_agent_cli import secret_file as _sf
+
+            _file_key = (
+                _sf.read_named_key_file_env(
+                    str(entry.get("api_key_file_env", "") or "").strip()
+                )
+                or ""
+            ).strip()
+            _inline_key = str(entry.get("api_key", "") or "").strip()
+            if _file_key and _inline_key:
+                raise _sf.SecretFileError(
+                    "custom provider sets both api_key_file_env and an inline "
+                    "api_key — refusing an ambiguous secret source"
+                )
+            resolved_api_key = _file_key
             if not resolved_api_key:
-                resolved_api_key = str(entry.get("api_key", "") or "").strip()
+                key_env = str(entry.get("key_env", "") or "").strip()
+                resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
+            # Fall back to inline api_key when neither file nor key_env resolves
+            if not resolved_api_key:
+                resolved_api_key = _inline_key
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
@@ -1112,8 +1149,22 @@ def _resolve_named_custom_runtime(
 
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
+    from youtab_agent_cli import secret_file as _sf
+
+    _cp_file_key = (
+        _sf.read_named_key_file_env(
+            str(custom_provider.get("api_key_file_env", "") or "").strip()
+        )
+        or ""
+    ).strip()
+    if _cp_file_key and str(custom_provider.get("api_key", "") or "").strip():
+        raise _sf.SecretFileError(
+            "custom provider sets both api_key_file_env and an inline api_key "
+            "— refusing an ambiguous secret source"
+        )
     api_key_candidates = [
         (explicit_api_key or "").strip(),
+        _cp_file_key,
         str(custom_provider.get("api_key", "") or "").strip(),
         _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         # Gate provider env keys on their authoritative hosts — sending
@@ -1168,6 +1219,10 @@ def _resolve_openrouter_runtime(
             break
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
+    # The ORIGINAL requested provider, before the alias→"custom" rewrite below.
+    # Kept so the local-endpoint block can recover which local model server a
+    # normalised "custom" came from, without recomputing the alias map.
+    _alias = requested_norm
     # GitHub #27132: provider aliases that resolve to "custom" (ollama,
     # vllm, llamacpp, …) follow the same base_url trust + routing rules
     # as a bare `provider: custom`. Normalising here keeps every check
@@ -1198,12 +1253,41 @@ def _resolve_openrouter_runtime(
         ):
             use_config_base_url = True
 
+    # For a local model server — the aliases that resolve to the OpenAI-
+    # compatible "custom" path above (ollama/vllm/llamacpp; lmstudio has its own
+    # provider-registry resolution and is NOT handled here) — resolve the
+    # inference endpoint from its protected deployment env (OLLAMA_BASE_URL/
+    # OLLAMA_HOST, VLLM_BASE_URL, …) via the canonical engine_connection
+    # resolver: the SAME endpoint the runtime's availability probe + engine
+    # attestation used. Authorised to loopback/private/link-local/tailnet only;
+    # a public host (no opt-in), credentials-in-URL, or malformed value resolves
+    # to "" (fail closed). The endpoint is never taken from a process argument
+    # (it stays a protected env value the worker inherits).
+    _local_provider = ""
+    _local_endpoint = ""
+    if requested_norm == "custom" and _alias != "custom":
+        try:
+            from youtab_agent_cli import engine_connection as _ec
+
+            if _alias in _ec.LOCAL_SERVER_PROVIDERS:
+                _local_provider = _alias
+                _local_endpoint = _ec.inference_base_url_for_local_provider(_alias)
+        except Exception:
+            _local_provider = ""
+            _local_endpoint = ""
+
     base_url = (
         (explicit_base_url or "").strip()
         or env_custom_base_url
         or (cfg_base_url.strip() if use_config_base_url else "")
-        or env_openrouter_base_url
-        or OPENROUTER_BASE_URL
+        or _local_endpoint
+        # A local-server-bound run must NEVER silently fall back to the machine-
+        # default OpenRouter endpoint: that mis-attributes the run to a cloud
+        # provider and fails with "empty API key / set OPENROUTER_API_KEY"
+        # (WAVE-30D live-canary defect t_2cf3c738). Fail closed with an empty
+        # base_url — the caller surfaces "empty base URL" — instead. Non-local
+        # providers keep the existing OpenRouter default unchanged.
+        or ("" if _local_provider else (env_openrouter_base_url or OPENROUTER_BASE_URL))
     ).rstrip("/")
 
     # Choose API key based on whether the resolved base_url targets OpenRouter.
@@ -1660,6 +1744,49 @@ def _resolve_explicit_runtime(
     return None
 
 
+def _enforce_local_provider_binding(
+    requested: Optional[str], result: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Path-independent fail-closed invariant for a local-server-bound run.
+
+    A run pinned to a local model server (ollama/vllm/llamacpp — the aliases
+    that route through the OpenAI-compatible "custom" path) MUST dial the
+    attested loopback/private/link-local/tailnet endpoint. Regardless of which
+    resolution branch produced ``base_url`` — a ``providers.<name>`` custom
+    entry, the credential pool, an ``explicit_base_url``/``CUSTOM_BASE_URL``
+    override, config, or the OpenAI-compatible fallthrough — the FINAL endpoint
+    must pass :func:`engine_connection.endpoint_is_authorized`. Otherwise the run
+    would be mis-attributed to a cloud provider (WAVE-30D live-canary defect
+    ``t_2cf3c738`` and the reviewer's F1/F2 override/short-circuit paths): strip
+    the endpoint + credential so the caller surfaces "empty base URL" and fails
+    closed rather than dialing an unauthorised/cloud host.
+
+    lmstudio is excluded on purpose: ``resolve_provider("lmstudio")`` is the
+    ``lmstudio`` registry provider (not ``custom``), so it never routes through
+    the local ``custom`` path this invariant guards.
+    """
+    try:
+        req = (requested or "").strip().lower()
+        from youtab_agent_cli import engine_connection as _ec
+
+        if req not in _ec.LOCAL_SERVER_PROVIDERS:
+            return result
+        if resolve_provider(req) != "custom":
+            return result
+        base_url = (result or {}).get("base_url") or ""
+        if not base_url or not _ec.endpoint_is_authorized(base_url):
+            hardened = dict(result or {})
+            hardened["base_url"] = ""
+            hardened["api_key"] = ""
+            hardened["source"] = "local-binding-fail-closed"
+            return hardened
+    except Exception:
+        # Never let the guard itself crash resolution; a genuine problem still
+        # surfaces downstream (empty/invalid base_url fails closed there too).
+        pass
+    return result
+
+
 def resolve_runtime_provider(
     *,
     requested: Optional[str] = None,
@@ -1676,7 +1803,28 @@ def resolve_runtime_provider(
     api_mode is derived from the model they are switching TO, not the stale
     persisted default. Other callers can leave it None to preserve existing
     behavior (api_mode derived from config).
+
+    A final, path-independent invariant (:func:`_enforce_local_provider_binding`)
+    guarantees a local-server-bound run can only resolve an authorised local
+    endpoint — never a cloud default — no matter which internal branch produced
+    the result.
     """
+    result = _resolve_runtime_provider_impl(
+        requested=requested,
+        explicit_api_key=explicit_api_key,
+        explicit_base_url=explicit_base_url,
+        target_model=target_model,
+    )
+    return _enforce_local_provider_binding(requested, result)
+
+
+def _resolve_runtime_provider_impl(
+    *,
+    requested: Optional[str] = None,
+    explicit_api_key: Optional[str] = None,
+    explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
+) -> Dict[str, Any]:
     requested_provider = resolve_requested_provider(requested)
 
     # Honour ``providers.<name>.enabled: false`` for BOTH user-defined

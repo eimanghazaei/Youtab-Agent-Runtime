@@ -226,6 +226,29 @@ def _load_config_drain_auth_section() -> dict:
     return section if isinstance(section, dict) else {}
 
 
+def is_drain_enabled() -> bool:
+    """The authoritative drain enable/disable decision, shared by provider
+    registration and the ``gateway_drain`` handler guard so the two can never
+    disagree.
+
+    True iff a VALID drain secret is configured: present, non-empty, and strong
+    enough by the SAME entropy gate (:func:`assess_secret_strength`) and the SAME
+    ``min_secret_chars`` config the provider uses. Absent / empty / weak /
+    malformed → False (the drain surface is DISABLED and the handler must 503).
+    Reads the secret the same way the provider does
+    (``os.environ[YOUTAB_AGENT_DASHBOARD_DRAIN_SECRET]``) and NEVER returns or
+    logs the secret value — only the boolean decision."""
+    secret = os.environ.get("YOUTAB_AGENT_DASHBOARD_DRAIN_SECRET", "").strip()
+    if not secret:
+        return False
+    section = _load_config_drain_auth_section()
+    try:
+        min_chars = int(section.get("min_secret_chars", _DEFAULT_MIN_SECRET_CHARS))
+    except (TypeError, ValueError):
+        min_chars = _DEFAULT_MIN_SECRET_CHARS
+    return assess_secret_strength(secret, min_chars=min_chars) is None
+
+
 def register(ctx) -> None:
     """Plugin entry — registers DrainSecretProvider when a strong secret is set.
 
@@ -270,19 +293,40 @@ def register(ctx) -> None:
         logger.warning("dashboard-auth-drain: %s", LAST_SKIP_REASON)
         return
 
-    ctx.register_dashboard_auth_provider(provider)
-
-    # Opt the begin/cancel-drain endpoint into the generic token-auth seam so
-    # the dashboard's interactive cookie gate doesn't bounce NAS's bearer call.
+    # The token-auth seam is a hard dependency of the running dashboard. If it
+    # cannot even be imported, the drain endpoint stays DISABLED — the provider
+    # is never registered, so there is no partially-configured boundary
+    # (fail-closed by absence). This is the ONLY tolerated catch here.
     try:
-        from youtab_agent_cli.dashboard_auth.token_auth import register_token_route
-
-        register_token_route(DRAIN_ROUTE_PATH)
-    except Exception as exc:  # noqa: BLE001 — seam import must not crash plugin load
-        logger.warning(
-            "dashboard-auth-drain: could not register token route %s: %s",
-            DRAIN_ROUTE_PATH, exc,
+        from youtab_agent_cli.dashboard_auth.token_auth import (
+            register_token_route,
+            require_route_ownership,
         )
+    except Exception as exc:  # noqa: BLE001 — seam missing → endpoint disabled, no provider
+        LAST_SKIP_REASON = (
+            f"dashboard-auth token seam unavailable ({exc}); the drain endpoint "
+            "stays disabled (fail-closed, provider not registered)."
+        )
+        logger.warning("dashboard-auth-drain: %s", LAST_SKIP_REASON)
+        return
+
+    # Opt the begin/cancel-drain endpoint into the generic token-auth seam,
+    # bound to THIS provider only and requiring the ``drain`` scope.
+    #
+    # Fail-closed: DECLARE the ownership requirement BEFORE registering the
+    # provider or the route. If EITHER registration fails — including a failure
+    # the plugin loader swallows — the requirement stays unmet and the lifespan
+    # verification (verify_service_route_ownership) aborts startup before serving,
+    # rather than leaving /api/gateway/drain reachable through the interactive
+    # cookie gate. No broad log-and-continue: any error propagates.
+    require_route_ownership(
+        provider=provider.name, path=DRAIN_ROUTE_PATH,
+        is_prefix=False, capability=scope,
+    )
+    ctx.register_dashboard_auth_provider(provider)
+    register_token_route(
+        DRAIN_ROUTE_PATH, provider=provider.name, capability=scope
+    )
 
     logger.info(
         "dashboard-auth-drain: registered drain service-credential provider "

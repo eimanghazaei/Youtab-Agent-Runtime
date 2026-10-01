@@ -1331,6 +1331,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
+            ollama_keep_alive=getattr(agent, "_ollama_keep_alive", None),
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,
             openrouter_min_coding_score=agent.openrouter_min_coding_score,
@@ -1372,6 +1373,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         is_lmstudio=_is_lmstudio,
         is_custom_provider=agent.provider == "custom",
         ollama_num_ctx=agent._ollama_num_ctx,
+        ollama_keep_alive=getattr(agent, "_ollama_keep_alive", None),
         provider_preferences=_prefs or None,
         openrouter_min_coding_score=agent.openrouter_min_coding_score,
         qwen_prepare_fn=agent._qwen_prepare_chat_messages if _is_qwen else None,
@@ -1704,6 +1706,50 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    # WAVE-30H #3 / Batch2 #6: a managed run is bound to a sealed substrate (the
+    # effective binding validated at admission). Provider/model/base_url/client
+    # fallback would silently drift OFF that substrate with no signed rebind
+    # authorization — the signed rebind ACCEPT path is intentionally deferred, so ANY
+    # managed fallback must FAIL CLOSED here. Determine managed status at this
+    # AUTHORITY BOUNDARY fail-closed:
+    #   * a genuine sealed admitted context (a real AdmittedCommand — isinstance, so a
+    #     MagicMock test double's auto-created attribute is NOT a false positive), OR
+    #   * MANAGED trust mode (covers a pre-admitted worker whose fallback fires during
+    #     _init_agent, BEFORE _admitted_command is attached — finding #1's ordering).
+    # If trust-mode inspection RAISES, we cannot confirm the run is standalone: read
+    # the raw managed markers and, for any admitted/managed indication, fail closed
+    # (never assume standalone at this boundary). A genuine standalone run resolves
+    # trust mode without error and is unaffected.
+    _managed_authority = False
+    try:
+        from youtab_runtime import managed_execution as _mx
+
+        _real_admitted = isinstance(
+            getattr(agent, "_admitted_command", None), _mx.AdmittedCommand
+        )
+        try:
+            _managed_mode = _mx.current_trust_mode() is _mx.TrustMode.MANAGED
+        except Exception:  # noqa: BLE001 — trust mode indeterminate at this boundary
+            _raw = (os.environ.get("YOUTAB_RUNTIME_TRUST_MODE") or "").strip().lower()
+            _managed_mode = (
+                _real_admitted
+                or _raw == "managed"
+                or bool(os.environ.get("YOUTAB_AGENT_KANBAN_TASK"))
+            )
+        _managed_authority = _real_admitted or _managed_mode
+    except Exception:  # noqa: BLE001 — cannot import the authority module: fail closed
+        # Only block if there is ANY sign this is a managed run; a pure standalone
+        # process without managed markers keeps its fallback resilience.
+        _managed_authority = bool(os.environ.get("YOUTAB_AGENT_KANBAN_TASK")) or (
+            (os.environ.get("YOUTAB_RUNTIME_TRUST_MODE") or "").strip().lower()
+            == "managed"
+        )
+    if _managed_authority:
+        logger.error(
+            "managed run: provider fallback disabled (sealed substrate); refusing "
+            "to drift from the bound identity without a signed rebind authorization"
+        )
+        return False
     if reason in {FailoverReason.rate_limit, FailoverReason.billing, FailoverReason.upstream_rate_limit}:
         # Only start cooldown when leaving the primary provider.  If we're
         # already on a fallback and chain-switching, the primary wasn't the
@@ -1794,9 +1840,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if not fb_api_key_hint:
             # key_env and api_key_env are both documented aliases (see
             # _normalize_custom_provider_entry in youtab_agent_cli/config.py).
-            fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
-            if fb_key_env:
-                fb_api_key_hint = os.getenv(fb_key_env, "").strip() or None
+            # Provider-neutral <ENV>_FILE + api_key_file_env support (WAVE-30B §4).
+            from youtab_agent_cli import secret_file as _sf
+
+            fb_api_key_hint = (
+                _sf.read_named_key_file_env(
+                    (fb.get("api_key_file_env") or "").strip()
+                )
+                or ""
+            ).strip() or None
+            if not fb_api_key_hint:
+                fb_key_env = (fb.get("key_env") or fb.get("api_key_env") or "").strip()
+                if fb_key_env:
+                    fb_api_key_hint = (
+                        _sf.env_or_file(fb_key_env, "", require_secure_perms=True).strip()
+                        or None
+                    )
         # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
         # when no explicit key is in the fallback config. Host match
         # (not substring) — see GHSA-76xc-57q6-vm5m.
@@ -3054,6 +3113,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
             attempt_request_client["value"] = request_client
             last_chunk_time["t"] = time.time()
+            # WAVE-30E: remember when THIS attempt opened the stream so the first
+            # chunk can yield a real time-to-first-token (per successful attempt).
+            _diag["opened_at"] = last_chunk_time["t"]
             agent._touch_activity("waiting for provider response (streaming)")
             return request_client.chat.completions.create(**stream_kwargs)
 
@@ -3156,6 +3218,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
                 if _diag.get("first_chunk_at") is None:
                     _diag["first_chunk_at"] = last_chunk_time["t"]
+                    # WAVE-30E: real streaming time-to-first-token = first chunk
+                    # minus this attempt's stream-open. Stashed on the agent for
+                    # the per-call timing record; best-effort, never interrupts.
+                    try:
+                        _opened_at = _diag.get("opened_at")
+                        if _opened_at is not None:
+                            _ttft = last_chunk_time["t"] - _opened_at
+                            if _ttft >= 0:
+                                agent._last_ttft_s = _ttft
+                    except Exception:
+                        pass
                 # Approximate byte size from the chunk's delta payload —
                 # exact wire bytes aren't exposed by the SDK. A full
                 # repr() per chunk was 5.5-8.8 µs of pure CPU on the

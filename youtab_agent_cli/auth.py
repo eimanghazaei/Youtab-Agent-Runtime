@@ -1159,6 +1159,81 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
+def _atomic_secret_write(dest: Path, payload: str, *, fsync_dir: bool = False) -> Path:
+    """Atomically persist ``payload`` (a plaintext secret) to ``dest`` with no
+    permissive-creation window and fail-closed access control.
+
+    Three guarantees, all preserved regardless of platform:
+
+    * **Crash-atomicity** — the bytes are written to a sibling temp file,
+      fsync'd, then :func:`atomic_replace`'d onto ``dest``. A crash never leaves
+      ``dest`` half-written.
+    * **No exposure window** — the temp file is created via
+      :func:`windows_acl.secure_write_secret_file`, so on Windows it is *born*
+      with an owner-only *protected* DACL (current user + SYSTEM) BEFORE any
+      secret byte is written, and on POSIX it is created with ``O_EXCL`` at
+      ``0o600``. The secret therefore never exists on disk under the parent's
+      broad inherited DACL (Windows) or the process umask (POSIX). A rename
+      keeps the temp file's own explicit DACL, so ``dest`` lands protected.
+    * **Fail-closed** — on Windows, after the rename the owner-only DACL is
+      re-applied and *verified* on ``dest`` as belt-and-suspenders (this also
+      covers :func:`atomic_replace`'s rare cross-device copy fallback, which
+      would otherwise re-inherit the parent's broad DACL). If it cannot be
+      applied/verified — including because pywin32 is unavailable — ``dest`` is
+      unlinked and the error is raised: no plaintext is left behind. On POSIX
+      the destination is re-chmod'd to ``0o600``.
+
+    Returns the destination path on success.
+    """
+    from youtab_agent_cli import windows_acl
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = dest.with_name(f"{dest.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
+    try:
+        # Born owner-only (Windows: empty -> protected DACL -> verify -> write)
+        # / O_EXCL 0o600 (POSIX); fsync'd; itself fail-closed (removes residue
+        # and raises if it cannot protect the secret, e.g. pywin32 missing).
+        windows_acl.secure_write_secret_file(tmp_path, payload)
+        atomic_replace(tmp_path, dest)
+        if fsync_dir:
+            try:
+                dir_fd = os.open(str(dest.parent), os.O_RDONLY)
+            except OSError:
+                dir_fd = None
+            if dir_fd is not None:
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+    finally:
+        try:
+            if tmp_path.exists():
+                tmp_path.unlink()
+        except OSError:
+            pass
+
+    if os.name == "nt":
+        # Belt-and-suspenders: prove the finalized file is owner-only and fail
+        # closed (delete + raise) if not.
+        try:
+            windows_acl.apply_owner_only_dacl(dest)
+            if not windows_acl.verify_owner_only_dacl(dest):
+                raise OSError("owner-only DACL verification failed")
+        except OSError:
+            try:
+                dest.unlink()
+            except OSError:
+                pass
+            raise
+    else:
+        # Re-assert owner-only mode bits (umask can only have cleared bits).
+        try:
+            dest.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        except OSError:
+            pass
+    return dest
+
+
 def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = None) -> Path:
     # target_path=None preserves the existing contract (write the active
     # store at _auth_file_path()). An explicit path lets callers persist a
@@ -1174,43 +1249,12 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
     payload = json.dumps(auth_store, indent=2) + "\n"
-    tmp_path = auth_file.with_name(f"{auth_file.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-    try:
-        # Create with 0o600 atomically via os.open(O_EXCL) + fdopen to close
-        # the TOCTOU window where default umask (often 0o644) briefly exposed
-        # OAuth tokens to other local users between open() and chmod().
-        # Mirrors agent/google_oauth.py (#19673) and tools/mcp_oauth.py (#21148).
-        fd = os.open(
-            str(tmp_path),
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            stat.S_IRUSR | stat.S_IWUSR,
-        )
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        atomic_replace(tmp_path, auth_file)
-        try:
-            dir_fd = os.open(str(auth_file.parent), os.O_RDONLY)
-        except OSError:
-            dir_fd = None
-        if dir_fd is not None:
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-    # Restrict file permissions to owner only
-    try:
-        auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
-    except OSError:
-        pass
-    return auth_file
+    # WAVE-27 #7b: write via a temp file that is *born* owner-only so the OAuth
+    # tokens never exist on disk under the parent's broad inherited DACL
+    # (Windows) or the process umask (POSIX), then atomic-replace onto
+    # auth.json and prove the finalized DACL, failing closed. Preserves the
+    # previous crash-atomic O_EXCL/0o600 write + dir fsync + post-write DACL.
+    return _atomic_secret_write(auth_file, payload, fsync_dir=True)
 
 
 def _load_provider_state_with_source(
@@ -2495,30 +2539,12 @@ def _save_qwen_cli_tokens(tokens: Dict[str, Any]) -> Path:
     auth_path.parent.mkdir(parents=True, exist_ok=True)
     # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
     secure_parent_dir(auth_path)
-    # Per-process random temp suffix avoids collisions between concurrent
-    # writers and stale leftovers from a crashed prior write.
-    tmp_path = auth_path.with_name(f"{auth_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-    # Create with 0o600 atomically via os.open(O_EXCL) — closes the TOCTOU
-    # window where write_text() + post-write chmod briefly exposed tokens
-    # at process umask (typically 0o644). See #19673, #21148.
-    fd = os.open(
-        str(tmp_path),
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-        stat.S_IRUSR | stat.S_IWUSR,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps(tokens, indent=2, sort_keys=True) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        atomic_replace(tmp_path, auth_path)
-    finally:
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
-    return auth_path
+    # WAVE-27 #7b: write via a temp file that is *born* owner-only (Windows
+    # protected DACL / POSIX O_EXCL 0o600) so the Qwen OAuth tokens never exist
+    # on disk under the parent's broad inherited DACL / process umask, then
+    # atomic-replace and prove the finalized DACL, failing closed.
+    payload = json.dumps(tokens, indent=2, sort_keys=True) + "\n"
+    return _atomic_secret_write(auth_path, payload)
 
 
 def _qwen_access_token_is_expiring(expiry_date_ms: Any, skew_seconds: int = QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS) -> bool:
@@ -5266,27 +5292,15 @@ def _write_shared_youtab_state(state: Dict[str, Any]) -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
             # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
             secure_parent_dir(path)
-            tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
-            # Create with 0o600 atomically via os.open(O_EXCL) — closes the TOCTOU
-            # window where write_text() + post-write chmod briefly exposed Youtab
-            # refresh_token at process umask. See #19673, #21148.
-            fd = os.open(
-                str(tmp),
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                stat.S_IRUSR | stat.S_IWUSR,
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(json.dumps(shared, indent=2, sort_keys=True))
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(tmp, path)
-            finally:
-                try:
-                    if tmp.exists():
-                        tmp.unlink()
-                except OSError:
-                    pass
+            # WAVE-27 #7b: write via a temp file that is *born* owner-only so the
+            # Youtab refresh_token never exists on disk under the parent's broad
+            # inherited DACL / process umask, then atomic-replace and prove the
+            # finalized DACL, failing closed. (The write is best-effort
+            # convenience; per-profile auth.json is the source of truth, so a
+            # fail-closed raise here — after the residue is removed — is safely
+            # swallowed by the outer handler below.)
+            payload = json.dumps(shared, indent=2, sort_keys=True)
+            _atomic_secret_write(path, payload)
         _oauth_trace(
             "youtab_shared_store_written",
             path=str(path),

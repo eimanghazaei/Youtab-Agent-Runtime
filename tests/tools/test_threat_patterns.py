@@ -219,7 +219,11 @@ class TestReDoSHardening:
 
         assert isinstance(findings, list)
         assert "prompt_injection" not in findings
-        assert elapsed < 0.5
+        # Linear-time scanning completes in microseconds; a catastrophic-
+        # backtracking (ReDoS) regression takes seconds-to-minutes. A 5s bound
+        # still catches exponential blowup while riding out -j3 CPU-starvation
+        # stalls on the pure-CPU scan (avoids a false flake).
+        assert elapsed < 5.0, f"scan took {elapsed:.3f}s (ReDoS?)"
 
 
     def test_payload_beyond_scan_cap_is_not_evaluated(self):

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 import pytest
+from tests import _wincompat
 
 from tools.file_operations import _is_write_denied
 
@@ -247,6 +248,7 @@ class TestAtomicWrite:
         assert [p for p in os.listdir(tmp_path) if ".youtab-agent-runtime-tmp" in p] == []
 
 
+    @_wincompat.requires_posix_permissions
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")

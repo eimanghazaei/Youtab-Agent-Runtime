@@ -11,10 +11,22 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tests import _wincompat
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _managed_uv(home: Path) -> Path:
+    """Platform-correct managed uv path under *home* (``uv.exe`` on Windows).
+
+    Mirrors ``youtab_agent_cli.managed_uv.managed_uv_path()`` so fixtures place
+    the fake binary exactly where ``resolve_uv()`` looks for it.
+    """
+    name = "uv.exe" if os.name == "nt" else "uv"
+    return home / "bin" / name
+
 
 def _make_executable(path: Path) -> None:
     """Create a minimal fake uv binary at *path*."""
@@ -88,11 +100,12 @@ class TestManagedUvPath:
 class TestResolveUv:
 
     def test_existing_executable(self, tmp_path):
-        _make_executable(tmp_path / "bin" / "uv")
+        uv = _managed_uv(tmp_path)
+        _make_executable(uv)
         with patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path):
             from youtab_agent_cli.managed_uv import resolve_uv
             result = resolve_uv()
-            assert result == str(tmp_path / "bin" / "uv")
+            assert result == str(uv)
 
     def test_non_executable_file_returns_none(self, tmp_path):
         uv = tmp_path / "bin" / "uv"
@@ -114,15 +127,20 @@ class TestEnsureUv:
     def test_installs_if_missing(self, tmp_path):
         with patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
              patch("youtab_agent_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
+             patch(
+                 "youtab_agent_cli.managed_uv.subprocess.run",
+                 return_value=SimpleNamespace(returncode=0, stdout="uv 0.1.2", stderr=""),
+             ), \
              patch("youtab_agent_cli.managed_uv._install_uv") as mock_install:
-            # Simulate the installer creating the binary
+            # Simulate the installer creating the binary. The `--version` probe
+            # is mocked so no real (non-Win32) fake binary is ever exec'd.
             def fake_install(target):
                 _make_executable(target)
             mock_install.side_effect = fake_install
 
             from youtab_agent_cli.managed_uv import ensure_uv
             path = ensure_uv()
-            assert path == str(tmp_path / "bin" / "uv")
+            assert path == str(_managed_uv(tmp_path))
             mock_install.assert_called_once()
 
     def test_install_reports_runtime_repair_to_observer(self, tmp_path):
@@ -148,12 +166,15 @@ class TestEnsureUv:
             "youtab_agent_cli.managed_uv._install_uv",
             side_effect=fake_install,
         ), patch(
+            "youtab_agent_cli.managed_uv.subprocess.run",
+            return_value=SimpleNamespace(returncode=0, stdout="uv 0.1.2", stderr=""),
+        ), patch(
             "youtab_agent_cli.managed_uv.repair_vulnerable_runtime",
             return_value=repair,
         ):
             path = ensure_uv(repair_observer=observed.append)
 
-        assert path == str(tmp_path / "bin" / "uv")
+        assert path == str(_managed_uv(tmp_path))
         assert observed == [repair]
 
 
@@ -260,15 +281,20 @@ class TestUpdateManagedUv:
         vulnerable-runtime repair probe still runs (CVE repair is never gated)."""
         from youtab_agent_cli.managed_uv import RuntimeRepairResult, update_managed_uv
 
-        uv = tmp_path / "bin" / "uv"
+        uv = _managed_uv(tmp_path)
         _make_executable(uv)
-        # Fresh stamp under the isolated YOUTAB_AGENT_HOME.
-        import youtab_constants
-        stamp = youtab_constants.get_youtab_home() / "cache" / ".uv_self_update_stamp"
+        # Isolate the stamp fully under tmp_path. The stamp is written AND read via
+        # the getter that production actually uses for it: `_uv_self_update_is_fresh`
+        # and `_touch_uv_self_update_stamp` re-import `youtab_constants.get_youtab_home`
+        # at call time, so that getter — not `managed_uv.get_youtab_home` — must be
+        # patched, otherwise the freshness check inspects (and the test writes to) the
+        # real user home and the result becomes environment-dependent.
+        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
 
-        with patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
+        with patch("youtab_constants.get_youtab_home", return_value=tmp_path), \
+             patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
              patch("youtab_agent_cli.managed_uv.subprocess.run") as mock_run, \
              patch(
                  "youtab_agent_cli.managed_uv.repair_vulnerable_runtime",
@@ -287,16 +313,19 @@ class TestUpdateManagedUv:
 
         from youtab_agent_cli.managed_uv import UV_SELF_UPDATE_INTERVAL_SECONDS, update_managed_uv
 
-        uv = tmp_path / "bin" / "uv"
+        uv = _managed_uv(tmp_path)
         _make_executable(uv)
-        import youtab_constants
-        stamp = youtab_constants.get_youtab_home() / "cache" / ".uv_self_update_stamp"
+        # Isolate the stamp under tmp_path via the getter production actually uses
+        # for it (re-imported from youtab_constants at call time); never touch the
+        # real user home.
+        stamp = tmp_path / "cache" / ".uv_self_update_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
         old = _time.time() - UV_SELF_UPDATE_INTERVAL_SECONDS - 60
         _os.utime(stamp, (old, old))
 
-        with patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
+        with patch("youtab_constants.get_youtab_home", return_value=tmp_path), \
+             patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
              patch("youtab_agent_cli.managed_uv.repair_vulnerable_runtime", return_value=_RRR("not-applicable")), \
              patch("youtab_agent_cli.managed_uv.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="uv 0.2.0")
@@ -561,7 +590,11 @@ class TestRuntimeCutover:
 # ---------------------------------------------------------------------------
 
 class TestInstallUvInternals:
+    @_wincompat.requires_posix
     def test_posix_sets_uv_unmanaged_install(self, tmp_path):
+        # POSIX-specific: on the real platform _install_uv dispatches by
+        # platform.system(); on Windows it takes the Windows branch instead
+        # (see the paired test_windows_uses_windows_installer below).
         target = tmp_path / "bin" / "uv"
         with patch("youtab_agent_cli.managed_uv._install_uv_posix") as mock_posix:
             from youtab_agent_cli.managed_uv import _install_uv
@@ -569,6 +602,21 @@ class TestInstallUvInternals:
             mock_posix.assert_called_once()
             call_env = mock_posix.call_args[0][0]
             assert call_env["UV_UNMANAGED_INSTALL"] == str(tmp_path / "bin")
+
+    def test_windows_uses_windows_installer(self, tmp_path):
+        """Paired Windows behaviour: on Windows ``_install_uv`` must dispatch to
+        the Windows installer branch and never the POSIX one, with the install
+        dir pointed at the managed ``bin`` via ``UV_INSTALL_DIR``."""
+        target = tmp_path / "bin" / "uv.exe"
+        with patch("youtab_agent_cli.managed_uv.platform.system", return_value="Windows"), \
+             patch("youtab_agent_cli.managed_uv._install_uv_windows") as mock_win, \
+             patch("youtab_agent_cli.managed_uv._install_uv_posix") as mock_posix:
+            from youtab_agent_cli.managed_uv import _install_uv
+            _install_uv(target)
+            mock_win.assert_called_once()
+            mock_posix.assert_not_called()
+            call_env = mock_win.call_args[0][0]
+            assert call_env["UV_INSTALL_DIR"] == str(tmp_path / "bin")
 
 
 class TestRuntimeRequestMinorLine:
@@ -955,9 +1003,14 @@ class TestDefaultLiveVenv:
         root.mkdir()
         (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
         for d in dirs:
-            bin_dir = root / d / "bin"
-            bin_dir.mkdir(parents=True)
-            (bin_dir / "python").write_text("py", encoding="utf-8")
+            # Mirror production _venv_python(): Windows uses Scripts/python.exe,
+            # POSIX uses bin/python. Not-patched here, so use the real platform.
+            if os.name == "nt":
+                interp = root / d / "Scripts" / "python.exe"
+            else:
+                interp = root / d / "bin" / "python"
+            interp.parent.mkdir(parents=True)
+            interp.write_text("py", encoding="utf-8")
         return root
 
     def test_dot_venv_only_is_targeted(self, tmp_path):

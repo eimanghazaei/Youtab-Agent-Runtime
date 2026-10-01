@@ -12,10 +12,12 @@ import sys
 from unittest.mock import patch
 
 import pytest
+from tests import _wincompat
 
 from tools.environments.local import _find_bash, _find_shell
 
 
+@_wincompat.requires_posix
 class TestFindShellPrefersUserShell:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 

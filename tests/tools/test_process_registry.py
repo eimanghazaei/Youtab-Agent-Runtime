@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import pytest
+from tests import _wincompat
 from unittest.mock import MagicMock, patch
 
 from tools.environments.local import _YOUTAB_AGENT_PROVIDER_ENV_FORCE_PREFIX
@@ -263,8 +264,18 @@ class TestOrphanedPipeReconciliation:
         except (ProcessLookupError, PermissionError):
             pass
 
-    def test_wait_wakes_when_session_moves_to_finished(self, registry):
-        """wait() should not sleep for the old 1s polling tick after exit."""
+    def test_wait_wakes_when_session_moves_to_finished(self, registry, monkeypatch):
+        """wait() wakes on the completion Event, not a poll tick.
+
+        Raise the poll fallback to 10s so the signal is unambiguous and immune
+        to -j3 scheduler jitter: a correct event-driven wake returns in ~0.05s
+        (well under the 3s bound), whereas a regression that fell back to polling
+        would take ~10s and fail. (Widening the bound alone would let a poll-
+        fallback regression slip through, so we lengthen the poll instead.)
+        """
+        import tools.process_registry as _pr
+        monkeypatch.setattr(_pr, "WAIT_POLL_INTERVAL_SECONDS", 10.0)
+
         s = _make_session(sid="proc_wait_event", output="done")
         registry._running[s.id] = s
 
@@ -279,14 +290,17 @@ class TestOrphanedPipeReconciliation:
         t.start()
         start = time.monotonic()
         try:
-            result = registry.wait(s.id, timeout=5)
+            result = registry.wait(s.id, timeout=30)
         finally:
-            t.join(timeout=1)
+            t.join(timeout=5)
         elapsed = time.monotonic() - start
 
         assert result["status"] == "exited", result
         assert result["exit_code"] == 0
-        assert elapsed < 0.9  # must stay under the old 1s poll tick being regression-tested, f"wait() should wake on completion; took {elapsed:.3f}s"
+        assert elapsed < 3.0, (
+            f"wait() should wake on the completion event (~0.05s); took "
+            f"{elapsed:.3f}s — a regression to the {10.0}s poll fallback"
+        )
 
 
 # =========================================================================
@@ -326,6 +340,7 @@ class TestStdinHelpers:
         proc.stdin.close.assert_called_once()
         assert result["status"] == "ok"
 
+    @_wincompat.requires_posix
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 
@@ -480,6 +495,10 @@ class TestSpawnEnvSanitization:
         with patch.dict(os.environ, {
             "PATH": "/usr/bin:/bin",
             "HOME": "/home/user",
+            # USERPROFILE is the Windows home var; sanitization keeps it (it is
+            # not a blocked token), so a realistic cleared env must still carry
+            # it — otherwise Path.home() raises on Windows where HOME is unused.
+            "USERPROFILE": r"C:\Users\tester",
             "USER": "tester",
             "TELEGRAM_BOT_TOKEN": "bot-secret",
             "FIRECRAWL_API_KEY": "fc-secret",
@@ -570,6 +589,7 @@ class TestSpawnEnvSanitization:
 class TestPopenLeakOnSetupFailure:
     """Regression for issue #2749: subprocess orphaned when post-Popen setup raises."""
 
+    @_wincompat.requires_os_attr("getpgid")
     def test_popen_killed_when_thread_creation_fails(self, registry):
         """If Thread() raises after Popen, proc must be killed — not orphaned."""
         killed = []
@@ -750,6 +770,7 @@ class TestKillProcess:
         assert result["status"] == "already_exited"
 
 
+    @_wincompat.requires_posix
     def test_kill_detached_session_uses_host_pid(self, registry):
         s = _make_session(sid="proc_detached", command="sleep 999")
         s.pid = 424242

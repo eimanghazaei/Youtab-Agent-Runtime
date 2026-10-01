@@ -1,0 +1,387 @@
+{
+  "config": "cold",
+  "reps": 5,
+  "runs": [
+    {
+      "tag": "cold-1",
+      "t_wall_start": 1788957372.7383385,
+      "grant_root_run_id": "run-26c737272e03",
+      "grant_nonce": "grant-509fa9a4c2184b1f96f738f1ef73305d71207f05",
+      "create_status": 200,
+      "create_ms": 1454.0,
+      "run_id": "t_e54c79cc",
+      "terminal": true,
+      "status": "completed",
+      "e2e_ms": 209188.0,
+      "event_first_offset_s": {
+        "created": 1.469,
+        "runtime_execution_mode": 1.469,
+        "runtime_engine_selection": 1.469,
+        "runtime_limits": 1.469,
+        "runtime_execution_grant": 1.469,
+        "runtime_capability_manifest": 1.469,
+        "claimed": 1.469,
+        "spawned": 1.469,
+        "heartbeat": 8.688,
+        "completed": 209.188
+      },
+      "kind_counts": {
+        "claimed": 1,
+        "completed": 1,
+        "created": 1,
+        "heartbeat": 4,
+        "runtime_capability_manifest": 1,
+        "runtime_engine_selection": 1,
+        "runtime_execution_grant": 1,
+        "runtime_execution_mode": 1,
+        "runtime_limits": 1,
+        "spawned": 1
+      },
+      "pids": [
+        41848
+      ],
+      "t_wall_end": 1788957581.9245095,
+      "stages": {
+        "queue_wait_ms": 429.1,
+        "worker_startup_ms": 2690.2,
+        "prompt_construct_ms": 515.0,
+        "model_call_ms": [
+          163567.3,
+          36525.4
+        ],
+        "model_call_cold": [
+          true,
+          false
+        ],
+        "model_ttft_ms": [
+          158173.0,
+          36443.5
+        ],
+        "tool_call_ms": [
+          0.0
+        ],
+        "tool_names": [
+          "kanban_show"
+        ],
+        "n_model_calls": 2,
+        "generation_ms": [
+          5394.3,
+          81.9
+        ]
+      }
+    },
+    {
+      "tag": "cold-2",
+      "t_wall_start": 1788957581.927072,
+      "grant_root_run_id": "run-9c7e66c46e4d",
+      "grant_nonce": "grant-8efeeea98a954c9fba72e0d121248fb7402ab4fc",
+      "create_status": 200,
+      "create_ms": 891.0,
+      "run_id": "t_0fc409ae",
+      "terminal": false,
+      "status": "timeout",
+      "e2e_ms": 420937.0,
+      "event_first_offset_s": {
+        "created": 0.891,
+        "runtime_execution_mode": 0.891,
+        "runtime_engine_selection": 0.891,
+        "runtime_limits": 0.891,
+        "runtime_execution_grant": 0.891,
+        "runtime_capability_manifest": 0.891,
+        "claimed": 0.891,
+        "spawned": 0.891,
+        "heartbeat": 8.391
+      },
+      "kind_counts": {
+        "claimed": 1,
+        "created": 1,
+        "heartbeat": 7,
+        "runtime_capability_manifest": 1,
+        "runtime_engine_selection": 1,
+        "runtime_execution_grant": 1,
+        "runtime_execution_mode": 1,
+        "runtime_limits": 1,
+        "spawned": 1
+      },
+      "pids": [
+        55284
+      ],
+      "t_wall_end": 1788958002.8597078,
+      "stages": {
+        "queue_wait_ms": 128.1,
+        "worker_startup_ms": 2751.7,
+        "prompt_construct_ms": 1203.0,
+        "model_call_ms": [
+          188358.7
+        ],
+        "model_call_cold": [
+          true
+        ],
+        "model_ttft_ms": [
+          182012.4
+        ],
+        "tool_call_ms": [
+          15.0
+        ],
+        "tool_names": [
+          "kanban_show"
+        ],
+        "n_model_calls": 1,
+        "generation_ms": [
+          6346.3
+        ]
+      }
+    },
+    {
+      "tag": "cold-3",
+      "t_wall_start": 1788958002.8617127,
+      "grant_root_run_id": "run-a41b553b0aa0",
+      "grant_nonce": "grant-862f6cfc578a424bbaef4900e561b377be67613c",
+      "create_status": 200,
+      "create_ms": 813.0,
+      "run_id": "t_f68b4dfa",
+      "terminal": false,
+      "status": "timeout",
+      "e2e_ms": 420985.0,
+      "event_first_offset_s": {
+        "created": 0.829,
+        "runtime_execution_mode": 0.829,
+        "runtime_engine_selection": 0.829,
+        "runtime_limits": 0.829,
+        "runtime_execution_grant": 0.829,
+        "runtime_capability_manifest": 0.829,
+        "claimed": 0.829,
+        "spawned": 0.829,
+        "heartbeat": 9.469
+      },
+      "kind_counts": {
+        "claimed": 1,
+        "created": 1,
+        "heartbeat": 7,
+        "runtime_capability_manifest": 1,
+        "runtime_engine_selection": 1,
+        "runtime_execution_grant": 1,
+        "runtime_execution_mode": 1,
+        "runtime_limits": 1,
+        "spawned": 1
+      },
+      "pids": [
+        56920
+      ],
+      "t_wall_end": 1788958423.841888,
+      "stages": {
+        "queue_wait_ms": 135.9,
+        "worker_startup_ms": 3565.2,
+        "prompt_construct_ms": 547.0,
+        "model_call_ms": [
+          311304.8
+        ],
+        "model_call_cold": [
+          true
+        ],
+        "model_ttft_ms": [
+          307338.8
+        ],
+        "tool_call_ms": [
+          0.0
+        ],
+        "tool_names": [
+          "kanban_show"
+        ],
+        "n_model_calls": 1,
+        "generation_ms": [
+          3966.0
+        ]
+      }
+    },
+    {
+      "tag": "cold-4",
+      "t_wall_start": 1788958423.844417,
+      "grant_root_run_id": "run-ca44afe19215",
+      "grant_nonce": "grant-680a8d13ea944c76b36ca7fe443bfd9402fa5be9",
+      "create_status": 200,
+      "create_ms": 844.0,
+      "run_id": "t_6bb7e345",
+      "terminal": false,
+      "status": "timeout",
+      "e2e_ms": 420953.0,
+      "event_first_offset_s": {
+        "created": 0.859,
+        "runtime_execution_mode": 0.859,
+        "runtime_engine_selection": 0.859,
+        "runtime_limits": 0.859,
+        "runtime_execution_grant": 0.859,
+        "runtime_capability_manifest": 0.859,
+        "claimed": 0.859,
+        "spawned": 0.859,
+        "heartbeat": 9.406
+      },
+      "kind_counts": {
+        "claimed": 1,
+        "created": 1,
+        "heartbeat": 7,
+        "runtime_capability_manifest": 1,
+        "runtime_engine_selection": 1,
+        "runtime_execution_grant": 1,
+        "runtime_execution_mode": 1,
+        "runtime_limits": 1,
+        "spawned": 1
+      },
+      "pids": [
+        52108
+      ],
+      "t_wall_end": 1788958844.7981598,
+      "stages": {
+        "queue_wait_ms": 136.0,
+        "worker_startup_ms": 3602.7,
+        "prompt_construct_ms": 281.0,
+        "model_call_ms": [],
+        "model_call_cold": [],
+        "model_ttft_ms": [],
+        "tool_call_ms": [],
+        "tool_names": [],
+        "n_model_calls": 0,
+        "generation_ms": []
+      }
+    },
+    {
+      "tag": "cold-5",
+      "t_wall_start": 1788958844.8002224,
+      "grant_root_run_id": "run-a7cccc875bc2",
+      "grant_nonce": "grant-7531628bfbbb4d4197955f189c164d7b7270d7a2",
+      "create_status": 200,
+      "create_ms": 875.0,
+      "run_id": "t_9a673dd3",
+      "terminal": false,
+      "status": "timeout",
+      "e2e_ms": 421062.0,
+      "event_first_offset_s": {
+        "created": 0.875,
+        "runtime_execution_mode": 0.875,
+        "runtime_engine_selection": 0.875,
+        "runtime_limits": 0.875,
+        "runtime_execution_grant": 0.875,
+        "runtime_capability_manifest": 0.875,
+        "claimed": 0.875,
+        "spawned": 0.875,
+        "heartbeat": 9.453
+      },
+      "kind_counts": {
+        "claimed": 1,
+        "created": 1,
+        "heartbeat": 7,
+        "runtime_capability_manifest": 1,
+        "runtime_engine_selection": 1,
+        "runtime_execution_grant": 1,
+        "runtime_execution_mode": 1,
+        "runtime_limits": 1,
+        "spawned": 1
+      },
+      "pids": [
+        47236
+      ],
+      "t_wall_end": 1788959265.8620114,
+      "stages": {
+        "queue_wait_ms": 138.5,
+        "worker_startup_ms": 4023.3,
+        "prompt_construct_ms": 468.0,
+        "model_call_ms": [],
+        "model_call_cold": [],
+        "model_ttft_ms": [],
+        "tool_call_ms": [],
+        "tool_names": [],
+        "n_model_calls": 0,
+        "generation_ms": []
+      }
+    }
+  ],
+  "pool_proof": null,
+  "aggregate": {
+    "reps": 5,
+    "completed": 1,
+    "failed_or_timeout": 4,
+    "e2e_ms": {
+      "n": 1,
+      "raw": [
+        209188.0
+      ],
+      "p50": 209188.0,
+      "p95": 209188.0
+    },
+    "worker_startup_ms": {
+      "n": 1,
+      "raw": [
+        2690.2
+      ],
+      "p50": 2690.2,
+      "p95": 2690.2
+    },
+    "queue_wait_ms": {
+      "n": 1,
+      "raw": [
+        429.1
+      ],
+      "p50": 429.1,
+      "p95": 429.1
+    },
+    "prompt_construct_ms": {
+      "n": 1,
+      "raw": [
+        515.0
+      ],
+      "p50": 515.0,
+      "p95": 515.0
+    },
+    "model_ttft_ms": {
+      "n": 2,
+      "raw": [
+        158173.0,
+        36443.5
+      ],
+      "p50": 97308.2,
+      "p95": 152086.5
+    },
+    "model_call_ms": {
+      "n": 2,
+      "raw": [
+        163567.3,
+        36525.4
+      ],
+      "p50": 100046.3,
+      "p95": 157215.2
+    },
+    "model_call_cold_ms": {
+      "n": 1,
+      "raw": [
+        163567.3
+      ],
+      "p50": 163567.3,
+      "p95": 163567.3
+    },
+    "model_call_warm_ms": {
+      "n": 1,
+      "raw": [
+        36525.4
+      ],
+      "p50": 36525.4,
+      "p95": 36525.4
+    },
+    "generation_ms": {
+      "n": 2,
+      "raw": [
+        5394.3,
+        81.9
+      ],
+      "p50": 2738.1,
+      "p95": 5128.7
+    },
+    "tool_call_ms": {
+      "n": 1,
+      "raw": [
+        0.0
+      ],
+      "p50": 0.0,
+      "p95": 0.0
+    }
+  }
+}

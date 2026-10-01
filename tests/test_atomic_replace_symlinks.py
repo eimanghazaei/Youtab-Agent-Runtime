@@ -33,6 +33,15 @@ from utils import (
     atomic_yaml_write,
 )
 
+# Symlink *creation* needs SeCreateSymbolicLinkPrivilege on Windows (WinError
+# 1314 without it), so tests that build a symlink in setup are gated on the
+# capability — never a blanket platform skip. The symlink-preservation feature
+# they cover is inherently symlink-dependent; the Windows-inclusive counterpart
+# (atomic_replace works correctly on a *regular* file) is proven on every
+# platform by ``test_atomic_replace_regular_file`` and
+# ``test_atomic_replace_accepts_pathlike_and_str`` below.
+from tests._wincompat import requires_symlink
+
 
 # ─── Direct helper ────────────────────────────────────────────────────────────
 
@@ -43,6 +52,7 @@ def _write_tmp(dir_: Path, content: str) -> Path:
     return tmp
 
 
+@requires_symlink
 def test_atomic_replace_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
@@ -91,6 +101,7 @@ def test_atomic_replace_accepts_pathlike_and_str(tmp_path: Path) -> None:
 # ─── atomic_json_write / atomic_yaml_write wiring ──────────────────────────
 
 
+@requires_symlink
 def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.json"
     link = tmp_path / "link.json"
@@ -104,6 +115,7 @@ def test_atomic_json_write_preserves_symlink(tmp_path: Path) -> None:
     assert loaded == {"hello": "world"}
 
 
+@requires_symlink
 def test_atomic_yaml_write_preserves_symlink(tmp_path: Path) -> None:
     real = tmp_path / "real.yaml"
     link = tmp_path / "link.yaml"
@@ -171,6 +183,7 @@ def test_atomic_yaml_write_restores_owner_on_real_symlink_target(
 # ─── Broken-symlink edge case ─────────────────────────────────────────────
 
 
+@requires_symlink
 def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     """A symlink pointing at a missing file: the write should create the
     real target (resolving via realpath) rather than leaving the dangling
@@ -195,6 +208,7 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
 
 
 
+@requires_symlink
 def test_atomic_replace_copy_fallback_preserves_symlink(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

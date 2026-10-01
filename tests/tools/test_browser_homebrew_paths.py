@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
+from tests import _wincompat
 
 from tools.browser_tool import (
     _discover_homebrew_node_dirs,
@@ -185,6 +186,7 @@ class TestRunBrowserCommandPathConstruction:
         ]
 
 
+    @_wincompat.requires_posix
     def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
         """Termux fallback dirs should survive browser PATH rebuilding."""
         captured_env = {}

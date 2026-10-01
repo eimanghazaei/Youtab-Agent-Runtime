@@ -28,6 +28,48 @@ import time
 import uuid
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
+
+# WAVE-30F: anchor the process-lifetime phase clock early in the agent-stack
+# import so the per-run worker's startup phases (agent construction → first model
+# send) can be attributed at an authorized canary. The head slice (process start +
+# heavy imports, before this point) is derived from the dispatcher's timestamped
+# "spawned" journal event. Fail-soft: lifecycle observability must never break the
+# cold-start path.
+try:  # pragma: no cover - trivial import guard
+    from youtab_runtime.phase_timing import mark as _phase_mark
+    _phase_mark("agent_stack_imported")
+except Exception:  # pragma: no cover - defensive
+    def _phase_mark(_name: str) -> None:
+        return None
+
+# WAVE-30H R8: causally-valid per-stage latency spans. Self-noops when tracing is
+# off (default) or unavailable — instrumenting agent construction must never break
+# or slow the cold-start path it measures.
+try:  # pragma: no cover - observability import guard
+    # NB: aliased _st_mod (not _st) — init_agent already binds a LOCAL `_st`
+    # (session title), which would otherwise shadow a module global named _st.
+    from youtab_runtime import stage_trace as _st_mod
+except Exception:  # pragma: no cover - defensive
+    _st_mod = None  # type: ignore[assignment]
+
+
+def _stage_span(stage_attr: str, **attrs: Any):
+    """A stage_trace span that self-noops when tracing is disabled/unavailable.
+
+    ``stage_attr`` is the NAME of a :class:`stage_trace.Stage` constant (e.g.
+    ``"TOOLS_DISCOVER"``) so the canonical value stays single-sourced; when
+    tracing is unavailable the constant is never dereferenced.
+    """
+    from contextlib import nullcontext
+
+    if _st_mod is None:
+        return nullcontext({})
+    try:
+        return _st_mod.span(getattr(_st_mod.Stage, stage_attr), **attrs)
+    except Exception:  # pragma: no cover - defensive; never break construction
+        return nullcontext({})
+
+
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 from agent.context_compressor import ContextCompressor
@@ -568,6 +610,7 @@ def init_agent(
             remain skipped.
     """
     _install_safe_stdio()
+    _phase_mark("agent_init_start")  # WAVE-30F lifecycle phase marker (fail-soft)
 
     agent.model = model
     agent.max_iterations = max_iterations
@@ -983,6 +1026,13 @@ def init_agent(
     # Claude uses its own timeout path and is not covered here.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
+    # WAVE-30H R8: measure engine/provider resolution + client construction as one
+    # causally-bounded stage (engine.resolve). Boundary = from here through the end
+    # of the per-provider client-build if/elif below. Monotonic (intra-process).
+    # This is distinct from model.init (server-side native load_duration, emitted by
+    # run_observer) — do not conflate the two.
+    _engine_resolve_t0 = time.monotonic_ns() if _st_mod is not None else None
+
     if agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
@@ -1223,9 +1273,24 @@ def init_agent(
                     for _fb in _fb_entries:
                         _fb_explicit_key = (_fb.get("api_key") or "").strip() or None
                         if not _fb_explicit_key:
-                            _fb_key_env = (_fb.get("key_env") or _fb.get("api_key_env") or "").strip()
-                            if _fb_key_env:
-                                _fb_explicit_key = os.getenv(_fb_key_env, "").strip() or None
+                            # Provider-neutral <ENV>_FILE + api_key_file_env (WAVE-30B §4).
+                            from youtab_agent_cli import secret_file as _sf
+
+                            _fb_explicit_key = (
+                                _sf.read_named_key_file_env(
+                                    (_fb.get("api_key_file_env") or "").strip()
+                                )
+                                or ""
+                            ).strip() or None
+                            if not _fb_explicit_key:
+                                _fb_key_env = (_fb.get("key_env") or _fb.get("api_key_env") or "").strip()
+                                if _fb_key_env:
+                                    _fb_explicit_key = (
+                                        _sf.env_or_file(
+                                            _fb_key_env, "", require_secure_perms=True
+                                        ).strip()
+                                        or None
+                                    )
                         _fb_client, _fb_model = resolve_provider_client(
                             _fb["provider"], model=_fb["model"], raw_codex=True,
                             explicit_base_url=_fb.get("base_url"),
@@ -1347,6 +1412,17 @@ def init_agent(
         except Exception as e:
             raise RuntimeError(f"Failed to initialize OpenAI client: {e}")
 
+    if _st_mod is not None and _engine_resolve_t0 is not None:
+        try:
+            _st_mod.record(
+                _st_mod.Stage.ENGINE_RESOLVE,
+                duration_ns=time.monotonic_ns() - _engine_resolve_t0,
+                provider=(agent.provider or None),
+                model_id=(agent.model or None),
+            )
+        except Exception:  # pragma: no cover - observability never breaks init
+            pass
+
     # Keep a stable identity for the pool entry that supplied this runtime.
     # OAuth refreshes can replace the runtime token before a failed request is
     # recovered, so the mutable API-key value alone cannot reliably attribute
@@ -1382,16 +1458,22 @@ def init_agent(
     # Get available tools with filtering. Capture the registry generation this
     # snapshot is derived from FIRST, so a later concurrent refresh can tell
     # whether it holds a newer or staler view (see refresh_agent_mcp_tools).
-    try:
-        from tools.registry import registry as _snapshot_registry
-        agent._tool_snapshot_generation = _snapshot_registry._generation
-    except Exception:
-        agent._tool_snapshot_generation = 0
-    agent.tools = _ra().get_tool_definitions(
-        enabled_toolsets=enabled_toolsets,
-        disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
-    )
+    with _stage_span("TOOLS_DISCOVER"):
+        try:
+            from tools.registry import registry as _snapshot_registry
+            agent._tool_snapshot_generation = _snapshot_registry._generation
+        except Exception:
+            agent._tool_snapshot_generation = 0
+    with _stage_span("TOOLS_SCHEMA_LOAD") as _box_schema:
+        agent.tools = _ra().get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=agent.quiet_mode,
+        )
+        try:
+            _box_schema["tool_count"] = len(agent.tools or [])
+        except Exception:  # pragma: no cover - attr set must never break init
+            pass
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()
@@ -2605,6 +2687,18 @@ def init_agent(
             "Ollama num_ctx: will request %d tokens (model max from /api/show)",
             agent._ollama_num_ctx,
         )
+
+    # WAVE-30E: optional Ollama keep_alive (config ``model.ollama_keep_alive``).
+    # A duration string ("30m", "-1" for indefinite) or number of seconds sent
+    # per request so the ECO model stays resident between interactive runs,
+    # keeping the ~26s cold-load off the WARM critical path. Left unset by default
+    # (Ollama's own server default applies), so this changes nothing unless the
+    # operator opts in — and it is a WARM-path optimization only: cold-start
+    # performance is measured and reported separately, never masked by it.
+    agent._ollama_keep_alive = None
+    _keep_alive_cfg = _model_cfg.get("ollama_keep_alive") if isinstance(_model_cfg, dict) else None
+    if _keep_alive_cfg is not None and str(_keep_alive_cfg).strip() != "":
+        agent._ollama_keep_alive = str(_keep_alive_cfg).strip()
 
     # Codex gpt-5.x autoraise notice: show at most once per profile/config
     # state. Without the persisted marker the notice re-fires on every agent

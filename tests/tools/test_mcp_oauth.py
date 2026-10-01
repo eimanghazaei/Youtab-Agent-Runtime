@@ -751,7 +751,13 @@ class TestWaitForCallbackSkipIntegration:
         monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
 
         async def instant_sleep(_):
-            pass
+            # Yield the GIL (a scheduler yield, NOT a delay) so the daemon
+            # paste-reader thread gets scheduled and can set the skip result.
+            # A pure no-op lets this tight poll loop burn through its virtual
+            # 300s timeout in ~0 real time before the reader thread ever runs
+            # under -j3 CI contention, so the skip is missed and no error raises.
+            import time as _t
+            _t.sleep(0)
         with patch.object(mod.asyncio, "sleep", instant_sleep):
             with pytest.raises(OAuthNonInteractiveError, match="user_skipped"):
                 asyncio.run(_wait_for_callback())

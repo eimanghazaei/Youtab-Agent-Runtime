@@ -14,6 +14,7 @@ import subprocess
 import time
 
 import pytest
+from tests import _wincompat
 
 from tools.environments.local import LocalEnvironment
 
@@ -34,6 +35,7 @@ def local_env():
 class TestBackgroundChildDoesNotHang:
     """Regression guard for issue #8340."""
 
+    @_wincompat.requires_posix
     def test_plain_background_returns_promptly(self, local_env):
         """``cmd &`` with no output redirection must not hang on pipe inherit."""
         marker = "youtab_8340_plain_bg"
