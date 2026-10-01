@@ -84,7 +84,7 @@ def test_dirty_checkout_and_secret_file_fail_closed(committed_source, tmp_path):
 
 def test_private_key_material_after_first_megabyte_is_rejected(committed_source, tmp_path):
     payload = committed_source / "agent" / "large.txt"
-    payload.write_bytes(b"x" * (1024 * 1024 + 3) + b"-----BEGIN PRIVATE KEY-----")
+    payload.write_bytes(b"x" * (1024 * 1024 + 3) + b"\n-----BEGIN PRIVATE KEY-----\n")
     _git(committed_source, "add", "agent/large.txt")
     _git(committed_source, "commit", "-m", "late secret")
     out = tmp_path / "releases"

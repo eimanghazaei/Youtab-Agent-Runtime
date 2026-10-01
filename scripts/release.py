@@ -56,8 +56,9 @@ RUNTIME_ARTIFACT_FILES = frozenset({
 })
 _SECRET_SUFFIXES = (".pem", ".p12", ".pfx", ".key", ".kdbx")
 _SECRET_NAMES = {"id_rsa", "id_ed25519", "credentials.json", "secrets.json", "auth.json"}
-_SECRET_MARKERS = (b"-----BEGIN PRIVATE KEY-----", b"-----BEGIN RSA PRIVATE KEY-----",
-                   b"-----BEGIN OPENSSH PRIVATE KEY-----")
+_PRIVATE_KEY_BLOCK = re.compile(
+    rb"(?:^|[\r\n])[ \t]*-----BEGIN (?:[A-Z0-9]+ )?PRIVATE KEY-----"
+)
 
 
 def _release_base_url(value: str) -> str:
@@ -168,13 +169,12 @@ def package_runtime_artifact(output_dir: Path, version: str,
                 info.compress_type = zipfile.ZIP_DEFLATED
                 with source.open(entry) as src, dest.open(info, "w") as dst:
                     overlap = b""
-                    overlap_size = max(len(marker) for marker in _SECRET_MARKERS) - 1
                     for chunk in iter(lambda: src.read(1024 * 1024), b""):
                         window = overlap + chunk
-                        if any(marker in window for marker in _SECRET_MARKERS):
+                        if _PRIVATE_KEY_BLOCK.search(window):
                             raise RuntimeError(f"release source contains private-key material: {entry.filename}")
                         dst.write(chunk)
-                        overlap = window[-overlap_size:]
+                        overlap = window[-128:]
                 included.add(entry.filename)
         if not required.issubset(included):
             raise RuntimeError(f"release package lacks required files: {sorted(required - included)}")
