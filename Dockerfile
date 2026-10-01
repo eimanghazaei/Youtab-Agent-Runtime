@@ -285,6 +285,8 @@ RUN cd plugins/platforms/photon/sidecar && \
 # empty placeholder — the real README is restored by `COPY . .` below.
 #
 # `uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp`
+# plus `--extra documents-extract`, which is deliberately absent from `[all]`
+# because its onnxruntime pin has no wheel for Intel macOS (see pyproject).
 # installs the deps reachable through the composite `[all]` extra
 # (handpicked set intended for the production image — excludes `[dev]`),
 # plus gateway messaging adapters that should work in the published image
@@ -318,7 +320,7 @@ RUN cd plugins/platforms/photon/sidecar && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra documents-extract
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
@@ -344,6 +346,18 @@ COPY --link --chmod=a+rX,go-w . .
 # cached layer above; `--no-deps` makes this a fast egg-link creation with no
 # resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
+
+# ---------- Document toolchain: proof, not inventory ----------
+# The layer near the top of this file asserts that the binaries EXIST. That is
+# not the same as being able to render: the image that shipped before this had
+# every document skill installed and could not produce one correct Persian PDF.
+# So here, with the venv synced and the skills copied in, run the recipe the
+# `pdf` skill actually documents and judge the rendered page — a PDF is
+# produced, an Arabic-script font is embedded, and the raster is right-aligned.
+# A toolchain that installs but cannot render fails the build instead of
+# reaching a user. The same checks run from tests/skills/test_office_document_skills.py
+# wherever the binaries are present; this is the caller that may not skip.
+RUN uv run --no-sync python scripts/check_document_toolchain.py
 
 # Wire the exec shim and install-method stamp.  Files under /opt/youtab are
 # already root-owned (COPY, uv sync, npm install all run as root) and

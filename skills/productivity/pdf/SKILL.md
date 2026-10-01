@@ -52,7 +52,7 @@ macOS: `brew install poppler qpdf libreoffice`. OCR extras: `pip install pytesse
 | Extract text | pdfplumber | `page.extract_text()` |
 | Extract tables | pdfplumber | `page.extract_tables()` |
 | Create PDFs (Latin / LTR) | reportlab | Canvas or Platypus |
-| **Create PDFs containing Persian, Arabic, Hebrew, Urdu, Indic or Thai** | **soffice** | HTML/DOCX → `soffice --convert-to pdf` — see below. **Never reportlab.** |
+| **Create PDFs containing Persian, Arabic, Hebrew, Urdu, Indic or Thai** | **soffice** | HTML/DOCX → `python scripts/office/soffice.py --convert-to pdf` — see below. **Never reportlab.** |
 | Command-line merge/split | qpdf | `qpdf --empty --pages ...` |
 | OCR scanned PDFs | pytesseract | Convert to images first (or use `ocr-and-documents`) |
 | Fill PDF forms | see [forms.md](forms.md) | `scripts/fill_fillable_fields.py` etc. |
@@ -129,7 +129,15 @@ neutrals — because the underlying algorithm was being re-implemented by hand.
 
 Use a shaping engine instead. `soffice` is in the image and lays out text
 through HarfBuzz and ICU, so joining, mark placement and bidi are done by code
-that implements those specifications:
+that implements those specifications.
+
+Always invoke it through `scripts/office/soffice.py`, never as a bare `soffice`.
+That wrapper is the sanctioned entry point every office skill already uses: it
+supplies an isolated `-env:UserInstallation` profile, sets `SAL_USE_VCLPLUGIN=svp`,
+and installs an `LD_PRELOAD` socket shim when `AF_UNIX` is blocked. A bare
+`soffice` in a sandboxed task environment aborts with "User installation could
+not be completed" and converts nothing — so the bare form does not merely run
+unprotected, it produces no file at all.
 
 ```bash
 cat > doc.html <<'HTML'
@@ -154,7 +162,7 @@ cat > doc.html <<'HTML'
   <table border="1" align="right"><tr><th>لایه</th><th>مسئولیت</th></tr></table>
 </body></html>
 HTML
-soffice --headless --norestore --convert-to pdf:writer_pdf_Export doc.html
+python scripts/office/soffice.py --headless --norestore --convert-to pdf:writer_pdf_Export doc.html
 ```
 
 Verified by rendering exactly that input and looking at the page: joining forms

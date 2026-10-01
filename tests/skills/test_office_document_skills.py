@@ -9,6 +9,7 @@ of skill content.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -211,7 +212,13 @@ def _resolved_distributions() -> set[str]:
     """
     text = PYPROJECT.read_text(encoding="utf-8")
     names = set()
-    for pattern in (r"^dependencies = \[(.*?)^\]", r"^documents = \[(.*?)^\]"):
+    patterns = (
+        r"^dependencies = \[(.*?)^\]",
+        r"^documents = \[(.*?)^\]",
+        # installed by the Linux image but deliberately outside `[all]`
+        r"^documents-extract = \[(.*?)^\]",
+    )
+    for pattern in patterns:
         block = re.search(pattern, text, re.MULTILINE | re.DOTALL)
         assert block, f"pyproject.toml no longer has a block matching {pattern!r}"
         for raw in re.findall(r'"([^"]+)"', block.group(1)):
@@ -346,3 +353,103 @@ def test_pdf_skill_forbids_a_verifier_derived_from_the_builder():
         "bullet markers",
     ):
         assert claim in body, f"raster assertion missing: {claim}"
+
+
+# ---------------------------------------------------------------------------
+# Executable proof.
+#
+# Everything above reads text: it can only prove that the declarations have not
+# drifted apart. It cannot prove the toolchain works. The tests below run the
+# recipe the skill actually documents and judge the rendered pixels, so a
+# toolchain that installs but cannot render fails here instead of passing
+# quietly.
+#
+# They skip when the binaries are absent (a bare dev checkout, and the public CI
+# runners, have no LibreOffice). The place they are *not* allowed to skip is the
+# runtime image: the Dockerfile runs this same pipeline at build time, so an
+# image whose document toolchain cannot render never finishes building.
+# ---------------------------------------------------------------------------
+
+# The checks themselves live in scripts/check_document_toolchain.py, which the
+# Dockerfile also runs during the build. One implementation, two callers: a
+# toolchain that installs but cannot render fails the image build, and fails here
+# too on any machine that has the binaries.
+sys.path.insert(0, str(REPO))
+from scripts.check_document_toolchain import (  # noqa: E402
+    ToolchainError,
+    documented_recipe,
+    missing_binaries,
+    verify,
+)
+
+_MISSING_BINARIES = missing_binaries()
+needs_toolchain = pytest.mark.skipif(
+    bool(_MISSING_BINARIES),
+    reason=f"document toolchain not installed here: {', '.join(_MISSING_BINARIES)}",
+)
+
+
+@needs_toolchain
+def test_the_documented_rtl_recipe_renders_a_real_persian_pdf():
+    """Run the skill's own recipe, then judge the raster rather than the source."""
+    try:
+        notes = verify(REPO)
+    except ToolchainError as exc:  # pragma: no cover - only on a broken toolchain
+        pytest.fail(str(exc))
+    assert len(notes) >= 5, f"the toolchain check ran fewer checks than expected: {notes}"
+
+
+def test_the_documented_recipe_is_still_extractable_without_the_toolchain():
+    """The build-time check must be able to find the recipe even where it skips.
+
+    If SKILL.md's recipe block is renamed or reflowed, the renderer silently
+    stops being exercised; this fails instead, everywhere, including in CI where
+    LibreOffice is absent.
+    """
+    html, command = documented_recipe(REPO)
+    assert 'dir="rtl"' in html, "the documented HTML no longer sets dir=rtl"
+    assert command[:2] == ["python", "scripts/office/soffice.py"], command
+    assert "--convert-to" in command, command
+
+
+def test_the_soffice_wrapper_has_not_forked_between_skills():
+    """Each office skill carries a copy of the shim; they must stay identical.
+
+    Per-skill script duplication is this repo's existing convention, but four
+    copies that drift are four behaviours. The pdf skill's copy was added for
+    complex-script rendering and must not become a private fork of the shim.
+    """
+    copies = sorted((REPO / "skills" / "productivity").glob("*/scripts/office/soffice.py"))
+    assert len(copies) >= 4, f"expected one copy per office skill, found {copies}"
+    assert len({c.read_bytes() for c in copies}) == 1, (
+        "the office soffice wrapper has drifted between skills: "
+        + ", ".join(str(c.relative_to(REPO)) for c in copies)
+    )
+
+
+BARE_SOFFICE_CALL = re.compile(r"(^|[^/\w])soffice\s+--")
+
+
+def test_the_pdf_skill_never_invokes_the_bare_soffice_binary():
+    """A bare `soffice` call aborts in a sandbox, so the wrapper is not optional.
+
+    `run_soffice` supplies an isolated `-env:UserInstallation` profile, sets
+    `SAL_USE_VCLPLUGIN=svp` and preloads a socket shim when AF_UNIX is blocked.
+    Without it a non-root sandbox cannot bootstrap LibreOffice's default profile
+    and the conversion produces no file at all.
+    """
+    text = (_skill_dir("pdf") / "SKILL.md").read_text(encoding="utf-8")
+    body = text.split("## Prerequisites", 1)[1]
+    # drop the "Elsewhere (desktop, macOS, a bare checkout)" install block, which
+    # legitimately probes for the bare binary with `which soffice`
+    body = re.sub(r"^which soffice.*$", "", body, flags=re.MULTILINE)
+    bare = [
+        line
+        for line in body.splitlines()
+        if BARE_SOFFICE_CALL.search(line) and "scripts/office/soffice.py" not in line
+    ]
+    assert not bare, (
+        "the pdf skill invokes soffice directly instead of through "
+        "scripts/office/soffice.py; in a sandboxed task environment that aborts "
+        f'with "User installation could not be completed": {bare}'
+    )

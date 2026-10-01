@@ -4945,7 +4945,6 @@ all = [
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
     { name = "lxml" },
-    { name = "markitdown", extra = ["pptx", "xlsx"] },
     { name = "mcp" },
     { name = "openpyxl" },
     { name = "pandas" },
@@ -4995,13 +4994,15 @@ dingtalk = [
 ]
 documents = [
     { name = "lxml" },
-    { name = "markitdown", extra = ["pptx", "xlsx"] },
     { name = "openpyxl" },
     { name = "pandas" },
     { name = "pdfplumber" },
     { name = "pypdf" },
     { name = "python-docx" },
     { name = "reportlab" },
+]
+documents-extract = [
+    { name = "markitdown", extra = ["pptx", "xlsx"] },
 ]
 edge-tts = [
     { name = "edge-tts" },
@@ -5193,7 +5194,7 @@ requires-dist = [
     { name = "lark-oapi", marker = "extra == 'feishu'", specifier = "==1.6.8" },
     { name = "lxml", marker = "extra == 'documents'", specifier = "==6.1.3" },
     { name = "markdown", specifier = "==3.10.2" },
-    { name = "markitdown", extras = ["pptx", "xlsx"], marker = "extra == 'documents'", specifier = "==0.1.8" },
+    { name = "markitdown", extras = ["pptx", "xlsx"], marker = "extra == 'documents-extract'", specifier = "==0.1.8" },
     { name = "mautrix", extras = ["encryption"], marker = "extra == 'matrix'", specifier = "==0.21.0" },
     { name = "mcp", marker = "extra == 'computer-use'", specifier = "==1.26.0" },
     { name = "mcp", marker = "extra == 'dev'", specifier = "==1.26.0" },
@@ -5291,7 +5292,7 @@ requires-dist = [
     { name = "youtab-agent-runtime", extras = ["youtube"], marker = "extra == 'all'" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["documents", "anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "wake", "wakeword-ingest", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["documents-extract", "documents", "anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "wake", "wakeword-ingest", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "youtube-transcript-api"
