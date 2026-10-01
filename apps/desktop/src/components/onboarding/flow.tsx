@@ -16,6 +16,7 @@ import {
   type OnboardingContext,
   type OnboardingFlow,
   recheckExternalSignin,
+  retryOnboardingProviderDiscovery,
   setOnboardingCode,
   setOnboardingModel,
   submitOnboardingCode
@@ -63,6 +64,11 @@ export function FlowPanel({
           <span>{flow.message || t.onboarding.signInFailed}</span>
         </div>
         <div className="flex justify-end">
+          {!flow.provider ? (
+            <Button onClick={() => void retryOnboardingProviderDiscovery()} variant="outline">
+              {t.common.retry}
+            </Button>
+          ) : null}
           <Button onClick={cancelOnboardingFlow} variant="outline">
             {t.onboarding.pickDifferentProvider}
           </Button>

@@ -69,12 +69,54 @@ pub fn bootstrap_cache_dir() -> PathBuf {
 /// On Windows this is `%LOCALAPPDATA%\youtab\youtab-setup.exe`; on other
 /// platforms the extension differs but the directory is the same.
 pub fn installer_dest() -> PathBuf {
+    installer_dest_in(&youtab_home())
+}
+
+pub(crate) fn installer_dest_in(home: &Path) -> PathBuf {
     let name = if cfg!(target_os = "windows") {
         "youtab-setup.exe"
     } else {
         "youtab-setup"
     };
-    youtab_home().join(name)
+    home.join(name)
+}
+
+/// Fingerprint a regular, non-empty Setup. The customer transaction compares
+/// against the currently running executable, not an untrusted downloaded file.
+pub(crate) fn installer_sha256(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    use sha2::{Digest, Sha256};
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Setup must be a non-empty regular file"));
+    }
+    let mut input = std::fs::File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 { break; }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+pub(crate) fn verify_installer(path: &Path, expected_sha256: &str) -> std::io::Result<()> {
+    if installer_sha256(path)? != expected_sha256 {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Setup copy verification failed"));
+    }
+    Ok(())
+}
+
+/// Write a private sibling staging file. Never truncate the installed Setup.
+/// Partial staging files are owned/recovered by the existing install journal.
+pub(crate) fn stage_installer(source: &Path, staged: &Path, expected_sha256: &str) -> std::io::Result<()> {
+    let mut input = std::fs::File::open(source)?;
+    let mut output = std::fs::OpenOptions::new().write(true).create_new(true).open(staged)?;
+    std::io::copy(&mut input, &mut output)?;
+    output.sync_all()?;
+    drop(output);
+    verify_installer(staged, expected_sha256)
 }
 
 /// Marker the updater writes for the duration of an in-app update and removes
