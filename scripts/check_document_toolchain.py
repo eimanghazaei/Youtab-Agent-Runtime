@@ -21,7 +21,9 @@ Checks, in order, each one a thing that has actually been observed to fail:
   1. the documented command exits 0 and produces a PDF at all
      (a bare `soffice` call in a sandbox aborts and converts nothing);
   2. the PDF is large enough to hold a shaped page;
-  3. an Arabic-script face is embedded, so the glyphs are really in the file;
+  3. a font is embedded AND the page really carries Arabic-script characters
+     (judged on properties, never on a font's name, which sits behind an
+     indirect reference and is a free choice anyway);
   4. the rasterised page is right-aligned — more ink in the right third than in
      the left third. Text extraction passes on a Persian-looking page laid out
      as an English one; this is the check that does not.
@@ -48,7 +50,11 @@ RTL_HTML_BLOCK = r"cat > doc\.html <<'HTML'\n(.*?)\nHTML\n"
 RTL_COMMAND_LINE = r"^(python scripts/office/soffice\.py .*doc\.html)$"
 
 MIN_PDF_BYTES = 2048
-ARABIC_FONT_HINT = re.compile(r"Arabic|Naskh|Noto")
+# Arabic script, its presentation forms, and the Arabic Supplement/Extended
+# blocks. Used on the EXTRACTED text: whether the glyphs are really in the file
+# is a property of the page, not of a font's name.
+ARABIC_SCRIPT = re.compile(r"[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]")
+EMBEDDING_KEYS = ("/FontFile", "/FontFile2", "/FontFile3")
 INK_THRESHOLD = 128
 
 
@@ -104,19 +110,53 @@ def _render(repo: Path, workdir: Path) -> Path:
     return pdf
 
 
-def _check_embedded_font(pdf: Path) -> str:
+def _resolve(value):
+    """Follow a PDF indirect reference, if that is what this is.
+
+    Not optional: `page["/Resources"]["/Font"]` is normally an IndirectObject, so
+    reading it without dereferencing yields `IndirectObject(1, 0, ...)` and any
+    inspection of the font names silently sees nothing.
+    """
+    return value.get_object() if hasattr(value, "get_object") else value
+
+
+def _check_embedded_arabic_font(pdf: Path) -> str:
+    """At least one embedded font, and Arabic-script glyphs really on the page.
+
+    Judged on properties rather than on a font's name. A name test looked
+    attractive and is wrong twice over: the name lives behind an indirect
+    reference, and the right face is a choice — a page shaped with Vazirmatn is
+    as correct as one shaped with Noto Naskh Arabic, and a name allowlist would
+    fail the first and pass a non-embedded font that merely sounds Arabic.
+    """
     from pypdf import PdfReader
 
     reader = PdfReader(str(pdf))
     if not reader.pages:
         raise ToolchainError("the rendered PDF has no pages")
-    fonts = repr(reader.pages[0].get("/Resources", {}).get("/Font", {}))
-    if not ARABIC_FONT_HINT.search(fonts):
+    page = reader.pages[0]
+
+    resources = _resolve(page.get("/Resources", {}))
+    fonts = _resolve(resources.get("/Font", {})) if hasattr(resources, "get") else {}
+    described = []
+    for name, ref in (fonts.items() if hasattr(fonts, "items") else []):
+        font = _resolve(ref)
+        descriptor = _resolve(font.get("/FontDescriptor"))
+        embedded = bool(descriptor and any(k in descriptor for k in EMBEDDING_KEYS))
+        described.append((str(name), str(font.get("/BaseFont")), embedded))
+    if not any(embedded for _n, _b, embedded in described):
         raise ToolchainError(
-            "no Arabic-script font is embedded on page 1, so the shaped glyphs "
-            f"are not in the file. /Font was: {fonts}"
+            "no font is embedded in the rendered PDF, so it cannot be relied on to "
+            f"display anywhere but this machine. Fonts on page 1: {described}"
         )
-    return fonts
+
+    text = page.extract_text() or ""
+    if not ARABIC_SCRIPT.search(text):
+        raise ToolchainError(
+            "the rendered page carries no Arabic-script characters, so the Persian "
+            f"content did not reach the page. Fonts on page 1: {described}"
+        )
+    return ", ".join(f"{b}{' (embedded)' if e else ''}" for _n, b, e in described)
 
 
 def _check_right_aligned(pdf: Path, workdir: Path) -> tuple[int, int]:
@@ -174,8 +214,8 @@ def verify(repo: Path) -> list[str]:
             )
         notes.append(f"PDF larger than {MIN_PDF_BYTES} bytes")
 
-        _check_embedded_font(pdf)
-        notes.append("an Arabic-script font is embedded on page 1")
+        faces = _check_embedded_arabic_font(pdf)
+        notes.append(f"Arabic-script glyphs on an embedded face: {faces}")
 
         left, right = _check_right_aligned(pdf, workdir)
         notes.append(f"page reads right-to-left ({right} right-third vs {left} left-third ink)")

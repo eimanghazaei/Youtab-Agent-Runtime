@@ -8,6 +8,7 @@ of skill content.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -453,3 +454,74 @@ def test_the_pdf_skill_never_invokes_the_bare_soffice_binary():
         "scripts/office/soffice.py; in a sandboxed task environment that aborts "
         f'with "User installation could not be completed": {bare}'
     )
+
+
+PACKAGE_JSON = REPO / "package.json"
+
+# Named here so each omission is a recorded decision rather than something these
+# tests quietly tolerate. `sharp` needs a native build the sealed image cannot
+# run, and the other three only matter for the powerpoint icon path, which the
+# skill now tells the agent to do without.
+UNBAKED_NPM_PACKAGES = {"react-icons", "react", "react-dom", "sharp", "ntn"}
+
+
+def _manifest_npm_packages() -> set[str]:
+    """Every npm package the image installs from the root manifest.
+
+    The Dockerfile copies package.json + package-lock.json and runs `npm install`
+    before sealing /opt/youtab, so a package here is present at runtime and a
+    package absent from here can never be installed later.
+    """
+    manifest = json.loads(PACKAGE_JSON.read_text(encoding="utf-8"))
+    names: set[str] = set()
+    for section in ("dependencies", "devDependencies", "optionalDependencies"):
+        names.update(manifest.get(section) or {})
+    return {n.lower() for n in names}
+
+
+def _declared_npm_packages(skill_md: Path) -> set[str]:
+    """Packages a skill's own Prerequisites tell the agent to npm install."""
+    text = skill_md.read_text(encoding="utf-8")
+    names: set[str] = set()
+    for line in re.findall(r"^.*npm install (.+)$", text, re.MULTILINE):
+        line = line.split("#", 1)[0]
+        for token in line.split():
+            if token.startswith("-") or token in {"||", "&&"}:
+                continue
+            names.add(token.strip("\"'").lower())
+    return names - UNBAKED_NPM_PACKAGES
+
+
+@pytest.mark.parametrize("name", OFFICE_SKILLS)
+def test_declared_npm_packages_are_baked_into_the_image(name):
+    """The same contract as the pip one, for the Node generators.
+
+    `docx` and `pptxgenjs` are how the docx and powerpoint skills CREATE files.
+    The image seals /opt/youtab read-only for the youtab user, so an `npm install`
+    at task time cannot write node_modules: a package named by a skill and absent
+    from the root manifest is a dead instruction, and Word and PowerPoint creation
+    simply does not work.
+    """
+    declared = _declared_npm_packages(_skill_dir(name) / "SKILL.md")
+    missing = sorted(declared - _manifest_npm_packages())
+    assert not missing, (
+        f"{name} skill tells the agent to `npm install {' '.join(missing)}`, but "
+        f"package.json does not declare {missing}, so the sealed image has no such "
+        f"module. Either add them to the root manifest and lock them, or stop "
+        f"naming them in the skill."
+    )
+
+
+def test_the_node_document_generators_are_locked_not_merely_declared():
+    """Declared and locked, because the image installs with the lockfile present.
+
+    A manifest entry with no lock entry resolves at build time against the live
+    registry, which is exactly the unreproducible install this whole change exists
+    to remove.
+    """
+    lock = (REPO / "package-lock.json").read_text(encoding="utf-8")
+    for package in ("docx", "pptxgenjs"):
+        assert f'"node_modules/{package}"' in lock, (
+            f"{package} is not in package-lock.json, so the image build would "
+            f"resolve it against the live npm registry instead of the lock"
+        )
