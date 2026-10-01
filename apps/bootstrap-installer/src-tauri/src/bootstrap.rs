@@ -15,6 +15,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,418 @@ use crate::events::{BootstrapEvent, LogStream, Manifest, StageState};
 use crate::install_script::{self, Pin, ScriptKind, ScriptSource};
 use crate::powershell::{self, StreamSink};
 use crate::AppState;
+
+/// The existing Setup process is outside the install tree, so it can own the
+/// whole-tree swap while each PowerShell provisioning stage runs at the final
+/// path. Dropping an uncommitted swap restores the prior install on errors,
+/// cancellation, and early returns.
+struct InstallSwap {
+    current: PathBuf,
+    committed: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InstallJournal {
+    schema: u32,
+    had_old: bool,
+    setup: Option<SetupJournal>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SetupJournal {
+    replace: bool,
+    previous_sha256: Option<String>,
+    required_sha256: String,
+}
+
+impl InstallSwap {
+    fn backup_path(current: &Path) -> Result<PathBuf> {
+        let parent = current.parent().context("install root has no parent")?;
+        Ok(parent.join(format!("{}.old-backup", current.file_name().unwrap().to_string_lossy())))
+    }
+
+    fn marker_path(current: &Path, suffix: &str) -> Result<PathBuf> {
+        let parent = current.parent().context("install root has no parent")?;
+        Ok(parent.join(format!(".youtab-runtime-install-{suffix}")))
+    }
+
+    #[cfg(test)]
+    fn write_pending(current: &Path, had_old: bool) -> Result<()> {
+        Self::write_journal(current, &InstallJournal { schema: 2, had_old, setup: None })
+    }
+
+    fn write_journal(current: &Path, journal: &InstallJournal) -> Result<()> {
+        use std::io::Write;
+        let path = Self::marker_path(current, "pending")?;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
+            .with_context(|| format!("creating transaction marker {}", path.display()))?;
+        file.write_all(&serde_json::to_vec(journal)?)?;
+        file.sync_all()?;
+        Ok(())
+    }
+
+    fn read_journal(current: &Path) -> Result<InstallJournal> {
+        let bytes = std::fs::read(Self::marker_path(current, "pending")?)?;
+        // Replay transactions left by the previous Runtime-only implementation.
+        let journal = match bytes.as_slice() {
+            b"old\n" | b"old" => InstallJournal { schema: 2, had_old: true, setup: None },
+            b"fresh\n" | b"fresh" => InstallJournal { schema: 2, had_old: false, setup: None },
+            _ => serde_json::from_slice::<InstallJournal>(&bytes)?,
+        };
+        let hash_valid = |hash: &str| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+        if journal.schema != 2 || journal.setup.as_ref().is_some_and(|setup|
+            !hash_valid(&setup.required_sha256) ||
+            setup.previous_sha256.as_ref().is_some_and(|hash| !hash_valid(hash)) ||
+            (!setup.replace && setup.previous_sha256.as_ref() != Some(&setup.required_sha256))) {
+            return Err(anyhow!("invalid Runtime/Setup transaction journal"));
+        }
+        Ok(journal)
+    }
+
+    fn setup_paths(current: &Path) -> Result<(PathBuf, PathBuf, PathBuf)> {
+        let target = crate::paths::installer_dest_in(current.parent().context("install root has no parent")?);
+        let name = target.file_name().unwrap().to_string_lossy();
+        Ok((target.clone(), target.with_file_name(format!("{name}.new-staged")),
+            target.with_file_name(format!("{name}.old-backup"))))
+    }
+
+    fn remove_setup_file(path: &Path) -> Result<()> {
+        if path.exists() {
+            if !std::fs::symlink_metadata(path)?.is_file() {
+                return Err(anyhow!("Setup transaction path is not a regular file"));
+            }
+            std::fs::remove_file(path)?;
+        }
+        Ok(())
+    }
+
+    fn restore_path(current: &Path, backup: &Path, had_old: bool, directory: bool) -> Result<()> {
+        let failed = current.with_file_name(format!("{}.failed-recovery", current.file_name().unwrap().to_string_lossy()));
+        if backup.exists() || !had_old {
+            if failed.exists() && current.exists() {
+                return Err(anyhow!("ambiguous failed recovery directory/file; backup retained"));
+            }
+            if current.exists() {
+                std::fs::rename(current, &failed).with_context(|| "moving failed install out of active path")?;
+            }
+            if backup.exists() {
+                // A failed rename leaves backup + journal + failed path intact;
+                // the next recovery retries instead of deleting the old install.
+                std::fs::rename(backup, current).with_context(|| "restoring previous install")?;
+            }
+        } else if !current.exists() {
+            return Err(anyhow!("previous install and its backup are both absent"));
+        }
+        // Also retry cleanup when restoring the backup succeeded but deleting
+        // the failed replacement was interrupted on the previous recovery.
+        if failed.exists() {
+            if directory { std::fs::remove_dir_all(failed)?; }
+            else { Self::remove_setup_file(&failed)?; }
+        }
+        Ok(())
+    }
+
+    fn restore_setup(current: &Path, setup: &SetupJournal) -> Result<()> {
+        let (target, staged, backup) = Self::setup_paths(current)?;
+        if !setup.replace {
+            crate::paths::verify_installer(&target, &setup.required_sha256)?;
+            return Ok(());
+        }
+        if let Some(previous) = &setup.previous_sha256 {
+            crate::paths::verify_installer(if backup.exists() { &backup } else { &target }, previous)
+                .context("previous Setup identity could not be verified; backups retained")?;
+        }
+        Self::restore_path(&target, &backup, setup.previous_sha256.is_some(), false)?;
+        if let Some(previous) = &setup.previous_sha256 {
+            crate::paths::verify_installer(&target, previous)?;
+        }
+        Self::remove_setup_file(&staged)?;
+        Ok(())
+    }
+
+    /// Replay an interrupted Setup transaction before starting a new one.
+    /// A committed marker means verification finished and only backup cleanup
+    /// was interrupted; a pending marker restores the previous install.
+    fn recover(current: &Path) -> Result<()> {
+        let pending = Self::marker_path(current, "pending")?;
+        let committed = Self::marker_path(current, "committed")?;
+        let backup = Self::backup_path(current)?;
+        let (_, setup_staged, setup_backup) = Self::setup_paths(current)?;
+        if !pending.exists() {
+            if backup.exists() || setup_staged.exists() || setup_backup.exists() {
+                return Err(anyhow!("orphaned Runtime transaction state requires review"));
+            }
+            // Journal removal is the last cleanup step before deleting this
+            // latch. A crash between them must not strand a verified install.
+            Self::remove_setup_file(&committed)?;
+            return Ok(());
+        }
+        let journal = Self::read_journal(current)?;
+        if committed.exists() {
+            if std::fs::read(&committed)? != b"verified\n" || !current.is_dir() {
+                return Err(anyhow!("invalid committed transaction; backups retained"));
+            }
+            if let Some(setup) = &journal.setup {
+                let (target, _, _) = Self::setup_paths(current)?;
+                crate::paths::verify_installer(&target, &setup.required_sha256)
+                    .context("committed Setup verification failed; backups retained")?;
+            }
+            if backup.exists() {
+                std::fs::remove_dir_all(&backup).with_context(|| "cleaning verified old Runtime")?;
+            }
+            Self::remove_setup_file(&setup_backup)?;
+            Self::remove_setup_file(&setup_staged)?;
+            std::fs::remove_file(pending)?;
+            std::fs::remove_file(committed)?;
+            return Ok(());
+        }
+        if let Some(setup) = &journal.setup {
+            Self::restore_setup(current, setup)?;
+        }
+        Self::restore_path(current, &backup, journal.had_old, true)?;
+        std::fs::remove_file(pending)?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn promote(current: &Path, staged: &Path) -> Result<Self> {
+        Self::promote_with_setup(current, staged, None)
+    }
+
+    fn promote_with_setup(current: &Path, staged: &Path, setup_source: Option<&Path>) -> Result<Self> {
+        let parent = current.parent().context("install root has no parent")?;
+        let staged_parent = staged.parent().context("staging root has no parent")?;
+        let prefix = format!("{}.new-", current.file_name().unwrap().to_string_lossy());
+        let name = staged.file_name().context("staging root has no name")?.to_string_lossy();
+        if staged_parent != parent || !name.starts_with(&prefix) || staged.is_symlink() || !staged.is_dir() {
+            return Err(anyhow!("invalid staged Runtime directory"));
+        }
+        let backup_path = Self::backup_path(current)?;
+        let (setup_target, setup_staged, setup_backup) = Self::setup_paths(current)?;
+        if backup_path.exists() || Self::marker_path(current, "pending")?.exists()
+            || Self::marker_path(current, "committed")?.exists() || setup_staged.exists() || setup_backup.exists() {
+            return Err(anyhow!("previous Runtime transaction requires recovery"));
+        }
+        let had_old = current.exists();
+        let setup = setup_source.map(|source| -> Result<SetupJournal> {
+            let required_sha256 = crate::paths::installer_sha256(source)?;
+            let previous_sha256 = if setup_target.exists() {
+                Some(crate::paths::installer_sha256(&setup_target)?)
+            } else { None };
+            let same = match (source.canonicalize(), setup_target.canonicalize()) {
+                (Ok(a), Ok(b)) => a == b,
+                _ => source == setup_target,
+            };
+            Ok(SetupJournal { replace: !same, previous_sha256, required_sha256 })
+        }).transpose()?;
+        Self::write_journal(current, &InstallJournal { schema: 2, had_old, setup })?;
+        // Own rollback BEFORE any copy or active-path mutation. The same
+        // journal covers partial staging, Runtime promotion, and Setup rename.
+        let swap = Self { current: current.to_path_buf(), committed: false };
+        let journal = Self::read_journal(current)?;
+        if let Some(setup) = &journal.setup {
+            if setup.replace {
+                crate::paths::stage_installer(setup_source.unwrap(), &setup_staged, &setup.required_sha256)?;
+            } else {
+                crate::paths::verify_installer(&setup_target, &setup.required_sha256)?;
+            }
+        }
+        if had_old {
+            let backup = backup_path;
+            std::fs::rename(current, &backup).with_context(|| "backing up current Runtime install")?;
+        }
+        std::fs::rename(staged, current).with_context(|| "promoting staged Runtime")?;
+        Ok(swap)
+    }
+
+    fn install_setup(&mut self) -> Result<()> {
+        let journal = Self::read_journal(&self.current)?;
+        if let Some(setup) = &journal.setup {
+            let (target, staged, backup) = Self::setup_paths(&self.current)?;
+            if setup.replace {
+                crate::paths::verify_installer(&staged, &setup.required_sha256)?;
+                if let Some(previous) = &setup.previous_sha256 {
+                    crate::paths::verify_installer(&target, previous)?;
+                    std::fs::rename(&target, &backup).context("backing up previous Setup")?;
+                }
+                std::fs::rename(staged, &target).context("promoting verified Setup")?;
+            }
+            crate::paths::verify_installer(&target, &setup.required_sha256)?;
+        }
+        Ok(())
+    }
+
+    fn rollback(&mut self) -> Result<()> {
+        if self.committed { return Ok(()); }
+        Self::recover(&self.current)?;
+        self.committed = true;
+        Ok(())
+    }
+
+    fn commit(&mut self) -> Result<()> {
+        let journal = Self::read_journal(&self.current)?;
+        if let Some(setup) = &journal.setup {
+            let (target, _, _) = Self::setup_paths(&self.current)?;
+            crate::paths::verify_installer(&target, &setup.required_sha256)
+                .context("required Setup missing or invalid; install cannot complete")?;
+        }
+        let marker = Self::marker_path(&self.current, "committed")?;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&marker)?;
+        use std::io::Write;
+        file.write_all(b"verified\n")?;
+        file.sync_all()?;
+        drop(file);
+        self.committed = true;
+        Self::recover(&self.current)?;
+        Ok(())
+    }
+}
+
+pub(crate) fn recover_artifact_transaction(root: &Path) -> Result<()> {
+    InstallSwap::recover(root)
+}
+
+impl Drop for InstallSwap {
+    fn drop(&mut self) {
+        if !self.committed {
+            if let Err(err) = self.rollback() {
+                tracing::error!(?err, "CRITICAL: Runtime rollback failed; old backup retained");
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ArtifactInstallInfo {
+    staged: PathBuf,
+    source_sha: String,
+    artifact_sha256: String,
+    version: String,
+    release_sequence: u64,
+    release_base_url: String,
+}
+
+impl ArtifactInstallInfo {
+    fn from_stage_data(data: &serde_json::Value, pin: &Pin, base: &str) -> Result<Self> {
+        let string = |key: &str| -> Result<String> {
+            Ok(data.get(key).and_then(serde_json::Value::as_str)
+                .filter(|s| !s.is_empty()).ok_or_else(|| anyhow!("repository stage missing {key}"))?.to_string())
+        };
+        let source_sha = string("source_sha")?;
+        if pin.commit.as_deref() != Some(source_sha.as_str()) {
+            return Err(anyhow!("repository stage source SHA differs from Setup pin"));
+        }
+        let artifact_sha256 = string("artifact_sha256")?;
+        if artifact_sha256.len() != 64 || !artifact_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(anyhow!("repository stage artifact SHA256 is invalid"));
+        }
+        let release_base_url = string("release_base_url")?;
+        if release_base_url != base {
+            return Err(anyhow!("repository stage release base differs from Setup build"));
+        }
+        let release_sequence = data.get("release_sequence")
+            .and_then(serde_json::Value::as_u64).filter(|n| *n > 0)
+            .ok_or_else(|| anyhow!("repository stage release sequence is invalid"))?;
+        Ok(Self {
+            staged: PathBuf::from(string("staged_install_dir")?),
+            source_sha,
+            artifact_sha256,
+            version: string("version")?,
+            release_sequence,
+            release_base_url,
+        })
+    }
+}
+
+fn ensure_replacement_not_downgrade(root: &Path, next: &ArtifactInstallInfo) -> Result<()> {
+    let path = root.join(".youtab-agent-runtime-bootstrap-complete");
+    if !path.exists() {
+        if root.exists() {
+            return Err(anyhow!("existing Runtime has no verified artifact marker; automatic replacement refused"));
+        }
+        return Ok(());
+    }
+    let old: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    if old.get("releaseBaseUrl").and_then(serde_json::Value::as_str)
+        != Some(next.release_base_url.as_str()) {
+        return Err(anyhow!("existing Runtime is bound to a different or legacy source"));
+    }
+    let old_sequence = old.get("releaseSequence").and_then(serde_json::Value::as_u64)
+        .filter(|n| *n > 0).ok_or_else(|| anyhow!("existing Runtime has no release sequence"))?;
+    let old_sha = old.get("pinnedCommit").and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+        .ok_or_else(|| anyhow!("existing Runtime has no valid source SHA"))?;
+    let old_hash = old.get("artifactSha256").and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+        .ok_or_else(|| anyhow!("existing Runtime has no valid artifact hash"))?;
+    if next.release_sequence < old_sequence {
+        return Err(anyhow!("Runtime artifact downgrade is forbidden"));
+    }
+    if next.release_sequence == old_sequence &&
+        (old_sha != next.source_sha || old_hash != next.artifact_sha256) {
+        return Err(anyhow!("release sequence was reused for different content"));
+    }
+    Ok(())
+}
+
+/// Exercise the installed backend's existing ready-file and /api/health path
+/// before retiring the prior install. The probe has its own empty home and
+/// never exposes the user's session or credentials to this synthetic server.
+async fn verify_installed_backend(install_root: &Path, youtab_home: &Path) -> Result<()> {
+    let cli = if cfg!(windows) {
+        install_root.join("venv/Scripts/youtab.exe")
+    } else {
+        install_root.join("venv/bin/youtab")
+    };
+    if !cli.is_file() {
+        return Err(anyhow!("installed Youtab CLI is absent"));
+    }
+    let probe_dir = youtab_home.join(format!(".setup-health-{}", std::process::id()));
+    std::fs::create_dir(&probe_dir).context("creating isolated backend probe home")?;
+    let ready = probe_dir.join("ready.json");
+    let mut child = tokio::process::Command::new(cli)
+        .args(["serve", "--host", "127.0.0.1", "--port", "0", "--no-open"])
+        .env("YOUTAB_AGENT_HOME", &probe_dir)
+        .env("YOUTAB_AGENT_DESKTOP_READY_FILE", &ready)
+        .current_dir(install_root)
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn().context("starting installed backend health probe")?;
+    let result = async {
+        let client = reqwest::Client::builder().timeout(Duration::from_secs(2)).no_proxy().build()?;
+        for _ in 0..150 {
+            if let Some(status) = child.try_wait()? {
+                return Err(anyhow!("installed backend exited before ready: {status}"));
+            }
+            if let Ok(bytes) = std::fs::read(&ready) {
+                let payload: serde_json::Value = serde_json::from_slice(&bytes)?;
+                let port = payload.get("port").and_then(serde_json::Value::as_u64)
+                    .filter(|n| (1..=65535).contains(n))
+                    .ok_or_else(|| anyhow!("backend ready file has invalid port"))?;
+                let url = format!("http://127.0.0.1:{port}/api/health");
+                if let Ok(response) = client.get(url).send().await {
+                    if response.status().is_success() {
+                        let body: serde_json::Value = serde_json::from_slice(&response.bytes().await?)?;
+                        if body.get("ok") == Some(&serde_json::Value::Bool(true)) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        Err(anyhow!("installed backend did not pass /api/health within 30 seconds"))
+    }.await;
+    let _ = child.kill().await;
+    let waited = child.wait().await;
+    let _ = std::fs::remove_dir_all(&probe_dir);
+    waited.context("waiting for owned backend probe to stop")?;
+    result
+}
 
 // ---------------------------------------------------------------------------
 // Public Tauri commands
@@ -102,7 +515,20 @@ pub async fn start_bootstrap(
     let cancel_rx = Arc::new(Mutex::new(Some(cancel_rx)));
 
     tokio::spawn(async move {
-        let result = run_bootstrap(app_for_task.clone(), args_for_task, cancel_rx).await;
+        let result = run_requested_bootstrap(app_for_task.clone(), args_for_task, cancel_rx).await;
+
+        if let Err(err) = &result {
+            // A transaction failure may occur outside a PowerShell stage. The
+            // renderer needs a terminal event even when an inner stage did not
+            // emit one (for example, promotion or health verification).
+            emit_event(
+                &app_for_task,
+                BootstrapEvent::Failed {
+                    stage: None,
+                    error: format!("{err:#}"),
+                },
+            );
+        }
 
         // Reflect terminal state into AppState so get_bootstrap_status()
         // can serve it after the task exits.
@@ -287,6 +713,14 @@ fn resolve_marker_commit(install_root: &Path, pin: &Pin) -> Option<String> {
 }
 
 fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<serde_json::Value> {
+    write_bootstrap_complete_marker_with_artifact(install_root, pin, None)
+}
+
+fn write_bootstrap_complete_marker_with_artifact(
+    install_root: &Path,
+    pin: &Pin,
+    artifact: Option<&ArtifactInstallInfo>,
+) -> Result<serde_json::Value> {
     use std::io::Write;
 
     let marker_path = crate::paths::likely_bootstrap_marker(install_root);
@@ -303,12 +737,20 @@ fn write_bootstrap_complete_marker(install_root: &Path, pin: &Pin) -> Result<ser
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or_default();
-    let marker = serde_json::json!({
+    let mut marker = serde_json::json!({
         "schemaVersion": 1,
         "pinnedCommit": resolve_marker_commit(install_root, pin),
         "pinnedBranch": pin.branch.clone(),
         "completedAtUnix": completed_at_unix,
     });
+    if let Some(info) = artifact {
+        let object = marker.as_object_mut().expect("marker is an object");
+        object.insert("version".into(), serde_json::json!(info.version));
+        object.insert("releaseSequence".into(), serde_json::json!(info.release_sequence));
+        object.insert("artifactSha256".into(), serde_json::json!(info.artifact_sha256));
+        object.insert("releaseBaseUrl".into(), serde_json::json!(info.release_base_url));
+        object.insert("installedAt".into(), serde_json::json!(completed_at_unix));
+    }
     let mut body = serde_json::to_vec_pretty(&marker)?;
     body.push(b'\n');
 
@@ -441,15 +883,77 @@ fn desktop_launch_command_std(
 // Bootstrap implementation
 // ---------------------------------------------------------------------------
 
+async fn run_requested_bootstrap(
+    app: AppHandle,
+    args: StartBootstrapArgs,
+    cancel_rx: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
+) -> Result<String> {
+    let repair = std::env::args().any(|arg| arg == "--repair" || arg == "--reinstall");
+    if repair {
+        if let Some(base) = option_env!("RELEASE_BASE_URL") {
+            let home = args.youtab_home.as_ref().map(PathBuf::from)
+                .unwrap_or_else(crate::paths::youtab_home);
+            let root = home.join("youtab-agent-runtime");
+            let lock = crate::update::UpdateMarkerGuard::acquire_for_install(&home)?;
+            InstallSwap::recover(&root)?;
+            if root.join(".youtab-agent-runtime-bootstrap-complete").exists() {
+                let approved = crate::update::approved_artifact_target(base, &root).await?;
+                return run_bootstrap(app, args, cancel_rx, Some(approved.sha), Some(lock)).await;
+            }
+            return run_bootstrap(app, args, cancel_rx, None, Some(lock)).await;
+        }
+    }
+    run_bootstrap(app, args, cancel_rx, None, None).await
+}
+
+pub(crate) async fn run_artifact_update(
+    app: AppHandle,
+    source_sha: String,
+    lock: crate::update::UpdateMarkerGuard,
+) -> Result<String> {
+    let (cancel_tx, cancel_rx) = mpsc::channel(1);
+    drop(cancel_tx);
+    run_bootstrap(
+        app,
+        StartBootstrapArgs { commit: None, branch: None, youtab_home: None, include_desktop: true },
+        Arc::new(Mutex::new(Some(cancel_rx))),
+        Some(source_sha),
+        Some(lock),
+    ).await
+}
+
 async fn run_bootstrap(
     app: AppHandle,
     args: StartBootstrapArgs,
     cancel_rx_holder: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
+    authorized_artifact_target: Option<String>,
+    preheld_lock: Option<crate::update::UpdateMarkerGuard>,
 ) -> Result<String> {
     let kind = ScriptKind::for_current_os();
+    let release_base = option_env!("RELEASE_BASE_URL");
+    if release_base.is_some() && !args.include_desktop {
+        return Err(anyhow!("customer artifact Setup requires the Desktop build stage"));
+    }
+    let youtab_home = args.youtab_home.clone()
+        .unwrap_or_else(|| crate::paths::youtab_home().to_string_lossy().into_owned());
+    let youtab_home_path = PathBuf::from(&youtab_home);
+    let install_root = youtab_home_path.join("youtab-agent-runtime");
+    let _install_lock = if release_base.is_some() {
+        let lock = match preheld_lock {
+            Some(lock) => lock,
+            None => crate::update::UpdateMarkerGuard::acquire_for_install(&youtab_home_path)?,
+        };
+        InstallSwap::recover(&install_root)?;
+        Some(lock)
+    } else {
+        None
+    };
+    let mut install_swap: Option<InstallSwap> = None;
+    let mut artifact_info: Option<ArtifactInstallInfo> = None;
 
     let pin = Pin {
-        commit: args.commit.or_else(|| option_env_string("BUILD_PIN_COMMIT")),
+        commit: authorized_artifact_target.clone()
+            .or(args.commit).or_else(|| option_env_string("BUILD_PIN_COMMIT")),
         branch: args.branch.or_else(|| option_env_string("BUILD_PIN_BRANCH")),
     };
 
@@ -478,7 +982,12 @@ async fn run_bootstrap(
     };
 
     // 1. Resolve install.ps1
-    let script = install_script::resolve(kind, &pin, &emit_log)
+    let script_pin = if authorized_artifact_target.is_some() {
+        Pin { commit: option_env_string("BUILD_PIN_COMMIT"), branch: None }
+    } else {
+        pin.clone()
+    };
+    let mut script = install_script::resolve(kind, &script_pin, &emit_log)
         .await
         .map_err(|e| {
             let msg = format!("resolve install script failed: {e:#}");
@@ -491,6 +1000,12 @@ async fn run_bootstrap(
             );
             anyhow!(msg)
         })?;
+    if authorized_artifact_target.is_some() {
+        // Only the internal latest.json update path may target a new source
+        // SHA while retaining the install script trusted by this Setup build.
+        script.commit = pin.commit.clone();
+        script.branch = None;
+    }
 
     let source_note = match &script.source {
         ScriptSource::DevCheckout => "dev checkout",
@@ -698,6 +1213,20 @@ async fn run_bootstrap(
                 );
             }
             Some(frame) if frame.ok => {
+                if stage.name.eq_ignore_ascii_case("repository") {
+                    if let Some(base) = release_base {
+                        let data = frame.data.as_ref().ok_or_else(||
+                            anyhow!("artifact repository stage omitted its result data"))?;
+                        let info = ArtifactInstallInfo::from_stage_data(data, &pin, base)?;
+                        ensure_replacement_not_downgrade(&install_root, &info)?;
+                        crate::update::require_install_locks_free(&install_root).await?;
+                        let setup_source = std::env::current_exe().context("locating running Setup")?;
+                        let mut swap = InstallSwap::promote_with_setup(&install_root, &info.staged, Some(&setup_source))?;
+                        swap.install_setup()?;
+                        artifact_info = Some(info);
+                        install_swap = Some(swap);
+                    }
+                }
                 emit_event(
                     &app,
                     BootstrapEvent::Stage {
@@ -739,15 +1268,15 @@ async fn run_bootstrap(
     // 4. Resolve install_root. install.ps1 doesn't (yet) report this back
     // explicitly; we infer it from $YoutabHome which Stage-Repository clones
     // the repo INTO at $YoutabHome\youtab-agent-runtime. Mirrors youtab_constants.
-    let youtab_home = args
-        .youtab_home
-        .clone()
-        .unwrap_or_else(|| crate::paths::youtab_home().to_string_lossy().into_owned());
-    let install_root = PathBuf::from(&youtab_home).join("youtab-agent-runtime");
-
     // Marker publish is terminal for this run: a write failure must emit Failed
     // so the UI leaves the progress state (it does not poll get_bootstrap_status).
-    let marker = match write_bootstrap_complete_marker(&install_root, &pin) {
+    if install_swap.is_some() {
+        verify_installed_backend(&install_root, &youtab_home_path).await?;
+        if args.include_desktop && resolve_youtab_desktop_exe(&install_root).is_none() {
+            return Err(anyhow!("installed Desktop executable is absent after build"));
+        }
+    }
+    let marker = match write_bootstrap_complete_marker_with_artifact(&install_root, &pin, artifact_info.as_ref()) {
         Ok(marker) => marker,
         Err(err) => {
             let msg = format!("write bootstrap marker failed: {err:#}");
@@ -762,16 +1291,19 @@ async fn run_bootstrap(
         }
     };
 
-    // Copy ourselves to YOUTAB_AGENT_HOME/youtab-setup.exe so the desktop app can
-    // re-invoke us with `--update` and shortcuts have a stable target. This is
-    // a one-shot install concern; an `--update` re-invocation no-ops because
-    // we're already running from that path. Best-effort — a failure here must
-    // not fail an otherwise-successful install.
-    if let Err(err) = crate::paths::copy_self_to_youtab_home() {
+    if let Some(swap) = install_swap.as_mut() {
+        swap.commit()?;
+    }
+
+    // Artifact installs stage and verify Setup within the joint transaction.
+    // Preserve the existing development/legacy installation behavior.
+    if release_base.is_none() {
+      if let Err(err) = crate::paths::copy_self_to_youtab_home() {
         tracing::warn!(?err, "failed to copy installer into YOUTAB_AGENT_HOME (non-fatal)");
         emit_log(&format!(
             "[bootstrap] warning: could not stage updater binary: {err}"
         ));
+      }
     }
 
     emit_event(
@@ -867,6 +1399,10 @@ fn build_pin_args(script: &install_script::ResolvedScript) -> Vec<String> {
     if let Some(b) = &script.branch {
         out.push("-Branch".to_string());
         out.push(b.clone());
+    }
+    if let Some(base) = option_env!("RELEASE_BASE_URL") {
+        out.push("-ReleaseBaseUrl".to_string());
+        out.push(base.to_string());
     }
     out
 }
@@ -1116,5 +1652,283 @@ mod tests {
             "failed write must not leave a temp marker sibling either"
         );
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn install_swap_restores_old_tree_on_failure() {
+        let parent = unique_tmp_dir("swap-rollback");
+        let current = parent.join("youtab-agent-runtime");
+        let staged = parent.join("youtab-agent-runtime.new-test");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(current.join("old.txt"), b"old").unwrap();
+        std::fs::write(staged.join("new.txt"), b"new").unwrap();
+        let mut swap = InstallSwap::promote(&current, &staged).unwrap();
+        assert!(current.join("new.txt").exists());
+        swap.rollback().unwrap();
+        assert!(current.join("old.txt").exists());
+        assert!(!current.join("new.txt").exists());
+        assert!(!InstallSwap::marker_path(&current, "pending").unwrap().exists());
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn install_swap_recovers_crash_before_and_after_promotion() {
+        let parent = unique_tmp_dir("swap-crash");
+        let current = parent.join("youtab-agent-runtime");
+        let staged = parent.join("youtab-agent-runtime.new-test");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::write(current.join("old.txt"), b"old").unwrap();
+        InstallSwap::write_pending(&current, true).unwrap();
+        std::fs::rename(&current, InstallSwap::backup_path(&current).unwrap()).unwrap();
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("new.txt"), b"new").unwrap();
+        let swap = InstallSwap::promote(&current, &staged).unwrap();
+        std::mem::forget(swap); // simulate process death before verification
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert!(!current.join("new.txt").exists());
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn fresh_install_failure_removes_unverified_current() {
+        let parent = unique_tmp_dir("swap-fresh-failure");
+        let current = parent.join("youtab-agent-runtime");
+        let staged = parent.join("youtab-agent-runtime.new-test");
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(staged.join("new.txt"), b"new").unwrap();
+        let mut swap = InstallSwap::promote(&current, &staged).unwrap();
+        swap.rollback().unwrap();
+        assert!(!current.exists());
+        assert!(!InstallSwap::marker_path(&current, "pending").unwrap().exists());
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn artifact_replacement_rejects_downgrade_and_sequence_reuse() {
+        let parent = unique_tmp_dir("swap-sequence");
+        let current = parent.join("youtab-agent-runtime");
+        std::fs::create_dir_all(&current).unwrap();
+        let base = "https://api.youtab.io/pilot-runtime-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/releases";
+        let mut next = ArtifactInstallInfo {
+            staged: parent.join("unused"), source_sha: "b".repeat(40),
+            artifact_sha256: "c".repeat(64), version: "0.19.0".into(),
+            release_sequence: 1, release_base_url: base.into(),
+        };
+        std::fs::write(current.join(".youtab-agent-runtime-bootstrap-complete"),
+            serde_json::to_vec(&serde_json::json!({
+                "releaseBaseUrl": base, "releaseSequence": 2,
+                "pinnedCommit": "d".repeat(40), "artifactSha256": "e".repeat(64),
+            })).unwrap()).unwrap();
+        assert!(ensure_replacement_not_downgrade(&current, &next).is_err());
+        next.release_sequence = 2;
+        assert!(ensure_replacement_not_downgrade(&current, &next).is_err());
+        next.release_sequence = 3;
+        assert!(ensure_replacement_not_downgrade(&current, &next).is_ok());
+        std::fs::write(current.join(".youtab-agent-runtime-bootstrap-complete"),
+            serde_json::to_vec(&serde_json::json!({
+                "releaseBaseUrl": base, "releaseSequence": 2,
+                "pinnedCommit": "invalid", "artifactSha256": "e".repeat(64),
+            })).unwrap()).unwrap();
+        assert!(ensure_replacement_not_downgrade(&current, &next).is_err());
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    fn setup_swap_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let parent = unique_tmp_dir(label);
+        let current = parent.join("youtab-agent-runtime");
+        let staged = parent.join("youtab-agent-runtime.new-test");
+        let source = parent.join("downloaded-setup.exe");
+        std::fs::create_dir_all(&current).unwrap();
+        std::fs::create_dir_all(&staged).unwrap();
+        std::fs::write(current.join("old.txt"), b"old-runtime").unwrap();
+        std::fs::write(staged.join("new.txt"), b"new-runtime").unwrap();
+        std::fs::write(&source, b"new-setup-fixture").unwrap();
+        std::fs::write(crate::paths::installer_dest_in(&parent), b"old-setup-fixture").unwrap();
+        (parent, current, staged, source)
+    }
+
+    #[test]
+    fn setup_staging_success_commits_both_verified_paths() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-success");
+        let (target, setup_stage, setup_backup) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"old-setup-fixture");
+        assert_eq!(std::fs::read(&setup_stage).unwrap(), b"new-setup-fixture");
+        swap.install_setup().unwrap();
+        swap.commit().unwrap();
+        assert!(current.join("new.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), std::fs::read(source).unwrap());
+        assert!(!setup_stage.exists());
+        assert!(!setup_backup.exists());
+        assert!(!InstallSwap::backup_path(&current).unwrap().exists());
+        InstallSwap::recover(&current).unwrap();
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_copy_and_verification_failure_preserves_existing_pair() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-copy-fail");
+        let (target, setup_stage, _) = InstallSwap::setup_paths(&current).unwrap();
+        // Missing source fails before either active path is touched.
+        assert!(InstallSwap::promote_with_setup(&current, &staged, Some(&parent.join("missing"))).is_err());
+        assert!(current.join("old.txt").exists());
+        // The low-level copy never truncates an existing staging path.
+        std::fs::write(&setup_stage, b"partial-copy").unwrap();
+        let expected = crate::paths::installer_sha256(&source).unwrap();
+        assert!(crate::paths::stage_installer(&source, &setup_stage, &expected).is_err());
+        assert_eq!(std::fs::read(&setup_stage).unwrap(), b"partial-copy");
+        std::fs::remove_file(&setup_stage).unwrap();
+        // A copied file whose bytes fail verification remains journal-owned.
+        InstallSwap::write_journal(&current, &InstallJournal {
+            schema: 2, had_old: true, setup: Some(SetupJournal {
+                replace: true,
+                previous_sha256: Some(crate::paths::installer_sha256(&target).unwrap()),
+                required_sha256: "0".repeat(64),
+            }),
+        }).unwrap();
+        assert!(crate::paths::stage_installer(&source, &setup_stage, &"0".repeat(64)).is_err());
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        assert!(!setup_stage.exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_verification_failure_after_runtime_promotion_restores_both() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-verify-fail");
+        let (target, setup_stage, _) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        std::fs::write(&setup_stage, b"corrupt").unwrap();
+        assert!(swap.install_setup().is_err());
+        assert!(swap.commit().is_err());
+        swap.rollback().unwrap();
+        assert!(current.join("old.txt").exists());
+        assert!(!current.join("new.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_recovery_after_both_promotions_restores_prior_install() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-crash");
+        let (target, _, _) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        swap.install_setup().unwrap();
+        std::mem::forget(swap);
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        InstallSwap::recover(&current).unwrap();
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_missing_or_corrupt_after_promotion_never_commits() {
+        for missing in [true, false] {
+            let (parent, current, staged, source) = setup_swap_fixture("setup-final-verify");
+            let (target, _, _) = InstallSwap::setup_paths(&current).unwrap();
+            let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+            swap.install_setup().unwrap();
+            if missing { std::fs::remove_file(&target).unwrap(); }
+            else { std::fs::write(&target, b"corrupt").unwrap(); }
+            assert!(swap.commit().is_err());
+            swap.rollback().unwrap();
+            assert!(current.join("old.txt").exists());
+            assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+            std::fs::remove_dir_all(parent).unwrap();
+        }
+    }
+
+    #[test]
+    fn setup_running_from_stable_path_is_verified_without_self_replacement() {
+        let (parent, current, staged, _) = setup_swap_fixture("setup-self");
+        let (target, setup_stage, setup_backup) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&target)).unwrap();
+        assert!(!setup_stage.exists());
+        swap.install_setup().unwrap();
+        swap.commit().unwrap();
+        assert!(!setup_backup.exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_fresh_install_failure_removes_both_unverified_paths() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-fresh");
+        let (target, _, _) = InstallSwap::setup_paths(&current).unwrap();
+        std::fs::remove_dir_all(&current).unwrap();
+        std::fs::remove_file(&target).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        swap.install_setup().unwrap();
+        swap.rollback().unwrap();
+        assert!(!current.exists());
+        assert!(!target.exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_recovery_between_backup_and_promotion_restores_prior_pair() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-rename-crash");
+        let (target, _, backup) = InstallSwap::setup_paths(&current).unwrap();
+        let swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        std::fs::rename(&target, &backup).unwrap();
+        std::mem::forget(swap);
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_committed_crash_retries_cleanup_without_reverting_verified_pair() {
+        let (parent, current, staged, source) = setup_swap_fixture("setup-commit-crash");
+        let (target, _, backup) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        swap.install_setup().unwrap();
+        std::fs::write(InstallSwap::marker_path(&current, "committed").unwrap(), b"verified\n").unwrap();
+        std::mem::forget(swap);
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("new.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"new-setup-fixture");
+        assert!(!backup.exists());
+        assert!(!InstallSwap::backup_path(&current).unwrap().exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn setup_legacy_runtime_only_journal_remains_recoverable() {
+        let (parent, current, _, _) = setup_swap_fixture("setup-legacy-journal");
+        std::fs::write(InstallSwap::marker_path(&current, "pending").unwrap(), b"old\n").unwrap();
+        std::fs::rename(&current, InstallSwap::backup_path(&current).unwrap()).unwrap();
+        InstallSwap::recover(&current).unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(crate::paths::installer_dest_in(&parent)).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn setup_windows_lock_fails_closed_then_recovery_retries_after_unlock() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let (parent, current, staged, source) = setup_swap_fixture("setup-windows-lock");
+        let (target, _, _) = InstallSwap::setup_paths(&current).unwrap();
+        let mut swap = InstallSwap::promote_with_setup(&current, &staged, Some(&source)).unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(&target).unwrap();
+        assert!(swap.install_setup().is_err());
+        assert!(swap.commit().is_err());
+        assert!(swap.rollback().is_err());
+        assert!(InstallSwap::backup_path(&current).unwrap().exists());
+        assert!(InstallSwap::marker_path(&current, "pending").unwrap().exists());
+        drop(lock);
+        swap.rollback().unwrap();
+        assert!(current.join("old.txt").exists());
+        assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
+        std::fs::remove_dir_all(parent).unwrap();
     }
 }

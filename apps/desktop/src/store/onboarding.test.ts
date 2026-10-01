@@ -7,12 +7,131 @@ import {
   $desktopOnboarding,
   type DesktopOnboardingState,
   type OnboardingContext,
+  type OnboardingFlow,
   refreshOnboarding,
   requestDesktopOnboarding,
+  retryOnboardingProviderDiscovery,
+  saveOnboardingApiKey,
   saveOnboardingLocalEndpoint,
   startProviderOAuth,
   submitOnboardingCode
 } from './onboarding'
+
+describe('direct API-key provider setup', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  function gateway(ready: boolean): OnboardingContext['requestGateway'] {
+    return async (method, params) => {
+      if (method === 'reload.env') { return {} as never }
+      if (method === 'setup.status') { return { provider_configured: true } as never }
+      if (method === 'setup.runtime_check') {
+        expect(params).toEqual({ provider: 'deepseek' })
+        return { ok: ready, error: ready ? undefined : 'No inference provider configured.' } as never
+      }
+      throw new Error(`unexpected gateway method: ${method}`)
+    }
+  }
+
+  it('saves the exact DeepSeek model and advances only when runtime resolves it', async () => {
+    const paths: string[] = []
+    let assigned: unknown
+    installApiMock(async (request: { body?: unknown; path: string }) => {
+      paths.push(request.path)
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'deepseek', models: ['deepseek-chat'] }] }
+      }
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { provider: 'deepseek', model: 'anthropic/claude' }
+      }
+      if (request.path === '/api/model/set') {
+        assigned = request.body
+        return { ok: true, provider: 'deepseek', model: 'deepseek-chat' }
+      }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+
+    const result = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(true) })
+    expect(result).toEqual({ ok: true })
+    expect(paths).toContain('/api/model/set')
+    expect(assigned).toMatchObject({ scope: 'main', provider: 'deepseek', model: 'deepseek-chat' })
+    expect($desktopOnboarding.get().flow).toMatchObject({ status: 'confirming_model', providerSlug: 'deepseek' })
+  })
+
+  it('does not mark DeepSeek connected when model persistence fails', async () => {
+    installApiMock(async request => {
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'deepseek', models: ['deepseek-chat'] }] }
+      }
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { provider: 'deepseek', model: 'deepseek-chat' }
+      }
+      if (request.path === '/api/model/set') { throw new Error('write failed') }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+    const result = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(true) })
+    expect(result.ok).toBe(false)
+    expect($desktopOnboarding.get().configured).toBe(false)
+  })
+
+  it('rejects a model-set response that did not persist the assignment', async () => {
+    installApiMock(async request => {
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'deepseek', models: ['deepseek-chat'] }] }
+      }
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { provider: 'deepseek', model: 'deepseek-chat' }
+      }
+      if (request.path === '/api/model/set') { return { ok: false, confirm_required: true } }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+    const result = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(true) })
+    expect(result.ok).toBe(false)
+    expect($desktopOnboarding.get().configured).toBe(false)
+  })
+
+  it('rejects an unrelated anthropic model row and a failed runtime check', async () => {
+    let assignments = 0
+    installApiMock(async request => {
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'anthropic', models: ['anthropic/claude'] }] }
+      }
+      if (request.path === '/api/model/set') { assignments++; return { ok: true } }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+    const unrelated = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(true) })
+    expect(unrelated.ok).toBe(false)
+    expect(assignments).toBe(0)
+
+    installApiMock(async request => {
+      if (request.path === '/api/env') { return { ok: true } }
+      if (request.path.startsWith('/api/model/options')) {
+        return { providers: [{ slug: 'deepseek', models: ['deepseek-chat'] }] }
+      }
+      if (request.path.startsWith('/api/model/recommended-default')) {
+        return { provider: 'deepseek', model: 'deepseek-chat' }
+      }
+      if (request.path === '/api/model/set') { return { ok: true, provider: 'deepseek', model: 'deepseek-chat' } }
+      throw new Error(`unexpected path: ${request.path}`)
+    })
+    const unresolved = await saveOnboardingApiKey('DEEPSEEK_API_KEY', 'test-key', 'DeepSeek', { requestGateway: gateway(false) })
+    expect(unresolved.ok).toBe(false)
+    expect(unresolved.message).toContain('cannot resolve a usable provider')
+    expect($desktopOnboarding.get().configured).toBe(false)
+  })
+})
 
 function provider(id: string, name = id): OAuthProvider {
   return {
@@ -59,14 +178,75 @@ it('uses the advertised native_pkce capability through the existing desktop logi
   const selected = { ...provider('gateway'), flow: 'native_pkce' as const, native_base_url: 'https://api.youtab.io' }
   await startProviderOAuth(selected, {
     requestGateway: async method => {
-      if (method === 'reload.env') { return {} as never }
-      if (method === 'setup.status') { return { provider_configured: true } as never }
-      if (method === 'setup.runtime_check') { return { ok: true } as never }
+      if (method === 'reload.env') {
+        return {} as never
+      }
+      if (method === 'setup.status') {
+        return { provider_configured: true } as never
+      }
+      if (method === 'setup.runtime_check') {
+        return { ok: true } as never
+      }
       throw new Error(`unexpected gateway method: ${method}`)
     }
   })
   expect(login).toHaveBeenCalledWith('https://api.youtab.io', { nativeCapability: true, profile: null })
   expect($desktopOnboarding.get().configured).toBe(true)
+})
+
+it.each([
+  ['404', () => Promise.reject(new Error('HTTP 404'))],
+  ['malformed response', () => Promise.resolve({ providers: null })],
+  ['temporary failure', () => Promise.reject(new Error('Connection timed out'))]
+])('keeps Youtab sign-in unavailable on provider discovery %s and recovers on retry', async (_case, firstResult) => {
+  const nativeLogin = vi.fn()
+
+  const api = vi
+    .fn()
+    .mockImplementationOnce(firstResult)
+    .mockResolvedValueOnce({
+      providers: [{ ...provider('youtab'), flow: 'native_pkce', native_base_url: 'https://api.youtab.io' }]
+    })
+
+  Object.defineProperty(window, 'youtabDesktop', {
+    configurable: true,
+    value: { api, oauthLoginConnectionConfig: nativeLogin }
+  })
+  $desktopOnboarding.set(baseState({ manual: true, requested: true }))
+
+  await refreshOnboarding({ requestGateway: vi.fn() })
+
+  expect($desktopOnboarding.get().flow).toMatchObject({
+    status: 'error',
+    message: expect.stringContaining('retry')
+  })
+  expect($desktopOnboarding.get().mode).toBe('oauth')
+  expect($desktopOnboarding.get().providers).toEqual([])
+  expect(api).toHaveBeenCalledTimes(1)
+  expect(nativeLogin).not.toHaveBeenCalled()
+
+  await retryOnboardingProviderDiscovery()
+
+  expect($desktopOnboarding.get().flow.status).toBe('idle')
+  expect($desktopOnboarding.get().providers?.[0]).toMatchObject({ id: 'youtab', flow: 'native_pkce' })
+  expect(api).toHaveBeenCalledTimes(2)
+})
+
+it.each(['awaiting_user', 'polling'] as const)('preserves a newer %s flow when catalog discovery fails', async status => {
+  let rejectCatalog!: (error: Error) => void
+  installApiMock(() => new Promise((_resolve, reject) => { rejectCatalog = reject }))
+  $desktopOnboarding.set(baseState())
+  const pending = retryOnboardingProviderDiscovery()
+  const selected = provider('example')
+  const flow: OnboardingFlow = status === 'polling'
+    ? { status, provider: selected, copied: false, start: { flow: 'device_code', session_id: 'fixture-session', expires_in: 600, poll_interval: 5, user_code: 'fixture-code', verification_url: 'https://example.test/verify' } }
+    : { status, provider: selected, code: '', start: { flow: 'pkce', session_id: 'fixture-session', expires_in: 600, auth_url: 'https://example.test/authorize' } }
+  $desktopOnboarding.set({ ...$desktopOnboarding.get(), flow })
+  rejectCatalog(new Error('Connection timed out'))
+  await pending
+
+  expect($desktopOnboarding.get().flow).toBe(flow)
+  expect($desktopOnboarding.get().flow).toMatchObject({ start: { session_id: 'fixture-session' } })
 })
 
 function emptyOpenRouterGateway(): OnboardingContext['requestGateway'] {
