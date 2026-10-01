@@ -250,6 +250,43 @@ These checks are the acceptance test for the document. Run all of them.
 4. Confirm the fonts are embedded subsets: `pdffonts output.pdf` — every face
    used must show `emb yes`.
 
+### The verifier may not be derived from the builder
+
+**Never import the builder's shaping, layout or line-breaking code into the
+verifier.** A verifier that calls the builder's own `fa()`/`shape()` compares the
+builder against itself, so a bug in that function is invisible by construction —
+both sides of the comparison make the same mistake.
+
+This is not hypothetical. A 5-page Persian translation reported
+`RESULT: ALL CHECKS PASSED` on ten checks, including one explicitly named
+"visual word order is RTL-reversed", while the rendered page actually showed:
+
+* **every multi-line paragraph printed with its lines in reverse order** — the
+  end of the sentence above its beginning;
+* `begin → prepare → decide → complete` drawn as `begin ← prepare ← decide`,
+  the arrows mirrored by UAX#9 L4, so the pipeline reads backwards;
+* a comma-separated Latin enum reversed — `COMPLETED, DEGRADED, FAILED,
+  REFUSED` came out `REFUSED، FAILED، DEGRADED، COMPLETED`;
+* bullet markers on the left of right-aligned text;
+* a long identifier split mid-word across a line break.
+
+Every check passed because each one compared `fa(source)` against the stream
+that the same `fa()` had produced. The document was wrong and the gate agreed
+with it.
+
+So the verifier compares against the two things the builder cannot influence:
+
+* **the SOURCE text, in logical order** — never a pre-shaped string; and
+* **the RASTER**, read with `vision_analyze`.
+
+From the raster, assert these four explicitly. They are the ones a text-layer
+check structurally cannot see, and each corresponds to a defect observed above:
+
+1. the first line of each multi-line paragraph is the beginning of its sentence;
+2. arrows and brackets point the way the source does;
+3. comma-separated Latin runs keep their source order;
+4. bullet markers sit on the leading edge — right, for RTL.
+
 **When these pass, the document is finished. Deliver it and stop.**
 
 That is a rule, not a suggestion, and it binds in both directions:

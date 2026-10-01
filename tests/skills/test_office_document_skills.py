@@ -312,3 +312,37 @@ def test_pdf_verification_is_binding_in_both_directions():
     assert "pdftoppm" in body and "vision_analyze" in body, (
         "the raster check is the only one that can see shaping defects"
     )
+
+
+def test_pdf_skill_forbids_a_verifier_derived_from_the_builder():
+    """A verifier that imports the builder's shaping function checks the builder
+    against itself.
+
+    Observed on a real 5-page Persian translation: ten checks passed, one of them
+    named "visual word order is RTL-reversed", while the page showed every
+    multi-line paragraph with its lines in reverse order, arrows mirrored so the
+    pipeline read backwards, and a Latin enum reversed. Each check compared
+    `fa(source)` with the stream the same `fa()` produced, so the gate agreed
+    with the defect. The skill has to forbid that construction and name the
+    raster assertions that catch what a text-layer check cannot.
+    """
+    text = (_skill_dir("pdf") / "SKILL.md").read_text(encoding="utf-8")
+    # Whitespace-folded: these are prose assertions and Markdown wraps lines,
+    # so a sentence may be split anywhere.
+    body = " ".join(text.split("## Verification", 1)[1].split())
+    assert "may not be derived from the builder" in body, (
+        "the prohibition must be a heading an agent cannot skim past"
+    )
+    assert "compares the builder against itself" in body, "the reason must be stated"
+    for anchor in ("SOURCE text", "RASTER"):
+        assert anchor in body, (
+            f"the verifier's two independent references must be named ({anchor})"
+        )
+    # The four raster assertions, each tied to a defect that shipped.
+    for claim in (
+        "beginning of its sentence",
+        "arrows",
+        "source order",
+        "bullet markers",
+    ):
+        assert claim in body, f"raster assertion missing: {claim}"
