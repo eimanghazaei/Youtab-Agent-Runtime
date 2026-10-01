@@ -34,6 +34,12 @@ fn main() {
     let commit = resolve_commit_pin();
     let branch = resolve_branch_pin();
 
+    // A pinned customer setup executes the script embedded in this binary.
+    // Refuse to label modified or mismatched script bytes as that commit.
+    if let Some(c) = &commit {
+        verify_bundled_install_script(c);
+    }
+
     if let Some(c) = &commit {
         println!("cargo:rustc-env=BUILD_PIN_COMMIT={c}");
         println!(
@@ -187,4 +193,40 @@ fn short(commit: &str) -> &str {
     } else {
         commit
     }
+}
+
+fn verify_bundled_install_script(commit: &str) {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let script = root.join("scripts/install.ps1");
+    println!("cargo:rerun-if-changed={}", script.display());
+
+    let head = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD^{commit}"])
+        .current_dir(&root)
+        .output()
+        .expect("pinned setup build requires a Git checkout");
+    assert!(
+        head.status.success(),
+        "pinned setup build requires a resolvable HEAD"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&head.stdout).trim(),
+        commit,
+        "pinned setup build commit must equal checkout HEAD"
+    );
+
+    let committed = Command::new("git")
+        .args(["show", "HEAD:scripts/install.ps1"])
+        .current_dir(&root)
+        .output()
+        .expect("reading committed install.ps1");
+    assert!(
+        committed.status.success(),
+        "committed install.ps1 is unavailable"
+    );
+    let local = std::fs::read(&script).expect("reading bundled install.ps1");
+    assert_eq!(
+        local, committed.stdout,
+        "pinned setup build refuses modified install.ps1"
+    );
 }

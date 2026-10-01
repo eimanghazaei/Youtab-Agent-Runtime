@@ -1,10 +1,10 @@
-//! Resolves and downloads `scripts/install.ps1` (and `install.sh`).
+//! Resolves `scripts/install.ps1` (and `install.sh`).
 //!
 //! Resolution order:
 //!   1. Dev shortcut: a sibling repo checkout via $YOUTAB_AGENT_SETUP_DEV_REPO_ROOT
 //!      env var. Lets devs iterate without re-publishing the script.
-//!   2. Bundled fallback: if the installer was bundled with a script (e.g.
-//!      tauri's `resource` mechanism), serve from there. Not used today.
+//!   2. Pinned Windows releases use the canonical install.ps1 embedded at build
+//!      time. A mismatched pin or damaged cached copy fails closed.
 //!   3. Network: download from GitHub raw at a pinned commit or branch.
 //!      Commit pins are immutable; branch pins are HEAD-tracking.
 //!
@@ -18,6 +18,10 @@ use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 use crate::paths;
+
+// The build script proves these bytes equal HEAD:scripts/install.ps1 for an
+// explicitly pinned release. No private GitHub request is needed to start it.
+const BUNDLED_PS1: &[u8] = include_bytes!("../../../../scripts/install.ps1");
 
 /// Identity of the install.ps1 we'll execute. Used by both the manifest
 /// fetch and the per-stage runs.
@@ -104,7 +108,9 @@ pub async fn resolve(
 ) -> Result<ResolvedScript> {
     // 1. Dev shortcut.
     if let Ok(repo_root) = std::env::var("YOUTAB_AGENT_SETUP_DEV_REPO_ROOT") {
-        let candidate = PathBuf::from(repo_root).join("scripts").join(kind.filename());
+        let candidate = PathBuf::from(repo_root)
+            .join("scripts")
+            .join(kind.filename());
         if candidate.exists() {
             emit_log(&format!(
                 "[bootstrap] dev mode — using local {} at {}",
@@ -120,7 +126,25 @@ pub async fn resolve(
         }
     }
 
-    // 2. (Not implemented) bundled fallback.
+    // 2. Exact-commit Windows release: use its own trusted script bytes.
+    // A caller changing the pin cannot silently pair this script with a
+    // different Runtime commit or fall through to a remote script.
+    if let Some(bytes) = bundled_ps1_for_pin(kind, pin, option_env!("BUILD_PIN_COMMIT"))? {
+        let commit = pin.commit.as_deref().expect("validated bundled commit");
+        let cached = cached_path(kind, commit);
+        cache_bundled_script(kind, &cached, bytes)?;
+        emit_log(&format!(
+            "[bootstrap] using bundled {} for commit {}",
+            kind.filename(),
+            truncate_ref(commit)
+        ));
+        return Ok(ResolvedScript {
+            path: cached,
+            source: ScriptSource::Bundled,
+            commit: pin.commit.clone(),
+            branch: pin.branch.clone(),
+        });
+    }
 
     // 3. Network. Pin must be a real commit or a branch ref.
     //
@@ -165,11 +189,7 @@ pub async fn resolve(
             emit_log(&format!(
                 "[bootstrap] downloading {} for {} {} from GitHub",
                 kind.filename(),
-                if immutable {
-                    "commit"
-                } else {
-                    "mutable ref"
-                },
+                if immutable { "commit" } else { "mutable ref" },
                 truncate_ref(&commit_or_ref)
             ));
 
@@ -209,6 +229,53 @@ pub async fn resolve(
 pub struct Pin {
     pub commit: Option<String>,
     pub branch: Option<String>,
+}
+
+fn bundled_ps1_for_pin(
+    kind: ScriptKind,
+    pin: &Pin,
+    built_commit: Option<&str>,
+) -> Result<Option<&'static [u8]>> {
+    if !matches!(kind, ScriptKind::Ps1) {
+        return Ok(None);
+    }
+    let Some(built_commit) = built_commit else {
+        return Ok(None);
+    };
+    match pin.commit.as_deref() {
+        Some(commit) if commit == built_commit => Ok(Some(BUNDLED_PS1)),
+        Some(commit) => Err(anyhow!(
+            "install script pin {commit} does not match bundled build commit {built_commit}"
+        )),
+        None => Ok(None),
+    }
+}
+
+fn cache_bundled_script(kind: ScriptKind, dest: &Path, bytes: &[u8]) -> Result<()> {
+    let expected = prepare_cached_script_bytes(kind, bytes);
+    if dest.exists() {
+        let existing = std::fs::read(dest)
+            .with_context(|| format!("reading bundled script cache {}", dest.display()))?;
+        if existing != expected {
+            return Err(anyhow!(
+                "bundled install script cache integrity mismatch at {}",
+                dest.display()
+            ));
+        }
+        return Ok(());
+    }
+
+    let parent = dest
+        .parent()
+        .context("bundled script cache has no parent")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating bundled script cache {}", parent.display()))?;
+    let tmp = dest.with_extension("ps1.bundled-tmp");
+    std::fs::write(&tmp, &expected)
+        .with_context(|| format!("writing bundled install script {}", tmp.display()))?;
+    std::fs::rename(&tmp, dest)
+        .with_context(|| format!("placing bundled install script {}", dest.display()))?;
+    Ok(())
 }
 
 fn cached_path(kind: ScriptKind, commit_or_ref: &str) -> PathBuf {
@@ -330,9 +397,8 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
     );
 
     if let Some(parent) = dest_path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| {
-            format!("creating bootstrap-cache parent dir {}", parent.display())
-        })?;
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating bootstrap-cache parent dir {}", parent.display()))?;
     }
 
     let tmp_path = dest_path.with_extension({
@@ -380,13 +446,7 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
 
     tokio::fs::rename(&tmp_path, dest_path)
         .await
-        .with_context(|| {
-            format!(
-                "renaming {} → {}",
-                tmp_path.display(),
-                dest_path.display()
-            )
-        })?;
+        .with_context(|| format!("renaming {} → {}", tmp_path.display(), dest_path.display()))?;
 
     Ok(())
 }
@@ -414,7 +474,10 @@ mod tests {
     #[test]
     fn prepare_cached_ps1_prefixes_utf8_bom() {
         let out = prepare_cached_script_bytes(ScriptKind::Ps1, b"Write-Host hi\n");
-        assert!(out.starts_with(UTF8_BOM), "cached .ps1 must start with UTF-8 BOM");
+        assert!(
+            out.starts_with(UTF8_BOM),
+            "cached .ps1 must start with UTF-8 BOM"
+        );
         assert_eq!(&out[UTF8_BOM.len()..], b"Write-Host hi\n");
     }
 
@@ -497,6 +560,53 @@ mod tests {
         upgrade_cached_script(ScriptKind::Sh, &cached, &|_| {});
         assert_eq!(std::fs::read(&cached).unwrap(), b"#!/bin/bash\n");
 
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pinned_windows_release_uses_only_matching_bundled_script() {
+        let commit = "02d26981d3d4ad50e142399b8476f59ad5953ff0";
+        let pin = Pin {
+            commit: Some(commit.into()),
+            branch: Some("main".into()),
+        };
+        assert_eq!(
+            bundled_ps1_for_pin(ScriptKind::Ps1, &pin, Some(commit))
+                .unwrap()
+                .unwrap(),
+            BUNDLED_PS1
+        );
+        assert!(bundled_ps1_for_pin(
+            ScriptKind::Ps1,
+            &pin,
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        )
+        .is_err());
+        assert!(bundled_ps1_for_pin(ScriptKind::Sh, &pin, Some(commit))
+            .unwrap()
+            .is_none());
+        assert!(bundled_ps1_for_pin(ScriptKind::Ps1, &pin, None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn bundled_script_cache_rejects_corruption_without_network_fallback() {
+        let dir =
+            std::env::temp_dir().join(format!("youtab-bundled-ps1-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cached = dir.join("install-test.ps1");
+
+        cache_bundled_script(ScriptKind::Ps1, &cached, BUNDLED_PS1).unwrap();
+        let expected = prepare_cached_script_bytes(ScriptKind::Ps1, BUNDLED_PS1);
+        assert_eq!(std::fs::read(&cached).unwrap(), expected);
+        cache_bundled_script(ScriptKind::Ps1, &cached, BUNDLED_PS1).unwrap();
+
+        std::fs::write(&cached, b"Write-Host tampered").unwrap();
+        assert!(cache_bundled_script(ScriptKind::Ps1, &cached, BUNDLED_PS1)
+            .unwrap_err()
+            .to_string()
+            .contains("integrity mismatch"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
