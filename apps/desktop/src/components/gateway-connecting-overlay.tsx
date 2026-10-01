@@ -146,9 +146,8 @@ export function GatewayConnectingOverlay() {
           leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
         )}
       >
-        {/* Startup heading — the app name in the Web Platform font (system sans
-            stack via --font-sans) and Youtab Ice Blue. */}
-        <h1 className="text-center font-sans text-3xl font-semibold tracking-tight text-[color:var(--youtab-ice-blue)]">
+        {/* Display face stays on the title; status text keeps the body font. */}
+        <h1 className="youtab-display-title text-center text-3xl tracking-tight text-[color:var(--youtab-ice-blue)]">
           Youtab Agent Runtime
         </h1>
         {/* Keep the message legible throughout startup; animate only its dots. */}

@@ -168,7 +168,7 @@ describe('connecting overlay vs recovery surface', () => {
     expect(isRecoveryShown()).toBe(false)
   })
 
-  it('startup screen shows the "Youtab Agent Runtime" heading in the Web Platform font and Ice Blue', async () => {
+  it('startup screen shows the "Youtab Agent Runtime" heading in the display font and Ice Blue', async () => {
     // Drive the initial-boot connecting state so the overlay renders.
     setGatewayState('connecting')
     $desktopBoot.set({
@@ -187,10 +187,9 @@ describe('connecting overlay vs recovery surface', () => {
     const heading = screen.getByRole('heading', { name: 'Youtab Agent Runtime' })
     expect(heading.tagName).toBe('H1')
     expect(heading.textContent).toBe('Youtab Agent Runtime')
-    // Ice Blue via the brand token + the Web Platform font (system sans via
-    // --font-sans → --dt-font-sans).
+    // Ice Blue via the brand token and the bundled display font.
     expect(heading.className).toContain('var(--youtab-ice-blue)')
-    expect(heading.className).toContain('font-sans')
+    expect(heading.className).toContain('youtab-display-title')
     // The stable status copy remains subordinate to the heading. Only its
     // trailing dots animate, so users can read the message at every frame.
     const status = screen.getByRole('status', { name: 'Youtab trying to connect' })

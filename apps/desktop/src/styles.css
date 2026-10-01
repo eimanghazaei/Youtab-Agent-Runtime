@@ -33,6 +33,19 @@
   src: url('../../../node_modules/@youtab/ui-desktop/dist/fonts/Collapse-Bold.woff2') format('woff2');
 }
 
+/* Bundled display face for installer and startup titles (SIL OFL 1.1). */
+@font-face {
+  font-family: 'Racing Sans One';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/racing-sans-one/RacingSansOne-Regular.ttf') format('truetype');
+}
+
+.youtab-display-title {
+  font-family: 'Racing Sans One', sans-serif;
+}
+
 /* JetBrains Mono — bundled terminal font (Apache-2.0) so bold/italic share the
    regular face's metrics instead of squeezing against a system fallback. */
 @font-face {
