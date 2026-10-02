@@ -645,7 +645,6 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         _bskin = get_active_skin()
         _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else YOUTAB_AGENT_CADUCEUS
     except Exception:
-        _bskin = None
         _hero = YOUTAB_AGENT_CADUCEUS
     left_lines = ["", _hero, ""]
     if (provider or "").strip().lower() == "moa":
