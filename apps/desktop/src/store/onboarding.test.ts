@@ -167,15 +167,27 @@ function installApiMock(api: (request: { path: string }) => Promise<unknown>) {
 }
 
 it('uses the advertised native_pkce capability through the existing desktop login IPC', async () => {
+  $desktopOnboarding.set(baseState())
   const login = vi.fn().mockResolvedValue({ ok: true, connected: true, baseUrl: 'https://api.youtab.io' })
   Object.defineProperty(window, 'youtabDesktop', {
     configurable: true,
     value: {
-      api: vi.fn().mockRejectedValue(new Error('model catalog unavailable')),
+      api: vi.fn().mockImplementation(async ({ path }: { path: string }) => {
+        if (path.startsWith('/api/model/options')) {
+          return { providers: [{ slug: 'youtab', models: ['deepseek-chat'] }] }
+        }
+        if (path.startsWith('/api/model/recommended-default')) {
+          return { provider: 'youtab', model: 'anthropic/claude-opus' }
+        }
+        if (path === '/api/model/set') {
+          return { ok: true, provider: 'youtab', model: 'deepseek-chat' }
+        }
+        throw new Error(`unexpected api path: ${path}`)
+      }),
       oauthLoginConnectionConfig: login
     }
   })
-  const selected = { ...provider('gateway'), flow: 'native_pkce' as const, native_base_url: 'https://api.youtab.io' }
+  const selected = { ...provider('youtab'), flow: 'native_pkce' as const, native_base_url: 'https://api.youtab.io' }
   await startProviderOAuth(selected, {
     requestGateway: async method => {
       if (method === 'reload.env') {
@@ -191,7 +203,34 @@ it('uses the advertised native_pkce capability through the existing desktop logi
     }
   })
   expect(login).toHaveBeenCalledWith('https://api.youtab.io', { nativeCapability: true, profile: null })
-  expect($desktopOnboarding.get().configured).toBe(true)
+  expect($desktopOnboarding.get().configured).toBe(false)
+  expect($desktopOnboarding.get().flow).toMatchObject({ status: 'confirming_model', currentModel: 'deepseek-chat' })
+  expect(window.youtabDesktop?.api).toHaveBeenCalledWith(expect.objectContaining({
+    path: '/api/model/set',
+    body: expect.objectContaining({ provider: 'youtab', model: 'deepseek-chat' })
+  }))
+})
+
+it.each([
+  ['empty catalog', []],
+  ['unrelated provider', [{ slug: 'anthropic', models: ['anthropic/claude-opus'] }]]
+])('keeps native sign-in unresolved on %s instead of completing against another provider', async (_case, providers) => {
+  $desktopOnboarding.set(baseState())
+  const requestGateway = vi.fn(async () => ({} as never))
+  const api = vi.fn(async ({ path }: { path: string }) => {
+    if (path.startsWith('/api/model/options')) { return { providers } }
+    throw new Error(`unexpected api path: ${path}`)
+  })
+  Object.defineProperty(window, 'youtabDesktop', {
+    configurable: true,
+    value: { api, oauthLoginConnectionConfig: vi.fn().mockResolvedValue({ connected: true }) }
+  })
+  const selected = { ...provider('youtab'), flow: 'native_pkce' as const, native_base_url: 'https://api.youtab.io' }
+  await startProviderOAuth(selected, { requestGateway })
+  expect($desktopOnboarding.get().flow.status).toBe('error')
+  expect($desktopOnboarding.get().configured).toBe(false)
+  expect(requestGateway).not.toHaveBeenCalledWith('setup.runtime_check', expect.anything())
+  expect(api.mock.calls.every(([request]) => request.path !== '/api/model/set')).toBe(true)
 })
 
 it.each([

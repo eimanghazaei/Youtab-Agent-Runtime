@@ -34,7 +34,9 @@ export const LOCALE_OPTIONS = [
     name: 'العربية',
     englishName: 'Arabic',
     configValue: 'ar'
-  }
+  },
+  { id: 'nl', name: 'Nederlands', englishName: 'Dutch', configValue: 'nl' },
+  { id: 'fa', name: 'فارسی', englishName: 'Persian Farsi', configValue: 'fa' }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
 // `name` is the endonym (native name) shown in the picker so users recognize
@@ -46,6 +48,8 @@ export const LOCALE_META: Record<Locale, { name: string; englishName: string }> 
 ) as Record<Locale, { name: string; englishName: string }>
 
 const LOCALE_ALIASES: Record<string, Locale> = {
+  nl: 'nl', 'nl-nl': 'nl', nl_nl: 'nl', 'nl-be': 'nl', dutch: 'nl', nederlands: 'nl',
+  fa: 'fa', 'fa-ir': 'fa', fa_ir: 'fa', persian: 'fa', farsi: 'fa', فارسی: 'fa',
   en: 'en',
   'en-us': 'en',
   en_us: 'en',

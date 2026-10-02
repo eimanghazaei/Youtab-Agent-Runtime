@@ -46,6 +46,17 @@
   font-family: 'Racing Sans One', sans-serif;
 }
 
+/* Text direction only: preserve sidebar placement and control ordering. */
+html[lang='fa'] :is(p, h1, h2, h3, h4, textarea, [data-slot='clarify-inline']) {
+  direction: rtl;
+  unicode-bidi: plaintext;
+}
+
+html[lang='fa'] :is(pre, code, input[type='url'], input[type='email']) {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
 /* JetBrains Mono — bundled terminal font (Apache-2.0) so bold/italic share the
    regular face's metrics instead of squeezing against a system fallback. */
 @font-face {

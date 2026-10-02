@@ -3,6 +3,14 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, localeConfigValue, normalizeLocale } from './languages'
 
 describe('desktop i18n languages', () => {
+  it('accepts Dutch and Persian aliases and persists canonical language values', () => {
+    expect(normalizeLocale('nl-NL')).toBe('nl')
+    expect(normalizeLocale('Nederlands')).toBe('nl')
+    expect(normalizeLocale('fa-IR')).toBe('fa')
+    expect(normalizeLocale('Farsi')).toBe('fa')
+    expect(localeConfigValue('nl')).toBe('nl')
+    expect(localeConfigValue('fa')).toBe('fa')
+  })
   it('normalizes supported locale aliases', () => {
     expect(normalizeLocale('en')).toBe('en')
     expect(normalizeLocale('EN-US')).toBe('en')

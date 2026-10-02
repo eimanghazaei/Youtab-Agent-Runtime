@@ -5,7 +5,6 @@ import { useEffect, useRef, useState } from 'react'
 
 import { BrandMark } from '../components/brand-mark'
 import { Button } from '../components/button'
-import { Loader } from '../components/loader'
 import {
   $mode,
   $progress,
@@ -115,7 +114,7 @@ export default function ProgressScreen({ bootstrap }: ProgressProps) {
                   )}
                   key={name}
                 >
-                  {rec.state === 'running' && <Loader className="-ml-2 size-6 shrink-0" />}
+                  {rec.state === 'running' && <BrandMark aria-label="Working" className="youtab-working-mark -ml-2 size-6 shrink-0" role="status" />}
                   <span className="flex-1 truncate">{rec.info.title}</span>
                   {meta && <span className="text-xs tabular-nums text-muted-foreground/70">{meta}</span>}
                   <StateIcon state={rec.state ?? null} />

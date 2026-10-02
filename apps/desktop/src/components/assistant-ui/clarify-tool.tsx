@@ -88,12 +88,12 @@ export function readClarifyResult(result: unknown): ClarifyResult {
 const letterFor = (index: number): string => String.fromCharCode(65 + index)
 
 const OPTION_ROW_CLASS =
-  'flex w-full items-start gap-2 rounded-[0.25rem] px-1.5 py-1 text-left disabled:cursor-not-allowed disabled:opacity-50'
+  'flex min-h-10 w-full items-start gap-2 rounded-md px-3 py-2 text-left disabled:cursor-not-allowed disabled:opacity-50'
 
 // field-sizing on top of Textarea's shared chrome; kill min-h-16 for one-liners.
 const CLARIFY_TEXTAREA_CLASS = 'field-sizing-content max-h-40 min-h-0 resize-none'
 
-const CLARIFY_SHELL_CLASS = `${WIDGET_SHELL_CLASS} text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
+const CLARIFY_SHELL_CLASS = `${WIDGET_SHELL_CLASS} border-2 border-primary/40 p-5 shadow-lg text-[length:var(--conversation-text-font-size)] text-(--ui-text-primary)`
 
 const CLARIFY_ICON_CLASS = 'mt-px size-4 shrink-0 text-(--ui-text-tertiary)'
 
@@ -548,7 +548,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     // The form is the outer element so the actions can sit OUTSIDE the card and
     // still submit it — the panel holds the question, the buttons ride below it.
     <form
-      className="my-1.5 grid gap-4"
+      className="my-4 grid gap-4 rounded-xl border border-primary/25 bg-(--ui-widget-surface-background) p-4"
       data-clarify-choices={hasChoices ? choices.length : undefined}
       onSubmit={handleSubmit}
     >
@@ -623,11 +623,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         )}
       </ClarifyShell>
 
-      <div className="flex items-center justify-end gap-1">
-        <Button disabled={submitting} onClick={() => void respond('')} size="xs" type="button" variant="text">
+      <div className="flex items-center justify-end gap-2">
+        <Button disabled={submitting} onClick={() => void respond('')} size="sm" type="button" variant="text">
           {copy.skip}
         </Button>
-        <Button disabled={submitting || !pendingAnswer} size="xs" type="submit">
+        <Button disabled={submitting || !pendingAnswer} size="sm" type="submit">
           {submitting ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (

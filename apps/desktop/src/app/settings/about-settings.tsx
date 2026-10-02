@@ -1,9 +1,9 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
-import { BrandMark } from '@/components/brand-mark'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { SimorghOrb } from '@/components/ui/simorgh-orb'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -96,7 +96,7 @@ export function AboutSettings() {
   return (
     <SettingsContent>
       <div className="flex flex-col items-center gap-3 pt-6 pb-2 text-center">
-        <BrandMark className="size-16" />
+        <SimorghOrb className="size-16 text-primary" />
         <div>
           <h2 className="text-lg font-semibold tracking-tight">{a.heading}</h2>
           <p className="mt-1 text-xs text-muted-foreground">

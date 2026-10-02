@@ -64,6 +64,8 @@ function applyDocumentLocale(locale: Locale) {
 
   document.documentElement.lang = locale
   document.documentElement.dir = RTL_LOCALES.has(locale) ? 'rtl' : 'ltr'
+  // Persian copy reads RTL while the existing shell/menu geometry stays fixed.
+  document.documentElement.dataset.textDirection = locale === 'fa' ? 'rtl' : document.documentElement.dir
 }
 
 export interface I18nContextValue {

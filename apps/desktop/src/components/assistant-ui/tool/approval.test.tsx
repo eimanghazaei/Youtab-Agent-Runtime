@@ -88,17 +88,17 @@ describe('PendingToolApproval', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
-  it('reveals the full command inline when the Command toggle is clicked', () => {
+  it('shows the complete command before approval and can collapse it', () => {
     const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
     setRequest(longCommand)
     render(<PendingToolApproval part={part('terminal')} />)
 
-    // Collapsed by default: the full command is not in the DOM yet.
-    expect(screen.queryByText(longCommand)).toBeNull()
+    expect(screen.getByText(longCommand)).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Approval needed' })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Command/ }))
 
-    expect(screen.getByText(longCommand)).toBeTruthy()
+    expect(screen.queryByText(longCommand)).toBeNull()
   })
 
   it('sends choice "deny" on Reject', async () => {

@@ -25,6 +25,13 @@ function LanguageProbe({ target = 'zh' }: { target?: Locale }) {
 }
 
 describe('I18nProvider', () => {
+  it.each([['fa', 'ذخیره'], ['nl', 'Opslaan']] as const)('loads %s and keeps shell geometry stable', (locale, save) => {
+    render(<I18nProvider configClient={null} initialLocale={locale}><LanguageProbe /></I18nProvider>)
+    expect(screen.getByTestId('save').textContent).toBe(save)
+    expect(document.documentElement.lang).toBe(locale)
+    expect(document.documentElement.dir).toBe('ltr')
+    expect(document.documentElement.dataset.textDirection).toBe(locale === 'fa' ? 'rtl' : 'ltr')
+  })
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()

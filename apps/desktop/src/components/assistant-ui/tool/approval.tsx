@@ -30,10 +30,8 @@ import {
 
 import type { ToolPart } from './fallback-model'
 
-// Inline approval control. Rendered as a compact button strip
-// under the pending tool row that raised the approval (the row already shows
-// the command, so the strip deliberately doesn't repeat it) instead of as a
-// modal overlay.
+// Prominent approval card under the tool that raised it. Keep the description
+// and complete command visible before Run, without stealing focus from chat.
 //
 // Binding is POSITIONAL, not command-matched: the desktop `tool.start` payload
 // carries no structured args (only tool_id/name/context — see
@@ -110,11 +108,9 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
   // "Always allow" persists the pattern to ~/.youtab-agent-runtime/config.yaml permanently, so
   // it goes through a confirm step rather than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
-  // The pending tool row only shows a single truncated line of the command, and
-  // a pending row can't be expanded (no result yet), so the full command was
-  // previously only reachable via the "Always allow" modal. Let the user reveal
-  // it inline instead — "expand, Run" (2 clicks) rather than the modal dance.
-  const [showCommand, setShowCommand] = useState(false)
+  // Show the full command by default so approval is informed. Users can
+  // collapse a long command without changing the approval request.
+  const [showCommand, setShowCommand] = useState(true)
   const busy = submitting !== null
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
@@ -181,13 +177,17 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
 
   return (
     <div
-      className={cn(surface === 'inline' ? 'mt-1 ps-5' : 'mt-2')}
+      aria-label={t.notifications.native.approvalTitle}
+      className="my-3 w-full rounded-xl border-2 border-primary/45 bg-(--ui-widget-surface-background) p-5 shadow-lg"
       data-slot={surface === 'inline' ? 'tool-approval-inline' : 'tool-approval-actions'}
+      role="region"
     >
-      <div className="flex items-center gap-2.5">
-        <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
+      <p className="mb-2 text-base font-semibold text-foreground">{t.notifications.native.approvalTitle}</p>
+      <p className="mb-4 whitespace-pre-wrap break-words text-sm text-foreground">{request.description}</p>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="inline-flex h-10 items-stretch overflow-hidden rounded-md border border-primary/40 bg-primary/15 text-primary">
           <Button
-            className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
+            className="h-full gap-2 rounded-none px-4 text-sm font-medium text-primary hover:bg-primary/15 hover:text-primary"
             disabled={busy}
             onClick={() => void respond('once')}
             size="xs"
@@ -202,7 +202,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
               <DropdownMenuTrigger asChild>
                 <Button
                   aria-label={copy.moreOptions}
-                  className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
+                  className="h-full w-9 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
                   disabled={busy}
                   size="xs"
                   variant="ghost"
@@ -235,7 +235,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
         </div>
 
         <Button
-          className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
+          className="h-10 gap-2 rounded-md px-3 text-sm font-medium text-foreground hover:text-foreground"
           disabled={busy}
           onClick={() => void respond('deny')}
           size="xs"
