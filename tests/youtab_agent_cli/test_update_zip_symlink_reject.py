@@ -129,3 +129,29 @@ def test_update_via_zip_accepts_normal_member(tmp_path, monkeypatch, capsys):
     # confirming the extraction + copy phases ran past the validation gate.
     assert (fake_root / "README.md").exists()
     assert (fake_root / "README.md").read_text(encoding="utf-8") == "ok\n"
+
+
+def _retired_header():
+    block, corner = chr(0x2588), chr(0x2557)
+    return block * 2 + corner + "  " + block * 2 + corner + block * 7 + corner + block * 6 + corner + " " + block * 3 + corner
+
+
+def test_retired_banner_zip_rejected_before_existing_install_is_touched(tmp_path, monkeypatch):
+    from youtab_agent_cli import main as youtab_main
+    install = tmp_path / "install"
+    install.mkdir()
+    original = install / "cli.py"
+    original.write_text("print('Youtab Code')\n", encoding="utf-8")
+    archive = tmp_path / "retired.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("youtab-agent-runtime-main/cli.py", 'BANNER = "' + _retired_header() + '"\n')
+    monkeypatch.setattr(youtab_main, "PROJECT_ROOT", install)
+    def download(url, dest):
+        from pathlib import Path
+        Path(dest).write_bytes(archive.read_bytes())
+        return dest, None
+    with patch("urllib.request.urlretrieve", side_effect=download):
+        with pytest.raises(SystemExit) as error:
+            youtab_main._update_via_zip(type("Args", (), {})())
+    assert error.value.code == 1
+    assert original.read_text(encoding="utf-8") == "print('Youtab Code')\n"

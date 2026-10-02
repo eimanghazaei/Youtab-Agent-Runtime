@@ -1435,6 +1435,39 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+function Assert-CurrentRuntimeBranding {
+    param([string]$Root)
+    $block = [char]0x2588
+    $corner = [char]0x2557
+    $retiredPrefix = ('{0}{1}  {0}{1}{2}{1}{3}{1} {4}{1}' -f
+        ($block.ToString() * 2), $corner, ($block.ToString() * 7),
+        ($block.ToString() * 6), ($block.ToString() * 3))
+    $suffixes = @('.py', '.ts', '.tsx', '.js', '.jsx', '.cjs', '.mjs', '.json', '.yaml', '.yml', '.toml', '.txt', '.svg')
+    $excluded = @('.git', 'node_modules', 'venv', '.venv', '__pycache__', 'tests', '__tests__', 'e2e', 'docs', '_evidence', '_backups')
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push($Root)
+    while ($pending.Count -gt 0) {
+      foreach ($source in Get-ChildItem -LiteralPath $pending.Pop() -Force -ErrorAction Stop) {
+        if ($source.PSIsContainer) {
+            if ($source.Name -notin $excluded -and
+                -not ($source.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                $pending.Push($source.FullName)
+            }
+            continue
+        }
+        if ($source.Extension.ToLowerInvariant() -notin $suffixes) { continue }
+        $path = $source.FullName
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $text = [IO.File]::ReadAllText($path, [Text.Encoding]::UTF8)
+            $text = $text.Replace('\u2588', $block.ToString()).Replace('\u2557', $corner.ToString())
+            if ($text.Contains($retiredPrefix)) {
+                throw 'Runtime contains retired CLI banner; installation/update refused'
+            }
+        }
+      }
+    }
+}
+
 function Install-RepositoryFromArtifact {
     # The GUI owns promotion and rollback. This stage only creates a verified
     # sibling tree; it must never modify the current installation.
@@ -1536,6 +1569,7 @@ function Install-RepositoryFromArtifact {
                 throw "Runtime artifact is missing required layout file: $required"
             }
         }
+        Assert-CurrentRuntimeBranding -Root $stageDir
         $stagedScriptHash = Get-FileSha256 -Path (Join-Path $stageDir 'scripts/install.ps1')
         if ($stagedScriptHash -cne $manifest.install_script_sha256) {
             throw "Runtime artifact install script does not match the pinned manifest"
@@ -1977,6 +2011,7 @@ function Install-Repository {
         }
     }
 
+    Assert-CurrentRuntimeBranding -Root $InstallDir
     Write-Success "Repository ready"
 }
 

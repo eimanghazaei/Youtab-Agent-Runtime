@@ -16,4 +16,30 @@ describe('Youtab Code banner', () => {
     expect(DARK_THEME.color.border).toBe('#0096C7')
     expect(LIGHT_THEME.color.border).toBe('#0077B6')
   })
+  it('replaces a retired custom-skin logo instead of rendering it again', () => {
+    const block = String.fromCodePoint(0x2588)
+    const corner = String.fromCodePoint(0x2557)
+
+    const previous =
+      block.repeat(2) +
+      corner +
+      '  ' +
+      block.repeat(2) +
+      corner +
+      block.repeat(7) +
+      corner +
+      block.repeat(6) +
+      corner +
+      ' ' +
+      block.repeat(3) +
+      corner
+
+    const title = logo(DARK_THEME.color, previous)
+      .map(([, text]) => text)
+      .join('\n')
+
+    expect(title).toContain('Youtab Code')
+    expect(title).not.toContain(previous)
+    expect(caduceus(DARK_THEME.color, previous)).toEqual(caduceus(DARK_THEME.color))
+  })
 })

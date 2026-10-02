@@ -1,6 +1,7 @@
 """Tests for banner toolset name normalization and skin color usage."""
 
 from unittest.mock import patch
+import pytest
 
 from rich.console import Console
 
@@ -85,13 +86,19 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
     assert "MoA:" not in out
 
 
-def test_youtab_code_branding_and_ocean_blue_render(tmp_path, monkeypatch):
+@pytest.mark.parametrize("retired_skin", [False, True])
+def test_youtab_code_branding_and_ocean_blue_render(tmp_path, monkeypatch, retired_skin):
     """Actual wide/narrow output uses the replacement title and verified column."""
     import io
     import os
     from youtab_agent_cli.skin_engine import load_skin
 
     monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+    skin = load_skin("default")
+    block, corner = chr(0x2588), chr(0x2557)
+    old_title = block * 2 + corner + "  " + block * 2 + corner + block * 7 + corner + block * 6 + corner + " " + block * 3 + corner
+    if retired_skin:
+        skin.banner_hero = old_title
     for width in (60, 160):
         buf = io.StringIO()
         with (
@@ -101,13 +108,14 @@ def test_youtab_code_branding_and_ocean_blue_render(tmp_path, monkeypatch):
             patch.object(banner, "get_update_result", return_value=None),
             patch.object(banner, "get_latest_release_tag", return_value=None),
             patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
-            patch("youtab_agent_cli.skin_engine.get_active_skin", return_value=load_skin("default")),
+            patch("youtab_agent_cli.skin_engine.get_active_skin", return_value=skin),
         ):
             console = Console(file=buf, record=True, force_terminal=True, color_system="truecolor", width=width)
             banner.build_welcome_banner(console, model="test", cwd=str(tmp_path), tools=[])
         plain = console.export_text()
         assert "Youtab Code" in plain
         assert "HERMES" not in plain
+        assert old_title not in plain
         assert "38;2;0;150;199" in buf.getvalue()
         assert all(len(line) <= width for line in plain.splitlines())
     from rich.text import Text

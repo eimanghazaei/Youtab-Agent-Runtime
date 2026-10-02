@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from youtab_constants import get_youtab_home
 from typing import TYPE_CHECKING, Dict, List, Optional
+from youtab_agent_cli.branding_policy import contains_retired_banner
 
 # rich and prompt_toolkit are imported lazily (inside the functions that use
 # them) rather than at module level.  Importing this module is on the TUI
@@ -644,6 +645,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         from youtab_agent_cli.skin_engine import get_active_skin
         _bskin = get_active_skin()
         _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else YOUTAB_AGENT_CADUCEUS
+        if contains_retired_banner(_hero.encode("utf-8")):
+            _hero = YOUTAB_AGENT_CADUCEUS
     except Exception:
         _hero = YOUTAB_AGENT_CADUCEUS
     left_lines = ["", _hero, ""]

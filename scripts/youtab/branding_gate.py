@@ -48,6 +48,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from brand_url_inventory import (  # noqa: E402
     FORBIDDEN_CLASSES,
@@ -173,7 +174,16 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
 
+    from youtab_agent_cli.branding_policy import find_retired_banner
+
     inventory = classify_tree(root)
+    retired_findings = []
+    try:
+        retired = find_retired_banner(root)
+        if retired is not None:
+            retired_findings.append({"kind": "retired-cli-banner", "path": retired.relative_to(root).as_posix(), "classification": PRODUCT_FORBIDDEN})
+    except OSError:
+        retired_findings.append({"kind": "branding-read-error", "classification": PRODUCT_FORBIDDEN})
     ocr_findings, binary_files, images_seen, ocr_engine = _ocr_findings(
         root, ocr=args.ocr
     )
@@ -200,7 +210,7 @@ def main() -> int:
             ),
         })
 
-    blocking = list(inventory["blocking"]) + [
+    blocking = list(inventory["blocking"]) + retired_findings + [
         f for f in ocr_findings if f["classification"] in FORBIDDEN_CLASSES
     ]
     result = {
