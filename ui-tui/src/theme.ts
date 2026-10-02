@@ -250,7 +250,7 @@ export function themeToneHex(tone: string): string {
 // ── Defaults ─────────────────────────────────────────────────────────
 
 const BRAND: ThemeBrand = {
-  name: 'Youtab Agent Runtime',
+  name: 'Youtab Code',
   icon: '⚕',
   prompt: '❯',
   welcome: 'Type your message or /help for commands.',
@@ -368,17 +368,17 @@ export function buildPalette(seeds: ThemeSeeds, isLight: boolean): ThemeColors {
 }
 
 export const DARK_SEEDS: ThemeSeeds = {
-  accent: '#FFBF00',
+  accent: '#0096C7',
   // The classic Youtab navy surfaces are IDENTITY, not derivation drift —
   // keep them as explicit fill seeds (the ladder derives them for skins
   // that don't care).
   activeRow: '#333355',
   bg: '#101014',
-  border: '#CD7F32',
+  border: '#0096C7',
   error: '#ef5350',
   ok: '#4caf50',
-  primary: '#FFD700',
-  prompt: '#FFF8DC',
+  primary: '#0096C7',
+  prompt: '#E0F2FE',
   selection: '#3a3a55',
   shellDollar: '#4dabf7',
   statusBad: '#FF8C00',
@@ -386,32 +386,25 @@ export const DARK_SEEDS: ThemeSeeds = {
   statusGood: '#8FBC8F',
   statusWarn: '#FFD700',
   surface: '#1a1a2e',
-  text: '#FFF8DC',
+  text: '#E0F2FE',
   warn: '#ffa726'
 }
 
-// Light-terminal seeds: darker golds/ambers that stay legible on white.
-// The classic light-mode Youtab look was never hand-authored: for years the
-// TUI emitted the DARK golds and hosts with xterm's minimumContrastRatio
-// (Cursor defaults to 4.5) lifted them against white — hue and saturation
-// kept, luminance clamped. These seeds are those exact lifts
-// (liftForContrast(dark, '#ffffff', 4.5)), so hosts WITHOUT a contrast pass
-// render the same thing Cursor always showed. Text/prompt stay ink — body
-// copy historically rendered in the terminal's default near-black fg.
+// Darker Ocean Blue accents for light terminals.
 export const LIGHT_SEEDS: ThemeSeeds = {
-  accent: '#956E00',
+  accent: '#0077B6',
   bg: '#ffffff',
-  border: '#A56628',
+  border: '#0077B6',
   error: '#C14240',
   ok: '#367E39',
-  primary: '#867000',
-  prompt: '#2B2014',
+  primary: '#0077B6',
+  prompt: '#163D52',
   shellDollar: '#377BB3',
   statusBad: '#A65A00',
   statusCritical: '#B94D4D',
   statusGood: '#5C7A5C',
-  statusWarn: '#867000',
-  text: '#3D2F13',
+  statusWarn: '#B36A00',
+  text: '#163D52',
   warn: '#956115'
 }
 

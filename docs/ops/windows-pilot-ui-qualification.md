@@ -74,3 +74,14 @@ that an older staged Setup has acquired the new installer visuals.
 Mask private release prefixes, credentials, OAuth callback codes/state and
 customer data in logs, screenshots and reports. Record actual observations,
 including failures; never substitute unit mocks for PC acceptance.
+
+
+## Priority CLI branding follow-up
+
+The inherited wide glyph banner is removed from the Python CLI and TypeScript TUI.
+The replacement reads **Youtab Code** in a compact ASCII design, with a plain title
+at narrow widths. The default CLI uses Ocean Blue (`#0096C7`, light accents
+`#0077B6`), including its double-bull reference column, input rules and panel
+borders. Error and warning colors retain their semantic meanings. Alternate
+user-selected skins remain available. Customer installations need the qualified
+release update to receive this change; prior immutable artifacts are not edited.

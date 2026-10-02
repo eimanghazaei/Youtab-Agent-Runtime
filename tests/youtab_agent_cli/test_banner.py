@@ -83,3 +83,34 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
     out = console.export_text()
     assert "claude-opus-4.8" in out
     assert "MoA:" not in out
+
+
+def test_youtab_code_branding_and_ocean_blue_render(tmp_path, monkeypatch):
+    """Actual wide/narrow output uses the replacement title and verified column."""
+    import io
+    import os
+    from youtab_agent_cli.skin_engine import load_skin
+
+    monkeypatch.setenv("YOUTAB_AGENT_HOME", str(tmp_path))
+    for width in (60, 160):
+        buf = io.StringIO()
+        with (
+            patch("shutil.get_terminal_size", return_value=os.terminal_size((width, 50))),
+            patch.object(model_tools, "check_tool_availability", return_value=([], [])),
+            patch.object(banner, "get_available_skills", return_value={}),
+            patch.object(banner, "get_update_result", return_value=None),
+            patch.object(banner, "get_latest_release_tag", return_value=None),
+            patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
+            patch("youtab_agent_cli.skin_engine.get_active_skin", return_value=load_skin("default")),
+        ):
+            console = Console(file=buf, record=True, force_terminal=True, color_system="truecolor", width=width)
+            banner.build_welcome_banner(console, model="test", cwd=str(tmp_path), tools=[])
+        plain = console.export_text()
+        assert "Youtab Code" in plain
+        assert "HERMES" not in plain
+        assert "38;2;0;150;199" in buf.getvalue()
+        assert all(len(line) <= width for line in plain.splitlines())
+    from rich.text import Text
+    column = Text.from_markup(banner.YOUTAB_AGENT_CADUCEUS)
+    assert len(column.plain.splitlines()) == 28
+    assert all(str(span.style).lower() == "#0096c7" for span in column.spans)

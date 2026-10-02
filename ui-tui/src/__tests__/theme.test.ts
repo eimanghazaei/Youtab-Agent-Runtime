@@ -43,7 +43,7 @@ describe('DEFAULT_THEME', () => {
   it('has brand defaults', async () => {
     const { DEFAULT_THEME } = await importThemeWithCleanEnv()
 
-    expect(DEFAULT_THEME.brand.name).toBe('Youtab Agent Runtime')
+    expect(DEFAULT_THEME.brand.name).toBe('Youtab Code')
     expect(DEFAULT_THEME.brand.prompt).toBe('❯')
     expect(DEFAULT_THEME.brand.tool).toBe('┊')
   })
@@ -51,7 +51,7 @@ describe('DEFAULT_THEME', () => {
   it('has color palette', async () => {
     const { DEFAULT_THEME } = await importThemeWithCleanEnv()
 
-    expect(DEFAULT_THEME.color.primary).toBe('#FFD700')
+    expect(DEFAULT_THEME.color.primary).toBe('#0096C7')
     expect(DEFAULT_THEME.color.error).toBe('#ef5350')
   })
 })
@@ -433,20 +433,45 @@ describe('derived tone ladder', () => {
     const dark = await importThemeWithCleanEnv()
     const light = await importThemeWithEnv({ YOUTAB_AGENT_TUI_BACKGROUND: '#ffffff' })
 
+    // Keep the historical math fixture independent of the new product palette.
+    const darkPalette = dark.buildPalette(
+      {
+        ...dark.DARK_SEEDS,
+        accent: '#FFBF00',
+        primary: '#FFD700',
+        border: '#CD7F32',
+        text: '#FFF8DC',
+        prompt: '#FFF8DC'
+      },
+      false
+    )
+
+    const lightPalette = light.buildPalette(
+      {
+        ...light.LIGHT_SEEDS,
+        accent: '#956E00',
+        primary: '#867000',
+        border: '#A56628',
+        text: '#3D2F13',
+        prompt: '#2B2014'
+      },
+      true
+    )
+
     const cases: Array<[string, string, string]> = [
-      [dark.DARK_THEME.color.muted, '#CC9B1F', 'dark muted'],
-      [dark.DARK_THEME.color.label, '#DAA520', 'dark label'],
-      [dark.DARK_THEME.color.statusFg, '#C0C0C0', 'dark statusFg'],
-      [dark.DARK_THEME.color.completionBg, '#1a1a2e', 'dark surface'],
-      [dark.DARK_THEME.color.completionCurrentBg, '#333355', 'dark chip'],
-      [dark.DARK_THEME.color.selectionBg, '#3a3a55', 'dark selection'],
+      [darkPalette.muted, '#CC9B1F', 'dark muted'],
+      [darkPalette.label, '#DAA520', 'dark label'],
+      [darkPalette.statusFg, '#C0C0C0', 'dark statusFg'],
+      [darkPalette.completionBg, '#1a1a2e', 'dark surface'],
+      [darkPalette.completionCurrentBg, '#333355', 'dark chip'],
+      [darkPalette.selectionBg, '#3a3a55', 'dark selection'],
       // Light canon = liftForContrast(dark literal, white, 4.5): the exact
       // colors xterm's minimumContrastRatio rendered on light hosts.
-      [light.LIGHT_THEME.color.muted, '#946C08', 'light muted'],
-      [light.LIGHT_THEME.color.statusFg, '#6F6F6F', 'light statusFg'],
-      [light.LIGHT_THEME.color.completionBg, '#F5F5F5', 'light surface'],
-      [light.LIGHT_THEME.color.completionCurrentBg, '#e0d1bf', 'light chip'],
-      [light.LIGHT_THEME.color.selectionBg, '#D4E4F7', 'light selection']
+      [lightPalette.muted, '#946C08', 'light muted'],
+      [lightPalette.statusFg, '#6F6F6F', 'light statusFg'],
+      [lightPalette.completionBg, '#F5F5F5', 'light surface'],
+      [lightPalette.completionCurrentBg, '#e0d1bf', 'light chip'],
+      [lightPalette.selectionBg, '#D4E4F7', 'light selection']
     ]
 
     for (const [got, original, label] of cases) {
