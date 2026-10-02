@@ -90,3 +90,19 @@ def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
 # in CI first.
 # ---------------------------------------------------------------------------
 
+
+
+def _retired_header():
+    block, corner = chr(0x2588), chr(0x2557)
+    return block * 2 + corner + "  " + block * 2 + corner + block * 7 + corner + block * 6 + corner + " " + block * 3 + corner
+
+
+def test_retired_banner_triggers_existing_git_update_rollback_guard(tmp_path):
+    _populate_critical_tree(tmp_path)
+    path = tmp_path / "youtab_agent_cli" / "banner.py"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('BANNER = "' + _retired_header() + '"\n', encoding="utf-8")
+    ok, failing_path, reason = youtab_main._validate_critical_files_syntax(tmp_path)
+    assert ok is False
+    assert failing_path == str(path)
+    assert "retired CLI banner" in reason

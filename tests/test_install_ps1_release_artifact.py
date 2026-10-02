@@ -215,3 +215,18 @@ def test_customer_artifact_git_stage_is_skipped(tmp_path: Path) -> None:
     assert frames[0]["ok"] is True
     assert frames[0]["skipped"] is True
     assert "not required" in str(frames[0]["reason"])
+
+
+def _retired_header():
+    block, corner = chr(0x2588), chr(0x2557)
+    return block * 2 + corner + "  " + block * 2 + corner + block * 7 + corner + block * 6 + corner + " " + block * 3 + corner
+
+@pytest.mark.parametrize("name", ["cli.py", "youtab_agent_cli/banner.py", "ui-tui/src/banner.ts", "assets/renamed-title.txt"])
+def test_retired_banner_artifact_rejected_before_promotion(tmp_path, monkeypatch, name):
+    monkeypatch.setitem(FILES, name, ('BANNER = "' + _retired_header() + '"\n').encode("utf-8"))
+    result, frame, current = _run_stage(tmp_path)
+    assert result.returncode != 0
+    assert frame["ok"] is False
+    assert "retired CLI banner" in str(frame)
+    assert (current / "existing.txt").read_text(encoding="utf-8") == "unchanged"
+    assert not list(current.parent.glob(current.name + ".new-*"))

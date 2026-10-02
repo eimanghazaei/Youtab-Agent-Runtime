@@ -34,6 +34,7 @@ import sys
 import time as _time
 from datetime import datetime
 from pathlib import Path
+from youtab_agent_cli.branding_policy import find_retired_banner
 from typing import Optional
 
 from youtab_agent_cli.config import get_youtab_home
@@ -139,6 +140,12 @@ def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]
     import tempfile
 
     root = Path(root)
+    try:
+        retired = find_retired_banner(root)
+    except OSError as exc:
+        return False, str(root), f"could not verify CLI branding: {exc}"
+    if retired is not None:
+        return False, str(retired), "retired CLI banner is forbidden"
     with tempfile.TemporaryDirectory(prefix="youtab-syntax-check-") as tmpdir:
         for relpath in _UPDATE_CRITICAL_FILES:
             path = root / relpath
@@ -606,6 +613,10 @@ def _update_via_zip(args):
                 if os.path.isdir(candidate) and d != "__MACOSX":
                     extracted = candidate
                     break
+
+        retired = find_retired_banner(Path(extracted))
+        if retired is not None:
+            raise ValueError("update contains retired CLI banner")
 
         # Copy updated files over existing installation, preserving venv/node_modules/.git
         preserve = {"venv", "node_modules", ".git", ".env"}

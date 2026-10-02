@@ -134,3 +134,24 @@ def test_real_checkout_filter_preserves_workspace_build_inputs():
     assert "tests-js/assistant-ui-tap-compat.test.ts" not in included
     assert "scripts/release.py" not in included
     assert not any(name.endswith(".pem") or "/e2e/" in name for name in included)
+
+
+def _retired_header():
+    block, corner = chr(0x2588), chr(0x2557)
+    return block * 2 + corner + "  " + block * 2 + corner + block * 7 + corner + block * 6 + corner + " " + block * 3 + corner
+
+@pytest.mark.parametrize("name", ["cli.py", "youtab_agent_cli/banner.py", "ui-tui/src/banner.ts", "assets/renamed-title.txt"])
+def test_retired_banner_cannot_be_published(committed_source, tmp_path, name):
+    path = committed_source / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('BANNER = "' + _retired_header() + '"\n', encoding="utf-8")
+    _git(committed_source, "add", ".")
+    _git(committed_source, "commit", "-m", "retired banner fixture")
+    out = tmp_path / "releases"
+    out.mkdir()
+    previous = '{"release_sequence": 1}\n'
+    (out / "latest.json").write_text(previous, encoding="utf-8")
+    with pytest.raises(RuntimeError, match="retired CLI banner"):
+        release.package_runtime_artifact(out, "0.19.2", 2, BASE)
+    assert (out / "latest.json").read_text(encoding="utf-8") == previous
+    assert not any(p.is_dir() for p in out.iterdir())

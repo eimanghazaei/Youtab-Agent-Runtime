@@ -13,6 +13,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from youtab_constants import get_youtab_home
 from typing import TYPE_CHECKING, Dict, List, Optional
+from youtab_agent_cli.branding_policy import contains_retired_banner
 
 # rich and prompt_toolkit are imported lazily (inside the functions that use
 # them) rather than at module level.  Importing this module is on the TUI
@@ -30,7 +31,6 @@ logger = logging.getLogger(__name__)
 # ANSI building blocks for conversation display
 # =========================================================================
 
-_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
@@ -67,42 +67,41 @@ def _skin_color(key: str, fallback: str) -> str:
 
 from youtab_agent_cli import __version__ as VERSION, __release_date__ as RELEASE_DATE
 
-YOUTAB_AGENT_AGENT_LOGO = """[bold #FFD700]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
-[bold #FFD700]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
-[#FFBF00]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
-[#FFBF00]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
-[#CD7F32]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
-[#CD7F32]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]"""
+YOUTAB_CODE_LOGO = r"""[bold italic #0096C7] _  _            _        _      ___         _[/]
+[bold italic #0096C7]| || |___ _  _ _| |_ __ _| |__  / __|___  __| |___[/]
+[bold italic #0096C7] \_, / _ \ || |_   _/ _` | '_ \| (__/ _ \/ _` / -_)[/]
+[bold italic #0096C7] |__/\___/\_,_| \__\__,_|_.__/ \___\___/\__,_\___|[/]
+[bold italic #0096C7]                 Youtab Code[/]"""
 
 # Persepolis double-bull capital, sampled from the Owner-provided reference.
-YOUTAB_AGENT_CADUCEUS = """[#FFD700]⠀⣄⠀⠀⡤⠈⣀⠀⣀⣤⠶⣧⣤⡀⣇⣀⣀⠀⠀⠀⠀⠀⠀⠀⣠⣤⠴⠂⣄⣀⢂⠐⠠⡄⣀⠐[/]
-[#FFD700]⠀⠀⠉⠻⣷⣶⡏⠉⣽⡾⡆⠈⠻⣿⣿⠉⠉⠉⠉⠉⠉⠉⢡⣾⠏⠁⠀⢸⡷⡇⢰⣲⠀⠊⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠈⢿⣧⠘⣿⣧⠃⠠⠀⣿⣿⣀⣀⣀⣀⣀⣀⣀⣸⡃⠄⠠⢀⢈⡘⢓⡄⠁⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠑⠓⠁⣧⡈⠄⠀⣻⣿⣿⣿⣿⣿⣿⠿⢻⠛⠡⠂⠀⠀⢸⠀⠈⠈⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⢠⠔⣋⣶⡥⠾⠟⢿⣿⠿⠿⠋⠡⠤⣀⠀⠀⡄⠠⠉⢀⠑⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠈⠂⠀⠀⣶⣾⣿⣿⣷⢿⠿⡿⣿⢿⢿⡿⢶⠶⡆⠀⠀⠐⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢈⠿⢻⣾⣿⢿⢿⡷⣿⢿⢾⢁⠴⠤⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣬⣿⣿⣷⣼⣤⣧⣤⣼⣼⠃⣔⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⣿⣿⢿⠿⠿⡿⢿⢿⠀⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⡇⢸⢀⠀⡇⠀⢸⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⣿⡇⢸⢠⠀⡇⠀⠸⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡠⠤⣼⣿⡇⠴⢸⠀⡇⡆⣌⠀⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢢⣐⣿⣿⣷⣷⣿⣾⣷⣷⣿⣄⠑⢂⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣦⣿⣿⣿⣧⣤⣼⣤⣧⣧⣿⡙⠯⡉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢈⣭⣿⠗⢻⣿⡽⠙⠯⣯⡭⠿⠖⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣿⣿⣷⣾⣿⣿⣧⣄⣀⣄⣻⣄⣀⣷⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠿⣿⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢹⣿⣿⣿⣿⠏⠀⠘⢠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣸⣿⣿⣿⣿⠀⠀⡇⢸⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣤⣿⣿⣿⡿⣻⠛⡛⠙⡛⠓⢠⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣼⣿⣿⣿⣿⡇⣿⠀⢸⠀⠀⠀⠄⣇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⢽⣿⠀⠸⠀⠀⠀⠀⣼⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣸⣯⠀⢸⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⢿⣿⣿⣿⣿⣿⣦⣿⣶⣾⣦⠧⠝⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⢿⣿⠛⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⢾⣯⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⢹⣿⣯⢹⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
-[#FFD700]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣸⡇⣟⣼⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
+YOUTAB_AGENT_CADUCEUS = """[#0096C7]⠀⣄⠀⠀⡤⠈⣀⠀⣀⣤⠶⣧⣤⡀⣇⣀⣀⠀⠀⠀⠀⠀⠀⠀⣠⣤⠴⠂⣄⣀⢂⠐⠠⡄⣀⠐[/]
+[#0096C7]⠀⠀⠉⠻⣷⣶⡏⠉⣽⡾⡆⠈⠻⣿⣿⠉⠉⠉⠉⠉⠉⠉⢡⣾⠏⠁⠀⢸⡷⡇⢰⣲⠀⠊⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠈⢿⣧⠘⣿⣧⠃⠠⠀⣿⣿⣀⣀⣀⣀⣀⣀⣀⣸⡃⠄⠠⢀⢈⡘⢓⡄⠁⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠑⠓⠁⣧⡈⠄⠀⣻⣿⣿⣿⣿⣿⣿⠿⢻⠛⠡⠂⠀⠀⢸⠀⠈⠈⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⢠⠔⣋⣶⡥⠾⠟⢿⣿⠿⠿⠋⠡⠤⣀⠀⠀⡄⠠⠉⢀⠑⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠈⠂⠀⠀⣶⣾⣿⣿⣷⢿⠿⡿⣿⢿⢿⡿⢶⠶⡆⠀⠀⠐⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢈⠿⢻⣾⣿⢿⢿⡷⣿⢿⢾⢁⠴⠤⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣬⣿⣿⣷⣼⣤⣧⣤⣼⣼⠃⣔⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⣿⣿⢿⠿⠿⡿⢿⢿⠀⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⡇⢸⢀⠀⡇⠀⢸⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢰⣿⡇⢸⢠⠀⡇⠀⠸⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡠⠤⣼⣿⡇⠴⢸⠀⡇⡆⣌⠀⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢢⣐⣿⣿⣷⣷⣿⣾⣷⣷⣿⣄⠑⢂⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣦⣿⣿⣿⣧⣤⣼⣤⣧⣧⣿⡙⠯⡉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢈⣭⣿⠗⢻⣿⡽⠙⠯⣯⡭⠿⠖⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣿⣿⣷⣾⣿⣿⣧⣄⣀⣄⣻⣄⣀⣷⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣿⣿⣿⣿⣿⣿⣿⣿⠿⣿⠟⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢹⣿⣿⣿⣿⠏⠀⠘⢠⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣸⣿⣿⣿⣿⠀⠀⡇⢸⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣤⣿⣿⣿⡿⣻⠛⡛⠙⡛⠓⢠⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣼⣿⣿⣿⣿⡇⣿⠀⢸⠀⠀⠀⠄⣇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⢽⣿⠀⠸⠀⠀⠀⠀⣼⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⣿⣿⣿⣿⣸⣯⠀⢸⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⢿⣿⣿⣿⣿⣿⣦⣿⣶⣾⣦⠧⠝⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⢿⣿⠛⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣿⣿⣿⢾⣯⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⢹⣿⣯⢹⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#0096C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣿⣿⣿⣿⣸⡇⣟⣼⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
 
 
 
@@ -636,9 +635,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     layout_table.add_column("right", justify="left")
 
     # Resolve skin colors once for the entire banner
-    accent = _skin_color("banner_accent", "#FFBF00")
-    dim = _skin_color("banner_dim", "#B8860B")
-    text = _skin_color("banner_text", "#FFF8DC")
+    accent = _skin_color("banner_accent", "#0096C7")
+    dim = _skin_color("banner_dim", "#70AFCB")
+    text = _skin_color("banner_text", "#E0F2FE")
     session_color = _skin_color("session_border", "#8B8682")
 
     # Use skin's custom caduceus art if provided
@@ -646,8 +645,9 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         from youtab_agent_cli.skin_engine import get_active_skin
         _bskin = get_active_skin()
         _hero = _bskin.banner_hero if hasattr(_bskin, 'banner_hero') and _bskin.banner_hero else YOUTAB_AGENT_CADUCEUS
+        if contains_retired_banner(_hero.encode("utf-8")):
+            _hero = YOUTAB_AGENT_CADUCEUS
     except Exception:
-        _bskin = None
         _hero = YOUTAB_AGENT_CADUCEUS
     left_lines = ["", _hero, ""]
     if (provider or "").strip().lower() == "moa":
@@ -887,8 +887,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)
 
-    title_color = _skin_color("banner_title", "#FFD700")
-    border_color = _skin_color("banner_border", "#CD7F32")
+    title_color = _skin_color("banner_title", "#0096C7")
+    border_color = _skin_color("banner_border", "#0096C7")
     version_label = format_banner_version_label()
     release_info = get_latest_release_tag()
     if release_info:
@@ -905,8 +905,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     console.print()
     term_width = shutil.get_terminal_size().columns
-    if term_width >= 95:
-        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else YOUTAB_AGENT_AGENT_LOGO
+    if term_width >= 15:
+        _logo = YOUTAB_CODE_LOGO if term_width >= 66 else "[bold italic #0096C7]Youtab Code[/]"
         console.print(_logo)
         console.print()
     console.print(outer_panel)

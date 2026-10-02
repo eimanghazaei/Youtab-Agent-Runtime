@@ -36,6 +36,7 @@ from datetime import datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 VERSION_FILE = REPO_ROOT / "youtab_agent_cli" / "__init__.py"
 PYPROJECT_FILE = REPO_ROOT / "pyproject.toml"
 
@@ -120,6 +121,8 @@ def package_runtime_artifact(output_dir: Path, version: str,
     head = git_result("rev-parse", "--verify", "HEAD^{commit}")
     if head.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", head.stdout.strip()):
         raise RuntimeError("runtime artifact requires an exact Git commit")
+    from youtab_agent_cli.branding_policy import contains_retired_banner
+
     source_sha = head.stdout.strip()
     target_dir = output_dir / source_sha
     artifact_name = f"youtab-runtime-{source_sha}.zip"
@@ -171,8 +174,10 @@ def package_runtime_artifact(output_dir: Path, version: str,
                         window = overlap + chunk
                         if _PRIVATE_KEY_BLOCK.search(window):
                             raise RuntimeError(f"release source contains private-key material: {entry.filename}")
+                        if contains_retired_banner(window):
+                            raise RuntimeError(f"release source contains retired CLI banner: {entry.filename}")
                         dst.write(chunk)
-                        overlap = window[-128:]
+                        overlap = window[-512:]
                 included.add(entry.filename)
         if not required.issubset(included):
             raise RuntimeError(f"release package lacks required files: {sorted(required - included)}")

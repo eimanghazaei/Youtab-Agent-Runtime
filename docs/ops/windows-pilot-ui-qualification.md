@@ -74,3 +74,30 @@ that an older staged Setup has acquired the new installer visuals.
 Mask private release prefixes, credentials, OAuth callback codes/state and
 customer data in logs, screenshots and reports. Record actual observations,
 including failures; never substitute unit mocks for PC acceptance.
+
+
+## Priority CLI branding follow-up
+
+The inherited wide glyph banner is removed from the Python CLI and TypeScript TUI.
+The replacement reads **Youtab Code** in a compact ASCII design, with a plain title
+at narrow widths. The default CLI uses Ocean Blue (`#0096C7`, light accents
+`#0077B6`), including its double-bull reference column, input rules and panel
+borders. Error and warning colors retain their semantic meanings. Alternate
+user-selected skins remain available. Customer installations need the qualified
+release update to receive this change; prior immutable artifacts are not edited.
+
+### Preventing the retired banner from returning
+
+The branding CI gate rejects the retired glyph signature in product sources,
+including renamed assets. The artifact builder rejects it before publishing any
+immutable directory or replacing the latest pointer. Git updates validate the
+new tree and use the existing rollback path on rejection; ZIP updates reject it
+before copying files into the installation. The pinned install script checks
+staged Runtime sources before promotion. Preserved history, evidence and
+dependencies are excluded from the source-tree check. The TUI substitutes the
+Youtab Code title when a custom skin requests the retired logo.
+
+These protections require the new code and a newly built pinned Setup. Older
+installed updaters and Setup executables do not acquire them retroactively.
+Qualify the supported legacy transition and real update before declaring PC
+acceptance. Never publish an older candidate containing the retired banner.
