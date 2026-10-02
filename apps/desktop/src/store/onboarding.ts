@@ -640,7 +640,8 @@ export async function startProviderOAuth(provider: OAuthProvider, ctx: Onboardin
       }
       setFlow({ status: 'success', provider })
       await completeWithModelConfirm(ctx, provider.name, [provider.id], reason =>
-        setFlow({ status: 'error', provider, message: providerResolutionFailure(reason) })
+        setFlow({ status: 'error', provider, message: providerResolutionFailure(reason) }),
+        true
       )
       return
     }

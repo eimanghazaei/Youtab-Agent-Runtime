@@ -14,18 +14,16 @@ export function toggleStatusbarVisible() {
 
 // Items the bar hides until the user turns them on from its context menu. The
 // bar's job is to answer "is the backend healthy, where am I, what's it doing" —
-// route shortcuts (cron/webhooks/agents), the terminal toggle, and the approval
-// pill are navigation, not status, so they start out of the way. The per-turn
+// route shortcuts (cron/webhooks/agents) start hidden. Approval mode and terminal
+// remain visible for access to consent and runtime output. The per-turn
 // session readouts (running/session timers, context meter) are diagnostics most
 // users don't watch, so they start hidden too and the bar stays quiet mid-turn.
 export const STATUSBAR_HIDDEN_BY_DEFAULT: readonly string[] = [
   'agents',
-  'approval-mode',
   'context-usage',
   'cron',
   'running-timer',
   'session-timer',
-  'terminal',
   'webhooks'
 ]
 
@@ -41,6 +39,15 @@ export const $statusbarHiddenIds = persistentAtom<string[]>(
     Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string' && id.length > 0) : []
   )
 )
+
+// One-time upgrade of the previous pilot defaults. Subsequent user choices
+// stay authoritative, including hiding either control from the context menu.
+const $pilotControlsMigrated = persistentAtom('youtab.desktop.pilotControlsVisible.v1', false, Codecs.bool)
+
+if (!$pilotControlsMigrated.get()) {
+  $statusbarHiddenIds.set($statusbarHiddenIds.get().filter(id => id !== 'approval-mode' && id !== 'terminal'))
+  $pilotControlsMigrated.set(true)
+}
 
 export function setStatusbarItemVisible(id: string, visible: boolean) {
   const hidden = $statusbarHiddenIds.get()

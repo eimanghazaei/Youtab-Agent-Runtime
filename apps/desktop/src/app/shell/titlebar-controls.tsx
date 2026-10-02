@@ -216,6 +216,7 @@ export function TitlebarControls({ leftTools = [], tools = [] }: TitlebarControl
       actionId: 'keybinds.openPanel',
       icon: <Codicon name="keyboard" />,
       id: 'keybinds',
+      hidden: true,
       label: t.titlebar.openKeybinds,
       onSelect: () => {
         triggerHaptic('open')

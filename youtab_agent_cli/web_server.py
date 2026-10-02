@@ -6606,9 +6606,10 @@ def get_recommended_default_model(provider: str = ""):
 
     Mirrors the model-curation `youtab model` does so GUI onboarding lands on a
     sensible default instead of blindly taking the first curated entry. For
-    Youtab this honors the user's free/paid tier: free users get a free model,
-    paid users get the full curated default. For any other provider it falls
-    back to the first curated model (same as before).
+    Native Youtab Gateway uses only the current profile's admitted catalog.
+    Hosted Youtab Portal honors the user's free/paid tier: free users get a
+    free model, paid users get the full curated default. Other providers use
+    their own available model list.
 
     Response: {"provider": str, "model": str, "free_tier": bool | None}
     where free_tier is True/False for Youtab and None otherwise. `model` may be
@@ -6618,6 +6619,27 @@ def get_recommended_default_model(provider: str = ""):
 
     if slug == "youtab":
         try:
+            from youtab_agent_cli.auth import get_local_inference_token_state
+
+            if get_local_inference_token_state() is not None or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
+                from youtab_agent_cli.models import cached_provider_model_ids, pick_silent_default_model
+                from youtab_agent_cli.providers import youtab_api_mode
+
+                # Native admission comes from this profile's Gateway catalog,
+                # never the hosted Portal's tier recommendations.
+                admitted = []
+                for model in cached_provider_model_ids("youtab"):
+                    try:
+                        youtab_api_mode(model)
+                    except ValueError:
+                        continue
+                    admitted.append(model)
+                return {
+                    "provider": "youtab",
+                    "model": pick_silent_default_model(admitted, provider="youtab"),
+                    "free_tier": None,
+                }
+
             from youtab_agent_cli.models import (
                 get_curated_youtab_model_ids,
                 get_pricing_for_provider,

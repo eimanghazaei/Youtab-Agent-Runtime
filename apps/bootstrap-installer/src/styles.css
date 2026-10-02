@@ -27,6 +27,25 @@
  */
 @import '../../desktop/src/styles.css';
 
+/* Installer accent only; Desktop themes remain independently selectable. */
+:root {
+  --theme-foreground: #164b3c;
+  --theme-primary: #087f5b;
+  --theme-midground: #087f5b;
+  --theme-secondary: #276b57;
+  --theme-accent-soft: #d8f3e8;
+}
+
+@keyframes youtab-working-mark {
+  0%, 100% { transform: rotate(0deg) scale(0.9); opacity: 0.65; }
+  50% { transform: rotate(180deg) scale(1); opacity: 1; }
+  100% { transform: rotate(360deg) scale(0.9); }
+}
+
+.youtab-working-mark {
+  animation: youtab-working-mark 2.8s linear infinite;
+}
+
 /* Installer-only additions: a fade-in animation and a warm radial glow
    for the welcome screen. Everything else inherits from the desktop. */
 @keyframes youtab-fade-in {
@@ -69,20 +88,20 @@
 :root.dark {
   color-scheme: dark;
 
-  --theme-foreground: #ffe6cb;
-  --theme-primary: #ffe6cb;
-  --theme-secondary: #1b45a4;
-  --theme-accent-soft: #1540b1;
-  --theme-midground: #0053fd;
+  --theme-foreground: #d7f5e8;
+  --theme-primary: #70dbaf;
+  --theme-secondary: #36896c;
+  --theme-accent-soft: #1b684c;
+  --theme-midground: #70dbaf;
   --theme-warm: #ffe6cb;
-  --theme-background-seed: #0d2f86;
-  --theme-sidebar-seed: #09286f;
-  --theme-card-seed: #12378f;
-  --theme-elevated-seed: #123a96;
-  --theme-bubble-seed: #143b91;
+  --theme-background-seed: #07251d;
+  --theme-sidebar-seed: #061f18;
+  --theme-card-seed: #0d3025;
+  --theme-elevated-seed: #123a2e;
+  --theme-bubble-seed: #143b2e;
 
   /* Non-derived shadcn tokens applyTheme() paints inline (Youtab dark values). */
-  --dt-primary-foreground: #0d2f86;
+  --dt-primary-foreground: #07251d;
   --dt-destructive: #c0473a;
   --dt-destructive-foreground: #fef2f2;
 }

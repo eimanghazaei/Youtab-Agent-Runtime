@@ -1272,6 +1272,7 @@ export function ChatSidebar({
                 dndSensors={dndSensors}
                 emptyState={<SidebarPinnedEmptyState />}
                 label={s.pinned}
+                labelIcon={<Codicon aria-hidden className="size-3" name="pinned" />}
                 onArchiveSession={onArchiveSession}
                 onBranchSession={onBranchSession}
                 onDeleteSession={onDeleteSession}
@@ -1413,6 +1414,7 @@ export function ChatSidebar({
                   )
                 }
                 label={sessionsLabel}
+                labelIcon={<Codicon aria-hidden className="size-3" name="device-desktop" />}
                 labelMeta={
                   worktreeGroupingActive ? (
                     reposScanning && !projectsSkeletonVisible ? (
