@@ -42,6 +42,8 @@ struct InstallJournal {
     schema: u32,
     had_old: bool,
     setup: Option<SetupJournal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    legacy_head_sha: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -58,6 +60,11 @@ impl InstallSwap {
         Ok(parent.join(format!("{}.old-backup", current.file_name().unwrap().to_string_lossy())))
     }
 
+    fn legacy_archive_path(current: &Path) -> Result<PathBuf> {
+        let parent = current.parent().context("install root has no parent")?;
+        Ok(parent.join(format!("{}.legacy-preserved-v1", current.file_name().unwrap().to_string_lossy())))
+    }
+
     fn marker_path(current: &Path, suffix: &str) -> Result<PathBuf> {
         let parent = current.parent().context("install root has no parent")?;
         Ok(parent.join(format!(".youtab-runtime-install-{suffix}")))
@@ -65,7 +72,7 @@ impl InstallSwap {
 
     #[cfg(test)]
     fn write_pending(current: &Path, had_old: bool) -> Result<()> {
-        Self::write_journal(current, &InstallJournal { schema: 2, had_old, setup: None })
+        Self::write_journal(current, &InstallJournal { schema: 2, had_old, setup: None, legacy_head_sha: None })
     }
 
     fn write_journal(current: &Path, journal: &InstallJournal) -> Result<()> {
@@ -82,12 +89,17 @@ impl InstallSwap {
         let bytes = std::fs::read(Self::marker_path(current, "pending")?)?;
         // Replay transactions left by the previous Runtime-only implementation.
         let journal = match bytes.as_slice() {
-            b"old\n" | b"old" => InstallJournal { schema: 2, had_old: true, setup: None },
-            b"fresh\n" | b"fresh" => InstallJournal { schema: 2, had_old: false, setup: None },
+            b"old\n" | b"old" => InstallJournal { schema: 2, had_old: true, setup: None, legacy_head_sha: None },
+            b"fresh\n" | b"fresh" => InstallJournal { schema: 2, had_old: false, setup: None, legacy_head_sha: None },
             _ => serde_json::from_slice::<InstallJournal>(&bytes)?,
         };
         let hash_valid = |hash: &str| hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
-        if journal.schema != 2 || journal.setup.as_ref().is_some_and(|setup|
+        let legacy_valid = match &journal.legacy_head_sha {
+            Some(sha) => journal.schema == 3 && journal.had_old && sha.len() == 40
+                && sha.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()),
+            None => journal.schema == 2,
+        };
+        if !legacy_valid || journal.setup.as_ref().is_some_and(|setup|
             !hash_valid(&setup.required_sha256) ||
             setup.previous_sha256.as_ref().is_some_and(|hash| !hash_valid(hash)) ||
             (!setup.replace && setup.previous_sha256.as_ref() != Some(&setup.required_sha256))) {
@@ -184,7 +196,24 @@ impl InstallSwap {
                 crate::paths::verify_installer(&target, &setup.required_sha256)
                     .context("committed Setup verification failed; backups retained")?;
             }
-            if backup.exists() {
+            if let Some(expected) = &journal.legacy_head_sha {
+                // The initial Git-to-artifact transition retains the ENTIRE old
+                // tree, including .git, carried commits and untracked files.
+                // This path is never reused as an update cleanup directory.
+                let archive = Self::legacy_archive_path(current)?;
+                if backup.exists() {
+                    if archive.exists() || archive.is_symlink() {
+                        return Err(anyhow!("legacy archive already exists; both installs retained"));
+                    }
+                    if legacy_git_head(&backup)? != *expected {
+                        return Err(anyhow!("legacy backup identity changed; backup retained"));
+                    }
+                    std::fs::rename(&backup, &archive).context("preserving legacy Runtime")?;
+                }
+                if legacy_git_head(&archive)? != *expected {
+                    return Err(anyhow!("preserved legacy Runtime could not be verified"));
+                }
+            } else if backup.exists() {
                 std::fs::remove_dir_all(&backup).with_context(|| "cleaning verified old Runtime")?;
             }
             Self::remove_setup_file(&setup_backup)?;
@@ -206,7 +235,17 @@ impl InstallSwap {
         Self::promote_with_setup(current, staged, None)
     }
 
+    #[cfg(test)]
     fn promote_with_setup(current: &Path, staged: &Path, setup_source: Option<&Path>) -> Result<Self> {
+        Self::promote_with_policy(current, staged, setup_source, None)
+    }
+
+    fn promote_with_policy(current: &Path, staged: &Path, setup_source: Option<&Path>, legacy_head_sha: Option<String>) -> Result<Self> {
+        if let Some(expected) = &legacy_head_sha {
+            if validate_legacy_migration(current)? != *expected {
+                return Err(anyhow!("legacy install changed before promotion"));
+            }
+        }
         let parent = current.parent().context("install root has no parent")?;
         let staged_parent = staged.parent().context("staging root has no parent")?;
         let prefix = format!("{}.new-", current.file_name().unwrap().to_string_lossy());
@@ -232,7 +271,7 @@ impl InstallSwap {
             };
             Ok(SetupJournal { replace: !same, previous_sha256, required_sha256 })
         }).transpose()?;
-        Self::write_journal(current, &InstallJournal { schema: 2, had_old, setup })?;
+        Self::write_journal(current, &InstallJournal { schema: if legacy_head_sha.is_some() { 3 } else { 2 }, had_old, setup, legacy_head_sha })?;
         // Own rollback BEFORE any copy or active-path mutation. The same
         // journal covers partial staging, Runtime promotion, and Setup rename.
         let swap = Self { current: current.to_path_buf(), committed: false };
@@ -349,6 +388,59 @@ impl ArtifactInstallInfo {
             release_base_url,
         })
     }
+}
+
+fn legacy_git(root: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let mut command = std::process::Command::new("git");
+    command.arg("--no-optional-locks").arg("-C").arg(root).args(args);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    }
+    command.output().context("reading legacy Git identity")
+}
+
+/// Read only: no fetch, reset, checkout, hooks or credential access.
+fn legacy_git_head(root: &Path) -> Result<String> {
+    let git = root.join(".git");
+    if root.is_symlink() || !root.is_dir() || git.is_symlink() || !git.is_dir() {
+        return Err(anyhow!("legacy migration requires a standalone Git install"));
+    }
+    let output = legacy_git(root, &["rev-parse", "--verify", "HEAD"])?;
+    let sha = String::from_utf8(output.stdout)?.trim().to_string();
+    if !output.status.success() || sha.len() != 40
+        || !sha.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+        return Err(anyhow!("legacy Git identity is invalid"));
+    }
+    Ok(sha)
+}
+
+fn validate_legacy_migration(root: &Path) -> Result<String> {
+    let marker_path = root.join(".youtab-agent-runtime-bootstrap-complete");
+    if marker_path.is_symlink() || !marker_path.is_file() {
+        return Err(anyhow!("legacy migration requires the existing bootstrap marker"));
+    }
+    let marker: serde_json::Value = serde_json::from_slice(&std::fs::read(marker_path)?)?;
+    // An explicit migration flag must NEVER bypass artifact channel identity
+    // or sequence checks, including partially damaged artifact metadata.
+    if ["releaseBaseUrl", "releaseSequence", "artifactSha256"].iter()
+        .any(|key| marker.get(*key).is_some_and(|v| !v.is_null())) {
+        return Err(anyhow!("artifact installs must use the normal update/repair path"));
+    }
+    let pin = marker.get("pinnedCommit").and_then(serde_json::Value::as_str)
+        .filter(|sha| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()))
+        .ok_or_else(|| anyhow!("legacy marker has no valid source SHA"))?;
+    let head = legacy_git_head(root)?;
+    let status = legacy_git(root, &["merge-base", "--is-ancestor", pin, &head])?;
+    if !status.status.success() {
+        return Err(anyhow!("legacy marker is not in installed Git history"));
+    }
+    let archive = InstallSwap::legacy_archive_path(root)?;
+    if archive.exists() || archive.is_symlink() {
+        return Err(anyhow!("preserved legacy install already exists; review required"));
+    }
+    Ok(head)
 }
 
 fn ensure_replacement_not_downgrade(root: &Path, next: &ArtifactInstallInfo) -> Result<()> {
@@ -948,6 +1040,13 @@ async fn run_bootstrap(
     } else {
         None
     };
+    let migration_requested = std::env::args().any(|arg| arg == "--migrate-legacy");
+    let legacy_head_sha = if migration_requested {
+        if !cfg!(target_os = "windows") || release_base.is_none() || authorized_artifact_target.is_some() {
+            return Err(anyhow!("legacy migration requires the Windows customer Setup install flow"));
+        }
+        Some(validate_legacy_migration(&install_root)?)
+    } else { None };
     let mut install_swap: Option<InstallSwap> = None;
     let mut artifact_info: Option<ArtifactInstallInfo> = None;
 
@@ -1218,10 +1317,12 @@ async fn run_bootstrap(
                         let data = frame.data.as_ref().ok_or_else(||
                             anyhow!("artifact repository stage omitted its result data"))?;
                         let info = ArtifactInstallInfo::from_stage_data(data, &pin, base)?;
-                        ensure_replacement_not_downgrade(&install_root, &info)?;
+                        if legacy_head_sha.is_none() {
+                            ensure_replacement_not_downgrade(&install_root, &info)?;
+                        }
                         crate::update::require_install_locks_free(&install_root).await?;
                         let setup_source = std::env::current_exe().context("locating running Setup")?;
-                        let mut swap = InstallSwap::promote_with_setup(&install_root, &info.staged, Some(&setup_source))?;
+                        let mut swap = InstallSwap::promote_with_policy(&install_root, &info.staged, Some(&setup_source), legacy_head_sha.clone())?;
                         swap.install_setup()?;
                         artifact_info = Some(info);
                         install_swap = Some(swap);
@@ -1785,7 +1886,7 @@ mod tests {
         std::fs::remove_file(&setup_stage).unwrap();
         // A copied file whose bytes fail verification remains journal-owned.
         InstallSwap::write_journal(&current, &InstallJournal {
-            schema: 2, had_old: true, setup: Some(SetupJournal {
+            schema: 2, legacy_head_sha: None, had_old: true, setup: Some(SetupJournal {
                 replace: true,
                 previous_sha256: Some(crate::paths::installer_sha256(&target).unwrap()),
                 required_sha256: "0".repeat(64),
@@ -1931,4 +2032,146 @@ mod tests {
         assert_eq!(std::fs::read(target).unwrap(), b"old-setup-fixture");
         std::fs::remove_dir_all(parent).unwrap();
     }
+
+    fn legacy_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf, String) {
+        let (parent, current, staged, setup) = setup_swap_fixture(label);
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(["-c", "core.hooksPath=", "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid"])
+                .arg("-C").arg(&current).args(args).output().unwrap();
+            assert!(output.status.success(), "fixture Git command failed");
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "--quiet"]);
+        git(&["add", "old.txt"]);
+        git(&["commit", "--quiet", "-m", "Original install"]);
+        let pin = git(&["rev-parse", "HEAD"]);
+        std::fs::write(current.join("carried.txt"), b"carried-local-work").unwrap();
+        git(&["add", "carried.txt"]);
+        git(&["commit", "--quiet", "-m", "Carried local commit"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        std::fs::write(current.join("untracked.txt"), b"untracked-local-work").unwrap();
+        std::fs::write(current.join(".youtab-agent-runtime-bootstrap-complete"),
+            serde_json::to_vec(&serde_json::json!({"schemaVersion": 1, "pinnedCommit": pin})).unwrap()).unwrap();
+        (parent, current, staged, setup, head)
+    }
+
+    #[test]
+    fn migration_preserves_git_carried_commits_and_untracked_files_after_commit() {
+        let (parent, current, staged, setup, head) = legacy_fixture("migration-preserve");
+        std::fs::write(parent.join("config.yaml"), b"user-config-fixture").unwrap();
+        assert_eq!(validate_legacy_migration(&current).unwrap(), head);
+        let mut swap = InstallSwap::promote_with_policy(&current, &staged, Some(&setup), Some(head.clone())).unwrap();
+        swap.install_setup().unwrap();
+        swap.commit().unwrap();
+        let archive = InstallSwap::legacy_archive_path(&current).unwrap();
+        assert_eq!(legacy_git_head(&archive).unwrap(), head);
+        assert_eq!(std::fs::read(archive.join("carried.txt")).unwrap(), b"carried-local-work");
+        assert_eq!(std::fs::read(archive.join("untracked.txt")).unwrap(), b"untracked-local-work");
+        assert_eq!(std::fs::read(parent.join("config.yaml")).unwrap(), b"user-config-fixture");
+        assert!(current.join("new.txt").exists());
+        assert!(!InstallSwap::backup_path(&current).unwrap().exists());
+        InstallSwap::recover(&current).unwrap();
+        assert!(archive.join(".git").is_dir());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn migration_failure_rolls_back_runtime_and_setup_without_losing_local_work() {
+        let (parent, current, staged, setup, head) = legacy_fixture("migration-rollback");
+        {
+            let mut swap = InstallSwap::promote_with_policy(&current, &staged, Some(&setup), Some(head.clone())).unwrap();
+            swap.install_setup().unwrap();
+            // Simulated provisioning/health failure: uncommitted drop rolls back.
+        }
+        assert_eq!(legacy_git_head(&current).unwrap(), head);
+        assert_eq!(std::fs::read(current.join("untracked.txt")).unwrap(), b"untracked-local-work");
+        assert_eq!(std::fs::read(crate::paths::installer_dest_in(&parent)).unwrap(), b"old-setup-fixture");
+        assert!(!InstallSwap::legacy_archive_path(&current).unwrap().exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn migration_committed_recovery_resumes_after_archive_rename() {
+        let (parent, current, staged, setup, head) = legacy_fixture("migration-resume");
+        let mut swap = InstallSwap::promote_with_policy(&current, &staged, Some(&setup), Some(head.clone())).unwrap();
+        swap.install_setup().unwrap();
+        std::fs::write(InstallSwap::marker_path(&current, "committed").unwrap(), b"verified\n").unwrap();
+        let archive = InstallSwap::legacy_archive_path(&current).unwrap();
+        std::fs::rename(InstallSwap::backup_path(&current).unwrap(), &archive).unwrap();
+        std::mem::forget(swap);
+        InstallSwap::recover(&current).unwrap();
+        InstallSwap::recover(&current).unwrap();
+        assert_eq!(legacy_git_head(&archive).unwrap(), head);
+        assert!(!InstallSwap::marker_path(&current, "pending").unwrap().exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn migration_existing_archive_fails_before_any_promotion() {
+        let (parent, current, staged, setup, head) = legacy_fixture("migration-collision");
+        let archive = InstallSwap::legacy_archive_path(&current).unwrap();
+        std::fs::create_dir(&archive).unwrap();
+        std::fs::write(archive.join("preserve.txt"), b"previous-archive").unwrap();
+        assert!(InstallSwap::promote_with_policy(&current, &staged, Some(&setup), Some(head.clone())).is_err());
+        assert_eq!(legacy_git_head(&current).unwrap(), head);
+        assert_eq!(std::fs::read(archive.join("preserve.txt")).unwrap(), b"previous-archive");
+        assert!(staged.join("new.txt").exists());
+        assert!(!InstallSwap::marker_path(&current, "pending").unwrap().exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn migration_flag_cannot_bypass_artifact_channel_or_partial_metadata() {
+        let (parent, current, _, _, _) = legacy_fixture("migration-no-bypass");
+        let marker = current.join(".youtab-agent-runtime-bootstrap-complete");
+        let original: serde_json::Value = serde_json::from_slice(&std::fs::read(&marker).unwrap()).unwrap();
+        for key in ["releaseBaseUrl", "releaseSequence", "artifactSha256"] {
+            let mut data = original.clone();
+            data[key] = serde_json::json!("damaged-or-different-channel");
+            std::fs::write(&marker, serde_json::to_vec(&data).unwrap()).unwrap();
+            assert!(validate_legacy_migration(&current).is_err(), "{key}");
+        }
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn migration_invalid_journal_preserves_pending_state() {
+        let (parent, current, _, _, _) = legacy_fixture("migration-invalid-journal");
+        let pending = InstallSwap::marker_path(&current, "pending").unwrap();
+        std::fs::write(&pending, br#"{"schema":3,"had_old":false,"setup":null,"legacy_head_sha":"invalid"}"#).unwrap();
+        assert!(InstallSwap::recover(&current).is_err());
+        assert!(pending.exists());
+        assert!(current.join("carried.txt").exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn later_artifact_updates_leave_the_preserved_legacy_tree_untouched() {
+        let (parent, current, staged, setup, head) = legacy_fixture("migration-later-update");
+        let mut swap = InstallSwap::promote_with_policy(&current, &staged, Some(&setup), Some(head.clone())).unwrap();
+        swap.install_setup().unwrap();
+        swap.commit().unwrap();
+        let archive = InstallSwap::legacy_archive_path(&current).unwrap();
+        let next = parent.join("youtab-agent-runtime.new-later");
+        std::fs::create_dir(&next).unwrap();
+        std::fs::write(next.join("later.txt"), b"later-artifact").unwrap();
+        let mut update = InstallSwap::promote_with_setup(&current, &next, Some(&setup)).unwrap();
+        update.install_setup().unwrap();
+        update.commit().unwrap();
+        assert!(current.join("later.txt").exists());
+        assert_eq!(legacy_git_head(&archive).unwrap(), head);
+        assert_eq!(std::fs::read(archive.join("untracked.txt")).unwrap(), b"untracked-local-work");
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn migration_source_change_fails_before_promotion() {
+        let (parent, current, staged, setup, _) = legacy_fixture("migration-source-change");
+        assert!(InstallSwap::promote_with_policy(&current, &staged, Some(&setup), Some("a".repeat(40))).is_err());
+        assert!(current.join("carried.txt").exists());
+        assert!(!InstallSwap::marker_path(&current, "pending").unwrap().exists());
+        std::fs::remove_dir_all(parent).unwrap();
+    }
+
 }
