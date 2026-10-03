@@ -110,6 +110,7 @@ contextBridge.exposeInMainWorld('youtabDesktop', {
   writeClipboard: text => ipcRenderer.invoke('youtab:writeClipboard', text),
   readClipboard: () => ipcRenderer.invoke('youtab:readClipboard'),
   saveImageFromUrl: url => ipcRenderer.invoke('youtab:saveImageFromUrl', url),
+  saveFileCopy: filePath => ipcRenderer.invoke('youtab:saveFileCopy', filePath),
   saveImageBuffer: (data, ext) => ipcRenderer.invoke('youtab:saveImageBuffer', { data, ext }),
   saveClipboardImage: () => ipcRenderer.invoke('youtab:saveClipboardImage'),
   getPathForFile: file => {

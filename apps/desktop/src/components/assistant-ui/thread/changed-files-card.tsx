@@ -3,12 +3,13 @@ import { type FC, useMemo } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { deriveChangedFiles } from '@/components/assistant-ui/thread/changed-files'
+import { FileDownloadButton } from '@/components/chat/file-download-button'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { DiffCount } from '@/components/ui/diff-count'
 import { FileTypeIcon } from '@/components/ui/file-type-icon'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { openReviewForPath, revealReview } from '@/store/review'
+import { openReviewForPath } from '@/store/review'
 
 /**
  * Cursor-style "N files changed" summary closing out the newest assistant turn:
@@ -41,7 +42,7 @@ export const ChangedFilesCard: FC<{ parts: readonly unknown[] }> = ({ parts }) =
         <span className="min-w-0 flex-1 truncate text-(--ui-text-primary)">{copy.filesChanged(files.length)}</span>
         <button
           className="shrink-0 cursor-pointer text-(--ui-text-tertiary) transition-colors hover:text-(--ui-text-primary)"
-          onClick={() => revealReview(scopeCwd)}
+          onClick={() => void openReviewForPath(files[0].path, scopeCwd)}
           type="button"
         >
           {copy.reviewChanges}
@@ -49,17 +50,19 @@ export const ChangedFilesCard: FC<{ parts: readonly unknown[] }> = ({ parts }) =
       </div>
       <div className="mt-1.5 flex flex-col">
         {files.map(file => (
-          <button
-            className="row-hover -mx-1.5 flex items-center gap-2 rounded-md px-1.5 py-1 text-left"
-            key={file.path}
-            onClick={() => void openReviewForPath(file.path, scopeCwd)}
-            title={file.path}
-            type="button"
-          >
-            <FileTypeIcon className="shrink-0 text-(--ui-text-tertiary)" path={file.path} size="0.875rem" />
-            <span className="min-w-0 flex-1 truncate text-(--ui-text-secondary)">{file.name}</span>
-            <DiffCount added={file.added} removed={file.removed} />
-          </button>
+          <div className="flex items-center gap-1" key={file.path}>
+            <button
+              className="row-hover -mx-1.5 flex min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 py-1 text-left"
+              onClick={() => void openReviewForPath(file.path, scopeCwd)}
+              title={file.path}
+              type="button"
+            >
+              <FileTypeIcon className="shrink-0 text-(--ui-text-tertiary)" path={file.path} size="0.875rem" />
+              <span className="min-w-0 flex-1 truncate text-(--ui-text-secondary)">{file.name}</span>
+              <DiffCount added={file.added} removed={file.removed} />
+            </button>
+            <FileDownloadButton cwd={viewCwd} path={file.path} />
+          </div>
         ))}
       </div>
     </div>

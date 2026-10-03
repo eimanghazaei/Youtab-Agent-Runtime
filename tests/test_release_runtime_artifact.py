@@ -27,6 +27,7 @@ def committed_source(tmp_path, monkeypatch):
         "pyproject.toml": "[project]\nname = 'youtab-agent-runtime'\n",
         "apps/desktop/package.json": '{"name":"youtab"}\n',
         "agent/runtime.py": "print('runtime')\n",
+        "skills/testing/base/SKILL.md": "---\nname: base\ndescription: Base skill\n---\nBase instructions.\n",
         "tests/ignored.py": "test-only\n",
         ".github/workflows/ignored.yml": "dev-only\n",
     }.items():
@@ -64,6 +65,69 @@ def test_static_release_is_sha_bound_and_immutable(committed_source, tmp_path):
     with pytest.raises(FileExistsError):
         release.package_runtime_artifact(out, "0.19.2", 2, BASE)
     assert (out / "latest.json").read_bytes() == before
+
+
+def test_missing_capability_instructions_prevents_publication(committed_source, tmp_path, monkeypatch):
+    original_filter = release._runtime_artifact_path_allowed
+    monkeypatch.setattr(
+        release, "_runtime_artifact_path_allowed",
+        lambda name: original_filter(name) and not name.endswith("SKILL.md"),
+    )
+    out = tmp_path / "releases"
+    with pytest.raises(RuntimeError, match="lacks capability instructions"):
+        release.package_runtime_artifact(out, "0.19.1", 1, BASE)
+    assert not (out / "latest.json").exists()
+
+
+def test_extracted_artifact_seeds_skills_and_preserves_user_customizations(
+    committed_source, tmp_path, monkeypatch,
+):
+    from tools import skills_sync
+
+    payloads = {
+        "skills/engineering/planner/SKILL.md":
+            "---\nname: planner\ndescription: Plan work\n---\nRead references/steps.md.\n",
+        "skills/engineering/planner/references/steps.md": "Plan, verify, report.\n",
+        "optional-skills/engineering/reviewer/SKILL.md":
+            "---\nname: reviewer\ndescription: Review changes\n---\nReview safely.\n",
+        "plugins/example/SKILL.md": "---\nname: example-plugin\n---\nPlugin instructions.\n",
+        "docs/NOT_SHIPPED.md": "Developer documentation.\n",
+    }
+    for name, content in payloads.items():
+        path = committed_source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _git(committed_source, "add", ".")
+    _git(committed_source, "commit", "-m", "capability fixtures")
+    out = tmp_path / "releases"
+    manifest = release.package_runtime_artifact(out, "0.19.1", 1, BASE)
+    sha = manifest["source_sha"]
+    extracted = tmp_path / "extracted"
+    with zipfile.ZipFile(out / sha / f"youtab-runtime-{sha}.zip") as archive:
+        archive.extractall(extracted)
+    runtime = extracted / f"youtab-runtime-{sha}"
+    for name, content in payloads.items():
+        if name.startswith("docs/"):
+            assert not (runtime / name).exists()
+        else:
+            assert (runtime / name).read_text(encoding="utf-8") == content
+    home = tmp_path / "isolated-user-home"
+    active = home / "skills"
+    monkeypatch.setattr(skills_sync, "YOUTAB_AGENT_HOME", home)
+    monkeypatch.setattr(skills_sync, "SKILLS_DIR", active)
+    monkeypatch.setattr(skills_sync, "MANIFEST_FILE", active / ".bundled_manifest")
+    monkeypatch.setattr(skills_sync, "_get_bundled_dir", lambda: runtime / "skills")
+    monkeypatch.setattr(skills_sync, "_get_optional_dir", lambda: runtime / "optional-skills")
+    monkeypatch.setattr(skills_sync, "_build_external_skill_index", set)
+    result = skills_sync.sync_skills(quiet=True)
+    assert "planner" in result["copied"]
+    installed = active / "engineering/planner"
+    assert (installed / "references/steps.md").read_text() == payloads[
+        "skills/engineering/planner/references/steps.md"
+    ]
+    (installed / "SKILL.md").write_text("User-customized instructions.\n")
+    skills_sync.sync_skills(quiet=True)
+    assert (installed / "SKILL.md").read_text() == "User-customized instructions.\n"
 
 
 def test_dirty_checkout_and_secret_file_fail_closed(committed_source, tmp_path):

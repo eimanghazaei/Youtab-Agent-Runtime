@@ -12,6 +12,7 @@ import { Package } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { EmptyState, ListRow, Pill, SectionHeading, SettingsContent } from './primitives'
+import { RuntimePluginsSettings } from './runtime-plugins-settings'
 
 const KIND_ORDER: Record<PluginRecord['kind'], number> = { disk: 0, runtime: 1, bundled: 2 }
 
@@ -97,6 +98,7 @@ export function PluginsSettings() {
 
   return (
     <SettingsContent>
+      <RuntimePluginsSettings />
       <SectionHeading icon={Package} meta={p.count(rows.length)} title={p.title} />
       <p className="mb-4 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">{p.blurb}</p>
 

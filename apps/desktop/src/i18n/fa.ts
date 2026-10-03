@@ -2,6 +2,12 @@ import { defineLocale } from './define-locale'
 
 // Technical identifiers and untranslated specialist messages retain English.
 export const fa = defineLocale({
+  runtimePlugins: {
+    title: "افزونه‌های Runtime",
+    description: "یکپارچه‌سازی‌های همراه برنامه و نصب‌شدهٔ ایجنت. دسترسی به هر افزونه به وابستگی‌ها و تنظیمات حساب آن بستگی دارد.",
+    empty: "افزونهٔ Runtime یافت نشد.",
+    failed: "بارگذاری افزونه‌های Runtime ناموفق بود.",
+  },
   common: {
     apply: 'اعمال', back: 'بازگشت', save: 'ذخیره', saving: 'در حال ذخیره…', cancel: 'لغو',
     change: 'تغییر', choose: 'انتخاب', clear: 'پاک کردن', close: 'بستن', collapse: 'جمع کردن',

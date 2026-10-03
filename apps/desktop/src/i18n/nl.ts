@@ -2,6 +2,12 @@ import { defineLocale } from './define-locale'
 
 // Untranslated specialist messages use the existing English fallback contract.
 export const nl = defineLocale({
+  runtimePlugins: {
+    title: "Runtime-plug-ins",
+    description: "Meegeleverde en geïnstalleerde agentintegraties. Beschikbaarheid hangt af van afhankelijkheden en accountinstellingen.",
+    empty: "Geen Runtime-plug-ins gevonden.",
+    failed: "Runtime-plug-ins konden niet worden geladen.",
+  },
   common: {
     apply: 'Toepassen', back: 'Terug', save: 'Opslaan', saving: 'Opslaan…', cancel: 'Annuleren',
     change: 'Wijzigen', choose: 'Kiezen', clear: 'Wissen', close: 'Sluiten', collapse: 'Inklappen',

@@ -3,6 +3,12 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 import type { Translations } from './types'
 
 export const en: Translations = {
+  runtimePlugins: {
+    title: "Runtime plugins",
+    description: "Bundled and installed agent integrations. Availability depends on each plugin's dependencies and account settings.",
+    empty: "No Runtime plugins found.",
+    failed: "Could not load Runtime plugins.",
+  },
   common: {
     apply: 'Apply',
     back: 'Back',
