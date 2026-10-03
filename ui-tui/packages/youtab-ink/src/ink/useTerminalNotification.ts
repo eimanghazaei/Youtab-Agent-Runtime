@@ -95,9 +95,6 @@ export function useTerminalNotification(): TerminalNotification {
 
           break
 
-        case null:
-          // Handled by the if guard above
-          break
       }
     },
     [writeRaw]

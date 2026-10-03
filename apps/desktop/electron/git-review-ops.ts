@@ -5,6 +5,7 @@
 // non-repo / remote backend; mutations reject so the renderer can toast.
 
 import { execFile } from 'node:child_process'
+import { constants } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -16,6 +17,23 @@ const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
+
+async function readBoundedSample(handle, maxBytes) {
+  const sample = Buffer.alloc(maxBytes + 1)
+  let total = 0
+
+  while (total < sample.length) {
+    const { bytesRead } = await handle.read(sample, total, sample.length - total, total)
+
+    if (bytesRead === 0) {
+      break
+    }
+
+    total += bytesRead
+  }
+
+  return sample.subarray(0, total)
+}
 
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
@@ -101,27 +119,39 @@ function countsByPath(summary) {
 async function untrackedInsertions(cwd, relPath) {
   try {
     const fullPath = path.join(cwd, relPath)
-    const stat = await fs.stat(fullPath)
+    const handle = await fs.open(fullPath, constants.O_RDONLY | (constants.O_NOFOLLOW || 0))
 
-    if (!stat.isFile() || stat.size > UNTRACKED_LINE_COUNT_MAX_BYTES) {
-      return 0
-    }
+    try {
+      const stat = await handle.stat()
 
-    const buf = await fs.readFile(fullPath)
-
-    if (buf.includes(0)) {
-      return 0
-    }
-
-    let lines = 0
-
-    for (const byte of buf) {
-      if (byte === 10) {
-        lines++
+      if (!stat.isFile() || stat.size > UNTRACKED_LINE_COUNT_MAX_BYTES) {
+        return 0
       }
-    }
 
-    return buf.length > 0 && buf[buf.length - 1] !== 10 ? lines + 1 : lines
+      // A file can grow after stat; read at most one byte past the cap from
+      // this same handle and treat an oversized result as binary/unknown.
+      const buf = await readBoundedSample(handle, UNTRACKED_LINE_COUNT_MAX_BYTES)
+
+      if (buf.length > UNTRACKED_LINE_COUNT_MAX_BYTES) {
+        return 0
+      }
+
+      if (buf.includes(0)) {
+        return 0
+      }
+
+      let lines = 0
+
+      for (const byte of buf) {
+        if (byte === 10) {
+          lines++
+        }
+      }
+
+      return buf.length > 0 && buf[buf.length - 1] !== 10 ? lines + 1 : lines
+    } finally {
+      await handle.close()
+    }
   } catch {
     return 0
   }
@@ -694,6 +724,7 @@ export {
   branchBase,
   fileDiffVsHead,
   gitFor,
+  readBoundedSample,
   repoStatus,
   resolveRenamePath,
   reviewCommit,

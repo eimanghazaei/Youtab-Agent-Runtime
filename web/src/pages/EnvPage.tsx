@@ -896,7 +896,7 @@ export default function EnvPage() {
 
   const pendingClearKey = keyClear.pendingId;
   const pendingKeyDescription =
-    pendingClearKey && vars ? vars[pendingClearKey]?.description : undefined;
+    pendingClearKey ? vars[pendingClearKey]?.description : undefined;
 
   return (
     <div className="flex flex-col gap-6">

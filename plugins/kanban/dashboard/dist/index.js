@@ -86,8 +86,6 @@
     return body || raw;
   }
 
-  // Order matches BOARD_COLUMNS in plugin_api.py.
-  const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
   // a key, and as defaults for the get*() helpers below so callers running
   // outside any React component (where there's no `t`) still get sane text.
@@ -199,7 +197,6 @@
   // `title=` hints on unlabelled controls. Kept in one place so rebrands or
   // path changes are a single edit.
   const DOCS_URL = "https://youtab-agent-runtime.youtab.io/docs/user-guide/features/kanban";
-  const DOCS_TUTORIAL_URL = "https://youtab-agent-runtime.youtab.io/docs/user-guide/features/kanban-tutorial";
 
   // localStorage key for the user's selected board. Independent of the
   // CLI's on-disk ``<root>/kanban/current`` pointer so browser users
@@ -1382,7 +1379,7 @@
         setBusy(true); setMsg(null);
         const url = withBoard(`${API}/tasks/${encodeURIComponent(task.id)}/reassign`, boardSlug);
         const body = {
-          profile: reassignProfile || null,
+          profile: reassignProfile,
           reclaim_first: !!(action.payload && action.payload.reclaim_first),
           reason: `recovery action for ${diag.kind}`,
         };
@@ -1794,7 +1791,6 @@
       setDraft(p.description || "");
     }, [p.description]);
 
-    const tag = p.description_auto && p.description ? " [auto, review]" : "";
     return h("div", { className: "flex flex-col gap-1 border-l-2 pl-2",
       style: { borderColor: p.description ? "#888" : "#cc6" } },
       h("div", { className: "flex items-center gap-2 text-xs" },
@@ -3410,6 +3406,7 @@
             if (props.onOpenTask) props.onOpenTask(taskId);
           },
         }) : null,
+        patchErr ? h("div", { className: "p-4 text-sm text-destructive", role: "alert" }, patchErr) : null,
         data ? h("div", { className: "youtab-agent-runtime-kanban-drawer-comment-foot" },
           h("div", {
             className: "youtab-agent-runtime-kanban-comment-hint text-xs text-muted-foreground",
@@ -4073,7 +4070,7 @@
     };
 
     const providers = (catalog && catalog.providers) || [];
-    const loading = editing && !catalog;
+    const loading = !catalog;
     const currentValue = task.model_override
       ? (task.provider_override
           ? `${task.provider_override}\u0000${task.model_override}`

@@ -678,8 +678,6 @@ async function connect(deps) {
     profile = '',
     remoteYoutabPath = '',
     ownershipId,
-    forward,
-    pickLocalPort,
     waitForYoutab,
     probeReuseProof,
     adoptServedToken,

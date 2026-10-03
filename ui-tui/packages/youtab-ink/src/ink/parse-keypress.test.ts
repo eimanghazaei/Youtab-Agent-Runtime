@@ -108,15 +108,15 @@ describe('flush-boundary SGR mouse reassembly', () => {
     expect(keys).toEqual([])
 
     // continuation arrives; the whole report reassembles, nothing leaks
-    ;[keys, state] = parseMultipleKeypresses(state, '46M')
-    expect(keys).toEqual([expect.objectContaining({ kind: 'mouse', button: 0, col: 35, row: 46, action: 'press' })])
+    const [completedKeys] = parseMultipleKeypresses(state, '46M')
+    expect(completedKeys).toEqual([expect.objectContaining({ kind: 'mouse', button: 0, col: 35, row: 46, action: 'press' })])
   })
 
   it('drops a truncated mouse prefix after a second flush instead of leaking it', () => {
-    let [keys, state] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[<0;35;')
+    const [, initialState] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[<0;35;')
 
-    ;[keys, state] = parseMultipleKeypresses(state, null) // first flush keeps it
-    ;[keys, state] = parseMultipleKeypresses(state, null) // second flush drops it
+    const [, firstFlushState] = parseMultipleKeypresses(initialState, null) // first flush keeps it
+    const [keys, state] = parseMultipleKeypresses(firstFlushState, null) // second flush drops it
 
     expect(keys).toEqual([])
     expect(state.incomplete).toBe('')

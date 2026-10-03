@@ -359,18 +359,16 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
 
       {localTokens > 0 ? (
         <OverlaySection defaultOpen t={t} title="Budget">
-          {localTokens > 0 ? (
-            <Field
-              name="tokens"
-              t={t}
-              value={
-                <>
-                  {fmtTokens(inputTokens)} in · {fmtTokens(outputTokens)} out
-                  {item.reasoningTokens ? ` · ${fmtTokens(item.reasoningTokens)} reasoning` : ''}
-                </>
-              }
-            />
-          ) : null}
+          <Field
+            name="tokens"
+            t={t}
+            value={
+              <>
+                {fmtTokens(inputTokens)} in · {fmtTokens(outputTokens)} out
+                {item.reasoningTokens ? ` · ${fmtTokens(item.reasoningTokens)} reasoning` : ''}
+              </>
+            }
+          />
 
           {subtreeTokens > 0 ? <Field name="subtree tokens" t={t} value={`+${fmtTokens(subtreeTokens)}`} /> : null}
         </OverlaySection>

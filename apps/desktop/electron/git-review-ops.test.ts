@@ -6,9 +6,29 @@ import path from 'node:path'
 
 import { afterEach, test } from 'vitest'
 
-import { gitFor, repoStatus, resolveRenamePath } from './git-review-ops'
+import { gitFor, readBoundedSample, repoStatus, resolveRenamePath, reviewList } from './git-review-ops'
 
 const tempDirs: string[] = []
+
+test('readBoundedSample continues after short reads and stops at the cap', async () => {
+  const source = Buffer.from('one\ntwo\nthree')
+
+  const positions: number[] = []
+
+  const handle = {
+    async read(target: Buffer, offset: number, length: number, position: number) {
+      positions.push(position)
+
+      const bytesRead = source.copy(target, offset, position, position + Math.min(length, 2))
+
+      return { bytesRead }
+    }
+  }
+
+  assert.equal((await readBoundedSample(handle, 100)).toString(), source.toString())
+  assert.deepEqual(positions, [0, 2, 4, 6, 8, 10, 12, 13])
+  assert.equal((await readBoundedSample(handle, 4)).toString(), 'one\nt')
+})
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -86,4 +106,24 @@ test('repoStatus reports an untracked directory without recursively listing its 
     status.files.map(file => file.path),
     ['generated/']
   )
+})
+
+test('reviewList counts only bounded regular untracked files', async () => {
+  const dir = makeRepo()
+  fs.writeFileSync(path.join(dir, 'short.txt'), 'one\ntwo')
+  fs.writeFileSync(path.join(dir, 'oversized.txt'), Buffer.alloc(1024 * 1024 + 1, 65))
+
+  if (process.platform !== 'win32') {
+    fs.symlinkSync(path.join(dir, 'short.txt'), path.join(dir, 'link.txt'))
+  }
+
+  const result = await reviewList(dir, 'unstaged', null, 'git')
+  const files = new Map(result.files.map(file => [file.path, file] as const))
+
+  assert.equal(files.get('short.txt')?.added, 2)
+  assert.equal(files.get('oversized.txt')?.added, 0)
+
+  if (process.platform !== 'win32') {
+    assert.equal(files.get('link.txt')?.added, 0)
+  }
 })

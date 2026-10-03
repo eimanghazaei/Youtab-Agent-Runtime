@@ -33,6 +33,7 @@ import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
 import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import { mediaSendLimiter } from './media_rate_limit.js';
 import {
   buildPollPayload,
   buildLocationPayload,
@@ -233,16 +234,6 @@ function getMessageContent(msg) {
   if (content.buttonsMessage) return content.buttonsMessage;
   if (content.listMessage) return content.listMessage;
   return content;
-}
-
-function getContextInfo(messageContent) {
-  if (!messageContent || typeof messageContent !== 'object') return {};
-  for (const value of Object.values(messageContent)) {
-    if (value && typeof value === 'object' && value.contextInfo) {
-      return value.contextInfo;
-    }
-  }
-  return {};
 }
 
 mkdirSync(SESSION_DIR, { recursive: true });
@@ -888,7 +879,7 @@ app.post('/edit', async (req, res) => {
 });
 
 // Send media (image, video, document) natively
-app.post('/send-media', async (req, res) => {
+app.post('/send-media', mediaSendLimiter, async (req, res) => {
   if (!sock || connectionState !== 'connected') {
     return res.status(503).json({ error: 'Not connected to WhatsApp' });
   }

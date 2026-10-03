@@ -30,8 +30,6 @@ interface Skill {
   _search?: string;
 }
 
-const allSkills: Skill[] = [];
-
 interface IndexMeta {
   extractedAt?: string;
   indexGeneratedAt?: string;
@@ -40,6 +38,13 @@ interface IndexMeta {
   bySource?: Record<string, number>;
 }
 const indexMeta: IndexMeta = {};
+
+function safeInstallCommand(skill: Skill): string {
+  const command = skill.installCmd || (!skill.identifier ? `youtab skills install ${skill.name}` : "");
+  return /^youtab skills install [A-Za-z0-9][A-Za-z0-9._:/@+-]*$/.exec(command)?.[0] === command &&
+    !command.slice("youtab skills install ".length).split("/").includes("..")
+    ? command : "";
+}
 
 function formatRelativeTime(iso?: string): string | null {
   if (!iso) return null;
@@ -296,6 +301,7 @@ function SkillCard({
 }) {
   const src = SOURCE_CONFIG[skill.source] || SOURCE_CONFIG["optional"];
   const icon = CATEGORY_ICONS[skill.category] || "\u{1F4E6}";
+  const installCommand = safeInstallCommand(skill);
 
   return (
     <div
@@ -415,10 +421,8 @@ function SkillCard({
               </div>
             )}
             <div className={styles.installHint}>
-              <code>{skill.installCmd || `youtab skills install ${skill.name}`}</code>
-              <CopyButton
-                text={skill.installCmd || `youtab skills install ${skill.name}`}
-              />
+              {installCommand ? <><code>{installCommand}</code><CopyButton text={installCommand} /></> :
+                <code>Install command unavailable</code>}
             </div>
             <div className={styles.cardLinks}>
               {skill.docsPath ? (

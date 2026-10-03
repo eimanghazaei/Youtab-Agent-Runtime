@@ -20,8 +20,10 @@ the unified index existed).
 
 import json
 import os
+import re
 from collections import Counter
 from datetime import datetime, timezone
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -31,6 +33,7 @@ LOCAL_SKILL_DIRS = [
     ("optional-skills", "optional"),
 ]
 UNIFIED_INDEX_PATH = os.path.join(REPO_ROOT, "website", "static", "api", "skills-index.json")
+SAFE_INSTALL_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]*\Z")
 LEGACY_INDEX_CACHE_DIR = os.path.join(REPO_ROOT, "skills", "index-cache")
 # Output to static/api/ so the file is CDN-served at /api/skills.json
 # rather than bundled into the page's JS chunk. At 50k+ skills the
@@ -160,14 +163,14 @@ def _docs_page_path(rel_dir: str, source_label: str) -> str:
     return ""
 
 
-def _install_command(source: str, identifier: str, name: str) -> str:
+def _install_command(source: str, identifier: str) -> str:
     """Build the ``youtab skills install …`` command for a unified-index entry.
 
     These show up in the SkillCard panel so users can copy-paste them. We try
     to use the most idiomatic identifier per source.
     """
-    if not identifier:
-        return f"youtab skills install {name}"
+    if not _safe_install_identifier(identifier):
+        return ""
     src = source.lower()
     if src in {"official", "built-in", "optional"}:
         # OptionalSkillSource emits identifiers like "official/security/1password"
@@ -189,6 +192,32 @@ def _install_command(source: str, identifier: str, name: str) -> str:
     return f"youtab skills install {identifier}"
 
 
+def _safe_install_identifier(identifier: object) -> bool:
+    """Accept only one shell-inert CLI operand across POSIX and PowerShell."""
+    return (isinstance(identifier, str) and len(identifier) <= 2048
+            and SAFE_INSTALL_IDENTIFIER.fullmatch(identifier) is not None
+            and ".." not in identifier.split("/"))
+
+
+def _valid_unified_entry(entry: object) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    if not _safe_install_identifier(entry.get("identifier")):
+        return False
+    if not all(isinstance(entry.get(key), str) and entry[key]
+               for key in ("name", "source")):
+        return False
+    if not isinstance(entry.get("description", ""), str):
+        return False
+    if not isinstance(entry.get("repo", ""), str):
+        return False
+    tags = entry.get("tags", [])
+    if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+        return False
+    extra = entry.get("extra", {})
+    return isinstance(extra, dict)
+
+
 def _source_url(source: str, identifier: str, extra: dict) -> str:
     """Best-effort clickable URL to the skill's origin (repo / detail page).
 
@@ -201,8 +230,13 @@ def _source_url(source: str, identifier: str, extra: dict) -> str:
     extra = extra or {}
     for key in ("detail_url", "source_url", "repo_url", "url", "index_url"):
         val = extra.get(key)
-        if isinstance(val, str) and val.startswith("http"):
-            return val
+        if isinstance(val, str) and val.isprintable():
+            try:
+                parsed = urlsplit(val)
+            except ValueError:
+                continue
+            if parsed.scheme == "https" and parsed.hostname and not parsed.username:
+                return val
 
     if not identifier:
         return ""
@@ -354,7 +388,7 @@ def extract_unified_index_skills():
         print(f"[extract-skills] Failed to read unified index: {e}")
         return None, None
 
-    if not isinstance(data, dict) or "skills" not in data:
+    if not isinstance(data, dict) or not isinstance(data.get("skills"), list):
         return None, None
 
     meta = {
@@ -365,7 +399,7 @@ def extract_unified_index_skills():
 
     out = []
     for entry in data.get("skills", []):
-        if not isinstance(entry, dict):
+        if not _valid_unified_entry(entry):
             continue
         source_id = (entry.get("source") or "").lower()
         identifier = entry.get("identifier", "") or ""
@@ -409,7 +443,7 @@ def extract_unified_index_skills():
             if repo:
                 author = repo.split("/")[0]
 
-        install_cmd = _install_command(source_id, identifier, name)
+        install_cmd = _install_command(source_id, identifier)
         source_url = _source_url(source_id, identifier, extra)
 
         out.append({

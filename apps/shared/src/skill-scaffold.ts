@@ -23,7 +23,7 @@ const BUNDLE_SKILL_BLOCK = '\n\n[Loaded as part of the '
 
 // The skill name is the first quoted span of the activation note, for both the
 // single-skill (`work`) and the bundle (`/clean /work`) header.
-const NAME_RE = new RegExp(`^${INVOCATION_PREFIX.replace(/[[\]]/g, '\\$&')}"([^"]*)"`)
+const NAME_RE = /^\[IMPORTANT: The user has invoked the "([^"]*)"/
 
 /** Text between `marker` and `end`, or '' when the marker is absent. */
 function between(text: string, marker: string, end: string, fromEnd = false): string {

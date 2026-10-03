@@ -436,21 +436,6 @@ function codeTypingStartTime() {
   return Math.max(0, orbBuildStartTime() + SCENE.orbBuildDuration * 0.62 - 0.3);
 }
 
-function logoCenterPan() {
-  const aspect = cols / rows / 2;
-  const h = 0.38;
-  const w = h * 2.6 * 0.55;
-  const halfStageX = (w / 2 / aspect) * W;
-  const centerX = W * 0.5;
-  const centerY = H * 0.5;
-  return {
-    panX: centerX / W - 0.5,
-    panY: centerY / H - 0.5,
-    left: centerX - halfStageX,
-    right: centerX + halfStageX,
-  };
-}
-
 function startSceneTimeline() {
   if (ORB.staged || !cols || !rows || !W || !H) return;
   ORB.staged = true;

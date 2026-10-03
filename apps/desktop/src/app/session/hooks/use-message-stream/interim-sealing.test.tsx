@@ -15,8 +15,6 @@ const SID = 'session-1'
 
 let handleEvent: ((event: RpcEvent) => void) | null = null
 let sessionStates: Map<string, ClientSessionState>
-let mockCompleteSound: ReturnType<typeof vi.fn>
-let mockHaptic: ReturnType<typeof vi.fn>
 
 function Harness() {
   const activeSessionIdRef = useRef<string | null>(SID)
@@ -67,13 +65,6 @@ const completePreviewed = (text: string) =>
 
 function getState(): ClientSessionState {
   return sessionStates.get(SID) ?? createClientSessionState()
-}
-
-function assistantText(): string {
-  const state = getState()
-  const last = [...state.messages].reverse().find(m => m.role === 'assistant' && !m.hidden)
-
-  return last ? chatMessageText(last) : ''
 }
 
 function assistantMessages(): string[] {

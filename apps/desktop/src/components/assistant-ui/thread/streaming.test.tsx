@@ -80,12 +80,6 @@ function stubOffsetDimension(
 stubOffsetDimension('offsetWidth', 'clientWidth', 800)
 stubOffsetDimension('offsetHeight', 'clientHeight', 600)
 
-async function wait(ms: number) {
-  await act(async () => {
-    await new Promise(resolve => window.setTimeout(resolve, ms))
-  })
-}
-
 function userMessage(): ThreadMessage {
   return {
     id: 'user-1',
