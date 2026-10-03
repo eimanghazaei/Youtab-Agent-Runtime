@@ -40,6 +40,7 @@ import sys
 import signal
 import threading
 import time
+from subprocess import Popen as _restart_watcher_popen
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -9518,7 +9519,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Mirrors the canonical fallback in
             # youtab_agent_cli/gateway_windows.py::_spawn_detached.
             try:
-                subprocess.Popen(
+                _restart_watcher_popen(
                     watcher_argv,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -9527,7 +9528,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except OSError:
                 try:
-                    subprocess.Popen(
+                    _restart_watcher_popen(
                         watcher_argv,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,

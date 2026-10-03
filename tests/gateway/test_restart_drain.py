@@ -180,7 +180,7 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
         popen_calls.append((cmd, kwargs))
         return MagicMock()
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(gateway_run, "_restart_watcher_popen", fake_popen)
 
     await runner._launch_detached_restart_command()
 
@@ -224,7 +224,7 @@ async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch
         popen_calls.append((cmd, kwargs))
         return MagicMock()
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(gateway_run, "_restart_watcher_popen", fake_popen)
 
     await runner._launch_detached_restart_command()
 
