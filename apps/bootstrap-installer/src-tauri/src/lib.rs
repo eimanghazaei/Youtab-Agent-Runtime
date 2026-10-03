@@ -61,7 +61,7 @@ where
     S: AsRef<str>,
 {
     args.into_iter()
-        .any(|a| a.as_ref() == "--reinstall" || a.as_ref() == "--repair")
+        .any(|a| a.as_ref() == "--reinstall" || a.as_ref() == "--repair" || a.as_ref() == "--migrate-legacy")
 }
 
 /// Process-wide install state, shared across Tauri commands.
@@ -208,6 +208,7 @@ mod tests {
     fn reinstall_and_repair_flags_force_setup() {
         assert!(force_setup_from_args(["--reinstall"]));
         assert!(force_setup_from_args(["--repair"]));
+        assert!(force_setup_from_args(["--migrate-legacy"]));
         assert!(force_setup_from_args(["--foo", "--repair", "--bar"]));
     }
 
