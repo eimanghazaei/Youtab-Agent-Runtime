@@ -3,6 +3,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const zhHant = defineLocale({
+  runtimePlugins: {
+    title: "Runtime 外掛",
+    description: "內建和已安裝的代理整合。可用性取決於外掛相依性和帳戶設定。",
+    empty: "找不到 Runtime 外掛。",
+    failed: "無法載入 Runtime 外掛。",
+  },
   common: {
     apply: '套用',
     back: '返回',

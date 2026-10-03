@@ -1,6 +1,12 @@
 import { defineLocale } from './define-locale'
 
 export const ar = defineLocale({
+  runtimePlugins: {
+    title: "إضافات Runtime",
+    description: "تكاملات الوكيل المضمنة والمثبتة. يعتمد التوفر على متطلبات الإضافة وإعدادات الحساب.",
+    empty: "لم يتم العثور على إضافات Runtime.",
+    failed: "تعذر تحميل إضافات Runtime.",
+  },
   common: {
     apply: 'تطبيق',
     back: 'رجوع',

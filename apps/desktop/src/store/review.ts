@@ -7,10 +7,12 @@ import type { YoutabReviewFile, YoutabReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
+import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 
 import { refreshRepoStatus } from './coding-status'
+import { openPreview } from './preview'
 import { $busy, $currentCwd } from './session'
 import { $workspaceChangeTick } from './workspace-events'
 
@@ -342,12 +344,33 @@ function matchReviewFile(files: readonly YoutabReviewFile[], path: string): Yout
  */
 export async function openReviewForPath(path: string, scopeCwd: null | string = null): Promise<void> {
   revealReview(scopeCwd)
+  const cwd = repoCwd()
   await refreshReview()
 
-  const file = matchReviewFile($reviewFiles.get(), path)
+  if (repoCwd() !== cwd) {
+    return
+  }
+
+  const normalizedPath = path.replace(/\\/g, '/')
+  const normalizedCwd = cwd?.replace(/\\/g, '/').replace(/\/+$/, '')
+  const absolute = /^(?:[a-z]:\/|\/)/i.test(normalizedPath)
+  const comparablePath = /^[a-z]:\//i.test(normalizedPath) ? normalizedPath.toLowerCase() : normalizedPath
+  const comparableCwd = /^[a-z]:\//i.test(normalizedPath) ? normalizedCwd?.toLowerCase() : normalizedCwd
+  const insideScope = !absolute || (comparableCwd && comparablePath.startsWith(`${comparableCwd}/`))
+  const file = insideScope ? matchReviewFile($reviewFiles.get(), path) : undefined
 
   if (file) {
     await selectReviewFile(file)
+
+    return
+  }
+
+  // Generated files outside Git (including a customer's Desktop) still have
+  // reviewable contents. Use the existing file preview, not an empty diff.
+  const target = await normalizeOrLocalPreviewTarget(path, cwd)
+
+  if (target && repoCwd() === cwd) {
+    openPreview(target, 'explicit-link')
   }
 }
 

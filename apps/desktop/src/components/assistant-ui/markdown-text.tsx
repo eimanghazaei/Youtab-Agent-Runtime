@@ -262,6 +262,19 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     return <PreviewAttachment source="explicit-link" target={previewTarget} />
   }
 
+  // Plain file links are also outputs, not external browser navigation.
+  // Keep HTTP, mail, anchors and other schemes on their existing routes.
+  if (
+    href &&
+    (/^(?:file:|[a-z]:[\\/])/i.test(href) ||
+      (!/^[a-z][a-z0-9+.-]*:/i.test(href) &&
+        !href.startsWith('#') &&
+        !href.startsWith('//') &&
+        /\.[a-z0-9]{1,12}$/i.test(href)))
+  ) {
+    return <PreviewAttachment source="explicit-link" target={href} />
+  }
+
   const sessionRef = sessionRefFromMarkdownHref(href)
 
   if (sessionRef) {

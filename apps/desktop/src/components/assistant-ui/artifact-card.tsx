@@ -6,8 +6,11 @@ import { useEffect, useMemo } from 'react'
 import { useSessionView } from '@/app/chat/session-view'
 import { CodeCardIcon } from '@/components/chat/code-card'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
+import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
-import type { ArtifactDetection } from '@/lib/artifact-detect'
+import { type ArtifactDetection, artifactDownloadName } from '@/lib/artifact-detect'
+import { downloadTextFile } from '@/lib/download-text'
 import { codiconForLanguage } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
 import { $artifactRegistry, artifactsForSession, openArtifact, upsertArtifact } from '@/store/artifacts'
@@ -95,42 +98,52 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
   }
 
   return (
-    <button
-      className={cn(
-        WIDGET_SHELL_CLASS,
-        'group/artifact my-1.5 flex w-full max-w-md items-center gap-2.5 overflow-hidden text-left',
-        streaming ? 'cursor-default' : 'cursor-pointer'
-      )}
-      data-slot="aui_artifact-card"
-      disabled={streaming}
-      onClick={open}
-      type="button"
-    >
-      <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground">
-        <CodeCardIcon className="text-[1rem]" name={detectionIcon(detection)} />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span
-          className={cn(
-            'block truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground',
-            streaming && 'shimmer text-foreground/55'
-          )}
-        >
-          {title}
+    <div className={cn(WIDGET_SHELL_CLASS, 'my-1.5 flex w-full max-w-md items-center gap-2')}>
+      <button
+        className={cn(
+          'group/artifact flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden text-left',
+          streaming ? 'cursor-default' : 'cursor-pointer'
+        )}
+        data-slot="aui_artifact-card"
+        disabled={streaming}
+        onClick={open}
+        type="button"
+      >
+        <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted/55 text-muted-foreground">
+          <CodeCardIcon className="text-[1rem]" name={detectionIcon(detection)} />
         </span>
-        <span className="block truncate text-[length:var(--conversation-tool-font-size)] text-muted-foreground">
-          {streaming
-            ? copy.generating(lineCount)
-            : versionCount > 1
-              ? `${kindLabel} · ${copy.versionBadge(versionCount)}`
-              : kindLabel}
+        <span className="min-w-0 flex-1">
+          <span
+            className={cn(
+              'block truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground',
+              streaming && 'shimmer text-foreground/55'
+            )}
+          >
+            {title}
+          </span>
+          <span className="block truncate text-[length:var(--conversation-tool-font-size)] text-muted-foreground">
+            {streaming
+              ? copy.generating(lineCount)
+              : versionCount > 1
+                ? `${kindLabel} · ${copy.versionBadge(versionCount)}`
+                : kindLabel}
+          </span>
         </span>
-      </span>
-      {!streaming && (
-        <span className="shrink-0 text-[length:var(--conversation-tool-font-size)] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/artifact:opacity-100">
-          {copy.open}
-        </span>
-      )}
-    </button>
+        {!streaming && (
+          <span className="shrink-0 text-[length:var(--conversation-tool-font-size)] font-medium text-muted-foreground opacity-0 transition-opacity group-hover/artifact:opacity-100">
+            {copy.open}
+          </span>
+        )}
+      </button>
+      <Button
+        aria-label={t.artifactPreview.download}
+        disabled={streaming}
+        onClick={() => downloadTextFile(artifactDownloadName(detection.kind, detection.language, title), trimmed)}
+        size="icon-xs"
+        variant="ghost"
+      >
+        <Codicon name="cloud-download" />
+      </Button>
+    </div>
   )
 }

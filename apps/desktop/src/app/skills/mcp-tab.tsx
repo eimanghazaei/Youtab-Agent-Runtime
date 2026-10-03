@@ -60,7 +60,9 @@ type McpServers = Record<string, Record<string, unknown>>
 // are the JSON keys, transport is inferred from `command` vs `url` — so any
 // README's "add this to your mcp.json" snippet pastes verbatim. Storage stays
 // the config.yaml `mcp_servers` map (CLI/TUI untouched).
-const STARTER_ENTRY = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/dir'] }
+// A template is not a configured integration. Keep it disabled until the user
+// supplies and enables an accessible directory; never start a placeholder.
+const STARTER_ENTRY = { enabled: false, command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/dir'] }
 
 const pretty = (value: unknown) => JSON.stringify(value, null, 2)
 const wrapDoc = (entries: McpServers) => pretty({ mcpServers: entries })

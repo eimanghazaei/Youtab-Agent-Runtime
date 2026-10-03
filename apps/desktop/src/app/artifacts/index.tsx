@@ -2,6 +2,7 @@ import type * as React from 'react'
 import { memo, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { FileDownloadButton } from '@/components/chat/file-download-button'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
@@ -602,6 +603,7 @@ const LocationCell = memo(function LocationCell({ artifact }: { artifact: Artifa
         text={artifact.value}
         title={copyLabel}
       />
+      {artifact.kind === 'file' && <FileDownloadButton path={artifact.value} />}
     </div>
   )
 })

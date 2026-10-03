@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { YoutabReviewFile, YoutabReviewShipInfo } from '@/global'
 
+import { $previewTabs } from './preview'
 import {
   $reviewCommitDefault,
   $reviewCommitMsgBusy,
@@ -26,6 +27,7 @@ import {
   createOrOpenPr,
   generateCommitMessage,
   openReview,
+  openReviewForPath,
   pushChanges,
   refreshReview,
   refreshShipInfo,
@@ -79,6 +81,7 @@ function stubReview(over: ReviewStub = {}) {
 }
 
 beforeEach(() => {
+  $previewTabs.set([])
   requestOneShot.mockClear()
   requestOneShot.mockResolvedValue('generated message')
   // Reset stores touched across tests.
@@ -486,5 +489,27 @@ describe('$reviewCommitDefault', () => {
     expect($reviewCommitDefault.get()).toBe('commitPush')
     $reviewCommitDefault.set('commit')
     expect($reviewCommitDefault.get()).toBe('commit')
+  })
+})
+
+describe('generated file review', () => {
+  it('opens Windows files outside Git as a content preview instead of an empty diff', async () => {
+    const review = stubReview({ list: vi.fn(async () => ({ files: [file('report.md')] })) })
+    await openReviewForPath('C:\\Users\\Gaming\\Desktop\\report.md')
+    expect($previewTabs.get().at(-1)?.target.path).toBe('C:\\Users\\Gaming\\Desktop\\report.md')
+    expect($previewTabs.get().at(-1)?.target.language).toBe('markdown')
+    expect(review.diff).not.toHaveBeenCalled()
+  })
+
+  it('retains a real Git diff when the changed file is tracked', async () => {
+    const review = stubReview({
+      list: vi.fn(async () => ({ files: [file('report.md')] })),
+      diff: vi.fn(async () => '+report')
+    })
+
+    await openReviewForPath('/repo/report.md')
+    expect(review.diff).toHaveBeenCalled()
+    expect($reviewDiff.get()).toBe('+report')
+    expect($previewTabs.get()).toHaveLength(0)
   })
 })

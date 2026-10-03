@@ -49,6 +49,7 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  runtimePlugins: { title: string; description: string; empty: string; failed: string }
   common: {
     apply: string
     back: string

@@ -1816,6 +1816,7 @@ def _(rid, params: dict) -> dict:
                 out.append(
                     {
                         "name": name,
+                        "key": key,
                         "version": str(version or ""),
                         "description": desc or "",
                         "source": source,
@@ -1846,7 +1847,7 @@ def _(rid, params: dict) -> dict:
             result = dashboard_set_agent_plugin_enabled(name, enabled=enable)
             if not result.get("ok"):
                 return _err(rid, 5026, result.get("error") or "toggle failed")
-            row = next((r for r in _rows() if r["name"] == name), None)
+            row = next((r for r in _rows() if r["key"] == name or r["name"] == name), None)
             return _ok(
                 rid,
                 {

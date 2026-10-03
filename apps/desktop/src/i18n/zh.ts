@@ -3,6 +3,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import type { Translations } from './types'
 
 export const zh: Translations = {
+  runtimePlugins: {
+    title: "Runtime 插件",
+    description: "内置和已安装的智能体集成。可用性取决于插件依赖和账户设置。",
+    empty: "未找到 Runtime 插件。",
+    failed: "无法加载 Runtime 插件。",
+  },
   common: {
     apply: '应用',
     back: '返回',

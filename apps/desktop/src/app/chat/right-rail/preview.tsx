@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo } from 'react'
 
 import type { SetTitlebarToolGroup } from '@/app/shell/titlebar-controls'
+import { FileDownloadButton } from '@/components/chat/file-download-button'
 import { Codicon } from '@/components/ui/codicon'
 import {
   ContextMenu,
@@ -152,6 +153,9 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
         >
           <Codicon name="close" size="0.75rem" />
         </button>
+        {activeTab.target.kind === 'file' && (
+          <FileDownloadButton path={activeTab.target.path || activeTab.target.source} />
+        )}
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">

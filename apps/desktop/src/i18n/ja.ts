@@ -3,6 +3,12 @@ import { defineFieldCopy } from '@/app/settings/field-copy'
 import { defineLocale } from './define-locale'
 
 export const ja = defineLocale({
+  runtimePlugins: {
+    title: "Runtime プラグイン",
+    description: "同梱およびインストール済みのエージェント連携。利用には各プラグインの依存関係とアカウント設定が必要です。",
+    empty: "Runtime プラグインが見つかりません。",
+    failed: "Runtime プラグインを読み込めませんでした。",
+  },
   common: {
     apply: '適用',
     back: '戻る',

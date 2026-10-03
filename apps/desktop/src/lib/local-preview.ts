@@ -59,10 +59,14 @@ function joinPath(base: string, rel: string) {
 }
 
 function pathToFileUrl(path: string) {
-  const encoded = path
+  const normalized = /^[a-z]:[\\/]|^\\\\/i.test(path) ? path.replace(/\\/g, '/') : path
+
+  const encoded = normalized
     .split('/')
-    .map(part => encodeURIComponent(part))
+    .map((part, index) => index === 0 && /^[a-z]:$/i.test(part) ? part : encodeURIComponent(part))
     .join('/')
+
+  if (normalized.startsWith('//')) {return `file:${encoded}`}
 
   return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
 }
@@ -82,11 +86,11 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 
   if (/^file:\/\//i.test(raw)) {
     try {
-      path = decodeURIComponent(new URL(raw).pathname)
+      path = decodeURIComponent(new URL(raw).pathname).replace(/^\/(?=[a-z]:[\\/])/i, '')
     } catch {
       path = raw.replace(/^file:\/\//i, '')
     }
-  } else if (!raw.startsWith('/') && cwd) {
+  } else if (!raw.startsWith('/') && !/^[a-z]:[\\/]/i.test(raw) && !raw.startsWith('\\\\') && cwd) {
     path = joinPath(cwd, raw)
   }
 

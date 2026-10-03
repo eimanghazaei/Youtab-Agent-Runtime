@@ -11508,7 +11508,10 @@ class YoutabCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 except Exception:
                     pass  # Best-effort
 
-            print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
+            if self.agent is not None:
+                print(f"  ✅ Agent updated — {len(self.agent.tools)} tool(s) available")
+            else:
+                print("  ✅ MCP connections reloaded — built-in tools are unchanged")
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")

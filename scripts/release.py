@@ -93,8 +93,14 @@ def _runtime_artifact_path_allowed(path: str) -> bool:
         return False
     if any(part.startswith("test_") for part in parts):
         return False
-    if path.endswith((".md", ".snap")) and path not in RUNTIME_ARTIFACT_FILES:
+    if path.endswith(".snap"):
         return False
+    if path.endswith(".md") and path not in RUNTIME_ARTIFACT_FILES:
+        # Skill instructions and their references are executable capability
+        # inputs, including plugin-provided skills. Excluding all Markdown
+        # silently produces a valid ZIP with no discoverable bundled skills.
+        if parts[0] not in {"skills", "optional-skills", "plugins"}:
+            return False
     return path in RUNTIME_ARTIFACT_FILES or parts[0] in RUNTIME_ARTIFACT_ROOTS or (
         len(parts) == 1 and path.endswith(".py")
     )
@@ -153,6 +159,18 @@ def package_runtime_artifact(output_dir: Path, version: str,
         required = {"scripts/install.ps1", "pyproject.toml", "apps/desktop/package.json"}
         included = set()
         with zipfile.ZipFile(archive) as source, zipfile.ZipFile(package, "w") as dest:
+            capability_files = {
+                entry.filename for entry in source.infolist()
+                if not entry.is_dir()
+                and entry.filename.split("/", 1)[0] in {"skills", "optional-skills", "plugins"}
+                and entry.filename.endswith(".md")
+                and not any(part in {"tests", "__tests__", "e2e", "node_modules", "__pycache__"}
+                            or part.startswith((".", "test_"))
+                            for part in entry.filename.split("/"))
+            }
+            if not any(name.startswith("skills/") and name.endswith("/SKILL.md")
+                       for name in capability_files):
+                raise RuntimeError("release source lacks bundled skill instructions")
             for entry in source.infolist():
                 if entry.is_dir() or not _runtime_artifact_path_allowed(entry.filename):
                     continue
@@ -181,6 +199,8 @@ def package_runtime_artifact(output_dir: Path, version: str,
                 included.add(entry.filename)
         if not required.issubset(included):
             raise RuntimeError(f"release package lacks required files: {sorted(required - included)}")
+        if not capability_files.issubset(included):
+            raise RuntimeError("release package lacks capability instructions or references")
         script_bytes = subprocess.run(
             ["git", "show", "HEAD:scripts/install.ps1"], cwd=REPO_ROOT,
             capture_output=True, check=True,

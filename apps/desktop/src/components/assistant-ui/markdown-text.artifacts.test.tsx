@@ -1,11 +1,14 @@
-import { cleanup, render, screen } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { downloadTextFile } from '@/lib/download-text'
 import { artifactsForSession, clearArtifactRegistry } from '@/store/artifacts'
 import { $previewTabs } from '@/store/preview'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
 
 import { MarkdownTextContent } from './markdown-text'
+
+vi.mock('@/lib/download-text', () => ({ downloadTextFile: vi.fn() }))
 
 const HTML_DOC = `<!doctype html>
 <html>
@@ -63,6 +66,14 @@ describe('MarkdownTextContent artifacts', () => {
     expect(container.querySelector('[data-slot="code-card"]')).not.toBeNull()
     expect(container.querySelector('[data-slot="aui_artifact-card"]')).toBeNull()
     expect(artifactsForSession('session-artifacts')).toHaveLength(0)
+  })
+
+  it('offers an explicit download of the generated content without opening the preview', async () => {
+    render(<MarkdownTextContent isRunning={false} text={fenced('html', HTML_DOC)} />)
+    await screen.findByText('Pomodoro Timer')
+    fireEvent.click(screen.getByRole('button', { name: 'Download' }))
+    expect(downloadTextFile).toHaveBeenCalledWith('Pomodoro-Timer.html', HTML_DOC.trim())
+    expect($previewTabs.get()).toHaveLength(0)
   })
 
   it('does not register while the message is still streaming', async () => {

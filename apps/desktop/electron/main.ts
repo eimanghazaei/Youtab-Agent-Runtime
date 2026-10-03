@@ -100,6 +100,7 @@ import {
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
+import { exportFileCopy } from './file-export'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
@@ -10795,6 +10796,12 @@ ipcMain.handle('youtab:writeClipboard', (_event, text) => {
 ipcMain.handle('youtab:readClipboard', () => clipboard.readText())
 
 ipcMain.handle('youtab:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
+ipcMain.handle('youtab:saveFileCopy', async (_event, filePath) => {
+  return exportFileCopy(filePath, async name => {
+    const result = await dialog.showSaveDialog(mainWindow, { defaultPath: name })
+    return result.canceled ? null : result.filePath || null
+  })
+})
 
 ipcMain.handle('youtab:saveImageBuffer', async (_event, payload) => {
   const data = payload?.data
