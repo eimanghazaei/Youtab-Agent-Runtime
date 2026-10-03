@@ -1,0 +1,47 @@
+# P5 terminal-durability fault injection — PG lost AFTER admission, BEFORE terminal persist
+# RC image youtab-agent-runtime:p5-rc-5b371ccb2
+# embedded source SHA: 5b371ccb2d7888b0b429b907f47d91b666ec31e8
+# image Id (config digest): sha256:4389e5f44e657e264d66dd6e9d9828a46c88d9e967d4f5598aebca6f001076d3
+# secrets REDACTED; external client = curlimages/curl container over the TLS edge
+# Mock provider delays its SSE completion ~10s so PG can be stopped mid-run.
+#
+# Claim proved: a client CANNOT observe a durable 'completed' result that then
+# disappears after restart. When the terminal durable write fails, the run is
+# reported reconciliation_required (terminal=false, durable=false), NOT completed.
+
+== T0 admit run (mock will delay ~10s) ==
+run_id=run_e044ee63678d4771aac3655f5b1357f4
+
+== T1 RUNNING is durably persisted (before the fault) ==
+status=running  pg_state=RUNNING
+
+== T2 STOP PostgreSQL mid-run (after RUNNING persist, before terminal write) ==
+pg stopped
+
+== T3/T4 run finishes in-memory; CLIENT VIEW (via TLS edge) ==
+GET /v1/runs/{id}:
+  {"status":"reconciliation_required","last_event":"run.completed",
+   "output":"CUSTOMER_TASK_OK_42","durable":false,"pending_status":"completed", ...}
+GET /result:
+  {"status":"reconciliation_required","terminal":false,"output":"CUSTOMER_TASK_OK_42","error":null}
+  -> client is NEVER told terminal=true / a durable completion.
+
+== T5b DURABLE TRUTH in PostgreSQL for this run (terminal never written) ==
+run_e044ee63678d4771aac3655f5b1357f4|RUNNING|result=NULL
+
+== T5c/T5d RESTART the service (in-memory cache lost), client view served from store ==
+GET /v1/runs/{id}:
+  {"status":"running","output":null,"error":null,"recovered_from_store":true}
+GET /result:
+  {"status":"running","terminal":false,"output":null,"error":null}
+
+== VERDICT ==
+At no point did the client observe status=completed (terminal=true) with output
+for a run whose completion was not in the store. Before restart: reconciliation_
+required (terminal=false). Durable store: RUNNING (never terminal). After restart:
+running. No durable completed result appeared and then vanished. PASS.
+
+Pre-fix contrast (documented, not re-run): _mirror_run_state swallowed the terminal
+write error, so GET would have returned status=completed + output from the in-memory
+cache, and after restart the same run reverted to running (output gone) — a
+vanishing "completed" result. The fix (commit 5b371ccb2) closes that window.

@@ -1,0 +1,73 @@
+# PROPOSED production override — durable RunStore on PostgreSQL (pending Master
+# coordination of the shared deployment contract). This file is ADDITIVE and does
+# NOT modify the shared docker-compose.yml. Opt in explicitly:
+#
+#   POSTGRES_PASSWORD=... \
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d
+#
+# It makes the server REQUIRE PostgreSQL: the gateway selects the postgres
+# RunStore backend, and a missing/unreachable PostgreSQL makes the store
+# construction fail closed at startup (no silent SQLite fallback), so the service
+# cannot become healthy or accept a /v1/runs run. Desktop/local installs that do
+# NOT use this override keep the default SQLite backend.
+#
+# No secret is embedded: POSTGRES_PASSWORD is read from the host environment.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: youtab-durable-pg
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=youtab
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      - POSTGRES_DB=durable
+    networks:
+      - youtab-runtime
+    volumes:
+      - youtab-durable-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U youtab -d durable"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  youtab-agent-runtime:
+    environment:
+      # --- Durable-execution API ingress (/v1/runs). OFF unless KEY+HOST are set. ---
+      # API_SERVER_KEY is a secret read from the HOST env (never embedded here).
+      # Bind inside the container only; publish the port to a trusted network via the
+      # `ports`/reverse-proxy in your shared docker-compose.yml, not to 0.0.0.0 on a
+      # public host. Pair with terminal.backend: docker for a sandboxed backend.
+      - API_SERVER_KEY=${API_SERVER_KEY:?set API_SERVER_KEY (durable /v1/runs ingress secret)}
+      - API_SERVER_HOST=${API_SERVER_HOST:-127.0.0.1}
+      - API_SERVER_PORT=${API_SERVER_PORT:-8642}
+      # Require the PostgreSQL durable RunStore backend (fail-closed in server mode).
+      - YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND=postgres
+      # libpq KEYWORD conninfo (NOT a URL) so a password with URI-special chars
+      # (@ : / ? # [ ]) is used verbatim and needs no percent-encoding. Caveat: a
+      # password containing a SPACE or a single-quote must be wrapped/escaped per
+      # libpq rules (password='pass word'); passwords without those work as-is.
+      # (A URL DSN — postgresql://youtab:<pw>@postgres:5432/durable — also works
+      # but then <pw> MUST be percent-encoded.)
+      - YOUTAB_AGENT_DURABLE_PG_DSN=host=postgres port=5432 dbname=durable user=youtab password=${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Durable-store READINESS probe (NOT liveness). /health/ready round-trips the
+    # PostgreSQL RunStore: 200 when the store answers, 503 when it is unreachable.
+    # So this healthcheck fails when PG is lost — at startup (api_server never
+    # binds → connection refused) AND mid-flight (store dead → 503) — which is the
+    # intended fail-closed signal that drains this instance. /health (static
+    # liveness OK) is deliberately NOT used here. Route is OBSERVED on the image
+    # (/health/ready + /v1/health/ready; there is no /api/health or /healthz).
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:%s/health/ready' % os.environ.get('API_SERVER_PORT','8642'), timeout=3); sys.exit(0 if r.status==200 else 1)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  youtab-durable-pgdata:
