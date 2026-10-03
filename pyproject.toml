@@ -147,6 +147,39 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Document generation and verification, for the skills under
+# skills/productivity/{pdf,docx,xlsx,powerpoint}. These were previously named
+# only in each skill's "Prerequisites" block as a runtime `pip install`, which
+# cannot succeed in the published image: the venv is sealed
+# (YOUTAB_AGENT_DISABLE_LAZY_INSTALLS=1, /opt/youtab read-only). An agent asked
+# for a Word/Excel/PDF deliverable therefore had to build its own venv in the
+# task workspace and improvise a pipeline, so the quality of the file a user
+# received depended on what that one run happened to invent. Declaring them as
+# a resolved, locked extra makes the skills' own instructions executable and
+# the output reproducible. markitdown is deliberately NOT here: it is a
+# read/convert convenience with a wide dependency tree and nothing in the
+# generation path needs it.
+# Split out of `documents` on 2026-10-01, NOT merged back into it.
+# markitdown pulls magika, which pins onnxruntime==1.27.0. That lock entry has
+# no sdist and ships only `macosx_14_0_arm64` wheels, so including it in the
+# curated `[all]` extra makes `uv sync --extra all --locked` (the default
+# scripts/install.sh path) unsatisfiable on Intel Macs and on Apple-silicon
+# Macs running macOS 13. The runtime image is Linux and installs this extra
+# explicitly, so the xlsx and powerpoint skills keep their `markitdown` read
+# path in production; a desktop install simply does without that one reader.
+documents-extract = [
+  "markitdown[pptx,xlsx]==0.1.8",  # the xlsx and powerpoint skills' read path
+]
+
+documents = [
+  "reportlab==5.0.1",     # LTR documents, forms, page surgery (the pdf skill)
+  "pypdf==6.19.0",        # read/merge/split + structural verification
+  "pdfplumber==0.11.10",  # text and table extraction for verification
+  "openpyxl==3.1.5",      # xlsx generation
+  "python-docx==1.2.0",   # docx generation from Python (docx-js covers the npm route)
+  "lxml==6.1.3",          # the docx/pptx validation scripts in those skills
+  "pandas==3.0.6",                 # the xlsx skill's analysis path (numpy is already core)
+]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
@@ -367,6 +400,19 @@ all = [
   # [all], `uv sync --locked` on Windows tried to build it from sdist
   # and failed on `make`. Lazy-install routes that build to first use,
   # where the user is expected to have a toolchain available.
+  # documents belongs here and not in LAZY_DEPS: it is not an opt-in backend a
+  # user chooses, it is the deliverable path for any session asked for a Word,
+  # Excel or PDF file, and it is the "skill deps that dev environments need"
+  # case this policy already admits. It also cannot work as a lazy install in
+  # practice, because the same skills need system binaries (soffice, pandoc,
+  # pdftoppm) that no pip install can provide; those are baked into the image
+  # alongside it. Every wheel in [documents] is published for Linux, macOS and
+  # Windows, so this does not reintroduce the python-olm sdist problem above.
+  # The markitdown reader is NOT here: it lives in [documents-extract], which
+  # only the Linux image installs, because its onnxruntime pin has no Intel
+  # macOS wheel and no sdist.
+  # Deliberately NOT added to [termux]: libreoffice has no Android path.
+  "youtab-agent-runtime[documents]",
   "youtab-agent-runtime[cron]",
   "youtab-agent-runtime[cli]",
   "youtab-agent-runtime[pty]",

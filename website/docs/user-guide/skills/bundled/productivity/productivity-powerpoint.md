@@ -15,7 +15,7 @@ Create, read, edit .pptx decks, slides, notes, templates.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity/powerpoint` |
+| Path | `skills/productivity\powerpoint` |
 | Version | `2.0.0` |
 | Author | Anthropic (adapted by Youtab B.V.) |
 | License | Proprietary. LICENSE.txt has complete terms |
@@ -38,6 +38,20 @@ Create, read, and edit PowerPoint decks — from-scratch generation with pptxgen
 Use this skill any time a .pptx or .potx file is involved in any way — as input, output, or both: creating slide decks, pitch decks, or presentations; reading or extracting text from any .pptx; editing existing presentations; combining or splitting slide files; working with templates (.potx), layouts, speaker notes, or comments. Trigger whenever the user mentions "deck," "slides," "presentation," or references a .pptx/.potx filename.
 
 ## Prerequisites
+
+Already installed in the Youtab runtime image — do not try to install them.
+`pptxgenjs` is a baked npm dependency; `markitdown`, `Pillow`, `defusedxml` and
+`lxml` are installed into the image's venv; `soffice` and `pdftoppm` are baked
+binaries. The image has no `sudo`, its venv is sealed and `/opt/youtab` is
+read-only, so an `apt install`, `pip install` or `npm install` here cannot work.
+If something really is missing, say so and stop rather than building a private
+virtualenv or node_modules in the workspace.
+
+The icon extras below (`react-icons react react-dom sharp`) are **not** baked:
+`sharp` needs a native build the sealed image cannot run. Build decks without
+them rather than attempting the install.
+
+Elsewhere (desktop, macOS, a bare checkout):
 
 ```bash
 npm ls pptxgenjs --depth=0 2>/dev/null | grep -q pptxgenjs || npm install pptxgenjs

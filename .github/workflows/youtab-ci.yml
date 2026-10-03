@@ -71,7 +71,14 @@ jobs:
         # (`test_required_ci_installs_the_governed_extra`), which requires every
         # `pip install -e` line here to carry the `web` extra so FastAPI cannot
         # resolve freely from the core range again.
-        run: python -m pip install -e '.[dev,web,slack,wakeword-ingest]'
+        #
+        # `documents` is here for the same reason PyAV is: the document skills'
+        # tests assert on real PDF structure, and without pypdf they would error
+        # or skip rather than check anything -- which is how the image came to
+        # ship document skills it could not run. The embedding checks in
+        # `tests/skills/test_office_document_skills.py` build their own PDF
+        # fixtures, so they need no LibreOffice, only the reader.
+        run: python -m pip install -e '.[dev,web,slack,wakeword-ingest,documents]'
       # The branding gate OCRs every shipped image, and this runner had no OCR
       # engine at all -- so it read none of the 61 tracked images and reported
       # that as if the images were at fault.

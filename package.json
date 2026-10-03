@@ -37,7 +37,9 @@
   "homepage": "https://github.com/eimanghazaei/Youtab-Agent-Runtime#readme",
   "dependencies": {
     "@streamdown/math": "^1.0.2",
-    "agent-browser": "^0.26.0"
+    "agent-browser": "^0.26.0",
+    "docx": "^9.8.1",
+    "pptxgenjs": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

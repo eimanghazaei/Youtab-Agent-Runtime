@@ -15,7 +15,7 @@ Create, read, edit Word .docx documents and templates.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/productivity/docx` |
+| Path | `skills/productivity\docx` |
 | Version | `1.0.0` |
 | Author | Anthropic (adapted by Youtab B.V.) |
 | License | Proprietary. LICENSE.txt has complete terms |
@@ -39,9 +39,19 @@ Use this skill whenever the user wants to create, read, edit, or manipulate Word
 
 ## Prerequisites
 
+Already installed in the Youtab runtime image — do not try to install them.
+`docx` (docx-js) is a baked npm dependency; `python-docx`, `defusedxml` and `lxml`
+ship in the `documents` extra; `pandoc`, `soffice` and `pdftoppm` are baked
+binaries. The image has no `sudo`, its venv is sealed and `/opt/youtab` is
+read-only, so an `apt install`, `pip install` or `npm install` here cannot work.
+If something really is missing, say so and stop rather than building a private
+virtualenv or node_modules in the workspace.
+
+Elsewhere (desktop, macOS, a bare checkout):
+
 ```bash
 npm ls docx --depth=0 2>/dev/null | grep -q docx || npm install docx   # creation (docx-js)
-pip show pandoc >/dev/null 2>&1 || true; which pandoc || sudo apt install -y pandoc   # reading
+which pandoc || sudo apt install -y pandoc           # reading
 which soffice || sudo apt install -y libreoffice     # rendering/verification
 which pdftoppm || sudo apt install -y poppler-utils  # PDF → images
 pip install defusedxml lxml   # validation scripts
