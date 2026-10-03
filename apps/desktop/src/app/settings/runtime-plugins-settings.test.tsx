@@ -28,10 +28,10 @@ it('shows bundled Runtime integrations independently of Desktop extension record
 })
 
 it('only enables a plugin after an explicit user click through the existing backend contract', async () => {
-  request.mockResolvedValue({ plugins: [{ name: 'example-web', version: '1', description: 'Web integration', source: 'bundled', status: 'not enabled' }] })
+  request.mockResolvedValue({ plugins: [{ key: 'web/example-web', name: 'example-web', version: '1', description: 'Web integration', source: 'bundled', status: 'not enabled' }] })
   mount()
   fireEvent.click(await screen.findByRole('switch'))
-  await waitFor(() => expect(request).toHaveBeenCalledWith('plugins.manage', { action: 'toggle', name: 'example-web', enable: true }))
+  await waitFor(() => expect(request).toHaveBeenCalledWith('plugins.manage', { action: 'toggle', name: 'web/example-web', enable: true }))
 })
 
 it('shows an actionable error instead of presenting a failed lookup as an empty catalogue', async () => {

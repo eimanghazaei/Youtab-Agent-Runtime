@@ -59,10 +59,14 @@ function joinPath(base: string, rel: string) {
 }
 
 function pathToFileUrl(path: string) {
-  const encoded = path
+  const normalized = /^[a-z]:[\\/]|^\\\\/i.test(path) ? path.replace(/\\/g, '/') : path
+
+  const encoded = normalized
     .split('/')
-    .map(part => encodeURIComponent(part))
+    .map((part, index) => index === 0 && /^[a-z]:$/i.test(part) ? part : encodeURIComponent(part))
     .join('/')
+
+  if (normalized.startsWith('//')) {return `file:${encoded}`}
 
   return `file://${encoded.startsWith('/') ? encoded : `/${encoded}`}`
 }

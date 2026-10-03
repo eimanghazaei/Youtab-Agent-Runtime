@@ -191,3 +191,20 @@ class TestMCPConfigWatch:
 
         obj._reload_mcp.assert_not_called()
         assert "MCP server config changed" not in capsys.readouterr().out
+
+
+def test_reload_before_first_message_does_not_report_builtin_tools_as_removed(capsys):
+    import cli as cli_mod
+
+    obj = object.__new__(cli_mod.YoutabCLI)
+    obj.agent = None
+    obj._command_running = False
+    obj.conversation_history = []
+    with patch("tools.mcp_tool.shutdown_mcp_servers"), \
+         patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+         patch("tools.mcp_tool._servers", {}):
+        obj._reload_mcp()
+    output = capsys.readouterr().out
+    assert "built-in tools are unchanged" in output
+    assert "0 tool(s) available" not in output
+    assert "MCP reload failed" not in output

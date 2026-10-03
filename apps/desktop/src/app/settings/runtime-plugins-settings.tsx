@@ -16,6 +16,7 @@ import { $connection, $gatewayState } from '@/store/session'
 import { EmptyState, ListRow, Pill, SectionHeading } from './primitives'
 
 interface RuntimePlugin {
+  key?: string
   name: string
   version: string
   description: string
@@ -71,9 +72,9 @@ export function RuntimePluginsSettings() {
         <div className="divide-y divide-(--ui-stroke-tertiary)">
           {query.data.plugins.map(plugin => (
             <ListRow action={<Switch aria-label={`${t.settings.plugins.enable} ${plugin.name}`} checked={plugin.status === 'enabled'} disabled={busy !== null}
-                onCheckedChange={enabled => void toggle(plugin.name, enabled)} />} description={plugin.description}
-              key={`${plugin.source}:${plugin.name}`}
-              title={<span>{plugin.name} <Pill>{plugin.version || plugin.source}</Pill></span>}
+                onCheckedChange={enabled => void toggle(plugin.key || plugin.name, enabled)} />} description={plugin.description}
+              key={plugin.key || `${plugin.source}:${plugin.name}`}
+              title={<span>{plugin.name} <Pill>{plugin.key || plugin.version || plugin.source}</Pill></span>}
             />
           ))}
         </div>
