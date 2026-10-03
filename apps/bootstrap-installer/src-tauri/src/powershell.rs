@@ -269,7 +269,11 @@ fn stable_script_cwd<'a>(script_path: &'a Path, youtab_home_override: Option<&'a
 async fn recv_cancel(rx: &mut Option<CancelRx>) {
     match rx {
         Some(r) => {
-            let _ = r.recv().await;
+            // Channel closure is not a user cancellation. Artifact updates
+            // intentionally have no cancellation sender.
+            if r.recv().await.is_none() {
+                std::future::pending::<()>().await;
+            }
         }
         None => std::future::pending::<()>().await,
     }
@@ -408,6 +412,55 @@ use std::os::windows::process::CommandExt;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn closed_cancel_channel_does_not_cancel_script() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(tx);
+        let mut receiver = Some(rx);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            recv_cancel(&mut receiver),
+        ).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn explicit_cancel_message_still_cancels_script() {
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        tx.send(()).await.unwrap();
+        drop(tx);
+        let mut receiver = Some(rx);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            recv_cancel(&mut receiver),
+        ).await.expect("an explicit cancel must remain effective");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[tokio::test]
+    async fn artifact_update_closed_channel_allows_real_powershell_to_finish() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "youtab-cancel-smoke-{}-{nonce}", std::process::id(),
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let script = directory.join("smoke.ps1");
+        std::fs::write(&script,
+            "Start-Sleep -Milliseconds 200\nWrite-Output 'UPDATE_STAGE_FINISHED'\nexit 0\n",
+        ).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(tx);
+        let result = run_script(&script, &[], StreamSink {
+            on_stdout_line: Box::new(|_| {}),
+            on_stderr_line: Box::new(|_| {}),
+        }, None, Some(rx)).await;
+        std::fs::remove_dir_all(&directory).unwrap();
+        let result = result.expect("synthetic PowerShell stage should finish");
+        assert!(!result.killed);
+        assert_eq!(result.exit_code, Some(0));
+        assert!(result.stdout.contains("UPDATE_STAGE_FINISHED"));
+    }
 
     #[test]
     fn parse_stage_result_picks_last_json_line() {
