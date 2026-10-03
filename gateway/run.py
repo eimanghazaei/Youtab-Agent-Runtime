@@ -40,7 +40,6 @@ import sys
 import signal
 import threading
 import time
-from subprocess import Popen as _restart_watcher_popen
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -62,6 +61,13 @@ from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from youtab_agent_cli.config import cfg_get
 from youtab_agent_cli.fallback_config import get_fallback_chain
+
+def _restart_watcher_popen(*args, **kwargs):
+    """Keep watcher failure injection local; retain current process mediation."""
+    import subprocess
+
+    return subprocess.Popen(*args, **kwargs)
+
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
