@@ -61,6 +61,7 @@ def get_sessions(
     exclude_sources: str = None,
     cwd_prefix: str = None,
     full: bool = False,
+    include_pinned: bool = True,
     profile: Optional[str] = None,
 ):
     """List sessions.
@@ -123,7 +124,7 @@ def get_sessions(
                 # rows, skip the system_prompt blob inside SQLite too (pairs
                 # with the API-level _strip_session_list_rows below).
                 compact_rows=not full,
-                include_pinned=True,
+                include_pinned=include_pinned,
             )
             total = db.session_count(
                 source=source or None,
@@ -480,7 +481,13 @@ async def import_sessions_endpoint(request: Request):
         raise HTTPException(status_code=400, detail="Invalid session import payload") from exc
 
     try:
-        result = await asyncio.to_thread(_import_sessions_for_profile, body.profile, body.sessions)
+        if body.inert_history:
+            result = await asyncio.to_thread(
+                _import_sessions_for_profile, body.profile, body.sessions,
+                inert_history=True,
+            )
+        else:
+            result = await asyncio.to_thread(_import_sessions_for_profile, body.profile, body.sessions)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -719,13 +726,22 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
 
 
 @manage_router.get("/api/sessions/{session_id}/export")
-async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
+async def export_session_endpoint(session_id: str, profile: Optional[str] = None, lineage: bool = False):
     """Export a single session (metadata + messages) as JSON."""
     def _export():
         db = _open_session_db_for_profile(profile)
         try:
             sid = db.resolve_session_id(session_id)
-            return db.export_session(sid) if sid else None
+            if not sid:
+                return None
+            if not lineage:
+                return db.export_session(sid)
+            exported = db.export_session_lineage(db.get_compression_tip(sid))
+            if exported and exported.get("segments"):
+                # Keep the logical conversation's original date while the
+                # tip remains its current resumable identity.
+                exported["started_at"] = exported["segments"][0]["started_at"]
+            return exported
         finally:
             db.close()
 

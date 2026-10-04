@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, SecretStr, field_validator
+from pydantic import BaseModel, SecretStr, StrictBool, field_validator
 
 
 # --- from web_server.py (originally lines 1273-1372) ---
@@ -311,6 +311,7 @@ class BulkDeleteSessions(BaseModel):
 class SessionImport(BaseModel):
     sessions: List[Dict[str, Any]]
     profile: Optional[str] = None
+    inert_history: StrictBool = False
 
 
 # --- from web_server.py (originally lines 12082-12090) ---

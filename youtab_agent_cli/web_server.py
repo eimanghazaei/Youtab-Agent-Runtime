@@ -11594,10 +11594,10 @@ async def _read_session_import_body(request: Request) -> bytes:
     return bytes(body)
 
 
-def _import_sessions_for_profile(profile: Optional[str], sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _import_sessions_for_profile(profile: Optional[str], sessions: List[Dict[str, Any]], *, inert_history: bool = False) -> Dict[str, Any]:
     db = _open_session_db_for_profile(profile)
     try:
-        return db.import_sessions(sessions)
+        return db.import_sessions(sessions, inert_history=inert_history)
     finally:
         db.close()
 

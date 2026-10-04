@@ -17,7 +17,9 @@
  * `electron-builder --dir` step and matches `youtab desktop --source`. The
  * packaged-binary path is already covered by `launch.spec.ts`.
  *
- * Prerequisite: `npm run build` must have been run so that `dist/` exists.
+ * Prerequisite: `npm run build` followed by
+ * `node scripts/bundle-electron-main.mjs --dev`. Production bundles bake
+ * packaged mode and deliberately deny source-checkout overrides on Windows.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -222,6 +224,12 @@ function writeEmptyConfig(youtabHome: string): void {
  */
 export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}): Record<string, string> {
   const clean = stripCredentials(process.env)
+  const home = path.join(sandbox.root, 'home')
+  const localAppData = path.join(home, 'AppData', 'Local')
+  const appData = path.join(home, 'AppData', 'Roaming')
+  for (const directory of [home, localAppData, appData]) {
+    fs.mkdirSync(directory, { recursive: true })
+  }
 
   // XDG_RUNTIME_DIR is needed for Electron on Linux when running in a
   // headless/CI context — without it the zygote may fail to initialize.
@@ -236,6 +244,10 @@ export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}
 
   return {
     ...clean,
+    HOME: home,
+    USERPROFILE: home,
+    LOCALAPPDATA: localAppData,
+    APPDATA: appData,
     YOUTAB_AGENT_HOME: sandbox.youtabHome,
     YOUTAB_AGENT_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
     YOUTAB_AGENT_DESKTOP_IGNORE_EXISTING: '1',
@@ -287,19 +299,22 @@ export function findElectron(): string {
   // In dev mode, we use the `electron` binary directly (not the packaged app).
   // The dev:electron script in package.json does exactly this: `electron .`
   // after building. We replicate that here.
-  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', 'electron')
+  const localElectron = path.join(REPO_ROOT, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron')
 
   if (fs.existsSync(localElectron)) {
     return localElectron
   }
 
   // Fall back to PATH
-  const result = spawnSync('which', ['electron'], {
+  const result = spawnSync(process.platform === 'win32' ? 'where.exe' : 'which', ['electron'], {
     encoding: 'utf8',
   })
 
   if (result.status === 0 && result.stdout.trim()) {
-    return result.stdout.trim()
+    const executable = result.stdout.trim().split(/\r?\n/).find(candidate =>
+      process.platform !== 'win32' || path.extname(candidate).toLowerCase() === '.exe',
+    )
+    if (executable) { return executable }
   }
 
   throw new Error(

@@ -90,6 +90,23 @@ test('pilot release discovery verifies latest and exact immutable manifest on th
     'current'
   )
 })
+test('explicit Pilot and Stable discovery require a bound common Setup', async () => {
+  const { manifest_url: _manifestUrl, ...runtime } = releaseFixture()
+  const release = { ...runtime, setup_source_sha: RELEASE_SHA, updater_protocol: 1,
+    setup_url: `${RELEASE_BASE}/${RELEASE_SHA}/Youtab-Setup-${RELEASE_SHA}.exe`, setup_sha256: 'f'.repeat(64), setup_size: 4096 }
+  for (const channel of ['pilot', 'stable'] as const) {
+    const calls: string[] = []
+    const result = await fetchApprovedPilotRelease(RELEASE_BASE, async url => {
+      calls.push(url)
+      return url.endsWith('latest.json') ? { ...release, manifest_url: `${RELEASE_BASE}/${RELEASE_SHA}/manifest.json` } : release
+    }, channel)
+    assert.equal(calls[0], `${RELEASE_BASE}/channels/${channel}/latest.json`)
+    assert.equal(result.setup?.sha256, release.setup_sha256)
+    await assert.rejects(fetchApprovedPilotRelease(RELEASE_BASE, async url => {
+      return url.endsWith('latest.json') ? { ...release, manifest_url: `${RELEASE_BASE}/${RELEASE_SHA}/manifest.json` } : { ...release, setup_source_sha: 'c'.repeat(40) }
+    }, channel))
+  }
+})
 
 test('pilot release discovery rejects cross-origin, path escape, and mutable identity conflicts', async () => {
   assert.throws(() => pilotReleaseBaseUrl(`https://evil.example/pilot-runtime-${'a'.repeat(32)}/releases`), /approved/)

@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { getYoutabConfigRecord, saveYoutabConfig, type YoutabConfigRecord } from '@/youtab'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { getYoutabConfigRecordForProfile, saveYoutabConfigForProfile, type YoutabConfigRecord } from '@/youtab'
 
 import { TRANSLATIONS } from './catalog'
 import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'
@@ -10,24 +11,24 @@ import type { Locale, Translations } from './types'
 export { LOCALE_META } from './languages'
 
 export interface I18nConfigClient {
-  getConfig: () => Promise<YoutabConfigRecord>
-  saveConfig: (config: YoutabConfigRecord) => Promise<{ ok: boolean }>
+  getConfig: (profile?: string) => Promise<YoutabConfigRecord>
+  saveConfig: (config: YoutabConfigRecord, profile?: string) => Promise<{ ok: boolean }>
 }
 
 const defaultConfigClient: I18nConfigClient = {
-  getConfig: () => {
+  getConfig: profile => {
     if (typeof window === 'undefined' || !window.youtabDesktop?.api) {
       return Promise.resolve({})
     }
 
-    return getYoutabConfigRecord()
+    return getYoutabConfigRecordForProfile(profile)
   },
-  saveConfig: config => {
+  saveConfig: (config, profile) => {
     if (typeof window === 'undefined' || !window.youtabDesktop?.api) {
       return Promise.resolve({ ok: true })
     }
 
-    return saveYoutabConfig(config)
+    return saveYoutabConfigForProfile(config, profile)
   }
 }
 
@@ -74,7 +75,7 @@ export interface I18nContextValue {
   isSavingLocale: boolean
   locale: Locale
   saveError: Error | null
-  setLocale: (next: Locale) => Promise<void>
+  setLocale: (next: Locale, profile?: string, isCurrent?: () => boolean) => Promise<void>
   t: Translations
 }
 
@@ -144,30 +145,38 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
   }, [configClient, initialLocale])
 
   const setLocale = useCallback(
-    async (next: Locale) => {
+    async (next: Locale, profile?: string, isCurrent?: () => boolean) => {
+      const stillActive = () => (isCurrent?.() ?? true) && (profile === undefined || normalizeProfileKey($activeGatewayProfile.get()) === normalizeProfileKey(profile))
+
+      if (!stillActive()) {throw new Error('LANGUAGE_PROFILE_CHANGED')}
       const previousLocale = localeRef.current
 
       setSaveError(null)
-      setLocaleState(next)
+      if (profile === undefined) {setLocaleState(next)}
 
       if (!configClient) {
+        if (stillActive()) {setLocaleState(next)}
         return
       }
 
       setIsSavingLocale(true)
 
       try {
-        const latestConfig = await configClient.getConfig()
-        const result = await configClient.saveConfig(withConfigDisplayLanguage(latestConfig, next))
+        const latestConfig = await (profile === undefined ? configClient.getConfig() : configClient.getConfig(profile))
+
+        if (!stillActive()) {throw new Error('LANGUAGE_PROFILE_CHANGED')}
+        const updated = withConfigDisplayLanguage(latestConfig, next)
+        const result = await (profile === undefined ? configClient.saveConfig(updated) : configClient.saveConfig(updated, profile))
 
         if (!result.ok) {
           throw new Error('Failed to save language')
         }
+        if (!stillActive()) {throw new Error('LANGUAGE_PROFILE_CHANGED')}
+        if (profile !== undefined) {setLocaleState(next)}
       } catch (error) {
         const nextError = toError(error)
 
-        setLocaleState(previousLocale)
-        setSaveError(nextError)
+        if (stillActive()) {setLocaleState(previousLocale); setSaveError(nextError)}
 
         throw nextError
       } finally {

@@ -275,11 +275,23 @@ declare global {
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
       getRemoteDisplayReason?: () => Promise<string | null>
+      accountSync: {
+        onSessionChanged: (callback: () => void) => () => void
+        status: (profile: string | null) => Promise<DesktopAccountSyncState>
+        consent: (profile: string | null, enabled: boolean) => Promise<DesktopAccountSyncState>
+        autoNewChats: (profile: string | null, enabled: boolean) => Promise<DesktopAccountSyncState>
+        run: (profile: string | null) => Promise<DesktopAccountSyncState>
+        preferences: (profile: string | null, value: { language: 'en' | 'nl' | 'fa' | 'zh' | 'zh-hant' | 'ja' | 'ar'; appearance: 'light' | 'dark' | 'system' }) => Promise<DesktopAccountSyncState>
+        share: (profile: string | null, id: string) => Promise<DesktopAccountSyncState>
+        remove: (profile: string | null, id: string) => Promise<DesktopAccountSyncState>
+        continueChat: (profile: string | null, id: string) => Promise<{ localId: string }>
+      }
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
-        getBranch: () => Promise<{ branch: string }>
+        getBranch: () => Promise<{ branch: string; channel: 'pilot' | 'stable' }>
         setBranch: (name: string) => Promise<{ branch: string }>
+        setChannel: (channel: 'pilot' | 'stable') => Promise<{ channel: 'pilot' | 'stable' }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
       uninstall: {
@@ -379,6 +391,7 @@ export interface DesktopUpdateCommit {
 }
 
 export interface DesktopUpdateStatus {
+  channel?: 'pilot' | 'stable'
   supported: boolean
   updateAvailable?: boolean
   branch?: string
@@ -394,6 +407,17 @@ export interface DesktopUpdateStatus {
   commits?: DesktopUpdateCommit[]
   dirty?: boolean
   fetchedAt?: number
+}
+
+export interface DesktopAccountSyncState {
+  enabled: boolean
+  autoNewChats: boolean
+  discoveryLimited: boolean
+    migrationFailures?: Record<string, 'export' | 'history-limit'>
+  pending: number
+  sharedSessionIds: string[]
+  preferences: { language?: 'en' | 'nl' | 'fa' | 'zh' | 'zh-hant' | 'ja' | 'ar'; appearance?: 'light' | 'dark' | 'system' }[]
+    chats: { id: string; revision: number; title: string; started_at?: number; last_active?: number; incomplete?: boolean; messages: { role: 'user' | 'assistant'; content: string; timestamp?: number }[] }[]
 }
 
 export type DesktopUpdateDirtyStrategy = 'abort' | 'stash' | 'force'

@@ -42,6 +42,8 @@ export interface NativeTokenSet {
   accessToken: string
   refreshToken: string
   inferenceAccessToken?: string
+  /** Dedicated account-sync audience; never handed to model providers. */
+  accountSyncAccessToken?: string
   /** Local profiles whose inference credential follows this Gateway session. */
   profiles?: string[]
   /** Encrypted retry inventory after an incomplete local sign-out. */
@@ -553,6 +555,7 @@ export function parseTokenResponse(body: any): NativeTokenSet {
     accessToken,
     refreshToken: String(body?.refresh_token || body?.refreshToken || ''),
     inferenceAccessToken: String(body?.inference_access_token || body?.inferenceAccessToken || ''),
+    accountSyncAccessToken: String(body?.account_sync_access_token || body?.accountSyncAccessToken || ''),
     profiles: Array.isArray(body?.profiles)
       ? body.profiles.filter((profile: unknown): profile is string => typeof profile === 'string')
       : [],

@@ -107,7 +107,8 @@ def _runtime_artifact_path_allowed(path: str) -> bool:
 
 
 def package_runtime_artifact(output_dir: Path, version: str,
-                             release_sequence: int, base_url: str) -> dict:
+                             release_sequence: int, base_url: str,
+                             setup_executable: Path | None = None) -> dict:
     """Copy an exact committed Runtime package into a local static release root.
 
     The caller publishes that root through the existing Nginx delivery path.
@@ -115,7 +116,7 @@ def package_runtime_artifact(output_dir: Path, version: str,
     """
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", version):
         raise ValueError("invalid artifact version")
-    if release_sequence < 1:
+    if type(release_sequence) is not int or release_sequence < 1:
         raise ValueError("release sequence must be positive")
     base_url = _release_base_url(base_url)
     output_dir = output_dir.resolve()
@@ -130,6 +131,24 @@ def package_runtime_artifact(output_dir: Path, version: str,
     from youtab_agent_cli.branding_policy import contains_retired_banner
 
     source_sha = head.stdout.strip()
+    setup_bytes = None
+    if setup_executable is not None:
+        if setup_executable.is_symlink() or not setup_executable.is_file():
+            raise ValueError("Setup must be a regular executable file")
+        if not 64 <= setup_executable.stat().st_size <= 128 * 1024 * 1024:
+            raise ValueError("invalid Setup size")
+        setup_bytes = setup_executable.read_bytes()
+        header = int.from_bytes(setup_bytes[60:64], "little")
+        if (setup_bytes[:2] != b"MZ" or header < 64 or header + 26 > len(setup_bytes)
+                or setup_bytes[header:header + 4] != b"PE\0\0"
+                or int.from_bytes(setup_bytes[header + 4:header + 6], "little") != 0x8664
+                or not int.from_bytes(setup_bytes[header + 22:header + 24], "little") & 2
+                or int.from_bytes(setup_bytes[header + 24:header + 26], "little") != 0x20b):
+            raise ValueError("Setup must be a Windows x64 executable")
+        # Build.rs embeds these immutable pins. This checks the build input;
+        # publication still requires independent build/qualification evidence.
+        if source_sha.encode() not in setup_bytes or base_url.encode() not in setup_bytes:
+            raise ValueError("Setup is not pinned to this source and delivery base")
     target_dir = output_dir / source_sha
     artifact_name = f"youtab-runtime-{source_sha}.zip"
     script_name = f"install-{source_sha}.ps1"
@@ -226,6 +245,16 @@ def package_runtime_artifact(output_dir: Path, version: str,
             "architecture": "x64",
             "format": "zip",
         }
+        setup_name = f"Youtab-Setup-{source_sha}.exe"
+        if setup_bytes is not None:
+            manifest.update({
+                "setup_source_sha": source_sha,
+                "setup_url": f"{base_url}/{source_sha}/{setup_name}",
+                "setup_sha256": hashlib.sha256(setup_bytes).hexdigest(),
+                "setup_size": len(setup_bytes),
+                "updater_protocol": 1,
+            })
+            (tmp / setup_name).write_bytes(setup_bytes)
         (tmp / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
         # Same-volume rename publishes immutable files together. Never replace
         # an existing version; the only mutable object is latest.json.
@@ -234,6 +263,8 @@ def package_runtime_artifact(output_dir: Path, version: str,
         shutil.move(str(package), str(tmp_release / artifact_name))
         shutil.move(str(tmp / script_name), str(tmp_release / script_name))
         shutil.move(str(tmp / "manifest.json"), str(tmp_release / "manifest.json"))
+        if setup_bytes is not None:
+            shutil.move(str(tmp / setup_name), str(tmp_release / setup_name))
         os.rename(tmp_release, target_dir)
         latest = {
             **manifest,
@@ -2691,6 +2722,8 @@ def main():
                         help="Strictly increasing approved release number for --package-runtime")
     parser.add_argument("--artifact-base-url", type=str,
                         help="Configured HTTPS api.youtab.io pilot release base")
+    parser.add_argument("--setup-executable", type=Path,
+                        help="Common Windows x64 Setup built from the same exact source SHA")
     parser.add_argument("--bump", choices=["major", "minor", "patch"],
                         help="Which semver component to bump")
     parser.add_argument("--publish", action="store_true",
@@ -2706,11 +2739,12 @@ def main():
     if args.package_runtime:
         if (args.publish or args.bump or not args.artifact_output_dir
                 or not args.artifact_version or not args.release_sequence
-                or not args.artifact_base_url):
-            parser.error("--package-runtime requires output-dir, version, release-sequence, base-url; cannot use --publish or --bump")
+                or not args.artifact_base_url or not args.setup_executable):
+            parser.error("--package-runtime requires output-dir, version, release-sequence, base-url and setup-executable; cannot use --publish or --bump")
         manifest = package_runtime_artifact(
             args.artifact_output_dir, args.artifact_version,
             args.release_sequence, args.artifact_base_url,
+            args.setup_executable,
         )
         print(f"Prepared immutable Runtime artifact {manifest['source_sha']} at {args.artifact_output_dir}")
         return

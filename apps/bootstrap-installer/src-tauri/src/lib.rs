@@ -91,6 +91,46 @@ fn get_mode(state: tauri::State<'_, Arc<AppState>>) -> AppMode {
     state.mode
 }
 
+#[tauri::command]
+fn get_release_channel() -> Result<String, String> {
+    update::release_channel_for_install(&paths::youtab_home().join("youtab-agent-runtime")).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_installation_kind() -> Result<String, String> {
+    let root = paths::youtab_home().join("youtab-agent-runtime");
+    installation_kind(&root, option_env!("RELEASE_BASE_URL").is_some() && cfg!(target_os = "windows"))
+}
+
+fn installation_kind(root: &std::path::Path, legacy_allowed: bool) -> Result<String, String> {
+    if root.is_symlink() {return Err("Installation needs review before replacement".to_owned());}
+    if !root.exists() {return Ok("fresh".to_owned());}
+    let marker_path = root.join(".youtab-agent-runtime-bootstrap-complete");
+    if marker_path.is_symlink() {return Err("Installation needs review before replacement".to_owned());}
+    if std::fs::metadata(&marker_path).map_err(|_| "Installation needs review before replacement")?.len() > 65536 {
+        return Err("Installation metadata is too large".to_owned());
+    }
+    let bytes = std::fs::read(marker_path).map_err(|_| "Installation needs review before replacement".to_owned())?;
+    let marker: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "Installation metadata is unreadable".to_owned())?;
+    if marker.get("releaseSequence").is_some_and(|v| !v.is_null()) {
+        let valid_hex = |key: &str, length: usize| marker.get(key).and_then(serde_json::Value::as_str)
+            .is_some_and(|value| value.len() == length && value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+        if marker.get("releaseSequence").and_then(serde_json::Value::as_u64).unwrap_or(0) == 0
+            || !valid_hex("pinnedCommit", 40) || !valid_hex("artifactSha256", 64)
+            || marker.get("releaseBaseUrl").and_then(serde_json::Value::as_str).is_none() {
+            return Err("Installation metadata needs review".to_owned());
+        }
+        return Ok("artifact".to_owned());
+    }
+    if marker.get("releaseBaseUrl").is_some_and(|v| !v.is_null()) || marker.get("artifactSha256").is_some_and(|v| !v.is_null()) {
+        return Err("Installation metadata needs review".to_owned());
+    }
+    if legacy_allowed && !root.join(".git").is_symlink() && root.join(".git").is_dir() {
+        return Ok("legacy".to_owned());
+    }
+    Err("This existing installation cannot be replaced automatically".to_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Tracing → bootstrap-installer.log under YOUTAB_AGENT_HOME/logs/ so install
@@ -168,6 +208,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // Mode (install vs update)
             get_mode,
+            get_installation_kind,
+            get_release_channel,
             // Bootstrap lifecycle
             bootstrap::start_bootstrap,
             bootstrap::cancel_bootstrap,
@@ -188,6 +230,26 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{force_setup_from_args, AppMode};
+
+    #[test]
+    fn installation_preview_preserves_unknown_or_partial_installs() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("runtime");
+        assert_eq!(super::installation_kind(&root, true).unwrap(), "fresh");
+        std::fs::create_dir(&root).unwrap();
+        assert!(super::installation_kind(&root, true).is_err());
+        let marker = root.join(".youtab-agent-runtime-bootstrap-complete");
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(&marker, b"{}").unwrap();
+        assert_eq!(super::installation_kind(&root, true).unwrap(), "legacy");
+        assert!(super::installation_kind(&root, false).is_err());
+        for bad in [serde_json::json!({"releaseSequence": true}), serde_json::json!({"releaseSequence": 0}), serde_json::json!({"artifactSha256": "partial"})] {
+            std::fs::write(&marker, bad.to_string()).unwrap();
+            assert!(super::installation_kind(&root, true).is_err());
+        }
+        std::fs::write(&marker, serde_json::json!({"releaseSequence": 3, "pinnedCommit": "a".repeat(40), "artifactSha256": "b".repeat(64), "releaseBaseUrl": "https://api.youtab.io/pilot-runtime-example/releases"}).to_string()).unwrap();
+        assert_eq!(super::installation_kind(&root, true).unwrap(), "artifact");
+    }
 
     #[test]
     fn bare_args_are_install() {

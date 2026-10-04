@@ -1,7 +1,8 @@
 import { type CSSProperties } from 'react'
+import { useStore } from '@nanostores/react'
 
 import { HackeryButton } from '../components/hackery-button'
-import { startInstall } from '../store'
+import { $installationKind, $releaseChannel, openLogDir, startInstall, startUpdate } from '../store'
 
 /*
  * Welcome screen.
@@ -16,6 +17,8 @@ import { startInstall } from '../store'
  * flag. Showing %LOCALAPPDATA% to grandma is developer-brain.
  */
 export default function Welcome() {
+  const kind = useStore($installationKind)
+  const channel = useStore($releaseChannel)
   return (
     <div className="youtab-fade-in flex h-full flex-col items-center justify-center gap-10 px-12 py-10">
       {/* Hero — same recipe the desktop's chat/intro.tsx uses */}
@@ -37,12 +40,21 @@ export default function Welcome() {
         </p>
 
         <p className="m-0 text-center text-base leading-normal tracking-tight text-muted-foreground">
-          The agent that grows with you. We&rsquo;ll set things up in the
-          background &mdash; takes a few minutes.
+          {kind === 'legacy' ? 'Upgrade your existing Youtab installation to the common updater. Your chats, settings and credentials are preserved.'
+            : kind === 'unknown' ? 'Checking your installation. If this does not finish, open the logs before continuing.'
+            : 'The agent that grows with you. Setup takes a few minutes.'}
         </p>
       </div>
 
-      <HackeryButton label="Install" onClick={() => void startInstall()} />
+      {kind !== 'unknown' && <label className="flex items-center gap-3 text-sm">Update channel
+        <select aria-label="Update channel" value={channel} onChange={event => $releaseChannel.set(event.target.value === 'pilot' ? 'pilot' : 'stable')}>
+          <option value="stable">Stable</option><option value="pilot">Pilot / Test</option>
+        </select>
+      </label>}
+      {kind !== 'unknown' && <HackeryButton label={kind === 'fresh' ? 'Install' : 'Upgrade'} onClick={() => {
+        if (kind === 'artifact') {void startUpdate()} else {void startInstall({ migrateLegacy: kind === 'legacy' })}
+      }} />}
+      {kind === 'unknown' && <HackeryButton label="Open logs" onClick={() => void openLogDir()} />}
     </div>
   )
 }

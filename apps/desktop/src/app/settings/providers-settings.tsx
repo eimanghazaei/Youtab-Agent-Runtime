@@ -25,6 +25,7 @@ import type { EnvVarInfo, OAuthProvider } from '@/types/youtab'
 import { disconnectOAuthProvider, getApiRequestProfile, listOAuthProviders } from '@/youtab'
 
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
+import { AccountSyncSettings } from './account-sync-settings'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
 import { providerGroup, providerMeta, providerPriority } from './helpers'
@@ -513,6 +514,7 @@ export function ProvidersSettings({
         onWantApiKey={() => onViewChange('keys')}
         providers={oauthProviders}
       />
+      <AccountSyncSettings />
     </SettingsContent>
   )
 }

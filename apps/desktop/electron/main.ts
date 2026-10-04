@@ -32,6 +32,9 @@ import {
 import nodePty from 'node-pty'
 
 import { classifyActiveRuntime } from './active-runtime-state'
+import { accountSyncService, syncSessionIdentity } from './account-sync-service'
+import { joinedTranscript, type SyncJournal } from './account-sync'
+import { channelPreferenceStamp, selectedReleaseChannel, downloadSetup, stageSetup, type ReleaseChannel } from './release-delivery'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
@@ -2299,9 +2302,12 @@ function readDesktopUpdateConfig() {
     const parsed = JSON.parse(fs.readFileSync(DESKTOP_UPDATE_CONFIG_PATH, 'utf8'))
     const branch = typeof parsed?.branch === 'string' ? parsed.branch.trim() : ''
 
-    return { branch: branch || DEFAULT_UPDATE_BRANCH }
+    const marker = readBootstrapMarker()
+    const channel = selectedReleaseChannel(parsed, marker)
+    return { branch: branch || DEFAULT_UPDATE_BRANCH, channel, channelMarker: channelPreferenceStamp(marker) }
   } catch {
-    return { branch: DEFAULT_UPDATE_BRANCH }
+    const marker = readBootstrapMarker()
+    return { branch: DEFAULT_UPDATE_BRANCH, channel: selectedReleaseChannel(null, marker), channelMarker: channelPreferenceStamp(marker) }
   }
 }
 
@@ -2478,7 +2484,7 @@ async function checkUpdates() {
       // The packaged build stamp is the URL authority; the installed marker
       // must agree and cannot redirect discovery to another release source.
       const base = trustedPilotReleaseBaseUrl(INSTALL_STAMP?.releaseBaseUrl, marker?.releaseBaseUrl)
-      release = await fetchApprovedPilotRelease(base)
+      release = await fetchApprovedPilotRelease(base, undefined, readDesktopUpdateConfig().channel)
       updateState = classifyPilotReleaseUpdate(marker, release)
     } catch (error) {
       return {
@@ -2493,6 +2499,7 @@ async function checkUpdates() {
     return {
       supported: true,
       branch: 'release',
+      channel: readDesktopUpdateConfig().channel,
       currentSha: marker.pinnedCommit,
       targetSha: release.source_sha,
       currentVersion: marker.version || null,
@@ -2906,7 +2913,16 @@ async function applyUpdates(opts = {}) {
       }
     }
 
-    const updater = resolveUpdaterBinary()
+    let updater = resolveUpdaterBinary()
+    if (customerRelease) {
+      const marker = readBootstrapMarker()
+      const base = trustedPilotReleaseBaseUrl(INSTALL_STAMP?.releaseBaseUrl, marker?.releaseBaseUrl)
+      const release = await fetchApprovedPilotRelease(base, undefined, readDesktopUpdateConfig().channel)
+      classifyPilotReleaseUpdate(marker, release)
+      if (!release.setup) {throw new Error('Matching Youtab Setup is unavailable.')}
+      emitUpdateProgress({ stage: 'restart', message: 'Downloading the verified Youtab updater…', percent: null })
+      updater = await stageSetup(release.setup, path.join(YOUTAB_AGENT_HOME, 'update-cache'), downloadSetup)
+    }
 
     if (!updater && !IS_WINDOWS) {
       // macOS/Linux drag-install: no staged Tauri youtab-setup. Unlike Windows
@@ -2966,7 +2982,7 @@ async function applyUpdates(opts = {}) {
     const updateRoot = customerRelease ? ACTIVE_YOUTAB_AGENT_ROOT : resolveUpdateRoot()
     const { branch: configuredBranch } = readDesktopUpdateConfig()
     const branch = customerRelease ? null : await resolveHealedBranch(updateRoot, configuredBranch || DEFAULT_UPDATE_BRANCH)
-    const updaterArgs = customerRelease ? ['--update'] : ['--update', '--branch', branch]
+    const updaterArgs = customerRelease ? ['--update', '--channel', readDesktopUpdateConfig().channel] : ['--update', '--branch', branch]
     const targetApp = IS_MAC ? runningAppBundle() : null
 
     if (targetApp) {
@@ -6453,6 +6469,10 @@ function _nativeProfileSessionKeys(): string[] {
 }
 
 function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
+  const previous = _nativeTokens.get(baseUrl)
+  if (previous && (previous.userId !== tokens.userId || previous.profiles?.some(profile => !tokens.profiles?.includes(profile)))) {
+    stopAccountSync()
+  }
   _persistNativeTokens(baseUrl, tokens)
   _nativeTokens.set(baseUrl, tokens)
   _nativeRefreshRetries.reset(baseUrl)
@@ -6460,6 +6480,7 @@ function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
 }
 
 function _clearNativeTokens(baseUrl: string) {
+  stopAccountSync()
   nativeRefresh.discard(baseUrl)
   _nativeRefreshRetries.reset(baseUrl)
   const timer = _nativeRefreshTimers.get(baseUrl)
@@ -6485,6 +6506,125 @@ function assertNativeProfileDirectory(profile: string) {
     throw Object.assign(new Error('Linked profile no longer exists. Sign in again in Settings → Gateway.'), { needsOauthLogin: true })
   }
 }
+
+const accountSyncServices = new Map<string, ReturnType<typeof accountSyncService>>()
+function stopAccountSync() {
+  for (const service of accountSyncServices.values()) {service.stop()}
+  accountSyncServices.clear()
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {window.webContents.send('youtab:account-sync:session-changed')}
+  }
+}
+function accountSyncForProfile(requested: unknown) {
+  const profile = resolveLiveNativeProviderProfile(requested)
+  const baseUrl = 'https://api.youtab.io'
+  const requireSession = () => {
+    const tokens = _loadNativeTokens(baseUrl)
+    if (!tokens || tokens.logoutPending || tokens.rotationPending || !tokens.profiles?.includes(profile)) {throw new Error('ACCOUNT_SYNC_SIGN_IN_REQUIRED')}
+    return tokens
+  }
+  requireSession()
+  let service = accountSyncServices.get(profile)
+  if (!service) {
+    service = accountSyncService({
+      directory: path.join(app.getPath('userData'), 'account-sync', crypto.createHash('sha256').update(profile).digest('hex')),
+      baseUrl, profile,
+      token: async () => {
+        await ensureNativeAccessToken(baseUrl)
+        const token = requireSession().accountSyncAccessToken
+        if (!token) {throw new Error('ACCOUNT_SYNC_UNAVAILABLE')}
+        return token
+      },
+      encrypt: encryptDesktopSecret,
+      decrypt: decryptDesktopSecret,
+      exportSession: id => fetchJsonForProfile(profile, `/api/sessions/${encodeURIComponent(id)}/export?profile=${encodeURIComponent(profile)}&lineage=true`),
+      importSession: async session => {
+        const result = await requestJsonForProfile(profile, '/api/sessions/import', 'POST', JSON.stringify({ profile, inert_history: true, sessions: [session] })) as { ok: boolean; imported_ids: string[]; skipped_ids: string[] }
+        if (!result.ok || ![...result.imported_ids, ...result.skipped_ids].includes(session.id)) {throw new Error('SYNC_IMPORT_FAILED')}
+      },
+      listNewSessions: async (since, offset) => {
+        const sessions: { id: string; started_at: number }[] = []
+        for (let page = 0; page < 10; page++) {
+          const result = await fetchJsonForProfile(profile, `/api/sessions?profile=${encodeURIComponent(profile)}&limit=100&offset=${offset + page * 100}&min_messages=1&order=created&archived=include&include_pinned=false`) as { sessions: { id: string; _lineage_root_id?: string; started_at: number }[]; total: number }
+          if (!Array.isArray(result.sessions) || result.sessions.length > 100 || !Number.isSafeInteger(result.total) || result.total < 0) {throw new Error('INVALID_SYNC_DISCOVERY')}
+          sessions.push(...result.sessions.filter(value => typeof value.id === 'string' && Number.isFinite(value.started_at) && value.started_at >= since)
+            .map(value => ({ id: syncSessionIdentity(value), started_at: value.started_at })))
+          if (offset + (page + 1) * 100 >= result.total || result.sessions.length < 100) {return { sessions, limited: false, nextOffset: 0 }}
+        }
+        return { sessions, limited: true, nextOffset: offset + 1000 }
+      }
+    })
+    accountSyncServices.set(profile, service)
+  }
+  return service
+}
+function syncView(state: SyncJournal) {
+  return { enabled: state.consent, pending: state.outbox.length,
+    autoNewChats: state.autoNewChats ?? false,
+    discoveryLimited: state.discoveryLimited ?? false,
+    migrationFailures: state.migrationFailures ?? {},
+    sharedSessionIds: Object.keys(state.localLinks ?? {}),
+    preferences: Object.values(state.records).filter(record => record.kind === 'preferences' && !record.deleted)
+      .sort((one, two) => two.cursor - one.cursor).map(record => record.payload),
+    chats: Object.values(state.records).filter(record => record.kind === 'chat' && !record.deleted
+      && record.payload && 'messages' in record.payload && !record.payload.is_part)
+      .map(record => {
+        try {return { id: record.object_id, revision: record.revision, ...joinedTranscript(record.payload, state.records), incomplete: false }}
+        catch {return { id: record.object_id, revision: record.revision, title: record.payload && 'title' in record.payload ? record.payload.title : '', messages: [], incomplete: true }}
+      })
+      .sort((one, two) => ('last_active' in two ? Number(two.last_active) : 'started_at' in two ? Number(two.started_at) : 0)
+        - ('last_active' in one ? Number(one.last_active) : 'started_at' in one ? Number(one.started_at) : 0)) }
+}
+ipcMain.handle('youtab:account-sync:status', async (_event, profile) => syncView(await accountSyncForProfile(profile).status()))
+ipcMain.handle('youtab:account-sync:consent', async (_event, profile, enabled) => {
+  if (typeof enabled !== 'boolean') {throw new Error('INVALID_SYNC_CONSENT')}
+  const service = accountSyncForProfile(profile)
+  await service.consent(enabled)
+  return syncView(await service.status())
+})
+ipcMain.handle('youtab:account-sync:run', async (_event, profile) => syncView(await accountSyncForProfile(profile).sync()))
+ipcMain.handle('youtab:account-sync:auto', async (_event, profile, enabled) => {
+  if (typeof enabled !== 'boolean') {throw new Error('INVALID_SYNC_CONSENT')}
+  const service = accountSyncForProfile(profile)
+  await service.autoNewChats(enabled)
+  return syncView(await service.status())
+})
+ipcMain.handle('youtab:account-sync:preferences', async (_event, profile, value) => {
+  if (!value || typeof value !== 'object' || Object.keys(value).length !== 2
+    || !['en', 'nl', 'fa', 'zh', 'zh-hant', 'ja', 'ar'].includes(value.language)
+    || !['light', 'dark', 'system'].includes(value.appearance)) {throw new Error('INVALID_SYNC_PREFERENCES')}
+  return syncView(await accountSyncForProfile(profile).preferences(value))
+})
+ipcMain.handle('youtab:account-sync:share', async (_event, profile, id) => {
+  if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) {throw new Error('INVALID_SESSION_ID')}
+  return syncView(await accountSyncForProfile(profile).share(id))
+})
+ipcMain.handle('youtab:account-sync:delete', async (_event, profile, id) => {
+  if (typeof id !== 'string' || !/^chat_[a-f0-9]{32}$|^conflict_[a-f0-9]{32}$/.test(id)) {throw new Error('INVALID_SYNC_OBJECT')}
+  return syncView(await accountSyncForProfile(profile).remove(id))
+})
+ipcMain.handle('youtab:account-sync:continue', async (_event, profile, id) => {
+  if (typeof id !== 'string' || !/^(chat|conflict)_[a-f0-9]{32}$/.test(id)) {throw new Error('INVALID_SYNC_OBJECT')}
+  return accountSyncForProfile(profile).continueChat(id)
+})
+// Only profiles explicitly opened/consented in this app are polled. Other
+// local profiles and existing transcripts have no automatic upload path.
+const accountSyncTimer = setInterval(() => {
+  for (const service of accountSyncServices.values()) {
+    void service.status().then(state => state.consent ? service.sync() : undefined).catch(() => undefined)
+  }
+}, 60000)
+accountSyncTimer.unref()
+void app.whenReady().then(() => {
+  const tokens = _loadNativeTokens('https://api.youtab.io')
+  if (!tokens?.accountSyncAccessToken || tokens.logoutPending || tokens.rotationPending) {return}
+  for (const profile of tokens.profiles ?? []) {
+    try {
+      const service = accountSyncForProfile(profile)
+      void service.status().then(state => state.consent ? service.sync() : undefined).catch(() => undefined)
+    } catch { /* Removed local profiles remain inactive. */ }
+  }
+})
 
 function resolveLiveNativeProviderProfile(requested: unknown): string {
   // The renderer can swap its live Gateway to another profile without changing
@@ -11680,9 +11820,16 @@ ipcMain.handle('youtab:updates:branch:get', async () => readDesktopUpdateConfig(
 
 ipcMain.handle('youtab:updates:branch:set', async (_event, name) => {
   const branch = typeof name === 'string' && name.trim() ? name.trim() : DEFAULT_UPDATE_BRANCH
-  writeDesktopUpdateConfig({ branch })
+  writeDesktopUpdateConfig({ ...readDesktopUpdateConfig(), branch })
 
   return { branch }
+})
+
+ipcMain.handle('youtab:updates:channel:set', async (_event, channel) => {
+  if (channel !== 'pilot' && channel !== 'stable') {throw new Error('INVALID_RELEASE_CHANNEL')}
+  if (updateInFlight) {throw new Error('An update is already in progress.')}
+  writeDesktopUpdateConfig({ ...readDesktopUpdateConfig(), channel, channelMarker: channelPreferenceStamp(readBootstrapMarker()) })
+  return { channel }
 })
 
 // Resolve the canonical Youtab version (the one `release.py` bumps in
