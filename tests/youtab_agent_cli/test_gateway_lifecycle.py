@@ -33,6 +33,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import pytest
@@ -564,10 +565,18 @@ def fake_gateway(monkeypatch):
     # ``pids`` is a timeline consumed one observation at a time, holding the
     # last value forever: ``[100, None, 200]`` is "was up, went down, came back
     # as a different process" -- a restart that really happened.
-    state: dict[str, Any] = {"pids": [None], "exit": 0, "commands": []}
+    # An optional release event holds a real child on stdin and pauses its
+    # observation, letting concurrency tests control the in-flight interval.
+    state: dict[str, Any] = {
+        "pids": [None], "exit": 0, "commands": [],
+        "release": None, "observing": Event(), "children": [],
+    }
     cursor = {"i": 0}
 
     def probe(_profile=None):
+        if state["release"] is not None and state["children"]:
+            state["observing"].set()
+            assert state["release"].wait(timeout=10), "gateway observation was never released"
         pids = state["pids"]
         value = pids[min(cursor["i"], len(pids) - 1)]
         cursor["i"] += 1
@@ -575,6 +584,16 @@ def fake_gateway(monkeypatch):
 
     def spawn(subcommand, name):
         state["commands"].append(list(subcommand))
+        if state["release"] is not None:
+            proc = subprocess.Popen(
+                [sys.executable, "-c",
+                 f"import sys; sys.stdin.buffer.read(); sys.exit({state['exit']})"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            state["children"].append(proc)
+            return proc
         return _child(state["exit"])
 
     def spawn_restart(profile=None):
@@ -691,11 +710,32 @@ class TestHttpContract:
     def test_a_double_click_reuses_the_in_flight_job(self, gated, fake_gateway):
         """Idempotent restart, over HTTP."""
         fake_gateway["exit"] = 0
+        release = fake_gateway["release"] = Event()
         client = _as(gated, OWNER)
-        first = client.post("/api/gateway/restart").json()
-        second = client.post("/api/gateway/restart").json()
-        assert second["job_id"] == first["job_id"]
-        assert second["reused"] is True
+        first = None
+        try:
+            first_response = client.post("/api/gateway/restart")
+            assert first_response.status_code == 202
+            first = first_response.json()
+            # The child and the lifecycle observation stay blocked until both
+            # requests have run, regardless of how quickly the host schedules them.
+            assert fake_gateway["observing"].wait(timeout=5), "job never began observing"
+            second_response = client.post("/api/gateway/restart")
+            assert second_response.status_code == 202
+            second = second_response.json()
+            assert first["state"] == second["state"] == "pending"
+            assert first["reused"] is False
+            assert second["job_id"] == first["job_id"]
+            assert second["reused"] is True
+            assert len(fake_gateway["commands"]) == 1
+            assert fake_gateway["children"][0].poll() is None
+        finally:
+            release.set()
+            for proc in fake_gateway["children"]:
+                proc.stdin.close()
+                proc.wait(timeout=5)
+            if first is not None:
+                _settle(client, first["job_id"])
 
     def test_a_restart_storm_is_refused_with_429(self, gated, fake_gateway):
         fake_gateway["exit"] = 1
