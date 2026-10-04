@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto'
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -80,20 +81,32 @@ async function fixture() {
 }
 
 describe('main process account sync service', () => {
-  it('rejects a journal replaced between path validation and descriptor open', async () => {
+  it.skipIf(process.platform === 'win32')('rejects a FIFO journal without waiting for a writer', async () => {
+    const f = await fixture()
+    await accountSyncService(f.dependencies).consent(true)
+    const name = (await fs.readdir(f.dependencies.directory)).find(name => name.endsWith('.json'))!
+    const file = path.join(f.dependencies.directory, name)
+    await fs.unlink(file)
+    execFileSync('mkfifo', [file])
+    const decrypt = vi.fn(f.dependencies.decrypt)
+    await expect(accountSyncService({ ...f.dependencies, decrypt }).status()).rejects.toThrow('UNSAFE_SYNC_STORE')
+    expect(decrypt).not.toHaveBeenCalled()
+  }, 3000)
+  it('rejects a journal replaced after descriptor open before path validation', async () => {
     const f = await fixture()
     await accountSyncService(f.dependencies).consent(true)
     const originalOpen = fs.open.bind(fs)
     const decrypt = vi.fn(f.dependencies.decrypt)
     let swapped = false
     vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await originalOpen(file, flags, mode)
       if (!swapped && typeof flags === 'number' && String(file).endsWith('.json')) {
         swapped = true
         await fs.rename(file, `${file}.original`)
         await fs.writeFile(file, '{}')
       }
 
-      return originalOpen(file, flags, mode)
+      return handle
     })
     await expect(accountSyncService({ ...f.dependencies, decrypt }).status()).rejects.toThrow('UNSAFE_SYNC_STORE')
     expect(swapped).toBe(true)

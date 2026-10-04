@@ -93,16 +93,14 @@ export function accountSyncService(deps: ServiceDependencies) {
       const file = path.join(deps.directory, `${key}.json`)
 
       try {
-        const info = await fs.lstat(file)
-
-        if (!info.isFile() || info.isSymbolicLink() || info.size > 128 * 1024 * 1024) {throw new Error('UNSAFE_SYNC_STORE')}
-        const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+        const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
         let bytes: Buffer
 
         try {
           const opened = await handle.stat()
+          const info = await fs.lstat(file)
 
-          if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino || opened.size !== info.size) {throw new Error('UNSAFE_SYNC_STORE')}
+          if (!info.isFile() || info.isSymbolicLink() || info.size > 128 * 1024 * 1024 || !opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino || opened.size !== info.size) {throw new Error('UNSAFE_SYNC_STORE')}
           bytes = Buffer.alloc(info.size + 1)
           let length = 0
 
