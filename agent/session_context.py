@@ -36,8 +36,11 @@ needs to replace the import + call site:
     platform = get_session_env("YOUTAB_AGENT_SESSION_PLATFORM", "")
 """
 
+import logging
 from contextvars import ContextVar
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Sentinel to distinguish "never set in this context" from "explicitly set to empty".
 # When a contextvar holds _UNSET, we fall back to os.environ (CLI/cron compat).
@@ -213,7 +216,7 @@ def set_session_vars(
 
         set_session_cwd(cwd)
     except Exception:
-        pass
+        logger.debug("Could not bind optional session working directory; session routing remains bound")
     return tokens
 
 
@@ -254,7 +257,7 @@ def clear_session_vars(tokens: list) -> None:
 
         clear_session_cwd()
     except Exception:
-        pass
+        logger.debug("Could not clear optional session working directory; session routing remains cleared")
 
 
 def reset_session_vars() -> None:
@@ -302,7 +305,7 @@ def reset_session_vars() -> None:
 
         clear_session_cwd()
     except Exception:
-        pass
+        logger.debug("Could not reset optional session working directory; session routing remains unbound")
 
 
 def get_session_env(name: str, default: str = "") -> str:

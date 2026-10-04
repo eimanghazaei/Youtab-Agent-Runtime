@@ -685,7 +685,6 @@ _agent_browser_resolved = False
 # Lightpanda engine support — cached like _get_cloud_provider().
 # agent-browser v0.25.3+ supports ``--engine lightpanda`` natively.
 _cached_browser_engine: Optional[str] = None
-_browser_engine_resolved = False
 
 
 def _is_legacy_provider_registry_overridden() -> bool:
@@ -908,13 +907,12 @@ _cached_auto_local_for_private_urls: bool = True
 
 def _get_browser_engine() -> str:
     """Resolve the shared engine policy once per runtime cache lifetime."""
-    global _cached_browser_engine, _browser_engine_resolved
-    if _browser_engine_resolved:
+    global _cached_browser_engine
+    if _cached_browser_engine is not None:
         return _cached_browser_engine
     from youtab_agent_cli.config import read_raw_config
     from tools.local_capabilities import browser_engine
 
-    _browser_engine_resolved = True
     _cached_browser_engine = browser_engine(read_raw_config)
     return _cached_browser_engine
 
@@ -4570,7 +4568,7 @@ def cleanup_all_browsers() -> None:
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
     global _cached_chromium_installed
-    global _cached_browser_engine, _browser_engine_resolved
+    global _cached_browser_engine
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
@@ -4582,7 +4580,6 @@ def cleanup_all_browsers() -> None:
     global _chromium_autoinstall_attempted
     _chromium_autoinstall_attempted = False
     _cached_browser_engine = None
-    _browser_engine_resolved = False
 
 # ============================================================================
 # Requirements Check

@@ -49,8 +49,14 @@ logger = logging.getLogger(__name__)
 # handles on-demand installation so the Bedrock provider still works in the
 # EKS deployment without baking boto3 into the base image.
 # ---------------------------------------------------------------------------
+def ensure(feature: str, *, prompt: bool = True) -> None:
+    """Compatibility entry point for optional SDK bootstrap."""
+    from tools.lazy_deps import ensure as bootstrap
+
+    return bootstrap(feature, prompt=prompt)
+
+
 try:
-    from tools.lazy_deps import ensure
     ensure("provider.bedrock", prompt=False)
 except Exception:
     pass  # lazy_deps unavailable or install failed — let downstream imports surface the real error
@@ -65,7 +71,6 @@ _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache = _catalog._bedrock_control_client_cache
 
 
-_MIN_BOTO3_VERSION = _catalog._MIN_BOTO3_VERSION
 
 
 
@@ -1052,8 +1057,6 @@ def call_converse_stream(
 # Model discovery
 # ---------------------------------------------------------------------------
 
-_discovery_cache = _catalog._discovery_cache
-_DISCOVERY_CACHE_TTL_SECONDS = _catalog._DISCOVERY_CACHE_TTL_SECONDS
 
 
 
@@ -1298,3 +1301,48 @@ def get_bedrock_context_length(model_id: str, region: str = "", probe: bool = Tr
         if probed:
             return probed
     return _static_bedrock_context_length(model_id)
+
+
+# Public export contract: retain the historical wildcard surface and shared aliases.
+__all__ = [
+    'Any',
+    'BEDROCK_CONTEXT_LENGTHS',
+    'BEDROCK_DEFAULT_CONTEXT_LENGTH',
+    'CONTEXT_OVERFLOW_PATTERNS',
+    'Dict',
+    'List',
+    'OVERLOAD_PATTERNS',
+    'Optional',
+    'SimpleNamespace',
+    'THROTTLE_PATTERNS',
+    'Tuple',
+    '_extract_provider_from_arn',
+    'bedrock_model_ids_or_none',
+    'build_converse_kwargs',
+    'call_converse',
+    'call_converse_stream',
+    'classify_bedrock_error',
+    'convert_messages_to_converse',
+    'convert_tools_to_converse',
+    'discover_bedrock_models',
+    'ensure',
+    'get_bedrock_context_length',
+    'has_aws_credentials',
+    'invalidate_runtime_client',
+    'is_anthropic_bedrock_model',
+    'is_context_overflow_error',
+    'is_stale_connection_error',
+    'is_streaming_access_denied_error',
+    'json',
+    'logger',
+    'logging',
+    'normalize_converse_response',
+    'normalize_converse_stream_events',
+    'probe_bedrock_context_length',
+    're',
+    'reset_client_cache',
+    'reset_discovery_cache',
+    'resolve_aws_auth_env_var',
+    'resolve_bedrock_region',
+    'stream_converse_with_callbacks',
+]

@@ -39,7 +39,10 @@ credential value. Results carry key NAMES and config PATHS only.
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "save_provider_env_credential",
@@ -196,7 +199,7 @@ def purge_env_credential_references(
         for provider in providers:
             suppress_credential_source(provider, f"env:{env_var}")
     except Exception:
-        pass
+        logger.debug("Credential source suppression failed; continuing removal cleanup")
     if clear_models_cache and providers:
         try:
             from youtab_agent_cli.provider_models_cache import clear_provider_models_cache

@@ -19,6 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from youtab_agent_cli import auth
 from youtab_agent_cli import youtab_model_catalog
 
 
@@ -720,7 +721,6 @@ def test_gateway_assignment_keeps_same_credential_catalog_during_outage(profile_
 
 def test_missing_global_auth_file_is_safe(profile_env):
     """Profile processes that never had a global auth.json still work."""
-    from youtab_agent_cli.auth import read_credential_pool
 
     # No global auth.json written at all.
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
@@ -734,8 +734,8 @@ def test_missing_global_auth_file_is_safe(profile_env):
         }],
     }))
 
-    assert read_credential_pool("openrouter")[0]["id"] == "prof-1"
-    assert read_credential_pool("anthropic") == []
+    assert auth.read_credential_pool("openrouter")[0]["id"] == "prof-1"
+    assert auth.read_credential_pool("anthropic") == []
 
 
 def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
@@ -751,12 +751,11 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
         }],
     }))
 
-    from youtab_agent_cli.auth import read_credential_pool
 
     # Profile reads still work; malformed global is silently ignored.
-    assert read_credential_pool("openrouter")[0]["id"] == "prof-1"
+    assert auth.read_credential_pool("openrouter")[0]["id"] == "prof-1"
     # And no fallback for anthropic since global is unreadable.
-    assert read_credential_pool("anthropic") == []
+    assert auth.read_credential_pool("anthropic") == []
 
 
 # ---------------------------------------------------------------------------
@@ -770,25 +769,23 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
 
 
 def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_env):
-    from youtab_agent_cli.auth import get_provider_auth_state
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
         "youtab": {"access_token": "youtab-global", "refresh_token": "rt-global"},
     }))
     _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
 
-    state = get_provider_auth_state("youtab")
+    state = auth.get_provider_auth_state("youtab")
     assert state is not None
     assert state["access_token"] == "youtab-global"
 
 
 def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
-    from youtab_agent_cli.auth import get_provider_auth_state
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
     _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
 
-    assert get_provider_auth_state("youtab") is None
+    assert auth.get_provider_auth_state("youtab") is None
 
 
 # ---------------------------------------------------------------------------
@@ -821,7 +818,6 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 
 
 def test_write_credential_pool_targets_profile_not_global(profile_env):
-    from youtab_agent_cli.auth import read_credential_pool, write_credential_pool
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
         "openrouter": [{
@@ -834,7 +830,7 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
         }],
     }))
 
-    write_credential_pool("openrouter", [{
+    auth.write_credential_pool("openrouter", [{
         "id": "prof-new",
         "label": "profile-new",
         "auth_type": "api_key",
@@ -852,14 +848,14 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
     assert profile_data["credential_pool"]["openrouter"][0]["id"] == "prof-new"
 
     # Subsequent read returns profile (shadows global).
-    assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
+    assert [e["id"] for e in auth.read_credential_pool("openrouter")] == ["prof-new"]
 
 
 
 
 def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env):
     """Changing profile context cannot inherit another store's lock depth."""
-    import youtab_agent_cli.auth as auth
+    from youtab_agent_cli import auth
     import youtab_constants
 
     profile_b = profile_env["global"] / "profiles" / "reviewer"
@@ -924,7 +920,6 @@ def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     A fresh login intentionally clears the entry's status; resurrecting the
     stale cooldown onto the new credentials would bench a just-authorized key.
     """
-    from youtab_agent_cli.auth import write_credential_pool
 
     _write(classic_env / "auth.json", _make_auth_store(pool={
         "openrouter": [_pool_entry(
@@ -936,7 +931,7 @@ def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     }))
 
     # Same entry id, freshly re-authed with a new token and cleared status.
-    write_credential_pool("openrouter", [_pool_entry(access_token="sk-new")])
+    auth.write_credential_pool("openrouter", [_pool_entry(access_token="sk-new")])
 
     data = json.loads((classic_env / "auth.json").read_text(encoding="utf-8"))
     persisted = data["credential_pool"]["openrouter"][0]

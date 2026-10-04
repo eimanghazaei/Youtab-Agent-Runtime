@@ -1,10 +1,14 @@
 """Provider model-cache persistence/invalidation independent of live discovery."""
 
 import json
+import logging
 from pathlib import Path
 from typing import Callable, Optional
 
 from youtab_agent_cli.model_provider_identity import normalize_provider
+
+
+logger = logging.getLogger(__name__)
 
 
 def _provider_models_cache_path() -> Path:
@@ -33,7 +37,7 @@ def _save_provider_models_cache(data: dict, *, path: Optional[Path] = None) -> N
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_json_write(path, data, indent=None)
     except Exception:
-        pass
+        logger.debug("Provider model cache write failed; continuing without persistence")
 
 
 def clear_provider_models_cache(
@@ -61,4 +65,4 @@ def clear_provider_models_cache(
             del cache[normalized]
             (save_cache or _save_provider_models_cache)(cache)
     except Exception:
-        pass
+        logger.debug("Provider model cache invalidation failed; credential operation continues")

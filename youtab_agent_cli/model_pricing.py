@@ -1,5 +1,6 @@
 """Pure model price formatting shared by CLI pickers."""
 
+from math import isnan
 from typing import Any
 
 
@@ -59,14 +60,14 @@ def compute_sale_discount(
             n = float(raw)
         except (TypeError, ValueError):
             return None
-        return n if n > 0 and n == n else None  # n == n rejects NaN
+        return n if n > 0 and not isnan(n) else None
 
     def _nonneg(raw: Any) -> float | None:
         try:
             n = float(raw)
         except (TypeError, ValueError):
             return None
-        return n if n >= 0 and n == n else None
+        return n if n >= 0 and not isnan(n) else None
 
     # Free / $0 models never show sale chrome, even if a leftover list price
     # is higher (e.g. a :free sibling that inherited pricing.original).

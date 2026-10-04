@@ -15,7 +15,6 @@ def _reset_engine_cache():
     """Reset the module-level engine cache so tests start clean."""
     import tools.browser_tool as bt
     bt._cached_browser_engine = None
-    bt._browser_engine_resolved = False
 
 
 @pytest.fixture(autouse=True)
@@ -187,11 +186,9 @@ class TestCleanupResetsEngineCache:
         import tools.browser_tool as bt
         # Seed the cache
         bt._cached_browser_engine = "lightpanda"
-        bt._browser_engine_resolved = True
         # cleanup should reset them
         bt.cleanup_all_browsers()
         assert bt._cached_browser_engine is None
-        assert bt._browser_engine_resolved is False
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +301,6 @@ class TestEngineOverride:
 
         # Set the global cache to lightpanda
         bt._cached_browser_engine = "lightpanda"
-        bt._browser_engine_resolved = True
 
         _session.return_value = {"session_name": "test-sess"}
 
@@ -350,7 +346,6 @@ class TestEngineOverride:
         import tools.browser_tool as bt
 
         bt._cached_browser_engine = "lightpanda"
-        bt._browser_engine_resolved = True
 
         _session.return_value = {"session_name": "test-sess"}
 
@@ -389,7 +384,6 @@ class TestEngineOverride:
         import tools.browser_tool as bt
 
         bt._cached_browser_engine = "lightpanda"
-        bt._browser_engine_resolved = True
         captured_cmds = []
         mock_provider = MagicMock()
 

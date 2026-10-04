@@ -1,6 +1,7 @@
 """Youtab picker catalog operations, independent of credential orchestration."""
 from __future__ import annotations
 import json
+import logging
 import os
 import time
 import urllib.request
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Any, Optional
 from youtab_agent_cli import __version__ as _YOUTAB_AGENT_VERSION
 from youtab_agent_cli.urllib_security import open_credentialed_url
+
+logger = logging.getLogger(__name__)
 
 _YOUTAB_AGENT_USER_AGENT = f"youtab-cli/{_YOUTAB_AGENT_VERSION}"
 YOUTAB_RECOMMENDED_MODELS_PATH = "/api/youtab/recommended-models"
@@ -513,7 +516,7 @@ def resolve_youtab_pricing_credentials(resolve_credentials, inference_override) 
             api_key = creds.get("api_key", "") or ""
             creds_base = (creds.get("base_url", "") or "").strip()
     except Exception:
-        pass
+        logger.debug("Youtab pricing credential lookup failed; using anonymous fallback")
 
     base_url = (env_base or creds_base or "https://api.youtab.io").rstrip("/")
     return (api_key, base_url)

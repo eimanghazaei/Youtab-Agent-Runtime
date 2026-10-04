@@ -26,7 +26,6 @@ strips safe instead of leaking the sibling's. The handler then binds its own
 session a few steps later.
 """
 import asyncio
-from contextvars import copy_context
 
 import pytest
 
@@ -198,5 +197,32 @@ def test_reset_session_vars_closes_async_delivery_leak():
         "After reset, async delivery must default to supported; "
         f"got {captured['window']!r}"
     )
+
+
+@pytest.mark.parametrize("operation", ["bind", "clear", "reset"])
+def test_optional_cwd_failure_preserves_session_routing(operation, monkeypatch, caplog):
+    from agent import runtime_cwd
+
+    def unavailable(*_args):
+        raise RuntimeError("sensitive-working-directory")
+
+    helper = "set_session_cwd" if operation == "bind" else "clear_session_cwd"
+    monkeypatch.setattr(runtime_cwd, helper, unavailable)
+    with caplog.at_level("DEBUG", logger="agent.session_context"):
+        if operation == "bind":
+            sc.set_session_vars(platform="discord", cwd="sensitive-working-directory")
+            expected = "discord"
+        elif operation == "clear":
+            sc.clear_session_vars([])
+            expected = ""
+        else:
+            sc._SESSION_PLATFORM.set("discord")
+            monkeypatch.setenv("YOUTAB_AGENT_SESSION_PLATFORM", "telegram")
+            sc.reset_session_vars()
+            expected = "telegram"
+
+    assert sc.get_session_env("YOUTAB_AGENT_SESSION_PLATFORM") == expected
+    assert "optional session working directory" in caplog.text
+    assert "sensitive-working-directory" not in caplog.text
 
 

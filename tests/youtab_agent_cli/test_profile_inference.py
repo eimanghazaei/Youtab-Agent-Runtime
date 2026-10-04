@@ -24,10 +24,10 @@ def test_inference_policy_import_does_not_load_login_or_model_ui(tmp_path):
     env = {**os.environ, "YOUTAB_AGENT_HOME": str(tmp_path)}
     result = subprocess.run([
         sys.executable, "-c",
-        "import sys; from youtab_agent_cli import profile_inference; "
-        "assert 'youtab_agent_cli.auth' not in sys.modules; "
-        "assert 'youtab_agent_cli.models' not in sys.modules; "
-        "assert 'youtab_agent_cli.config' not in sys.modules; "
+        "import sys; from youtab_agent_cli import profile_inference; " +
+        "assert 'youtab_agent_cli.auth' not in sys.modules; " +
+        "assert 'youtab_agent_cli.models' not in sys.modules; " +
+        "assert 'youtab_agent_cli.config' not in sys.modules; " +
         "assert profile_inference.get_local_inference_token_state() is None",
     ], env=env, capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
