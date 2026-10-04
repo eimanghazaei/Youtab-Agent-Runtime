@@ -464,7 +464,8 @@ class TestLoginYoutabSkipKeepsCurrent:
     def _patch_login_internals(self, monkeypatch, *, prompt_returns):
         """Patch OAuth + model-list + prompt so _login_youtab doesn't hit network."""
         import youtab_agent_cli.auth as auth_mod
-        import youtab_agent_cli.models as models_mod
+        import youtab_agent_cli.youtab_picker_catalog as picker
+        import youtab_agent_cli.youtab_account as account
         import youtab_agent_cli.youtab_subscription as ns
 
         fake_auth_state = {
@@ -483,16 +484,18 @@ class TestLoginYoutabSkipKeepsCurrent:
             auth_mod, "_prompt_model_selection",
             lambda *a, **kw: prompt_returns,
         )
-        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda p: {})
+        monkeypatch.setattr(picker, "get_curated_youtab_model_ids", lambda: ["synthetic/model"])
+        monkeypatch.setattr(picker, "get_youtab_pricing", lambda *args: {})
         free_tier_calls = []
 
         def _check_youtab_free_tier(**kwargs):
             free_tier_calls.append(kwargs)
-            return None
+            from types import SimpleNamespace
+            return SimpleNamespace(is_free_tier=False)
 
-        monkeypatch.setattr(models_mod, "check_youtab_free_tier", _check_youtab_free_tier)
+        monkeypatch.setattr(account, "get_youtab_portal_account_info", _check_youtab_free_tier)
         monkeypatch.setattr(
-            models_mod, "partition_youtab_models_by_tier",
+            picker, "partition_youtab_models_by_tier",
             lambda ids, p, free_tier=False: (ids, []),
         )
         monkeypatch.setattr(ns, "prompt_enable_tool_gateway", lambda cfg: None)

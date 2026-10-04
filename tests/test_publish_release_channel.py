@@ -1,5 +1,10 @@
 import hashlib
 import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
 
 import pytest
 
@@ -81,6 +86,128 @@ def test_immutable_conflicts_are_never_overwritten(candidate):
     with pytest.raises(ValueError):
         install_immutable(source, root, sha, base)
     assert setup.read_bytes() == b"existing unexpected bytes"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX private access contract")
+def test_offline_release_bytes_and_discovery_remain_private(candidate):
+    root, source, sha, base, qualification, verify, _legacy = candidate
+    publish(root, source, sha, base, "pilot", None, None, None, verify)
+    publish(root, source, sha, base, "stable", None, digest(root / "latest.json"), qualification, verify)
+    for path in list((root / sha).iterdir()) + [root / "latest.json", root / "channels/pilot/latest.json", root / "channels/stable/latest.json"]:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    for path in [root / sha, root / "channels", root / "channels/pilot", root / "channels/stable"]:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700
+    # The publication lock remains private even when downloads are shared.
+    assert stat.S_IMODE((root / ".publication.lock").stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0 or not shutil.which("setfacl"),
+                    reason="Requires isolated Linux root and setfacl to test named web-worker ACLs")
+def test_unprivileged_web_worker_can_download_but_cannot_mutate(candidate):
+    root, source, sha, base, *_rest = candidate
+    web_gid, web_uid, unrelated_uid = 40002, 40003, 40004
+    # Prove publication replaces unrelated/inherited ACLs instead of accumulating them.
+    subprocess.run(["setfacl", "-m", f"u:{unrelated_uid}:rwx,d:u:{unrelated_uid}:rwx", str(root)], check=True)
+    publish(root, source, sha, base, "pilot", None, None, None, candidate[5], web_uid=web_uid)
+    publish(root, source, sha, base, "stable", None, digest(root / "latest.json"), candidate[4], candidate[5], web_uid=web_uid)
+
+    def become_web_worker():
+        os.setgroups([])
+        os.setgid(web_gid)
+        os.setuid(web_uid)
+
+    # cwd is entered before dropping identity, avoiding unrelated pytest parent permissions.
+    result = subprocess.run([sys.executable, "-c", """
+from pathlib import Path
+import sys
+artifact = Path(sys.argv[1])
+assert artifact.read_bytes()
+assert Path('channels/pilot/latest.json').read_bytes()
+assert Path('channels/stable/latest.json').read_bytes()
+assert Path('latest.json').read_bytes()
+for path, mode in [(artifact, 'wb'), (Path('channels/pilot/latest.json'), 'wb'), (Path('.publication.lock'), 'rb')]:
+    try:
+        with path.open(mode):
+            pass
+    except PermissionError:
+        continue
+    raise AssertionError('web worker gained mutation or private-lock access')
+for action in [lambda: artifact.chmod(0o600), lambda: artifact.rename(artifact.with_suffix('.moved')),
+               lambda: Path('channels/pilot/latest.json').rename(Path('channels/pilot/moved.json'))]:
+    try:
+        action()
+    except PermissionError:
+        continue
+    raise AssertionError('web worker gained chmod or rename authority')
+""", f"{sha}/Youtab-Setup-{sha}.exe"], cwd=root, preexec_fn=become_web_worker,
+        capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+
+    def become_unrelated_worker():
+        os.setgroups([])
+        os.setgid(web_gid)
+        os.setuid(unrelated_uid)
+
+    result = subprocess.run([sys.executable, "-c", """
+from pathlib import Path
+import sys
+for path in [Path(sys.argv[1]), Path('channels/pilot/latest.json')]:
+    try:
+        path.read_bytes()
+    except PermissionError:
+        continue
+    raise AssertionError('unrelated UID gained release read access')
+""", f"{sha}/Youtab-Setup-{sha}.exe"], cwd=root, preexec_fn=become_unrelated_worker,
+        capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    for path in [root, root / sha, root / "channels", root / "channels/pilot", root / "channels/stable"]:
+        acl = subprocess.run(["getfacl", "--numeric", "--omit-header", str(path)], check=True, capture_output=True, text=True).stdout
+        assert f"user:{web_uid}:r-x" in acl
+        assert "group::---" in acl and "other::---" in acl
+        assert "default:" not in acl and f"user:{unrelated_uid}:" not in acl
+        assert path.stat().st_uid == path.stat().st_gid == 0
+    for path in list((root / sha).iterdir()) + [root / "channels/pilot/latest.json", root / "channels/stable/latest.json", root / "latest.json"]:
+        acl = subprocess.run(["getfacl", "--numeric", "--omit-header", str(path)], check=True, capture_output=True, text=True).stdout
+        assert f"user:{web_uid}:r--" in acl
+        assert "group::---" in acl and "other::---" in acl
+        assert f"user:{unrelated_uid}:" not in acl
+        assert path.stat().st_uid == path.stat().st_gid == 0
+
+
+def test_named_acl_refuses_root_or_invalid_uid_without_changing_discovery(candidate):
+    root, source, sha, base, _, verify, legacy = candidate
+    for uid in (0, -1, True, "40003"):
+        with pytest.raises(ValueError):
+            publish(root, source, sha, base, "pilot", None, None, None, verify, web_uid=uid)
+        assert (root / "latest.json").read_bytes() == legacy
+        assert not (root / sha).exists()
+
+
+@pytest.mark.skipif(os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0,
+                    reason="POSIX root capability preflight")
+def test_named_acl_missing_tool_stops_before_publication(candidate, monkeypatch):
+    root, source, sha, base, _, verify, legacy = candidate
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(ValueError, match="setfacl support"):
+        publish(root, source, sha, base, "pilot", None, None, None, verify, web_uid=40003)
+    assert (root / "latest.json").read_bytes() == legacy
+    assert not (root / "channels").exists()
+
+
+@pytest.mark.skipif(os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0 or not shutil.which("setfacl"),
+                    reason="POSIX root ACL capability preflight")
+def test_named_acl_filesystem_failure_stops_before_publication(candidate, monkeypatch):
+    import scripts.release_channels as channels
+
+    root, source, sha, base, _, verify, legacy = candidate
+    def unavailable(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, "setfacl")
+    monkeypatch.setattr(channels.subprocess, "run", unavailable)
+    with pytest.raises(subprocess.CalledProcessError):
+        publish(root, source, sha, base, "pilot", None, None, None, verify, web_uid=40003)
+    assert (root / "latest.json").read_bytes() == legacy
+    assert not (root / "channels").exists()
+    assert not list(root.glob(".acl-preflight-*"))
 
 
 def test_publication_lock_excludes_concurrent_promotions(candidate):

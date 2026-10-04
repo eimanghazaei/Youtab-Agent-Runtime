@@ -75,6 +75,21 @@ Pilot-to-Stable promotion with qualification and pointer CAS/rollback.
 immutable hashes and mutable pointer cache behavior, and bridges Stable to the
 legacy pointer only after qualification. It has not been executed on the VPS.
 
+Publication starts with private owner modes: files `0600`, directories `0700`.
+The publication CLI requires `--web-user` naming an existing non-root web-server
+account. It tests `setfacl` capability on the release filesystem before changing
+discovery, retains root ownership, clears inherited/default ACLs, and grants only
+that named UID read access to release files and read/traversal to directories.
+No group or other-user access is granted. ACL masks appear in group mode bits;
+the owning group ACL itself remains empty. Access metadata is flushed before
+immutable directories or discovery pointers are promoted. Offline helpers without
+a web UID retain private `0600`/`0700` access.
+The web account needs separately provisioned traversal of ancestor directories and read access to existing
+immutable releases; existing release hashes must remain unchanged. Verify all
+three discovery URLs and immutable downloads as the actual web-server worker
+before approving a rollout. Provisioning and rollout need separate Owner approval;
+the local permission changes do not claim live server access is configured.
+
 The main process owns a scoped encrypted journal, durable outbox/cursor,
 account/session cancellation, all-history discovery, background sync and
 inert continuation. Long histories use bounded immutable text parts; roots

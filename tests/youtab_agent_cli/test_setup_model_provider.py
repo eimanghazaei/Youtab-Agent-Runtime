@@ -156,8 +156,8 @@ def test_setup_summary_local_browser_unavailable_without_chromium(
         "youtab_agent_cli.youtab_subscription.get_youtab_portal_account_info",
         lambda *a, **k: None,
     )
-    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: False)
-    monkeypatch.setattr("tools.browser_tool._using_lightpanda_engine", lambda: False)
+    monkeypatch.setattr("tools.local_capabilities.chromium_installed", lambda: False)
+    monkeypatch.setattr("tools.local_capabilities.browser_engine", lambda _: "auto")
     monkeypatch.setattr(
         "agent.auxiliary_client.get_available_vision_backends", lambda: []
     )

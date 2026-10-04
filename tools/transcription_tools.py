@@ -97,7 +97,9 @@ def _safe_find_spec(module_name: str) -> bool:
         return module_name in globals() or module_name in os.sys.modules
 
 
-_HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
+from tools.local_capabilities import has_faster_whisper
+
+_HAS_FASTER_WHISPER = has_faster_whisper()
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
 _HAS_PILK = _safe_find_spec("pilk")

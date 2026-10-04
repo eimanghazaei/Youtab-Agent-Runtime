@@ -20,7 +20,6 @@ Other modules import from this file.  No parallel registries.
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -614,15 +613,7 @@ def host_mandated_api_mode(base_url: str = "") -> Optional[str]:
     return None
 
 
-def youtab_api_mode(model: str = "") -> str:
-    """Reject Messages models on the Gateway profile; preserve hosted legacy wire."""
-    if str(model or "").strip().lower().startswith(("anthropic/", "anthropic.")):
-        from youtab_agent_cli.auth import get_local_inference_token_state
-
-        if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" or get_local_inference_token_state() is not None:
-            raise ValueError("Youtab Gateway does not support /v1/messages for anthropic/* models")
-        return "anthropic_messages"
-    return "chat_completions"
+from youtab_agent_cli.profile_inference import youtab_api_mode
 
 
 def determine_api_mode(provider: str, base_url: str = "", model: str = "") -> str:

@@ -17,10 +17,10 @@ import shutil
 import tempfile
 import urllib.request
 
-from scripts.release_channels import _read, digest, promote, verify_release
+from scripts.release_channels import _read, digest, promote, set_release_access, verify_release, preflight_release_access
 
 
-def _replace(pointer: Path, content: bytes) -> None:
+def _replace(pointer: Path, content: bytes, *, web_uid: int | None = None) -> None:
     handle, name = tempfile.mkstemp(prefix=".latest-", suffix=".tmp", dir=pointer.parent)
     temporary = Path(name)
     try:
@@ -28,7 +28,7 @@ def _replace(pointer: Path, content: bytes) -> None:
             writer.write(content)
             writer.flush()
             os.fsync(writer.fileno())
-        os.chmod(temporary, 0o644)
+        set_release_access(temporary, pointer.parent, web_uid=web_uid)
         os.replace(temporary, pointer)
         if os.name != "nt":
             descriptor = os.open(pointer.parent, os.O_DIRECTORY)
@@ -50,6 +50,7 @@ def publication_lock(root: Path):
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(lock, flags, 0o600)
     with os.fdopen(descriptor, "r+b") as file:
+        set_release_access(lock, root)
         if os.name == "nt":
             import msvcrt
             file.write(b"0")
@@ -62,7 +63,8 @@ def publication_lock(root: Path):
         yield
 
 
-def install_immutable(source_root: Path, root: Path, sha: str, base: str) -> dict:
+def install_immutable(source_root: Path, root: Path, sha: str, base: str,
+                      *, web_uid: int | None = None) -> dict:
     """Install only the four verified members; never overwrite an immutable SHA."""
     if source_root.is_symlink() or root.is_symlink() or not root.is_dir():
         raise ValueError("unsafe release root")
@@ -79,6 +81,9 @@ def install_immutable(source_root: Path, root: Path, sha: str, base: str) -> dic
         verify_release(root, manifest, base)
         if target.is_symlink() or {file.name for file in target.iterdir()} != members:
             raise ValueError("immutable conflict")
+        for member in members:
+            set_release_access(target / member, root, web_uid=web_uid)
+        set_release_access(target, root, directory=True, web_uid=web_uid)
         return manifest
     stage = Path(tempfile.mkdtemp(prefix=".publish-", dir=root))
     try:
@@ -87,10 +92,10 @@ def install_immutable(source_root: Path, root: Path, sha: str, base: str) -> dic
                 shutil.copyfileobj(reader, writer)
                 writer.flush()
                 os.fsync(writer.fileno())
-            os.chmod(stage / member, 0o644)
+            set_release_access(stage / member, root, web_uid=web_uid)
             if digest(stage / member) != digest(source / member):
                 raise ValueError("staged integrity failure")
-        os.chmod(stage, 0o755)
+        set_release_access(stage, root, directory=True, web_uid=web_uid)
         if os.name != "nt":
             descriptor = os.open(stage, os.O_DIRECTORY)
             try:
@@ -116,9 +121,14 @@ def install_immutable(source_root: Path, root: Path, sha: str, base: str) -> dic
 
 def publish(root: Path, source_root: Path, sha: str, base: str, channel: str,
             expected: str | None, expected_legacy: str | None,
-            qualification: dict | None, public_verify) -> str:
+            qualification: dict | None, public_verify, *, web_uid: int | None = None) -> str:
     """Rollback discovery on a failed public readback; retain immutable artifacts."""
+    access = {"web_uid": web_uid} if web_uid is not None else {}
+    if web_uid is not None:
+        preflight_release_access(root, web_uid)
     with publication_lock(root):
+        if web_uid is not None:
+            set_release_access(root, root, directory=True, web_uid=web_uid)
         pointer = root / "channels" / channel / "latest.json"
         if channel not in {"pilot", "stable"}:
             raise ValueError("invalid channel")
@@ -133,7 +143,7 @@ def publish(root: Path, source_root: Path, sha: str, base: str, channel: str,
             legacy_before = legacy.read_bytes() if legacy.exists() else None
             if (digest(legacy) if legacy_before is not None else None) != expected_legacy:
                 raise ValueError("legacy index changed")
-        manifest = install_immutable(source_root, root, sha, base)
+        manifest = install_immutable(source_root, root, sha, base, **access)
         candidate = (json.dumps({**manifest, "manifest_url": f"{base}/{sha}/manifest.json"}, sort_keys=True, indent=2) + "\n").encode()
         if legacy_before is not None:
             previous = json.loads(legacy_before)
@@ -142,10 +152,10 @@ def publish(root: Path, source_root: Path, sha: str, base: str, channel: str,
         for name in ("manifest.json", f"youtab-runtime-{sha}.zip", f"install-{sha}.ps1", f"Youtab-Setup-{sha}.exe"):
             public_verify(f"{base}/{sha}/{name}", digest(root / sha / name), False)
         try:
-            result = promote(root, channel, sha, base, expected, qualification)
+            result = promote(root, channel, sha, base, expected, qualification, **access)
             public_verify(f"{base}/channels/{channel}/latest.json", result, True)
             if channel == "stable":
-                _replace(legacy, candidate)
+                _replace(legacy, candidate, **access)
                 public_verify(f"{base}/latest.json", hashlib.sha256(candidate).hexdigest(), True)
             return result
         except Exception:
@@ -156,7 +166,7 @@ def publish(root: Path, source_root: Path, sha: str, base: str, channel: str,
                     if legacy_before is None:
                         legacy.unlink()
                     else:
-                        _replace(legacy, legacy_before)
+                        _replace(legacy, legacy_before, **access)
             finally:
                 # A failed restore/flush for one index must not suppress the
                 # independent restoration attempt for the other index.
@@ -164,7 +174,7 @@ def publish(root: Path, source_root: Path, sha: str, base: str, channel: str,
                     if before is None:
                         pointer.unlink()
                     else:
-                        _replace(pointer, before)
+                        _replace(pointer, before, **access)
             raise
 
 
@@ -202,12 +212,17 @@ def main() -> None:
     parser.add_argument("--expected-index", required=True, help="SHA-256 or absent")
     parser.add_argument("--expected-legacy", default="absent")
     parser.add_argument("--qualification", type=Path)
+    parser.add_argument("--web-user", required=True, help="Provisioned non-root web-server account for read-only named ACLs")
     args = parser.parse_args()
     if os.name != "posix" or os.geteuid() != 0:
         raise ValueError("approved VPS root execution required")
     root = Path("/srv/youtab-runtime-releases")
     if root.is_symlink() or root.stat().st_uid != 0 or root.stat().st_mode & 0o022:
         raise ValueError("untrusted publication root")
+    import pwd
+    web_uid = pwd.getpwnam(args.web_user).pw_uid
+    if web_uid == 0:
+        raise ValueError("web-server account must be non-root")
     if args.base_file.is_symlink() or not args.base_file.is_file():
         raise ValueError("invalid private input")
     manifest_file = args.source_root / args.source_sha / "manifest.json"
@@ -221,7 +236,8 @@ def main() -> None:
     expected = lambda value: None if value == "absent" else value
     qualification = _read(args.qualification) if args.qualification else None
     publish(root, args.source_root, args.source_sha, args.base_file.read_text().strip(), args.channel,
-            expected(args.expected_index), expected(args.expected_legacy), qualification, verify_public)
+            expected(args.expected_index), expected(args.expected_legacy), qualification, verify_public,
+            web_uid=web_uid)
     print("PUBLICATION=PASS")
     print("CHANNEL=" + args.channel)
     print("SOURCE_SHA=" + args.source_sha)

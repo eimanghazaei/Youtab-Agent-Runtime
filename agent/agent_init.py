@@ -48,7 +48,7 @@ from agent.tool_guardrails import (
     ToolGuardrailDecision,
 )
 from youtab_agent_cli.config import cfg_get
-from youtab_agent_cli.route_identity import normalize_route_base_url
+from youtab_agent_cli.route_url import normalize_route_base_url
 from youtab_agent_cli.timeouts import get_provider_request_timeout
 from youtab_constants import get_youtab_home
 from utils import base_url_host_matches, is_truthy_value

@@ -61,7 +61,7 @@ def _stub_browser_probes(monkeypatch, *, has_agent_browser, chromium, lightpanda
     """Common monkeypatches for local-browser readiness scenarios.
 
     ``chromium`` / ``lightpanda`` drive the runtime probes that
-    ``_local_browser_runnable`` reuses from ``tools.browser_tool`` (lazy import,
+    ``_local_browser_runnable`` reuses from ``tools.local_capabilities`` (lazy import,
     so patching the module attributes is enough).
     """
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
@@ -73,9 +73,9 @@ def _stub_browser_probes(monkeypatch, *, has_agent_browser, chromium, lightpanda
     monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
     monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
     monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: False)
-    monkeypatch.setattr("tools.browser_tool._chromium_installed", lambda: chromium)
+    monkeypatch.setattr("tools.local_capabilities.chromium_installed", lambda: chromium)
     monkeypatch.setattr(
-        "tools.browser_tool._using_lightpanda_engine", lambda: lightpanda
+        "tools.local_capabilities.browser_engine", lambda _: "lightpanda" if lightpanda else "auto"
     )
 
 
@@ -115,9 +115,9 @@ def _capture_checklist(monkeypatch, *, selected_idx):
         captured["pre_selected"] = list(pre_selected or [])
         return list(selected_idx)
 
-    import youtab_agent_cli.setup as setup_mod
+    import youtab_agent_cli.selection_prompt as selection_prompt
 
-    monkeypatch.setattr(setup_mod, "prompt_checklist", _fake_checklist, raising=False)
+    monkeypatch.setattr(selection_prompt, "prompt_checklist", _fake_checklist)
     monkeypatch.setattr(
         "youtab_agent_cli.config.save_config", lambda cfg: None, raising=False
     )

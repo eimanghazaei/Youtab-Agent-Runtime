@@ -78,7 +78,7 @@ class TestDeclareStatelessChannel:
         subprocess env bridge to ContextVar-authoritative. A pure single-process
         one-shot must not trigger that as a side effect of declaring a capability.
         """
-        from gateway import session_context as sc
+        from agent import session_context as sc
 
         reset_session_vars()
         engaged_before = sc._session_context_engaged

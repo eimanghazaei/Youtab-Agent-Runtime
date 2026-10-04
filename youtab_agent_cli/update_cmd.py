@@ -1957,14 +1957,14 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
                 sys.exit(2)
             print("Artifact update checks are handled by Youtab Desktop and Setup.")
             return
-    from youtab_agent_cli.config import detect_install_method, recommended_update_command_for_method
+    from youtab_agent_cli.install_method import detect_install_method, recommended_update_command_for_method
     method = detect_install_method(_m().PROJECT_ROOT)
     if method == "docker":
         # Docker can't ``git fetch`` from within the container.  Surface the
         # same long-form ``docker pull`` guidance ``youtab update`` (apply
         # path) uses — telling the user to "reinstall via curl" or that
         # ".git is missing" would point them at the wrong remediation.
-        from youtab_agent_cli.config import format_docker_update_message
+        from youtab_agent_cli.install_method import format_docker_update_message
         print(format_docker_update_message())
         sys.exit(1)
 
@@ -2093,7 +2093,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             print("✓ Already up to date.")
         else:
             print(f"⚕ Update available (behind {compare_branch}).")
-            from youtab_agent_cli.config import recommended_update_command
+            from youtab_agent_cli.install_method import recommended_update_command
 
             print(f"  Run '{recommended_update_command()}' to install.")
         return
@@ -2112,7 +2112,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     else:
         commits_word = "commit" if behind == 1 else "commits"
         print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
-        from youtab_agent_cli.config import recommended_update_command
+        from youtab_agent_cli.install_method import recommended_update_command
 
         print(f"  Run '{recommended_update_command()}' to install.")
 

@@ -4,10 +4,10 @@ import pytest
 
 @pytest.fixture
 def native_catalog(monkeypatch):
-    from youtab_agent_cli import auth, models
+    from youtab_agent_cli import profile_inference, models
 
     monkeypatch.setenv("YOUTAB_AGENT_DESKTOP", "1")
-    monkeypatch.setattr(auth, "get_local_inference_token_state", lambda: {"synthetic": True})
+    monkeypatch.setattr(profile_inference, "get_local_inference_token_state", lambda: {"synthetic": True})
     monkeypatch.setattr(models, "get_preferred_silent_default_model", lambda provider: "deepseek-chat")
 
     def forbidden_portal_call(*args, **kwargs):
@@ -64,11 +64,11 @@ def test_native_catalog_failure_does_not_use_portal_fallback(monkeypatch, native
 
 
 def test_hosted_portal_keeps_tier_recommendation_path(monkeypatch):
-    from youtab_agent_cli import auth, models
+    from youtab_agent_cli import auth, models, profile_inference
     from youtab_agent_cli.web_server import get_recommended_default_model
 
     monkeypatch.delenv("YOUTAB_AGENT_DESKTOP", raising=False)
-    monkeypatch.setattr(auth, "get_local_inference_token_state", lambda: None)
+    monkeypatch.setattr(profile_inference, "get_local_inference_token_state", lambda: None)
     monkeypatch.setattr(auth, "get_provider_auth_state", lambda provider: {})
     monkeypatch.setattr(models, "get_curated_youtab_model_ids", lambda: ["hosted/free-model"])
     monkeypatch.setattr(models, "get_pricing_for_provider", lambda provider: {})

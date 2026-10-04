@@ -67,8 +67,8 @@ class TestProviderModelIdsBedrock:
 
         monkeypatch.setenv("AWS_REGION", "eu-central-1")
 
-        with patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
-             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
+        with patch("agent.bedrock_catalog.discover_bedrock_models", side_effect=_mock_discover), \
+             patch("agent.bedrock_catalog.resolve_bedrock_region", return_value="eu-central-1"):
             result = provider_model_ids("bedrock")
 
         assert "eu.anthropic.claude-sonnet-4-6-20250514-v1:0" in result
@@ -79,10 +79,10 @@ class TestProviderModelIdsBedrock:
         """Different regions produce different model ID prefixes (eu.* vs us.*)."""
         from youtab_agent_cli.models import provider_model_ids
 
-        with patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover):
-            with patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
+        with patch("agent.bedrock_catalog.discover_bedrock_models", side_effect=_mock_discover):
+            with patch("agent.bedrock_catalog.resolve_bedrock_region", return_value="eu-central-1"):
                 eu_result = provider_model_ids("bedrock")
-            with patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
+            with patch("agent.bedrock_catalog.resolve_bedrock_region", return_value="us-east-1"):
                 us_result = provider_model_ids("bedrock")
 
         assert all(m.startswith("eu.") for m in eu_result)
@@ -162,7 +162,7 @@ class TestBedrockRegionRouting:
         mock_session.get_config_variable.return_value = "eu-central-1"
 
         with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
-             patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
+             patch("agent.bedrock_catalog.discover_bedrock_models", side_effect=_mock_discover), \
              _mock_botocore_session(return_value=mock_session):
             providers = list_authenticated_providers(current_provider="bedrock")
 

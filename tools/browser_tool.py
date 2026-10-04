@@ -907,50 +907,15 @@ _cached_auto_local_for_private_urls: bool = True
 
 
 def _get_browser_engine() -> str:
-    """Return the configured browser engine (``auto``, ``lightpanda``, or ``chrome``).
-
-    Reads ``config["browser"]["engine"]`` once and caches the result.
-    Falls back to the ``AGENT_BROWSER_ENGINE`` env var, then ``auto``.
-
-    ``auto`` means: don't pass ``--engine`` at all (agent-browser defaults to
-    Chrome).  ``lightpanda`` or ``chrome`` are forwarded as
-    ``--engine <value>`` to agent-browser v0.25.3+.
-
-    Lightpanda is 1.3-5.8x faster on navigation but has no graphical
-    renderer (no screenshots).
-    """
+    """Resolve the shared engine policy once per runtime cache lifetime."""
     global _cached_browser_engine, _browser_engine_resolved
     if _browser_engine_resolved:
         return _cached_browser_engine
+    from youtab_agent_cli.config import read_raw_config
+    from tools.local_capabilities import browser_engine
 
     _browser_engine_resolved = True
-    _cached_browser_engine = "auto"  # safe default
-
-    # Config file takes priority
-    try:
-        from youtab_agent_cli.config import read_raw_config
-        cfg = read_raw_config()
-        val = cfg.get("browser", {}).get("engine")
-        if val and str(val).strip():
-            _cached_browser_engine = str(val).strip().lower()
-    except Exception as e:
-        logger.debug("Could not read browser.engine from config: %s", e)
-
-    # Fall back to env var (only if config didn't set a value)
-    if _cached_browser_engine == "auto":
-        env_val = os.environ.get("AGENT_BROWSER_ENGINE", "").strip().lower()
-        if env_val:
-            _cached_browser_engine = env_val
-
-    # Validate: agent-browser only accepts "chrome" and "lightpanda".
-    _VALID_ENGINES = {"auto", "lightpanda", "chrome"}
-    if _cached_browser_engine not in _VALID_ENGINES:
-        logger.warning(
-            "Unknown browser engine %r (valid: %s), falling back to 'auto'",
-            _cached_browser_engine, ", ".join(sorted(_VALID_ENGINES)),
-        )
-        _cached_browser_engine = "auto"
-
+    _cached_browser_engine = browser_engine(read_raw_config)
     return _cached_browser_engine
 
 
@@ -4629,93 +4594,20 @@ _cached_chromium_installed: Optional[bool] = None
 
 
 def _chromium_search_roots() -> List[str]:
-    """Directories to scan for a Chromium / headless-shell build.
+    """Compatibility seam for the shared read-only browser cache search."""
+    from tools.local_capabilities import chromium_search_roots
 
-    Order mirrors what agent-browser and Playwright actually probe:
-
-    1. ``PLAYWRIGHT_BROWSERS_PATH`` when set (Docker image sets this to
-       ``/opt/youtab/.playwright``).
-    2. ``~/.cache/ms-playwright`` — Playwright's default on Linux/macOS.
-    3. ``~/Library/Caches/ms-playwright`` — Playwright's default on macOS.
-    4. ``%USERPROFILE%\\AppData\\Local\\ms-playwright`` — Playwright's default
-       on Windows.
-    """
-    roots: List[str] = []
-    env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
-    if env_path and env_path != "0":
-        roots.append(env_path)
-    home = os.path.expanduser("~")
-    roots.append(os.path.join(home, ".cache", "ms-playwright"))
-    if sys.platform == "darwin":
-        roots.append(os.path.join(home, "Library", "Caches", "ms-playwright"))
-    if sys.platform == "win32":
-        local = os.environ.get("LOCALAPPDATA") or os.path.join(
-            home, "AppData", "Local"
-        )
-        roots.append(os.path.join(local, "ms-playwright"))
-    return roots
+    return chromium_search_roots()
 
 
 def _chromium_installed() -> bool:
-    """Return True when a usable Chromium (or headless-shell) build is on disk.
-
-    Checks, in order:
-
-    1. ``AGENT_BROWSER_EXECUTABLE_PATH`` env var — the official way to point
-       agent-browser at a pre-installed Chrome/Chromium.
-    2. System Chrome/Chromium in PATH (``google-chrome``, ``chromium``,
-       ``chromium-browser``, ``chrome``).
-    3. Playwright's browser cache (current logic) — directories containing
-       ``chromium-*`` or ``chromium_headless_shell-*``.
-
-    agent-browser (0.26+) downloads Playwright's chromium / headless-shell
-    builds into ``PLAYWRIGHT_BROWSERS_PATH`` and won't start without at least
-    one of the three above being present.  Without a browser binary the CLI
-    hangs on first use until the command timeout fires (often ~30s).  Guarding
-    the tool behind this check prevents advertising a capability that will
-    fail at runtime.
-    """
+    """Cache the shared disk probe; retained for runtime reset and patch seams."""
     global _cached_chromium_installed
-    if _cached_chromium_installed is not None:
-        return _cached_chromium_installed
+    if _cached_chromium_installed is None:
+        from tools.local_capabilities import chromium_installed
 
-    # 1. AGENT_BROWSER_EXECUTABLE_PATH — explicit user-configured browser
-    ab_path = os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH", "").strip()
-    if ab_path:
-        if os.path.isfile(ab_path) or shutil.which(ab_path):
-            _cached_chromium_installed = True
-            return True
-
-    # 2. System Chrome/Chromium in PATH (common names)
-    system_chrome = (
-        shutil.which("google-chrome")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-        or shutil.which("chrome")
-    )
-    if system_chrome:
-        _cached_chromium_installed = True
-        return True
-
-    # 3. Playwright browser cache (legacy — chromium-* / chromium_headless_shell-* dirs)
-    for root in _chromium_search_roots():
-        if not root or not os.path.isdir(root):
-            continue
-        try:
-            entries = os.listdir(root)
-        except OSError:
-            continue
-        # Playwright names them ``chromium-<build>`` and
-        # ``chromium_headless_shell-<build>``; agent-browser accepts either.
-        for entry in entries:
-            if entry.startswith("chromium-") or entry.startswith(
-                "chromium_headless_shell-"
-            ):
-                _cached_chromium_installed = True
-                return True
-
-    _cached_chromium_installed = False
-    return False
+        _cached_chromium_installed = chromium_installed(search_roots=_chromium_search_roots)
+    return _cached_chromium_installed
 
 
 # One-shot per process: a 170MB download that fails (or is slow) must not be

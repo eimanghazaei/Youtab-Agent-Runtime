@@ -53,16 +53,25 @@ from youtab_constants import OPENROUTER_BASE_URL, secure_parent_dir
 from agent.credential_persistence import sanitize_borrowed_credential_payload
 from utils import atomic_replace, atomic_yaml_write, env_float, is_truthy_value
 
-logger = logging.getLogger(__name__)
+from youtab_agent_cli.auth_errors import AuthError
+from youtab_agent_cli.auth_storage import _auth_file_path, _auth_lock_holder_for, _file_lock, read_auth_document
+from youtab_agent_cli.profile_inference import (
+    _parse_iso_timestamp,
+    _is_expiring,
+    _coerce_ttl_seconds,
+    _optional_base_url,
+    _youtab_portal_env_override,
+    _decode_jwt_claims,
+    _youtab_invoke_jwt_status,
+    _agent_key_is_usable,
+    inference_token_safety_seconds,
+    _is_profile_inference_token,
+    profile_inference_base_url,
+    _profile_inference_store_key,
+    profile_inference_state,
+)
 
-try:
-    import fcntl
-except Exception:
-    fcntl = None
-try:
-    import msvcrt
-except Exception:
-    msvcrt = None
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Constants
@@ -776,21 +785,6 @@ def _normalize_lmstudio_runtime_base_url(base_url: str) -> str:
 CODEX_RATE_LIMITED_CODE = "codex_rate_limited"
 
 
-class AuthError(RuntimeError):
-    """Structured auth error with UX mapping hints."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        provider: str = "",
-        code: Optional[str] = None,
-        relogin_required: bool = False,
-    ) -> None:
-        super().__init__(message)
-        self.provider = provider
-        self.code = code
-        self.relogin_required = relogin_required
 
 
 def is_rate_limited_auth_error(error: Exception) -> bool:
@@ -902,26 +896,6 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
 # Auth Store — persistence layer for ~/.youtab-agent-runtime/auth.json
 # =============================================================================
 
-def _auth_file_path() -> Path:
-    path = get_youtab_home() / "auth.json"
-    # Seat belt: if pytest is running and YOUTAB_AGENT_HOME resolves to the real
-    # user's auth store, refuse rather than silently corrupt it. This catches
-    # tests that forgot to monkeypatch YOUTAB_AGENT_HOME, tests invoked without the
-    # hermetic conftest, or sandbox escapes via threads/subprocesses. In
-    # production (no PYTEST_CURRENT_TEST) this is a single dict lookup.
-    if os.environ.get("PYTEST_CURRENT_TEST"):
-        real_home_auth = (Path.home() / ".youtab-agent-runtime" / "auth.json").resolve(strict=False)
-        try:
-            resolved = path.resolve(strict=False)
-        except Exception:
-            resolved = path
-        if resolved == real_home_auth:
-            raise RuntimeError(
-                f"Refusing to touch real user auth store during test run: {path}. "
-                "Set YOUTAB_AGENT_HOME to a tmp_path in your test fixture, or run "
-                "via scripts/run_tests.sh for hermetic CI-parity env."
-            )
-    return path
 
 
 def _global_auth_file_path() -> Optional[Path]:
@@ -995,8 +969,6 @@ def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
 
-_auth_target_lock_holders: Dict[str, threading.local] = {}
-_auth_target_lock_holders_guard = threading.Lock()
 
 
 def _same_path(left: Path, right: Path) -> bool:
@@ -1006,86 +978,8 @@ def _same_path(left: Path, right: Path) -> bool:
         return left == right
 
 
-def _auth_lock_holder_for(target_path: Path) -> threading.local:
-    """Return a reentrancy tracker keyed to one canonical auth-store path."""
-    try:
-        key = str(target_path.resolve(strict=False))
-    except Exception:
-        key = str(target_path)
-    with _auth_target_lock_holders_guard:
-        return _auth_target_lock_holders.setdefault(key, threading.local())
 
 
-@contextmanager
-def _file_lock(
-    lock_path: Path,
-    holder: threading.local,
-    timeout_seconds: float,
-    timeout_message: str,
-):
-    """Cross-process advisory flock helper.
-
-    Reentrant per-thread via ``holder.depth``. Falls back to a depth-only
-    guard when neither ``fcntl`` nor ``msvcrt`` is available (rare).
-    Callers supply their own ``threading.local`` so independent locks
-    (e.g. profile auth.json vs shared Youtab store) don't share reentrancy
-    state — that would let one lock's reentrant acquisition silently skip
-    the other's kernel-level flock.
-    """
-    if getattr(holder, "depth", 0) > 0:
-        holder.depth += 1
-        try:
-            yield
-        finally:
-            holder.depth -= 1
-        return
-
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-
-    if fcntl is None and msvcrt is None:
-        holder.depth = 1
-        try:
-            yield
-        finally:
-            holder.depth = 0
-        return
-
-    # On Windows, msvcrt.locking needs the file to have content and the
-    # file pointer at position 0. Ensure the lock file has at least 1 byte.
-    if msvcrt and (not lock_path.exists() or lock_path.stat().st_size == 0):
-        lock_path.write_text(" ", encoding="utf-8")
-
-    with lock_path.open("r+" if msvcrt else "a+", encoding="utf-8") as lock_file:
-        deadline = time.monotonic() + max(1.0, timeout_seconds)
-        while True:
-            try:
-                if fcntl:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                else:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
-                break
-            except (BlockingIOError, OSError, PermissionError):
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(timeout_message)
-                time.sleep(0.05)
-
-        holder.depth = 1
-        try:
-            yield
-        finally:
-            holder.depth = 0
-            if fcntl:
-                try:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-                except (OSError, IOError):
-                    pass
-            elif msvcrt:
-                try:
-                    lock_file.seek(0)
-                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
-                    pass
 
 
 @contextmanager
@@ -1122,21 +1016,7 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     if not auth_file.exists():
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
-    try:
-        raw = json.loads(auth_file.read_text(encoding="utf-8"))
-    except Exception as exc:
-        corrupt_path = auth_file.with_suffix(".json.corrupt")
-        try:
-            import shutil
-            shutil.copy2(auth_file, corrupt_path)
-        except Exception:
-            pass
-        logger.warning(
-            "auth: failed to parse %s (%s) — starting with empty store. "
-            "Corrupt file preserved at %s",
-            auth_file, exc, corrupt_path,
-        )
-        return {"version": AUTH_STORE_VERSION, "providers": {}}
+    raw = read_auth_document(auth_file)
 
     if isinstance(raw, dict) and (
         isinstance(raw.get("providers"), dict)
@@ -2061,7 +1941,7 @@ def resolve_provider(
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.
     try:
-        from agent.bedrock_adapter import has_aws_credentials
+        from agent.aws_auth import has_aws_credentials
         if has_aws_credentials():
             return "bedrock"
     except ImportError:
@@ -2079,43 +1959,12 @@ def resolve_provider(
 # Timestamp / TTL helpers
 # =============================================================================
 
-def _parse_iso_timestamp(value: Any) -> Optional[float]:
-    if not isinstance(value, str) or not value:
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except Exception:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.timestamp()
 
 
-def _is_expiring(expires_at_iso: Any, skew_seconds: int) -> bool:
-    expires_epoch = _parse_iso_timestamp(expires_at_iso)
-    if expires_epoch is None:
-        return True
-    return expires_epoch <= (time.time() + skew_seconds)
 
 
-def _coerce_ttl_seconds(expires_in: Any) -> int:
-    try:
-        ttl = int(expires_in)
-    except Exception:
-        ttl = 0
-    return max(0, ttl)
 
 
-def _optional_base_url(value: Any) -> Optional[str]:
-    if not isinstance(value, str):
-        return None
-    cleaned = value.strip().rstrip("/")
-    return cleaned if cleaned else None
 
 
 _YOUTAB_STALE_PORTAL_HOSTS: FrozenSet[str] = frozenset({
@@ -2221,102 +2070,12 @@ def _youtab_inference_env_override() -> Optional[str]:
     return _optional_base_url(os.getenv("YOUTAB_INFERENCE_BASE_URL"))
 
 
-def _youtab_portal_env_override() -> Optional[str]:
-    """Return the user/deployment-set Portal base URL override, if any.
-
-    Mirrors ``_youtab_inference_env_override()``: ``YOUTAB_AGENT_PORTAL_BASE_URL`` /
-    ``YOUTAB_PORTAL_BASE_URL`` are the documented dev/staging escape hatch for
-    pointing Youtab at a non-production Youtab Portal (e.g. a hosted agent
-    provisioned on youtab-account-service's `staging` environment, which stamps
-    ``YOUTAB_AGENT_PORTAL_BASE_URL=https://portal.staging-youtab.io`` into
-    the container env). The env source is trusted (the OS user/deployment
-    set it themselves), so — like the inference override — it must NOT be
-    gated by ``_YOUTAB_PORTAL_ALLOWED_HOSTS``: that allowlist exists to reject
-    an untrusted NETWORK-provided value (a poisoned portal_base_url
-    persisted to auth.json), not a value the operator explicitly configured.
-
-    Returns a trailing-slash-stripped non-empty string, or ``None`` when
-    neither env var is set/blank.
-    """
-    value = _optional_base_url(os.getenv("YOUTAB_AGENT_PORTAL_BASE_URL")) or _optional_base_url(
-        os.getenv("YOUTAB_PORTAL_BASE_URL")
-    )
-    if value is None:
-        return None
-    try:
-        parsed = urlparse(value)
-        _ = parsed.port
-    except ValueError as exc:
-        raise AuthError("Invalid configured Youtab Portal URL.", provider="youtab") from exc
-    if (
-        parsed.scheme not in {"http", "https"}
-        or not parsed.hostname
-        or (parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1"})
-        or parsed.username
-        or parsed.password
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise AuthError("Invalid configured Youtab Portal URL.", provider="youtab")
-    return value
 
 
-def _decode_jwt_claims(token: Any) -> Dict[str, Any]:
-    if not isinstance(token, str) or token.count(".") != 2:
-        return {}
-    payload = token.split(".")[1]
-    payload += "=" * ((4 - len(payload) % 4) % 4)
-    try:
-        raw = base64.urlsafe_b64decode(payload.encode("utf-8"))
-        claims = json.loads(raw.decode("utf-8"))
-    except Exception:
-        return {}
-    return claims if isinstance(claims, dict) else {}
 
 
-def _scope_values(raw_scope: Any) -> set[str]:
-    # OAuth token responses normally return a space-separated string. Keep
-    # collection support for JWT ``scp`` claims and older stored test fixtures.
-    scopes: set[str] = set()
-    if isinstance(raw_scope, str):
-        for part in raw_scope.replace(",", " ").split():
-            cleaned = part.strip()
-            if cleaned:
-                scopes.add(cleaned)
-    elif isinstance(raw_scope, (list, tuple, set, frozenset)):
-        for item in raw_scope:
-            if isinstance(item, str):
-                scopes.update(_scope_values(item))
-    return scopes
 
 
-def _youtab_invoke_jwt_status(
-    token: Any,
-    *,
-    scope: Any = None,
-    expires_at: Any = None,
-    min_ttl_seconds: int = YOUTAB_INVOKE_JWT_MIN_TTL_SECONDS,
-) -> Optional[str]:
-    """Return None when the token can be used for inference, else a reason."""
-    claims = _decode_jwt_claims(token)
-    if not claims:
-        return "access_token_not_jwt"
-    scopes = (
-        _scope_values(scope)
-        | _scope_values(claims.get("scope"))
-        | _scope_values(claims.get("scp"))
-    )
-    if YOUTAB_INFERENCE_INVOKE_SCOPE not in scopes:
-        return "missing_inference_invoke_scope"
-    exp = claims.get("exp")
-    skew = max(0, int(min_ttl_seconds))
-    if isinstance(exp, (int, float)):
-        if float(exp) <= (time.time() + skew):
-            return "invoke_jwt_expiring"
-        return None
-    if _is_expiring(expires_at, skew):
-        return "invoke_jwt_expiry_unknown_or_expiring"
-    return None
 
 
 def _youtab_invoke_jwt_is_usable(
@@ -5636,147 +5395,25 @@ def _refresh_access_token(
     raise AuthError(description, provider="youtab", code=code, relogin_required=relogin)
 
 
-def fetch_youtab_models(
-    *,
-    inference_base_url: str,
-    api_key: str,
-    timeout_seconds: float = 15.0,
-    verify: bool | str = True,
-    exact: bool = False,
-) -> List[str]:
-    """Fetch available model IDs from the Youtab inference API."""
-    timeout = httpx.Timeout(timeout_seconds)
-    with httpx.Client(timeout=timeout, headers={"Accept": "application/json"}, verify=verify) as client:
-        response = client.get(
-            f"{inference_base_url.rstrip('/')}/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
-
-    if response.status_code != 200:
-        description = f"/models request failed with status {response.status_code}"
-        try:
-            err = response.json()
-            description = str(err.get("error_description") or err.get("error") or description)
-        except Exception as e:
-            logger.debug("Could not parse error response JSON: %s", e)
-        # A rejected request is authoritative: callers must not substitute a
-        # stale admitted-model catalog for revoked or unauthorized access.
-        rejected = 400 <= response.status_code < 500 and response.status_code not in (408, 429)
-        code = "models_fetch_rejected" if rejected else "models_fetch_failed"
-        raise AuthError(description, provider="youtab", code=code)
-
-    payload = response.json()
-    data = payload.get("data")
-    if not isinstance(data, list):
-        return []
-
-    model_ids: List[str] = []
-    for item in data:
-        if not isinstance(item, dict):
-            continue
-        model_id = item.get("id")
-        if isinstance(model_id, str) and model_id.strip():
-            mid = model_id.strip()
-            # Skip Youtab models — they're not reliable for agentic tool-calling
-            if not exact and "youtab" in mid.lower():
-                continue
-            model_ids.append(mid)
-
-    # Sort: prefer opus > pro > haiku/flash > sonnet (sonnet is cheap/fast,
-    # users who want the best model should see opus first).
-    def _model_priority(mid: str) -> tuple:
-        low = mid.lower()
-        if "opus" in low:
-            return (0, mid)
-        if "pro" in low and "sonnet" not in low:
-            return (1, mid)
-        if "sonnet" in low:
-            return (3, mid)
-        return (2, mid)
-
-    model_ids.sort(key=_model_priority)
-    return list(dict.fromkeys(model_ids))
+from youtab_agent_cli.youtab_model_catalog import fetch_youtab_models as fetch_youtab_models
 
 
-def _agent_key_is_usable(state: Dict[str, Any], min_ttl_seconds: int) -> bool:
-    key = state.get("agent_key")
-    if not isinstance(key, str) or not key.strip():
-        return False
-    return _youtab_invoke_jwt_is_usable(
-        key,
-        scope=state.get("scope"),
-        expires_at=state.get("agent_key_expires_at"),
-        min_ttl_seconds=max(0, int(min_ttl_seconds)),
-    )
 
 
-def inference_token_safety_seconds(state: Dict[str, Any]) -> int:
-    """Use a short clock margin bounded by this credential's own lifetime."""
-    lifetime = _coerce_ttl_seconds(state.get("agent_key_expires_in"))
-    if not lifetime:
-        obtained = _parse_iso_timestamp(state.get("agent_key_obtained_at"))
-        expires = _parse_iso_timestamp(state.get("agent_key_expires_at"))
-        if obtained is not None and expires is not None:
-            lifetime = max(0, int(expires - obtained))
-    if not lifetime:
-        claims = _decode_jwt_claims(state.get("agent_key"))
-        issued, expires = claims.get("iat"), claims.get("exp")
-        if isinstance(issued, (int, float)) and isinstance(expires, (int, float)):
-            lifetime = max(0, int(expires - issued))
-    if not lifetime:
-        return 0
-    return min(max(1, lifetime // 10), 30, max(0, lifetime - 1))
 
 
-def _is_profile_inference_token(token: str) -> bool:
-    """Check the dedicated resource profile before exposing a stored bearer."""
-    claims = _decode_jwt_claims(token)
-    issuer = claims.get("iss")
-    return bool(
-        claims.get("type") == "inference_access"
-        and isinstance(issuer, str)
-        and issuer.startswith("https://")
-        and claims.get("aud") == f"{issuer.rstrip('/')}/v1/inference"
-        and _youtab_invoke_jwt_status(token, min_ttl_seconds=0) is None
-    )
 
 
-def profile_inference_base_url(state: Dict[str, Any]) -> str:
-    """Bind a profile inference bearer to the configured native Gateway."""
-    portal = _youtab_portal_env_override() or DEFAULT_YOUTAB_PORTAL_URL
-    issuer = _decode_jwt_claims(state.get("agent_key")).get("iss")
-    if issuer != portal:
-        raise AuthError(
-            "Profile inference credential does not match the configured Gateway.",
-            provider="youtab",
-            code="profile_inference_authority_mismatch",
-        )
-    return f"{portal}/v1"
 
 
-def _profile_inference_store_key() -> str:
-    # Both root and named profiles may already hold legacy CLI Youtab auth.
-    return "youtab_inference"
 
 
 def get_local_inference_token_state() -> Optional[Dict[str, Any]]:
     """Read only the active profile's inference entry, never the global store."""
     path = _auth_file_path()
     with _auth_store_lock(target_path=path):
-        providers = _load_auth_store(path).get("providers")
-        state = providers.get(_profile_inference_store_key()) if isinstance(providers, dict) else None
-        if (
-            isinstance(state, dict)
-            and "agent_key" in state
-            and not state.get("access_token")
-            and not state.get("refresh_token")
-        ):
-            local = dict(state)
-            if local.get("agent_key") and not _is_profile_inference_token(local["agent_key"]):
-                # Keep the entry as a shadow so no global credential appears.
-                local["agent_key"] = ""
-            return local
-    return None
+        return profile_inference_state(_load_auth_store(path))
+
 
 
 def persist_profile_inference_token(token: Optional[str]) -> None:
@@ -7040,7 +6677,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
     if pconfig and pconfig.auth_type == "aws_sdk":
         try:
-            from agent.bedrock_adapter import has_aws_credentials
+            from agent.aws_auth import has_aws_credentials
             return {"logged_in": has_aws_credentials(), "provider": target}
         except ImportError:
             return {"logged_in": False, "provider": target, "error": "boto3 not installed"}
@@ -7426,7 +7063,7 @@ def _prompt_model_selection(
     If *unavailable_models* is provided, those models are shown grayed out
     and unselectable, with an upgrade link to *portal_url*.
     """
-    from youtab_agent_cli.models import (
+    from youtab_agent_cli.model_pricing import (
         _format_price_per_mtok,
         compute_sale_discount,
     )
@@ -8819,8 +8456,8 @@ def _login_youtab(args, pconfig: ProviderConfig) -> None:
                     code="invalid_token",
                 )
 
-            from youtab_agent_cli.models import (
-                get_curated_youtab_model_ids, get_pricing_for_provider,
+            from youtab_agent_cli.youtab_picker_catalog import (
+                get_curated_youtab_model_ids, get_youtab_pricing,
                 check_youtab_free_tier, partition_youtab_models_by_tier,
                 union_with_portal_free_recommendations,
                 union_with_portal_paid_recommendations,
@@ -8831,10 +8468,15 @@ def _login_youtab(args, pconfig: ProviderConfig) -> None:
             unavailable_models: list = []
             unavailable_message = ""
             if model_ids:
-                pricing = get_pricing_for_provider("youtab")
+                pricing = get_youtab_pricing(
+                    resolve_youtab_runtime_credentials, _youtab_inference_env_override
+                )
                 # Force fresh account data for model selection so recent credit
                 # purchases are reflected immediately.
-                free_tier = check_youtab_free_tier(force_fresh=True)
+                from youtab_agent_cli.youtab_account import get_youtab_portal_account_info
+                free_tier = check_youtab_free_tier(
+                    get_youtab_portal_account_info, force_fresh=True
+                )
                 _portal_for_recs = auth_state.get("portal_base_url", "")
                 if free_tier:
                     try:

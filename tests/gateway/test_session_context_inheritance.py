@@ -30,7 +30,7 @@ from contextvars import copy_context
 
 import pytest
 
-import gateway.session_context as sc
+import agent.session_context as sc
 from gateway.session_context import (
     _SESSION_ASYNC_DELIVERY,
     _UNSET,

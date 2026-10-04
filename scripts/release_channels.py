@@ -10,9 +10,60 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import tempfile
 
 CHANNELS = frozenset({"pilot", "stable"})
+
+
+def set_release_access(path: Path, root: Path, *, directory: bool = False,
+                       web_uid: int | None = None) -> None:
+    """Keep private owner modes; optionally grant one web UID read/traversal ACL."""
+    if path.is_symlink():
+        raise ValueError("unsafe release access target")
+    if web_uid is not None:
+        if type(web_uid) is not int or web_uid <= 0 or os.name != "posix" or os.geteuid() != 0:
+            raise ValueError("named web ACL requires a non-root UID and root publisher")
+        os.chown(path, 0, 0)
+    if directory:
+        os.chmod(path, 0o700)
+    else:
+        os.chmod(path, 0o600)
+    if web_uid is not None:
+        subprocess.run(["setfacl", "--remove-all", "--", str(path)], check=True, capture_output=True, timeout=10)
+        if directory:
+            subprocess.run(["setfacl", "--remove-default", "--", str(path)], check=True, capture_output=True, timeout=10)
+            acl = f"u::rwx,u:{web_uid}:r-x,g::---,m::r-x,o::---"
+        else:
+            acl = f"u::rw-,u:{web_uid}:r--,g::---,m::r--,o::---"
+        subprocess.run(["setfacl", "--no-mask", "--set", acl, "--", str(path)], check=True, capture_output=True, timeout=10)
+    # Flush metadata after chmod/ACL, before callers rename published bytes.
+    if os.name != "nt" or not directory:
+        flags = (os.O_RDONLY if directory else os.O_RDWR) | getattr(os, "O_NOFOLLOW", 0)
+        if directory:
+            flags |= os.O_DIRECTORY
+        descriptor = os.open(path, flags)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def preflight_release_access(root: Path, web_uid: int) -> None:
+    """Exercise named file/directory ACLs on the publication filesystem."""
+    if type(web_uid) is not int or web_uid <= 0 or os.name != "posix" or os.geteuid() != 0:
+        raise ValueError("named web ACL requires a non-root UID and root publisher")
+    if root.is_symlink() or not root.is_dir() or not shutil.which("setfacl"):
+        raise ValueError("publication filesystem requires setfacl support")
+    probe = Path(tempfile.mkdtemp(prefix=".acl-preflight-", dir=root))
+    try:
+        member = probe / "probe"
+        member.write_bytes(b"synthetic ACL capability probe")
+        set_release_access(member, root, web_uid=web_uid)
+        set_release_access(probe, root, directory=True, web_uid=web_uid)
+    finally:
+        shutil.rmtree(probe)
 
 
 def digest(path: Path) -> str:
@@ -71,7 +122,8 @@ def verify_release(root: Path, manifest: dict, base: str) -> None:
 
 
 def promote(root: Path, channel: str, source_sha: str, base: str,
-            expected_pointer_sha256: str | None, qualification: dict | None = None) -> str:
+            expected_pointer_sha256: str | None, qualification: dict | None = None,
+            *, web_uid: int | None = None) -> str:
     """Atomically promote verified bytes; None means the pointer must be absent.
 
     Owner-reviewed qualification is an explicit input, not inferred from green CI.
@@ -96,6 +148,8 @@ def promote(root: Path, channel: str, source_sha: str, base: str,
     if channels.is_symlink() or directory.is_symlink():
         raise ValueError("unsafe channel directory")
     directory.mkdir(parents=True, exist_ok=True)
+    set_release_access(channels, root, directory=True, web_uid=web_uid)
+    set_release_access(directory, root, directory=True, web_uid=web_uid)
     pointer = directory / "latest.json"
     if pointer.is_symlink():
         raise ValueError("unsafe channel pointer")
@@ -116,7 +170,7 @@ def promote(root: Path, channel: str, source_sha: str, base: str,
             writer.write(payload)
             writer.flush()
             os.fsync(writer.fileno())
-        os.chmod(temporary, 0o644)
+        set_release_access(temporary, root, web_uid=web_uid)
         # Detect a caller that failed to hold the required publication lock.
         if pointer.exists() != exists or (exists and digest(pointer) != expected_pointer_sha256):
             raise ValueError("concurrent channel change")

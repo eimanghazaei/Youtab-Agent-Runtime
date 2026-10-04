@@ -49,6 +49,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Union
 from youtab_constants import get_youtab_home
 from utils import env_var_enabled, fast_safe_load
 from youtab_agent_cli.config import cfg_get
+from youtab_agent_cli.auxiliary_catalog import AUX_TASKS as _BUILTIN_AUX_TASKS
 from youtab_agent_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
 
 
@@ -1125,9 +1126,6 @@ class PluginContext:
                 f"Plugin '{self.manifest.name}' auxiliary task key {key!r} "
                 f"must contain only alphanumeric characters and underscores"
             )
-
-        # Lazy import to avoid circular: youtab_agent_cli.main imports plugins indirectly
-        from youtab_agent_cli.main import _AUX_TASKS as _BUILTIN_AUX_TASKS
 
         builtin_keys = {k for k, _name, _desc in _BUILTIN_AUX_TASKS}
         if key in builtin_keys:
