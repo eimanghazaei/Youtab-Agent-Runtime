@@ -1,8 +1,10 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { EnvVarInfo, OAuthProvider } from '@/types/youtab'
+import type * as YoutabApi from '@/youtab'
 
 const listOAuthProviders = vi.fn()
 const disconnectOAuthProvider = vi.fn()
@@ -11,7 +13,8 @@ const startManualProviderOAuth = vi.fn()
 const startManualLocalEndpoint = vi.fn()
 const onboarding = atom({ manual: false })
 
-vi.mock('@/youtab', () => ({
+vi.mock('@/youtab', async importOriginal => ({
+  ...(await importOriginal<typeof YoutabApi>()),
   disconnectOAuthProvider: (providerId: string) => disconnectOAuthProvider(providerId),
   getEnvVars: () => getEnvVars(),
   listOAuthProviders: () => listOAuthProviders()
@@ -77,7 +80,7 @@ async function renderProvidersSettings() {
   const { ProvidersSettings } = await import('./providers-settings')
   let result: ReturnType<typeof render>
   await act(async () => {
-    result = render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="accounts" />)
+    result = render(<MemoryRouter><ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="accounts" /></MemoryRouter>)
   })
 
   return result!

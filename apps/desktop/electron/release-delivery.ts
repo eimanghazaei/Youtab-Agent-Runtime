@@ -147,19 +147,31 @@ export async function stageSetup(release: SetupRelease, cacheDirectory: string, 
   let created = false
 
   try {
-    const handle = await fs.open(staged, 'wx', 0o600)
+    const handle = await fs.open(staged, 'wx+', 0o600)
     created = true
 
     try {
       await handle.writeFile(bytes)
       await handle.sync()
+      const persisted = Buffer.alloc(bytes.byteLength)
+      let length = 0
+
+      while (length < persisted.length) {
+        const { bytesRead } = await handle.read(persisted, length, persisted.length - length, length)
+
+        if (!bytesRead) {throw new Error('STAGED_SETUP_INTEGRITY_FAILURE')}
+        length += bytesRead
+      }
+
+      const opened = await handle.stat()
+      const current = await fs.lstat(staged)
+
+      if (!current.isFile() || current.isSymbolicLink() || current.dev !== opened.dev || current.ino !== opened.ino
+        || opened.size !== release.size || current.size !== release.size
+        || createHash('sha256').update(persisted).digest('hex') !== release.sha256) {throw new Error('STAGED_SETUP_INTEGRITY_FAILURE')}
     } finally {
       await handle.close()
     }
-
-    const persisted = await fs.readFile(staged)
-
-    if (createHash('sha256').update(persisted).digest('hex') !== release.sha256) {throw new Error('STAGED_SETUP_INTEGRITY_FAILURE')}
 
     return staged
   } catch (error) {

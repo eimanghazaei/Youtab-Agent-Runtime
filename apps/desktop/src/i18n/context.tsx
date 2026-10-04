@@ -1,7 +1,6 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
-import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
-import { getYoutabConfigRecordForProfile, saveYoutabConfigForProfile, type YoutabConfigRecord } from '@/youtab'
+import { getApiRequestProfile, getYoutabConfigRecordForProfile, saveYoutabConfigForProfile, type YoutabConfigRecord } from '@/youtab'
 
 import { TRANSLATIONS } from './catalog'
 import { DEFAULT_LOCALE, localeConfigValue, normalizeLocale } from './languages'
@@ -146,7 +145,7 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
 
   const setLocale = useCallback(
     async (next: Locale, profile?: string, isCurrent?: () => boolean) => {
-      const stillActive = () => (isCurrent?.() ?? true) && (profile === undefined || normalizeProfileKey($activeGatewayProfile.get()) === normalizeProfileKey(profile))
+      const stillActive = () => (isCurrent?.() ?? true) && (profile === undefined || (getApiRequestProfile()?.trim() || 'default') === (profile.trim() || 'default'))
 
       if (!stillActive()) {throw new Error('LANGUAGE_PROFILE_CHANGED')}
       const previousLocale = localeRef.current

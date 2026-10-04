@@ -1,5 +1,5 @@
-import { type CSSProperties } from 'react'
 import { useStore } from '@nanostores/react'
+import { type CSSProperties } from 'react'
 
 import { HackeryButton } from '../components/hackery-button'
 import { $installationKind, $releaseChannel, openLogDir, startInstall, startUpdate } from '../store'
@@ -19,6 +19,7 @@ import { $installationKind, $releaseChannel, openLogDir, startInstall, startUpda
 export default function Welcome() {
   const kind = useStore($installationKind)
   const channel = useStore($releaseChannel)
+
   return (
     <div className="youtab-fade-in flex h-full flex-col items-center justify-center gap-10 px-12 py-10">
       {/* Hero — same recipe the desktop's chat/intro.tsx uses */}
@@ -47,7 +48,7 @@ export default function Welcome() {
       </div>
 
       {kind !== 'unknown' && <label className="flex items-center gap-3 text-sm">Update channel
-        <select aria-label="Update channel" value={channel} onChange={event => $releaseChannel.set(event.target.value === 'pilot' ? 'pilot' : 'stable')}>
+        <select aria-label="Update channel" onChange={event => $releaseChannel.set(event.target.value === 'pilot' ? 'pilot' : 'stable')} value={channel}>
           <option value="stable">Stable</option><option value="pilot">Pilot / Test</option>
         </select>
       </label>}

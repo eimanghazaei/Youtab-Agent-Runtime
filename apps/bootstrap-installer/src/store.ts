@@ -305,6 +305,7 @@ export async function initialize(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 let lastInstallOptions: { branch?: string; migrateLegacy?: boolean } | undefined
+
 export async function startInstall(opts?: { branch?: string; migrateLegacy?: boolean }): Promise<void> {
   lastInstallOptions = opts ?? lastInstallOptions
   const fake = fakeMode()

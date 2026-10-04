@@ -9,6 +9,7 @@ import { accountSyncService, syncSessionIdentity } from './account-sync-service'
 
 const roots: string[] = []
 afterEach(async () => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
 
   for (const root of roots.splice(0)) {
@@ -79,6 +80,25 @@ async function fixture() {
 }
 
 describe('main process account sync service', () => {
+  it('rejects a journal replaced between path validation and descriptor open', async () => {
+    const f = await fixture()
+    await accountSyncService(f.dependencies).consent(true)
+    const originalOpen = fs.open.bind(fs)
+    const decrypt = vi.fn(f.dependencies.decrypt)
+    let swapped = false
+    vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+      if (!swapped && typeof flags === 'number' && String(file).endsWith('.json')) {
+        swapped = true
+        await fs.rename(file, `${file}.original`)
+        await fs.writeFile(file, '{}')
+      }
+
+      return originalOpen(file, flags, mode)
+    })
+    await expect(accountSyncService({ ...f.dependencies, decrypt }).status()).rejects.toThrow('UNSAFE_SYNC_STORE')
+    expect(swapped).toBe(true)
+    expect(decrypt).not.toHaveBeenCalled()
+  })
   it('keeps a compressed conversation attached to its original account identity', async () => {
     const f = await fixture()
     let row = { id: 'original-root', started_at: 100, _lineage_root_id: undefined as string | undefined }

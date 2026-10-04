@@ -31,10 +31,9 @@ import {
 } from 'electron'
 import nodePty from 'node-pty'
 
-import { classifyActiveRuntime } from './active-runtime-state'
-import { accountSyncService, syncSessionIdentity } from './account-sync-service'
 import { joinedTranscript, type SyncJournal } from './account-sync'
-import { channelPreferenceStamp, selectedReleaseChannel, downloadSetup, stageSetup, type ReleaseChannel } from './release-delivery'
+import { accountSyncService, syncSessionIdentity } from './account-sync-service'
+import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
@@ -185,6 +184,7 @@ import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRoutePr
 import { fetchPrimaryProfileSessions } from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
+import { channelPreferenceStamp, downloadSetup, selectedReleaseChannel, stageSetup } from './release-delivery'
 import * as remoteLifecycle from './remote-lifecycle'
 import {
   RemoteLivenessTracker,

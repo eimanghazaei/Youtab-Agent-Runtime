@@ -33,12 +33,12 @@
  */
 
 import { execFileSync, spawn } from 'node:child_process'
-import { channelIndex, type ReleaseChannel, verifiedSetupRelease } from './release-delivery'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import https from 'node:https'
 import path from 'node:path'
 
+import { channelIndex, type ReleaseChannel, verifiedSetupRelease } from './release-delivery'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 const IS_WINDOWS = process.platform === 'win32'

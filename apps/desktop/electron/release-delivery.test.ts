@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import { channelIndex, channelPreferenceStamp, selectedReleaseChannel, stageSetup, verifiedSetupRelease } from './release-delivery'
 
@@ -20,6 +20,31 @@ bytes.writeUInt16LE(2, 0x96)
 bytes.writeUInt16LE(0x20b, 0x98)
 const manifest = { source_sha: sha, release_sequence: 4, platform: 'windows', architecture: 'x64', format: 'zip', setup_source_sha: sha, updater_protocol: 1, setup_url: `${base}/${sha}/Youtab-Setup-${sha}.exe`, setup_sha256: createHash('sha256').update(bytes).digest('hex'), setup_size: bytes.length }
 const latest = { ...manifest, manifest_url: `${base}/${sha}/manifest.json` }
+
+test('staging rejects pathname replacement while verifying the original descriptor', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'youtab-setup-test-'))
+  const originalOpen = fs.open.bind(fs)
+  const spy = vi.spyOn(fs, 'open').mockImplementation(async (file, flags, mode) => {
+    const handle = await originalOpen(file, flags, mode)
+
+    if (flags === 'wx+') {
+      await fs.rename(file, `${file}.original`)
+      await fs.writeFile(file, 'replacement')
+    }
+
+    return handle
+  })
+
+  try {
+    await assert.rejects(stageSetup(verifiedSetupRelease(base, latest, manifest, 3), root, async () => bytes), /STAGED_SETUP_INTEGRITY_FAILURE/)
+    assert.equal((await fs.readdir(root)).filter(name => name.endsWith('.exe')).length, 0)
+  } finally {
+    spy.mockRestore()
+    assert.equal(path.dirname(root), path.resolve(os.tmpdir()))
+    assert.ok(path.basename(root).startsWith('youtab-setup-test-'))
+    await fs.rm(root, { recursive: true, force: true })
+  }
+})
 
 test('Pilot and Stable discover separate pointers for the same immutable Setup', () => {
   assert.notEqual(channelIndex(base, 'pilot'), channelIndex(base, 'stable'))

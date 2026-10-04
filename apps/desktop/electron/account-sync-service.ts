@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
+import { constants } from 'node:fs'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -94,8 +95,29 @@ export function accountSyncService(deps: ServiceDependencies) {
       try {
         const info = await fs.lstat(file)
 
-        if (info.isSymbolicLink() || info.size > 128 * 1024 * 1024) {throw new Error('UNSAFE_SYNC_STORE')}
-        const encrypted = JSON.parse(await fs.readFile(file, 'utf8'))
+        if (!info.isFile() || info.isSymbolicLink() || info.size > 128 * 1024 * 1024) {throw new Error('UNSAFE_SYNC_STORE')}
+        const handle = await fs.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+        let bytes: Buffer
+
+        try {
+          const opened = await handle.stat()
+
+          if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino || opened.size !== info.size) {throw new Error('UNSAFE_SYNC_STORE')}
+          bytes = Buffer.alloc(info.size + 1)
+          let length = 0
+
+          while (length < bytes.length) {
+            const { bytesRead } = await handle.read(bytes, length, bytes.length - length, length)
+
+            if (!bytesRead) {break}
+            length += bytesRead
+          }
+
+          if (length !== info.size) {throw new Error('UNSAFE_SYNC_STORE')}
+          bytes = bytes.subarray(0, length)
+        } finally {await handle.close()}
+
+        const encrypted = JSON.parse(bytes.toString('utf8'))
         const plain = deps.decrypt(encrypted)
 
         if (!plain) {throw new Error('SYNC_STORE_UNREADABLE')}
