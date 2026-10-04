@@ -49,14 +49,18 @@ logger = logging.getLogger(__name__)
 # handles on-demand installation so the Bedrock provider still works in the
 # EKS deployment without baking boto3 into the base image.
 # ---------------------------------------------------------------------------
-def ensure(feature: str, *, prompt: bool = True) -> None:
-    """Compatibility entry point for optional SDK bootstrap."""
-    from tools.lazy_deps import ensure as bootstrap
+def _unavailable_ensure(feature: str, *, prompt: bool = True) -> None:
+    """Report an unavailable installer when the optional bootstrap cannot import."""
+    mode = "interactive" if prompt else "noninteractive"
+    raise ImportError(
+        f"Cannot bootstrap {feature!r} in {mode} mode: "
+        "the lazy dependency installer is unavailable; install boto3 manually"
+    )
 
-    return bootstrap(feature, prompt=prompt)
 
-
+ensure = _unavailable_ensure
 try:
+    from tools.lazy_deps import ensure
     ensure("provider.bedrock", prompt=False)
 except Exception:
     pass  # lazy_deps unavailable or install failed — let downstream imports surface the real error

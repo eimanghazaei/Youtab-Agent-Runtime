@@ -6,6 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from tools import browser_tool as bt
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -13,7 +15,6 @@ import pytest
 
 def _reset_engine_cache():
     """Reset the module-level engine cache so tests start clean."""
-    import tools.browser_tool as bt
     bt._cached_browser_engine = None
 
 
@@ -34,27 +35,24 @@ class TestGetBrowserEngine:
 
     def test_default_is_auto(self):
         """With no config or env var, engine defaults to 'auto'."""
-        from tools.browser_tool import _get_browser_engine
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("AGENT_BROWSER_ENGINE", None)
             with patch("youtab_agent_cli.config.read_raw_config", return_value={}):
-                assert _get_browser_engine() == "auto"
+                assert bt._get_browser_engine() == "auto"
 
     def test_config_lightpanda(self):
         """Config browser.engine = 'lightpanda' is respected."""
-        from tools.browser_tool import _get_browser_engine
         cfg = {"browser": {"engine": "lightpanda"}}
         with patch("youtab_agent_cli.config.read_raw_config", return_value=cfg):
-            assert _get_browser_engine() == "lightpanda"
+            assert bt._get_browser_engine() == "lightpanda"
 
 
     def test_caching(self):
         """Result is cached — second call doesn't re-read config."""
-        from tools.browser_tool import _get_browser_engine
         mock_read = MagicMock(return_value={"browser": {"engine": "lightpanda"}})
         with patch("youtab_agent_cli.config.read_raw_config", mock_read):
-            assert _get_browser_engine() == "lightpanda"
-            assert _get_browser_engine() == "lightpanda"
+            assert bt._get_browser_engine() == "lightpanda"
+            assert bt._get_browser_engine() == "lightpanda"
             mock_read.assert_called_once()
 
 
@@ -66,33 +64,28 @@ class TestShouldInjectEngine:
     """Test whether --engine flag is injected based on mode."""
 
     def test_auto_never_injects(self):
-        from tools.browser_tool import _should_inject_engine
-        assert _should_inject_engine("auto") is False
+        assert bt._should_inject_engine("auto") is False
 
     def test_lightpanda_injects_in_local_mode(self):
-        from tools.browser_tool import _should_inject_engine
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
              patch("tools.browser_tool._get_cdp_override", return_value=""), \
              patch("tools.browser_tool._get_cloud_provider", return_value=None):
-            assert _should_inject_engine("lightpanda") is True
+            assert bt._should_inject_engine("lightpanda") is True
 
     def test_chrome_injects_in_local_mode(self):
-        from tools.browser_tool import _should_inject_engine
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
              patch("tools.browser_tool._get_cdp_override", return_value=""), \
              patch("tools.browser_tool._get_cloud_provider", return_value=None):
-            assert _should_inject_engine("chrome") is True
+            assert bt._should_inject_engine("chrome") is True
 
     def test_no_inject_in_camofox_mode(self):
-        from tools.browser_tool import _should_inject_engine
         with patch("tools.browser_tool._is_camofox_mode", return_value=True):
-            assert _should_inject_engine("lightpanda") is False
+            assert bt._should_inject_engine("lightpanda") is False
 
     def test_no_inject_with_cdp_override(self):
-        from tools.browser_tool import _should_inject_engine
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
              patch("tools.browser_tool._get_cdp_override_raw", return_value="ws://localhost:9222"):
-            assert _should_inject_engine("lightpanda") is False
+            assert bt._should_inject_engine("lightpanda") is False
 
 
 # ---------------------------------------------------------------------------
@@ -103,28 +96,24 @@ class TestNeedsLightpandaFallback:
     """Test fallback detection for Lightpanda results."""
 
     def test_non_lightpanda_never_falls_back(self):
-        from tools.browser_tool import _needs_lightpanda_fallback
         result = {"success": False, "error": "timeout"}
-        assert _needs_lightpanda_fallback("chrome", "open", result) is False
-        assert _needs_lightpanda_fallback("auto", "open", result) is False
+        assert bt._needs_lightpanda_fallback("chrome", "open", result) is False
+        assert bt._needs_lightpanda_fallback("auto", "open", result) is False
 
     def test_failed_command_triggers_fallback(self):
-        from tools.browser_tool import _needs_lightpanda_fallback
         result = {"success": False, "error": "page.goto: Timeout"}
-        assert _needs_lightpanda_fallback("lightpanda", "open", result) is True
+        assert bt._needs_lightpanda_fallback("lightpanda", "open", result) is True
 
 
     def test_empty_snapshot_triggers_fallback(self):
-        from tools.browser_tool import _needs_lightpanda_fallback
         result = {"success": True, "data": {"snapshot": ""}}
-        assert _needs_lightpanda_fallback("lightpanda", "snapshot", result) is True
+        assert bt._needs_lightpanda_fallback("lightpanda", "snapshot", result) is True
 
 
     def test_unknown_command_does_not_trigger_fallback(self):
         """Commands not in the whitelist should not trigger fallback."""
-        from tools.browser_tool import _needs_lightpanda_fallback
         result = {"success": False, "error": "nope"}
-        assert _needs_lightpanda_fallback("lightpanda", "some_future_cmd", result) is False
+        assert bt._needs_lightpanda_fallback("lightpanda", "some_future_cmd", result) is False
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +140,6 @@ class TestLightpandaRequirements:
     """Lightpanda should expose browser tools without local Chromium."""
 
     def test_lightpanda_local_mode_does_not_require_chromium(self):
-        import tools.browser_tool as bt
 
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
              patch("tools.browser_tool._get_cdp_override", return_value=""), \
@@ -163,7 +151,6 @@ class TestLightpandaRequirements:
             assert bt.check_browser_requirements() is True
 
     def test_chrome_local_mode_still_requires_chromium(self):
-        import tools.browser_tool as bt
 
         with patch("tools.browser_tool._is_camofox_mode", return_value=False), \
              patch("tools.browser_tool._get_cdp_override", return_value=""), \
@@ -183,7 +170,6 @@ class TestCleanupResetsEngineCache:
     """Verify cleanup_all_browsers resets engine-related globals."""
 
     def test_engine_cache_reset(self):
-        import tools.browser_tool as bt
         # Seed the cache
         bt._cached_browser_engine = "lightpanda"
         # cleanup should reset them
@@ -199,10 +185,9 @@ class TestLightpandaFallbackWarning:
     """Verify Chrome fallback results are annotated for users."""
 
     def test_fallback_result_gets_user_visible_warning(self):
-        from tools.browser_tool import _annotate_lightpanda_fallback
 
         result = {"success": True, "data": {"snapshot": "- heading \"Hello\" [ref=e1]"}}
-        annotated = _annotate_lightpanda_fallback(
+        annotated = bt._annotate_lightpanda_fallback(
             result,
             "Lightpanda returned an empty/too-short snapshot; retried with Chrome.",
         )
@@ -219,8 +204,6 @@ class TestLightpandaFallbackWarning:
 
 
     def test_browser_navigate_surfaces_fallback_warning(self):
-        import json
-        import tools.browser_tool as bt
 
         result = bt._annotate_lightpanda_fallback(
             {"success": True, "data": {"title": "Fallback OK", "url": "https://example.com/"}},
@@ -247,8 +230,6 @@ class TestLightpandaFallbackWarning:
 
 
     def test_browser_vision_lightpanda_response_has_structured_fallback(self, tmp_path):
-        import json
-        import tools.browser_tool as bt
 
         chrome_shot = tmp_path / "chrome-structured.png"
         chrome_shot.write_bytes(b"\x89PNG" + b"0" * 128)
@@ -297,7 +278,6 @@ class TestEngineOverride:
         self, _camofox, _cdp, _cloud, _chromium, _local, _find, _session
     ):
         """When _engine_override='auto', --engine flag is NOT injected."""
-        import tools.browser_tool as bt
 
         # Set the global cache to lightpanda
         bt._cached_browser_engine = "lightpanda"
@@ -343,7 +323,6 @@ class TestEngineOverride:
         self, _camofox, _cdp, _cloud, _chromium, _local, _find, _session
     ):
         """Without _engine_override, the cached engine is used."""
-        import tools.browser_tool as bt
 
         bt._cached_browser_engine = "lightpanda"
 
@@ -381,7 +360,6 @@ class TestEngineOverride:
 
     def test_hybrid_local_sidecar_injects_engine_even_with_cloud_provider(self):
         """A task::local sidecar is local even when global cloud config exists."""
-        import tools.browser_tool as bt
 
         bt._cached_browser_engine = "lightpanda"
         captured_cmds = []

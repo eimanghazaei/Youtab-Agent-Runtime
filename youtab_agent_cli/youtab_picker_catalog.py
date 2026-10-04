@@ -167,8 +167,7 @@ def _write_youtab_recommended_disk(base: str, data: dict[str, Any], *, disk_path
             fh.write("\n")
         os.replace(tmp, path)
     except OSError as exc:
-        import logging
-        logging.getLogger(__name__).debug(
+        logger.debug(
             "youtab recommended-models disk cache write failed: %s", exc
         )
 
