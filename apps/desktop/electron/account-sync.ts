@@ -275,19 +275,19 @@ export class AccountSync {
     await this.persist()
   }
   async shareSession(localId: string, payload: SyncPayload) {
+    if (this.busy) {throw new Error('SYNC_BUSY')}
     const generation = this.generation
     await this.connect()
     this.live(generation)
 
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(localId) || ['__proto__', 'constructor', 'prototype'].includes(localId)) {throw new Error('INVALID_LOCAL_SESSION')}
     const state = this.state!
-    const links = state.localLinks ??= {}
 
-    if (!Object.hasOwn(links, localId)) {
-      links[localId] = `chat_${randomUUID().replaceAll('-', '')}`
-    }
-
-    const current = state.records[links[localId]]
+    if (!state.consent) {throw new Error('SYNC_CONSENT_REQUIRED')}
+    const full = transcript(payload) as SyncTranscript
+    const links = state.localLinks ?? {}
+    let cloudId = Object.hasOwn(links, localId) ? links[localId] : `chat_${randomUUID().replaceAll('-', '')}`
+    const current = state.records[cloudId]
     const baseline = state.localHashes?.[localId]
 
     const currentTranscript = current && !current.deleted ? joinedTranscript(current.payload, state.records) : null
@@ -295,21 +295,15 @@ export class AccountSync {
     if (baseline && currentTranscript
       && createHash('sha256').update(JSON.stringify(currentTranscript)).digest('hex') !== baseline
       && !equal(currentTranscript, payload)) {
-      links[localId] = `conflict_${randomUUID().replaceAll('-', '')}`
+      cloudId = `conflict_${randomUUID().replaceAll('-', '')}`
     }
 
-    const full = transcript(payload) as SyncTranscript
-
     if (currentTranscript && equal(currentTranscript, full)) {
-      await this.queue(links[localId], 'chat', current!.payload)
+      await this.queue(cloudId, 'chat', current!.payload)
       ;(state.localHashes ??= {})[localId] = createHash('sha256').update(JSON.stringify(full)).digest('hex')
       await this.persist()
 
       return
-    }
-
-    if (current?.payload && 'chunk_refs' in current.payload) {
-      state.ownedParts = [...new Set([...(state.ownedParts ?? []), ...(current.payload.chunk_refs ?? [])])]
     }
 
     let batch: SyncMessage[] = []
@@ -325,6 +319,7 @@ export class AccountSync {
 
     batches.push(batch)
     const root: SyncTranscript = { ...full, messages: batches[0] }
+    const parts: { id: string; payload: SyncTranscript }[] = []
 
     if (batches.length > 1) {
       root.chunk_refs = []
@@ -342,14 +337,30 @@ export class AccountSync {
 
         const id = `part_${randomUUID().replaceAll('-', '')}`
 
-        ;(state.ownedParts ??= []).push(id)
-        await this.queue(id, 'chat', { title: '', messages, is_part: true })
-        this.live(generation)
+        parts.push({ id, payload: { title: '', messages, is_part: true } })
         root.chunk_refs.push(id)
       }
     }
 
-    await this.queue(links[localId], 'chat', root)
+    // JSON escaping can make one valid local message exceed a wire record.
+    // Validate the entire upload before changing links or queuing any parts.
+    wireTranscript(root)
+
+    for (const part of parts) {wireTranscript(part.payload)}
+
+    ;(state.localLinks ??= {})[localId] = cloudId
+
+    if (current?.payload && 'chunk_refs' in current.payload) {
+      state.ownedParts = [...new Set([...(state.ownedParts ?? []), ...(current.payload.chunk_refs ?? [])])]
+    }
+
+    for (const part of parts) {
+      ;(state.ownedParts ??= []).push(part.id)
+      await this.queue(part.id, 'chat', part.payload)
+      this.live(generation)
+    }
+
+    await this.queue(cloudId, 'chat', root)
     this.live(generation)
     ;(state.localHashes ??= {})[localId] = createHash('sha256').update(JSON.stringify(payload)).digest('hex')
     await this.persist()

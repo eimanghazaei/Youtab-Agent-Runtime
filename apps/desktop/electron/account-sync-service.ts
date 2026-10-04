@@ -177,6 +177,18 @@ export function accountSyncService(deps: ServiceDependencies) {
  return null}
       }
 
+      const shareTranscript = async (id: string, payload: SyncTranscript) => {
+        try {await client.shareSession(id, payload)}
+        catch (error) {
+          live(expected)
+
+          if (!(error instanceof Error) || error.message !== 'SYNC_WIRE_HISTORY_LIMIT') {throw error}
+          // Keep the original local chat and expose its migration failure;
+          // an unrepresentable message must not block other chats or retries.
+          failures[id] = 'history-limit'
+        }
+      }
+
       if (state.autoNewChats) {
         const offset = state.discoveryOffset ?? 0
         const discovery = await deps.listNewSessions(0, offset).catch(() => ({ sessions: [], limited: true, nextOffset: offset }))
@@ -193,7 +205,7 @@ export function accountSyncService(deps: ServiceDependencies) {
 
           const payload = await exportTranscript(session.id)
 
-          if (payload) {await client.shareSession(session.id, payload)}
+          if (payload) {await shareTranscript(session.id, payload as SyncTranscript)}
         }
 
         await client.checkpointDiscovery(discovery.nextOffset ?? 0, failures)
@@ -209,7 +221,7 @@ export function accountSyncService(deps: ServiceDependencies) {
         if (payload) {
           const hash = createHash('sha256').update(JSON.stringify(payload)).digest('hex')
 
-          if (hash !== state.localHashes?.[id]) {await client.shareSession(id, payload)}
+          if (hash !== state.localHashes?.[id]) {await shareTranscript(id, payload as SyncTranscript)}
         }
       }
 

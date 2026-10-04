@@ -179,6 +179,66 @@ describe('main process account sync service', () => {
     expect(state.localLinks).toHaveProperty('healthy')
     expect(f.imported).toHaveLength(0)
   })
+  it('checkpoints escaped-message failures without blocking later discovery or healthy uploads, then retries', async () => {
+    const f = await fixture()
+    let content = '\u0001'.repeat(200000)
+
+    const list = vi.fn(async (_since: number, offset: number) => ({
+      sessions: offset === 0 ? [{ id: 'escaped', started_at: 10 }, { id: 'healthy', started_at: 20 }] : [{ id: 'later', started_at: 30 }],
+      limited: offset === 0, nextOffset: offset === 0 ? 2 : 0
+    }))
+
+    const exported = vi.fn(async (id: string) => ({ title: id, messages: [{ role: 'user', content: id === 'escaped' ? content : id }] }))
+    const dependencies = { ...f.dependencies, listNewSessions: list, exportSession: exported }
+    const service = accountSyncService(dependencies)
+    await service.consent(true)
+    const failed = await service.sync()
+    expect(failed.migrationFailures).toEqual({ escaped: 'history-limit' })
+    expect(failed.discoveryOffset).toBe(2)
+    expect(failed.localLinks).not.toHaveProperty('escaped')
+    expect(failed.localLinks).toHaveProperty('healthy')
+    expect(failed.outbox).toHaveLength(0)
+    expect(f.records.size).toBe(1)
+    expect(content).toBe('\u0001'.repeat(200000))
+
+    const restarted = accountSyncService(dependencies)
+    expect((await restarted.status()).migrationFailures).toEqual({ escaped: 'history-limit' })
+    await restarted.sync()
+    expect(f.records.size).toBe(2)
+    content = 'representable original text'
+    const retried = await restarted.sync()
+    expect(retried.migrationFailures).toEqual({})
+    expect(retried.localLinks).toHaveProperty('escaped')
+    expect(f.records.size).toBe(3)
+    expect([...f.records.values()].every(record => !record.deleted)).toBe(true)
+    expect(f.imported).toHaveLength(0)
+    expect(list.mock.calls.map(call => call[1])).toEqual([0, 2, 0])
+  })
+  it('preserves the previous cloud chat when a linked edit exceeds the wire limit and syncs other edits', async () => {
+    const f = await fixture()
+    const contents: Record<string, string> = { escaped: 'old escaped text', healthy: 'old healthy text' }
+    const exportSession = async (id: string) => ({ title: id, messages: [{ role: 'user', content: contents[id] }] })
+    const service = accountSyncService({ ...f.dependencies, exportSession })
+    await service.consent(true); await service.share('escaped'); await service.share('healthy')
+    const previous = await service.status()
+    const original = structuredClone(f.records.get(previous.localLinks!.escaped))
+    contents.escaped = '\u0001'.repeat(200000)
+    contents.healthy = 'healthy revised text'
+    const failed = await service.sync()
+    expect(failed.migrationFailures).toEqual({ escaped: 'history-limit' })
+    expect(failed.localLinks).toEqual(previous.localLinks)
+    expect(failed.localHashes!.escaped).toBe(previous.localHashes!.escaped)
+    expect(f.records.get(previous.localLinks!.escaped)).toEqual(original)
+    expect(f.records.get(previous.localLinks!.healthy).payload.messages[0].content).toBe(contents.healthy)
+    expect(failed.outbox).toHaveLength(0)
+
+    contents.escaped = 'escaped revised text'
+    const retried = await service.sync()
+    expect(retried.migrationFailures).toEqual({})
+    expect(f.records.get(previous.localLinks!.escaped).payload.messages[0].content).toBe(contents.escaped)
+    expect(f.records.size).toBe(2)
+    expect(f.imported).toHaveLength(0)
+  })
   it('transfers long history in bounded parts and reconstructs it on a second device', async () => {
     const f = await fixture()
     const messages = Array.from({ length: 5001 }, (_, index) => ({ role: 'user' as const, content: `old message ${index}`, timestamp: 100 + index }))

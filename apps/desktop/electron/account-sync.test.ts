@@ -45,6 +45,21 @@ function fixture() {
 }
 
 describe('account sync journal', () => {
+  it.each([false, true])('preflights escaped messages before changing any journal state (part: %s)', async asPart => {
+    const f = fixture(); const client = f.client()
+    await client.setConsent(true)
+    await client.shareSession('existing', payload)
+    await client.synchronize()
+    const before = await client.connect()
+    const durable = structuredClone([...f.documents])
+    const escaped = { role: 'user' as const, content: '\u0001'.repeat(200000) }
+    const oversized = transcript({ title: 'Escaped', messages: asPart ? [...payload.messages, escaped] : [escaped] })
+
+    await expect(client.shareSession(asPart ? 'existing' : 'new', oversized)).rejects.toThrow('SYNC_WIRE_HISTORY_LIMIT')
+    expect(await client.connect()).toEqual(before)
+    expect([...f.documents]).toEqual(durable)
+    expect(f.records.size).toBe(1)
+  })
   it('cancels a queued offline edit when local content reverts to the server copy', async () => {
     const f = fixture(); const client = f.client()
     await client.setConsent(true); await client.queue('chat', 'chat', payload); await client.synchronize()
