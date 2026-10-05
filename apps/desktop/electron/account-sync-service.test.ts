@@ -6,7 +6,8 @@ import path from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { accountSyncService, syncSessionIdentity } from './account-sync-service'
+import { accountSyncService, importAccountSyncSession, syncSessionIdentity } from './account-sync-service'
+import { serializeJsonBody } from './oauth-net-request'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -81,6 +82,63 @@ async function fixture() {
 }
 
 describe('main process account sync service', () => {
+  it.each(['imported_ids', 'skipped_ids'] as const)('serializes an inert import document once and accepts %s acknowledgement', async acknowledgement => {
+    const session = {
+      id: 'synced_synthetic', source: 'account-sync', title: 'Original conversation',
+      started_at: 100, last_active: 200, messages: [{ role: 'user' as const, content: 'original history', timestamp: 101 }]
+    }
+
+    const request = vi.fn(async (profile: string, route: string, method: string, body?: unknown) => {
+      expect({ profile, route, method }).toEqual({ profile: 'test-profile', route: '/api/sessions/import', method: 'POST' })
+      const wire = serializeJsonBody(body)
+      const document = JSON.parse(wire!.toString('utf8'))
+
+      expect(typeof document).toBe('object')
+      expect(document).toEqual({ profile: 'test-profile', inert_history: true, sessions: [session] })
+
+      return { ok: true, imported_ids: [], skipped_ids: [], [acknowledgement]: [session.id] }
+    })
+
+    await importAccountSyncSession('test-profile', session, request)
+    expect(request).toHaveBeenCalledOnce()
+  })
+  it.each(['request-rejected', 'wrong-id', 'not-ok', 'malformed'] as const)('does not bind an imported chat after %s and permits a verified retry', async failure => {
+    const f = await fixture(); const one = accountSyncService(f.dependencies)
+    await one.consent(true); await one.share('local-chat')
+    const cloudId = [...f.records.keys()][0]
+    const original = structuredClone(f.records.get(cloudId))
+    const second = await fs.mkdtemp(path.join(os.tmpdir(), 'youtab-sync-service-')); roots.push(second)
+    let rejected = true
+
+    const request = vi.fn(async (_profile: string, _route: string, _method: string, body?: unknown) => {
+      const document = JSON.parse(serializeJsonBody(body)!.toString('utf8'))
+      expect(document.inert_history).toBe(true)
+      const id = document.sessions[0].id
+
+      if (rejected) {
+        if (failure === 'request-rejected') {throw new Error('HTTP_400')}
+
+        if (failure === 'malformed') {return { ok: true, imported_ids: id, skipped_ids: [] }}
+
+        return { ok: failure !== 'not-ok', imported_ids: failure === 'wrong-id' ? ['other-id'] : [id], skipped_ids: [] }
+      }
+
+      return { ok: true, imported_ids: [id], skipped_ids: [] }
+    })
+
+    const two = accountSyncService({ ...f.dependencies, directory: second,
+      importSession: session => importAccountSyncSession(f.dependencies.profile, session, request) })
+
+    await two.consent(true)
+    await expect(two.continueChat(cloudId)).rejects.toThrow(failure === 'request-rejected' ? 'HTTP_400' : 'SYNC_IMPORT_FAILED')
+
+    expect((await two.status()).localLinks ?? {}).toEqual({})
+    expect(f.records.get(cloudId)).toEqual(original)
+    rejected = false
+    const retried = await two.continueChat(cloudId)
+    expect((await two.status()).localLinks).toEqual({ [retried.localId]: cloudId })
+    expect(f.records.get(cloudId)).toEqual(original)
+  })
   it.skipIf(process.platform === 'win32')('rejects a FIFO journal without waiting for a writer', async () => {
     const f = await fixture()
     await accountSyncService(f.dependencies).consent(true)

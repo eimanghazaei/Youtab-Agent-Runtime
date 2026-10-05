@@ -5,6 +5,8 @@ import path from 'node:path'
 
 import { AccountSync, joinedTranscript, scopeKey, type SyncJournal, type SyncPreferences, type SyncTranscript, transcript } from './account-sync'
 
+type ImportedSyncSession = SyncTranscript & { id: string; source: string }
+
 interface ServiceDependencies {
   directory: string
   baseUrl: string
@@ -13,8 +15,22 @@ interface ServiceDependencies {
   encrypt: (text: string) => unknown
   decrypt: (encrypted: unknown) => string | null
   exportSession: (id: string) => Promise<unknown>
-  importSession: (session: SyncTranscript & { id: string; source: string }) => Promise<void>
+  importSession: (session: ImportedSyncSession) => Promise<void>
   listNewSessions: (since: number, offset: number) => Promise<{ sessions: { id: string; started_at: number }[]; limited: boolean; nextOffset?: number }>
+}
+
+/** Pass a document to the JSON transport; it owns the single serialization. */
+export async function importAccountSyncSession(
+  profile: string,
+  session: ImportedSyncSession,
+  request: (profile: string, route: string, method: string, body?: unknown) => Promise<unknown>
+): Promise<void> {
+  const result = await request(profile, '/api/sessions/import', 'POST', {
+    profile, inert_history: true, sessions: [session]
+  }) as { ok?: unknown; imported_ids?: unknown; skipped_ids?: unknown } | null
+
+  if (!result || result.ok !== true || !Array.isArray(result.imported_ids) || !Array.isArray(result.skipped_ids)
+    || ![...result.imported_ids, ...result.skipped_ids].includes(session.id)) {throw new Error('SYNC_IMPORT_FAILED')}
 }
 
 export function syncSessionIdentity(session: { id: string; _lineage_root_id?: string }): string {

@@ -32,7 +32,7 @@ import {
 import nodePty from 'node-pty'
 
 import { joinedTranscript, type SyncJournal } from './account-sync'
-import { accountSyncService, syncSessionIdentity } from './account-sync-service'
+import { accountSyncService, importAccountSyncSession, syncSessionIdentity } from './account-sync-service'
 import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
@@ -6538,10 +6538,7 @@ function accountSyncForProfile(requested: unknown) {
       encrypt: encryptDesktopSecret,
       decrypt: decryptDesktopSecret,
       exportSession: id => fetchJsonForProfile(profile, `/api/sessions/${encodeURIComponent(id)}/export?profile=${encodeURIComponent(profile)}&lineage=true`),
-      importSession: async session => {
-        const result = await requestJsonForProfile(profile, '/api/sessions/import', 'POST', JSON.stringify({ profile, inert_history: true, sessions: [session] })) as { ok: boolean; imported_ids: string[]; skipped_ids: string[] }
-        if (!result.ok || ![...result.imported_ids, ...result.skipped_ids].includes(session.id)) {throw new Error('SYNC_IMPORT_FAILED')}
-      },
+      importSession: session => importAccountSyncSession(profile, session, requestJsonForProfile),
       listNewSessions: async (since, offset) => {
         const sessions: { id: string; started_at: number }[] = []
         for (let page = 0; page < 10; page++) {
@@ -8057,7 +8054,7 @@ async function fetchJsonForProfile(profile, path) {
 }
 
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
-async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
+async function requestJsonForProfile(profile: string, path: string, method: string, body?: unknown) {
   const conn = await ensureBackend(profile)
   const url = `${conn.baseUrl}${path}`
   const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
