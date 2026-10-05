@@ -72,7 +72,7 @@ def _session_with(responses):
     idx = [0]
 
     def _post(url, **kwargs):
-        calls.append((url, kwargs.get("json")))
+        calls.append((url, kwargs.get("json"), kwargs.get("headers")))
         r = responses[idx[0]] if idx[0] < len(responses) else responses[-1]
         idx[0] += 1
         ctx = MagicMock()
@@ -89,6 +89,13 @@ def _session_with(responses):
 
 
 def _pconfig():
+    from youtab_constants import get_youtab_dir
+
+    session_path = get_youtab_dir("platforms/whatsapp/session", "whatsapp/session")
+    session_path.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(session_path / "bridge-capability", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write("t" * 43)
     return SimpleNamespace(token="", extra={"bridge_port": 3000})
 
 
@@ -122,6 +129,7 @@ def test_text_plus_mixed_media_routes_native_types():
                 )
             )
         assert res["success"] is True
+        assert all(call[2] == {"Authorization": "Bearer " + "t" * 43} for call in calls)
         # text first, then three media uploads in order
         assert calls[0][0].endswith("/send")
         assert calls[0][1]["message"] == "hello"

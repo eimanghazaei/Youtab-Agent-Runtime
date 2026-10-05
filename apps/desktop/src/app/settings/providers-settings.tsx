@@ -24,6 +24,7 @@ import { $desktopOnboarding, startManualLocalEndpoint, startManualProviderOAuth 
 import type { EnvVarInfo, OAuthProvider } from '@/types/youtab'
 import { disconnectOAuthProvider, getApiRequestProfile, listOAuthProviders } from '@/youtab'
 
+import { AccountSyncSettings } from './account-sync-settings'
 import { isKeyVar, ProviderKeyRows } from './credential-key-ui'
 import { CustomEndpointsSettings } from './custom-endpoints-settings'
 import { SettingsCategoryHeading, useEnvCredentials } from './env-credentials'
@@ -419,6 +420,7 @@ export function ProvidersSettings({
         if (!provider.native_base_url || !window.youtabDesktop?.oauthLogoutConnectionConfig) {
           throw new Error('Native provider logout is unavailable')
         }
+
         await window.youtabDesktop.oauthLogoutConnectionConfig(provider.native_base_url, {
           nativeCapability: true,
           profile: getApiRequestProfile()
@@ -426,6 +428,7 @@ export function ProvidersSettings({
       } else {
         await disconnectOAuthProvider(provider.id)
       }
+
       notify({
         durationMs: 3_000,
         kind: 'success',
@@ -513,6 +516,7 @@ export function ProvidersSettings({
         onWantApiKey={() => onViewChange('keys')}
         providers={oauthProviders}
       />
+      <AccountSyncSettings />
     </SettingsContent>
   )
 }

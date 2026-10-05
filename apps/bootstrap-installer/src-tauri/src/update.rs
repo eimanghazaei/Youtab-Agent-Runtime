@@ -58,7 +58,10 @@ static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// Frontend → Rust: kick off the update flow. Mirrors `start_bootstrap`'s
 /// fire-and-forget shape; progress arrives on the `bootstrap` event channel.
 #[tauri::command]
-pub async fn start_update(app: AppHandle) -> Result<(), String> {
+pub async fn start_update(app: AppHandle, channel: Option<String>) -> Result<(), String> {
+    if let Some(value) = &channel {
+        release_channel_from_args(["--channel", value.as_str()]).map_err(|e| e.to_string())?;
+    }
     // Re-entrancy guard (see UPDATE_RUNNING). compare_exchange lets exactly one
     // caller flip false→true; any concurrent caller no-ops instead of spawning
     // a second racing update.
@@ -83,7 +86,7 @@ pub async fn start_update(app: AppHandle) -> Result<(), String> {
         return Ok(());
     }
     tokio::spawn(async move {
-        if let Err(err) = run_update(app.clone()).await {
+        if let Err(err) = run_update(app.clone(), channel).await {
             // run_update already emits a Failed event on the paths that matter;
             // this catches anything that escaped. Emit defensively.
             emit(
@@ -257,9 +260,10 @@ impl Drop for UpdateMarkerGuard {
     }
 }
 
-async fn run_update(app: AppHandle) -> Result<()> {
+async fn run_update(app: AppHandle, channel: Option<String>) -> Result<()> {
     if let Some(base) = option_env!("RELEASE_BASE_URL") {
-        return run_artifact_update(app, base).await;
+        let selected = match channel {Some(value) => value, None => release_channel_for_install(&crate::paths::youtab_home().join("youtab-agent-runtime"))?};
+        return run_artifact_update(app, base, &selected).await;
     }
     let youtab_home = crate::paths::youtab_home();
     let install_root = youtab_home.join("youtab-agent-runtime");
@@ -641,25 +645,53 @@ async fn run_update(app: AppHandle) -> Result<()> {
     Ok(())
 }
 
-async fn run_artifact_update(app: AppHandle, base: &str) -> Result<()> {
+async fn run_artifact_update(app: AppHandle, base: &str, channel: &str) -> Result<()> {
     let home = crate::paths::youtab_home();
     let root = home.join("youtab-agent-runtime");
     let lock = UpdateMarkerGuard::acquire_for_install(&home)?;
     crate::bootstrap::recover_artifact_transaction(&root)?;
-    let approved = approved_artifact_target(base, &root).await?;
+    let approved = approved_artifact_target(base, &root, channel).await?;
+    if option_env!("BUILD_PIN_COMMIT") != Some(approved.sha.as_str()) {
+        return Err(anyhow!("Setup does not match the selected release; check for updates again"));
+    }
+    let running = std::env::current_exe()?;
+    if crate::paths::installer_sha256(&running)? != approved.setup_sha256 {
+        return Err(anyhow!("Setup hash does not match the selected release"));
+    }
     if !approved.is_newer {
         require_artifact_setup(&home, &std::env::current_exe()?)?;
+        let marker = persist_selected_channel(&root, &approved.installed_marker, channel, &approved.sha, &approved.setup_sha256)?;
         emit(&app, BootstrapEvent::Complete {
-            install_root: root.to_string_lossy().into_owned(), marker: Some(approved.installed_marker),
+            install_root: root.to_string_lossy().into_owned(), marker: Some(marker),
         });
         return Ok(());
     }
-    crate::bootstrap::run_artifact_update(app.clone(), approved.sha, lock).await?;
+    crate::bootstrap::run_artifact_update(app.clone(), approved.sha, channel.to_owned(), lock).await?;
     if let Err(err) = crate::bootstrap::launch_youtab_desktop(app.clone(), root.to_string_lossy().into_owned()).await {
         emit_log(&app, None, LogStream::Stderr, &format!("[update] launch after verified install failed: {err}"));
     }
     exit_after_success(&app);
     Ok(())
+}
+
+fn persist_selected_channel(root: &Path, original: &serde_json::Value, channel: &str, source: &str, setup_hash: &str) -> Result<serde_json::Value> {
+    use std::io::Write;
+    release_channel_from_args(["--channel", channel])?;
+    let marker_path = root.join(".youtab-agent-runtime-bootstrap-complete");
+    if root.is_symlink() || marker_path.is_symlink() {return Err(anyhow!("unsafe installation metadata"));}
+    let current: serde_json::Value = serde_json::from_slice(&std::fs::read(&marker_path)?)?;
+    if &current != original {return Err(anyhow!("installation changed during channel selection"));}
+    let mut next = current;
+    let object = next.as_object_mut().ok_or_else(|| anyhow!("invalid installation metadata"))?;
+    object.insert("releaseChannel".into(), serde_json::json!(channel));
+    object.insert("channelSelectedAt".into(), serde_json::json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos().to_string()));
+    object.insert("setupSourceSha".into(), serde_json::json!(source));
+    object.insert("setupSha256".into(), serde_json::json!(setup_hash));
+    let mut temporary = tempfile::NamedTempFile::new_in(root)?;
+    temporary.write_all(&serde_json::to_vec_pretty(&next)?)?;
+    temporary.as_file().sync_all()?;
+    temporary.persist(&marker_path).map_err(|error| anyhow!("could not persist selected channel: {}", error.error))?;
+    Ok(next)
 }
 
 fn require_artifact_setup(home: &Path, running: &Path) -> Result<()> {
@@ -671,10 +703,12 @@ fn require_artifact_setup(home: &Path, running: &Path) -> Result<()> {
 pub(crate) struct ApprovedArtifactTarget {
     pub sha: String,
     pub is_newer: bool,
+    pub setup_sha256: String,
     installed_marker: serde_json::Value,
 }
 
-pub(crate) async fn approved_artifact_target(base: &str, root: &Path) -> Result<ApprovedArtifactTarget> {
+pub(crate) async fn approved_artifact_target(base: &str, root: &Path, channel: &str) -> Result<ApprovedArtifactTarget> {
+    release_channel_from_args(["--channel", channel])?;
     let marker_path = root.join(".youtab-agent-runtime-bootstrap-complete");
     let marker: serde_json::Value = serde_json::from_slice(&std::fs::read(&marker_path)?)?;
     if marker.get("releaseBaseUrl").and_then(serde_json::Value::as_str) != Some(base) {
@@ -697,7 +731,7 @@ pub(crate) async fn approved_artifact_target(base: &str, root: &Path) -> Result<
         .timeout(Duration::from_secs(15))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
-    let latest: serde_json::Value = read_release_json(&client, &format!("{base}/latest.json")).await?;
+    let latest: serde_json::Value = read_release_json(&client, &format!("{base}/channels/{channel}/latest.json")).await?;
     let target_sha = release_sha(&latest)?;
     let manifest_url = format!("{base}/{target_sha}/manifest.json");
     if latest.get("manifest_url").and_then(serde_json::Value::as_str) != Some(manifest_url.as_str()) {
@@ -705,18 +739,25 @@ pub(crate) async fn approved_artifact_target(base: &str, root: &Path) -> Result<
     }
     let immutable = read_release_json(&client, &manifest_url).await?;
     for key in ["version", "release_sequence", "source_sha", "artifact_url", "sha256",
-        "install_script_url", "install_script_sha256", "created_at", "platform", "architecture", "format"] {
+        "install_script_url", "install_script_sha256", "created_at", "platform", "architecture", "format",
+        "setup_url", "setup_sha256", "setup_size", "setup_source_sha", "updater_protocol"] {
         if latest.get(key) != immutable.get(key) {
             return Err(anyhow!("latest and immutable release disagree on {key}"));
         }
     }
     let expected_archive = format!("{base}/{target_sha}/youtab-runtime-{target_sha}.zip");
     let expected_script = format!("{base}/{target_sha}/install-{target_sha}.ps1");
+    let expected_setup = format!("{base}/{target_sha}/Youtab-Setup-{target_sha}.exe");
     if immutable.get("artifact_url").and_then(serde_json::Value::as_str) != Some(expected_archive.as_str())
         || immutable.get("install_script_url").and_then(serde_json::Value::as_str) != Some(expected_script.as_str())
         || immutable.get("platform").and_then(serde_json::Value::as_str) != Some("windows")
         || immutable.get("architecture").and_then(serde_json::Value::as_str) != Some("x64")
         || immutable.get("format").and_then(serde_json::Value::as_str) != Some("zip")
+        || immutable.get("setup_url").and_then(serde_json::Value::as_str) != Some(expected_setup.as_str())
+        || immutable.get("setup_source_sha").and_then(serde_json::Value::as_str) != Some(target_sha)
+        || immutable.get("updater_protocol").and_then(serde_json::Value::as_u64) != Some(1)
+        || !immutable.get("setup_size").and_then(serde_json::Value::as_u64).is_some_and(|n| n > 0 && n <= 128 * 1024 * 1024)
+        || !release_hash(&immutable, "setup_sha256")
         || !release_hash(&immutable, "sha256") || !release_hash(&immutable, "install_script_sha256") {
         return Err(anyhow!("immutable Runtime release has invalid artifact metadata"));
     }
@@ -732,8 +773,73 @@ pub(crate) async fn approved_artifact_target(base: &str, root: &Path) -> Result<
     }
     Ok(ApprovedArtifactTarget {
         sha: target_sha.to_string(), is_newer: next_sequence > installed_sequence,
+        setup_sha256: immutable["setup_sha256"].as_str().unwrap().to_owned(),
         installed_marker: marker,
     })
+}
+
+/// Explicit, bounded channel selection. Invalid or duplicate flags fail closed.
+pub(crate) fn release_channel_from_args<I, S>(args: I) -> Result<String>
+where I: IntoIterator<Item = S>, S: AsRef<str> {
+    let values: Vec<String> = args.into_iter().map(|a| a.as_ref().to_owned()).collect();
+    let mut channel: Option<String> = None;
+    let mut index = 0;
+    while index < values.len() {
+        let arg = &values[index];
+        let candidate = if arg == "--channel" {
+            index += 1;
+            Some(values.get(index).ok_or_else(|| anyhow!("missing release channel"))?.as_str())
+        } else { arg.strip_prefix("--channel=") };
+        if let Some(value) = candidate {
+            if channel.is_some() || !matches!(value, "pilot" | "stable") {
+                return Err(anyhow!("invalid or duplicate release channel"));
+            }
+            channel = Some(value.to_owned());
+        }
+        index += 1;
+    }
+    Ok(channel.unwrap_or_else(|| "stable".to_owned()))
+}
+
+pub(crate) fn release_channel_for_install(root: &Path) -> Result<String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|v| v == "--channel" || v.starts_with("--channel=")) {
+        return release_channel_from_args(args);
+    }
+    let marker = root.join(".youtab-agent-runtime-bootstrap-complete");
+    if root.is_symlink() || marker.is_symlink() {return Err(anyhow!("unsafe installation metadata"));}
+    if !marker.exists() {return Ok("stable".to_owned());}
+    let document: serde_json::Value = serde_json::from_slice(&std::fs::read(marker)?)?;
+    let stored = match document.get("releaseChannel") {
+        None => "stable",
+        Some(value) => value.as_str().ok_or_else(|| anyhow!("invalid stored release channel"))?,
+    };
+    release_channel_from_args(["--channel", stored])
+}
+
+pub(crate) async fn verify_setup_channel(base: &str, channel: &str) -> Result<()> {
+    release_channel_from_args(["--channel", channel])?;
+    let client = reqwest::Client::builder().timeout(Duration::from_secs(15)).redirect(reqwest::redirect::Policy::none()).build()?;
+    let latest = read_release_json(&client, &format!("{base}/channels/{channel}/latest.json")).await?;
+    let sha = release_sha(&latest)?;
+    let manifest_url = format!("{base}/{sha}/manifest.json");
+    if latest.get("manifest_url").and_then(serde_json::Value::as_str) != Some(manifest_url.as_str()) {
+        return Err(anyhow!("selected channel manifest binding is invalid"));
+    }
+    let immutable = read_release_json(&client, &manifest_url).await?;
+    let mut expected = immutable.clone();
+    expected.as_object_mut().ok_or_else(|| anyhow!("invalid immutable manifest"))?.insert("manifest_url".to_owned(), serde_json::json!(manifest_url));
+    if expected != latest || option_env!("BUILD_PIN_COMMIT") != Some(sha) {
+        return Err(anyhow!("Download the current Setup for the selected channel"));
+    }
+    let setup = format!("{base}/{sha}/Youtab-Setup-{sha}.exe");
+    if immutable.get("setup_source_sha").and_then(serde_json::Value::as_str) != Some(sha)
+        || immutable.get("setup_url").and_then(serde_json::Value::as_str) != Some(setup.as_str())
+        || immutable.get("updater_protocol").and_then(serde_json::Value::as_u64) != Some(1)
+        || immutable.get("setup_sha256").and_then(serde_json::Value::as_str) != Some(crate::paths::installer_sha256(&std::env::current_exe()?)?.as_str()) {
+        return Err(anyhow!("Setup does not match the selected channel"));
+    }
+    Ok(())
 }
 
 fn release_sha(value: &serde_json::Value) -> Result<&str> {
@@ -751,10 +857,12 @@ fn release_hash(value: &serde_json::Value, key: &str) -> bool {
 }
 
 async fn read_release_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value> {
-    let response = client.get(url).send().await?.error_for_status()?;
-    let bytes = response.bytes().await?;
-    if bytes.len() > 64 * 1024 {
-        return Err(anyhow!("release metadata exceeds size limit"));
+    let mut response = client.get(url).send().await?.error_for_status()?;
+    if response.status() != reqwest::StatusCode::OK {return Err(anyhow!("release metadata did not return HTTP 200"));}
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() + chunk.len() > 64 * 1024 {return Err(anyhow!("release metadata exceeds size limit"));}
+        bytes.extend_from_slice(&chunk);
     }
     Ok(serde_json::from_slice(&bytes)?)
 }
@@ -1361,6 +1469,15 @@ fn emit_log(app: &AppHandle, stage: Option<&str>, stream: LogStream, line: &str)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn release_channel_is_explicit_and_validated() {
+        assert_eq!(super::release_channel_from_args(["--update"]).unwrap(), "stable");
+        assert_eq!(super::release_channel_from_args(["--update", "--channel", "pilot"]).unwrap(), "pilot");
+        assert_eq!(super::release_channel_from_args(["--channel=stable"]).unwrap(), "stable");
+        for args in [vec!["--channel"], vec!["--channel", "preview"], vec!["--channel=../pilot"], vec!["--channel=pilot", "--channel=stable"]] {
+            assert!(super::release_channel_from_args(args).is_err());
+        }
+    }
     use super::*;
 
     #[test]
@@ -1797,5 +1914,22 @@ mod tests {
         );
         assert!(!old.exists(), "backup should be rolled back, not left behind");
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+#[cfg(test)]
+mod channel_persistence_tests {
+    #[test]
+    fn same_version_channel_selection_is_persisted_without_replacing_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let marker_path = root.path().join(".youtab-agent-runtime-bootstrap-complete");
+        let original = serde_json::json!({"releaseChannel": "pilot", "releaseSequence": 4, "pinnedCommit": "a".repeat(40), "artifactSha256": "b".repeat(64), "preservedField": "unchanged"});
+        std::fs::write(&marker_path, original.to_string()).unwrap();
+        let next = super::persist_selected_channel(root.path(), &original, "stable", &"a".repeat(40), &"c".repeat(64)).unwrap();
+        assert_eq!(next["releaseChannel"], "stable");
+        assert_eq!(next["releaseSequence"], original["releaseSequence"]);
+        assert_eq!(next["artifactSha256"], original["artifactSha256"]);
+        assert_eq!(next["preservedField"], "unchanged");
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&std::fs::read(marker_path).unwrap()).unwrap(), next);
+        assert!(super::persist_selected_channel(root.path(), &original, "pilot", &"a".repeat(40), &"c".repeat(64)).is_err());
     }
 }

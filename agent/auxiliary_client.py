@@ -1864,7 +1864,7 @@ def _youtab_base_url() -> str:
 def _resolve_youtab_pool_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
     """Resolve Youtab auxiliary credentials from the selected pool entry."""
     try:
-        from youtab_agent_cli.auth import _agent_key_is_usable
+        from youtab_agent_cli.profile_inference import (_agent_key_is_usable)
 
         pool = load_pool("youtab")
     except Exception as exc:
@@ -1920,10 +1920,7 @@ def _resolve_youtab_runtime_api(*, force_refresh: bool = False) -> Optional[tupl
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
     """
-    from youtab_agent_cli.auth import (
-        _agent_key_is_usable, get_local_inference_token_state,
-        inference_token_safety_seconds, profile_inference_base_url,
-    )
+    from youtab_agent_cli.profile_inference import (_agent_key_is_usable, get_local_inference_token_state, inference_token_safety_seconds, profile_inference_base_url)
     local = get_local_inference_token_state()
     if local is not None:
         if force_refresh or not _agent_key_is_usable(local, inference_token_safety_seconds(local)):
@@ -2221,9 +2218,9 @@ def _try_youtab(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             _mark_provider_unhealthy("youtab", ttl=_remaining)
             return None, None
     except Exception:
-        pass
+        logger.debug("Auxiliary rate guard unavailable; use provider authentication and normal request limits", exc_info=True)
 
-    from youtab_agent_cli.auth import get_local_inference_token_state
+    from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
     local_inference = get_local_inference_token_state()
     youtab = None if local_inference is not None or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" else _read_youtab_auth()
     runtime = _resolve_youtab_runtime_api(force_refresh=False)
@@ -2319,7 +2316,7 @@ def _refresh_youtab_recommended_model(
     still recommends the exact model that just 404'd and the default also
     matches it) — callers should then let the original error propagate.
     """
-    from youtab_agent_cli.auth import get_local_inference_token_state
+    from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
     if get_local_inference_token_state() is not None:
         return None  # Exact Gateway Engine IDs may not be silently replaced.
     stale = (stale_model or "").strip().lower()
@@ -3858,7 +3855,7 @@ def _recoverable_pool_provider(
     """Infer which provider pool can recover the current auxiliary client."""
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized == "youtab":
-        from youtab_agent_cli.auth import get_local_inference_token_state
+        from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
         if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" or get_local_inference_token_state() is not None:
             return None  # Desktop-owned inference tokens cannot enter the pool.
     if normalized not in {"", "auto", "custom"}:
@@ -3869,7 +3866,7 @@ def _recoverable_pool_provider(
     if base_url_host_matches(base, "openrouter.ai"):
         return "openrouter"
     if _is_youtab_inference_host(base):
-        from youtab_agent_cli.auth import get_local_inference_token_state
+        from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
         if os.environ.get("YOUTAB_AGENT_DESKTOP") == "1" or get_local_inference_token_state() is not None:
             return None
         return "youtab"

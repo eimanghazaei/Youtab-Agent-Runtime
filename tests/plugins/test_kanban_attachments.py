@@ -221,6 +221,50 @@ def test_upload_sanitizes_traversal_filename(client):
     assert Path(stored_path).resolve().is_relative_to(task_dir)
 
 
+@pytest.mark.parametrize("filename", ["F:config.yaml", "notes.txt:secret", "C:"])
+def test_upload_rejects_drive_relative_and_stream_names(client, monkeypatch, filename):
+    task_id = _create_task_via_api(client)
+    # If the regression returns, fail before any write outside this fixture.
+    module = sys.modules["youtab_dashboard_plugin_kanban_attach_test"]
+    original = module._collision_free_path
+    root = kb.task_attachments_dir(task_id).resolve()
+
+    def guarded_destination(*args):
+        candidate = original(*args)
+        assert candidate.resolve().is_relative_to(root), "upload escaped fixture"
+        return candidate
+
+    monkeypatch.setattr(module, "_collision_free_path", guarded_destination)
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": (filename, b"untrusted upload", "text/plain")},
+    )
+    assert response.status_code == 400
+    assert client.get(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments"
+    ).json()["attachments"] == []
+
+
+@pytest.mark.parametrize("filename", ["F:config.yaml", "notes.txt:secret", "../outside"])
+def test_collision_builder_rejects_unsafe_direct_call(tmp_path, filename):
+    with pytest.raises(ValueError):
+        kb._collision_free_path(tmp_path, filename)
+
+
+def test_collision_builder_rejects_outside_symlink(tmp_path):
+    root = tmp_path / "attachments"
+    root.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"original")
+    try:
+        (root / "notes.txt").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    with pytest.raises(ValueError):
+        kb._collision_free_path(root, "notes.txt")
+    assert outside.read_bytes() == b"original"
+
+
 def test_download_unknown_attachment_404(client):
     assert client.get("/api/plugins/kanban/attachments/424242").status_code == 404
 

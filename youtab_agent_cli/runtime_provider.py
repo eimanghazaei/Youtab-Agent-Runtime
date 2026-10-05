@@ -457,7 +457,7 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "xai":
         api_mode = "codex_responses"
     elif provider == "youtab":
-        from youtab_agent_cli.providers import youtab_api_mode
+        from youtab_agent_cli.profile_inference import youtab_api_mode
 
         api_mode = youtab_api_mode(effective_model)
         base_url = _youtab_inference_base_url_override() or base_url
@@ -1479,7 +1479,7 @@ def _resolve_profile_inference_runtime(
             "Profile inference credential expired; Desktop sign-in is required.",
             provider="youtab",
         )
-    from youtab_agent_cli.providers import youtab_api_mode
+    from youtab_agent_cli.profile_inference import youtab_api_mode
 
     return {
         "provider": "youtab",
@@ -1560,7 +1560,7 @@ def _resolve_explicit_runtime(
         )
         if profile_inference is not None:
             return profile_inference
-        from youtab_agent_cli.providers import youtab_api_mode
+        from youtab_agent_cli.profile_inference import youtab_api_mode
 
         state = auth_mod.get_provider_auth_state("youtab") or {}
         base_url = (
@@ -1939,7 +1939,7 @@ def resolve_runtime_provider(
 
     if provider == "youtab":
         try:
-            from youtab_agent_cli.providers import youtab_api_mode
+            from youtab_agent_cli.profile_inference import youtab_api_mode
 
             creds = resolve_youtab_runtime_credentials(
                 timeout_seconds=float(_getenv("YOUTAB_AGENT_YOUTAB_TIMEOUT_SECONDS", "15")),

@@ -1,6 +1,6 @@
 """MCP dashboard routes (extracted verbatim from web_server.py).
 
-Handler bodies are byte-identical.  The OAuth flow registry
+The OAuth flow registry
 (``_mcp_oauth_flows`` + lock + pending cap) and the worker/helpers stay in
 web_server - reached via the late-binding seam in :mod:`youtab_agent_cli.web_deps`
 (``late`` for callables, ``LateState`` for the mutable registry/lock/limit) so
@@ -174,10 +174,10 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         # Probe blocks on a dedicated MCP event loop — run in a thread so the
         # FastAPI event loop is never blocked.
         tools, token_present = await asyncio.to_thread(_probe_scoped)
-    except Exception as exc:
+    except Exception:
         return {
             "ok": False,
-            "error": str(exc),
+            "error": "MCP connection failed. Check the server settings and authentication, then try again.",
             "tools": [],
         }
     if not token_present:

@@ -3,8 +3,8 @@
 Applies pattern matching to mask API keys, tokens, and credentials
 before they reach log files, verbose output, or gateway logs.
 
-Short tokens (< 18 chars) are fully masked. Longer tokens preserve
-the first 6 and last 4 characters for debuggability.
+Recognized credentials are replaced with non-reusable markers. Vendor labels
+are preserved for debugging without retaining random credential bytes.
 """
 
 import logging
@@ -464,11 +464,11 @@ def mask_secret(
 
 
 def _mask_token(token: str) -> str:
-    """Mask a log token — conservative 18-char floor, preserves 6 prefix / 4 suffix."""
+    """Mask matched credentials without retaining random secret material."""
     # Empty input: historically this returned "***" rather than "". Preserve.
     if not token:
         return "***"
-    return mask_secret(token, head=6, tail=4, floor=18)
+    return _mask_token_nonreusable(token)
 
 
 def _redact_query_string(query: str) -> str:
@@ -609,8 +609,7 @@ def _redact_form_body(text: str) -> str:
 def _mask_token_nonreusable(token: str) -> str:
     """Redact a prefix-matched credential to a NON-REUSABLE sentinel.
 
-    Unlike :func:`_mask_token` (which keeps head/tail chars — fine for logs
-    that are never fed back into a config), this emits a marker that:
+    Emits a marker suitable for logs and file content that:
 
     * cannot be mistaken for a usable-but-truncated key, so an agent that
       reads it from a config file and writes it back does NOT corrupt the
@@ -646,7 +645,8 @@ def redact_sensitive_text(
     Safe to call on any string -- non-matching text passes through unchanged.
     Enabled by default. Disable via security.redact_secrets: false in config.yaml.
     Set force=True for safety boundaries that must never return raw secrets
-    regardless of the user's global logging redaction preference.
+    regardless of the user's ordinary output redaction preference. Persistent
+    logging always forces redaction through RedactingFormatter.
 
     Set redact_url_credentials=True at non-navigation egress boundaries to
     additionally redact credential-named query parameters and ``user:pass@``
@@ -659,10 +659,9 @@ def redact_sensitive_text(
     private keys, DB connstrings, JWTs, and URL secrets are still redacted.
 
     Set file_read=True for file *content* returned to the agent (read_file /
-    search_files / cat). Secrets are STILL redacted — they are never exposed —
-    but prefix-matched credentials are replaced with a non-reusable sentinel
-    (``«redacted:ghp_…»``) instead of a head/tail-preserving mask
-    (``ghp_S1...Pn2T``). The old mask looked like a real-but-truncated key, so
+    search_files / cat). Prefix-matched credentials use a non-reusable sentinel
+    (``«redacted:ghp_…»``), also used for log masking. The historical head/tail
+    mask (``ghp_S1...Pn2T``) looked like a real-but-truncated key, so
     an agent reading it from config.yaml and writing it back silently corrupted
     the stored credential into a dead 13-char value → 401 (issue #35519). The
     sentinel is syntactically invalid as a token, so it can't be mistaken for a
@@ -975,11 +974,11 @@ def _has_http_method_substring(text: str) -> bool:
 
 
 class RedactingFormatter(logging.Formatter):
-    """Log formatter that redacts secrets from all log messages."""
+    """Redact recognized credentials at the logging boundary, regardless of output preferences."""
 
     def __init__(self, fmt=None, datefmt=None, style='%', **kwargs):
         super().__init__(fmt, datefmt, style, **kwargs)
 
     def format(self, record: logging.LogRecord) -> str:
         original = super().format(record)
-        return redact_sensitive_text(original)
+        return redact_sensitive_text(original, force=True, redact_url_credentials=True)

@@ -11,6 +11,42 @@ import pytest
 from scripts import release
 
 
+def _setup_image(source_sha, base):
+    image = bytearray(256)
+    image[:2] = b"MZ"
+    image[60:64] = (64).to_bytes(4, "little")
+    image[64:68] = b"PE\0\0"
+    image[68:70] = (0x8664).to_bytes(2, "little")
+    image[86:88] = (2).to_bytes(2, "little")
+    image[88:90] = (0x20b).to_bytes(2, "little")
+    return bytes(image) + source_sha.encode() + base.encode()
+
+
+def test_common_setup_is_included_with_source_and_hash_binding(committed_source, tmp_path):
+    sha = release.git_result("rev-parse", "HEAD").stdout.strip()
+    setup = tmp_path / "setup.exe"
+    setup.write_bytes(_setup_image(sha, BASE))
+    manifest = release.package_runtime_artifact(tmp_path / "releases", "0.19.2", 4, BASE, setup)
+    packaged = tmp_path / "releases" / sha / f"Youtab-Setup-{sha}.exe"
+    assert packaged.read_bytes() == setup.read_bytes()
+    assert manifest["setup_sha256"] == hashlib.sha256(setup.read_bytes()).hexdigest()
+    assert manifest["setup_source_sha"] == sha
+    assert manifest["setup_size"] == len(setup.read_bytes())
+    assert manifest["updater_protocol"] == 1
+
+
+@pytest.mark.parametrize("case", ["wrong_source", "wrong_base", "not_executable"])
+def test_common_setup_rejects_mismatched_or_invalid_binary(committed_source, tmp_path, case):
+    sha = release.git_result("rev-parse", "HEAD").stdout.strip()
+    setup = tmp_path / "setup.exe"
+    setup.write_bytes(_setup_image("b" * 40 if case == "wrong_source" else sha,
+                                  "https://wrong.invalid" if case == "wrong_base" else BASE)
+                     if case != "not_executable" else b"not executable")
+    with pytest.raises(ValueError):
+        release.package_runtime_artifact(tmp_path / "releases", "0.19.2", 4, BASE, setup)
+    assert not (tmp_path / "releases" / sha).exists()
+
+
 BASE = "https://api.youtab.io/pilot-runtime-" + "a" * 32 + "/releases"
 
 

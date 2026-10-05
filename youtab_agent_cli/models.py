@@ -20,6 +20,7 @@ from typing import Any, NamedTuple, Optional
 
 from youtab_agent_cli import __version__ as _YOUTAB_AGENT_VERSION
 from youtab_agent_cli.urllib_security import open_credentialed_url
+from youtab_agent_cli.youtab_picker_catalog import YOUTAB_MODELS
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -211,51 +212,7 @@ def _xai_curated_models() -> list[str]:
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "moa": ["default"],
-    "youtab": [
-        # Anthropic
-        "anthropic/claude-fable-5",
-        "anthropic/claude-opus-5",
-        "anthropic/claude-opus-4.8",
-        "anthropic/claude-sonnet-5",
-        "anthropic/claude-haiku-4.5",
-        # OpenAI
-        "openai/gpt-5.6-sol",
-        "openai/gpt-5.6-sol-pro",
-        "openai/gpt-5.6-terra",
-        "openai/gpt-5.6-terra-pro",
-        "openai/gpt-5.6-luna",
-        "openai/gpt-5.6-luna-pro",
-        "openai/gpt-5.5",
-        "openai/gpt-5.5-pro",
-        "openai/gpt-5.4-mini",
-        # Google
-        "google/gemini-3.1-pro-preview",
-        "google/gemini-3.6-flash",
-        # xAI
-        "x-ai/grok-4.5",
-        # DeepSeek
-        "deepseek/deepseek-v4-pro",
-        "deepseek/deepseek-v4-flash",
-        # Qwen
-        "qwen/qwen3.7-max",
-        # MoonshotAI
-        "moonshotai/kimi-k3",
-        # MiniMax
-        "minimax/minimax-m3",
-        # Z-AI
-        "z-ai/glm-5.2",
-        "z-ai/glm-5.1",
-        # Xiaomi
-        "xiaomi/mimo-v2.5-pro",
-        # Tencent
-        "tencent/hy3",
-        # StepFun
-        "stepfun/step-3.7-flash",
-        # NVIDIA
-        "nvidia/nemotron-3-super-120b-a12b",
-        # Sakana
-        "sakana/fugu-ultra",
-    ],
+    "youtab": YOUTAB_MODELS,
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
     "openai": [
@@ -619,15 +576,7 @@ _PROVIDER_MODELS["ai-gateway"] = [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS]
 # surface it to users as-is — no local allowlist filtering.
 
 
-def _is_model_free(model_id: str, pricing: dict[str, dict[str, str]]) -> bool:
-    """Return True if *model_id* has zero-cost prompt AND completion pricing."""
-    p = pricing.get(model_id)
-    if not p:
-        return False
-    try:
-        return float(p.get("prompt", "1")) == 0 and float(p.get("completion", "1")) == 0
-    except (TypeError, ValueError):
-        return False
+from youtab_agent_cli.youtab_picker_catalog import _is_model_free as _is_model_free
 
 
 # ---------------------------------------------------------------------------
@@ -661,164 +610,21 @@ def is_youtab_free_tier(account_info: dict[str, Any]) -> bool:
         return False
 
 
-def partition_youtab_models_by_tier(
-    model_ids: list[str],
-    pricing: dict[str, dict[str, str]],
-    free_tier: bool,
-) -> tuple[list[str], list[str]]:
-    """Split Youtab models into (selectable, unavailable) based on user tier.
-
-    For paid-tier users: all models are selectable, none unavailable.
-
-    For free-tier users: only free models are selectable; paid models
-    are returned as unavailable (shown grayed out in the menu).
-    """
-    if not free_tier:
-        return (model_ids, [])
-
-    if not pricing:
-        return (model_ids, [])  # can't determine, show everything
-
-    selectable: list[str] = []
-    unavailable: list[str] = []
-    for mid in model_ids:
-        if _is_model_free(mid, pricing):
-            selectable.append(mid)
-        else:
-            unavailable.append(mid)
-    return (selectable, unavailable)
+def partition_youtab_models_by_tier(model_ids, pricing, free_tier):
+    from youtab_agent_cli.youtab_picker_catalog import partition_youtab_models_by_tier as partition
+    return partition(model_ids, pricing, free_tier, is_model_free=_is_model_free)
 
 
-def union_with_portal_free_recommendations(
-    curated_ids: list[str],
-    pricing: dict[str, dict[str, str]],
-    portal_base_url: str = "",
-    *,
-    force_refresh: bool = False,
-) -> tuple[list[str], dict[str, dict[str, str]]]:
-    """Augment curated list + pricing with the Portal's ``freeRecommendedModels``.
-
-    The Portal's ``/api/youtab/recommended-models`` endpoint advertises which
-    models are free *right now* — independent of what the in-repo
-    ``_PROVIDER_MODELS["youtab"]`` list happens to contain or whether the
-    docs-hosted catalog manifest has been rebuilt since the last release.
-
-    For free-tier users this is the source of truth: any model the Portal
-    flags as free should be selectable, even if the user is running an
-    older Youtab that doesn't ship that model in its hardcoded curated
-    list.  This function returns an augmented ``(model_ids, pricing)``
-    pair where:
-
-    * Portal free recommendations missing from ``curated_ids`` are
-      appended after the curated list (so the in-repo curated models
-      show first and Portal-only picks follow).
-    * ``pricing`` gets a synthetic ``{"prompt": "0", "completion": "0"}``
-      entry for any free recommendation missing from the live pricing
-      map, so :func:`partition_youtab_models_by_tier` keeps it.
-
-    Failures (network, parse, missing field) are silent and degrade to
-    returning the inputs unchanged.
-    """
-    try:
-        payload = fetch_youtab_recommended_models(
-            portal_base_url, force_refresh=force_refresh
-        )
-    except Exception:
-        return (list(curated_ids), dict(pricing))
-
-    free_block = payload.get("freeRecommendedModels") if isinstance(payload, dict) else None
-    if not isinstance(free_block, list) or not free_block:
-        return (list(curated_ids), dict(pricing))
-
-    portal_free_ids: list[str] = []
-    for entry in free_block:
-        name = _extract_model_name(entry)
-        if name:
-            portal_free_ids.append(name)
-    if not portal_free_ids:
-        return (list(curated_ids), dict(pricing))
-
-    augmented_pricing = dict(pricing)
-    free_synthetic = {"prompt": "0", "completion": "0"}
-    for mid in portal_free_ids:
-        if mid not in augmented_pricing:
-            augmented_pricing[mid] = dict(free_synthetic)
-
-    augmented_ids = list(curated_ids)
-    seen = set(augmented_ids)
-    # Append Portal free recommendations that aren't already curated, so the
-    # in-repo curated ("HA") models show first and Portal-only picks follow.
-    new_ones = [mid for mid in portal_free_ids if mid not in seen]
-    if new_ones:
-        augmented_ids = augmented_ids + new_ones
-
-    return (augmented_ids, augmented_pricing)
+def union_with_portal_free_recommendations(curated_ids, pricing, portal_base_url="", *, force_refresh=False):
+    from youtab_agent_cli.youtab_picker_catalog import union_with_portal_free_recommendations as union
+    return union(curated_ids, pricing, portal_base_url, force_refresh=force_refresh,
+                 fetch_recommendations=fetch_youtab_recommended_models)
 
 
-def union_with_portal_paid_recommendations(
-    curated_ids: list[str],
-    pricing: dict[str, dict[str, str]],
-    portal_base_url: str = "",
-    *,
-    force_refresh: bool = False,
-) -> tuple[list[str], dict[str, dict[str, str]]]:
-    """Augment curated list with the Portal's ``paidRecommendedModels``.
-
-    Mirror of :func:`union_with_portal_free_recommendations` for paid-tier
-    users. The Portal's ``/api/youtab/recommended-models`` endpoint advertises
-    which paid models are blessed *right now* — independent of what the
-    in-repo ``_PROVIDER_MODELS["youtab"]`` list happens to contain or whether
-    the docs-hosted catalog manifest has been rebuilt since the last release.
-
-    For paid-tier users this lets newly-launched paid models surface in the
-    picker even if the user is running an older Youtab that doesn't ship
-    them in its hardcoded curated list. This function returns an augmented
-    ``(model_ids, pricing)`` pair where:
-
-    * Portal paid recommendations missing from ``curated_ids`` are
-      appended after the curated list (so the in-repo curated models
-      show first and Portal-only picks follow).
-    * ``pricing`` is left untouched — we deliberately do NOT synthesize
-      pricing entries for paid models. Live pricing is fetched separately
-      via :func:`get_pricing_for_provider`; if the live endpoint hasn't
-      published pricing yet, the picker shows a blank price column rather
-      than fabricating numbers. (The free helper synthesizes ``$0`` so
-      :func:`partition_youtab_models_by_tier` keeps free models selectable;
-      no equivalent gating applies on the paid side, so synthesis would
-      only mislead the user.)
-
-    Failures (network, parse, missing field) are silent and degrade to
-    returning the inputs unchanged — never block the picker on a
-    Portal-side hiccup.
-    """
-    try:
-        payload = fetch_youtab_recommended_models(
-            portal_base_url, force_refresh=force_refresh
-        )
-    except Exception:
-        return (list(curated_ids), dict(pricing))
-
-    paid_block = payload.get("paidRecommendedModels") if isinstance(payload, dict) else None
-    if not isinstance(paid_block, list) or not paid_block:
-        return (list(curated_ids), dict(pricing))
-
-    portal_paid_ids: list[str] = []
-    for entry in paid_block:
-        name = _extract_model_name(entry)
-        if name:
-            portal_paid_ids.append(name)
-    if not portal_paid_ids:
-        return (list(curated_ids), dict(pricing))
-
-    augmented_ids = list(curated_ids)
-    seen = set(augmented_ids)
-    # Append Portal paid recommendations that aren't already curated, so the
-    # in-repo curated ("HA") models show first and Portal-only picks follow.
-    new_ones = [mid for mid in portal_paid_ids if mid not in seen]
-    if new_ones:
-        augmented_ids = augmented_ids + new_ones
-
-    return (augmented_ids, dict(pricing))
+def union_with_portal_paid_recommendations(curated_ids, pricing, portal_base_url="", *, force_refresh=False):
+    from youtab_agent_cli.youtab_picker_catalog import union_with_portal_paid_recommendations as union
+    return union(curated_ids, pricing, portal_base_url, force_refresh=force_refresh,
+                 fetch_recommendations=fetch_youtab_recommended_models)
 
 
 # ---------------------------------------------------------------------------
@@ -826,36 +632,21 @@ def union_with_portal_paid_recommendations(
 # session while still picking up upgrades quickly.
 # ---------------------------------------------------------------------------
 _FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
-_free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
+from youtab_agent_cli.youtab_picker_catalog import _free_tier_cache as _free_tier_cache
 
 
 def check_youtab_free_tier(*, force_fresh: bool = False) -> bool:
-    """Check if the current Youtab Portal user is on a free (unpaid) tier.
-
-    Results are cached for ``_FREE_TIER_CACHE_TTL`` seconds to avoid
-    hitting the Portal API on every call.  The cache is short-lived so
-    that an account upgrade is reflected within a few minutes.
-
-    Returns True only when entitlement is known to be free.  Unknown/error
-    states return False so this compatibility wrapper does not block users.
-    """
+    """Use the shared entitlement cache, retaining the legacy None reset seam."""
     global _free_tier_cache
-    now = time.monotonic()
-    if not force_fresh and _free_tier_cache is not None:
-        cached_result, cached_at = _free_tier_cache
-        if now - cached_at < _FREE_TIER_CACHE_TTL:
-            return cached_result
-
-    try:
-        from youtab_agent_cli.youtab_account import get_youtab_portal_account_info
-
-        account_info = get_youtab_portal_account_info(force_fresh=force_fresh)
-        result = account_info.is_free_tier
-        _free_tier_cache = (result, now)
-        return result
-    except Exception:
-        _free_tier_cache = (False, now)
-        return False  # default to paid on error — don't block users
+    from youtab_agent_cli.youtab_account import get_youtab_portal_account_info
+    from youtab_agent_cli import youtab_picker_catalog as picker
+    if _free_tier_cache is None:
+        picker._free_tier_cache.clear()
+        _free_tier_cache = picker._free_tier_cache
+    return picker.check_youtab_free_tier(
+        get_youtab_portal_account_info, force_fresh=force_fresh,
+        cache=_free_tier_cache, ttl=_FREE_TIER_CACHE_TTL,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -881,127 +672,28 @@ def check_youtab_free_tier(*, force_fresh: bool = False) -> bool:
 YOUTAB_RECOMMENDED_MODELS_PATH = "/api/youtab/recommended-models"
 _YOUTAB_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
 # (result_dict, timestamp) keyed by portal_base_url so staging vs prod don't collide.
-_youtab_recommended_cache: dict[str, tuple[dict[str, Any], float]] = {}
+from youtab_agent_cli.youtab_picker_catalog import _youtab_recommended_cache as _youtab_recommended_cache
 
 
-def _youtab_recommended_disk_path() -> "Path":
-    """Disk path for the persisted recommended-models cache."""
-    from youtab_constants import get_youtab_home
-    return get_youtab_home() / "cache" / "youtab_recommended_cache.json"
+from youtab_agent_cli.youtab_picker_catalog import _youtab_recommended_disk_path as _youtab_recommended_disk_path
 
 
-def _read_youtab_recommended_disk(base: str) -> dict[str, Any] | None:
-    """Return the last-known-good payload for ``base`` from disk, or None.
-
-    The disk file is a JSON object keyed by portal base URL so staging and
-    prod don't collide:
-    ``{"<base>": {"data": {...}, "ts": <epoch_seconds>}}``.
-    """
-    try:
-        with open(_youtab_recommended_disk_path(), encoding="utf-8") as fh:
-            blob = json.load(fh)
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(blob, dict):
-        return None
-    entry = blob.get(base)
-    if not isinstance(entry, dict):
-        return None
-    data = entry.get("data")
-    return data if isinstance(data, dict) and data else None
+def _read_youtab_recommended_disk(base):
+    from youtab_agent_cli.youtab_picker_catalog import _read_youtab_recommended_disk as read
+    return read(base, disk_path=_youtab_recommended_disk_path)
 
 
-def _write_youtab_recommended_disk(base: str, data: dict[str, Any]) -> None:
-    """Persist ``data`` as the last-known-good payload for ``base``.
-
-    Merges into any existing per-base map, then writes atomically. Failures
-    are non-fatal (logged at debug) — the in-process cache still works.
-    """
-    if not data:
-        return
-    path = _youtab_recommended_disk_path()
-    try:
-        try:
-            with open(path, encoding="utf-8") as fh:
-                blob = json.load(fh)
-            if not isinstance(blob, dict):
-                blob = {}
-        except (OSError, json.JSONDecodeError):
-            blob = {}
-        blob[base] = {"data": data, "ts": time.time()}
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(blob, fh, indent=2)
-            fh.write("\n")
-        os.replace(tmp, path)
-    except OSError as exc:
-        import logging
-        logging.getLogger(__name__).debug(
-            "youtab recommended-models disk cache write failed: %s", exc
-        )
+def _write_youtab_recommended_disk(base, data):
+    from youtab_agent_cli.youtab_picker_catalog import _write_youtab_recommended_disk as write
+    return write(base, data, disk_path=_youtab_recommended_disk_path)
 
 
-def fetch_youtab_recommended_models(
-    portal_base_url: str = "",
-    timeout: float = 5.0,
-    *,
-    force_refresh: bool = False,
-) -> dict[str, Any]:
-    """Fetch the Youtab Portal's curated recommended-models payload.
-
-    Hits ``<portal>/api/youtab/recommended-models``. The endpoint is public —
-    no auth is required. Results are cached per portal URL for
-    ``_YOUTAB_RECOMMENDED_CACHE_TTL`` seconds in process; pass
-    ``force_refresh=True`` to bypass the in-process cache.
-
-    A successful live fetch is also persisted to a per-base disk cache
-    (``$YOUTAB_AGENT_HOME/cache/youtab_recommended_cache.json``) as last-known-good.
-    When the live fetch fails (network, parse, non-2xx) and the in-process
-    cache is empty, the disk copy is returned instead of ``{}`` — so a
-    transient Portal hiccup no longer silently drops the free/paid model
-    recommendations from the picker. Self-heals on the next successful fetch.
-
-    Returns the parsed JSON dict, or ``{}`` only when neither the network nor
-    any cache layer can supply data. Callers must treat missing/null fields
-    as "no recommendation" and fall back to their own default.
-    """
-    base = (portal_base_url or "https://api.youtab.io").rstrip("/")
-    now = time.monotonic()
-    cached = _youtab_recommended_cache.get(base)
-    if not force_refresh and cached is not None:
-        payload, cached_at = cached
-        if now - cached_at < _YOUTAB_RECOMMENDED_CACHE_TTL:
-            return payload
-
-    url = f"{base}{YOUTAB_RECOMMENDED_MODELS_PATH}"
-    try:
-        req = urllib.request.Request(
-            url,
-            headers={"Accept": "application/json"},
-        )
-        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
-            data = json.loads(resp.read().decode())
-        if not isinstance(data, dict):
-            data = {}
-    except Exception:
-        data = {}
-
-    if data:
-        # Live fetch succeeded — refresh both cache layers.
-        _youtab_recommended_cache[base] = (data, now)
-        _write_youtab_recommended_disk(base, data)
-        return data
-
-    # Live fetch failed. Fall back to the last-known-good disk copy so a
-    # transient Portal hiccup doesn't drop the recommendations entirely.
-    disk = _read_youtab_recommended_disk(base)
-    if disk:
-        _youtab_recommended_cache[base] = (disk, now)
-        return disk
-
-    _youtab_recommended_cache[base] = (data, now)
-    return data
+def fetch_youtab_recommended_models(portal_base_url="", timeout=5.0, *, force_refresh=False):
+    from youtab_agent_cli.youtab_picker_catalog import fetch_youtab_recommended_models as fetch
+    return fetch(portal_base_url, timeout, force_refresh=force_refresh,
+                 cache=_youtab_recommended_cache, open_url=_urlopen_model_catalog_request,
+                 read_disk=_read_youtab_recommended_disk, write_disk=_write_youtab_recommended_disk,
+                 ttl=_YOUTAB_RECOMMENDED_CACHE_TTL)
 
 
 def _resolve_youtab_portal_url() -> str:
@@ -1020,14 +712,7 @@ def _resolve_youtab_portal_url() -> str:
         return "https://api.youtab.io"
 
 
-def _extract_model_name(entry: Any) -> Optional[str]:
-    """Pull the ``modelName`` field from a recommended-model entry, else None."""
-    if not isinstance(entry, dict):
-        return None
-    model_name = entry.get("modelName")
-    if isinstance(model_name, str) and model_name.strip():
-        return model_name.strip()
-    return None
+from youtab_agent_cli.youtab_picker_catalog import _extract_model_name as _extract_model_name
 
 
 def get_youtab_recommended_aux_model(
@@ -1272,91 +957,7 @@ def group_providers(slugs):
     return rows
 
 
-_PROVIDER_ALIASES = {
-    "glm": "zai",
-    "z-ai": "zai",
-    "z.ai": "zai",
-    "zhipu": "zai",
-    "github": "copilot",
-    "github-copilot": "copilot",
-    "github-models": "copilot",
-    "github-model": "copilot",
-    "github-copilot-acp": "copilot-acp",
-    "copilot-acp-agent": "copilot-acp",
-    "google": "gemini",
-    "google-gemini": "gemini",
-    "google-ai-studio": "gemini",
-    "google-vertex": "vertex",
-    "vertex-ai": "vertex",
-    "gcp-vertex": "vertex",
-    "vertexai": "vertex",
-    "kimi": "kimi-coding",
-    "moonshot": "kimi-coding",
-    "kimi-cn": "kimi-coding-cn",
-    "moonshot-cn": "kimi-coding-cn",
-    "step": "stepfun",
-    "stepfun-coding-plan": "stepfun",
-    "arcee-ai": "arcee",
-    "arceeai": "arcee",
-    "gmi-cloud": "gmi",
-    "gmicloud": "gmi",
-    "fireworks-ai": "fireworks",
-    "fw": "fireworks",
-    "minimax-china": "minimax-cn",
-    "minimax_cn": "minimax-cn",
-    "minimax-portal": "minimax-oauth",
-    "minimax-global": "minimax-oauth",
-    "minimax_oauth": "minimax-oauth",
-    "claude": "anthropic",
-    "claude-code": "anthropic",
-    "deep-seek": "deepseek",
-    "opencode": "opencode-zen",
-    "zen": "opencode-zen",
-    "go": "opencode-go",
-    "opencode-go-sub": "opencode-go",
-    "aigateway": "ai-gateway",
-    "vercel": "ai-gateway",
-    "vercel-ai-gateway": "ai-gateway",
-    "kilo": "kilocode",
-    "kilo-code": "kilocode",
-    "kilo-gateway": "kilocode",
-    "dashscope": "alibaba",
-    "aliyun": "alibaba",
-    "qwen": "alibaba",
-    "alibaba-cloud": "alibaba",
-    "qwen-portal": "qwen-oauth",
-    "hf": "huggingface",
-    "hugging-face": "huggingface",
-    "huggingface-hub": "huggingface",
-    "novita-ai": "novita",
-    "novitaai": "novita",
-    "mimo": "xiaomi",
-    "xiaomi-mimo": "xiaomi",
-    "tencent": "tencent-tokenhub",
-    "tokenhub": "tencent-tokenhub",
-    "tencent-cloud": "tencent-tokenhub",
-    "tencentmaas": "tencent-tokenhub",
-    "aws": "bedrock",
-    "aws-bedrock": "bedrock",
-    "amazon-bedrock": "bedrock",
-    "amazon": "bedrock",
-    "grok": "xai",
-    "grok-oauth": "xai-oauth",
-    "xai-oauth": "xai-oauth",
-    "x-ai-oauth": "xai-oauth",
-    "xai-grok-oauth": "xai-oauth",
-    "x-ai": "xai",
-    "x.ai": "xai",
-    "nim": "nvidia",
-    "nvidia-nim": "nvidia",
-    "build-nvidia": "nvidia",
-    "nemotron": "nvidia",
-    "lmstudio": "lmstudio",
-    "lm-studio": "lmstudio",
-    "lm_studio": "lmstudio",
-    "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
-    "ollama_cloud": "ollama-cloud",
-}
+from youtab_agent_cli.model_provider_identity import _PROVIDER_ALIASES
 
 
 # In-repo fallback for the model Youtab silently lands on when the user never
@@ -1568,22 +1169,9 @@ def model_ids(*, force_refresh: bool = False) -> list[str]:
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
 
 
-def get_curated_youtab_model_ids() -> list[str]:
-    """Return the curated Youtab Portal model-id list.
-
-    Prefers the remotely-hosted catalog manifest (published under
-    the packaged engine catalogue); falls back to the in-repo
-    snapshot in ``_PROVIDER_MODELS["youtab"]`` when the manifest is
-    unreachable. Always returns a list (never None).
-    """
-    try:
-        from youtab_agent_cli.model_catalog import get_curated_youtab_models
-        remote = get_curated_youtab_models()
-    except Exception:
-        remote = None
-    if remote:
-        return list(remote)
-    return list(_PROVIDER_MODELS.get("youtab", []))
+def get_curated_youtab_model_ids():
+    from youtab_agent_cli.youtab_picker_catalog import get_curated_youtab_model_ids as curated
+    return curated(fallback=_PROVIDER_MODELS.get("youtab", []))
 
 
 def _ai_gateway_model_is_free(pricing: Any) -> bool:
@@ -1680,182 +1268,21 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
 # ---------------------------------------------------------------------------
 
 # Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
-_pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
+from youtab_agent_cli.youtab_picker_catalog import _pricing_cache as _pricing_cache
 
 
-def _format_price_per_mtok(per_token_str: str) -> str:
-    """Convert a per-token price string to a human-friendly $/Mtok string.
-
-    Always uses 2 decimal places so that prices align vertically when
-    right-justified in a column (the decimal point stays in the same position).
-
-    Examples:
-        "0.000003"   → "$3.00"      (per million tokens)
-        "0.00003"    → "$30.00"
-        "0.00000015" → "$0.15"
-        "0.0000001"  → "$0.10"
-        "0.00018"    → "$180.00"
-        "0"          → "free"
-    """
-    try:
-        val = float(per_token_str)
-    except (TypeError, ValueError):
-        return "?"
-    if val == 0:
-        return "free"
-    per_m = val * 1_000_000
-    return f"${per_m:.2f}"
+from youtab_agent_cli.model_pricing import (
+    _format_price_per_mtok as _format_price_per_mtok,
+    compute_sale_discount as compute_sale_discount,
+)
 
 
-def compute_sale_discount(
-    prompt: str,
-    completion: str,
-    original: Any,
-) -> tuple[int, str, str] | None:
-    """Derive sale chrome from gateway ``pricing.original`` when cheaper.
-
-    Youtab Portal-only feature: callers gate on the provider; this helper only
-    sees ``original`` because the Youtab fetch path opted in via
-    ``include_sale_original=True``.
-
-    Returns ``(discount_percent, was_prompt_raw, was_completion_raw)`` only when
-    ``original`` is a dict and the current prompt (fallback: completion) rate
-    is strictly below the corresponding original. Percent is
-    ``round((1 - current/original) * 100)`` — never hardcoded, and a discount
-    that rounds below 1% is treated as no sale (never render "-0%"). Returns
-    ``None`` when there is no sale (missing/equal/invalid original), so UIs
-    show normal prices.
-    """
-    if not isinstance(original, dict):
-        return None
-
-    was_prompt = original.get("prompt")
-    was_completion = original.get("completion")
-    if was_prompt in (None, "") and was_completion in (None, ""):
-        return None
-
-    def _finite(raw: Any) -> float | None:
-        try:
-            n = float(raw)
-        except (TypeError, ValueError):
-            return None
-        return n if n > 0 and n == n else None  # n == n rejects NaN
-
-    def _nonneg(raw: Any) -> float | None:
-        try:
-            n = float(raw)
-        except (TypeError, ValueError):
-            return None
-        return n if n >= 0 and n == n else None
-
-    # Free / $0 models never show sale chrome, even if a leftover list price
-    # is higher (e.g. a :free sibling that inherited pricing.original).
-    cur_prompt_any = _nonneg(prompt) if prompt not in (None, "") else None
-    cur_comp_any = _nonneg(completion) if completion not in (None, "") else None
-    if cur_prompt_any == 0 and cur_comp_any == 0:
-        return None
-
-    cur_prompt = _finite(prompt) if prompt not in (None, "") else None
-    orig_prompt = _finite(was_prompt) if was_prompt not in (None, "") else None
-    if cur_prompt is not None and orig_prompt is not None and cur_prompt < orig_prompt:
-        pct = int(round((1.0 - (cur_prompt / orig_prompt)) * 100))
-        if pct < 1:
-            return None
-        return (
-            pct,
-            str(was_prompt),
-            str(was_completion) if was_completion not in (None, "") else "",
-        )
-
-    cur_comp = _finite(completion) if completion not in (None, "") else None
-    orig_comp = _finite(was_completion) if was_completion not in (None, "") else None
-    if cur_comp is not None and orig_comp is not None and cur_comp < orig_comp:
-        pct = int(round((1.0 - (cur_comp / orig_comp)) * 100))
-        if pct < 1:
-            return None
-        return (
-            pct,
-            str(was_prompt) if was_prompt not in (None, "") else "",
-            str(was_completion),
-        )
-
-    return None
-
-
-def fetch_models_with_pricing(
-    api_key: str | None = None,
-    base_url: str = "https://openrouter.ai/api",
-    timeout: float = 8.0,
-    *,
-    force_refresh: bool = False,
-    include_sale_original: bool = False,
-) -> dict[str, dict[str, Any]]:
-    """Fetch ``/v1/models`` and return ``{model_id: {prompt, completion, ...}}``.
-
-    Results are cached per *base_url* so repeated calls are free.
-    Works with any OpenRouter-compatible endpoint (OpenRouter, Youtab Portal).
-
-    When *include_sale_original* is true (Youtab Portal only) and the gateway
-    advertises a global discount under ``pricing.original``, those
-    pre-discount rates are copied through as a nested ``original`` dict so
-    pickers can show sale chrome. Other providers never opt in — OpenRouter
-    (and anything else sharing this helper) keeps the legacy
-    ``{prompt, completion}`` shape even if a response happens to nest
-    ``original``.
-    """
-    cache_key = (base_url or "").rstrip("/")
-    if not force_refresh and cache_key in _pricing_cache:
-        return _pricing_cache[cache_key]
-
-    url = cache_key + "/v1/models"
-    headers: dict[str, str] = {
-        "Accept": "application/json",
-        "User-Agent": _YOUTAB_AGENT_USER_AGENT,
-    }
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    try:
-        req = urllib.request.Request(url, headers=headers)
-        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
-    except Exception:
-        _pricing_cache[cache_key] = {}
-        return {}
-
-    result: dict[str, dict[str, Any]] = {}
-    for item in payload.get("data", []):
-        mid = item.get("id")
-        pricing = item.get("pricing")
-        if mid and isinstance(pricing, dict):
-            entry: dict[str, Any] = {
-                "prompt": str(pricing.get("prompt", "")),
-                "completion": str(pricing.get("completion", "")),
-            }
-            if pricing.get("input_cache_read"):
-                entry["input_cache_read"] = str(pricing["input_cache_read"])
-            if pricing.get("input_cache_write"):
-                entry["input_cache_write"] = str(pricing["input_cache_write"])
-            # Sale chrome is Youtab Portal-only. Never copy pricing.original for
-            # OpenRouter / other OpenAI-compatible catalogs.
-            if include_sale_original:
-                original = pricing.get("original")
-                if isinstance(original, dict):
-                    orig_entry: dict[str, str] = {}
-                    for key in (
-                        "prompt",
-                        "completion",
-                        "input_cache_read",
-                        "input_cache_write",
-                    ):
-                        if original.get(key) not in (None, ""):
-                            orig_entry[key] = str(original[key])
-                    if orig_entry.get("prompt") or orig_entry.get("completion"):
-                        entry["original"] = orig_entry
-            result[mid] = entry
-
-    _pricing_cache[cache_key] = result
-    return result
+def fetch_models_with_pricing(api_key=None, base_url="https://openrouter.ai/api", timeout=8.0,
+                              *, force_refresh=False, include_sale_original=False):
+    from youtab_agent_cli.youtab_picker_catalog import fetch_models_with_pricing as fetch
+    return fetch(api_key, base_url, timeout, force_refresh=force_refresh,
+                 include_sale_original=include_sale_original, cache=_pricing_cache,
+                 open_url=_urlopen_model_catalog_request)
 
 
 def fetch_ai_gateway_pricing(
@@ -1913,59 +1340,13 @@ def _resolve_openrouter_api_key() -> str:
     return os.getenv("OPENROUTER_API_KEY", "").strip()
 
 
-_DEFAULT_YOUTAB_INFERENCE_BASE = "https://api.youtab.io"
 
 
-def _resolve_youtab_pricing_credentials() -> tuple[str, str]:
-    """Return ``(api_key, base_url)`` for Youtab Portal pricing.
-
-    The Youtab inference ``/v1/models`` endpoint exposes pricing without
-    authentication, so the api_key is best-effort: when runtime credential
-    resolution fails (expired refresh token, missing auth.json, etc.) we
-    still return a usable inference base URL so the picker keeps working
-    with anonymous pricing data.  Free-tier users in particular need this
-    — pricing drives the free/paid partition, and silently returning empty
-    pricing because of an auth blip makes the picker look broken ("No free
-    models currently available").
-
-    Base URL precedence (mirrors runtime credential resolution):
-    1. ``YOUTAB_INFERENCE_BASE_URL`` env override (staging / preview)
-    2. Resolved runtime credential ``base_url``
-    3. Production default
-
-    Without (1), a staging profile's sale ``pricing.original`` never
-    reaches the pickers — the anonymous fallback would hit prod, which
-    has no ``original`` field.
-    """
-    env_base = None
-    try:
-        from youtab_agent_cli.auth import _youtab_inference_env_override
-
-        env_base = _youtab_inference_env_override()
-    except Exception:
-        env_base = None
-
-    api_key = ""
-    creds_base = ""
-    from youtab_agent_cli.auth import get_local_inference_token_state, profile_inference_base_url
-
-    local = get_local_inference_token_state()
-    if local is not None:
-        if not local.get("agent_key"):
-            return ("", "")
-        return (str(local.get("agent_key") or ""), profile_inference_base_url(local))
-    try:
-        from youtab_agent_cli.auth import resolve_youtab_runtime_credentials
-
-        creds = resolve_youtab_runtime_credentials()
-        if creds:
-            api_key = creds.get("api_key", "") or ""
-            creds_base = (creds.get("base_url", "") or "").strip()
-    except Exception:
-        pass
-
-    base_url = (env_base or creds_base or _DEFAULT_YOUTAB_INFERENCE_BASE).rstrip("/")
-    return (api_key, base_url)
+def _resolve_youtab_pricing_credentials():
+    from youtab_agent_cli.auth import resolve_youtab_runtime_credentials, _youtab_inference_env_override
+    from youtab_agent_cli.youtab_picker_catalog import resolve_youtab_pricing_credentials
+    return resolve_youtab_pricing_credentials(resolve_youtab_runtime_credentials,
+                                               _youtab_inference_env_override)
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
@@ -2314,7 +1695,7 @@ def _resolve_static_model_alias(
 ) -> Optional[tuple[str, str]]:
     """Resolve short aliases (e.g. sonnet/opus) using static catalogs only."""
     try:
-        from youtab_agent_cli.model_switch import MODEL_ALIASES
+        from youtab_agent_cli.model_alias_catalog import MODEL_ALIASES
     except Exception:
         return None
 
@@ -2524,8 +1905,9 @@ def normalize_provider(provider: Optional[str]) -> str:
     ``youtab_agent_cli.auth.resolve_provider()`` to resolve it to a concrete
     provider based on credentials and environment.
     """
-    normalized = (provider or "openrouter").strip().lower()
-    return _PROVIDER_ALIASES.get(normalized, normalized)
+    from youtab_agent_cli.model_provider_identity import normalize_provider as normalize
+
+    return normalize(provider, aliases=_PROVIDER_ALIASES)
 
 
 def provider_label(provider: Optional[str]) -> str:
@@ -2816,13 +2198,8 @@ def provider_model_ids(
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
     if normalized == "youtab":
-        from youtab_agent_cli.auth import (
-            _agent_key_is_usable,
-            fetch_youtab_models,
-            get_local_inference_token_state,
-            inference_token_safety_seconds,
-            profile_inference_base_url,
-        )
+        from youtab_agent_cli.profile_inference import (_agent_key_is_usable, get_local_inference_token_state, inference_token_safety_seconds, profile_inference_base_url)
+        from youtab_agent_cli.youtab_model_catalog import (fetch_youtab_models)
 
         local = get_local_inference_token_state()
         if local is not None:
@@ -2846,7 +2223,8 @@ def provider_model_ids(
             return []
         # Try live Youtab Portal /models endpoint
         try:
-            from youtab_agent_cli.auth import fetch_youtab_models, resolve_youtab_runtime_credentials
+            from youtab_agent_cli.youtab_model_catalog import (fetch_youtab_models)
+            from youtab_agent_cli.auth import (resolve_youtab_runtime_credentials)
             creds = resolve_youtab_runtime_credentials()
             if creds:
                 live = fetch_youtab_models(api_key=creds.get("api_key", ""), inference_base_url=creds.get("base_url", ""))
@@ -2984,7 +2362,7 @@ def provider_model_ids(
     # below — bedrock is not expected to appear in that table.
     if normalized == "bedrock":
         try:
-            from agent.bedrock_adapter import bedrock_model_ids_or_none
+            from agent.bedrock_catalog import bedrock_model_ids_or_none
             ids = bedrock_model_ids_or_none()
             if ids is not None:
                 return ids
@@ -3080,8 +2458,9 @@ _PROVIDER_MODELS_CACHE_TTL = 3600  # 1h
 
 
 def _provider_models_cache_path() -> Path:
-    from youtab_constants import get_youtab_home
-    return get_youtab_home() / "provider_models_cache.json"
+    from youtab_agent_cli.provider_models_cache import _provider_models_cache_path as cache_path
+
+    return cache_path()
 
 
 def _credential_fingerprint(provider: str) -> str:
@@ -3113,7 +2492,8 @@ def _credential_fingerprint(provider: str) -> str:
             if bev:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
     except Exception:
-        pass
+        import logging
+        logging.getLogger(__name__).debug("Provider registry unavailable while computing catalog cache identity", exc_info=True)
 
     # A profile inference bearer rotates without changing its account or
     # workspace admission. Keep that catalog during a transient outage, while
@@ -3122,7 +2502,7 @@ def _credential_fingerprint(provider: str) -> str:
     profile_identity = None
     if provider == "youtab":
         try:
-            from youtab_agent_cli.auth import _decode_jwt_claims, get_local_inference_token_state
+            from youtab_agent_cli.profile_inference import (_decode_jwt_claims, get_local_inference_token_state)
 
             local = get_local_inference_token_state()
             token = local.get("agent_key") if local else None
@@ -3178,24 +2558,21 @@ def _credential_fingerprint(provider: str) -> str:
 
 def _load_provider_models_cache() -> dict:
     """Return the full cache dict, or {} on any error."""
+    from youtab_agent_cli.provider_models_cache import _load_provider_models_cache as load_cache
+
+    # Keep path lookup inside best-effort handling, including patched failures.
     try:
-        path = _provider_models_cache_path()
-        if not path.exists():
-            return {}
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        return load_cache(path=_provider_models_cache_path())
     except Exception:
         return {}
 
 
 def _save_provider_models_cache(data: dict) -> None:
     """Persist the cache dict. Best-effort — silent on any error."""
+    from youtab_agent_cli.provider_models_cache import _save_provider_models_cache as save_cache
+
     try:
-        from utils import atomic_json_write
-        path = _provider_models_cache_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(path, data, indent=None)
+        save_cache(data, path=_provider_models_cache_path())
     except Exception:
         pass
 
@@ -3233,7 +2610,7 @@ def cached_provider_model_ids(
     # Cache miss / stale / forced refresh — call the live path.
     youtab_profile_catalog = False
     if normalized == "youtab":
-        from youtab_agent_cli.auth import get_local_inference_token_state
+        from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
 
         youtab_profile_catalog = (
             get_local_inference_token_state() is not None
@@ -3248,7 +2625,7 @@ def cached_provider_model_ids(
     except Exception as error:
         if not youtab_profile_catalog:
             raise
-        from youtab_agent_cli.auth import AuthError
+        from youtab_agent_cli.auth_errors import (AuthError)
 
         # Revoked/forbidden credentials and other rejected requests cannot use
         # stale admission. Only transport or server failure may use the cache.
@@ -3291,19 +2668,13 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
     entry is removed. Used by ``/model --refresh`` and
     ``youtab model --refresh``.
     """
-    try:
-        if provider is None:
-            path = _provider_models_cache_path()
-            if path.exists():
-                path.unlink()
-            return
-        cache = _load_provider_models_cache()
-        normalized = normalize_provider(provider) or provider or ""
-        if normalized in cache:
-            del cache[normalized]
-            _save_provider_models_cache(cache)
-    except Exception:
-        pass
+    from youtab_agent_cli.provider_models_cache import clear_provider_models_cache as clear_cache
+
+    clear_cache(
+        provider, cache_path=_provider_models_cache_path,
+        load_cache=_load_provider_models_cache, save_cache=_save_provider_models_cache,
+        normalize=normalize_provider,
+    )
 
 
 def _fetch_anthropic_models(
@@ -3577,7 +2948,7 @@ def _lmstudio_fetch_raw_models(
             payload = json.loads(resp.read().decode())
     except urllib.error.HTTPError as exc:
         if exc.code in {401, 403}:
-            from youtab_agent_cli.auth import AuthError
+            from youtab_agent_cli.auth_errors import (AuthError)
             raise AuthError(
                 f"LM Studio rejected the request with HTTP {exc.code}.",
                 provider="lmstudio",
@@ -4784,7 +4155,7 @@ def validate_requested_model(
         }
 
     if normalized == "youtab":
-        from youtab_agent_cli.auth import get_local_inference_token_state
+        from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
 
         if get_local_inference_token_state() is not None:
             admitted = requested in provider_model_ids("youtab", force_refresh=True)
@@ -4796,7 +4167,7 @@ def validate_requested_model(
             }
 
     if normalized == "lmstudio":
-        from youtab_agent_cli.auth import AuthError
+        from youtab_agent_cli.auth_errors import (AuthError)
         # Use probe_lmstudio_models so we can distinguish None (unreachable
         # / malformed response) from [] (reachable, but no chat-capable models
         # are loaded). fetch_lmstudio_models collapses both to [].
@@ -5177,7 +4548,7 @@ def validate_requested_model(
     # AWS SDK control plane (ListFoundationModels + ListInferenceProfiles).
     if normalized == "bedrock":
         try:
-            from agent.bedrock_adapter import discover_bedrock_models, resolve_bedrock_region
+            from agent.bedrock_catalog import discover_bedrock_models, resolve_bedrock_region
             region = resolve_bedrock_region()
             discovered = discover_bedrock_models(region)
             discovered_ids = {m["id"] for m in discovered}
@@ -5273,3 +4644,89 @@ def validate_requested_model(
             f"If the service isn't down, this model may not be valid."
         ),
     }
+
+
+# Public export contract: retain the historical wildcard surface and shared aliases.
+__all__ = [
+    'annotations',
+    'Any',
+    'CANONICAL_PROVIDERS',
+    'COPILOT_BASE_URL',
+    'COPILOT_EDITOR_VERSION',
+    'COPILOT_MODELS_URL',
+    'COPILOT_REASONING_EFFORTS_GPT5',
+    'COPILOT_REASONING_EFFORTS_O_SERIES',
+    'LMStudioLoadResult',
+    'NamedTuple',
+    'OPENROUTER_MODELS',
+    'Optional',
+    'PREFERRED_SILENT_DEFAULT_MODEL',
+    'PROVIDER_GROUPS',
+    'Path',
+    'ProviderEntry',
+    'VERCEL_AI_GATEWAY_MODELS',
+    'YOUTAB_MODELS',
+    'YOUTAB_RECOMMENDED_MODELS_PATH',
+    '_format_price_per_mtok',
+    'ai_gateway_model_ids',
+    'azure_foundry_model_api_mode',
+    'cached_provider_model_ids',
+    'check_youtab_free_tier',
+    'clear_provider_models_cache',
+    'compute_sale_discount',
+    'copilot_default_headers',
+    'copilot_model_api_mode',
+    'curated_models_for_provider',
+    'deepinfra_base_url',
+    'deepinfra_model_ids',
+    'detect_provider_for_model',
+    'detect_static_provider_for_model',
+    'ensure_lmstudio_model_loaded',
+    'fetch_ai_gateway_models',
+    'fetch_ai_gateway_pricing',
+    'fetch_api_models',
+    'fetch_github_model_catalog',
+    'fetch_lmstudio_models',
+    'fetch_models_with_pricing',
+    'fetch_ollama_cloud_models',
+    'fetch_openrouter_models',
+    'fetch_youtab_recommended_models',
+    'get_close_matches',
+    'get_copilot_model_context',
+    'get_curated_youtab_model_ids',
+    'get_default_model_for_provider',
+    'get_preferred_silent_default_model',
+    'get_pricing_for_provider',
+    'get_youtab_recommended_aux_model',
+    'github_model_reasoning_efforts',
+    'group_providers',
+    'is_youtab_free_tier',
+    'json',
+    'list_available_providers',
+    'lmstudio_model_reasoning_options',
+    'model_ids',
+    'model_supports_fast_mode',
+    'normalize_copilot_model_id',
+    'normalize_opencode_base_url',
+    'normalize_opencode_model_id',
+    'normalize_provider',
+    'ollama_model_supports_thinking',
+    'open_credentialed_url',
+    'opencode_model_api_mode',
+    'os',
+    'parse_model_input',
+    'partition_youtab_models_by_tier',
+    'pick_silent_default_model',
+    'probe_api_models',
+    'probe_lmstudio_models',
+    'provider_group_for_slug',
+    'provider_label',
+    'provider_model_ids',
+    're',
+    'resolve_fast_mode_overrides',
+    'time',
+    'union_with_portal_free_recommendations',
+    'union_with_portal_paid_recommendations',
+    'urllib',
+    'validate_requested_model',
+]

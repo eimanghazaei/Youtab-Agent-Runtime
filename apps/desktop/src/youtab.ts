@@ -721,8 +721,12 @@ export function getYoutabConfig(profile?: string): Promise<YoutabConfig> {
 }
 
 export function getYoutabConfigRecord(): Promise<YoutabConfigRecord> {
+  return getYoutabConfigRecordForProfile()
+}
+
+export function getYoutabConfigRecordForProfile(profile?: string): Promise<YoutabConfigRecord> {
   return window.youtabDesktop.api<YoutabConfigRecord>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/config'
   })
 }
@@ -743,8 +747,12 @@ export function getYoutabConfigSchema(): Promise<ConfigSchemaResponse> {
 }
 
 export function saveYoutabConfig(config: YoutabConfigRecord): Promise<{ ok: boolean }> {
+  return saveYoutabConfigForProfile(config)
+}
+
+export function saveYoutabConfigForProfile(config: YoutabConfigRecord, profile?: string): Promise<{ ok: boolean }> {
   return window.youtabDesktop.api<{ ok: boolean }>({
-    ...profileScoped(),
+    ...profileScoped(profile),
     path: '/api/config',
     method: 'PUT',
     body: { config }

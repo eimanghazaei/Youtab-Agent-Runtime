@@ -356,6 +356,7 @@ struct ArtifactInstallInfo {
     version: String,
     release_sequence: u64,
     release_base_url: String,
+    release_channel: String,
 }
 
 impl ArtifactInstallInfo {
@@ -386,6 +387,7 @@ impl ArtifactInstallInfo {
             version: string("version")?,
             release_sequence,
             release_base_url,
+            release_channel: "stable".to_owned(),
         })
     }
 }
@@ -538,6 +540,11 @@ async fn verify_installed_backend(install_root: &Path, youtab_home: &Path) -> Re
 /// Frontend → Rust: kick off the install.
 #[derive(Debug, Deserialize)]
 pub struct StartBootstrapArgs {
+    #[serde(default = "default_release_channel")]
+    pub release_channel: String,
+    /// Explicit consent from the common Setup's migration screen.
+    #[serde(default)]
+    pub migrate_legacy: bool,
     /// Optional override for the commit pin. Defaults to the build-time
     /// pin baked in via `BUILD_PIN_COMMIT`.
     pub commit: Option<String>,
@@ -556,6 +563,7 @@ pub struct StartBootstrapArgs {
 fn default_true() -> bool {
     true
 }
+fn default_release_channel() -> String { "stable".to_owned() }
 
 #[derive(Debug, Serialize)]
 pub struct BootstrapStatus {
@@ -841,6 +849,9 @@ fn write_bootstrap_complete_marker_with_artifact(
         object.insert("releaseSequence".into(), serde_json::json!(info.release_sequence));
         object.insert("artifactSha256".into(), serde_json::json!(info.artifact_sha256));
         object.insert("releaseBaseUrl".into(), serde_json::json!(info.release_base_url));
+        object.insert("releaseChannel".into(), serde_json::json!(info.release_channel));
+        object.insert("setupSourceSha".into(), serde_json::json!(option_env!("BUILD_PIN_COMMIT")));
+        object.insert("setupSha256".into(), serde_json::json!(crate::paths::installer_sha256(&std::env::current_exe()?)?));
         object.insert("installedAt".into(), serde_json::json!(completed_at_unix));
     }
     let mut body = serde_json::to_vec_pretty(&marker)?;
@@ -977,7 +988,7 @@ fn desktop_launch_command_std(
 
 async fn run_requested_bootstrap(
     app: AppHandle,
-    args: StartBootstrapArgs,
+    mut args: StartBootstrapArgs,
     cancel_rx: Arc<Mutex<Option<mpsc::Receiver<()>>>>,
 ) -> Result<String> {
     let repair = std::env::args().any(|arg| arg == "--repair" || arg == "--reinstall");
@@ -989,7 +1000,13 @@ async fn run_requested_bootstrap(
             let lock = crate::update::UpdateMarkerGuard::acquire_for_install(&home)?;
             InstallSwap::recover(&root)?;
             if root.join(".youtab-agent-runtime-bootstrap-complete").exists() {
-                let approved = crate::update::approved_artifact_target(base, &root).await?;
+                let channel = crate::update::release_channel_for_install(&root)?;
+                let approved = crate::update::approved_artifact_target(base, &root, &channel).await?;
+                args.release_channel = channel;
+                if option_env!("BUILD_PIN_COMMIT") != Some(approved.sha.as_str())
+                    || crate::paths::installer_sha256(&std::env::current_exe()?)? != approved.setup_sha256 {
+                    return Err(anyhow!("Repair requires the Setup matching the selected release"));
+                }
                 return run_bootstrap(app, args, cancel_rx, Some(approved.sha), Some(lock)).await;
             }
             return run_bootstrap(app, args, cancel_rx, None, Some(lock)).await;
@@ -1001,13 +1018,14 @@ async fn run_requested_bootstrap(
 pub(crate) async fn run_artifact_update(
     app: AppHandle,
     source_sha: String,
+    release_channel: String,
     lock: crate::update::UpdateMarkerGuard,
 ) -> Result<String> {
     let (cancel_tx, cancel_rx) = mpsc::channel(1);
     drop(cancel_tx);
     run_bootstrap(
         app,
-        StartBootstrapArgs { commit: None, branch: None, youtab_home: None, include_desktop: true },
+        StartBootstrapArgs { commit: None, branch: None, youtab_home: None, include_desktop: true, migrate_legacy: false, release_channel },
         Arc::new(Mutex::new(Some(cancel_rx))),
         Some(source_sha),
         Some(lock),
@@ -1023,6 +1041,10 @@ async fn run_bootstrap(
 ) -> Result<String> {
     let kind = ScriptKind::for_current_os();
     let release_base = option_env!("RELEASE_BASE_URL");
+    if release_base.is_some() {
+        crate::update::release_channel_from_args(["--channel", args.release_channel.as_str()])?;
+        crate::update::verify_setup_channel(release_base.unwrap(), &args.release_channel).await?;
+    }
     if release_base.is_some() && !args.include_desktop {
         return Err(anyhow!("customer artifact Setup requires the Desktop build stage"));
     }
@@ -1040,7 +1062,7 @@ async fn run_bootstrap(
     } else {
         None
     };
-    let migration_requested = std::env::args().any(|arg| arg == "--migrate-legacy");
+    let migration_requested = args.migrate_legacy || std::env::args().any(|arg| arg == "--migrate-legacy");
     let legacy_head_sha = if migration_requested {
         if !cfg!(target_os = "windows") || release_base.is_none() || authorized_artifact_target.is_some() {
             return Err(anyhow!("legacy migration requires the Windows customer Setup install flow"));
@@ -1316,7 +1338,8 @@ async fn run_bootstrap(
                     if let Some(base) = release_base {
                         let data = frame.data.as_ref().ok_or_else(||
                             anyhow!("artifact repository stage omitted its result data"))?;
-                        let info = ArtifactInstallInfo::from_stage_data(data, &pin, base)?;
+                        let mut info = ArtifactInstallInfo::from_stage_data(data, &pin, base)?;
+                        info.release_channel = args.release_channel.clone();
                         if legacy_head_sha.is_none() {
                             ensure_replacement_not_downgrade(&install_root, &info)?;
                         }
@@ -1818,7 +1841,7 @@ mod tests {
         let mut next = ArtifactInstallInfo {
             staged: parent.join("unused"), source_sha: "b".repeat(40),
             artifact_sha256: "c".repeat(64), version: "0.19.0".into(),
-            release_sequence: 1, release_base_url: base.into(),
+            release_sequence: 1, release_base_url: base.into(), release_channel: "stable".into(),
         };
         std::fs::write(current.join(".youtab-agent-runtime-bootstrap-complete"),
             serde_json::to_vec(&serde_json::json!({

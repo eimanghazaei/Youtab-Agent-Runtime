@@ -212,3 +212,66 @@ class TestCacheDirEnvPassthrough:
         assert env["YOUTAB_AGENT_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["YOUTAB_AGENT_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
         assert env["WHATSAPP_SEND_READ_RECEIPTS"] == "true"
+        capability = env["YOUTAB_AGENT_WHATSAPP_BRIDGE_CAPABILITY"]
+        assert len(capability) == 43
+        assert adapter._bridge_headers() == {"Authorization": f"Bearer {capability}"}
+        assert capability not in mock_popen.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_gateway_restart_adopts_authorized_bridge_without_rotating_capability(tmp_path):
+    import os
+    from plugins.platforms.whatsapp.adapter import _file_content_hash, _read_bridge_capability
+
+    bridge_dir = _setup_bridge_dir(tmp_path)
+    _fresh_node_modules(bridge_dir)
+    session_path = tmp_path / "session"
+    capability = "t" * 43
+    descriptor = os.open(session_path / "bridge-capability", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write(capability)
+    adapter = _make_adapter(str(bridge_dir / "bridge.js"), session_path)
+    health = _mock_health({
+        "status": "connected",
+        "scriptHash": _file_content_hash(bridge_dir / "bridge.js"),
+        "sendReadReceipts": False,
+    })
+
+    def close_poll(coroutine):
+        coroutine.close()
+        return MagicMock()
+
+    with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+         patch("aiohttp.ClientSession", health), \
+         patch("subprocess.Popen") as spawn, \
+         patch("plugins.platforms.whatsapp.adapter.secrets.token_urlsafe") as random, \
+         patch("plugins.platforms.whatsapp.adapter.asyncio.create_task", side_effect=close_poll), \
+         patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+        assert await adapter.connect()
+    spawn.assert_not_called()
+    random.assert_not_called()
+    assert adapter._bridge_process is None
+    assert _read_bridge_capability(session_path) == capability
+    assert health.return_value.value.get.call_args.kwargs["headers"] == {"Authorization": f"Bearer {capability}"}
+
+
+@pytest.mark.parametrize("managed,matches,removed", [(True, True, True), (True, False, False), (False, True, False)])
+@pytest.mark.asyncio
+async def test_disconnect_removes_only_exited_managed_bridge_capability(tmp_path, managed, matches, removed):
+    import os
+
+    adapter = _make_adapter(session_path=tmp_path)
+    adapter._bridge_capability = "t" * 43 if matches else "u" * 43
+    adapter._bridge_process = MagicMock() if managed else None
+    if managed:
+        adapter._bridge_process.poll.return_value = 0
+    adapter._poll_task = None
+    adapter._session_lock_identity = None
+    credential = tmp_path / "bridge-capability"
+    descriptor = os.open(credential, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as stream:
+        stream.write("t" * 43)
+    with patch("plugins.platforms.whatsapp.adapter._terminate_bridge_process"), \
+         patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock):
+        await adapter.disconnect()
+    assert credential.exists() is not removed

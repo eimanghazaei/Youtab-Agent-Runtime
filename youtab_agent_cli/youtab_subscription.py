@@ -207,14 +207,15 @@ def _local_browser_runnable() -> bool:
     if not _has_agent_browser():
         return False
     try:
-        from tools.browser_tool import _chromium_installed, _using_lightpanda_engine
+        from tools.local_capabilities import chromium_installed, browser_engine
+        from youtab_agent_cli.config import read_raw_config
     except Exception:
         # If the runtime probe can't be imported, fall back to binary presence
         # (prior behaviour) rather than crashing the setup/status surface.
         return True
-    if _using_lightpanda_engine():
+    if browser_engine(read_raw_config) == "lightpanda":
         return True
-    return _chromium_installed()
+    return chromium_installed()
 
 
 def _browser_label(current_provider: str) -> str:
@@ -261,9 +262,9 @@ def _local_stt_backend_available() -> bool:
     if get_env_value("YOUTAB_AGENT_LOCAL_STT_COMMAND"):
         return True
     try:
-        from tools.transcription_tools import _HAS_FASTER_WHISPER
+        from tools.local_capabilities import has_faster_whisper
 
-        return bool(_HAS_FASTER_WHISPER)
+        return has_faster_whisper()
     except Exception:
         return False
 
@@ -446,8 +447,8 @@ def get_youtab_subscription_features(
     direct_groq_stt = bool(get_env_value("GROQ_API_KEY"))
     direct_mistral_stt = bool(get_env_value("MISTRAL_API_KEY"))
     try:
-        from tools.transcription_tools import _HAS_FASTER_WHISPER
-        local_stt_available = bool(_HAS_FASTER_WHISPER) or bool(
+        from tools.local_capabilities import has_faster_whisper
+        local_stt_available = has_faster_whisper() or bool(
             get_env_value("YOUTAB_AGENT_LOCAL_STT_COMMAND")
         )
     except Exception:
@@ -1090,7 +1091,7 @@ def prompt_enable_tool_gateway(
         return set()
 
     try:
-        from youtab_agent_cli.setup import prompt_checklist
+        from youtab_agent_cli.selection_prompt import prompt_checklist
     except Exception:
         return set()
 

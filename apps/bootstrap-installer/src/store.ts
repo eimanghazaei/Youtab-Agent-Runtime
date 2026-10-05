@@ -76,6 +76,8 @@ export const $mode = atom<AppMode>('install')
 export const $bootstrap = atom<BootstrapStateModel>(INITIAL)
 export const $logPath = atom<string | null>(null)
 export const $youtabHome = atom<string | null>(null)
+export const $installationKind = atom<'fresh' | 'legacy' | 'artifact' | 'unknown'>('unknown')
+export const $releaseChannel = atom<'pilot' | 'stable'>('stable')
 
 export const $progress = computed($bootstrap, (b) => {
   const total = b.stageOrder.length
@@ -180,6 +182,7 @@ export async function initialize(): Promise<void> {
     $logPath.set('~/.youtab-agent-runtime/logs/bootstrap-installer.log')
     $youtabHome.set('~/.youtab-agent-runtime')
     $mode.set(fake === 'update' ? 'update' : 'install')
+    $installationKind.set('fresh')
 
     // Update auto-runs (it's a hand-off); install/failure wait for the welcome click.
     if (fake === 'update') {void runFakeBoot('update')}
@@ -198,6 +201,8 @@ export async function initialize(): Promise<void> {
     $logPath.set(logPath)
     $youtabHome.set(youtabHome)
     $mode.set(mode)
+    $installationKind.set(await invoke<'fresh' | 'legacy' | 'artifact'>('get_installation_kind'))
+    $releaseChannel.set(await invoke<'pilot' | 'stable'>('get_release_channel'))
   } catch (err) {
     console.warn('failed to fetch installer paths', err)
   }
@@ -299,7 +304,10 @@ export async function initialize(): Promise<void> {
 // Actions
 // ---------------------------------------------------------------------------
 
-export async function startInstall(opts?: { branch?: string }): Promise<void> {
+let lastInstallOptions: { branch?: string; migrateLegacy?: boolean } | undefined
+
+export async function startInstall(opts?: { branch?: string; migrateLegacy?: boolean }): Promise<void> {
+  lastInstallOptions = opts ?? lastInstallOptions
   const fake = fakeMode()
 
   if (fake) {
@@ -315,9 +323,11 @@ export async function startInstall(opts?: { branch?: string }): Promise<void> {
   await invoke('start_bootstrap', {
     args: {
       commit: null,
-      branch: opts?.branch ?? null,
+      branch: lastInstallOptions?.branch ?? null,
       include_desktop: true,
-      youtab_home: null
+      youtab_home: null,
+      migrate_legacy: lastInstallOptions?.migrateLegacy === true,
+      release_channel: $releaseChannel.get()
     }
   })
 }
@@ -334,7 +344,7 @@ export async function startUpdate(): Promise<void> {
   // Rust side stream the synthetic update manifest.
   $bootstrap.set(INITIAL)
   $route.set('progress')
-  await invoke('start_update')
+  await invoke('start_update', { channel: $releaseChannel.get() })
 }
 
 export async function cancelInstall(): Promise<void> {

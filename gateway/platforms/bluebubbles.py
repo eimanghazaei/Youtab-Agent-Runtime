@@ -95,13 +95,20 @@ _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 
 # Log redaction patterns
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+_EMAIL_RE = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+\.[\w.]+")
+_LOG_VALUE_MAX_CHARS = 4096
+_ATTACHMENT_GUID_MAX_CHARS = 1024
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 
 
 def _redact(text: str) -> str:
     """Redact phone numbers and emails from log output."""
+    # Omit the entire value instead of cutting through a sensitive token.
+    # The boundary assertion above prevents retrying every suffix of a long
+    # non-email run; this cap also bounds work/output for webhook log values.
+    if len(text) > _LOG_VALUE_MAX_CHARS:
+        return "[REDACTED: oversized log value]"
     text = _PHONE_RE.sub("[REDACTED]", text)
     text = _EMAIL_RE.sub("[REDACTED]", text)
     return text
@@ -793,6 +800,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         Returns the local file path on success, None on failure.
         """
+        if (
+            not isinstance(att_guid, str)
+            or not att_guid
+            or len(att_guid) > _ATTACHMENT_GUID_MAX_CHARS
+        ):
+            logger.warning("[bluebubbles] ignored invalid attachment GUID")
+            return None
         if not self.client:
             return None
         try:

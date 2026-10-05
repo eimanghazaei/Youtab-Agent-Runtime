@@ -237,6 +237,24 @@ class TestBlueBubblesGuidResolution:
 class TestBlueBubblesAttachmentDownload:
     """Verify _download_attachment routes to the correct cache helper."""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "guid", ["a" * 1_048_576, None, {}, ""],
+        ids=["oversized", "null", "object", "empty"],
+    )
+    async def test_invalid_guid_is_rejected_before_http_or_logging_value(
+        self, monkeypatch, caplog, guid
+    ):
+        adapter = _make_adapter(monkeypatch)
+
+        class Client:
+            async def get(self, *args, **kwargs):
+                pytest.fail("invalid attachment GUID reached HTTP")
+
+        adapter.client = Client()
+        assert await adapter._download_attachment(guid, {}) is None
+        assert "a" * 1000 not in caplog.text
+
     def test_download_image_uses_image_cache(self, monkeypatch):
         """Image MIME routes to cache_image_from_bytes."""
         adapter = _make_adapter(monkeypatch)
@@ -272,6 +290,27 @@ class TestBlueBubblesAttachmentDownload:
             adapter._download_attachment("att-guid-123", att_meta)
         )
         assert result == "/tmp/test_image.png"
+
+
+def test_redaction_omits_oversized_value_before_regex(monkeypatch):
+    import gateway.platforms.bluebubbles as bb
+
+    class ForbiddenRegex:
+        def sub(self, *args, **kwargs):
+            pytest.fail("oversized log value reached regex")
+
+    monkeypatch.setattr(bb, "_PHONE_RE", ForbiddenRegex())
+    monkeypatch.setattr(bb, "_EMAIL_RE", ForbiddenRegex())
+    assert bb._redact("a" * 1_048_576) == "[REDACTED: oversized log value]"
+
+
+def test_redaction_preserves_valid_email_and_phone_masking():
+    from gateway.platforms.bluebubbles import _redact
+
+    assert _redact("iMessage;-;name+tag@example.com, +15555550100") == (
+        "iMessage;-;[REDACTED], [REDACTED]"
+    )
+    assert _redact("a" * 4096) == "a" * 4096
 
 
 # ---------------------------------------------------------------------------

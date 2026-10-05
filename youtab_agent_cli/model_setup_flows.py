@@ -396,17 +396,8 @@ def _model_flow_moa(config, current_model=""):
 
 def _model_flow_youtab(config, current_model="", args=None):
     """Youtab Portal provider: ensure logged in, then pick model."""
-    from youtab_agent_cli.auth import (
-        get_provider_auth_state,
-        _prompt_model_selection,
-        _save_model_choice,
-        _update_config_for_provider,
-        resolve_youtab_runtime_credentials,
-        AuthError,
-        format_auth_error,
-        _login_youtab,
-        PROVIDER_REGISTRY,
-    )
+    from youtab_agent_cli.auth import (get_provider_auth_state, _prompt_model_selection, _save_model_choice, _update_config_for_provider, resolve_youtab_runtime_credentials, format_auth_error, _login_youtab, PROVIDER_REGISTRY)
+    from youtab_agent_cli.auth_errors import (AuthError)
     from youtab_agent_cli.config import (
         get_env_value,
         load_config,
@@ -415,10 +406,7 @@ def _model_flow_youtab(config, current_model="", args=None):
     )
     from youtab_agent_cli.youtab_subscription import prompt_enable_tool_gateway
 
-    from youtab_agent_cli.auth import (
-        DEFAULT_YOUTAB_INFERENCE_URL,
-        get_local_inference_token_state,
-    )
+    from youtab_agent_cli.profile_inference import (DEFAULT_YOUTAB_INFERENCE_URL, get_local_inference_token_state)
 
     if get_local_inference_token_state() is not None or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
         from youtab_agent_cli.models import provider_model_ids
@@ -858,17 +846,8 @@ def _model_flow_qwen_oauth(_config, current_model=""):
 
 def _model_flow_minimax_oauth(config, current_model="", args=None):
     """MiniMax OAuth provider: ensure logged in, then pick model."""
-    from youtab_agent_cli.auth import (
-        get_provider_auth_state,
-        _prompt_model_selection,
-        _save_model_choice,
-        _update_config_for_provider,
-        resolve_minimax_oauth_runtime_credentials,
-        AuthError,
-        format_auth_error,
-        _login_minimax_oauth,
-        PROVIDER_REGISTRY,
-    )
+    from youtab_agent_cli.auth import (get_provider_auth_state, _prompt_model_selection, _save_model_choice, _update_config_for_provider, resolve_minimax_oauth_runtime_credentials, format_auth_error, _login_minimax_oauth, PROVIDER_REGISTRY)
+    from youtab_agent_cli.auth_errors import (AuthError)
 
     state = get_provider_auth_state("minimax-oauth")
     if not state or not state.get("access_token"):
@@ -2850,7 +2829,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     # LM Studio: live /api/v1/models probe (no models.dev catalog).
     # Ollama Cloud: merged discovery (live API + models.dev + disk cache).
     if provider_id == "lmstudio":
-        from youtab_agent_cli.auth import AuthError
+        from youtab_agent_cli.auth_errors import (AuthError)
         from youtab_agent_cli.models import fetch_lmstudio_models
 
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")

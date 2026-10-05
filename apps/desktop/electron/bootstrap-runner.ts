@@ -38,6 +38,7 @@ import fsp from 'node:fs/promises'
 import https from 'node:https'
 import path from 'node:path'
 
+import { channelIndex, type ReleaseChannel, verifiedSetupRelease } from './release-delivery'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 const IS_WINDOWS = process.platform === 'win32'
@@ -201,10 +202,12 @@ function readReleaseJson(url: string): Promise<unknown> {
   })
 }
 
-async function fetchApprovedPilotRelease(baseValue: unknown, readJson = readReleaseJson) {
+async function fetchApprovedPilotRelease(baseValue: unknown, readJson = readReleaseJson, channel?: ReleaseChannel) {
   const base = pilotReleaseBaseUrl(baseValue)
-  const latest = parsePilotRelease(await readJson(`${base}/latest.json`), base, true)
-  const immutable = parsePilotRelease(await readJson(latest.manifest_url!), base, false)
+  const latestRaw = await readJson(channel ? channelIndex(base, channel) : `${base}/latest.json`)
+  const latest = parsePilotRelease(latestRaw, base, true)
+  const immutableRaw = await readJson(latest.manifest_url!)
+  const immutable = parsePilotRelease(immutableRaw, base, false)
   for (const field of [
     'version',
     'release_sequence',
@@ -220,10 +223,13 @@ async function fetchApprovedPilotRelease(baseValue: unknown, readJson = readRele
       throw new Error('Runtime latest and immutable manifest disagree')
     }
   }
-  return latest
+  // Channel delivery requires a matching common Setup descriptor. Old callers
+  // retain the legacy index solely during the migration period.
+  const setup = channel ? verifiedSetupRelease(base, latestRaw, immutableRaw, 0) : null
+  return { ...latest, setup }
 }
 
-function classifyPilotReleaseUpdate(installed: any, latest: Awaited<ReturnType<typeof fetchApprovedPilotRelease>>) {
+function classifyPilotReleaseUpdate(installed: any, latest: Pick<Awaited<ReturnType<typeof fetchApprovedPilotRelease>>, 'release_sequence' | 'source_sha' | 'sha256'>) {
   if (
     !installed ||
     typeof installed.pinnedCommit !== 'string' ||

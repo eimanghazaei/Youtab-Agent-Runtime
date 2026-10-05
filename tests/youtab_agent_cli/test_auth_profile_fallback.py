@@ -12,7 +12,6 @@ authenticated only at the global root.
 from __future__ import annotations
 
 import json
-import os
 import time
 import base64
 import io
@@ -20,6 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from youtab_agent_cli import auth
+from youtab_agent_cli import youtab_model_catalog
 
 
 def _make_auth_store(pool: dict | None = None, providers: dict | None = None) -> dict:
@@ -152,7 +153,7 @@ def test_staging_profile_uses_one_authority_for_models_chat_and_proxy(profile_en
     )
     auth.persist_profile_inference_token(token)
     seen = []
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **kw: seen.append(kw) or ["deepseek.v4_flash"])
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **kw: seen.append(kw) or ["deepseek.v4_flash"])
     assert models.provider_model_ids("youtab") == ["deepseek.v4_flash"]
     assert seen[0]["inference_base_url"] == f"{staging}/v1"
     assert seen[0]["api_key"] == token
@@ -194,7 +195,7 @@ def test_profile_token_cannot_cross_configured_gateway_authority(profile_env, mo
 
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
     monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", staging)
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: pytest.fail("cross-authority model request"))
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: pytest.fail("cross-authority model request"))
     assert models.provider_model_ids("youtab") == []
     with pytest.raises(auth.AuthError, match="does not match"):
         runtime_provider._resolve_profile_inference_runtime(
@@ -446,12 +447,12 @@ def test_profile_model_catalog_uses_exact_gateway_ids_without_fallback(profile_e
         seen.append(kwargs)
         return ["deepseek.v4_flash", "anthropic/claude"]
 
-    monkeypatch.setattr(auth, "fetch_youtab_models", catalog)
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", catalog)
     assert models.provider_model_ids("youtab") == ["deepseek.v4_flash"]
     assert seen[0]["api_key"] == token
     assert seen[0]["inference_base_url"] == "https://api.youtab.io/v1"
     assert seen[0]["exact"] is True
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError()))
     assert models.provider_model_ids("youtab") == []
 
 
@@ -504,9 +505,9 @@ def test_profile_gateway_catalog_uses_existing_cache_during_outage(profile_env, 
 
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
     calls = []
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: calls.append(1) or ["deepseek.v4_flash"])
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: calls.append(1) or ["deepseek.v4_flash"])
     assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
     assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
     assert models.cached_provider_model_ids("youtab", force_refresh=True) == ["deepseek.v4_flash"]
     assert models.provider_model_ids("youtab", force_refresh=True) == []
@@ -522,11 +523,11 @@ def test_gateway_authority_switch_cannot_validate_stale_profile_models(profile_e
     from youtab_agent_cli import auth, models
 
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
     assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
 
     monkeypatch.setenv("YOUTAB_AGENT_PORTAL_BASE_URL", "https://staging.example.test")
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: pytest.fail("foreign token sent to Gateway"))
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: pytest.fail("foreign token sent to Gateway"))
     assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
     assert models.cached_provider_model_ids("youtab") == []
     assert models.validate_requested_model("deepseek.v4_flash", "youtab")["accepted"] is False
@@ -557,20 +558,20 @@ def test_profile_catalog_cache_survives_token_rotation_but_not_account_switch(pr
     from youtab_agent_cli import auth, models
 
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
     assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
 
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1200))
     assert models.cached_provider_model_ids("youtab", force_refresh=True) == ["deepseek.v4_flash"]
 
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1200, subject="user-b"))
     assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
 
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1200))
     assert models.cached_provider_model_ids("youtab", force_refresh=True) == ["deepseek.v4_flash"]
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 1200, workspace="workspace-b"))
     assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
 
@@ -579,11 +580,11 @@ def test_profile_gateway_catalog_empty_success_invalidates_cached_ids(profile_en
     from youtab_agent_cli import auth, models, tools_config, web_server, youtab_subscription
 
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
     assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
 
     # A successful empty catalog means the Engine is no longer admitted.
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: [])
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: [])
     assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
     assert models.cached_provider_model_ids("youtab") == []
 
@@ -600,9 +601,9 @@ def test_profile_gateway_catalog_rejected_request_invalidates_cached_ids(profile
     from youtab_agent_cli import auth, models
 
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
     assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(
         auth.AuthError("forbidden", provider="youtab", code="models_fetch_rejected"),
     ))
     assert models.cached_provider_model_ids("youtab", force_refresh=True) == []
@@ -682,9 +683,9 @@ def test_gateway_assignment_keeps_same_credential_catalog_during_outage(profile_
     from youtab_agent_cli import auth, models, tools_config, web_server, youtab_subscription
 
     auth.persist_profile_inference_token(_inference_jwt(int(time.time()) + 900))
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: ["deepseek.v4_flash"])
     assert models.cached_provider_model_ids("youtab") == ["deepseek.v4_flash"]
-    monkeypatch.setattr(auth, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
+    monkeypatch.setattr(youtab_model_catalog, "fetch_youtab_models", lambda **_kw: (_ for _ in ()).throw(OSError("offline")))
     monkeypatch.setattr(web_server, "load_config", lambda: {"model": {}})
     saved = []
     monkeypatch.setattr(web_server, "save_config", saved.append)
@@ -720,7 +721,6 @@ def test_gateway_assignment_keeps_same_credential_catalog_during_outage(profile_
 
 def test_missing_global_auth_file_is_safe(profile_env):
     """Profile processes that never had a global auth.json still work."""
-    from youtab_agent_cli.auth import read_credential_pool
 
     # No global auth.json written at all.
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
@@ -734,8 +734,8 @@ def test_missing_global_auth_file_is_safe(profile_env):
         }],
     }))
 
-    assert read_credential_pool("openrouter")[0]["id"] == "prof-1"
-    assert read_credential_pool("anthropic") == []
+    assert auth.read_credential_pool("openrouter")[0]["id"] == "prof-1"
+    assert auth.read_credential_pool("anthropic") == []
 
 
 def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
@@ -751,12 +751,11 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
         }],
     }))
 
-    from youtab_agent_cli.auth import read_credential_pool
 
     # Profile reads still work; malformed global is silently ignored.
-    assert read_credential_pool("openrouter")[0]["id"] == "prof-1"
+    assert auth.read_credential_pool("openrouter")[0]["id"] == "prof-1"
     # And no fallback for anthropic since global is unreadable.
-    assert read_credential_pool("anthropic") == []
+    assert auth.read_credential_pool("anthropic") == []
 
 
 # ---------------------------------------------------------------------------
@@ -770,25 +769,23 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
 
 
 def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_env):
-    from youtab_agent_cli.auth import get_provider_auth_state
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
         "youtab": {"access_token": "youtab-global", "refresh_token": "rt-global"},
     }))
     _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
 
-    state = get_provider_auth_state("youtab")
+    state = auth.get_provider_auth_state("youtab")
     assert state is not None
     assert state["access_token"] == "youtab-global"
 
 
 def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
-    from youtab_agent_cli.auth import get_provider_auth_state
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
     _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
 
-    assert get_provider_auth_state("youtab") is None
+    assert auth.get_provider_auth_state("youtab") is None
 
 
 # ---------------------------------------------------------------------------
@@ -821,7 +818,6 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 
 
 def test_write_credential_pool_targets_profile_not_global(profile_env):
-    from youtab_agent_cli.auth import read_credential_pool, write_credential_pool
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
         "openrouter": [{
@@ -834,7 +830,7 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
         }],
     }))
 
-    write_credential_pool("openrouter", [{
+    auth.write_credential_pool("openrouter", [{
         "id": "prof-new",
         "label": "profile-new",
         "auth_type": "api_key",
@@ -852,15 +848,15 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
     assert profile_data["credential_pool"]["openrouter"][0]["id"] == "prof-new"
 
     # Subsequent read returns profile (shadows global).
-    assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
+    assert [e["id"] for e in auth.read_credential_pool("openrouter")] == ["prof-new"]
 
 
 
 
 def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env):
     """Changing profile context cannot inherit another store's lock depth."""
-    import youtab_agent_cli.auth as auth
-    from youtab_constants import reset_youtab_home_override, set_youtab_home_override
+    from youtab_agent_cli import auth
+    import youtab_constants
 
     profile_b = profile_env["global"] / "profiles" / "reviewer"
     profile_b.mkdir(parents=True)
@@ -870,7 +866,7 @@ def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env
         holder_a = auth._auth_lock_holder_for(profile_env["profile"] / "auth.json")
         assert getattr(holder_a, "depth", 0) == 1
 
-        token = set_youtab_home_override(profile_b)
+        token = youtab_constants.set_youtab_home_override(profile_b)
         try:
             holder_b = auth._auth_lock_holder_for(profile_b / "auth.json")
             assert holder_b is not holder_a
@@ -881,7 +877,7 @@ def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env
                 assert profile_b_lock.exists()
                 assert getattr(holder_b, "depth", 0) == 1
         finally:
-            reset_youtab_home_override(token)
+            youtab_constants.reset_youtab_home_override(token)
 
     assert getattr(holder_a, "depth", 0) == 0
 
@@ -924,7 +920,6 @@ def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     A fresh login intentionally clears the entry's status; resurrecting the
     stale cooldown onto the new credentials would bench a just-authorized key.
     """
-    from youtab_agent_cli.auth import write_credential_pool
 
     _write(classic_env / "auth.json", _make_auth_store(pool={
         "openrouter": [_pool_entry(
@@ -936,7 +931,7 @@ def test_write_pool_never_merges_cooldown_onto_reauthed_entry(classic_env):
     }))
 
     # Same entry id, freshly re-authed with a new token and cleared status.
-    write_credential_pool("openrouter", [_pool_entry(access_token="sk-new")])
+    auth.write_credential_pool("openrouter", [_pool_entry(access_token="sk-new")])
 
     data = json.loads((classic_env / "auth.json").read_text(encoding="utf-8"))
     persisted = data["credential_pool"]["openrouter"][0]

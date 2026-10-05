@@ -1,6 +1,7 @@
 """Tests for tools.voice_mode -- all mocked, no real microphone or API calls."""
 
 import os
+import socket
 import struct
 import time
 import wave
@@ -120,6 +121,7 @@ def fake_clock(monkeypatch):
 # detect_audio_environment — WSL / SSH / Docker detection
 # ============================================================================
 
+@pytest.mark.skipif(not hasattr(socket, "AF_UNIX"), reason="PulseAudio socket integration requires AF_UNIX; exercised on Linux")
 class TestPulseSocketReachable:
     def test_stale_socket_file_not_reachable(self, monkeypatch, tmp_path):
         """A socket file with no listener should not count as reachable."""
@@ -200,6 +202,7 @@ class TestDetectAudioEnvironment:
 
     def test_wsl_without_pulse_blocks_voice(self, monkeypatch, tmp_path):
         """WSL without PULSE_SERVER should block voice mode."""
+        monkeypatch.setattr("tools.voice_mode._wsl_powershell_tts_available", lambda: False)
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
@@ -1377,6 +1380,10 @@ class TestWSL2PowerShellFallback:
     play_audio_file() should insert a PowerShell-based player at the front
     of the player list when powershell.exe and ffmpeg are available.
     """
+
+    @pytest.fixture(autouse=True)
+    def _linux_host(self, monkeypatch):
+        monkeypatch.setattr("tools.voice_mode.platform.system", lambda: "Linux")
 
     def _fake_check_output(self, responses):
         """Build a subprocess.check_output side_effect from a list of responses."""

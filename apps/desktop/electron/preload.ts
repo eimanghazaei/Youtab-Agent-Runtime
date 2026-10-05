@@ -1,6 +1,21 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 contextBridge.exposeInMainWorld('youtabDesktop', {
+  accountSync: {
+    onSessionChanged: callback => {
+      const listener = () => callback()
+      ipcRenderer.on('youtab:account-sync:session-changed', listener)
+      return () => ipcRenderer.removeListener('youtab:account-sync:session-changed', listener)
+    },
+    status: profile => ipcRenderer.invoke('youtab:account-sync:status', profile),
+    consent: (profile, enabled) => ipcRenderer.invoke('youtab:account-sync:consent', profile, enabled),
+    autoNewChats: (profile, enabled) => ipcRenderer.invoke('youtab:account-sync:auto', profile, enabled),
+    run: profile => ipcRenderer.invoke('youtab:account-sync:run', profile),
+    preferences: (profile, value) => ipcRenderer.invoke('youtab:account-sync:preferences', profile, value),
+    share: (profile, id) => ipcRenderer.invoke('youtab:account-sync:share', profile, id),
+    remove: (profile, id) => ipcRenderer.invoke('youtab:account-sync:delete', profile, id),
+    continueChat: (profile, id) => ipcRenderer.invoke('youtab:account-sync:continue', profile, id)
+  },
   getConnection: profile => ipcRenderer.invoke('youtab:connection', profile),
   revalidateConnection: () => ipcRenderer.invoke('youtab:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('youtab:backend:touch', profile),
@@ -311,6 +326,7 @@ contextBridge.exposeInMainWorld('youtabDesktop', {
     apply: opts => ipcRenderer.invoke('youtab:updates:apply', opts),
     getBranch: () => ipcRenderer.invoke('youtab:updates:branch:get'),
     setBranch: name => ipcRenderer.invoke('youtab:updates:branch:set', name),
+    setChannel: channel => ipcRenderer.invoke('youtab:updates:channel:set', channel),
     onProgress: callback => {
       const listener = (_event, payload) => callback(payload)
       ipcRenderer.on('youtab:updates:progress', listener)

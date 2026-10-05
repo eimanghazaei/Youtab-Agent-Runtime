@@ -1,11 +1,18 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import sanitize from 'sanitize-html'
 
 import { cn } from '../../utils'
 
 function sleep(ms: number) {
   return new Promise<void>(resolve => setTimeout(resolve, ms))
+}
+
+function escapeText(text: string) {
+  return text.replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[char]!)
 }
 
 export function TerminalDemo({
@@ -57,13 +64,13 @@ export function TerminalDemo({
             break
 
           case 'prompt':
-            render(content + `<span class="text-midground">${step.text}</span>`)
+            render(content + `<span class="text-midground">${escapeText(step.text)}</span>`)
 
             break
 
           case 'type':
             for (const char of step.text) {
-              render(content + char)
+              render(content + escapeText(char))
               await sleep(step.delay ?? 30)
             }
 
@@ -136,7 +143,11 @@ export function TerminalDemo({
         )}
         dangerouslySetInnerHTML={{
           __html:
-            html +
+            sanitize(html, {
+              allowedTags: ['span'],
+              allowedAttributes: { span: ['class'] },
+              allowedClasses: { span: ['opacity-50', 'opacity-70', 'text-midground'] }
+            }) +
             '<span class="blink inline-block dither ml-0.5 h-[1em] w-[1ch]"></span>'
         }}
         ref={bodyRef}

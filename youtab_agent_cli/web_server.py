@@ -6619,7 +6619,7 @@ def get_recommended_default_model(provider: str = ""):
 
     if slug == "youtab":
         try:
-            from youtab_agent_cli.auth import get_local_inference_token_state
+            from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
 
             if get_local_inference_token_state() is not None or os.environ.get("YOUTAB_AGENT_DESKTOP") == "1":
                 from youtab_agent_cli.models import cached_provider_model_ids, pick_silent_default_model
@@ -6915,7 +6915,7 @@ def _apply_model_assignment_sync(
     if scope == "main":
         if not provider or not model:
             raise HTTPException(status_code=400, detail="provider and model required for main")
-        from youtab_agent_cli.auth import get_local_inference_token_state
+        from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
         exact_inference = provider.strip().lower() == "youtab" and get_local_inference_token_state() is not None
         if (
             provider.strip().lower() == "youtab"
@@ -6924,7 +6924,7 @@ def _apply_model_assignment_sync(
         ):
             raise HTTPException(status_code=422, detail="Desktop Gateway sign-in is required")
         if exact_inference:
-            from youtab_agent_cli.auth import DEFAULT_YOUTAB_INFERENCE_URL
+            from youtab_agent_cli.profile_inference import (DEFAULT_YOUTAB_INFERENCE_URL)
             from youtab_agent_cli.models import cached_provider_model_ids
 
             if model not in cached_provider_model_ids("youtab", force_refresh=True):
@@ -10423,7 +10423,7 @@ def _build_oauth_catalog() -> list[Dict[str, Any]]:
         seen.add(entry["id"])
         row = dict(entry)
         if row["id"] == "youtab":
-            from youtab_agent_cli.auth import _youtab_portal_env_override
+            from youtab_agent_cli.profile_inference import (_youtab_portal_env_override)
 
             row["native_base_url"] = _youtab_portal_env_override() or row["native_base_url"]
         rows.append(row)
@@ -11594,10 +11594,10 @@ async def _read_session_import_body(request: Request) -> bytes:
     return bytes(body)
 
 
-def _import_sessions_for_profile(profile: Optional[str], sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _import_sessions_for_profile(profile: Optional[str], sessions: List[Dict[str, Any]], *, inert_history: bool = False) -> Dict[str, Any]:
     db = _open_session_db_for_profile(profile)
     try:
-        return db.import_sessions(sessions)
+        return db.import_sessions(sessions, inert_history=inert_history)
     finally:
         db.close()
 
@@ -12604,7 +12604,9 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             reset_secret_scope(secret_token)
             reset_youtab_home_override(home_token)
     except Exception as exc:
-        msg = str(exc)
+        from tools.mcp_dashboard_oauth import AUTH_FAILURE_MESSAGE, REGISTRATION_FAILURE_MESSAGE
+
+        msg = AUTH_FAILURE_MESSAGE
         # Providers that gate RFC 7591 registration to pre-approved clients
         # (Figma's MCP catalog, etc.) 403 the register call before any
         # authorization URL exists — surface what's actually happening
@@ -12618,7 +12620,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                 server_url=cfg.get("url") if isinstance(cfg, dict) else None,
             )
             if humanized:
-                msg = humanized
+                msg = REGISTRATION_FAILURE_MESSAGE
         except Exception:
             pass
         flow.mark_error(msg)

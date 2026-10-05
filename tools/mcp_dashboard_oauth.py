@@ -18,6 +18,13 @@ from typing import Iterator
 from urllib.parse import parse_qs, urlparse
 
 
+AUTH_FAILURE_MESSAGE = "MCP authentication failed. Check the server settings and sign in again."
+REGISTRATION_FAILURE_MESSAGE = (
+    "OAuth client registration was rejected. Check the provider's registration "
+    "requirements and configure OAuth client credentials if required."
+)
+
+
 @dataclass
 class DashboardOAuthFlow:
     flow_id: str
@@ -105,7 +112,13 @@ class DashboardOAuthFlow:
             if self.status == "approved":
                 return
             self.status = "error"
-            self.error = error
+            # Provider exceptions may embed token values, response bodies or
+            # local paths. Only fixed, application-owned guidance is public.
+            self.error = (
+                REGISTRATION_FAILURE_MESSAGE
+                if error == REGISTRATION_FAILURE_MESSAGE
+                else AUTH_FAILURE_MESSAGE
+            )
             self._authorization_ready.set()
             self._callback_ready.set()
 

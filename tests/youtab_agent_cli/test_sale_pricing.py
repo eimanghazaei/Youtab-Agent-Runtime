@@ -3,13 +3,29 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from unittest.mock import MagicMock
 
+import pytest
+
 import youtab_agent_cli.models as models_mod
-from youtab_agent_cli.models import (
-    compute_sale_discount,
-    fetch_models_with_pricing,
-)
+compute_sale_discount = models_mod.compute_sale_discount
+fetch_models_with_pricing = models_mod.fetch_models_with_pricing
+
+
+@pytest.mark.parametrize("nan", [float("nan"), Decimal("NaN"), "nan"])
+def test_sale_discount_rejects_float_decimal_and_text_nan(nan):
+    assert compute_sale_discount(nan, "1", {"prompt": "2", "completion": "1"}) is None
+    assert compute_sale_discount("1", "1", {"prompt": nan, "completion": "1"}) is None
+
+
+def test_sale_discount_preserves_decimal_prices_and_free_model_rule():
+    assert compute_sale_discount(Decimal("0.5"), Decimal("1"), {
+        "prompt": Decimal("1"), "completion": Decimal("2"),
+    }) == (50, "1", "2")
+    assert compute_sale_discount(Decimal("0"), Decimal("0"), {
+        "prompt": Decimal("1"), "completion": Decimal("2"),
+    }) is None
 
 
 

@@ -272,62 +272,9 @@ def _check_non_agentic_model_warning(model_name: str) -> str:
 # Resolved dynamically against the live models.dev catalog.
 # ---------------------------------------------------------------------------
 
-class ModelIdentity(NamedTuple):
-    """Vendor slug and family prefix used for catalog resolution."""
-    vendor: str
-    family: str
+from youtab_agent_cli.model_alias_catalog import MODEL_ALIASES, ModelIdentity as ModelIdentity
 
 
-MODEL_ALIASES: dict[str, ModelIdentity] = {
-    # Anthropic
-    "sonnet":    ModelIdentity("anthropic", "claude-sonnet"),
-    "opus":      ModelIdentity("anthropic", "claude-opus"),
-    "haiku":     ModelIdentity("anthropic", "claude-haiku"),
-    "claude":    ModelIdentity("anthropic", "claude"),
-
-    # OpenAI
-    "gpt5":      ModelIdentity("openai", "gpt-5"),
-    "gpt":       ModelIdentity("openai", "gpt"),
-    "codex":     ModelIdentity("openai", "codex"),
-    "o3":        ModelIdentity("openai", "o3"),
-    "o4":        ModelIdentity("openai", "o4"),
-
-    # Google
-    "gemini":    ModelIdentity("google", "gemini"),
-
-    # DeepSeek
-    "deepseek":  ModelIdentity("deepseek", "deepseek-chat"),
-
-    # X.AI
-    "grok":      ModelIdentity("x-ai", "grok"),
-
-    # Meta
-    "llama":     ModelIdentity("meta-llama", "llama"),
-
-    # Qwen / Alibaba
-    "qwen":      ModelIdentity("qwen", "qwen"),
-
-    # MiniMax
-    "minimax":   ModelIdentity("minimax", "minimax"),
-
-    # Nvidia
-    "nemotron":  ModelIdentity("nvidia", "nemotron"),
-
-    # Moonshot / Kimi
-    "kimi":      ModelIdentity("moonshotai", "kimi"),
-
-    # Z.AI / GLM
-    "glm":       ModelIdentity("z-ai", "glm"),
-
-    # Step Plan (StepFun)
-    "step":      ModelIdentity("stepfun", "step"),
-
-    # Xiaomi
-    "mimo":      ModelIdentity("xiaomi", "mimo"),
-
-    # Arcee
-    "trinity":   ModelIdentity("arcee-ai", "trinity"),
-}
 
 
 # ---------------------------------------------------------------------------
@@ -2025,15 +1972,16 @@ def list_authenticated_providers(
         """Credential check for AWS SDK providers in non-runtime discovery."""
         slug_norm = str(slug or "").strip().lower()
         current_norm = str(current_provider or "").strip().lower()
-        if _has_fast_aws_sdk_signal():
-            return True
-        if slug_norm != current_norm:
+        fast_signal = _has_fast_aws_sdk_signal()
+        if not fast_signal and slug_norm != current_norm:
             return False
         try:
+            # Prepare the optional SDK before reading its regional catalog,
+            # including environment credentials that bypass chain probing.
             from agent.bedrock_adapter import has_aws_credentials
-            return bool(has_aws_credentials())
+            return fast_signal or bool(has_aws_credentials())
         except Exception:
-            return False
+            return fast_signal
 
     data = fetch_models_dev()
 
@@ -2172,7 +2120,7 @@ def list_authenticated_providers(
         # /model picker sees the SAME list `youtab model` would build, with
         # disk caching to keep the picker open snappy. Falls back to the
         # curated static list when the live fetcher returns nothing.
-        from youtab_agent_cli.auth import get_local_inference_token_state
+        from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
 
         exact_inference = youtab_id == "youtab" and (
             get_local_inference_token_state() is not None
@@ -2319,11 +2267,7 @@ def list_authenticated_providers(
             except Exception as exc:
                 logger.debug("Anthropic external creds check failed: %s", exc)
         if not has_creds and youtab_slug == "youtab":
-            from youtab_agent_cli.auth import (
-                _agent_key_is_usable,
-                get_local_inference_token_state,
-                inference_token_safety_seconds,
-            )
+            from youtab_agent_cli.profile_inference import (_agent_key_is_usable, get_local_inference_token_state, inference_token_safety_seconds)
             try:
                 local = get_local_inference_token_state()
                 has_creds = bool(local and _agent_key_is_usable(local, inference_token_safety_seconds(local)))
@@ -2351,7 +2295,7 @@ def list_authenticated_providers(
             except Exception:
                 model_ids = curated.get(youtab_slug, []) or curated.get(pid, [])
         elif youtab_slug == "youtab":
-            from youtab_agent_cli.auth import get_local_inference_token_state
+            from youtab_agent_cli.profile_inference import (get_local_inference_token_state)
 
             if (
                 get_local_inference_token_state() is not None
@@ -3141,3 +3085,54 @@ def list_picker_providers(
         filtered.append(p)
 
     return filtered
+
+
+# Public export contract: retain the historical wildcard surface and shared aliases.
+__all__ = [
+    'annotations',
+    'Any',
+    'DIRECT_ALIASES',
+    'DirectAlias',
+    'List',
+    'MODEL_ALIASES',
+    'MODEL_SWITCH_ERROR_TEXT',
+    'MODEL_SWITCH_ERR_ONCE_REQUIRES_TARGET',
+    'MODEL_SWITCH_ERR_ONCE_WITH_GLOBAL',
+    'ModelCapabilities',
+    'ModelFlagParseResult',
+    'ModelIdentity',
+    'ModelInfo',
+    'ModelSwitchRequest',
+    'ModelSwitchResult',
+    'NamedTuple',
+    'Optional',
+    'ProviderDef',
+    'custom_provider_slug',
+    'dataclass',
+    'determine_api_mode',
+    'format_model_for_display',
+    'get_authenticated_provider_slugs',
+    'get_label',
+    'get_model_capabilities',
+    'get_model_info',
+    'host_mandated_api_mode',
+    'is_aggregator',
+    'is_non_agentic_chat_model',
+    'list_authenticated_providers',
+    'list_picker_providers',
+    'list_provider_models',
+    'logger',
+    'logging',
+    'normalize_model_for_provider',
+    'parse_model_flags',
+    'parse_model_flags_detailed',
+    'parse_model_switch_args',
+    'prewarm_picker_cache_async',
+    're',
+    'resolve_alias',
+    'resolve_display_context_length',
+    'resolve_effective_model',
+    'resolve_persist_behavior',
+    'resolve_provider_full',
+    'switch_model',
+]

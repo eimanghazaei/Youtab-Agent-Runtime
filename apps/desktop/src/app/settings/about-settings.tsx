@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { SimorghOrb } from '@/components/ui/simorgh-orb'
 import { type Translations, useI18n } from '@/i18n'
 import { CheckCircle2, ExternalLink, Loader2, RefreshCw } from '@/lib/icons'
@@ -18,6 +19,7 @@ import {
   startActiveUpdate
 } from '@/store/updates'
 
+import { accountSyncCopy } from './account-sync-copy'
 import { ListRow, SectionHeading, SettingsContent } from './primitives'
 import { UninstallSection } from './uninstall-section'
 
@@ -46,13 +48,16 @@ function relativeTime(ms: number | undefined, a: Translations['settings']['about
 }
 
 export function AboutSettings() {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const deliveryCopy = accountSyncCopy(locale)
   const a = t.settings.about
   const version = useStore($desktopVersion)
   const status = useStore($updateStatus)
   const apply = useStore($updateApply)
   const checking = useStore($updateChecking)
   const [justChecked, setJustChecked] = useState(false)
+  const [channel, setChannel] = useState<'pilot' | 'stable'>('stable')
+  const [channelError, setChannelError] = useState(false)
 
   // The version atom is loaded once at app boot, which makes About show a
   // stale number after a self-update (the running binary is current, the
@@ -60,6 +65,7 @@ export function AboutSettings() {
   // reflects the running build.
   useEffect(() => {
     void refreshDesktopVersion()
+    void window.youtabDesktop?.updates.getBranch().then(value => setChannel(value.channel)).catch(() => setChannelError(true))
   }, [])
 
   const behind = status?.behind ?? 0
@@ -107,6 +113,26 @@ export function AboutSettings() {
 
       <div className="mx-auto mt-4 w-full max-w-2xl">
         <SectionHeading icon={RefreshCw} title={a.updates} />
+
+        {window.youtabDesktop && (
+          <ListRow action={
+            <Select disabled={applying || checking} onValueChange={async value => {
+                const next = value as 'pilot' | 'stable'
+
+                try {
+                  await window.youtabDesktop?.updates.setChannel(next)
+                  setChannel(next)
+                  setChannelError(false)
+                  await checkUpdates()
+                } catch {setChannelError(true)}
+              }}
+              value={channel}>
+              <SelectTrigger aria-label={deliveryCopy.channel}><SelectValue /></SelectTrigger>
+              <SelectContent><SelectItem value="stable">Stable</SelectItem><SelectItem value="pilot">Pilot / Test</SelectItem></SelectContent>
+            </Select>
+          } description={deliveryCopy.channelDescription} title={deliveryCopy.channel} />
+        )}
+        {channelError && <p role="alert">{deliveryCopy.channelError}</p>}
 
         <div
           className={cn(

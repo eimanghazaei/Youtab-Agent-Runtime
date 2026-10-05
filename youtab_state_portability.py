@@ -10,6 +10,7 @@ module-level constants live in youtab_state_common.
 
 import logging
 import json
+import math
 import time
 from typing import Any, Dict, List, Optional
 
@@ -328,7 +329,7 @@ class SessionPortabilityMixin:
             item["session_id"] = session_id
         return item
 
-    def import_sessions(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def import_sessions(self, sessions: List[Dict[str, Any]], *, inert_history: bool = False) -> Dict[str, Any]:
         """Import sessions exported by :meth:`export_session` or ``export_all``.
 
         Existing session IDs are skipped. Imported child sessions keep their
@@ -337,7 +338,18 @@ class SessionPortabilityMixin:
         fail foreign-key validation. Gateway routing, handoff, rewind, and other
         live runtime state are intentionally reset: this restores conversation
         history, not ownership of a live channel or process.
+
+        ``inert_history=True`` projects account-sync text onto user/assistant
+        rows only: at most 100000 messages and 16 MiB of UTF-8 content across
+        the request, with at most 262144 characters per message. Standard
+        imports retain their existing limits. The HTTP/serialized import
+        envelope remains capped at 25 MiB. Original epoch timestamps survive;
+        missing message timestamps fall back to last_active, then started_at.
         """
+        if not isinstance(inert_history, bool):
+            raise ValueError("inert_history must be a boolean")
+        if inert_history:
+            sessions = self._normalize_inert_history(sessions)
         if not isinstance(sessions, list):
             raise ValueError("sessions must be a list")
         if len(sessions) > self._IMPORT_MAX_SESSIONS:
@@ -394,7 +406,7 @@ class SessionPortabilityMixin:
             if not isinstance(messages, list):
                 errors.append(self._import_error(index, session_id, "messages must be a list"))
                 continue
-            if len(messages) > self._IMPORT_MAX_MESSAGES_PER_SESSION:
+            if len(messages) > (100_000 if inert_history else self._IMPORT_MAX_MESSAGES_PER_SESSION):
                 errors.append(
                     self._import_error(
                         index,
@@ -422,7 +434,7 @@ class SessionPortabilityMixin:
                     self._import_error(index, session_id, "session must be JSON serializable")
                 )
                 continue
-            if session_bytes > self._IMPORT_MAX_SESSION_BYTES:
+            if session_bytes > (25 * 1024 * 1024 if inert_history else self._IMPORT_MAX_SESSION_BYTES):
                 errors.append(
                     self._import_error(index, session_id, "session exceeds the import size limit")
                 )
@@ -469,7 +481,7 @@ class SessionPortabilityMixin:
                 continue
 
             total_messages += len(clean_messages)
-            if total_messages > self._IMPORT_MAX_TOTAL_MESSAGES:
+            if total_messages > (100_000 if inert_history else self._IMPORT_MAX_TOTAL_MESSAGES):
                 errors.append(
                     self._import_error(
                         index,
@@ -654,3 +666,66 @@ class SessionPortabilityMixin:
             }
 
         return self._execute_write(_do)
+
+    @staticmethod
+    def _normalize_inert_history(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Project account-sync text into history with no imported runtime authority.
+
+        Extra metadata is discarded before normal import validation. Only text
+        in user/assistant messages survives; provider payloads, tools, paths,
+        credentials, model configuration and lineage never enter local state.
+        """
+        if not isinstance(sessions, list) or len(sessions) > 500:
+            raise ValueError("inert history must contain at most 500 sessions")
+
+        def date(value: Any, field: str) -> Optional[float]:
+            if value is None:
+                return None
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{field} must be a finite epoch timestamp")
+            try:
+                timestamp = float(value)
+            except (OverflowError, ValueError) as exc:
+                raise ValueError(f"{field} must be a finite epoch timestamp") from exc
+            if not math.isfinite(timestamp) or timestamp < 0 or timestamp > 253402300799:
+                raise ValueError(f"{field} must be a finite epoch timestamp")
+            return timestamp
+
+        normalized = []
+        total_messages = total_bytes = 0
+        for raw in sessions:
+            if not isinstance(raw, dict):
+                raise ValueError("inert history session must be an object")
+            session_id = raw.get("id")
+            title = raw.get("title")
+            if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 512:
+                raise ValueError("inert history id must be a non-empty string of at most 512 characters")
+            if title is not None and (not isinstance(title, str) or len(title) > 262_144):
+                raise ValueError("inert history title must be text of at most 262144 characters")
+            started = date(raw.get("started_at"), "started_at")
+            last_active = date(raw.get("last_active"), "last_active")
+            messages = raw.get("messages", [])
+            if not isinstance(messages, list):
+                raise ValueError("inert history messages must be a list")
+            total_messages += len(messages)
+            if total_messages > 100_000:
+                raise ValueError("inert history exceeds 100000 messages")
+            clean_messages = []
+            for message in messages:
+                if not isinstance(message, dict) or message.get("role") not in ("user", "assistant"):
+                    raise ValueError("inert history permits only user and assistant messages")
+                content = message.get("content")
+                if not isinstance(content, str) or len(content) > 262_144:
+                    raise ValueError("inert history content must be text of at most 262144 characters")
+                total_bytes += len(content.encode("utf-8"))
+                if total_bytes > 16 * 1024 * 1024:
+                    raise ValueError("inert history exceeds 16 MiB of text")
+                timestamp = date(message.get("timestamp"), "message.timestamp")
+                if timestamp is None:
+                    timestamp = last_active if last_active is not None else started
+                clean_messages.append({"role": message["role"], "content": content, "timestamp": timestamp})
+            normalized.append({
+                "id": session_id, "title": title, "source": "account-sync",
+                "started_at": started, "messages": clean_messages,
+            })
+        return normalized
