@@ -222,8 +222,19 @@ def test_upload_sanitizes_traversal_filename(client):
 
 
 @pytest.mark.parametrize("filename", ["F:config.yaml", "notes.txt:secret", "C:"])
-def test_upload_rejects_drive_relative_and_stream_names(client, filename):
+def test_upload_rejects_drive_relative_and_stream_names(client, monkeypatch, filename):
     task_id = _create_task_via_api(client)
+    # If the regression returns, fail before any write outside this fixture.
+    module = sys.modules["youtab_dashboard_plugin_kanban_attach_test"]
+    original = module._collision_free_path
+    root = kb.task_attachments_dir(task_id).resolve()
+
+    def guarded_destination(*args):
+        candidate = original(*args)
+        assert candidate.resolve().is_relative_to(root), "upload escaped fixture"
+        return candidate
+
+    monkeypatch.setattr(module, "_collision_free_path", guarded_destination)
     response = client.post(
         f"/api/plugins/kanban/tasks/{task_id}/attachments",
         files={"file": (filename, b"untrusted upload", "text/plain")},
