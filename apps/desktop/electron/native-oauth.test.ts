@@ -1324,10 +1324,23 @@ test('parseLoopbackCallback throws on state mismatch (CSRF)', () => {
   assert.throws(() => parseLoopbackCallback('/callback?code=abc&state=attacker', 'expected'), /state mismatch/i)
 })
 
-test('parseLoopbackCallback surfaces a gateway error param', () => {
+test('parseLoopbackCallback verifies state before processing a gateway error', () => {
+  for (const query of ['', '&state=attacker', '&state=xyz&state=attacker']) {
+    assert.throws(
+      () => parseLoopbackCallback(`/callback?error=access_denied&error_description=nope${query}`, 'xyz'),
+      /state mismatch/i
+    )
+  }
+})
+
+test('parseLoopbackCallback surfaces a stable denial without remote descriptions', () => {
   assert.throws(
-    () => parseLoopbackCallback('/callback?error=access_denied&error_description=nope', 'xyz'),
-    /access_denied.*nope/i
+    () => parseLoopbackCallback('/callback?error=access_denied&error_description=nope%0A%1B%5B31m&state=xyz', 'xyz'),
+    { message: 'Gateway rejected native login: access_denied' }
+  )
+  assert.throws(
+    () => parseLoopbackCallback('/callback?error=private%0A%1B%5B31m&error_description=nope&state=xyz', 'xyz'),
+    { message: 'Gateway rejected native login: provider_error' }
   )
 })
 

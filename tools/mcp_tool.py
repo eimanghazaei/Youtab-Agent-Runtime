@@ -90,6 +90,7 @@ Thread safety:
 """
 
 import asyncio
+import atexit
 import contextvars
 import concurrent.futures
 import errno
@@ -137,7 +138,8 @@ _OSV_MALWARE_CHECK_TIMEOUT_S = 12.0
 # the terminal while prompt_toolkit / Rich is rendering the TUI — which
 # corrupts the display and can hang the session.
 #
-# Instead we redirect every stdio MCP subprocess's stderr into a shared
+# Instead we redirect every stdio MCP subprocess's stderr through a shared
+# pipe that forces redaction before anything reaches the
 # per-profile log file (~/.youtab-agent-runtime/logs/mcp-stderr.log), tagged with the
 # server name so individual servers remain debuggable.
 #
@@ -148,7 +150,7 @@ _mcp_stderr_log_lock = threading.Lock()
 
 
 def _get_mcp_stderr_log() -> Any:
-    """Return a shared append-mode file handle for MCP subprocess stderr.
+    """Return a shared redacting pipe descriptor for MCP subprocess stderr.
 
     Opened once per process and reused for every stdio server.  Must have a
     real OS-level file descriptor (``fileno()``) because asyncio's subprocess
@@ -164,30 +166,34 @@ def _get_mcp_stderr_log() -> Any:
             log_dir = get_youtab_home() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / "mcp-stderr.log"
-            # Line-buffered so server output lands on disk promptly; errors=
-            # "replace" tolerates garbled binary output from misbehaving
-            # servers.
-            fh = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
+            from tools.mcp_stderr import RedactedStderrLog
+            fh = RedactedStderrLog(log_path)
             # Sanity-check: confirm a real fd is available before we commit.
             fh.fileno()
             _mcp_stderr_log_fh = fh
-        except Exception as exc:  # pragma: no cover — best-effort fallback
-            logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
-            try:
-                _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
-            except Exception:
-                # Last resort: the real stderr.  Not ideal for TUI users but
-                # it matches pre-fix behavior.
-                _mcp_stderr_log_fh = sys.stderr
+        except Exception:  # best-effort diagnostics; never fall back to raw stderr
+            logger.warning("MCP stderr capture unavailable; child diagnostics discarded")
+            _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
         return _mcp_stderr_log_fh
+
+
+def _close_mcp_stderr_log() -> None:
+    """Drain and close the shared capture after subprocess shutdown."""
+    global _mcp_stderr_log_fh
+    with _mcp_stderr_log_lock:
+        if _mcp_stderr_log_fh is not None:
+            _mcp_stderr_log_fh.close()
+            _mcp_stderr_log_fh = None
+
+
+atexit.register(_close_mcp_stderr_log)
 
 
 def _write_stderr_log_header(server_name: str) -> None:
     """Write a human-readable session marker before launching a server.
 
     Gives operators a way to find each server's output in the shared
-    ``mcp-stderr.log`` file without needing per-line prefixes (which would
-    require a pipe + reader thread and complicate shutdown).
+    ``mcp-stderr.log`` file; the pipe pump redacts child output independently.
     """
     fh = _get_mcp_stderr_log()
     try:

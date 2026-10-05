@@ -24,9 +24,9 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync, lstatSync, realpathSync, openSync, closeSync, fchmodSync, writeFileSync, renameSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { randomBytes, createHash } from 'crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'crypto';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
@@ -775,7 +775,59 @@ async function startSocket() {
 
 // HTTP server
 const app = express();
-app.use(express.json());
+let bridgeCapability = '';
+
+function initializeBridgeCapability() {
+  mkdirSync(SESSION_DIR, { recursive: true, mode: 0o700 });
+  const sessionRoot = realpathSync(SESSION_DIR);
+  const capabilityPath = path.join(sessionRoot, 'bridge-capability');
+  try {
+    const current = lstatSync(capabilityPath);
+    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1 ||
+        (process.platform !== 'win32' && ((current.mode & 0o077) !== 0 || current.uid !== process.getuid()))) {
+      throw new Error('WhatsApp bridge capability must be a private owned regular file');
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const capability = process.env.YOUTAB_AGENT_WHATSAPP_BRIDGE_CAPABILITY || randomBytes(32).toString('base64url');
+  if (!/^[A-Za-z0-9_-]{43}$/.test(capability)) {
+    throw new Error('Invalid WhatsApp bridge capability configuration');
+  }
+  const temporary = path.join(sessionRoot, `.bridge-capability-${randomBytes(16).toString('hex')}`);
+  let descriptor;
+  let created = false;
+  try {
+    descriptor = openSync(temporary, 'wx', 0o600);
+    created = true;
+    fchmodSync(descriptor, 0o600);
+    writeFileSync(descriptor, capability, 'utf8');
+    closeSync(descriptor);
+    descriptor = undefined;
+    // Rename replaces only this directory entry; it never follows a destination
+    // symlink. The nonce file is exclusively created within the session boundary.
+    renameSync(temporary, capabilityPath);
+  } finally {
+    try {
+      if (descriptor !== undefined) closeSync(descriptor);
+    } finally {
+      if (created && existsSync(temporary)) unlinkSync(temporary);
+    }
+  }
+  return capability;
+}
+
+// Loopback and Host checks constrain routing, but cannot authorize local callers.
+// Authenticate before JSON parsing, queue reads, file reads, or WhatsApp effects.
+app.use((req, res, next) => {
+  const authorization = req.headers.authorization;
+  const expected = Buffer.from(`Bearer ${bridgeCapability}`);
+  const supplied = Buffer.from(typeof authorization === 'string' ? authorization : '');
+  if (!bridgeCapability || supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+    return res.status(401).json({ error: 'WhatsApp bridge authorization required' });
+  }
+  next();
+});
 
 // Host-header validation — defends against DNS rebinding.
 // The bridge binds loopback-only (127.0.0.1) but a victim browser on
@@ -807,6 +859,7 @@ app.use((req, res, next) => {
   }
   next();
 });
+app.use(express.json());
 
 // Poll for new messages (long-poll style)
 app.get('/messages', (req, res) => {
@@ -1127,6 +1180,7 @@ if (PAIR_ONLY) {
     process.exit(1);
   });
 } else {
+  bridgeCapability = initializeBridgeCapability();
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
     console.log(`📁 Session stored in: ${SESSION_DIR}`);

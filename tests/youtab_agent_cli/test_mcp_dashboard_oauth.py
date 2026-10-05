@@ -139,3 +139,44 @@ def test_flow_status_does_not_expose_authorization_code():
     assert body["status"] == "approved"
     assert "secret-code" not in response.text
     assert "secret-state" not in response.text
+
+
+def test_mcp_probe_failure_does_not_expose_exception_details(monkeypatch):
+    from youtab_agent_cli import mcp_config
+
+    monkeypatch.setattr(mcp_config, "_get_mcp_servers", lambda: {"reports": {"url": "https://mcp.example"}})
+
+    def fail_probe(*_args, **_kwargs):
+        raise RuntimeError("Authorization: Bearer synthetic-private-token\nC:/private/internal-config.json")
+
+    monkeypatch.setattr(mcp_config, "_probe_single_server", fail_probe)
+    response = _client().post("/api/mcp/servers/reports/test")
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": False,
+        "error": "MCP connection failed. Check the server settings and authentication, then try again.",
+        "tools": [],
+    }
+    assert "synthetic-private-token" not in response.text
+    assert "internal-config" not in response.text
+
+
+def test_failed_oauth_flow_status_does_not_expose_exception_details():
+    from youtab_agent_cli import web_server
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow
+
+    flow = DashboardOAuthFlow(
+        flow_id="failed-flow",
+        server_name="reports",
+        profile=None,
+        youtab_home="/synthetic/private-home",
+        redirect_uri="https://agent.example/callback",
+    )
+    flow.mark_error("token exchange failed: synthetic-private-token; C:/private/internal-config.json")
+    web_server._mcp_oauth_flows[flow.flow_id] = flow
+    response = _client().get("/api/mcp/oauth/flows/failed-flow")
+    assert response.status_code == 200
+    assert response.json()["status"] == "error"
+    assert response.json()["error"] == "MCP authentication failed. Check the server settings and sign in again."
+    assert "synthetic-private-token" not in response.text
+    assert "internal-config" not in response.text

@@ -2634,7 +2634,7 @@ class ContextCompressor(ContextEngine):
         # Pass 1: Deduplicate identical tool results.
         # When the same file is read multiple times, keep only the most recent
         # full copy and replace older duplicates with a back-reference.
-        content_hashes: dict = {}  # hash -> (index, tool_call_id)
+        seen_content: set[str] = set()
         for i in range(len(result) - 1, -1, -1):
             msg = result[i]
             if msg.get("role") != "tool":
@@ -2649,13 +2649,14 @@ class ContextCompressor(ContextEngine):
                 continue
             if len(content) < 200:
                 continue
-            h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
-            if h in content_hashes:
+            if content in seen_content:
                 # This is an older duplicate — replace with back-reference
                 result[i] = {**msg, "content": "[Duplicate tool output — same content as a more recent call]"}
                 pruned += 1
             else:
-                content_hashes[h] = (i, msg.get("tool_call_id", "?"))
+                # Full text equality is required before discarding tool output.
+                # Hash collisions and lossy UTF-8 encoding must not erase data.
+                seen_content.add(content)
 
         # Ghost-skill defense (#32106): skills just loaded (or actively
         # referenced in the protected tail) keep their full skill_view

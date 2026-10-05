@@ -542,7 +542,7 @@
     // a new event for that task id. TaskDrawer useEffect-depends on its
     // own task's counter so it reloads itself on live events instead of
     // showing stale data.
-    const [taskEventTick, setTaskEventTick] = useState({});
+    const [taskEventTick, setTaskEventTick] = useState(() => Object.create(null));
 
     const cursorRef = useRef(0);
     const reloadTimerRef = useRef(null);
@@ -658,7 +658,7 @@
                 cursorRef.current = msg.cursor || cursorRef.current;
                 // Stamp per-task signal so the TaskDrawer can reload itself.
                 setTaskEventTick(function (prev) {
-                  const next = Object.assign({}, prev);
+                  const next = Object.assign(Object.create(null), prev);
                   for (const e of msg.events) {
                     if (e && e.task_id) next[e.task_id] = (next[e.task_id] || 0) + 1;
                   }

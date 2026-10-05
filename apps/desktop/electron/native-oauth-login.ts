@@ -16,7 +16,7 @@
  *
  * Security posture (see native-oauth.ts for the flow-level rationale):
  *   - the loopback server binds 127.0.0.1 on an EPHEMERAL port and shuts down
- *     the instant it receives the callback (or times out) — no long-lived
+ *     the instant it completes the verified callback (or times out) — no long-lived
  *     local listener;
  *   - the `state` is verified before the code is redeemed (CSRF);
  *   - the PKCE verifier never leaves this process until the token POST, and
@@ -72,8 +72,9 @@ export interface NativeLoginDeps {
  * Steps: bind a loopback listener → open the system browser at the gateway's
  * /auth/native/authorize with our PKCE challenge + loopback redirect_uri →
  * await the ?code= redirect → verify state → POST /auth/native/token with the
- * verifier → return tokens. Rejects on timeout, state mismatch, a gateway
- * error param, or a token-exchange failure. Always tears the listener down.
+ * verifier → return tokens. Ignores unrelated or foreign-state callbacks.
+ * Rejects on timeout, a verified gateway denial, or token-exchange failure.
+ * Always tears the listener down when login finishes.
  */
 export async function runNativeLogin(
   baseUrl: string,
@@ -105,8 +106,27 @@ export async function runNativeLogin(
         return
       }
 
-      // Ignore non-callback noise (e.g. /favicon.ico) — wait for the ?code=.
-      if (!/[?&](code|error)=/.test(url)) {
+      // Unrelated requests must not settle the login, even if they contain an
+      // error. Wait for the browser's GET callback with our unique state.
+      if (req.method !== 'GET') {
+        return
+      }
+
+      let callback: URL
+
+      try {
+        callback = new URL(url, 'http://127.0.0.1')
+      } catch {
+        return
+      }
+
+      const states = callback.searchParams.getAll('state')
+
+      if (callback.pathname !== '/callback' || states.length !== 1 || states[0] !== state) {
+        return
+      }
+
+      if (!callback.searchParams.has('code') && !callback.searchParams.has('error')) {
         return
       }
 

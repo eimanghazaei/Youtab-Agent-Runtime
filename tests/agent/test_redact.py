@@ -39,7 +39,8 @@ class TestKnownPrefixes:
         for token in samples:
             result = redact_sensitive_text(f"provider error {token}")
             assert token not in result
-            assert "..." in result
+            assert "redacted:" in result
+            assert token[-4:] not in result
 
     def test_short_fireworks_like_words_unchanged(self):
         text = "fw-tooshort fw_tooshort fpk_tooshort"
@@ -191,6 +192,44 @@ class TestPassthrough:
 
 
 class TestRedactingFormatter:
+    @pytest.mark.parametrize("message, private", [
+        ("OPENAI_API_KEY=sk-proj-syntheticPrivateBody987654321", "syntheticPrivateBody987654321"),
+        ('{"apiKey": "opaqueSyntheticPrivate987654321"}', "opaqueSyntheticPrivate987654321"),
+        ("https://api.example.test/callback?token=opaqueSyntheticPrivate987654321&view=public", "opaqueSyntheticPrivate987654321"),
+        ("https://user:opaqueSyntheticPrivate987654321@api.example.test/status", "opaqueSyntheticPrivate987654321"),
+    ])
+    def test_persistent_log_redacts_when_tool_redaction_is_disabled(self, tmp_path, monkeypatch, message, private):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        log = tmp_path / "synthetic.log"
+        handler = logging.FileHandler(log, encoding="utf-8")
+        handler.setFormatter(RedactingFormatter("%(message)s"))
+        try:
+            handler.handle(logging.LogRecord("synthetic", logging.ERROR, "", 0, message, (), None))
+        finally:
+            handler.close()
+        text = log.read_text(encoding="utf-8")
+        assert private not in text
+        assert redact_sensitive_text(message) == message  # ordinary output preference still applies
+
+    def test_log_masks_all_random_secret_bytes_but_keeps_vendor_label(self):
+        formatter = RedactingFormatter("%(message)s")
+        secret = "xai-Q7CANARYPRIVATEBODY246801357924680T9Z8"
+        record = logging.LogRecord("synthetic", logging.ERROR, "", 0, "Key: %s", (secret,), None)
+        text = formatter.format(record)
+        assert "xai-" in text
+        assert "Q7" not in text
+        assert "T9Z8" not in text
+
+    def test_cached_exception_text_is_redacted_without_mutating_the_record(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+        secret = "opaqueSyntheticException987654321"
+        record = logging.LogRecord("synthetic", logging.ERROR, "", 0, "Request failed", (), None)
+        record.exc_text = f'RuntimeError: {{"apiKey": "{secret}"}}'
+        formatted = RedactingFormatter("%(message)s").format(record)
+        assert secret not in formatted
+        assert "RuntimeError" in formatted
+        assert secret in record.exc_text
+
     def test_formats_and_redacts(self):
         formatter = RedactingFormatter("%(message)s")
         record = logging.LogRecord(
@@ -204,7 +243,8 @@ class TestRedactingFormatter:
         )
         result = formatter.format(record)
         assert "abc123def456" not in result
-        assert "sk-pro" in result
+        assert "redacted:sk-" in result
+        assert "jkl012" not in result
 
 
 class TestPrintenvSimulation:
@@ -512,7 +552,9 @@ class TestXaiToken:
     def test_bare_token_masked(self):
         result = redact_sensitive_text(f"using key {self.KEY}", force=True)
         assert self.KEY not in result
-        assert "xai-AB" in result
+        assert "redacted:xai-" in result
+        assert "AB" not in result
+        assert self.KEY[-4:] not in result
 
 
     def test_too_short_not_masked(self):
@@ -650,7 +692,8 @@ class TestFireworksToken:
     def test_bare_token_masked(self):
         result = redact_sensitive_text(f"fireworks error: key {self.KEY}", force=True)
         assert self.KEY not in result
-        assert "fw_AA" in result
+        assert "redacted:fw_" in result
+        assert "AA" not in result
 
 
     def test_too_short_not_masked(self):

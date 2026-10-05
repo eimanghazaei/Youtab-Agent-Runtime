@@ -12604,7 +12604,9 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
             reset_secret_scope(secret_token)
             reset_youtab_home_override(home_token)
     except Exception as exc:
-        msg = str(exc)
+        from tools.mcp_dashboard_oauth import AUTH_FAILURE_MESSAGE, REGISTRATION_FAILURE_MESSAGE
+
+        msg = AUTH_FAILURE_MESSAGE
         # Providers that gate RFC 7591 registration to pre-approved clients
         # (Figma's MCP catalog, etc.) 403 the register call before any
         # authorization URL exists — surface what's actually happening
@@ -12618,7 +12620,7 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                 server_url=cfg.get("url") if isinstance(cfg, dict) else None,
             )
             if humanized:
-                msg = humanized
+                msg = REGISTRATION_FAILURE_MESSAGE
         except Exception:
             pass
         flow.mark_error(msg)

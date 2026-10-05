@@ -1,7 +1,7 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { execFile } from 'node:child_process'
+import { resolveApiKeyPath } from './notarization-api-key.mjs'
 
 function run(command, args) {
   return new Promise((resolve, reject) => {
@@ -17,36 +17,6 @@ function run(command, args) {
       resolve({ stdout, stderr })
     })
   })
-}
-
-function inlineKeyLooksValid(value) {
-  return value.includes('BEGIN PRIVATE KEY') && value.includes('END PRIVATE KEY')
-}
-
-function resolveApiKeyPath(rawValue) {
-  const value = String(rawValue || '').trim()
-  if (!value) return { keyPath: '', cleanup: () => {} }
-
-  if (fs.existsSync(value)) {
-    return { keyPath: value, cleanup: () => {} }
-  }
-
-  if (!inlineKeyLooksValid(value)) {
-    throw new Error('APPLE_API_KEY must be a file path or inline .p8 key content')
-  }
-
-  const tempPath = path.join(os.tmpdir(), `youtab-notary-${Date.now()}-${process.pid}.p8`)
-  fs.writeFileSync(tempPath, value, 'utf8')
-  return {
-    keyPath: tempPath,
-    cleanup: () => {
-      try {
-        fs.rmSync(tempPath, { force: true })
-      } catch {
-        // Best-effort cleanup.
-      }
-    }
-  }
 }
 
 export default async function notarize(context) {

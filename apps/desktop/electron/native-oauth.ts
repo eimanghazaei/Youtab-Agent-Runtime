@@ -506,7 +506,7 @@ export function nativeRefreshUrl(baseUrl: string): string {
 
 /**
  * Parse the loopback redirect the gateway sends the browser to. Returns the
- * `code` + `state`, or throws with the gateway's `error` if the flow failed.
+ * code, or throws a safe gateway error if the flow failed.
  * `expectedState` MUST match (CSRF defense — RFC 6749 §10.12); a mismatch
  * throws rather than proceeding.
  */
@@ -514,24 +514,26 @@ export function parseLoopbackCallback(requestUrl: string, expectedState: string)
   // requestUrl is the path+query the loopback server received, e.g.
   // "/callback?code=...&state=...". Resolve against a dummy origin to parse.
   const parsed = new URL(requestUrl, 'http://127.0.0.1')
+  const states = parsed.searchParams.getAll('state')
+
+  if (!expectedState || states.length !== 1 || states[0] !== expectedState) {
+    // Authenticate both success and denial callbacks before accepting an outcome.
+    throw new Error('Loopback callback state mismatch (possible CSRF)')
+  }
+
   const error = parsed.searchParams.get('error')
 
   if (error) {
-    const desc = parsed.searchParams.get('error_description') || ''
-    throw new Error(`Gateway rejected native login: ${error}${desc ? ` (${desc})` : ''}`)
+    // Callback text is untrusted and may reach app logs. Keep only fixed codes;
+    // never include the provider's arbitrary error or error_description.
+    const safeError = error === 'access_denied' ? 'access_denied' : 'provider_error'
+    throw new Error(`Gateway rejected native login: ${safeError}`)
   }
 
   const code = parsed.searchParams.get('code') || ''
-  const state = parsed.searchParams.get('state') || ''
 
   if (!code) {
     throw new Error('Loopback callback missing authorization code')
-  }
-
-  if (!expectedState || state !== expectedState) {
-    // Never redeem a code that arrived with a mismatched state — it may be a
-    // forged callback trying to inject an attacker's code.
-    throw new Error('Loopback callback state mismatch (possible CSRF)')
   }
 
   return { code }

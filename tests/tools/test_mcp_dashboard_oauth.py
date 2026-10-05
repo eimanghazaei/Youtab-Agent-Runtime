@@ -111,3 +111,18 @@ def test_failed_reauth_rollback_preserves_newer_oauth_state(tmp_path, monkeypatc
     storage.restore(backup, only_if_absent=True)
 
     assert storage._tokens_path().read_text(encoding="utf-8") == "FRESH"
+
+
+def test_failed_registration_preserves_safe_actionable_guidance():
+    from tools.mcp_dashboard_oauth import DashboardOAuthFlow, REGISTRATION_FAILURE_MESSAGE
+
+    flow = DashboardOAuthFlow(
+        flow_id="registration-failure",
+        server_name="reports",
+        profile=None,
+        youtab_home="/synthetic/home",
+        redirect_uri="https://agent.example/callback",
+    )
+    flow.mark_error(REGISTRATION_FAILURE_MESSAGE)
+    assert flow.snapshot()["error"] == REGISTRATION_FAILURE_MESSAGE
+    assert flow.snapshot()["status"] == "error"

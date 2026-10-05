@@ -125,7 +125,11 @@ function normalizeBasePath(basePath: string | undefined): string {
 
   const withLead = basePath.startsWith('/') ? basePath : `/${basePath}`
 
-  return withLead.replace(/\/+$/, '')
+  let end = withLead.length
+  while (end > 0 && withLead.charCodeAt(end - 1) === 47) {
+    end--
+  }
+  return withLead.slice(0, end)
 }
 
 function normalizeEndpointPath(path: string): string {

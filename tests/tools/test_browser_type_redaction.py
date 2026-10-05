@@ -26,7 +26,7 @@ def test_browser_type_redacts_api_key_in_output(monkeypatch):
 
     assert result["success"] is True
     assert secret not in json.dumps(result)
-    assert result["typed"].startswith("sk-pro")
+    assert result["typed"] == "«redacted:sk-…»"
     # Raw secret still typed into the page.
     mock_run.assert_called_once()
     assert mock_run.call_args.args[2] == ["@apikey", secret]
@@ -69,6 +69,6 @@ def test_browser_type_failure_redacts_api_key_in_error(monkeypatch):
 
     assert result["success"] is False
     assert secret not in raw_result
-    assert "sk-pro" in raw_result
+    assert "redacted:sk-" in raw_result
     mock_run.assert_called_once()
     assert mock_run.call_args.args[2] == ["@apikey", secret]

@@ -12,6 +12,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const API_PORT = parseInt(process.env.API_PORT || '4747');
 const DIST_DIR = process.argv[2] || './dist';
@@ -51,20 +52,43 @@ function proxyToApi(req, res) {
   req.pipe(proxy, { end: true });
 }
 
-function serveStatic(req, res) {
-  const urlPath = req.url.split('?')[0];
-  let filePath = path.join(DIST_DIR, urlPath === '/' ? 'index.html' : urlPath);
+function isWithin(root, target) {
+  const relative = path.relative(root, target);
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+}
+
+function serveStatic(req, res, root) {
+  let urlPath;
+  try {
+    urlPath = decodeURIComponent(req.url.split('?')[0]);
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'text/plain' });
+    res.end('Invalid path');
+    return;
+  }
+  let filePath = path.resolve(root, `.${urlPath === '/' ? '/index.html' : urlPath}`);
+  if (!urlPath.startsWith('/') || urlPath.includes('\\') || urlPath.includes('\0') || !isWithin(root, filePath)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.end('Forbidden');
+    return;
+  }
 
   // SPA fallback: if file doesn't exist and isn't a static asset, serve index.html
   if (!fs.existsSync(filePath) && !path.extname(filePath)) {
-    filePath = path.join(DIST_DIR, 'index.html');
+    filePath = path.join(root, 'index.html');
   }
 
   const ext = path.extname(filePath);
   const mime = MIME[ext] || 'application/octet-stream';
 
   try {
-    const data = fs.readFileSync(filePath);
+    const canonical = fs.realpathSync(filePath);
+    if (!isWithin(root, canonical)) {
+      res.writeHead(403, { 'Content-Type': 'text/plain' });
+      res.end('Forbidden');
+      return;
+    }
+    const data = fs.readFileSync(canonical);
     res.writeHead(200, {
       'Content-Type': mime,
       'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=86400',
@@ -76,17 +100,23 @@ function serveStatic(req, res) {
   }
 }
 
-const server = http.createServer((req, res) => {
-  if (req.url.startsWith('/api')) {
-    proxyToApi(req, res);
-  } else {
-    serveStatic(req, res);
-  }
-});
+export function createGitNexusProxy(distDir) {
+  const root = fs.realpathSync(distDir);
+  return http.createServer((req, res) => {
+    if (req.url.startsWith('/api/') || req.url.split('?')[0] === '/api') {
+      proxyToApi(req, res);
+    } else {
+      serveStatic(req, res, root);
+    }
+  });
+}
 
-server.listen(PORT, () => {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+const server = createGitNexusProxy(DIST_DIR);
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`GitNexus proxy listening on http://localhost:${PORT}`);
   console.log(`  Web UI: http://localhost:${PORT}/`);
   console.log(`  API:    http://localhost:${PORT}/api/repos`);
   console.log(`  Backend: http://127.0.0.1:${API_PORT}`);
 });
+}

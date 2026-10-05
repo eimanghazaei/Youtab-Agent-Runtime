@@ -1042,7 +1042,8 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert "Called tool(s): read_file" in fallback
         assert "/tmp/project/app.py" in fallback
         assert secret not in fallback
-        assert "ghp_" not in fallback
+        assert "«redacted:ghp_…»" in fallback
+        assert "a" * 6 not in fallback
 
 
 
@@ -1921,6 +1922,33 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.youtab-agent-runtime/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestExactToolOutputDeduplication:
+    def test_distinct_text_survives_legacy_digest_collision(self, compressor):
+        first = "synthetic first result " * 15
+        second = "synthetic second result " * 15
+        messages = [
+            {"role": "tool", "tool_call_id": "first", "content": first},
+            {"role": "tool", "tool_call_id": "second", "content": second},
+        ]
+        with patch("agent.context_compressor.hashlib.md5") as digest:
+            digest.return_value.hexdigest.return_value = "0" * 32
+            result, pruned = compressor._prune_old_tool_results(messages, protect_tail_count=2)
+        assert [message["content"] for message in result] == [first, second]
+        assert pruned == 0
+
+    def test_identical_text_still_keeps_the_newest_full_copy(self, compressor):
+        content = "synthetic repeated result " * 15
+        messages = [
+            {"role": "tool", "tool_call_id": "old", "content": content},
+            {"role": "tool", "tool_call_id": "new", "content": content},
+        ]
+        result, pruned = compressor._prune_old_tool_results(messages, protect_tail_count=2)
+        assert result[0]["content"].startswith("[Duplicate tool output")
+        assert result[1]["content"] == content
+        assert messages[0]["content"] == content
+        assert pruned == 1
 
 
 class TestLazyContextResolution:
