@@ -3590,7 +3590,9 @@ def _safe_attachment_name(raw: str) -> str:
     name = (raw or "").replace("\\", "/").split("/")[-1].strip()
     name = "".join(ch for ch in name if ch.isprintable() and ch not in "\x00").strip()
     name = name.lstrip(".").strip()
-    if not name:
+    # Colons select drive-relative paths or NTFS alternate data streams on
+    # Windows even when the name contains no directory separator.
+    if not name or ":" in name:
         raise ValueError("invalid attachment filename")
     return name[:200]
 
@@ -3601,13 +3603,22 @@ def _collision_free_path(dest_dir: Path, safe_name: str) -> Path:
     ``foo.pdf`` → ``foo.pdf``, then ``foo (1).pdf``, ``foo (2).pdf``, …
     ``safe_name`` must already be sanitised via :func:`_safe_attachment_name`.
     """
+    if safe_name != _safe_attachment_name(safe_name):
+        raise ValueError("invalid attachment filename")
+    root = dest_dir.resolve()
     stem, dot, ext = safe_name.partition(".")
     candidate = safe_name
     n = 1
-    while (dest_dir / candidate).exists():
+    while True:
+        path = dest_dir / candidate
+        try:
+            path.resolve().relative_to(root)
+        except (ValueError, OSError):
+            raise ValueError("invalid attachment destination") from None
+        if not path.exists():
+            return path
         candidate = f"{stem} ({n}){dot}{ext}"
         n += 1
-    return dest_dir / candidate
 
 
 def store_attachment_bytes(
@@ -3648,7 +3659,10 @@ def store_attachment_bytes(
     dest_dir = task_attachments_dir(task_id, board=board)
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = _collision_free_path(dest_dir, safe_name)
-    dest_path.write_bytes(data)
+    # Exclusive creation also refuses a symlink/file inserted after the
+    # containment/collision check, rather than following or overwriting it.
+    with dest_path.open("xb") as out:
+        out.write(data)
     try:
         return add_attachment(
             conn,

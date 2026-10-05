@@ -816,7 +816,7 @@ async def upload_task_attachment(
 
         total = 0
         try:
-            with open(dest_path, "wb") as out:
+            with open(dest_path, "xb") as out:
                 while True:
                     chunk = await file.read(1024 * 1024)
                     if not chunk:

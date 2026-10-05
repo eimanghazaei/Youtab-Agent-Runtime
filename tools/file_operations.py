@@ -1047,7 +1047,7 @@ class ShellFileOperations(FileOperations):
             return _detect_line_ending(pre_content)
         # File may not exist (new write) — `head` exits 0 with empty
         # stdout in that case which yields None below.  Cheap probe.
-        head_cmd = f"head -c 4096 {self._escape_shell_arg(path)} 2>/dev/null"
+        head_cmd = f"head -c 4096 -- {self._escape_shell_arg(path)} 2>/dev/null"
         head_result = self._exec(head_cmd)
         if head_result.exit_code != 0 or not head_result.stdout:
             return None
@@ -1063,7 +1063,7 @@ class ShellFileOperations(FileOperations):
         """
         if pre_content is not None:
             return _has_bom(pre_content)
-        head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
+        head_cmd = f"head -c 3 -- {self._escape_shell_arg(path)} 2>/dev/null"
         head_result = self._exec(head_cmd)
         if head_result.exit_code != 0 or not head_result.stdout:
             return False
@@ -1134,7 +1134,7 @@ class ShellFileOperations(FileOperations):
             )
         
         # Read a sample to check for binary content
-        sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
+        sample_cmd = f"head -c 1000 -- {self._escape_shell_arg(path)} 2>/dev/null"
         sample_result = self._exec(sample_cmd)
         sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
         
@@ -1147,7 +1147,7 @@ class ShellFileOperations(FileOperations):
         
         # Read with pagination using sed
         end_line = offset + limit - 1
-        read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
+        read_cmd = f"sed -n '{offset},{end_line}p' -- {self._escape_shell_arg(path)}"
         read_result = self._exec(read_cmd)
         
         if read_result.exit_code != 0:
@@ -1191,7 +1191,7 @@ class ShellFileOperations(FileOperations):
         lower_name = filename.lower()
 
         # List files in the target directory
-        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
+        ls_cmd = f"ls -1 -- {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
         ls_result = self._exec(ls_cmd)
 
         scored: list = []  # (score, filepath) — higher is better
@@ -1252,14 +1252,14 @@ class ShellFileOperations(FileOperations):
             file_size = 0
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
-        sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
+        sample_result = self._exec(f"head -c 1000 -- {self._escape_shell_arg(path)} 2>/dev/null")
         sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
         if self._is_likely_binary(path, sample_output):
             return ReadResult(
                 is_binary=True, file_size=file_size,
                 error="Binary file — cannot display as text."
             )
-        cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
+        cat_result = self._exec(f"cat -- {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
         # Strip a leading UTF-8 BOM so patch's fuzzy matcher operates on
@@ -1453,7 +1453,7 @@ class ShellFileOperations(FileOperations):
             # pre_content as None which makes both downstream consumers
             # degrade gracefully (lint reports all errors; LSP skips the
             # shift map).
-            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+            read_cmd = f"cat -- {self._escape_shell_arg(path)} 2>/dev/null"
             read_result = self._exec(read_cmd)
             if read_result.exit_code == 0 and read_result.stdout:
                 pre_content = read_result.stdout
@@ -1578,7 +1578,7 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=denied)
 
         # Read current content
-        read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        read_cmd = f"cat -- {self._escape_shell_arg(path)} 2>/dev/null"
         read_result = self._exec(read_cmd)
         
         if read_result.exit_code != 0:
@@ -1630,7 +1630,7 @@ class ShellFileOperations(FileOperations):
         # failures (backend FS oddities, race with another task, truncated
         # pipe, etc.) that would otherwise return success-with-diff while the
         # file is unchanged on disk.
-        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        verify_cmd = f"cat -- {self._escape_shell_arg(path)} 2>/dev/null"
         verify_result = self._exec(verify_cmd)
         if verify_result.exit_code != 0:
             return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
@@ -1736,7 +1736,7 @@ class ShellFileOperations(FileOperations):
         if inproc is not None:
             # Need content — either passed in or read from disk.
             if content is None:
-                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+                read_cmd = f"cat -- {self._escape_shell_arg(path)} 2>/dev/null"
                 read_result = self._exec(read_cmd)
                 if read_result.exit_code != 0:
                     return LintResult(skipped=True, message=f"Failed to read {path} for lint")
@@ -2090,7 +2090,7 @@ class ShellFileOperations(FileOperations):
             )
             if "yes" in parent_check.stdout and basename_query:
                 ls_result = self._exec(
-                    f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
+                    f"ls -1 -- {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
                 )
                 if ls_result.exit_code == 0 and ls_result.stdout.strip():
                     lower_q = basename_query.lower()
@@ -2155,7 +2155,9 @@ class ShellFileOperations(FileOperations):
         if not has_hidden_path_ancestor:
             pagination_expr = f" | tail -n +{offset + 1} | head -n {limit}"
 
-        cmd = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+        # find still parses expression-like roots after --; make them paths.
+        find_root = f"./{path}" if path.startswith("-") or path in ("!", "(") else path
+        cmd = f"find {self._escape_shell_arg(find_root)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
               f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn{pagination_expr}"
 
         result = self._exec(cmd, timeout=60)
@@ -2163,7 +2165,7 @@ class ShellFileOperations(FileOperations):
 
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
-            cmd_simple = f"find {self._escape_shell_arg(path)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
+            cmd_simple = f"find {self._escape_shell_arg(find_root)}{hidden_filter_expr} -type f -name {self._escape_shell_arg(search_pattern)} " \
                         f"2>/dev/null | sort -rn{pagination_expr}"
             result = self._exec(cmd_simple, timeout=60)
             stdout, limit_reason = _search_stdout_and_limit(result)
@@ -2220,8 +2222,8 @@ class ShellFileOperations(FileOperations):
         fetch_limit = limit + offset
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
-            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"rg --files --sortr=modified --glob={self._escape_shell_arg(glob_pattern)} "
+            f"-- {self._escape_shell_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2231,8 +2233,8 @@ class ShellFileOperations(FileOperations):
         if not all_files and not limit_reason:
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
-                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"rg --files --glob={self._escape_shell_arg(glob_pattern)} "
+                f"-- {self._escape_shell_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2278,7 +2280,7 @@ class ShellFileOperations(FileOperations):
         
         # Add file glob filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--glob", self._escape_shell_arg(file_glob)])
+            cmd_parts.append("--glob=" + self._escape_shell_arg(file_glob))
         
         # Output mode handling
         if output_mode == "files_only":
@@ -2286,9 +2288,9 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")  # Count per file
         
-        # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        # Quoting protects the shell; -e and -- protect tool option parsing.
+        cmd_parts.extend(["-e", self._escape_shell_arg(pattern),
+                          "--", self._escape_shell_arg(path)])
         
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,
@@ -2408,7 +2410,7 @@ class ShellFileOperations(FileOperations):
         
         # Add file pattern filter (must be quoted to prevent shell expansion)
         if file_glob:
-            cmd_parts.extend(["--include", self._escape_shell_arg(file_glob)])
+            cmd_parts.append("--include=" + self._escape_shell_arg(file_glob))
         
         # Output mode handling
         if output_mode == "files_only":
@@ -2416,9 +2418,9 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")
         
-        # Add pattern and path
-        cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        # Quoting protects the shell; -e and -- protect tool option parsing.
+        cmd_parts.extend(["-e", self._escape_shell_arg(pattern),
+                          "--", self._escape_shell_arg(path)])
         
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)
