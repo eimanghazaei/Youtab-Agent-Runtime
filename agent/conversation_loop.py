@@ -113,6 +113,153 @@ _API_CALL_MODULES = frozenset({
 })
 
 
+# ── Managed-run progress steps (controlled, human-readable) ───────────────────
+#
+# A managed worker (dispatched with ``YOUTAB_AGENT_KANBAN_TASK`` = the durable
+# run id) records a short "what am I doing now" line to the run's event feed
+# before each batch of tool calls, so a watching UI shows real progress instead
+# of a bare heartbeat. The line is a curated phrase plus an optional scrubbed
+# detail (a search query, a file's basename); it is bounded and secret-scrubbed
+# here and sanitised again by the gateway/UI. A normal (non-managed) run never
+# touches this path, and every failure is swallowed — surfacing progress must
+# never affect execution. The payload is a PLAIN STRING so it survives the
+# gateway's string-only event projection and renders as one activity line.
+
+_RUNTIME_STEP_PHRASES = {
+    "web_search": "Searching the web",
+    "web_extract": "Reading a web page",
+    "read_file": "Reading a file",
+    "write_file": "Writing a file",
+    "patch": "Editing a file",
+    "search_files": "Searching the files",
+    "terminal": "Running a command",
+    "execute_code": "Running code",
+    "browser_navigate": "Browsing the web",
+    "browser_snapshot": "Looking at the page",
+    "browser_click": "Using the browser",
+    "todo": "Planning the work",
+    "session_search": "Searching past sessions",
+    "memory": "Updating memory",
+    "skill_view": "Reading a skill",
+    "image_generate": "Generating an image",
+    "delegate_task": "Delegating a subtask",
+}
+
+# Conservative, self-contained secret scrub (the governed redaction module is not
+# available on this code path): obvious key/token/JWT shapes and URL credentials.
+_STEP_SECRET_RE = re.compile(
+    r"\b(?:sk|pk|ghp|gho|github_pat|xox[baprs]|AKIA|ASIA)[-_A-Za-z0-9]{8,}\b"
+    r"|(?:api[_-]?key|token|secret|password|passwd|pwd|authorization|bearer)\s*[:=]\s*\S+"
+    r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b",
+    re.IGNORECASE,
+)
+_STEP_URL_USERINFO_RE = re.compile(r"\b([a-z][a-z0-9+.\-]*://)[^/\s@]+@", re.IGNORECASE)
+_STEP_URL_SECRET_QUERY_RE = re.compile(
+    r"([?&](?:access[_-]?token|refresh[_-]?token|client[_-]?secret|"
+    r"api[_-]?key|token|auth|sig|signature|secret|password|passwd|pwd|key|"
+    r"session|sid|code)=)[^&#\s]+",
+    re.IGNORECASE,
+)
+_STEP_MAX_DETAIL = 48
+_STEP_MAX_SUMMARY = 120
+
+
+def _scrub_step_text(text: Any, *, max_chars: int) -> str:
+    """Strip inline secrets / URL credentials, collapse whitespace, bound length."""
+    if not isinstance(text, str):
+        text = str(text)
+    s = _STEP_URL_USERINFO_RE.sub(r"\1[redacted]@", text)
+    s = _STEP_URL_SECRET_QUERY_RE.sub(r"\1[redacted]", s)
+    s = _STEP_SECRET_RE.sub("[redacted]", s)
+    s = " ".join(s.split())
+    if len(s) > max_chars:
+        s = s[:max_chars].rstrip() + "…"
+    return s
+
+
+def _runtime_step_detail(tool_name: str, raw_args: Any) -> str:
+    """A short, safe noun for a tool call (a query, a file's basename), or ''."""
+    try:
+        if isinstance(raw_args, dict):
+            args: Any = raw_args
+        elif isinstance(raw_args, str) and raw_args.strip():
+            args = json.loads(raw_args)
+        else:
+            args = {}
+    except Exception:
+        return ""
+    if not isinstance(args, dict):
+        return ""
+    name = str(tool_name or "")
+    if name in ("web_search", "session_search"):
+        q = args.get("query") or args.get("q") or ""
+        return _scrub_step_text(q, max_chars=_STEP_MAX_DETAIL)
+    if name in ("read_file", "write_file", "patch"):
+        path = str(args.get("path") or args.get("file_path") or "")
+        base = path.replace("\\", "/").rsplit("/", 1)[-1]
+        return _scrub_step_text(base, max_chars=_STEP_MAX_DETAIL)
+    return ""
+
+
+def _runtime_step_summary(tool_calls: Any) -> str:
+    """Build a controlled one-line summary for a batch of tool calls, or ''."""
+    try:
+        calls = list(tool_calls or [])
+    except Exception:
+        return ""
+    if not calls:
+        return ""
+    first = calls[0]
+    try:
+        name = str(getattr(getattr(first, "function", None), "name", "") or "")
+    except Exception:
+        name = ""
+    if not name:
+        # Tool names are validated/repaired before this seam, so a missing name
+        # is an anomaly (or malformed input): emit nothing rather than a bogus row.
+        return ""
+    phrase = _RUNTIME_STEP_PHRASES.get(name)
+    if phrase is None:
+        phrase = (
+            "Using the browser"
+            if name.startswith("browser_")
+            else ("Running " + name.replace("_", " ").strip())
+        )
+    detail = ""
+    try:
+        detail = _runtime_step_detail(name, getattr(first.function, "arguments", None))
+    except Exception:
+        detail = ""
+    summary = phrase + ((": " + detail) if detail else "")
+    extra = len(calls) - 1
+    if extra > 0:
+        summary += f" (+{extra} more)"
+    return _scrub_step_text(summary, max_chars=_STEP_MAX_SUMMARY)
+
+
+def _emit_runtime_step(tool_calls: Any) -> None:
+    """Record a controlled progress line for a MANAGED run; no-op otherwise.
+
+    Fail-open: any error (not managed, DB issue, odd args) leaves the run running
+    normally. Uses the same board-ambient connection the managed checkpoint path
+    uses, so the event lands in the DB the run's event feed reads.
+    """
+    run_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+    if not run_id:
+        return
+    try:
+        summary = _runtime_step_summary(tool_calls)
+        if not summary:
+            return
+        from youtab_agent_cli import kanban_db as kb
+
+        with kb.connect_closing() as conn:
+            with kb.write_txn(conn):
+                kb._append_event(conn, run_id, "runtime_step", summary)
+    except Exception:  # noqa: BLE001 — progress is best-effort, never fatal.
+        logger.debug("runtime step emit failed; continuing", exc_info=True)
+
+
 def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
     """Append a provider-safe checkpoint and correction to the live turn.
 
@@ -6097,6 +6244,10 @@ def run_conversation(
                         agent.stream_delta_callback(None)
                     except Exception:
                         pass
+
+                # Surface a controlled progress line for a managed run before the
+                # tools run, so the UI shows what's happening (no-op otherwise).
+                _emit_runtime_step(assistant_message.tool_calls)
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 

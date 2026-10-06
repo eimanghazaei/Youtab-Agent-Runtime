@@ -3808,7 +3808,7 @@ def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
     kind: str,
-    payload: Optional[dict] = None,
+    payload: Optional[dict | str] = None,
     *,
     run_id: Optional[int] = None,
 ) -> None:
@@ -3818,6 +3818,10 @@ def _append_event(
     events by attempt. For events that aren't scoped to a single run
     (task created/edited/archived, dependency promotion) leave it None
     and the row carries NULL.
+
+    ``payload`` is usually a dict; a plain string is also accepted and is
+    stored (and read back by :func:`list_events`) as a JSON string, so an
+    event can carry a single human-readable line (e.g. a progress step).
     """
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
