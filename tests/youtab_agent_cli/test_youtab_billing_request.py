@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import io
 import json
-import socket
 import time
 from contextlib import contextmanager
 
@@ -24,7 +23,7 @@ def test_native_profile_remote_spending_refuses_before_cache_or_http(monkeypatch
     monkeypatch.setattr(nb, "_token_cache", (time.time(), "old-account-token", "https://api.youtab.io"))
     monkeypatch.setattr(nb.urllib.request, "urlopen", lambda *_a, **_kw: pytest.fail("billing HTTP must not run"))
     for request in (
-        lambda: nb.get_billing_state(),
+        nb.get_billing_state,
         lambda: nb.post_charge(amount_usd="10", idempotency_key="test-key"),
         lambda: nb.get_charge_status("charge-id"),
         lambda: nb.patch_auto_top_up(enabled=True, threshold="10", top_up_amount="20"),
