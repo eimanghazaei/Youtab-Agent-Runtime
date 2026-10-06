@@ -149,7 +149,14 @@ _RUNTIME_STEP_PHRASES = {
 # available on this code path): obvious key/token/JWT shapes and URL credentials.
 _STEP_SECRET_RE = re.compile(
     r"\b(?:sk|pk|ghp|gho|github_pat|xox[baprs]|AKIA|ASIA)[-_A-Za-z0-9]{8,}\b"
-    r"|(?:api[_-]?key|token|secret|password|passwd|pwd|authorization|bearer)\s*[:=]\s*\S+"
+    # key=value / key: value. The credential may be introduced by an auth scheme
+    # ("Authorization: Bearer <token>"); without consuming that scheme the
+    # trailing \S+ would stop at the space and leave the credential in the clear.
+    r"|(?:api[_-]?key|token|secret|password|passwd|pwd|authorization)\s*[:=]\s*"
+    r"(?:(?:bearer|basic|token|digest)\s+)?\S+"
+    # A bare scheme + credential with no key prefix ("Bearer <token>"). The length
+    # floor keeps ordinary prose ("bearer of bad news") out of the match.
+    r"|\bbearer\s+\S{8,}"
     r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b",
     re.IGNORECASE,
 )
@@ -244,18 +251,26 @@ def _emit_runtime_step(tool_calls: Any) -> None:
     normally. Uses the same board-ambient connection the managed checkpoint path
     uses, so the event lands in the DB the run's event feed reads.
     """
-    run_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
-    if not run_id:
+    task_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+    if not task_id:
         return
     try:
         summary = _runtime_step_summary(tool_calls)
         if not summary:
             return
+        # The dispatcher hands the worker its attempt id (``YOUTAB_AGENT_KANBAN_RUN_ID``).
+        # Record it, like the heartbeat/terminal events do, so steps stay grouped with
+        # the attempt that produced them after a reclaim or retry.
+        attempt = (os.environ.get("YOUTAB_AGENT_KANBAN_RUN_ID") or "").strip()
+        try:
+            attempt_id = int(attempt) if attempt else None
+        except ValueError:
+            attempt_id = None
         from youtab_agent_cli import kanban_db as kb
 
         with kb.connect_closing() as conn:
             with kb.write_txn(conn):
-                kb._append_event(conn, run_id, "runtime_step", summary)
+                kb._append_event(conn, task_id, "runtime_step", summary, run_id=attempt_id)
     except Exception:  # noqa: BLE001 — progress is best-effort, never fatal.
         logger.debug("runtime step emit failed; continuing", exc_info=True)
 

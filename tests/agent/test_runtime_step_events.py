@@ -170,3 +170,53 @@ def test_emit_is_fail_open_on_bad_input(kanban_home, monkeypatch):
     # Must not raise, and must not emit a bogus event.
     _emit_runtime_step([_Boom()])
     assert _runtime_steps(task_id) == []
+
+
+# ---------------------------------------------------------------------------
+# Regressions from review of this change.
+# ---------------------------------------------------------------------------
+def test_scheme_delimited_credentials_are_redacted():
+    """An auth scheme separates the key from the credential by a SPACE, so a
+    pattern ending in ``\\S+`` after ``:`` stops at ``Bearer`` and leaves the
+    credential in the clear. The summary is persisted and shown to task viewers,
+    so it must cover the scheme form too."""
+    secret = "opaquecredential012345"
+    for text in (
+        f"Authorization: Bearer {secret}",
+        f"authorization={secret}",
+        f"Bearer {secret}",
+        f"Authorization: Basic {secret}",
+    ):
+        assert secret not in _scrub_step_text(text, max_chars=200), text
+
+    # And it must not swallow ordinary prose that merely contains the word.
+    assert "bad news" in _scrub_step_text("the bearer of bad news", max_chars=200)
+
+
+def test_step_event_is_attributed_to_the_worker_attempt(kanban_home, monkeypatch):
+    """Steps must carry the attempt id the dispatcher gave the worker, like the
+    heartbeat/terminal events, so they stay grouped after a reclaim or retry."""
+    task_id = _new_task()
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", "42")
+
+    _emit_runtime_step([_FakeTC("web_search", '{"query": "x"}')])
+
+    with kb.connect_closing() as conn:
+        events = [e for e in kb.list_events(conn, task_id) if e.kind == "runtime_step"]
+    assert len(events) == 1
+    assert events[0].run_id == 42
+
+
+def test_step_event_without_an_attempt_id_still_records(kanban_home, monkeypatch):
+    """A missing or malformed attempt id must not lose the step (fail-open)."""
+    task_id = _new_task()
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", "not-an-int")
+
+    _emit_runtime_step([_FakeTC("web_search", '{"query": "x"}')])
+
+    with kb.connect_closing() as conn:
+        events = [e for e in kb.list_events(conn, task_id) if e.kind == "runtime_step"]
+    assert len(events) == 1
+    assert events[0].run_id is None
