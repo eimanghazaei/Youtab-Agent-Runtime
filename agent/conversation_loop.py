@@ -6243,6 +6243,9 @@ def run_conversation(
                     try:
                         agent.stream_delta_callback(None)
                     except Exception:
+                        # Closing the streaming display is cosmetic: a display
+                        # callback that fails must never abort the turn before
+                        # the tools below run.
                         pass
 
                 # Surface a controlled progress line for a managed run before the
