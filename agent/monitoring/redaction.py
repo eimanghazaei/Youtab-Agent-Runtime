@@ -29,7 +29,12 @@ _SECRET_LITERAL_RE = re.compile(r"\*{3,}")
 _BEARER_RESIDUE_RE = re.compile(r"\bBearer\s+\[[^\]]+\]", re.IGNORECASE)
 
 # ── PII shapes ───────────────────────────────────────────────────────────────
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+# Bounded on purpose. ``redact_for_export`` runs on strings that are about to
+# leave the process, including tool and model output, so an unbounded ``+`` in
+# front of the required ``@`` makes ``sub`` quadratic — it retries the maximal
+# run at every start offset. The bounds are the RFC 5321 maxima (local part 64,
+# domain 255), so no address that could legitimately appear stops matching.
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,255}\.[A-Za-z]{2,24}")
 # E.164-ish and common separators; conservative to avoid nuking code/IDs.
 _PHONE_RE = re.compile(
     r"(?<!\w)(?:\+?\d{1,3}[\s.\-]?)?(?:\(\d{2,4}\)[\s.\-]?)?\d{3}[\s.\-]?\d{3,4}(?:[\s.\-]?\d{2,4})?(?!\w)"
