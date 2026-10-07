@@ -352,3 +352,90 @@ def test_regenerated_baseline_still_catches_a_later_regression(tmp_path):
         finding(line_hash="a:1"),
     ])))
     assert inspect(tmp_path, baseline_path) == 1
+
+
+# ---------------------------------------------------------------------------
+# Partially-degraded baseline detection.
+#
+# The committed baseline records 0 findings for 13 interprocedural dataflow
+# queries that are in its own `required_rules` -- py/path-injection,
+# py/clear-text-logging-sensitive-data, py/partial-ssrf and ten others --
+# while an identical query configuration on the same tree reports 1270 of
+# them. Key-by-key that reads as 1270 new findings, and "just refresh the
+# baseline" would accept every one as reviewed debt. The gate must refuse to
+# judge instead.
+# ---------------------------------------------------------------------------
+
+
+def dataflow_finding(rule, uri="app.py", line_hash="df:1"):
+    return {
+        "ruleId": rule,
+        "message": {"text": "Part of the URL of this request depends on a user-provided value."},
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": uri},
+            "region": {"startLine": 42},
+        }}],
+        "partialFingerprints": {
+            "primaryLocationLineHash": line_hash,
+            "primaryLocationStartColumnFingerprint": "7",
+        },
+    }
+
+
+DATAFLOW_RULES = ("py/path-injection", "py/log-injection", "py/partial-ssrf")
+
+
+def dataflow_sarif(results):
+    document = sarif(results)
+    for rule in DATAFLOW_RULES:
+        document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": rule})
+    return document
+
+
+def _baseline_requiring(path, findings, required):
+    write_baseline(path, findings)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["required_rules"] = list(required)
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_baseline_that_under_records_dataflow_queries_is_refused(tmp_path):
+    """Three required queries with nothing baselined and lots now => exit 2.
+
+    Not 1 (regression) and not 0 (clean): the baseline is not a valid
+    comparison basis, so the gate must decline to judge rather than invite a
+    refresh that launders the findings into accepted debt.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash="known:1"), 1)],
+        ["py/sql-injection", *DATAFLOW_RULES],
+    )
+    results = [finding(line_hash="known:1")]
+    for rule in DATAFLOW_RULES:
+        results += [dataflow_finding(rule, line_hash=f"{rule}:{i}") for i in range(40)]
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif(results)))
+
+    assert inspect(tmp_path, baseline) == 2
+
+
+def test_a_few_genuinely_new_dataflow_findings_are_still_just_new(tmp_path):
+    """The guard must not swallow ordinary regressions.
+
+    Same shape, but a handful of findings rather than hundreds: that is code
+    newly tripping a query, which is a normal failure (exit 1), not a broken
+    baseline (exit 2).
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash="known:1"), 1)],
+        ["py/sql-injection", *DATAFLOW_RULES],
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif([
+        finding(line_hash="known:1"),
+        dataflow_finding("py/partial-ssrf", line_hash="ssrf:1"),
+    ])))
+
+    assert inspect(tmp_path, baseline) == 1

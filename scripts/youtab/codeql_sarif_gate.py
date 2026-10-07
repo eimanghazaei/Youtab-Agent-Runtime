@@ -221,6 +221,42 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                     raise ValueError(f"CodeQL did not extract changed source files: {missing[:10]}")
             if baseline and not current:
                 raise ValueError("CodeQL reported zero findings against a nonempty baseline")
+            # The all-zero case above is the obvious degraded run. The costly
+            # case is PARTIAL degradation: the syntactic queries produce
+            # results while the interprocedural dataflow ones silently produce
+            # none, so the baseline looks populated and passes every check
+            # here. That is what the committed baseline actually is -- it
+            # records 0 for `py/clear-text-logging-sensitive-data`,
+            # `py/path-injection`, `py/log-injection`, `py/partial-ssrf` and
+            # nine other taint-tracking queries, all of which are in its own
+            # `required_rules`, while an identical query configuration on the
+            # same tree reports 1272 of them.
+            #
+            # Compared key-by-key that reads as 1272 NEW findings, and the
+            # obvious next move -- refresh the baseline -- would silently
+            # accept 1272 security findings, three of them SSRF at severity
+            # 9.1. So detect it and refuse to judge instead: a rule the suite
+            # was required to run, with nothing in the baseline and a lot in
+            # this run, means the baseline is not a valid comparison basis.
+            suspect = Counter()
+            for key, count in current.items():
+                rule = rule_of(key)
+                if rule in set(required_rules or ()) and not any(
+                    rule_of(k) == rule for k in baseline
+                ):
+                    suspect[rule] += count
+            if len(suspect) >= 3 and sum(suspect.values()) > 100:
+                worst = ", ".join(
+                    f"{rule} ({count})" for rule, count in suspect.most_common(5)
+                )
+                raise ValueError(
+                    f"baseline under-records {len(suspect)} required queries that this run "
+                    f"reports {sum(suspect.values())} findings for ({worst}). The baseline was "
+                    f"captured from a run whose dataflow analysis did not produce results, so it "
+                    f"is not a valid comparison basis and these are NOT new findings. Do not "
+                    f"refresh the baseline to clear this: that accepts every one of them as "
+                    f"reviewed debt. Triage them first."
+                )
     except (OSError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         print(f"CodeQL SARIF or baseline could not be verified: {exc}", file=sys.stderr)
         return 2
