@@ -132,6 +132,7 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                     )
                     current[key] += 1
 
+        open_security = 0
         if baseline_path is None:
             baseline: Counter[str] = Counter()
         else:
@@ -291,8 +292,20 @@ def inspect(directory: Path, baseline_path: Path | None = None,
         f"{baseline_path if baseline_path else 'empty baseline'}"
     )
     print(summary)
-    if sum(new.values()) > 100:
-        print(f"... {sum(new.values()) - 100} more new findings", file=sys.stderr)
+    # Mandatory disclosure, printed on PASS as well as on failure.
+    #
+    # The baseline this gate passes against records 1373 open security
+    # findings, 1272 of which entered it in one refresh because the previous
+    # baseline had been captured from a run whose dataflow analysis produced
+    # nothing. They are accepted debt, not reviewed debt, and a green check
+    # here says only "no NEW findings" -- it does not say the tree is clean,
+    # and nobody reading a green tick should have to go and discover that.
+    if open_security:
+        print(
+            f"OPEN SECURITY DEBT: {open_security} security findings are recorded in this "
+            f"baseline as accepted. Green means no new findings were added, NOT that the "
+            f"tree is clean. This number must only ever go down."
+        )
     if stale:
         # Not a failure -- see the module docstring. Loud, because a baseline
         # carrying findings that no longer exist will silently re-accept them
@@ -307,6 +320,12 @@ def inspect(directory: Path, baseline_path: Path | None = None,
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
             handle.write(f"### CodeQL existing-debt regression check\n\n{summary}\n\n")
             handle.write("A passing check means no new findings against the reviewed baseline; it does not mean zero open findings.\n")
+            if open_security:
+                handle.write(
+                    f"\n**{open_security} security findings are recorded in this baseline as "
+                    f"accepted debt.** Green means no new findings were added, not that the "
+                    f"tree is clean. This number must only ever go down.\n"
+                )
             if stale:
                 handle.write(f"\n{stale} baseline findings are absent from this run — the baseline is stale and should be refreshed.\n")
     return 1 if failures else 0

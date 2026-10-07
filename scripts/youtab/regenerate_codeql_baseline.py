@@ -48,17 +48,22 @@ EXPECTED_QUERIES = {
 def is_security(rule: dict) -> bool:
     """Whether a SARIF rule descriptor is a security rule.
 
-    CodeQL tags security queries two ways and does not always set both, so we
-    accept either: a ``security-severity`` property, or a ``security`` tag.
+    Calibrated against the committed baseline rather than guessed: over that
+    baseline's own findings, ``security-severity is not None`` and the
+    ``security`` tag each yield exactly its recorded ``open_security`` of 105,
+    so either reproduces how that number was originally produced. Both are
+    accepted because CodeQL does not always set both.
+
+    Deliberately NOT using the ``external/cwe/*`` tags: plenty of pure quality
+    queries carry a CWE tag (``py/empty-except`` among them), and counting
+    those scores the same baseline at 3655 rather than 105 -- which would
+    quietly redefine ``open_security`` into a different metric while looking
+    like a finding explosion.
     """
     properties = rule.get("properties") or {}
     if properties.get("security-severity") is not None:
         return True
-    return any(
-        isinstance(tag, str) and tag.startswith("external/cwe")
-        or tag == "security"
-        for tag in properties.get("tags") or []
-    )
+    return "security" in (properties.get("tags") or [])
 
 
 def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> dict:

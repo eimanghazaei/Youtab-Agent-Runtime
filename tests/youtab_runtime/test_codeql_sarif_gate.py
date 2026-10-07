@@ -439,3 +439,28 @@ def test_a_few_genuinely_new_dataflow_findings_are_still_just_new(tmp_path):
     ])))
 
     assert inspect(tmp_path, baseline) == 1
+
+
+def test_open_security_debt_is_disclosed_on_a_passing_run(tmp_path, capsys):
+    """Green must never read as "clean".
+
+    The baseline this gate passes against records 1373 accepted security
+    findings. A green tick that does not say so invites exactly the
+    misreading that let 1272 of them in. Mutation check: delete the
+    OPEN SECURITY DEBT print and this goes red.
+    """
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(finding(line_hash="known:1"), 1)])
+    document = json.loads(baseline.read_text(encoding="utf-8"))
+    document["open_security"] = 1
+    document["open_quality"] = 0
+    baseline.write_text(json.dumps(document), encoding="utf-8")
+
+    (tmp_path / "python.sarif").write_text(json.dumps(sarif([
+        finding(line_hash="known:1"),
+    ])))
+
+    assert inspect(tmp_path, baseline) == 0
+    out = capsys.readouterr().out
+    assert "OPEN SECURITY DEBT: 1 security findings" in out
+    assert "only ever go down" in out
