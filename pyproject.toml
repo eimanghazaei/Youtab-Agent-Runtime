@@ -80,7 +80,16 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
+  # 2.14.0, not 2.13.0: CVE-2026-102268 / GHSA-ffc3-869f-jxw9 (CRITICAL) --
+  # a public key whose PEM carries mutated whitespace or line endings is not
+  # recognised as asymmetric, so it skips the HS/asymmetric confusion guard.
+  # That guard is load-bearing here: youtab_agent_cli/access_jwt.py:162
+  # verifies externally-supplied Cloudflare Access assertions with
+  # `jwt.decode(..., algorithms=_ALLOWED_ALGORITHMS)` on the dashboard's auth
+  # boundary, and this repository ships a regression test whose whole subject
+  # is that guard (test_the_cron_fire_verifier_rejects_symmetric_algorithms).
+  # Supersedes the PYSEC-2026-175/177/178/179 set this pin was raised for.
+  "PyJWT[crypto]==2.14.0",
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
