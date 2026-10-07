@@ -180,3 +180,175 @@ def test_changed_html_or_yaml_requires_javascript_extraction(tmp_path, monkeypat
     (tmp_path / "javascript.sarif").write_text(json.dumps({"version": "2.1.0", "runs": [run]}))
     changed.write_bytes(b"workflow.yml\0")
     assert inspect(tmp_path, baseline, changed) == 2
+
+
+# ---------------------------------------------------------------------------
+# Graph-scoped rules (py/cyclic-import, py/import-and-import-from).
+#
+# These report one result per import statement participating in a cycle, so an
+# edit to ANY module in the cycle re-reports every member at a shifted line and
+# changes its primaryLocationLineHash. Compared by exact key, that reads as a
+# brand-new finding for a defect that did not change -- which is what kept this
+# gate red on every pull request and on main. They are therefore compared as a
+# per-(rule, file) count ceiling instead.
+# ---------------------------------------------------------------------------
+
+CYCLE_RULE = "py/cyclic-import"
+
+
+def cycle_finding(uri="app.py", line_hash="cyc:1"):
+    return {
+        "ruleId": CYCLE_RULE,
+        "message": {"text": "Import of module begins an import cycle."},
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": uri},
+            "region": {"startLine": 11},
+        }}],
+        "partialFingerprints": {
+            "primaryLocationLineHash": line_hash,
+            "primaryLocationStartColumnFingerprint": "0",
+        },
+    }
+
+
+def cycle_sarif(results):
+    document = sarif(results)
+    document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": CYCLE_RULE})
+    return document
+
+
+def test_graph_scoped_line_hash_churn_is_not_a_new_finding(tmp_path):
+    """The regression this gate shipped with: same defect, shifted line.
+
+    Baseline records two cycle findings in app.py. The current run reports two
+    cycle findings in app.py at completely different line hashes -- which is
+    what happens when an unrelated module in the same cycle is edited. Count is
+    unchanged, so this must pass. Before the per-file count comparison it
+    reported "2 new, 2 absent" and failed.
+    """
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [
+        (cycle_finding(line_hash="was:1"), 1),
+        (cycle_finding(line_hash="was:2"), 1),
+    ])
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        cycle_finding(line_hash="now:1"),
+        cycle_finding(line_hash="now:2"),
+    ])))
+    assert inspect(tmp_path, baseline) == 0
+
+
+def test_graph_scoped_count_increase_in_a_file_still_fails(tmp_path):
+    """Churn immunity must not cost us regression detection."""
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(cycle_finding(line_hash="was:1"), 1)])
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        cycle_finding(line_hash="now:1"),
+        cycle_finding(line_hash="now:2"),
+    ])))
+    assert inspect(tmp_path, baseline) == 1
+
+
+def test_graph_scoped_finding_in_an_unbaselined_file_fails(tmp_path):
+    """A cycle in a file the baseline never recorded is a new cycle."""
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(cycle_finding(uri="app.py", line_hash="was:1"), 1)])
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        cycle_finding(uri="app.py", line_hash="was:1"),
+        cycle_finding(uri="fresh.py", line_hash="new:1"),
+    ])))
+    assert inspect(tmp_path, baseline) == 1
+
+
+def test_graph_scoped_decrease_passes_and_does_not_mask_exact_rules(tmp_path):
+    """Fixing cycles passes; an unrelated exact-key finding still fails.
+
+    Mutation check: route py/sql-injection through the count comparison and the
+    second half of this test goes green when it must not.
+    """
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [
+        (cycle_finding(line_hash="was:1"), 1),
+        (cycle_finding(line_hash="was:2"), 1),
+    ])
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        cycle_finding(line_hash="now:1"),
+    ])))
+    assert inspect(tmp_path, baseline) == 0
+
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        cycle_finding(line_hash="now:1"),
+        finding(line_hash="brand-new:1"),
+    ])))
+    assert inspect(tmp_path, baseline) == 1
+
+
+# ---------------------------------------------------------------------------
+# regenerate_codeql_baseline.py round-trip.
+#
+# The gate validates the baseline strictly (schema, provenance, totals, query
+# identities, extracted-source inventory). A regenerator that produces a
+# baseline the gate then rejects is worse than none, so assert the contract
+# directly rather than trusting the two files to agree by inspection.
+# ---------------------------------------------------------------------------
+
+
+def _regenerate(sarif_dir, language, out):
+    import importlib.util
+
+    path = (
+        __import__("pathlib").Path(__file__).resolve().parents[2]
+        / "scripts" / "youtab" / "regenerate_codeql_baseline.py"
+    )
+    spec = importlib.util.spec_from_file_location("regen_baseline", path)
+    module = importlib.util.module_from_spec(spec)
+    import sys as _sys
+
+    _sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+        baseline = module.build(
+            sarif_dir, language,
+            "https://example.test/run/7", "0" * 40,
+        )
+    finally:
+        _sys.path.remove(str(path.parent))
+    out.write_text(json.dumps(baseline), encoding="utf-8")
+    return baseline
+
+
+def test_regenerated_baseline_is_accepted_by_the_gate(tmp_path):
+    """Regenerate from a SARIF, then gate that same SARIF: must pass."""
+    results = [
+        finding(line_hash="a:1"),
+        cycle_finding(line_hash="c:1"),
+        cycle_finding(line_hash="c:2"),
+    ]
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif(results)))
+
+    baseline_path = tmp_path / "regenerated.json"
+    baseline = _regenerate(tmp_path, "python", baseline_path)
+
+    assert baseline["open_total"] == 3
+    assert baseline["open_security"] + baseline["open_quality"] == baseline["open_total"]
+    assert baseline["source_head"] == "0" * 40
+    # The whole point: the gate accepts what the regenerator wrote.
+    assert inspect(tmp_path, baseline_path) == 0
+
+
+def test_regenerated_baseline_still_catches_a_later_regression(tmp_path):
+    """A refreshed baseline must not be a blank cheque."""
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        cycle_finding(line_hash="c:1"),
+    ])))
+    baseline_path = tmp_path / "regenerated.json"
+    _regenerate(tmp_path, "python", baseline_path)
+    assert inspect(tmp_path, baseline_path) == 0
+
+    # Same file gains a cycle, and an unrelated exact-key finding appears.
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        cycle_finding(line_hash="c:1"),
+        cycle_finding(line_hash="c:2"),
+        finding(line_hash="a:1"),
+    ])))
+    assert inspect(tmp_path, baseline_path) == 1

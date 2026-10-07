@@ -2,6 +2,43 @@
 
 Code Scanning uploads are unavailable for this repository. The baseline records
 open debt, not an assertion that the repository has no findings.
+
+Two comparison modes, because one identity scheme does not fit both kinds of
+finding:
+
+*Exact-key* (the default, and what this gate always did): a finding is
+identified by ``[ruleId, uri, primaryLocationLineHash, startColumnFingerprint]``.
+That identity is stable for a defect that lives on one line -- the line hash
+survives the file moving around it -- so an unseen key is genuinely a new
+finding.
+
+*Per-file count ceiling* (``GRAPH_SCOPED_RULES`` below): for rules whose defect
+is a property of the whole module import graph, CodeQL reports one result per
+*import statement participating in the cycle*, not one per cycle. Editing any
+module in a cycle re-reports every member at a shifted line, so the line hash
+changes and the exact-key comparison sees a brand-new finding for a defect that
+did not change. Measured on this repository: a pull request whose entire
+content was CodeQL remediation reported ``7690 open, 23 new, 22 absent`` -- a
+near 1:1 new/absent churn, which is the signature of unstable identity rather
+than regression. The gate was consequently red on every pull request AND on
+``main``, including on the two pull requests opened to fix CodeQL findings, and
+was removed from the required checks -- so the one analysis that looks at the
+whole tree constrained nothing.
+
+For those rules we therefore compare a COUNT per ``(ruleId, uri)`` and fail
+only when a file's count goes up. Line churn inside a file is invisible;
+"this module gained an import cycle" is still caught, and so is "a new file
+introduced one". The 2,488 findings this covers are 32% of the Python
+baseline, and all 1,809 ``py/cyclic-import`` ones are of the deferred-import
+kind (``py/unsafe-cyclic-import`` is 0), i.e. none can fail at import time.
+
+What this does NOT do: tighten the baseline when a finding is fixed. ``absent``
+is reported loudly below but not enforced, because there is no way to make a
+genuine fix pass the gate until the baseline is refreshed, and refreshing it
+wholesale silently accepts real regressions. ``regenerate_codeql_baseline.py``
+next to this file makes that refresh a reviewable one-command operation; once
+it is in routine use, ``absent`` can be promoted to a failure and the ratchet
+closes in both directions.
 """
 
 from __future__ import annotations
@@ -11,6 +48,38 @@ import os
 import sys
 from collections import Counter
 from pathlib import Path
+
+# Rules whose result identity is not stable under unrelated edits, because the
+# defect is a graph property reported at each participating import statement.
+# See the module docstring. Keep this set as small as the evidence justifies --
+# every rule added here trades exact-location tracking for churn immunity.
+GRAPH_SCOPED_RULES = frozenset({
+    "py/cyclic-import",
+    "py/import-and-import-from",
+})
+
+
+def rule_of(key: str) -> str:
+    """The ruleId embedded in a ``finding_key``."""
+    return json.loads(key)[0]
+
+
+def file_of(key: str) -> str:
+    """The artifact URI embedded in a ``finding_key``."""
+    return json.loads(key)[1]
+
+
+def split_by_identity(counts: Counter[str]) -> tuple[Counter[str], Counter[tuple[str, str]]]:
+    """Partition findings into exact-key and per-file-count buckets."""
+    exact: Counter[str] = Counter()
+    scoped: Counter[tuple[str, str]] = Counter()
+    for key, count in counts.items():
+        rule = rule_of(key)
+        if rule in GRAPH_SCOPED_RULES:
+            scoped[(rule, file_of(key))] += count
+        else:
+            exact[key] += count
+    return exact, scoped
 
 
 def finding_key(result: dict) -> str:
@@ -156,24 +225,55 @@ def inspect(directory: Path, baseline_path: Path | None = None,
         print(f"CodeQL SARIF or baseline could not be verified: {exc}", file=sys.stderr)
         return 2
 
-    new = current - baseline
-    absent = baseline - current
+    current_exact, current_scoped = split_by_identity(current)
+    baseline_exact, baseline_scoped = split_by_identity(baseline)
+
+    # Exact-key rules: any key not seen before is a new finding.
+    new = current_exact - baseline_exact
+    absent = baseline_exact - current_exact
+
+    # Graph-scoped rules: only a per-file INCREASE is a regression. Counter
+    # subtraction drops non-positive values, so this is exactly "went up".
+    scoped_regressions = current_scoped - baseline_scoped
+    scoped_absent = baseline_scoped - current_scoped
+
     for key in list(new.elements())[:100]:
         rule, file, line, message = details[key]
         print(f"{file}:{line}: {rule}: {message[:300]}", file=sys.stderr)
+    for (rule, file), delta in sorted(scoped_regressions.items()):
+        was = baseline_scoped[(rule, file)]
+        print(
+            f"{file}: {rule}: {was + delta} findings, up {delta} from {was} in the baseline",
+            file=sys.stderr,
+        )
+    failures = sum(new.values()) + sum(scoped_regressions.values())
+    stale = sum(absent.values()) + sum(scoped_absent.values())
     summary = (
         f"CodeQL SARIF: {sum(current.values())} open, {sum(new.values())} new, "
-        f"{sum(absent.values())} absent from current SARIF against "
+        f"{sum(scoped_regressions.values())} graph-scoped increases, "
+        f"{stale} absent from current SARIF against "
         f"{baseline_path if baseline_path else 'empty baseline'}"
     )
     print(summary)
     if sum(new.values()) > 100:
         print(f"... {sum(new.values()) - 100} more new findings", file=sys.stderr)
+    if stale:
+        # Not a failure -- see the module docstring. Loud, because a baseline
+        # carrying findings that no longer exist will silently re-accept them
+        # if the same defect returns at the same line hash.
+        print(
+            f"NOTE: {stale} baseline findings are absent from this run. The baseline is "
+            f"stale by that much; refresh it with "
+            f"scripts/youtab/regenerate_codeql_baseline.py so a fixed finding cannot be "
+            f"silently re-accepted later."
+        )
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as handle:
             handle.write(f"### CodeQL existing-debt regression check\n\n{summary}\n\n")
             handle.write("A passing check means no new findings against the reviewed baseline; it does not mean zero open findings.\n")
-    return 1 if new else 0
+            if stale:
+                handle.write(f"\n{stale} baseline findings are absent from this run — the baseline is stale and should be refreshed.\n")
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
