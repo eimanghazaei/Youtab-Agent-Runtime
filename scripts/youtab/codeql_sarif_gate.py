@@ -32,6 +32,14 @@ introduced one". The 2,488 findings this covers are 32% of the Python
 baseline, and all 1,809 ``py/cyclic-import`` ones are of the deferred-import
 kind (``py/unsafe-cyclic-import`` is 0), i.e. none can fail at import time.
 
+A third thing matters as much as either comparison mode: both events must
+measure the same tree the same way. CodeQL's diff-informed analysis is ON by
+default for `pull_request` and clips DATAFLOW results to the diff, so the same
+tree reported 7701 findings on a pull request and 8971 on a push to main.
+`codeql.yml` pins `CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"` to stop that;
+`tests/youtab_runtime/test_codeql_gate_wiring.py` fails if it is removed, and
+the mismatch check in `inspect` is the runtime backstop.
+
 What this does NOT do: tighten the baseline when a finding is fixed. ``absent``
 is reported loudly below but not enforced, because there is no way to make a
 genuine fix pass the gate until the baseline is refreshed, and refreshing it
@@ -222,23 +230,31 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                     raise ValueError(f"CodeQL did not extract changed source files: {missing[:10]}")
             if baseline and not current:
                 raise ValueError("CodeQL reported zero findings against a nonempty baseline")
-            # The all-zero case above is the obvious degraded run. The costly
-            # case is PARTIAL degradation: the syntactic queries produce
-            # results while the interprocedural dataflow ones silently produce
-            # none, so the baseline looks populated and passes every check
-            # here. That is what the committed baseline actually is -- it
-            # records 0 for `py/clear-text-logging-sensitive-data`,
-            # `py/path-injection`, `py/log-injection`, `py/partial-ssrf` and
-            # nine other taint-tracking queries, all of which are in its own
-            # `required_rules`, while an identical query configuration on the
-            # same tree reports 1272 of them.
+            # The all-zero case above is the obvious mismatch. The costly case
+            # is PARTIAL: the syntactic queries are fully represented while
+            # the interprocedural dataflow ones are not, so the baseline looks
+            # populated and satisfies every check above.
             #
-            # Compared key-by-key that reads as 1272 NEW findings, and the
-            # obvious next move -- refresh the baseline -- would silently
-            # accept 1272 security findings, three of them SSRF at severity
-            # 9.1. So detect it and refuse to judge instead: a rule the suite
-            # was required to run, with nothing in the baseline and a lot in
-            # this run, means the baseline is not a valid comparison basis.
+            # The mechanism is CodeQL's diff-informed analysis, not a broken
+            # run. On `pull_request` the action defaults to restricting
+            # DATAFLOW results to the lines the pull request touched, so the
+            # same tree measures 7701 findings on a pull request and 8971 on a
+            # push to main. A baseline captured under one event is not a valid
+            # comparison basis for the other -- the committed one came from a
+            # `pull_request` run and recorded 0 for
+            # `py/clear-text-logging-sensitive-data`, `py/path-injection`,
+            # `py/partial-ssrf` and ten other taint-tracking queries, all of
+            # them in its own `required_rules`, while every push to main
+            # measured 1272 of them.
+            #
+            # codeql.yml now pins `CODEQL_ACTION_DIFF_INFORMED_QUERIES:
+            # "false"` so both events measure the same thing, which is what
+            # makes this gate coherent at all. This check stays as the
+            # backstop: if that setting is ever dropped, or a future baseline
+            # is captured under the wrong event, the mismatch reappears, and
+            # key-by-key it reads as 1272 NEW findings. The obvious next move
+            # -- refresh the baseline -- would then accept 1272 security
+            # findings as reviewed debt. So refuse to judge instead.
             suspect = Counter()
             for key, count in current.items():
                 rule = rule_of(key)
@@ -252,11 +268,14 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                 )
                 raise ValueError(
                     f"baseline under-records {len(suspect)} required queries that this run "
-                    f"reports {sum(suspect.values())} findings for ({worst}). The baseline was "
-                    f"captured from a run whose dataflow analysis did not produce results, so it "
-                    f"is not a valid comparison basis and these are NOT new findings. Do not "
-                    f"refresh the baseline to clear this: that accepts every one of them as "
-                    f"reviewed debt. Triage them first."
+                    f"reports {sum(suspect.values())} findings for ({worst}). This is an "
+                    f"event mismatch, not a regression: the baseline was captured under "
+                    f"CodeQL's diff-informed analysis (the pull_request default, which clips "
+                    f"dataflow results to the diff) and is being compared against a full "
+                    f"analysis. Check that codeql.yml still sets "
+                    f"CODEQL_ACTION_DIFF_INFORMED_QUERIES=false, then rebuild the baseline "
+                    f"from a full run. Do NOT refresh it to clear this without reading the "
+                    f"findings first -- a refresh accepts every one as reviewed debt."
                 )
     except (OSError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         print(f"CodeQL SARIF or baseline could not be verified: {exc}", file=sys.stderr)
