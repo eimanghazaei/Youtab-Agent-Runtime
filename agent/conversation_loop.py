@@ -152,7 +152,10 @@ _STEP_SECRET_RE = re.compile(
     # key=value / key: value. The credential may be introduced by an auth scheme
     # ("Authorization: Bearer <token>"); without consuming that scheme the
     # trailing \S+ would stop at the space and leave the credential in the clear.
-    r"|(?:api[_-]?key|token|secret|password|passwd|pwd|authorization)\s*[:=]\s*"
+    # The keyword need not sit immediately before the separator:
+    # ``AWS_SECRET_ACCESS_KEY=`` puts ``_ACCESS_KEY`` between ``secret`` and
+    # ``=``, so a trailing name tail is consumed too.
+    r"|(?:api[_-]?key|token|secret|password|passwd|pwd|authorization)[\w-]*\s*[:=]\s*"
     r"(?:(?:bearer|basic|token|digest)\s+)?\S+"
     # A bare scheme + credential with no key prefix ("Bearer <token>"). The length
     # floor keeps ordinary prose ("bearer of bad news") out of the match.
@@ -179,6 +182,8 @@ _STEP_URL_SECRET_QUERY_RE = re.compile(
 )
 _STEP_MAX_DETAIL = 48
 _STEP_MAX_SUMMARY = 120
+# A progress row is cosmetic; it must never inherit the board's 120s wait.
+_STEP_BUSY_TIMEOUT_MS = 500
 
 
 def _scrub_step_text(text: Any, *, max_chars: int) -> str:
@@ -218,22 +223,12 @@ def _runtime_step_detail(tool_name: str, raw_args: Any) -> str:
     return ""
 
 
-def _runtime_step_summary(tool_calls: Any) -> str:
-    """Build a controlled one-line summary for a batch of tool calls, or ''."""
-    try:
-        calls = list(tool_calls or [])
-    except Exception:
-        return ""
-    if not calls:
-        return ""
-    first = calls[0]
-    try:
-        name = str(getattr(getattr(first, "function", None), "name", "") or "")
-    except Exception:
-        name = ""
+def _runtime_step_phrase(tool_name: Any, raw_args: Any) -> str:
+    """One controlled progress line for a single tool call, or '' if unmappable."""
+    name = str(tool_name or "")
     if not name:
         # Tool names are validated/repaired before this seam, so a missing name
-        # is an anomaly (or malformed input): emit nothing rather than a bogus row.
+        # is an anomaly: emit nothing rather than a bogus row.
         return ""
     phrase = _RUNTIME_STEP_PHRASES.get(name)
     if phrase is None:
@@ -242,30 +237,35 @@ def _runtime_step_summary(tool_calls: Any) -> str:
             if name.startswith("browser_")
             else ("Running " + name.replace("_", " ").strip())
         )
-    detail = ""
     try:
-        detail = _runtime_step_detail(name, getattr(first.function, "arguments", None))
+        detail = _runtime_step_detail(name, raw_args)
     except Exception:
         detail = ""
     summary = phrase + ((": " + detail) if detail else "")
-    extra = len(calls) - 1
-    if extra > 0:
-        summary += f" (+{extra} more)"
     return _scrub_step_text(summary, max_chars=_STEP_MAX_SUMMARY)
 
 
-def _emit_runtime_step(tool_calls: Any) -> None:
+def emit_runtime_step(tool_name: Any, tool_args: Any) -> None:
     """Record a controlled progress line for a MANAGED run; no-op otherwise.
 
-    Fail-open: any error (not managed, DB issue, odd args) leaves the run running
-    normally. Uses the same board-ambient connection the managed checkpoint path
-    uses, so the event lands in the DB the run's event feed reads.
+    Called from the tool executor *after* authorization succeeds and execution
+    actually begins. Emitting earlier (per batch, before dispatch) recorded work
+    that a plugin policy, a scope check or ``_tool_guardrails.before_call`` then
+    rejected, and pushed model-proposed arguments into the durable feed before
+    they were validated.
+
+    Fail-open and kept off the critical path. The row is cosmetic, so the
+    connection takes a short telemetry-specific busy timeout rather than the
+    board's 120s default, and the single-row append runs in SQLite autocommit
+    instead of through ``write_txn``, whose BEGIN IMMEDIATE retry boundary could
+    otherwise stall a tool for minutes during a worker stampede. Under
+    contention the step is dropped in well under a second; the tool still runs.
     """
     task_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
     if not task_id:
         return
     try:
-        summary = _runtime_step_summary(tool_calls)
+        summary = _runtime_step_phrase(tool_name, tool_args)
         if not summary:
             return
         # The dispatcher hands the worker its attempt id (``YOUTAB_AGENT_KANBAN_RUN_ID``).
@@ -279,9 +279,11 @@ def _emit_runtime_step(tool_calls: Any) -> None:
         from youtab_agent_cli import kanban_db as kb
 
         with kb.connect_closing() as conn:
-            with kb.write_txn(conn):
-                kb._append_event(conn, task_id, "runtime_step", summary, run_id=attempt_id)
-    except Exception:  # noqa: BLE001 — progress is best-effort, never fatal.
+            # Per-connection, so the board's default is untouched for every other
+            # caller. PRAGMA assignments cannot be parameter-bound.
+            conn.execute(f"PRAGMA busy_timeout={_STEP_BUSY_TIMEOUT_MS}")
+            kb._append_event(conn, task_id, "runtime_step", summary, run_id=attempt_id)
+    except Exception:  # noqa: BLE001 - progress is best-effort, never fatal.
         logger.debug("runtime step emit failed; continuing", exc_info=True)
 
 
@@ -6272,10 +6274,6 @@ def run_conversation(
                         # callback that fails must never abort the turn before
                         # the tools below run.
                         pass
-
-                # Surface a controlled progress line for a managed run before the
-                # tools run, so the UI shows what's happening (no-op otherwise).
-                _emit_runtime_step(assistant_message.tool_calls)
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 

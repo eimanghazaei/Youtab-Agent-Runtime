@@ -351,6 +351,24 @@ def _managed_values(
     )
 
 
+def _emit_managed_progress(function_name: str, function_args: dict) -> None:
+    """Record the managed-run progress step for a tool that is about to run.
+
+    Called only once policy, scope and guardrail checks have passed, so the
+    durable event feed never claims a rejected tool ran. ``emit_runtime_step``
+    is itself a no-op outside a managed run and fail-open on any error; this
+    wrapper only has to survive the deferred import, which stays deferred
+    because conversation_loop owns the step vocabulary and importing it at
+    module scope would add an import-time edge between the two.
+    """
+    try:
+        from agent.conversation_loop import emit_runtime_step
+    except Exception:  # noqa: BLE001 - progress must never block a tool.
+        logger.debug("runtime step emitter unavailable; continuing", exc_info=True)
+        return
+    emit_runtime_step(function_name, function_args)
+
+
 def _run_agent_tool_execution_middleware(
     agent,
     *,
@@ -479,6 +497,7 @@ def _run_agent_tool_execution_middleware(
             agent._iters_since_skill = 0
 
         _advance_start_order(_begin)
+        _emit_managed_progress(function_name, final_args)
         return execute(final_args)
 
     def _youtab_pipeline(relay_args: dict[str, Any]) -> Any:
