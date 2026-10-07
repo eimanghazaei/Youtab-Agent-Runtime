@@ -220,3 +220,31 @@ def test_step_event_without_an_attempt_id_still_records(kanban_home, monkeypatch
         events = [e for e in kb.list_events(conn, task_id) if e.kind == "runtime_step"]
     assert len(events) == 1
     assert events[0].run_id is None
+
+
+def test_cookie_and_session_credentials_are_redacted():
+    """The key allowlist covered ``token``/``authorization`` but not cookies, so a
+    ``Cookie: sessionid=...`` header survived into a persisted step that task
+    viewers can read. A Cookie header is credential material wholesale -- it may
+    carry several pairs -- so the whole value goes, and framework session names
+    are redacted at any value length."""
+    secret = "opaquecredential012345"
+    for text in (
+        f"Cookie: sessionid={secret}",
+        f"Set-Cookie: session={secret}; Path=/",
+        f"Cookie: a=1; sessionid={secret}; b=2",
+        f"sessionid={secret}",
+        f"PHPSESSID={secret}",
+        f"JSESSIONID={secret}",
+        f"ASP.NET_SessionId={secret}",
+        "session_id=abc123",
+        "xsrf=abc123",
+        "cookie: csrftoken=abc123def456ghi789",
+    ):
+        out = _scrub_step_text(text, max_chars=250)
+        assert secret not in out, text
+        assert "abc123" not in out, text
+
+    # Ordinary prose that merely contains these words must survive.
+    assert "started" in _scrub_step_text("session: started", max_chars=250)
+    assert "sessions" in _scrub_step_text("3 sessions open", max_chars=250)

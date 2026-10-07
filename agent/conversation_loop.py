@@ -157,6 +157,16 @@ _STEP_SECRET_RE = re.compile(
     # A bare scheme + credential with no key prefix ("Bearer <token>"). The length
     # floor keeps ordinary prose ("bearer of bad news") out of the match.
     r"|\bbearer\s+\S{8,}"
+    # A Cookie / Set-Cookie header is credential material wholesale: it holds
+    # one or more name=value pairs, any of which may be a live session. Redact
+    # the whole header value, bounded to the line so later text survives.
+    r"|(?:set-)?cookie\s*[:=]\s*[^\r\n]+"
+    # Cookie names that are never ordinary prose, so any value length goes.
+    r"|\b[\w-]*(?:phpsessid|jsessionid|session[_-]?id|sessid|csrftoken|csrf|xsrf)"
+    r"[\w-]*\s*[:=]\s*\S+"
+    # The bare word "session" takes a length floor so prose ("session: started")
+    # survives while a real session identifier does not.
+    r"|\bsession\s*[:=]\s*\S{8,}"
     r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b",
     re.IGNORECASE,
 )
