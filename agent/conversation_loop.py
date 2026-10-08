@@ -321,21 +321,19 @@ def emit_runtime_step(tool_name: Any, tool_args: Any) -> None:
         from youtab_agent_cli import kanban_db as kb
 
         with kb.connect_closing(busy_timeout_ms=_STEP_BUSY_TIMEOUT_MS) as conn:
-            if attempt_id is None:
-                row = conn.execute(
-                    "SELECT 1 FROM tasks WHERE id = ? AND status = \'running\'",
-                    (task_id,),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT 1 FROM tasks WHERE id = ? AND status = \'running\' "
-                    "AND current_run_id = ?",
-                    (task_id, attempt_id),
-                ).fetchone()
-            if row is None:
-                # The attempt is over, or this row belongs to a superseded one.
-                return
-            kb._append_event(
+            # One statement, not a SELECT fence followed by an INSERT. This
+            # append runs in autocommit by design (see above: a cosmetic row
+            # must not take write_txn's BEGIN IMMEDIATE retry boundary, which
+            # can stall a tool for minutes during a worker stampede), and in
+            # autocommit two statements are two transactions. A worker being
+            # reclaimed could pass the check and then still insert, which the
+            # dashboard broadcasts -- steps appearing on a task that has
+            # already finished, or a dead attempt's steps interleaved with
+            # the live one's. `append_event_if_run_active` makes the attempt
+            # predicate the row source of the INSERT, so it is evaluated
+            # inside the write: no matching task row, no insert, no
+            # broadcast.
+            kb.append_event_if_run_active(
                 conn, task_id, "runtime_step", summary, run_id=attempt_id
             )
     except Exception:  # noqa: BLE001 - progress is best-effort, never fatal.

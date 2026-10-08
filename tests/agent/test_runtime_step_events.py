@@ -384,6 +384,121 @@ def test_step_is_dropped_once_the_task_stops_running(kanban_home, monkeypatch):
     assert _runtime_steps(task_id) == []
 
 
+class _RecordingConn:
+    """Wraps a real connection and records every statement executed on it.
+
+    Also completes the task the moment the first statement returns, which is
+    the TOCTOU window: with a SELECT fence followed by a separate INSERT, that
+    completion lands between the two and the stale worker still inserts and
+    broadcasts a step for an attempt that has ended.
+    """
+
+    def __init__(self, inner, on_first_statement):
+        self._inner = inner
+        self._on_first = on_first_statement
+        self.statements: list[str] = []
+
+    def execute(self, sql, parameters=(), /):
+        result = self._inner.execute(sql, parameters)
+        self.statements.append(" ".join(sql.split()))
+        if len(self.statements) == 1:
+            self._on_first()
+        return result
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def test_the_attempt_check_and_the_append_are_one_statement(kanban_home, monkeypatch):
+    """The fence must be part of the write, not a preflight before it.
+
+    This append deliberately runs in SQLite autocommit -- a cosmetic row must
+    not take write_txn's BEGIN IMMEDIATE retry boundary, which can stall a
+    tool for minutes during a worker stampede. In autocommit, two statements
+    are two transactions: a worker being reclaimed passes the SELECT, the
+    dispatcher completes or supersedes the task, and the INSERT still lands.
+    The dashboard broadcasts every insert, so a finished task visibly grows
+    steps.
+
+    The window cannot be closed by ordering the two statements differently,
+    only by removing the second one, so that is what is asserted here: exactly
+    ONE statement reaches the connection, it is the INSERT, and it carries the
+    attempt predicate itself. `test_step_is_dropped_for_a_superseded_attempt`
+    and `..._once_the_task_stops_running` both pass against the two-statement
+    shape; this is the one that does not.
+    """
+    task_id = _new_task()
+    run_id = _claim(task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(run_id))
+
+    def complete_the_task():
+        with kb.connect_closing() as other:
+            other.execute("UPDATE tasks SET status='done' WHERE id = ?", (task_id,))
+
+    recorded: list[_RecordingConn] = []
+    real_connect = kb.connect_closing
+
+    class _Ctx:
+        def __enter__(self):
+            self._cm = real_connect(busy_timeout_ms=2000)
+            wrapper = _RecordingConn(self._cm.__enter__(), complete_the_task)
+            recorded.append(wrapper)
+            return wrapper
+
+        def __exit__(self, *exc):
+            return self._cm.__exit__(*exc)
+
+    monkeypatch.setattr(kb, "connect_closing", lambda **kwargs: _Ctx())
+
+    emit_runtime_step("web_search", '{"query": "x"}')
+
+    assert recorded, "the emitter never opened a connection"
+    statements = recorded[0].statements
+    assert len(statements) == 1, (
+        "the emitter ran more than one statement, so the attempt check and the "
+        f"append are separate transactions under autocommit: {statements}"
+    )
+    assert statements[0].startswith("INSERT INTO task_events"), statements[0]
+    assert "status = 'running'" in statements[0], (
+        f"the INSERT does not carry the running fence: {statements[0]}"
+    )
+    assert "current_run_id = ?" in statements[0], (
+        f"the INSERT does not carry the attempt fence: {statements[0]}"
+    )
+
+
+def test_the_atomic_append_reports_whether_it_wrote(kanban_home):
+    """The helper's return value is how a caller can tell a drop from a write.
+
+    Checked directly because `emit_runtime_step` is fail-open and swallows
+    everything, so a silent regression to "always returns None" would not
+    surface through it.
+    """
+    task_id = _new_task()
+    run_id = _claim(task_id)
+
+    with kb.connect_closing() as conn:
+        assert kb.append_event_if_run_active(
+            conn, task_id, "runtime_step", "step one", run_id=run_id
+        ) is True
+        # Superseded attempt: the row is fenced out, not written.
+        assert kb.append_event_if_run_active(
+            conn, task_id, "runtime_step", "stale", run_id=run_id + 1
+        ) is False
+        # And once the task stops running, neither form writes.
+        conn.execute("UPDATE tasks SET status='done' WHERE id = ?", (task_id,))
+        assert kb.append_event_if_run_active(
+            conn, task_id, "runtime_step", "after the end", run_id=run_id
+        ) is False
+        assert kb.append_event_if_run_active(
+            conn, task_id, "runtime_step", "after the end, unattributed"
+        ) is False
+
+    steps = _runtime_steps(task_id)
+    assert len(steps) == 1, [s.payload for s in steps]
+
+
 def test_no_step_from_a_delegated_child_context(kanban_home, monkeypatch):
     """A delegate_task child runs in the same process and inherits the parent's
     task and run id. write_txn would have refused the write via

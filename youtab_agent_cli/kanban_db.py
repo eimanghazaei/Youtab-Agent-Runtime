@@ -3837,6 +3837,65 @@ def _append_event(
     )
 
 
+def append_event_if_run_active(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: Optional[dict | str] = None,
+    *,
+    run_id: Optional[int] = None,
+) -> bool:
+    """Append an event row ONLY if the task is still running that attempt.
+
+    The predicate and the write are a single statement, which is the whole
+    point. The caller this exists for -- the best-effort ``runtime_step``
+    emitter in ``agent/conversation_loop.py`` -- runs in SQLite autocommit, by
+    design: it must not take ``write_txn``'s BEGIN IMMEDIATE retry boundary,
+    which can stall a tool for minutes during a worker stampede over a row
+    that is purely cosmetic.
+
+    Autocommit means a ``SELECT`` fence followed by an ``INSERT`` is two
+    transactions with a window between them. A worker that is being reclaimed
+    or has not noticed its attempt ended passes the ``SELECT``, the dispatcher
+    completes or supersedes the task, and the ``INSERT`` still lands -- and
+    because the dashboard broadcasts every insert, a finished task visibly
+    grows steps, or steps from a dead attempt interleave with the live one.
+    Short window, but these writes happen once per tool call for the whole
+    lifetime of every worker, and reclaim is the normal path after a crash or
+    a timeout rather than an exotic one.
+
+    ``INSERT INTO ... SELECT ... FROM tasks WHERE <predicate>`` closes it:
+    the predicate IS the row source, so SQLite evaluates it inside the
+    implicit transaction that performs the insert. No rows from ``tasks``
+    means no row inserted and nothing broadcast.
+
+    Returns True if the row was written, False if the attempt had already
+    ended or been superseded. Unlike :func:`_append_event` this is safe to
+    call outside an open transaction, and it is the only append that fences
+    itself; every other caller already holds ``write_txn``.
+    """
+    now = int(time.time())
+    pl = json.dumps(payload, ensure_ascii=False) if payload else None
+    if run_id is None:
+        cursor = conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "SELECT ?, ?, ?, ?, ? FROM tasks "
+            " WHERE id = ? AND status = 'running'",
+            (task_id, run_id, kind, pl, now, task_id),
+        )
+    else:
+        # Fenced to the live attempt as well: `current_run_id` moves on a
+        # reclaim, so a stale worker's run_id no longer matches and its
+        # steps stop at the database rather than at a check it already passed.
+        cursor = conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "SELECT ?, ?, ?, ?, ? FROM tasks "
+            " WHERE id = ? AND status = 'running' AND current_run_id = ?",
+            (task_id, run_id, kind, pl, now, task_id, run_id),
+        )
+    return cursor.rowcount > 0
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
