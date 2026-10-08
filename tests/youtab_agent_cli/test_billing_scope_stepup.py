@@ -5,9 +5,6 @@ from __future__ import annotations
 import pytest
 
 import youtab_agent_cli.auth as auth
-from youtab_agent_cli.auth import (
-    step_up_youtab_billing_scope,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -31,7 +28,7 @@ def test_step_up_refuses_without_device_flow_or_auth_store_mutation(monkeypatch)
     monkeypatch.setattr(auth, "_youtab_device_code_login", forbidden)
     monkeypatch.setattr(auth, "_save_auth_store", forbidden)
     with pytest.raises(auth.AuthError) as exc:
-        step_up_youtab_billing_scope()
+        auth.step_up_youtab_billing_scope()
     assert exc.value.code == "unsupported_connection"
     assert "unavailable" in str(exc.value)
 

@@ -12,7 +12,6 @@ authenticated only at the global root.
 from __future__ import annotations
 
 import json
-import os
 import time
 import base64
 import io
@@ -860,7 +859,7 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env):
     """Changing profile context cannot inherit another store's lock depth."""
     import youtab_agent_cli.auth as auth
-    from youtab_constants import reset_youtab_home_override, set_youtab_home_override
+    import youtab_constants
 
     profile_b = profile_env["global"] / "profiles" / "reviewer"
     profile_b.mkdir(parents=True)
@@ -870,7 +869,7 @@ def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env
         holder_a = auth._auth_lock_holder_for(profile_env["profile"] / "auth.json")
         assert getattr(holder_a, "depth", 0) == 1
 
-        token = set_youtab_home_override(profile_b)
+        token = youtab_constants.set_youtab_home_override(profile_b)
         try:
             holder_b = auth._auth_lock_holder_for(profile_b / "auth.json")
             assert holder_b is not holder_a
@@ -881,7 +880,7 @@ def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env
                 assert profile_b_lock.exists()
                 assert getattr(holder_b, "depth", 0) == 1
         finally:
-            reset_youtab_home_override(token)
+            youtab_constants.reset_youtab_home_override(token)
 
     assert getattr(holder_a, "depth", 0) == 0
 
