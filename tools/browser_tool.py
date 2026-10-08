@@ -2902,9 +2902,30 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     import urllib.parse
     from agent.redact import _PREFIX_RE
     url_decoded = urllib.parse.unquote(url)
+    # ``"authorization": "denied"`` marks a payload as a POLICY REFUSAL rather
+    # than a failure -- see ``tools.registry.TOOL_AUTHORIZATION_DENIED``. The
+    # managed-run progress feed reads it and does not record a refused call as
+    # work; without it the durable feed asserts that a blocked tool ran.
+    #
+    # It is on the seventeen guards in this module that refuse BEFORE the
+    # action happens, and deliberately NOT on these eight, which are not
+    # authorization decisions -- marking them would suppress a row for work
+    # that really occurred, or hide a failure the feed should show:
+    #
+    #   the two post-redirect guards in this function, because
+    #       `_run_browser_command(open)` has already SUCCEEDED by then -- the
+    #       page was fetched and the result is withheld afterwards, with the
+    #       session reset to about:blank. The navigation happened.
+    #   the navigation-failed return below it      (runtime failure)
+    #   browser_scroll's invalid `direction`       (input validation)
+    #   _browser_eval's generic error return       (runtime failure)
+    #   _camofox_eval's "JS eval unsupported"      (capability, not policy)
+    #   _camofox_eval's generic tool_error         (runtime failure)
+    #   browser_vision's missing screenshot file   (runtime failure)
     if _PREFIX_RE.search(url) or _PREFIX_RE.search(url_decoded):
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": "Blocked: URL contains what appears to be an API key or token. "
                      "Secrets must not be sent in URLs.",
         })
@@ -2913,6 +2934,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if _PREFIX_RE.search(url) or _PREFIX_RE.search(normalized_decoded):
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": "Blocked: URL contains what appears to be an API key or token. "
                      "Secrets must not be sent in URLs.",
         })
@@ -2933,6 +2955,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if sensitive_query_key and not _is_local_backend() and not auto_local_this_nav:
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": (
                 "Blocked: URL contains a credential-like query parameter "
                 f"({sensitive_query_key}). Cloud browser backends are third-party "
@@ -2953,6 +2976,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if _is_always_blocked_url(url):
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": "Blocked: URL targets a cloud metadata endpoint",
         })
 
@@ -2964,6 +2988,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     ):
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": "Blocked: URL targets a private or internal address",
         })
 
@@ -2972,6 +2997,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if blocked:
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": blocked["message"],
             "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
         })
@@ -3021,6 +3047,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Always-blocked floor (cloud metadata / IMDS) is enforced for every
         # backend and even when auto_local_this_nav is true — see pre-nav
         # check for rationale (#16234).
+        # NOT marked `"authorization": "denied"` -- on purpose. See the note
+        # above the pre-navigation guards: the open command succeeded, so the
+        # agent did browse; these withhold the RESULT and reset the session.
+        # Marking them would delete a true progress row.
         if (
             final_url
             and final_url != url
@@ -3166,6 +3196,7 @@ def browser_snapshot(
                     if _current_url and not _is_safe_url(_current_url):
                         return json.dumps({
                             "success": False,
+                            "authorization": "denied",
                             "error": (
                                 "Blocked: page URL targets a private or internal address "
                                 f"({_current_url}). This may have been caused by a "
@@ -3388,6 +3419,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
             if _blocked_url:
                 return json.dumps({
                     "success": False,
+                    "authorization": "denied",
                     "error": (
                         "Blocked: page URL targets a private or internal address "
                         f"({_blocked_url}). Browser history navigation (back) "
@@ -3452,6 +3484,7 @@ def _blocked_private_page_action(effective_task_id: str, action: str) -> Optiona
         return None
     return json.dumps({
         "success": False,
+        "authorization": "denied",
         "error": (
             "Blocked: page URL targets a private or internal address "
             f"({blocked_url}). Refusing to {action} on this page in this "
@@ -3479,7 +3512,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     if expression is not None:
         policy_error = _enforce_browser_eval_policy(expression)
         if policy_error:
-            return json.dumps({"success": False, "error": policy_error}, ensure_ascii=False)
+            return json.dumps({"success": False, "authorization": "denied", "error": policy_error}, ensure_ascii=False)
         return _browser_eval(expression, task_id)
 
     # --- Console output mode (original behaviour) ---
@@ -3494,6 +3527,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         if _blocked_url:
             return json.dumps({
                 "success": False,
+                "authorization": "denied",
                 "error": (
                     "Blocked: page URL targets a private or internal address "
                     f"({_blocked_url}). This may have been caused by a "
@@ -3767,6 +3801,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         if blocked_literal:
             return json.dumps({
                 "success": False,
+                "authorization": "denied",
                 "error": (
                     "Blocked: JavaScript expression targets a private or "
                     f"internal address ({blocked_literal}). Reading internal "
@@ -3816,6 +3851,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                     if _blocked_url:
                         return json.dumps({
                             "success": False,
+                            "authorization": "denied",
                             "error": (
                                 "Blocked: page URL targets a private or internal "
                                 f"address ({_blocked_url}). This may have been "
@@ -3905,6 +3941,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         if _blocked_url:
             return json.dumps({
                 "success": False,
+                "authorization": "denied",
                 "error": (
                     "Blocked: page URL targets a private or internal address "
                     f"({_blocked_url}). This may have been caused by a "
@@ -3962,6 +3999,7 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
             if _blocked_url:
                 return json.dumps({
                     "success": False,
+                    "authorization": "denied",
                     "error": (
                         "Blocked: page URL targets a private or internal address "
                         f"({_blocked_url}). This may have been caused by a "
@@ -4070,6 +4108,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
             if _blocked_url:
                 return json.dumps({
                     "success": False,
+                    "authorization": "denied",
                     "error": (
                         "Blocked: page URL targets a private or internal address "
                         f"({_blocked_url}). This may have been caused by a "
@@ -4165,6 +4204,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 if _current_url and not _is_safe_url(_current_url):
                     return json.dumps({
                         "success": False,
+                        "authorization": "denied",
                         "error": (
                             "Blocked: page URL targets a private or internal address "
                             f"({_current_url}). This may have been caused by a "
