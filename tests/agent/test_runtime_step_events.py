@@ -152,7 +152,7 @@ def test_credential_name_tails_are_redacted():
         ("export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxR", "wJalrXUtnFEMI"),
         ("MY_API_SECRET_KEY=supersecretvalue123456", "supersecretvalue"),
         ("AWS_SESSION_TOKEN=FwoGZXIvYXdzEBYaDHh4", "FwoGZXIvYXdz"),
-        ("GITHUB_TOKEN=ghp_AAAABBBBCCCCDDDDEEEE1111", "ghp_AAAABBBB"),
+        ("GITHUB_TOKEN=AAAABBBBCCCCDDDDEEEE1111", "AAAABBBBCCCC"),
     ):
         assert secret not in _scrub_step_text(text, max_chars=250), text
 
