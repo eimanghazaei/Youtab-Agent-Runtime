@@ -93,9 +93,16 @@ _TAPBACK_REMOVED = {
 # Webhook event types that carry user messages
 _MESSAGE_EVENTS = {"new-message", "message", "updated-message"}
 
-# Log redaction patterns
+# Log redaction patterns.
+#
+# Every quantifier is bounded. ``_redact`` runs over webhook-derived text, and
+# an unbounded ``+`` before a required literal makes ``sub`` quadratic: it
+# retries the maximal run at every start offset, so a single long token with no
+# ``@`` costs O(n^2). The bounds are the RFC 5321 maxima (local part 64, domain
+# 255), so no address that could legitimately appear in a log stops matching,
+# but per-offset work is now capped by a constant.
 _PHONE_RE = re.compile(r"\+?\d{7,15}")
-_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
+_EMAIL_RE = re.compile(r"[\w.+-]{1,64}@[\w-]{1,255}\.[\w.]{1,255}")
 
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 
