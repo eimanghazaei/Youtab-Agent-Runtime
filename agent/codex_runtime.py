@@ -384,6 +384,53 @@ def _codex_item_to_preview(item: dict) -> Any:
     return None
 
 
+def _codex_item_refused(item: dict) -> bool:
+    """Whether a completed codex item carries a handler-level REFUSAL.
+
+    `_codex_item_completion_payload`'s `is_error` cannot answer this. An
+    internal MCP handler returns its JSON as an ordinary FastMCP string, so a
+    policy refusal is placed INSIDE `mcpToolCall.result` -- often wrapped
+    again as text inside a content list -- and never reaches the item's
+    top-level `error`. The item therefore looks successful.
+
+    That matters because the managed-run progress feed reads the disposition:
+    `model_tools.handle_function_call` rejecting `web_search` through
+    `resolve_pre_tool_block` would otherwise persist a step containing the
+    original query for a search that never ran, and Youtab's own browser and
+    file guards return the same marked envelopes through this path.
+
+    So the result is searched RECURSIVELY for
+    `authorization == "denied"` (`tools.registry.TOOL_AUTHORIZATION_DENIED`),
+    descending into nested containers and parsing strings that are themselves
+    JSON, which is how FastMCP hands a tool's text back.
+    """
+    def carries(value: Any, depth: int = 0) -> bool:
+        if depth > 6:
+            return False
+        if isinstance(value, dict):
+            if value.get("authorization") == "denied":
+                return True
+            return any(carries(v, depth + 1) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return any(carries(v, depth + 1) for v in value)
+        if isinstance(value, str):
+            text = value.lstrip()
+            # Only parse what looks like JSON, and only when the marker could
+            # be in it at all -- this runs on every completed tool call.
+            if not text.startswith(("{", "[")) or "authorization" not in value:
+                return False
+            try:
+                return carries(json.loads(text), depth + 1)
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    for field in ("result", "contentItems", "error"):
+        if field in item and carries(item.get(field)):
+            return True
+    return False
+
+
 def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
     """Return (result_text, is_error) for a completed codex tool item.
     Mirrors the projector's tool-result content so the bubble shows the
@@ -574,7 +621,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         #
         # Guarded like every other callback here -- progress reporting must
         # never tear down the turn loop.
-        if not is_error:
+        if not is_error and not _codex_item_refused(item):
             try:
                 from agent.conversation_loop import emit_runtime_step
 

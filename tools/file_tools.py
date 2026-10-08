@@ -1890,7 +1890,12 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             resolved_path = None
         block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
         if block_error:
-            return tool_error(block_error)
+            # An authorization refusal, not a failure: this returns before
+            # `file_ops.search` runs, so nothing was searched. Without the
+            # marker the managed-run progress feed records "Searching the
+            # files" for a refused call.
+            # See tools/registry.TOOL_AUTHORIZATION_DENIED.
+            return tool_authorization_error(block_error)
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(

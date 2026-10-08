@@ -16,6 +16,7 @@ starts, so a UI shows what the agent is doing. These tests pin:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -642,6 +643,73 @@ def test_the_sensitive_path_write_guards_mark_their_refusals() -> None:
         assert tool_executor._is_authorization_refusal(
             tool_authorization_error(message)
         ), message
+
+
+@pytest.mark.parametrize("text", [
+    "Basic dTpw",                       # u:p -- four characters
+    "Basic YWRtaW46cGFzcw==",           # admin:pass
+    "search Basic dTpw now",            # mid-sentence
+])
+def test_a_short_basic_credential_is_redacted(text):
+    """Basic credentials have no minimum encoded length.
+
+    The bare-scheme pattern applied an eight-character prose floor to `basic`
+    as well as `bearer`, so `Basic dTpw` -- which is `u:p` -- survived into a
+    row that is persisted and broadcast to task viewers. The governed
+    redactor does not cover a bare scheme without an `Authorization:` header,
+    so nothing else caught it either.
+    """
+    assert "[redacted]" in _scrub_step_text(text, max_chars=120), text
+
+
+@pytest.mark.parametrize("text", [
+    "basic setup for the project",
+    "basic auth plan",
+    "bearer of bad news",
+    "the basic idea",
+])
+def test_prose_that_looks_like_a_scheme_survives(text):
+    """The reason the floor was there, kept without the floor.
+
+    Dropping the length rule for `basic` alone would redact ordinary prose,
+    so the discriminator is what a Basic credential IS: base64 of
+    `user:password`. `setup` and `basic` are not valid base64; `plan` and
+    `auth` decode without a colon. `bearer` keeps its floor because a Bearer
+    token shorter than eight characters is not a token.
+    """
+    assert _scrub_step_text(text, max_chars=120) == text, text
+
+
+def test_the_search_files_path_guard_marks_its_refusal(monkeypatch) -> None:
+    """`search_files` has its own pre-execution guard, driven for real.
+
+    `get_read_block_error` returns before `file_ops.search` runs, so nothing
+    was searched -- but it returned a plain `tool_error`, so the feed
+    recorded "Searching the files" for a refused call. Same class as the
+    read/write guards, a separate site.
+
+    `file_ops.search` is replaced with a `pytest.fail`, so this also proves
+    the guard returns BEFORE the search -- which is what makes it a refusal
+    rather than a withheld result.
+    """
+    from agent import tool_executor
+    from tools import file_tools
+
+    monkeypatch.setattr(file_tools, "get_read_block_error",
+                        lambda _p: "Blocked: Youtab internal path")
+    monkeypatch.setattr(
+        file_tools, "_get_file_ops",
+        lambda _t: pytest.fail("the search ran despite the guard"))
+
+    # The registered handler (`registry.register(name="search_files", ...,
+    # handler=_handle_search_files)`), which is the real entry point; the
+    # guard itself lives in a nested `search_tool`.
+    raw_result = file_tools._handle_search_files({"pattern": "password", "path": "."})
+    payload = json.loads(raw_result)
+
+    assert payload.get("authorization") == "denied", payload
+    assert "Blocked:" in payload["error"], payload
+    assert tool_executor._is_authorization_refusal(raw_result), raw_result
 
 
 def test_the_executors_refusal_marker_matches_the_registrys() -> None:

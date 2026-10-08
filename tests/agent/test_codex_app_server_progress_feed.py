@@ -17,6 +17,7 @@ function was called.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -177,6 +178,67 @@ def test_an_mcp_error_result_records_nothing(managed_run):
     }))
 
     assert _steps(managed_run.task_id) == []
+
+
+REFUSAL_JSON = json.dumps({
+    "error": "Blocked: Youtab internal path",
+    "authorization": "denied",
+})
+
+
+@pytest.mark.parametrize("result,why", [
+    ({"content": [{"type": "text", "text": REFUSAL_JSON}]},
+     "FastMCP hands a tool's JSON back as TEXT inside a content list"),
+    (json.loads(REFUSAL_JSON),
+     "a handler that returns the object directly"),
+])
+def test_an_mcp_refusal_hidden_in_the_result_records_nothing(
+    managed_run, result, why
+):
+    """`is_error` cannot see a handler-level refusal on this path.
+
+    An internal MCP handler returns its payload as an ordinary string, so a
+    policy refusal lands INSIDE `mcpToolCall.result` and never reaches the
+    item's top-level `error`. `_codex_item_completion_payload` reports
+    `is_error=False`, so the emission guard alone would have persisted a step
+    -- with the original query in it -- for a search that never ran.
+
+    Reachable through `model_tools.handle_function_call` rejecting
+    `web_search` via `resolve_pre_tool_block`, and through Youtab's own
+    browser and file guards, which return the same marked envelopes here.
+    """
+    bridge = make_codex_app_server_event_bridge(_stub_agent())
+
+    bridge(_completed({
+        "type": "mcpToolCall", "id": "mcp-refused",
+        "server": "youtab-agent-tools", "tool": "web_search",
+        "arguments": {"query": "internal admin credentials"},
+        "result": result,
+    }))
+
+    steps = _steps(managed_run.task_id)
+    assert steps == [], f"{why}: {steps}"
+
+
+def test_prose_mentioning_authorization_still_records_a_step(managed_run):
+    """The false-positive guard: the marker is a key, not a word.
+
+    A successful search whose results merely mention authorization must still
+    produce a step, or the detector would silence ordinary work.
+    """
+    bridge = make_codex_app_server_event_bridge(_stub_agent())
+
+    bridge(_completed({
+        "type": "mcpToolCall", "id": "mcp-ok",
+        "server": "youtab-agent-tools", "tool": "web_search",
+        "arguments": {"query": "oauth setup"},
+        "result": {"content": [{"type": "text", "text": json.dumps(
+            {"results": ["the authorization header is required"]})}]},
+    }))
+
+    steps = _steps(managed_run.task_id)
+    assert len(steps) == 1, steps
+    assert "Searching the web" in steps[0], steps[0]
 
 
 def test_nothing_is_recorded_outside_a_managed_run(tmp_path, monkeypatch):

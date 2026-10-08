@@ -174,9 +174,29 @@ _RUNTIME_STEP_PHRASES = {
 # caller and deserves its own bounded change: agent/redact.py redacts all
 # product logging, so widening it needs its own review.
 _STEP_SUPPLEMENT_RE = re.compile(
-    # A bare scheme + credential. The length floor keeps ordinary prose
-    # ("bearer of bad news") out of the match.
-    r"\b(?:bearer|basic)\s+\S{8,}"
+    # A bare scheme + credential.
+    #
+    # `bearer` keeps an eight-character floor, because it is an ordinary
+    # English word and "bearer of bad news" must not be redacted. A Bearer
+    # token shorter than eight characters is not a real token.
+    #
+    # `basic` CANNOT use a length floor: Basic credentials have no minimum
+    # encoded length -- `Basic dTpw` is `u:p`, four characters -- so the floor
+    # let short ones through into a row that is persisted and broadcast to
+    # task viewers. But `basic` is also ordinary prose ("basic setup"), so
+    # dropping the floor alone would over-redact.
+    #
+    # The discriminator is what a Basic credential IS: base64 of
+    # `user:password`. `_basic_token_is_credential` decodes the candidate and
+    # requires a colon, which separates the two cleanly and without a length
+    # rule at all:
+    #
+    #     dTpw             -> u:p          redacted
+    #     YWRtaW46cGFzcw== -> admin:pass   redacted
+    #     setup / basic    -> not base64   kept
+    #     plan / auth      -> no colon     kept
+    r"\bbearer\s+\S{8,}"
+    r"|\bbasic\s+(?P<basic>[A-Za-z0-9+/=]{4,})"
     # The auth header name in ASSIGNMENT form. The governed redactor covers
     # the header form ("Authorization: X") and api_key=/token=, but not
     # "authorization=X".
@@ -197,6 +217,37 @@ _STEP_MAX_DETAIL = 48
 _STEP_MAX_SUMMARY = 120
 # A progress row is cosmetic; it must never inherit the board's 120s wait.
 _STEP_BUSY_TIMEOUT_MS = 500
+
+
+def _basic_token_is_credential(token: str) -> bool:
+    """Whether a token after `Basic ` decodes to `user:password`.
+
+    This is the whole definition of a Basic credential, and it is what lets
+    the pattern above drop its length floor without over-redacting prose:
+    `setup` and `basic` are not valid base64 at all, and `plan`/`auth` decode
+    to bytes with no colon, while `dTpw` decodes to `u:p`.
+    """
+    import base64
+    import binascii
+
+    try:
+        decoded = base64.b64decode(token + "=" * (-len(token) % 4), validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return b":" in decoded
+
+
+def _redact_step_match(match: "re.Match[str]") -> str:
+    """Redact a supplement match, except prose that only looks like `Basic X`.
+
+    Every alternative in `_STEP_SUPPLEMENT_RE` redacts unconditionally apart
+    from the `basic` one, which has no length floor and so needs the decode
+    test to tell `Basic dTpw` from "basic setup".
+    """
+    token = match.groupdict().get("basic")
+    if token is not None and not _basic_token_is_credential(token):
+        return match.group(0)
+    return "[redacted]"
 
 
 def _scrub_step_text(text: Any, *, max_chars: int) -> str:
@@ -221,7 +272,7 @@ def _scrub_step_text(text: Any, *, max_chars: int) -> str:
         return ""
     if not isinstance(s, str):
         return ""
-    s = _STEP_SUPPLEMENT_RE.sub("[redacted]", s)
+    s = _STEP_SUPPLEMENT_RE.sub(_redact_step_match, s)
     s = " ".join(s.split())
     if len(s) > max_chars:
         s = s[:max_chars].rstrip() + "…"
