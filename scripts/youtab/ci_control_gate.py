@@ -97,7 +97,19 @@ VERSION_COMMENT_RE = re.compile(r"#\s*v?\d+(\.\d+)*")
 #: Actions from GitHub's own namespaces still get pinned -- the 2025
 #: tj-actions/changed-files compromise was a widely trusted third-party action
 #: whose tags were rewritten, and nothing about the owner changes the argument.
-PIN_EXEMPT_PREFIXES: tuple[str, ...] = ("./", "docker://")
+#:
+#: Only LOCAL actions are exempt: `./.github/actions/x` is this repository's
+#: own content, already covered by whatever protects the default branch, and
+#: its manifest is audited directly (see `load_composite_actions`).
+#:
+#: `docker://` used to be exempt too, which skipped the reference before any
+#: validation -- so `docker://image:latest` let upstream change the executed
+#: image with no commit here while the audit stayed green. Container actions
+#: are checked by `_docker_pin_problem` instead.
+PIN_EXEMPT_PREFIXES: tuple[str, ...] = ("./",)
+
+#: A container action is immutable only when it names a digest.
+DOCKER_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
 
 #: A step is treated as a gate when its name or command says so. Used only to
 #: decide whether `continue-on-error` is suspicious, so a false positive costs
@@ -127,6 +139,58 @@ class Findings:
     @property
     def skips(self) -> list[dict[str, Any]]:
         return [i for i in self.items if i["status"] == "skip"]
+
+
+def _docker_pin_problem(uses: str) -> str | None:
+    """Why a `docker://` reference is not immutable, or None if it is.
+
+    GitHub supports tagged images in `uses:` and recommends verifying their
+    integrity; a tag is mutable, so the only reference that pins what runs is
+    a digest.
+    """
+    if not uses.startswith("docker://"):
+        return None
+    if DOCKER_DIGEST_RE.search(uses):
+        return None
+    return (
+        f"{uses} is a container action pinned by tag, not by digest, so "
+        f"upstream can change the image that runs with no commit in this "
+        f"repository. Use docker://image@sha256:<64 hex>."
+    )
+
+
+def load_composite_actions(root: Path) -> dict[Path, dict]:
+    """This repository's own composite-action manifests, as pseudo-workflows.
+
+    A composite action invokes external actions through `runs.steps[*].uses`,
+    and those run with the CALLING workflow's privileges -- so a manifest that
+    switches a dependency to `@main` is exactly as dangerous as a workflow
+    doing it, and `load_workflows` never looked at one. This repository has
+    three such dependencies today (`actions/create-github-app-token`,
+    `DeterminateSystems/nix-installer-action`, `cachix/cachix-action`).
+
+    Shaped as `{"jobs": {"<composite>": {"steps": ...}}}` so the pin audit
+    reads them unchanged. Deliberately NOT fed to the permissions,
+    `pull_request_target` or continue-on-error conditions: a composite action
+    has no `permissions`, no triggers and no job-level settings, so those
+    conditions do not apply and reporting them would be noise.
+    """
+    import yaml
+
+    out: dict[Path, dict] = {}
+    for path in sorted(root.glob(".github/actions/*/action.y*ml")):
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001 - an unreadable manifest is a failure
+            out[path] = {"__error__": str(exc)}
+            continue
+        if not isinstance(loaded, dict):
+            out[path] = {"__error__": "not a mapping"}
+            continue
+        steps = ((loaded.get("runs") or {}).get("steps")
+                 if isinstance(loaded.get("runs"), dict) else None)
+        out[path] = {"jobs": {"<composite>": {"steps": steps or []}}}
+    return out
 
 
 def load_workflows(root: Path) -> dict[Path, dict]:
@@ -181,6 +245,15 @@ def check_action_pins(workflows: dict[Path, dict], f: Findings) -> None:
             candidates += [("step", str(step.get("uses") or "")) for step in steps_of(job)]
             for where, uses in candidates:
                 if not uses or uses.startswith(PIN_EXEMPT_PREFIXES):
+                    continue
+                docker_problem = _docker_pin_problem(uses)
+                if docker_problem is not None:
+                    f.fail("unpinned container action", f"{path}:{job_key}",
+                           docker_problem)
+                    continue
+                if uses.startswith("docker://"):
+                    # Digest-pinned: immutable, and not an action repository,
+                    # so it takes no part in the split-version grouping below.
                     continue
                 action, _, ref = uses.partition("@")
                 # Keyed by REPOSITORY, not by the full action path. Keying on
@@ -410,6 +483,27 @@ def ruleset_protects(body: dict, default_branch: str) -> bool:
     return matches(include) and not matches(exclude)
 
 
+def _pull_request_head_sha() -> str | None:
+    """The head SHA of the pull request this run is auditing, if any.
+
+    Read from the event payload rather than guessed from `GITHUB_SHA`, which
+    on a `pull_request` event is the merge commit. Returns None outside a
+    pull-request run, where the default-branch tip is the only relevant
+    state.
+    """
+    if os.environ.get("GITHUB_EVENT_NAME") != "pull_request":
+        return None
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if not event_path:
+        return None
+    try:
+        payload = json.loads(Path(event_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    head = ((payload.get("pull_request") or {}).get("head") or {}).get("sha")
+    return str(head) if head else None
+
+
 def observed_contexts(repo: str, revision: str) -> set[str]:
     """Check-run names GitHub has actually reported on these commits.
 
@@ -553,7 +647,28 @@ def check_required_checks(root: Path, workflows: dict[Path, dict],
         (f.fail("no observed check runs", "check-runs", message) if require_remote
          else f.skip("required checks", message))
         return
-    produced = observed_contexts(repo, tip)
+    # The default-branch tip AND, on a pull request, the pull request's own
+    # head.
+    #
+    # The tip alone deadlocks the change that introduces a context: this audit
+    # runs inside `python-security` on `pull_request`, so when this very pull
+    # request adds the `actions`, `c-cpp` and `rust` CodeQL legs and they are
+    # made required, the tip cannot possibly have reported them yet and
+    # `required - produced` fails forever on the only pull request that could
+    # fix it.
+    #
+    # This is NOT the history union that was removed earlier. That unioned
+    # five PAST revisions of main, so a context that had been renamed away
+    # still looked produced. These two are both CURRENT states: what main
+    # does now, and what the change under review proposes. A context that
+    # neither produces is genuinely unproducible, which is the condition.
+    revisions = [tip]
+    pr_head = _pull_request_head_sha()
+    if pr_head and pr_head != tip:
+        revisions.append(pr_head)
+    produced: set[str] = set()
+    for revision in revisions:
+        produced |= observed_contexts(repo, revision)
     if not produced:
         message = (f"no check runs on {default_branch} tip {tip[:9]}, so conditions 1 "
                    f"and 2 could not be evaluated against observed names")
@@ -566,10 +681,14 @@ def check_required_checks(root: Path, workflows: dict[Path, dict],
         f.fail(
             "required check nobody produces", context,
             f"the ruleset requires this context and no check run with that exact name "
-            f"was reported on {default_branch} tip {tip[:9]}, so every pull request "
-            f"waits on it forever. GitHub matches required checks on the reported JOB "
-            f"name -- a job with no `name` has its matrix values appended, and a job "
-            f"with a constant `name` has the whole matrix entry appended",
+            f"was reported on "
+            f"{', '.join(r[:9] for r in revisions)} "
+            f"({default_branch} tip"
+            + (" and this pull request's head" if len(revisions) > 1 else "")
+            + f"), so every pull request waits on it forever. GitHub matches required "
+            f"checks on the reported JOB name -- a job with no `name` has its matrix "
+            f"values appended, and a job with a constant `name` has the whole matrix "
+            f"entry appended",
         )
 
     # Condition 2: a CodeQL leg that reports but cannot block.
@@ -630,6 +749,11 @@ def main() -> int:
         f.fail("no workflows", ".github/workflows/", "nothing to audit")
 
     check_action_pins(workflows, f)
+    # Composite manifests get the PIN conditions only -- see
+    # `load_composite_actions` for why the others do not apply.
+    composites = load_composite_actions(root)
+    if composites:
+        check_action_pins(composites, f)
     check_permissions(workflows, f)
     check_pull_request_target(workflows, f)
     check_gates_can_fail(workflows, f)

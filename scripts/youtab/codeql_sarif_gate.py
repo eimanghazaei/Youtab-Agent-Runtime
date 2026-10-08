@@ -529,6 +529,27 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                     f"dropped by regenerating with an older script -- rebuild the "
                     f"baseline with scripts/youtab/regenerate_codeql_baseline.py."
                 )
+            # EVERY band, well-typed. Iterating `budget` alone meant a baseline
+            # that merely omitted `critical`, or carried it as a string, simply
+            # never had that band evaluated -- so the critical ratchet could be
+            # removed by deleting one key while this check and
+            # `check_codeql_coherence` both still saw a nonempty dict.
+            expected_bands = [name for name, _floor in SEVERITY_BANDS] + ["security"]
+            malformed = sorted(
+                f"{name}={budget.get(name)!r}"
+                for name in expected_bands
+                if not isinstance(budget.get(name), int)
+                or isinstance(budget.get(name), bool)
+                or int(budget[name]) < 0
+            )
+            if malformed:
+                raise ValueError(
+                    f"{baseline_path}: severity_budget is incomplete or mistyped "
+                    f"({', '.join(malformed)}). All of "
+                    f"{', '.join(expected_bands)} must be present as nonnegative "
+                    f"integers -- a missing band is silently never enforced, which "
+                    f"removes the ratchet for it."
+                )
             observed = count_by_band(run)
             band_budget, band_counts = budget, observed
             breaches = sorted(

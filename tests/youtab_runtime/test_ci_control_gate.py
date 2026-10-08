@@ -184,6 +184,114 @@ jobs:
     assert conditions(gate, tmp_path, checks=[gate.check_action_pins]) == []
 
 
+@pytest.mark.parametrize("ref,expected", [
+    ("docker://alpine:3.19", True),
+    ("docker://alpine:latest", True),
+    ("docker://alpine", True),
+    ("docker://alpine@sha256:" + "a" * 64, False),
+])
+def test_a_container_action_must_be_pinned_by_digest(gate, tmp_path, ref, expected):
+    """`docker://` used to be exempt, which skipped it before any check.
+
+    A tag is mutable, so `docker://image:latest` let upstream change the
+    image that runs with no commit in this repository while the pin audit
+    stayed green. GitHub supports tagged images in `uses:` and recommends
+    verifying their integrity; the only reference that pins what runs is a
+    digest.
+    """
+    write_workflow(tmp_path, "ci.yml", HEALTHY + "      - uses: " + ref + "\n")
+    failed = conditions(gate, tmp_path, checks=[gate.check_action_pins])
+    assert ("unpinned container action" in failed) is expected, (ref, failed)
+
+
+def test_a_local_action_reference_stays_exempt(gate, tmp_path):
+    """`./.github/actions/x` is this repository's own content.
+
+    It is covered by whatever protects the default branch, and its manifest
+    is audited directly, so requiring a SHA on it would be noise.
+    """
+    write_workflow(tmp_path, "ci.yml",
+                   HEALTHY + "      - uses: ./.github/actions/retry\n")
+    assert conditions(gate, tmp_path, checks=[gate.check_action_pins]) == []
+
+
+def test_composite_action_manifests_are_audited(gate, tmp_path):
+    """A composite action's dependencies run with the CALLER's privileges.
+
+    `load_workflows` only reads `.github/workflows/`, so a manifest that
+    switched a dependency to `@main` was never inspected and the required
+    gate stayed green. This repository has three such dependencies today:
+    `actions/create-github-app-token`,
+    `DeterminateSystems/nix-installer-action` and `cachix/cachix-action`.
+    """
+    directory = tmp_path / ".github" / "actions" / "mine"
+    directory.mkdir(parents=True)
+    (directory / "action.yml").write_text(
+        "name: mine\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: some-org/dangerous@main\n",
+        encoding="utf-8",
+    )
+
+    composites = gate.load_composite_actions(tmp_path)
+    assert composites, "the manifest was not loaded"
+    findings = gate.Findings()
+    gate.check_action_pins(composites, findings)
+    assert "unpinned action" in [i["condition"] for i in findings.failures], (
+        findings.failures
+    )
+
+
+def test_this_repositorys_own_composite_actions_pass(gate):
+    """The false-positive guard, against the real manifests.
+
+    All three external dependencies are SHA-pinned with version comments
+    today, so the new condition must be silent on them.
+    """
+    composites = gate.load_composite_actions(REPO_ROOT)
+    assert composites, "no composite manifests found in this repository"
+    findings = gate.Findings()
+    gate.check_action_pins(composites, findings)
+    assert findings.failures == [], findings.failures
+
+
+def test_main_runs_the_composite_audit(gate, tmp_path, monkeypatch, capsys):
+    """The loader and the audit both work; `main()` has to call them.
+
+    Asserted through `main()` rather than by calling the two directly,
+    because the first version of this coverage tested the pieces and passed
+    even with the wiring in `main()` removed -- the mutation that proved it
+    was dropping `check_action_pins(composites, f)`, and nothing failed.
+    """
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text(
+        HEALTHY, encoding="utf-8")
+    directory = tmp_path / ".github" / "actions" / "mine"
+    directory.mkdir(parents=True)
+    (directory / "action.yml").write_text(
+        "name: mine\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: some-org/dangerous@main\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["ci_control_gate.py", "--root", str(tmp_path), "--repo", "owner/repo"],
+    )
+
+    assert gate.main() == 1
+    out = capsys.readouterr().out
+    assert "unpinned action" in out, out
+    assert "action.yml" in out, out
+
+
 def test_missing_permissions_is_reported(gate, tmp_path):
     """No `permissions:` block means the token inherits the repo default."""
     write_workflow(tmp_path, "ci.yml",

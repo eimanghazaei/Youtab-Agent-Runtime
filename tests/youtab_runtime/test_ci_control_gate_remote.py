@@ -161,6 +161,69 @@ def test_a_produced_codeql_leg_that_is_not_required_is_reported(gate, monkeypatc
     assert ("gate that cannot block", "CodeQL analyze (rust)") in reported, reported
 
 
+def test_a_pull_request_is_judged_against_its_own_head_too(
+    gate, monkeypatch, tmp_path
+):
+    """Otherwise the change that INTRODUCES a required context deadlocks.
+
+    This audit runs inside `python-security` on `pull_request`. When a pull
+    request adds the `actions`, `c-cpp` and `rust` CodeQL legs and they are
+    made required, the default-branch tip cannot have reported them yet, so
+    `required - produced` fails forever on the only pull request that could
+    fix it.
+
+    Not the history union that was removed earlier: that unioned five PAST
+    revisions of main, so a context renamed away still looked produced. These
+    two are both CURRENT states -- what main does now, and what the change
+    under review proposes.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps({"pull_request": {"head": {"sha": "feedface"}}}), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+
+    def run(argv, **_kwargs):
+        joined = " ".join(str(a) for a in argv)
+        if "rulesets" in joined and joined.rstrip().endswith(".id"):
+            return _Result("1\n")
+        if "rulesets/1" in joined:
+            return _Result(json.dumps(ruleset_body(["build", "CodeQL analyze (rust)"])))
+        if joined.rstrip().endswith("repos/owner/repo"):
+            return _Result(json.dumps({"default_branch": "main"}))
+        if "commits?sha=main" in joined:
+            return _Result("cafebabe\n")
+        if "commits/cafebabe/check-runs" in joined:
+            return _Result("build\n")              # main does not have it yet
+        if "commits/feedface/check-runs" in joined:
+            return _Result("build\nCodeQL analyze (rust)\n")
+        raise AssertionError("unexpected call: " + joined)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    findings = gate.Findings()
+    gate.check_required_checks(REPO_ROOT, {}, "owner/repo", findings, True)
+
+    assert findings.failures == [], findings.failures
+
+
+def test_outside_a_pull_request_only_the_tip_is_consulted(gate, monkeypatch):
+    """A context neither main nor a pull request produces is still reported."""
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_PATH", raising=False)
+    monkeypatch.setattr(subprocess, "run", fake_api(
+        required=["build", "nobody-makes-this"], tip_contexts=["build"],
+    ))
+
+    findings = gate.Findings()
+    gate.check_required_checks(REPO_ROOT, {}, "owner/repo", findings, True)
+
+    assert [(i["condition"], i["where"]) for i in findings.failures] == [
+        ("required check nobody produces", "nobody-makes-this")
+    ], findings.failures
+
+
 def test_a_ruleset_requiring_nothing_is_itself_a_failure(gate, monkeypatch):
     """Every gate advisory has the same effect as having no gates."""
     monkeypatch.setenv("GH_TOKEN", "x")

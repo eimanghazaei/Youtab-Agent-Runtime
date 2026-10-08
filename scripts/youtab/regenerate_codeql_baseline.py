@@ -195,6 +195,14 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
         "extracted_count": len(extracted),
         "extracted_paths": extracted,
         "required_rules": sorted(severities),
+        # The SECURITY subset, recorded explicitly. `required_rules` is every
+        # query descriptor in the suite, so using it to classify made the
+        # identity ratchet refuse an ordinary `py/unused-import` as a security
+        # regression -- the opposite of the stated policy that quality
+        # findings are not ratcheted.
+        "security_rules": sorted(
+            rule for rule, is_sec in severities.items() if is_sec
+        ),
         # The ratchet. Counted off the RESULTS so it stays comparable across a
         # refresh, which is what lets `main()` below refuse to raise it. The
         # gate rejects a baseline that has no budget, so this control cannot be
@@ -281,9 +289,9 @@ def _security_pairs_that_grew(
     """
     def by_pair(document: dict) -> Counter[tuple[str, str]]:
         out: Counter[tuple[str, str]] = Counter()
-        severities = {
-            rule: True for rule in document.get("required_rules") or []
-        }
+        # The baseline's recorded SECURITY subset. Not `required_rules`, which
+        # lists every query in the suite including all of the quality ones.
+        security = set(document.get("security_rules") or ())
         for key, count in (document.get("findings") or {}).items():
             try:
                 parts = json.loads(key)
@@ -292,12 +300,25 @@ def _security_pairs_that_grew(
             if not isinstance(parts, list) or len(parts) < 2:
                 continue
             rule, uri = str(parts[0]), str(parts[1])
-            # `required_rules` is the baseline's own record of the rules it
-            # tracks; the band totals already encode which are security, so a
-            # rule absent from it is not treated as security here.
-            if rule in severities:
+            if rule in security:
                 out[(rule, uri)] += int(count)
         return out
+
+    # ABSENT, not empty. A legitimately empty security set is a real answer --
+    # a language whose suite has no security rules -- and treating it as
+    # "cannot classify" skipped the identity check for exactly the baseline
+    # where every finding is quality, silently.
+    if before.get("security_rules") is None or after.get("security_rules") is None:
+        # Cannot classify, so do not pretend to. The aggregate band ratchet
+        # above still applies; this half is announced as skipped rather than
+        # silently passing, because a baseline predating the field would
+        # otherwise look fully checked.
+        print(
+            "NOTE: one of these baselines has no `security_rules`, so the "
+            "per-identity security check was SKIPPED (the aggregate band ratchet "
+            "still applied). Rebuild both with this script to restore it."
+        )
+        return {}
 
     was, now = by_pair(before), by_pair(after)
     return {

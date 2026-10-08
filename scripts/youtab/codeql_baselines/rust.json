@@ -53,6 +53,27 @@
     "rust/weak-sensitive-data-hashing",
     "rust/xss"
   ],
+  "security_rules": [
+    "rust/access-after-lifetime-ended",
+    "rust/access-invalid-pointer",
+    "rust/cleartext-logging",
+    "rust/cleartext-storage-database",
+    "rust/cleartext-transmission",
+    "rust/command-line-injection",
+    "rust/disabled-certificate-check",
+    "rust/hard-coded-cryptographic-value",
+    "rust/insecure-cookie",
+    "rust/log-injection",
+    "rust/non-https-url",
+    "rust/path-injection",
+    "rust/regex-injection",
+    "rust/request-forgery",
+    "rust/sql-injection",
+    "rust/uncontrolled-allocation-size",
+    "rust/weak-cryptographic-algorithm",
+    "rust/weak-sensitive-data-hashing",
+    "rust/xss"
+  ],
   "severity_budget": {
     "critical": 0,
     "high": 0,

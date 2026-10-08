@@ -730,6 +730,39 @@ def test_a_baseline_without_a_severity_budget_is_refused(tmp_path, capsys):
     assert "no severity_budget" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("mutate,why", [
+    (lambda b: b.pop("critical"), "a missing band is never evaluated"),
+    (lambda b: b.update(critical="5"), "a string band is never evaluated"),
+    (lambda b: b.update(critical=-1), "a negative band accepts anything"),
+    (lambda b: b.update(critical=True), "a bool is an int in Python but not a count"),
+    (lambda b: b.pop("security"), "the aggregate security band is required too"),
+])
+def test_an_incomplete_or_mistyped_budget_is_refused(tmp_path, capsys, mutate, why):
+    """The ratchet must not be removable by deleting one key.
+
+    The breach loop iterated the budget's OWN keys, so a baseline that merely
+    omitted `critical` -- or carried it as a string -- simply never had that
+    band evaluated, while this check and `check_codeql_coherence` both still
+    saw a nonempty dict. The critical ratchet could be removed silently.
+    """
+    baseline = tmp_path / "baseline.json"
+    # `write_baseline` already carries a complete zero budget and a
+    # `required_rules` list the plain `sarif()` fixture satisfies, so the only
+    # thing wrong with the baseline is the mutation below -- otherwise an
+    # earlier check fires first and the test proves nothing.
+    write_baseline(baseline, [(finding(line_hash="known:1"), 1)])
+    document = json.loads(baseline.read_text(encoding="utf-8"))
+    mutate(document["severity_budget"])
+    baseline.write_text(json.dumps(document), encoding="utf-8")
+    (tmp_path / "python.sarif").write_text(
+        json.dumps(sarif([finding(line_hash="known:1")]))
+    )
+
+    assert inspect(tmp_path, baseline) == 2, why
+    message = capsys.readouterr().err
+    assert "incomplete or mistyped" in message, message
+
+
 def test_a_run_at_exactly_its_budget_passes(tmp_path, capsys):
     """The ratchet must not fail the state it was captured from."""
     baseline = tmp_path / "baseline.json"
@@ -853,11 +886,21 @@ def test_the_escape_hatch_records_its_reason_in_the_baseline(tmp_path):
     assert "critical 0 -> 1" in after["severity_budget_raised"]["detail"]
 
 
-def _doc(pairs, budget):
-    """A baseline-shaped document: findings keyed per (rule, uri, hash)."""
+def _doc(pairs, budget, *, security=None):
+    """A baseline-shaped document: findings keyed per (rule, uri, hash).
+
+    `security_rules` is distinct from `required_rules` on purpose.
+    `required_rules` lists EVERY query in the suite -- for python that is 172
+    descriptors of which only 48 are security -- so classifying by it treated
+    124 quality rules as security and refused ordinary quality churn as a
+    regression. Defaults to every rule in `pairs` so the security cases stay
+    terse; pass `security=[...]` to model a quality rule.
+    """
+    rules = sorted({r for r, _u, _h, _n in pairs})
     return {
         "findings": {json.dumps([r, u, h, "1"]): n for r, u, h, n in pairs},
-        "required_rules": sorted({r for r, _u, _h, _n in pairs}),
+        "required_rules": rules,
+        "security_rules": rules if security is None else sorted(security),
         "severity_budget": budget,
     }
 
@@ -881,6 +924,52 @@ def test_a_same_band_security_replacement_is_refused(tmp_path):
     message = str(excinfo.value)
     assert "py/full-ssrf in b.py" in message, message
     assert "--accept-severity-regression" in message, message
+
+
+def test_quality_churn_is_not_refused_as_a_security_regression(tmp_path):
+    """The policy says quality findings are not ratcheted; now it holds.
+
+    The identity check classified by `required_rules`, which is every query
+    descriptor in the suite including the entire quality half. A refresh that
+    added an ordinary `py/unused-import` was therefore refused as a security
+    regression, or demanded `--accept-severity-regression` for routine churn
+    -- which is how an escape hatch stops being read.
+
+    Measured on the real baselines when this was fixed: python records 48
+    security rules against 172 required ones, javascript 101 of 201.
+    """
+    regen = _regen_module()
+    budget = {"critical": 0, "high": 0, "medium": 0, "low": 0, "security": 0}
+    # A NON-EMPTY security set that does not contain the quality rule. An
+    # empty one would make the test pass whether or not classification works,
+    # because an absent/empty set skips the identity check.
+    before = _doc([("py/unused-import", "a.py", "h1", 1)], budget,
+                  security=["py/full-ssrf"])
+    after = _doc([("py/unused-import", "a.py", "h1", 1),
+                  ("py/unused-import", "b.py", "h2", 1)], dict(budget),
+                 security=["py/full-ssrf"])
+
+    regen.enforce_ratchet(before, after, None)   # must not raise
+
+    assert "severity_budget_raised" not in after
+
+
+def test_a_baseline_without_security_rules_announces_the_skip(tmp_path, capsys):
+    """A baseline predating the field must not look fully checked.
+
+    The aggregate band ratchet still applies, but the per-identity half
+    cannot run, and saying so is the difference between a gap and a silent
+    downgrade.
+    """
+    regen = _regen_module()
+    budget = {"critical": 0, "high": 0, "medium": 0, "low": 0, "security": 0}
+    before = _doc([("py/full-ssrf", "a.py", "h1", 1)], budget)
+    del before["security_rules"]
+    after = _doc([("py/full-ssrf", "b.py", "h2", 1)], dict(budget))
+
+    regen.enforce_ratchet(before, after, None)
+
+    assert "security_rules" in capsys.readouterr().out
 
 
 def test_a_pure_relocation_is_not_treated_as_a_replacement(tmp_path):
