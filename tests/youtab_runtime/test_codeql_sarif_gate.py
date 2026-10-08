@@ -65,6 +65,12 @@ def write_baseline(path, findings):
         "extracted_count": 1,
         "extracted_paths": ["app.py"],
         "required_rules": ["py/sql-injection"],
+        # The gate requires a severity_budget so the ratchet cannot be dropped
+        # by regenerating with an older script. These fixtures' rules carry no
+        # `security-severity`, so every finding is a QUALITY one and a zero
+        # budget is the correct value, not a placeholder.
+        "severity_budget": {"critical": 0, "high": 0, "medium": 0,
+                            "low": 0, "security": 0},
         # One result can yield several keys (CodeQL coalesces graph
         # diagnostics sharing a location), so accumulate rather than assign.
         "findings": accumulated,
@@ -482,6 +488,398 @@ def test_a_few_genuinely_new_dataflow_findings_are_still_just_new(tmp_path):
     assert inspect(tmp_path, baseline) == 1
 
 
+def test_bulk_new_findings_on_a_populated_rule_stay_in_the_regression_path(tmp_path, capsys):
+    """A real regression must not come out as "the baseline is incomplete".
+
+    This is the hole the count-delta version of the coverage check had. It
+    treated ANY positive per-rule delta as evidence that the baseline had been
+    captured under diff-informed analysis, and the proportional floor is low
+    for a small baseline: against the real 110-finding javascript baseline,
+    13 new `js/log-injection` results clear max(10, 11) and came out as exit 2
+    with a message naming baseline regeneration as a legitimate response.
+    Regenerating would have written all 13 in as reviewed debt.
+
+    So the shape here is a rule the baseline ALREADY populates, gaining a
+    bulk of findings. There is no coverage question -- the query plainly ran
+    on both sides -- so it has to be exit 1, with the locations printed.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash=f"other:{i}"), 1) for i in range(90)]
+        + [(dataflow_finding("py/log-injection", line_hash=f"log:{i}"), 1)
+           for i in range(20)],
+        ["py/sql-injection", *DATAFLOW_RULES],
+    )
+    results = (
+        [finding(line_hash=f"other:{i}") for i in range(90)]
+        + [dataflow_finding("py/log-injection", line_hash=f"log:{i}") for i in range(33)]
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif(results)))
+
+    assert inspect(tmp_path, baseline) == 1
+    captured = capsys.readouterr()
+    assert "13 new" in captured.out, captured.out
+    # The misclassification was not just the exit code -- it was the advice.
+    assert "records NOTHING" not in captured.err, captured.err
+    assert "reviewed debt" not in captured.err, captured.err
+
+
+def test_a_query_absent_from_the_baseline_entirely_is_still_a_coverage_breach(tmp_path):
+    """The fix must not cost the original detection.
+
+    Same volume as the test above, but on a required query the baseline holds
+    at ZERO rather than at 20. That is the structural fingerprint of a
+    diff-informed baseline -- the query never ran on that side -- and it must
+    still refuse to judge (exit 2).
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash=f"other:{i}"), 1) for i in range(90)],
+        ["py/sql-injection", *DATAFLOW_RULES],
+    )
+    results = (
+        [finding(line_hash=f"other:{i}") for i in range(90)]
+        + [dataflow_finding("py/log-injection", line_hash=f"log:{i}") for i in range(13)]
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif(results)))
+
+    assert inspect(tmp_path, baseline) == 2
+
+
+def _wide_sarif(*, extracted: int, artifacts: int):
+    """A SARIF whose extraction inventory and `artifacts` index differ in size.
+
+    They are independent arrays in the format, and CodeQL has populated them
+    with different sets in different releases, which is the whole point of the
+    two tests below.
+    """
+    document = sarif([finding(line_hash="known:1")])
+    run = document["runs"][0]
+    run["invocations"][0]["toolExecutionNotifications"] = [
+        {"descriptor": {"id": "py/diagnostics/successfully-extracted-files"},
+         "locations": [{"physicalLocation": {"artifactLocation": {"uri": f"src/f{i}.py"}}}]}
+        for i in range(extracted)
+    ]
+    run["artifacts"] = [{"location": {"uri": f"src/f{i}.py"}} for i in range(artifacts)]
+    return document
+
+
+def _baseline_with_coverage(path, *, extracted: int, artifact_count: int):
+    write_baseline(path, [(finding(line_hash="known:1"), 1)])
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["extracted_count"] = extracted
+    document["extracted_paths"] = [f"src/f{i}.py" for i in range(extracted)]
+    document["artifact_count"] = artifact_count
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_a_shrinking_artifacts_index_alone_does_not_fail_the_gate(tmp_path):
+    """Regression: a CodeQL bundle bump turned the gate red on a clean tree.
+
+    Real numbers from the javascript-typescript leg. The committed baseline
+    was captured on bundle 2.2x, which listed 6735 entries in `artifacts`
+    while extracting 2932 source files. Bundle 2.27.1 lists exactly the
+    extracted set, so `artifacts` reported 2932 -- a 56% fall that failed the
+    90% floor, on a run whose extraction inventory was identical set-for-set
+    and whose findings were the same 110.
+
+    `artifacts` membership is a SARIF serialisation detail of the release, so
+    it cannot carry a fail-closed gate. The extraction inventory is intact
+    here and that is what must decide.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_coverage(baseline, extracted=2932, artifact_count=6735)
+    (tmp_path / "python.sarif").write_text(
+        json.dumps(_wide_sarif(extracted=2932, artifacts=2932))
+    )
+
+    assert inspect(tmp_path, baseline) == 0
+
+
+def test_losing_extracted_source_files_still_fails_closed(tmp_path, capsys):
+    """The enforcing half must be untouched by the fix above.
+
+    Same baseline, but the run extracted 2000 of the 2932 files (68%). That is
+    a partial analysis whatever the invocation claims, and it must refuse to
+    judge -- including when `artifacts` looks healthy, which is the shape that
+    would fool a check reading the index instead.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_coverage(baseline, extracted=2932, artifact_count=6735)
+    (tmp_path / "python.sarif").write_text(
+        json.dumps(_wide_sarif(extracted=2000, artifacts=6735))
+    )
+
+    assert inspect(tmp_path, baseline) == 2
+    message = capsys.readouterr().err
+    assert "source extraction coverage dropped" in message, message
+    # The numbers have to be in the message: "dropped unexpectedly" with no
+    # figures sent the reader to the baseline rather than to the run.
+    assert "2000" in message and "2932" in message, message
+
+
+def test_a_coverage_error_still_reports_a_concurrent_new_finding(tmp_path, capsys):
+    """A cleanup and a regression in the same scan must not hide the regression.
+
+    The coverage check aborts before `new = current - baseline` is computed,
+    so when a legitimate cleanup removes 10% or more of the baseline AND the
+    same scan introduces a new finding, the reader saw only "THIS RUN
+    under-reports" plus an invitation to rebuild the baseline. Rebuilding from
+    that artifact writes the new finding in as reviewed debt.
+
+    Here 90 of 100 `py/path-injection` findings are remediated (a real
+    cleanup, over the proportional floor) while one new `py/sql-injection`
+    finding appears. The gate must still refuse (exit 2, the coverage question
+    is genuinely unanswerable), but it must print the new finding and say
+    plainly that regeneration is not the way out.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash="known:1"), 1)]
+        + [(dataflow_finding("py/path-injection", line_hash=f"pi:{i}"), 1)
+           for i in range(100)],
+        ["py/sql-injection", *DATAFLOW_RULES],
+    )
+    results = (
+        [finding(line_hash="known:1"),
+         finding(uri="fresh.py", line_hash="brandnew:1")]          # the regression
+        + [dataflow_finding("py/path-injection", line_hash=f"pi:{i}")
+           for i in range(10)]                                      # 90 remediated
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif(results)))
+
+    assert inspect(tmp_path, baseline) == 2
+    message = capsys.readouterr().err
+    assert "THIS RUN under-reports" in message, message
+    # The new finding's location, not just a count.
+    assert "fresh.py" in message, message
+    assert "NOT BY REGENERATING" in message, message
+    assert "1 NEW finding" in message, message
+    # And the innocent remedy must be gone -- it is what caused the laundering.
+    assert "remediated in full" not in message, message
+
+
+# ---------------------------------------------------------------------------
+# The severity ratchet
+#
+# Everything else here answers "did anything get worse against a fixed set of
+# accepted findings". That holds the line and never moves it, and it is blind
+# in one direction: a refresh taken after a genuine cleanup can admit a NEW
+# critical finding as accepted debt, because per-key comparison against the
+# NEW baseline then sees nothing new.
+#
+# Measured on the real baselines when this was written: python carried 5
+# critical (py/full-ssrf, py/partial-ssrf at 9.1) and 1146 high; javascript
+# carried 33 high. A green check was reporting "none of those 1184 got worse".
+# ---------------------------------------------------------------------------
+SEV_RULE = "py/full-ssrf"
+
+
+def severity_sarif(results, *, score="9.1"):
+    """A SARIF whose extra rule carries a real ``security-severity``."""
+    document = sarif(results)
+    document["runs"][0]["tool"]["extensions"][0]["rules"].append(
+        {"id": SEV_RULE, "properties": {"security-severity": score}}
+    )
+    return document
+
+
+def severity_finding(uri="app.py", line_hash="ssrf:1"):
+    return {
+        "ruleId": SEV_RULE,
+        "message": {"text": "Server-side request forgery"},
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": uri},
+            "region": {"startLine": 11},
+        }}],
+        "partialFingerprints": {
+            "primaryLocationLineHash": line_hash,
+            "primaryLocationStartColumnFingerprint": "3",
+        },
+    }
+
+
+def _baseline_with_budget(path, findings, budget):
+    write_baseline(path, findings)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["severity_budget"] = budget
+    document["required_rules"] = ["py/sql-injection", SEV_RULE]
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_a_baseline_without_a_severity_budget_is_refused(tmp_path, capsys):
+    """The ratchet must not be droppable by regenerating with an old script.
+
+    If a missing budget were tolerated, the whole control could be removed by
+    checking in a baseline built before it existed -- a silent downgrade with
+    a green check.
+    """
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(finding(line_hash="known:1"), 1)])
+    document = json.loads(baseline.read_text(encoding="utf-8"))
+    del document["severity_budget"]
+    baseline.write_text(json.dumps(document), encoding="utf-8")
+    (tmp_path / "python.sarif").write_text(
+        json.dumps(sarif([finding(line_hash="known:1")]))
+    )
+
+    assert inspect(tmp_path, baseline) == 2
+    assert "no severity_budget" in capsys.readouterr().err
+
+
+def test_a_run_at_exactly_its_budget_passes(tmp_path, capsys):
+    """The ratchet must not fail the state it was captured from."""
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_budget(
+        baseline,
+        [(finding(line_hash="known:1"), 1), (severity_finding(), 1)],
+        {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1},
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(severity_sarif([
+        finding(line_hash="known:1"), severity_finding(),
+    ])))
+
+    assert inspect(tmp_path, baseline) == 0
+    out = capsys.readouterr().out
+    assert "critical 1/1" in out, out
+    # The count must be stated on a PASSING run, not only on failure.
+    assert "1 CRITICAL finding(s) are accepted debt" in out, out
+
+
+def test_exceeding_a_severity_budget_fails_closed(tmp_path, capsys):
+    """One more critical finding than the budget allows is a hard stop.
+
+    Exit 2, not 1: this is not "a new finding to triage", it is a control
+    boundary, and the message has to say that regenerating will not move it --
+    otherwise the obvious next step is the one that launders the finding.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_budget(
+        baseline,
+        [(finding(line_hash="known:1"), 1), (severity_finding(), 1)],
+        {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1},
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(severity_sarif([
+        finding(line_hash="known:1"),
+        severity_finding(),
+        severity_finding(uri="other.py", line_hash="ssrf:2"),   # the sixth
+    ])))
+
+    assert inspect(tmp_path, baseline) == 2
+    message = capsys.readouterr().err
+    assert "severity budget exceeded" in message, message
+    assert "critical 2 > 1" in message, message
+    assert SEV_RULE in message, message
+    assert "RATCHET" in message, message
+    assert "will not raise it" in message, message
+
+
+def test_the_budget_catches_a_replacement_the_baseline_would_absorb(tmp_path):
+    """The case the per-key comparison alone cannot be relied on for.
+
+    Here the baseline has been refreshed, so per-key comparison is clean --
+    the critical finding in the SARIF is in the baseline's own key map. What
+    is NOT clean is that the refresh carried one more critical than the budget
+    the previous baseline set. Only the budget sees that.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_budget(
+        baseline,
+        # Two criticals recorded as accepted debt...
+        [(severity_finding(), 1), (severity_finding(uri="b.py", line_hash="ssrf:2"), 1)],
+        # ...but the budget, carried forward from before the refresh, allows one.
+        {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1},
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(severity_sarif([
+        severity_finding(), severity_finding(uri="b.py", line_hash="ssrf:2"),
+    ])))
+
+    # Nothing is NEW by key, so without the budget this would be exit 0.
+    assert inspect(tmp_path, baseline) == 2
+
+
+def test_the_regenerator_refuses_to_raise_a_budget(tmp_path, capsys):
+    """The half of the ratchet that cannot live in the gate.
+
+    The gate compares a run against a committed budget; nothing there stops
+    someone committing a HIGHER budget. And raising it is the easy mistake
+    rather than a malicious one -- a refresh is the documented response to a
+    cleanup, the diff is a megabyte of JSON, and a new critical finding moves
+    one integer inside it.
+    """
+    regen = _regen_module()
+    out = tmp_path / "baseline.json"
+    _write_cycle_sarif(tmp_path)
+    first = regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+    first["severity_budget"] = {"critical": 0, "high": 0, "medium": 0,
+                                "low": 0, "security": 0}
+    out.write_text(json.dumps(first), encoding="utf-8")
+
+    second = dict(first)
+    second["severity_budget"] = {"critical": 1, "high": 0, "medium": 0,
+                                 "low": 0, "security": 1}
+
+    with pytest.raises(SystemExit) as excinfo:
+        regen.enforce_ratchet(first, second, None)
+    message = str(excinfo.value)
+    assert "RAISES a severity budget" in message, message
+    assert "critical 0 -> 1" in message, message
+    assert "--accept-severity-regression" in message, message
+
+
+@pytest.mark.parametrize("reason", [None, "", "oops", "known issue"])
+def test_the_escape_hatch_requires_a_reason_worth_reading(tmp_path, reason):
+    """A one-word reason is how an escape hatch becomes the default path."""
+    regen = _regen_module()
+    before = {"severity_budget": {"critical": 0, "security": 0}}
+    after = {"severity_budget": {"critical": 1, "security": 1}}
+    with pytest.raises(SystemExit):
+        regen.enforce_ratchet(before, after, reason)
+
+
+def test_the_escape_hatch_records_its_reason_in_the_baseline(tmp_path):
+    """A deliberate raise is allowed, and leaves evidence in the diff."""
+    regen = _regen_module()
+    before = {"severity_budget": {"critical": 0, "security": 0}}
+    after = {"severity_budget": {"critical": 1, "security": 1}}
+    reason = "accepted: py/full-ssrf in the offline installer probe, tracked in ADR-0007"
+
+    regen.enforce_ratchet(before, after, reason)
+
+    assert after["severity_budget_raised"]["reason"] == reason
+    assert "critical 0 -> 1" in after["severity_budget_raised"]["detail"]
+
+
+def test_lowering_a_budget_is_always_allowed(tmp_path):
+    """The ratchet only resists one direction; fixing things must be free."""
+    regen = _regen_module()
+    before = {"severity_budget": {"critical": 5, "high": 1146, "security": 1372}}
+    after = {"severity_budget": {"critical": 4, "high": 1100, "security": 1300}}
+
+    regen.enforce_ratchet(before, after, None)
+
+    assert "severity_budget_raised" not in after
+
+
+def test_quality_findings_are_not_ratcheted(tmp_path):
+    """Only the security bands, deliberately.
+
+    Quality findings churn with ordinary refactoring. Budgeting them would
+    make the escape hatch routine, and an escape hatch used routinely is not
+    a control.
+    """
+    regen = _regen_module()
+    before = {"severity_budget": {"critical": 0, "security": 0}}
+    after = {"severity_budget": {"critical": 0, "security": 0}}
+
+    regen.enforce_ratchet(before, after, None)
+
+    assert "severity_budget_raised" not in after
+
+
 def test_open_security_debt_is_disclosed_on_a_passing_run(tmp_path, capsys):
     """Green must never read as "clean".
 
@@ -761,22 +1159,61 @@ def test_two_high_volume_queries_vanishing_is_a_coverage_breach(tmp_path):
 def test_remediating_a_small_rule_entirely_is_still_an_ordinary_pass(tmp_path):
     """Below the proportional floor, a whole rule going to zero is just a fix.
 
-    This is the case the rule-count floor was protecting, and the volume
-    floor protects it properly: 9 findings out of 9076 is remediation, and
-    the gate should not editorialise about it.
+    Built with DISTINCT findings so the baseline counts are ones a SARIF can
+    actually produce: 191 syntactic results plus 9 in one dataflow rule, and
+    the current run keeps all 191 and none of the 9. Deficit 9, floor 20 --
+    remediation, and the gate should not editorialise about it.
+
+    The earlier version of this test declared a count of 9067 for a single
+    key that the SARIF emitted once, which the fully-missing-rule measure
+    happened to tolerate and the deficit measure correctly does not. The
+    fixture was wrong, not the check.
     """
+    syntactic = [finding(line_hash=f"syn:{i}") for i in range(191)]
+    ssrf = [dataflow_finding("py/partial-ssrf", line_hash=f"ssrf:{i}") for i in range(9)]
+
     baseline = tmp_path / "baseline.json"
     _baseline_requiring(
         baseline,
-        [(finding(line_hash="syntactic:1"), 9067),
-         (dataflow_finding("py/partial-ssrf", line_hash="ssrf:1"), 9)],
+        [(f, 1) for f in syntactic + ssrf],
         ["py/sql-injection", "py/partial-ssrf"],
     )
-    document = sarif([finding(line_hash="syntactic:1")])
+    document = sarif(syntactic)
     document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": "py/partial-ssrf"})
     (tmp_path / "python.sarif").write_text(json.dumps(document))
 
     assert inspect(tmp_path, baseline) == 0
+
+
+def test_partial_loss_within_surviving_queries_is_caught(tmp_path):
+    """The hole the fully-missing-rule measure left wide open.
+
+    A degraded analysis that retains even ONE result per query has no
+    fully-missing rule at all, so nothing was suspect and every lost finding
+    filed as non-enforcing `absent`. On the real baselines a run keeping one
+    result per rule loses 9009 of 9076 (python) and 87 of 110 (JS), and the
+    gate returned 0 for both -- the whole analysis could evaporate and the
+    security gate would pass.
+
+    Here: 200 findings across two rules, reduced to one result each.
+
+    Mutation check: measure only rules whose current count is zero and this
+    goes green.
+    """
+    syntactic = [finding(line_hash=f"syn:{i}") for i in range(100)]
+    ssrf = [dataflow_finding("py/partial-ssrf", line_hash=f"ssrf:{i}") for i in range(100)]
+
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(f, 1) for f in syntactic + ssrf],
+        ["py/sql-injection", "py/partial-ssrf"],
+    )
+    document = sarif([syntactic[0], ssrf[0]])
+    document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": "py/partial-ssrf"})
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+
+    assert inspect(tmp_path, baseline) == 2
 
 
 def test_the_coverage_message_names_remediation_as_a_cause(tmp_path, capsys):
@@ -834,14 +1271,82 @@ def test_regenerator_refuses_missing_coverage_metadata(tmp_path, field, mutate, 
     assert expected in str(excinfo.value)
 
 
-def test_regenerator_refuses_a_sarif_with_no_findings(tmp_path):
-    """A baseline of nothing makes the gate's own 'zero findings against a
-    nonempty baseline' guard unreachable, so everything afterwards passes."""
+def test_regenerator_accepts_a_clean_analysis_as_an_empty_baseline(tmp_path, capsys):
+    """Zero findings with intact coverage is a CLEAN run, not a broken one.
+
+    This used to be refused outright, reasoning that an empty baseline "makes
+    the gate's own 'zero findings against a nonempty baseline' guard
+    unreachable, so everything afterwards passes". The first half is true and
+    the second does not follow: with an empty baseline, ``new = current -
+    baseline`` is the entire current set, so the next finding fails at exit 1.
+    That guard exists for a run reporting nothing against a baseline that HAS
+    entries; it is inapplicable here rather than bypassed --
+    ``test_an_empty_baseline_still_fails_on_the_first_new_finding`` below
+    proves enforcement is intact.
+
+    The refusal also blocked gating three real languages. ``rust`` reports 0
+    findings in this repository, and an empty baseline is the strongest gate
+    available for it: nothing accepted, so anything new is new.
+
+    A loud NOTE is still printed, because "0 findings" is also what a
+    truncated artifact looks like to a human skimming the output.
+    """
     regen = _regen_module()
     (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([])))
-    with pytest.raises(SystemExit) as excinfo:
+
+    baseline = regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+
+    assert baseline["open_total"] == 0
+    assert baseline["findings"] == {}
+    # Coverage metadata must still be real -- that is what separates "clean"
+    # from "partial".
+    assert baseline["artifact_count"] > 0
+    assert baseline["query_count"] > 0
+    assert baseline["extracted_count"] > 0
+    assert "zero findings" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("field,mutate", [
+    ("artifacts", lambda run: run.__setitem__("artifacts", [])),
+    ("extensions", lambda run: run["tool"].__setitem__("extensions", [])),
+    ("notifications", lambda run: run["invocations"][0].__setitem__(
+        "toolExecutionNotifications", [])),
+])
+def test_regenerator_still_refuses_zero_findings_with_degraded_coverage(
+    tmp_path, field, mutate
+):
+    """Zero findings is accepted ONLY alongside evidence the analysis ran.
+
+    This is the half of the old blanket refusal that was load-bearing. A
+    truncated artifact can report zero findings while still marking its
+    invocation successful, and a baseline built from one would be committed as
+    "regenerated" and then rejected by the gate on every later run.
+    """
+    regen = _regen_module()
+    document = cycle_sarif([])
+    mutate(document["runs"][0])
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+
+    with pytest.raises(SystemExit):
         regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
-    assert "zero findings" in str(excinfo.value)
+
+
+def test_an_empty_baseline_still_fails_on_the_first_new_finding(tmp_path):
+    """The enforcement claim above, asserted rather than argued.
+
+    An empty baseline accepts nothing, so a single finding is new and the gate
+    exits 1. If this ever passed, the empty baseline really would be the hole
+    the old refusal feared.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(baseline, [], ["py/sql-injection"])
+    document = json.loads(baseline.read_text(encoding="utf-8"))
+    assert document["findings"] == {}, "fixture is not an empty baseline"
+    (tmp_path / "python.sarif").write_text(
+        json.dumps(sarif([finding(line_hash="brand:1")]))
+    )
+
+    assert inspect(tmp_path, baseline) == 1
 
 
 def test_regenerator_accepts_a_complete_artifact(tmp_path):

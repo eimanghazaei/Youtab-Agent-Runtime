@@ -119,6 +119,21 @@ jobs:
       - name: Unit, integration, E2E, OWASP, SAST, secret, dependency and branding gates
         env:
           YOUTAB_AGENT_PYTHON: ${{ steps.py.outputs.python-path }}
+          # `gh` does not inherit a token inside a workflow; it has to be
+          # exported. Without it the ci-control gate skips its two
+          # ruleset conditions on every CI run and the wrapper still prints
+          # PASS, so required-check drift went unaudited exactly where it
+          # matters. run_all_gates.sh turns on --require-remote when it sees
+          # a token, which makes an unreadable ruleset a failure rather than
+          # a silent skip.
+          #
+          # Reading rulesets is not among the scopes a workflow `permissions:`
+          # block can grant, so if the default token is refused this gate
+          # fails with a message saying to supply one with
+          # administration:read as a secret. That is the intended outcome --
+          # a visible missing capability rather than a condition that quietly
+          # stopped running.
+          GH_TOKEN: ${{ github.token }}
         run: scripts/youtab/run_all_gates.sh
       # In this job rather than a job of its own, because `python-security` is
       # a required check and a new job would not be: a TLS floor proved by a

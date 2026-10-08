@@ -1,7 +1,29 @@
-# CodeQL security-and-quality analysis with a reviewed existing-debt baseline.
-# GitHub Code Scanning uploads are unavailable for this repository. The job
-# must fail on a missing SARIF, malformed SARIF, or new unsuppressed finding rather
-# than reporting a green check after an upload/configuration error.
+# CodeQL security-and-quality analysis, uploaded to GitHub Code Scanning.
+#
+# TWO mechanisms, deliberately, because neither covers what the other does.
+#
+# The committed baseline and the custom SARIF comparator were written when
+# Code Scanning uploads were unavailable on a private repository without
+# Advanced Security. The repository is public now, so uploads are free -- but
+# they are NOT a replacement for the comparator, and the plan to drop it in
+# their favour was reversed. The upload gives the native alert UI, per-alert
+# dismissal with a reason, severity filtering and history that a JSON file in
+# the tree never could. What it does not give is enforcement: a 5000-result
+# cap that discards ~4076 of this repository's python findings quality-first,
+# a results check that fails only on error/critical/high, PR gating only for
+# alerts whose every line is in the diff, and extraction errors that surface
+# for manual reading rather than failing the run. The four limits are set out
+# against the analyze step below.
+#
+# So: `upload: always` AND `output: results`, the comparator reading the full
+# local SARIF, and the artifact kept for baseline regeneration.
+#
+# Advanced setup rather than GitHub's default setup, deliberately: default
+# setup only offers the `default` and `extended` query suites (the API rejects
+# anything else), and neither runs the QUALITY queries. Those are 7598 of this
+# repository's 9076 findings -- py/empty-except, py/cyclic-import,
+# py/unused-import and the rest. Keeping `security-and-quality` is the whole
+# reason this file still exists.
 name: CodeQL no-new-findings gate
 
 on:
@@ -15,6 +37,9 @@ on:
 permissions:
   contents: read
   actions: read
+  # Required to upload SARIF to Code Scanning. This is the permission that
+  # was pointless while uploads were unavailable.
+  security-events: write
 
 # Diff-informed analysis OFF. This is the single setting that made this gate
 # incoherent, and it is load-bearing -- deleting it silently shrinks every
@@ -55,13 +80,81 @@ env:
 
 jobs:
   analyze:
-    name: CodeQL analyze
+    # The name is pinned to the language ALONE and must stay that way. With a
+    # bare `name: CodeQL analyze`, GitHub derives the check context from the
+    # whole matrix entry, so adding `build-mode` renamed every context to
+    # `CodeQL analyze (python, none)` and silently orphaned the
+    # `CodeQL analyze (python)` entries in the `main-required-gates` ruleset --
+    # which blocks every pull request forever, waiting on a status nothing
+    # produces. Renaming this is a two-place change, here and in the ruleset.
+    name: CodeQL analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        language: [python, javascript-typescript]
+        # Every language in the tree, because default setup and an advanced
+        # workflow cannot coexist: GitHub rejects every advanced upload while
+        # default setup is enabled ("CodeQL analyses from advanced
+        # configurations cannot be processed when the default setup is
+        # enabled"), for ALL languages, not just the overlapping ones. So this
+        # workflow has to cover everything or those languages get nothing.
+        #
+        #   python                 58.9 MB
+        #   javascript-typescript  16.5 MB  (js + ts + the `javascript`/
+        #                                   `typescript` aliases collapse here)
+        #   rust                    243 KB  apps/bootstrap-installer/src-tauri
+        #                                   -- a Tauri installer that runs
+        #                                   PowerShell and performs updates
+        #   c-cpp                   9.6 KB  native/fts5_cjk/fts5_cjk.c
+        #                                   -- a SQLite FTS5 CJK tokenizer
+        #   actions                         the workflow definitions
+        #
+        # build-mode: none everywhere -- nothing here needs a compile for
+        # CodeQL to extract it, and `none` is what default setup used for
+        # c-cpp and rust when it analysed them successfully.
+        include:
+          # EVERY leg is baseline-compared. The comparator was briefly limited
+          # to python and javascript-typescript on the argument that `actions`,
+          # `c-cpp` and `rust` hold only three findings between them, so the
+          # 5000-result cap could not bite. That argument answered the wrong
+          # question: the cap is not the only thing the native check fails to
+          # do. It also fails a pull request only for error/critical/high, so a
+          # NEW `warning` or `recommendation` in any of those three would have
+          # published and passed, and the finding count has no bearing on that
+          # severity gap.
+          #
+          # What actually blocked gating them was mechanical, and keeping
+          # `output: results` removed it: a SARIF downloaded back from Code
+          # Scanning is stripped (`invocations: []`, no extraction
+          # diagnostics), so no baseline could be built from one. The local
+          # SARIF is complete, and the artifact step below preserves it for
+          # every language. Their baselines were generated from it:
+          #
+          #   actions   1 finding   actions/code-injection/medium   (SECURITY)
+          #   c-cpp     2 findings  cpp/complex-condition, cpp/empty-if
+          #   rust      0 findings  -- an EMPTY baseline, which is the
+          #                            strongest gate there is: nothing is
+          #                            accepted, so any future finding is new
+          #
+          # The `actions` one is the case in point. It is a security finding in
+          # the workflow definitions, and a second one arriving as a `warning`
+          # is exactly what the native check would have let through.
+          #
+          # `tests/youtab_runtime/test_codeql_gate_wiring.py` requires every
+          # leg to be gated AND to have a committed baseline, so a language
+          # cannot be added to the matrix without one, and cannot quietly lose
+          # the comparator later.
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
+          - language: c-cpp
+            build-mode: none
+          - language: rust
+            build-mode: none
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -83,17 +176,61 @@ jobs:
           else
             : > changed-files.bin
           fi
+      # BOTH CodeQL steps are pinned to the SAME release, and they have to move
+      # together. Dependabot opened #74 bumping only `init` to v4.38.2 while
+      # `analyze` stayed on v3.37.9; since 3.30.4 the action validates this and
+      # the non-init steps THROW when they load a configuration file generated
+      # by a different version of `init`, so that bump would have failed every
+      # run at `analyze` with no SARIF produced -- a red gate with a cause three
+      # steps away from the symptom.
+      #
+      # v4 rather than the parallel v3.38.2: the v3 and v4 lines are the same
+      # code (both 38.2 releases ship CodeQL bundle 2.27.1 from the same PR);
+      # v4 is the Node.js 24 runtime and v3 is kept on Node 20 for older
+      # self-hosted runners and GHES. These jobs run on github.com-hosted
+      # `ubuntu-latest`, so v4 is the current line here.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
           queries: security-and-quality
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: "/language:${{ matrix.language }}"
-          upload: never
-          upload-database: false
+          # BOTH: upload for visibility, and keep the local SARIF for the
+          # gate below. These are not alternatives -- the gate reads
+          # `output:` off the runner, the upload is a separate side effect,
+          # and each covers what the other cannot.
+          #
+          # Code Scanning gives the alert UI, per-alert dismissal with a
+          # reason, severity filtering and history. What it does NOT give is
+          # enforcement, for four documented reasons:
+          #
+          #   1. A SARIF run is capped at 5000 results, prioritised by
+          #      severity. This repository's python analysis reports 9076, and
+          #      every upload lands at exactly results=5000 -- so ~4076
+          #      findings are dropped, and because the cap sorts by severity
+          #      the ones dropped are the QUALITY findings, which carry no
+          #      security severity. Those are the 7598 that justify running
+          #      `security-and-quality` at all.
+          #   2. The "Code scanning results" check fails by default only for
+          #      error/critical/high. A new `warning` or `recommendation` --
+          #      most of the quality suite -- publishes and passes.
+          #   3. An alert only gates a pull request when ALL of its reported
+          #      lines are in the diff. The interprocedural case this
+          #      workflow disables diff-informed queries to catch is exactly
+          #      the case whose source and sink are NOT in the diff.
+          #   4. Nonfatal extraction errors and skipped source files do not
+          #      fail the upload; they surface on the tool-status page for
+          #      manual reading.
+          #
+          # The gate below has none of those limits: it reads the full local
+          # SARIF, compares every finding against the committed baseline
+          # regardless of severity or diff, and fails closed on extraction
+          # coverage loss. It runs for every language in the matrix.
+          upload: always
           output: results
       - name: Preserve SARIF for finding triage
         if: ${{ always() }}
@@ -104,4 +241,5 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
       - name: Fail on new CodeQL findings or missing SARIF
+        # Unconditional: every language in the matrix is baseline-compared.
         run: python scripts/youtab/codeql_sarif_gate.py results scripts/youtab/codeql_baselines/${{ matrix.language }}.json changed-files.bin

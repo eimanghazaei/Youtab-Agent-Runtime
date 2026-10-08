@@ -56,7 +56,159 @@ import os
 import re
 import sys
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+
+#: Everything that varies per analysed language, in one place.
+#:
+#: Previously these three facts were spread across two scripts as inline
+#: conditionals -- a two-entry dict for the query pack, `"py" if language ==
+#: "python" else "js"` for the extraction diagnostic, and a javascript
+#: extension tuple reached by `language != "python"`. That shape is why
+#: `actions`, `c-cpp` and `rust` could not be baseline-compared at all: every
+#: one of those expressions silently produced the javascript answer for them.
+#:
+#: `queries` and `diagnostic` are read off the real SARIF of each leg, not
+#: guessed:
+#:
+#:     actions  codeql/actions-queries  actions/diagnostics/successfully-extracted-files
+#:     c-cpp    codeql/cpp-queries      cpp/diagnostics/...     (note: cpp, not c-cpp)
+#:     rust     codeql/rust-queries     rust/diagnostics/...
+#:
+#: `extracted` decides which CHANGED files must appear in the run's extraction
+#: inventory. Over-claiming here turns an unrelated edit into a hard gate
+#: failure, so each predicate is scoped to what that extractor actually reads:
+#: the actions extractor takes workflow and composite-action YAML, not every
+#: `.yaml` in the tree.
+#: CVSS-style bands, matching how Code Scanning labels `security-severity`.
+#: `None` means the rule carries no security severity at all -- a QUALITY
+#: finding, which is the bulk of `security-and-quality` and is deliberately
+#: not budgeted here.
+SEVERITY_BANDS: tuple[tuple[str, float], ...] = (
+    ("critical", 9.0),
+    ("high", 7.0),
+    ("medium", 4.0),
+    ("low", 0.0),
+)
+
+
+def severity_band(value: object) -> str | None:
+    """The band a rule's ``security-severity`` falls in, or None for quality."""
+    if value is None:
+        return None
+    try:
+        score = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    for name, floor in SEVERITY_BANDS:
+        if score >= floor:
+            return name
+    return "low"
+
+
+def rule_severities(run: dict) -> dict[str, object]:
+    """``{rule id: security-severity}`` across every query pack in the run."""
+    out: dict[str, object] = {}
+    for extension in (run.get("tool") or {}).get("extensions") or []:
+        for rule in extension.get("rules") or []:
+            if isinstance(rule.get("id"), str):
+                out[rule["id"]] = (rule.get("properties") or {}).get(
+                    "security-severity"
+                )
+    return out
+
+
+def count_by_band(run: dict) -> dict[str, int]:
+    """Findings per severity band for one CodeQL run.
+
+    Counted off the RESULTS rather than the baseline's key map, because the
+    budget has to be comparable across a baseline refresh -- that is the whole
+    point of it. Suppressed results are skipped the same way the finding
+    inventory skips them.
+    """
+    severities = rule_severities(run)
+    counts: dict[str, int] = {name: 0 for name, _ in SEVERITY_BANDS}
+    counts["security"] = 0
+    for result in run.get("results") or []:
+        if any(item.get("status") == "accepted"
+               for item in result.get("suppressions", [])):
+            continue
+        band = severity_band(severities.get(result.get("ruleId")))
+        if band is None:
+            continue
+        counts[band] += 1
+        counts["security"] += 1
+    return counts
+
+
+LANGUAGES: dict[str, dict[str, object]] = {
+    "python": {
+        "queries": "codeql/python-queries",
+        "diagnostic": "py/diagnostics/successfully-extracted-files",
+        "extracted": lambda name: name.endswith(".py"),
+    },
+    "javascript-typescript": {
+        "queries": "codeql/javascript-queries",
+        "diagnostic": "js/diagnostics/successfully-extracted-files",
+        "extracted": lambda name: (
+            name.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+                           ".html", ".yaml", ".yml"))
+            or PurePosixPath(name).name in ("package.json", "manifest.json")
+            or (PurePosixPath(name).name.startswith("tsconfig")
+                and name.endswith(".json"))
+        ),
+    },
+    "actions": {
+        "queries": "codeql/actions-queries",
+        "diagnostic": "actions/diagnostics/successfully-extracted-files",
+        # EXACTLY the extractor's supported paths:
+        # `.github/workflows/*.y{a,}ml` and `**/action.y{a,}ml`. Nothing else.
+        #
+        # `.github/` as the prefix was too broad and would have blocked valid
+        # pull requests. Measured against this repository's own tracked files
+        # and the actions extraction inventory:
+        #
+        #     .github/workflows/codeql.yml               extracted
+        #     .github/workflows/youtab-ci.yml            extracted
+        #     .github/actions/*/action.yml   (4 files)   extracted
+        #     .github/dependabot.yml                     NOT extracted
+        #     .github/ISSUE_TEMPLATE/*.yml   (4 files)   NOT extracted
+        #
+        # Those last five are real, tracked, and routinely edited --
+        # `dependabot.yml` especially. Under the old prefix, touching any one
+        # of them made the changed-file check demand it from an inventory
+        # CodeQL never puts it in, so the gate exited 2 and blocked the pull
+        # request with "CodeQL did not extract changed source files". A
+        # required check failing on a file the extractor does not read is a
+        # self-inflicted outage, which is exactly the over-claiming this
+        # predicate was supposed to avoid.
+        "extracted": lambda name: (
+            (name.startswith(".github/workflows/")
+             and name.count("/") == 2
+             and name.endswith((".yml", ".yaml")))
+            or PurePosixPath(name).name in ("action.yml", "action.yaml")
+        ),
+    },
+    "c-cpp": {
+        "queries": "codeql/cpp-queries",
+        "diagnostic": "cpp/diagnostics/successfully-extracted-files",
+        # The full documented set. `.h++` was missing while `.c++` was
+        # present, which was an oversight rather than a decision: a newly
+        # added `.h++` header that CodeQL silently skipped would not have been
+        # demanded by the changed-file check, and with the existing
+        # translation unit still extracted the aggregate coverage threshold
+        # stays green, so the miss would not surface anywhere.
+        "extracted": lambda name: name.endswith(
+            (".c", ".cc", ".cpp", ".cxx", ".c++",
+             ".h", ".hh", ".hpp", ".hxx", ".h++")
+        ),
+    },
+    "rust": {
+        "queries": "codeql/rust-queries",
+        "diagnostic": "rust/diagnostics/successfully-extracted-files",
+        "extracted": lambda name: name.endswith(".rs"),
+    },
+}
 
 # Rules whose result identity is not stable under unrelated edits, because the
 # defect is a graph property reported at each participating import statement.
@@ -168,6 +320,9 @@ def inspect(directory: Path, baseline_path: Path | None = None,
 
     current: Counter[str] = Counter()
     details: dict[str, tuple[str, str, int, str]] = {}
+    # Hoisted so the summary after the try block can report them; set inside.
+    band_counts: dict[str, int] = {}
+    band_budget: dict[str, object] = {}
     run_metadata: list[dict] = []
     try:
         for path in paths:
@@ -218,10 +373,8 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             if sum(baseline.values()) != open_total or open_security + open_quality != open_total:
                 raise ValueError(f"{baseline_path}: inconsistent finding totals")
             language = document.get("language")
-            expected_queries = {
-                "python": "codeql/python-queries",
-                "javascript-typescript": "codeql/javascript-queries",
-            }.get(language)
+            spec = LANGUAGES.get(language)
+            expected_queries = spec["queries"] if spec else None
             artifact_count = document.get("artifact_count")
             query_count = document.get("query_count")
             extracted_count = document.get("extracted_count")
@@ -260,8 +413,46 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             queries = (run.get("properties") or {}).get("codeqlConfigSummary", {}).get("queries")
             if queries != [{"type": "builtinSuite", "uses": "security-and-quality"}]:
                 raise ValueError("CodeQL security-and-quality suite was not used")
-            if len(run.get("artifacts", [])) < artifact_count * 0.9:
-                raise ValueError("CodeQL analyzed artifact coverage dropped unexpectedly")
+            # `artifacts` is NOT a coverage metric, and enforcing on it was a
+            # false positive waiting for a CodeQL upgrade. It arrived:
+            #
+            #   baseline (bundle 2.2x)  artifacts 6735, extracted 2932
+            #   this run (bundle 2.27.1) artifacts 2932, extracted 2932
+            #
+            # Zero source files were lost -- the extraction inventories are
+            # identical set-for-set, and the run reported the same 110
+            # findings -- but `artifacts` fell 56% and failed the 90% floor,
+            # so `CodeQL analyze (javascript-typescript)` went red on a tree
+            # with no regression in it. In 2.27.1 the index holds exactly the
+            # extracted set; before, it also carried ~3803 entries that were
+            # referenced but never extracted.
+            #
+            # That membership rule is a SARIF serialisation detail of the
+            # CodeQL release, not a property of the analysis, so it cannot
+            # carry a fail-closed gate across a version bump. The enforcing
+            # coverage check is the extraction inventory below, which is the
+            # defined quantity -- the files CodeQL reports it SUCCESSFULLY
+            # EXTRACTED, via `*/diagnostics/successfully-extracted-files` --
+            # and it is strictly the stronger of the two: the changed-files
+            # check beneath it also requires every edited source file to
+            # appear in that set, which no count of `artifacts` would catch.
+            #
+            # Kept as a reported signal rather than deleted, because a real
+            # collapse here is still worth seeing in the log next to the
+            # number that does gate -- and ONE case stays fatal: an index that
+            # is entirely EMPTY against a baseline that recorded entries. That
+            # is not a release listing a different set, it is a SARIF carrying
+            # no artifact index at all, which no complete run produces. 2.27.1
+            # still lists 2932 of them; the degenerate case is a malformed or
+            # truncated artifact and must not be allowed to clear a baseline.
+            artifact_now = len(run.get("artifacts", []))
+            if artifact_count > 0 and artifact_now == 0:
+                raise ValueError(
+                    "CodeQL SARIF carries an empty `artifacts` index against a baseline "
+                    f"recording {artifact_count}. A complete run always lists the files it "
+                    "analyzed, so this is a truncated or malformed artifact rather than a "
+                    "CodeQL version difference."
+                )
             query_sets = [item for item in run["tool"].get("extensions", [])
                           if item.get("name") == expected_queries]
             if len(query_sets) != 1 or len(query_sets[0].get("rules", [])) < query_count:
@@ -269,34 +460,105 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             actual_rules = {rule.get("id") for rule in query_sets[0]["rules"]}
             if not set(required_rules).issubset(actual_rules):
                 raise ValueError("CodeQL required query identities are missing")
-            diagnostic = ("py" if language == "python" else "js") + "/diagnostics/successfully-extracted-files"
+            diagnostic = spec["diagnostic"]
             extracted = {
                 item["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
                 for invocation in run["invocations"]
                 for item in invocation.get("toolExecutionNotifications", [])
                 if (item.get("descriptor") or {}).get("id") == diagnostic and item.get("locations")
             }
+            # THE enforcing coverage check. Same proportional shape the
+            # `artifacts` check used to have, on a metric that means
+            # something: a 10% drop in successfully-extracted source files is
+            # a partial analysis however healthy the invocation claims to be.
             if len(extracted) < extracted_count * 0.9:
-                raise ValueError("CodeQL source extraction coverage dropped unexpectedly")
+                raise ValueError(
+                    f"CodeQL source extraction coverage dropped unexpectedly: "
+                    f"{len(extracted)} files extracted against {extracted_count} in the "
+                    f"baseline ({len(set(baseline_extracted_paths) - extracted)} baselined "
+                    f"files absent). Below 90% this is a partial analysis, not a tree that "
+                    f"shrank -- re-run before touching the baseline."
+                )
+            if artifact_now < extracted_count * 0.9:
+                # Reported, never fatal -- see the note above the assignment.
+                print(
+                    f"NOTE: the SARIF `artifacts` index lists {artifact_now} entries "
+                    f"against {artifact_count} in the baseline, while source extraction is "
+                    f"intact at {len(extracted)}/{extracted_count}. The index's membership "
+                    f"rule changes between CodeQL releases, so this is expected after a "
+                    f"bundle bump and is not enforced."
+                )
             if changed_files_path is not None:
                 changed = {name.decode("utf-8").replace("\\", "/") for name in
                            changed_files_path.read_bytes().split(b"\0") if name}
-                js_extensions = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
-                                 ".html", ".yaml", ".yml")
+                is_source = spec["extracted"]
                 missing = sorted(
                     name for name in changed
-                    if Path(name).exists() and (
-                        name in baseline_extracted_paths or
-                        (language == "python" and name.endswith(".py")) or
-                        (language != "python" and (
-                            name.endswith(js_extensions) or
-                            Path(name).name in ("package.json", "manifest.json") or
-                            Path(name).name.startswith("tsconfig") and name.endswith(".json")
-                        ))
-                    ) and name not in extracted
+                    if Path(name).exists()
+                    and (name in baseline_extracted_paths or is_source(name))
+                    and name not in extracted
                 )
                 if missing:
                     raise ValueError(f"CodeQL did not extract changed source files: {missing[:10]}")
+            # ---------------------------------------------------------------
+            # THE SEVERITY RATCHET
+            #
+            # Everything else in this gate answers "did anything get worse
+            # relative to a fixed set of accepted findings". That holds the
+            # line and never moves it, and it is blind in one direction that
+            # matters: a refresh taken after a genuine cleanup can admit a NEW
+            # critical finding as accepted debt, because per-key comparison
+            # against the NEW baseline then sees nothing new.
+            #
+            # The budget closes that. It is counted off the RESULTS, so it
+            # survives a baseline refresh, and `regenerate_codeql_baseline.py`
+            # refuses to raise it. The numbers it starts from, measured:
+            #
+            #   python                   5 critical, 1146 high, 221 medium
+            #   javascript-typescript    0 critical,   33 high,  24 medium
+            #   actions / c-cpp / rust   0 critical,    0 high
+            #
+            # The critical budget is the sharp end: 5 for python
+            # (py/full-ssrf and py/partial-ssrf at 9.1), zero everywhere else.
+            # A sixth critical finding anywhere fails this gate and cannot be
+            # regenerated away.
+            budget = document.get("severity_budget")
+            if not isinstance(budget, dict) or not budget:
+                raise ValueError(
+                    f"{baseline_path}: no severity_budget. The ratchet cannot be "
+                    f"dropped by regenerating with an older script -- rebuild the "
+                    f"baseline with scripts/youtab/regenerate_codeql_baseline.py."
+                )
+            observed = count_by_band(run)
+            band_budget, band_counts = budget, observed
+            breaches = sorted(
+                (band, int(budget[band]), observed.get(band, 0))
+                for band in budget
+                if isinstance(budget.get(band), int)
+                and observed.get(band, 0) > int(budget[band])
+            )
+            if breaches:
+                severities = rule_severities(run)
+                worst = Counter(
+                    str(result.get("ruleId"))
+                    for result in run.get("results") or []
+                    if severity_band(severities.get(result.get("ruleId")))
+                    in {band for band, _b, _o in breaches}
+                )
+                detail = ", ".join(
+                    f"{band} {seen} > {allowed}" for band, allowed, seen in breaches
+                )
+                raise ValueError(
+                    f"CodeQL severity budget exceeded ({detail}). Rules in the "
+                    f"breached bands: "
+                    f"{', '.join(f'{r} ({n})' for r, n in worst.most_common(8))}. "
+                    f"This is a RATCHET: the budget may only go down, and "
+                    f"regenerating the baseline will not raise it. Fix the finding, "
+                    f"or raise the budget deliberately with the regenerator's "
+                    f"--accept-severity-regression and a reason that will be read in "
+                    f"review."
+                )
+
             if baseline and not current:
                 raise ValueError("CodeQL reported zero findings against a nonempty baseline")
             # The all-zero case above is the obvious mismatch. The costly case
@@ -336,23 +598,66 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             for key, count in current.items():
                 current_rule_totals[rule_of(key)] += count
 
-            # Direction 1: the baseline is missing a required query this run
-            # reports in bulk.
-            missing_in_baseline = Counter({
-                rule: count for rule, count in current_rule_totals.items()
-                if rule in required_set and rule not in baseline_rule_totals
-            })
-            # Direction 2: THIS RUN is missing a required query the baseline
-            # records in bulk. Symmetric and just as dangerous: a run that
-            # loses its interprocedural output still reports every syntactic
-            # finding, so `current` is nonempty and the all-zero check above
-            # passes. Those 1272 dataflow findings would land in `absent`,
-            # which is not enforcing -- a partial scanner failure would score
-            # a GREEN security gate. Fail closed on it instead.
-            missing_in_current = Counter({
-                rule: count for rule, count in baseline_rule_totals.items()
-                if rule in required_set and rule not in current_rule_totals
-            })
+            # PER-RULE DEFICITS, not "the rule vanished entirely".
+            #
+            # Measuring only rules whose count reached ZERO left the largest
+            # hole this check has had. A degraded analysis that retains even
+            # ONE result per query has no fully-missing rule at all, so
+            # nothing was suspect and every lost finding filed as
+            # non-enforcing `absent`. Measured on the real baselines, a run
+            # keeping one result per rule loses:
+            #
+            #     python                 9009 of 9076   (99.3%)
+            #     javascript-typescript    87 of  110   (79.1%)
+            #
+            # and the gate returned 0 for both. Essentially the whole
+            # analysis could evaporate and the security gate would pass.
+            #
+            # Comparing per-rule counts subsumes the old test -- a vanished
+            # rule is just a deficit equal to its whole count -- and catches
+            # partial loss, which is what a real degradation looks like.
+            deficits_in_current: Counter[str] = Counter()      # baseline had more
+            unrecorded_in_baseline: Counter[str] = Counter()   # baseline has NONE
+            for rule in required_set:
+                was = baseline_rule_totals.get(rule, 0)
+                now = current_rule_totals.get(rule, 0)
+                if was > now:
+                    deficits_in_current[rule] = was - now
+                elif now > was and was == 0:
+                    # ONLY when the baseline recorded the query at ZERO.
+                    #
+                    # This direction used to take ANY positive delta as
+                    # evidence that the baseline was captured under
+                    # diff-informed analysis, and that made it fire on
+                    # genuine regressions. Adding 13 `js/log-injection`
+                    # findings to the 110-finding javascript baseline is 13
+                    # >= max(10, 11), so a real new-finding regression came
+                    # out of this branch as exit 2 "baseline under-records"
+                    # -- a message that names rebuilding the baseline as a
+                    # legitimate response. Rebuilding it would have accepted
+                    # all 13 as reviewed debt. The gate would have talked the
+                    # reader into laundering the exact thing it exists to
+                    # catch.
+                    #
+                    # A count delta cannot distinguish the two cases, so this
+                    # branch no longer tries. It now requires the structural
+                    # fingerprint of diff-informed clipping instead: the
+                    # baseline holding a required query at ZERO while this
+                    # run reports it in volume. That is what the original bug
+                    # actually looked like -- 13 taint-tracking queries, all
+                    # in `required_rules`, all recorded as 0, against 1272
+                    # measured on main. A query at zero is not a baseline
+                    # that under-counts; it is a baseline that never saw the
+                    # query run.
+                    #
+                    # Everything else -- more findings on a rule the baseline
+                    # already populates -- is an ordinary new finding and
+                    # falls through to the `new` comparison below, which
+                    # prints each location and exits 1. Less precise in the
+                    # ambiguous case, and that is the right trade: exit 1
+                    # with locations is a safe diagnosis, exit 2 with
+                    # "consider regenerating" is not.
+                    unrecorded_in_baseline[rule] = now
 
             # The volume threshold is PROPORTIONAL, not absolute. An absolute
             # floor silently disables this check for whichever language has
@@ -387,30 +692,70 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             def coverage_breach(suspect: Counter[str], total: int) -> bool:
                 return sum(suspect.values()) >= max(10, -(-total * 10 // 100))
 
-            for label, suspect, total, explanation in (
-                ("baseline under-records", missing_in_baseline,
+            # Computed BEFORE any coverage check can abort, because the two
+            # can happen in the same scan and the coverage path used to hide
+            # the regression.
+            #
+            # The case: a legitimate cleanup removes 10% or more of the
+            # baseline, which trips `THIS RUN under-reports`, while the same
+            # scan also introduces a new finding. The raise happened before
+            # `new` was computed, so no new-finding location was ever printed
+            # and the message offered baseline regeneration as a valid
+            # response -- and regenerating from that artifact writes the new
+            # finding in as reviewed debt. Same failure mode as taking a
+            # positive delta for an incomplete baseline, reached from the
+            # other direction.
+            #
+            # So the new findings are printed with the coverage error, and the
+            # message states outright that regeneration is not available while
+            # any exist.
+            new_keys = current - baseline
+
+            for label, quantity, suspect, total, explanation, remedy in (
+                ("the baseline records NOTHING for",
+                 "{n} required queries that this run reports {k} times",
+                 unrecorded_in_baseline,
                  sum(current_rule_totals.values()),
                  "the baseline was captured under CodeQL's diff-informed analysis (the "
                  "pull_request default, which clips dataflow results to the diff) and is "
-                 "being compared against a full analysis"),
-                ("THIS RUN under-reports", missing_in_current,
+                 "being compared against a full analysis -- a required query sitting at "
+                 "zero in the baseline while this run reports it in volume is that "
+                 "signature, not a count that drifted",
+                 "or the CodeQL release in use ADDED these queries after the baseline was "
+                 "captured, so the baseline predates them -- the one case where rebuilding "
+                 "it from a complete run is the right move"),
+                ("THIS RUN under-reports",
+                 "{n} required queries by {k} findings",
+                 deficits_in_current,
                  sum(baseline_rule_totals.values()),
                  "this run lost the output of queries the baseline records, which is what a "
-                 "partially failed analysis or a re-enabled diff-informed run looks like"),
+                 "partially failed analysis or a re-enabled diff-informed run looks like",
+                 "or those queries really were remediated in full -- the one case where "
+                 "rebuilding the baseline from a complete run is the right move"),
             ):
                 if coverage_breach(suspect, total):
                     worst = ", ".join(
                         f"{rule} ({count})" for rule, count in suspect.most_common(5)
                     )
+                    if new_keys:
+                        for key in list(new_keys.elements())[:100]:
+                            rule, file, line, message = details[key]
+                            print(f"{file}:{line}: {rule}: {message[:300]}", file=sys.stderr)
+                        remedy = (
+                            f"BUT NOT BY REGENERATING: this run also introduces "
+                            f"{sum(new_keys.values())} NEW finding(s), printed above. A "
+                            f"refresh would record every one of them as reviewed debt, so "
+                            f"fix or triage those first and re-run; the coverage question "
+                            f"is answerable only against a run with no regression in it"
+                        )
                     raise ValueError(
-                        f"{label} {len(suspect)} required queries accounting for "
-                        f"{sum(suspect.values())} findings ({worst}). Two causes look "
+                        f"{label} "
+                        f"{quantity.format(n=len(suspect), k=sum(suspect.values()))} "
+                        f"({worst}). Two causes look "
                         f"identical from here and they need opposite responses. Either "
                         f"{explanation} -- check that codeql.yml still sets "
                         f"CODEQL_ACTION_DIFF_INFORMED_QUERIES=false and that every "
-                        f"invocation completed -- or those queries really were remediated "
-                        f"in full, which is the one case where rebuilding the baseline from "
-                        f"a complete run is the right move. Read the findings before you "
+                        f"invocation completed -- {remedy}. Read the findings before you "
                         f"decide: a refresh accepts every one of them as reviewed debt."
                     )
     except (OSError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
@@ -451,6 +796,22 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             f"baseline as accepted. Green means no new findings were added, NOT that the "
             f"tree is clean. This number must only ever go down."
         )
+    # The band breakdown, printed on PASS as well as failure. "9076 open" hides
+    # whether any of it is critical; this does not. The budget line is what a
+    # reader needs to see trending downward over time.
+    if band_counts:
+        shown = ", ".join(
+            f"{band} {band_counts.get(band, 0)}"
+            + (f"/{band_budget[band]}" if isinstance(band_budget.get(band), int) else "")
+            for band, _floor in SEVERITY_BANDS
+            if band_counts.get(band, 0) or isinstance(band_budget.get(band), int)
+        )
+        print(f"SEVERITY: {shown}  (counts/budget; the budget may only go down)")
+        if band_counts.get("critical"):
+            print(
+                f"  {band_counts['critical']} CRITICAL finding(s) are accepted debt in "
+                f"this baseline. They are not new, and they are not fixed."
+            )
     if stale:
         # Not a failure -- see the module docstring. Loud, because a baseline
         # carrying findings that no longer exist will silently re-accept them
