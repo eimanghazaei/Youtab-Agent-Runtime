@@ -354,15 +354,48 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             # Comparing per-rule counts subsumes the old test -- a vanished
             # rule is just a deficit equal to its whole count -- and catches
             # partial loss, which is what a real degradation looks like.
-            deficits_in_current: Counter[str] = Counter()   # baseline had more
-            deficits_in_baseline: Counter[str] = Counter()  # this run has more
+            deficits_in_current: Counter[str] = Counter()      # baseline had more
+            unrecorded_in_baseline: Counter[str] = Counter()   # baseline has NONE
             for rule in required_set:
                 was = baseline_rule_totals.get(rule, 0)
                 now = current_rule_totals.get(rule, 0)
                 if was > now:
                     deficits_in_current[rule] = was - now
-                elif now > was:
-                    deficits_in_baseline[rule] = now - was
+                elif now > was and was == 0:
+                    # ONLY when the baseline recorded the query at ZERO.
+                    #
+                    # This direction used to take ANY positive delta as
+                    # evidence that the baseline was captured under
+                    # diff-informed analysis, and that made it fire on
+                    # genuine regressions. Adding 13 `js/log-injection`
+                    # findings to the 110-finding javascript baseline is 13
+                    # >= max(10, 11), so a real new-finding regression came
+                    # out of this branch as exit 2 "baseline under-records"
+                    # -- a message that names rebuilding the baseline as a
+                    # legitimate response. Rebuilding it would have accepted
+                    # all 13 as reviewed debt. The gate would have talked the
+                    # reader into laundering the exact thing it exists to
+                    # catch.
+                    #
+                    # A count delta cannot distinguish the two cases, so this
+                    # branch no longer tries. It now requires the structural
+                    # fingerprint of diff-informed clipping instead: the
+                    # baseline holding a required query at ZERO while this
+                    # run reports it in volume. That is what the original bug
+                    # actually looked like -- 13 taint-tracking queries, all
+                    # in `required_rules`, all recorded as 0, against 1272
+                    # measured on main. A query at zero is not a baseline
+                    # that under-counts; it is a baseline that never saw the
+                    # query run.
+                    #
+                    # Everything else -- more findings on a rule the baseline
+                    # already populates -- is an ordinary new finding and
+                    # falls through to the `new` comparison below, which
+                    # prints each location and exits 1. Less precise in the
+                    # ambiguous case, and that is the right trade: exit 1
+                    # with locations is a safe diagnosis, exit 2 with
+                    # "consider regenerating" is not.
+                    unrecorded_in_baseline[rule] = now
 
             # The volume threshold is PROPORTIONAL, not absolute. An absolute
             # floor silently disables this check for whichever language has
@@ -397,30 +430,40 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             def coverage_breach(suspect: Counter[str], total: int) -> bool:
                 return sum(suspect.values()) >= max(10, -(-total * 10 // 100))
 
-            for label, suspect, total, explanation in (
-                ("baseline under-records", deficits_in_baseline,
+            for label, quantity, suspect, total, explanation, remedy in (
+                ("the baseline records NOTHING for",
+                 "{n} required queries that this run reports {k} times",
+                 unrecorded_in_baseline,
                  sum(current_rule_totals.values()),
                  "the baseline was captured under CodeQL's diff-informed analysis (the "
                  "pull_request default, which clips dataflow results to the diff) and is "
-                 "being compared against a full analysis"),
-                ("THIS RUN under-reports", deficits_in_current,
+                 "being compared against a full analysis -- a required query sitting at "
+                 "zero in the baseline while this run reports it in volume is that "
+                 "signature, not a count that drifted",
+                 "or the CodeQL release in use ADDED these queries after the baseline was "
+                 "captured, so the baseline predates them -- the one case where rebuilding "
+                 "it from a complete run is the right move"),
+                ("THIS RUN under-reports",
+                 "{n} required queries by {k} findings",
+                 deficits_in_current,
                  sum(baseline_rule_totals.values()),
                  "this run lost the output of queries the baseline records, which is what a "
-                 "partially failed analysis or a re-enabled diff-informed run looks like"),
+                 "partially failed analysis or a re-enabled diff-informed run looks like",
+                 "or those queries really were remediated in full -- the one case where "
+                 "rebuilding the baseline from a complete run is the right move"),
             ):
                 if coverage_breach(suspect, total):
                     worst = ", ".join(
                         f"{rule} ({count})" for rule, count in suspect.most_common(5)
                     )
                     raise ValueError(
-                        f"{label} {len(suspect)} required queries by {sum(suspect.values())} "
-                        f"findings ({worst}). Two causes look "
+                        f"{label} "
+                        f"{quantity.format(n=len(suspect), k=sum(suspect.values()))} "
+                        f"({worst}). Two causes look "
                         f"identical from here and they need opposite responses. Either "
                         f"{explanation} -- check that codeql.yml still sets "
                         f"CODEQL_ACTION_DIFF_INFORMED_QUERIES=false and that every "
-                        f"invocation completed -- or those queries really were remediated "
-                        f"in full, which is the one case where rebuilding the baseline from "
-                        f"a complete run is the right move. Read the findings before you "
+                        f"invocation completed -- {remedy}. Read the findings before you "
                         f"decide: a refresh accepts every one of them as reviewed debt."
                     )
     except (OSError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:

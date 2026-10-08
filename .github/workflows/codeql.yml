@@ -162,14 +162,27 @@ jobs:
           else
             : > changed-files.bin
           fi
+      # BOTH CodeQL steps are pinned to the SAME release, and they have to move
+      # together. Dependabot opened #74 bumping only `init` to v4.38.2 while
+      # `analyze` stayed on v3.37.9; since 3.30.4 the action validates this and
+      # the non-init steps THROW when they load a configuration file generated
+      # by a different version of `init`, so that bump would have failed every
+      # run at `analyze` with no SARIF produced -- a red gate with a cause three
+      # steps away from the symptom.
+      #
+      # v4 rather than the parallel v3.38.2: the v3 and v4 lines are the same
+      # code (both 38.2 releases ship CodeQL bundle 2.27.1 from the same PR);
+      # v4 is the Node.js 24 runtime and v3 is kept on Node 20 for older
+      # self-hosted runners and GHES. These jobs run on github.com-hosted
+      # `ubuntu-latest`, so v4 is the current line here.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
           queries: security-and-quality
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
         with:
           category: "/language:${{ matrix.language }}"
           # BOTH: upload for visibility, and keep the local SARIF for the

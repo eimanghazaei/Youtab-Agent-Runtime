@@ -482,6 +482,66 @@ def test_a_few_genuinely_new_dataflow_findings_are_still_just_new(tmp_path):
     assert inspect(tmp_path, baseline) == 1
 
 
+def test_bulk_new_findings_on_a_populated_rule_stay_in_the_regression_path(tmp_path, capsys):
+    """A real regression must not come out as "the baseline is incomplete".
+
+    This is the hole the count-delta version of the coverage check had. It
+    treated ANY positive per-rule delta as evidence that the baseline had been
+    captured under diff-informed analysis, and the proportional floor is low
+    for a small baseline: against the real 110-finding javascript baseline,
+    13 new `js/log-injection` results clear max(10, 11) and came out as exit 2
+    with a message naming baseline regeneration as a legitimate response.
+    Regenerating would have written all 13 in as reviewed debt.
+
+    So the shape here is a rule the baseline ALREADY populates, gaining a
+    bulk of findings. There is no coverage question -- the query plainly ran
+    on both sides -- so it has to be exit 1, with the locations printed.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash=f"other:{i}"), 1) for i in range(90)]
+        + [(dataflow_finding("py/log-injection", line_hash=f"log:{i}"), 1)
+           for i in range(20)],
+        ["py/sql-injection", *DATAFLOW_RULES],
+    )
+    results = (
+        [finding(line_hash=f"other:{i}") for i in range(90)]
+        + [dataflow_finding("py/log-injection", line_hash=f"log:{i}") for i in range(33)]
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif(results)))
+
+    assert inspect(tmp_path, baseline) == 1
+    captured = capsys.readouterr()
+    assert "13 new" in captured.out, captured.out
+    # The misclassification was not just the exit code -- it was the advice.
+    assert "records NOTHING" not in captured.err, captured.err
+    assert "reviewed debt" not in captured.err, captured.err
+
+
+def test_a_query_absent_from_the_baseline_entirely_is_still_a_coverage_breach(tmp_path):
+    """The fix must not cost the original detection.
+
+    Same volume as the test above, but on a required query the baseline holds
+    at ZERO rather than at 20. That is the structural fingerprint of a
+    diff-informed baseline -- the query never ran on that side -- and it must
+    still refuse to judge (exit 2).
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash=f"other:{i}"), 1) for i in range(90)],
+        ["py/sql-injection", *DATAFLOW_RULES],
+    )
+    results = (
+        [finding(line_hash=f"other:{i}") for i in range(90)]
+        + [dataflow_finding("py/log-injection", line_hash=f"log:{i}") for i in range(13)]
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif(results)))
+
+    assert inspect(tmp_path, baseline) == 2
+
+
 def test_open_security_debt_is_disclosed_on_a_passing_run(tmp_path, capsys):
     """Green must never read as "clean".
 
