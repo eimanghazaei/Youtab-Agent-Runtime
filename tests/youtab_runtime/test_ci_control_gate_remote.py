@@ -207,6 +207,53 @@ def test_a_pull_request_is_judged_against_its_own_head_too(
     assert findings.failures == [], findings.failures
 
 
+def test_a_pull_request_that_removes_a_required_context_is_reported(
+    gate, monkeypatch, tmp_path
+):
+    """Unioning main's tip reintroduced the masking, through a different door.
+
+    A pull request that REMOVES or renames a required job is blocked -- its
+    own run cannot emit that context -- while main's tip still reports the
+    old name. Unioning the two made `required - produced` empty, so the audit
+    passed on a pull request that cannot merge.
+
+    The question is "can the revision under review produce what is
+    required", so on a pull request that revision is the only subject.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    event = tmp_path / "event.json"
+    event.write_text(
+        json.dumps({"pull_request": {"head": {"sha": "feedface"}}}), encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+
+    def run(argv, **_kwargs):
+        joined = " ".join(str(a) for a in argv)
+        if "rulesets" in joined and joined.rstrip().endswith(".id"):
+            return _Result("1\n")
+        if "rulesets/1" in joined:
+            return _Result(json.dumps(ruleset_body(["build", "removed-by-this-pr"])))
+        if joined.rstrip().endswith("repos/owner/repo"):
+            return _Result(json.dumps({"default_branch": "main"}))
+        if "commits?sha=main" in joined:
+            return _Result("cafebabe\n")
+        if "commits/cafebabe/check-runs" in joined:
+            # main still reports the old context
+            return _Result("build\nremoved-by-this-pr\n")
+        if "commits/feedface/check-runs" in joined:
+            # the pull request no longer emits it
+            return _Result("build\n")
+        raise AssertionError("unexpected call: " + joined)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    findings = gate.Findings()
+    gate.check_required_checks(REPO_ROOT, {}, "owner/repo", findings, True)
+
+    assert [(i["condition"], i["where"]) for i in findings.failures] == [
+        ("required check nobody produces", "removed-by-this-pr")
+    ], findings.failures
+
+
 def test_outside_a_pull_request_only_the_tip_is_consulted(gate, monkeypatch):
     """A context neither main nor a pull request produces is still reported."""
     monkeypatch.setenv("GH_TOKEN", "x")

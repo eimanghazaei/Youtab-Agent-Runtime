@@ -292,6 +292,130 @@ def test_main_runs_the_composite_audit(gate, tmp_path, monkeypatch, capsys):
     assert "action.yml" in out, out
 
 
+PR_TARGET = 'name: ci\non:\n  pull_request_target:\npermissions:\n  contents: read\njobs:\n  build:\n    name: build\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\nREF_LINE\n      - name: test\n        run: pytest -q\n'
+
+
+@pytest.mark.parametrize("ref,reported,why", [
+    ("${{ github.head_ref }}", True,
+     "the standard alias, and the one the classic takeover uses"),
+    ("${{ github.event.pull_request.head.sha }}", True, "the explicit head sha"),
+    ("${{ github.event.pull_request.head.ref }}", True, "the explicit head ref"),
+    ("${{ github.event.pull_request.merge_commit_sha }}", True,
+     "the merge commit contains the pull request's code"),
+    ("${{ github.event.pull_request.base.sha }}", False, "the base is trusted"),
+    ("${{ github.base_ref }}", False, "the base alias is trusted"),
+    ("main", False, "a literal branch is not an expression"),
+])
+def test_pull_request_target_checkout_refs_are_allowlisted(
+    gate, tmp_path, ref, reported, why
+):
+    """Allowlist the SAFE shapes; a denylist of spellings always misses one.
+
+    The first version enumerated three head expressions and missed
+    `github.head_ref`, which is the standard alias and is populated on
+    exactly this event -- so the audit passed on the classic takeover. The
+    condition now reports any checkout `ref` that interpolates something
+    which is not a base reference.
+    """
+    body = PR_TARGET.replace(
+        "REF_LINE", "        with:\n          ref: " + ref)
+    write_workflow(tmp_path, "ci.yml", body)
+
+    failed = conditions(gate, tmp_path, checks=[gate.check_pull_request_target])
+    assert ("pull_request_target checks out PR head" in failed) is reported, (
+        ref, why, failed
+    )
+
+
+def test_pull_request_target_head_ref_outside_a_checkout_is_reported(
+    gate, tmp_path
+):
+    """A `run:` step can materialise the head without actions/checkout.
+
+    The structural check reads checkout steps, so this second condition
+    covers the rest of the file -- including `github.head_ref`, which the
+    original list omitted.
+    """
+    body = PR_TARGET.replace(
+        "REF_LINE",
+        "      - name: fetch\n"
+        "        run: git fetch origin ${{ github.head_ref }} && git checkout FETCH_HEAD")
+    write_workflow(tmp_path, "ci.yml", body)
+
+    failed = conditions(gate, tmp_path, checks=[gate.check_pull_request_target])
+    assert "pull_request_target references PR head" in failed, failed
+
+
+def test_the_self_repository_reference_is_exempt_from_pinning(gate, tmp_path):
+    """`$/` is the self-repository reference and carries no `@ref`.
+
+    GitHub documents it as preferred over `./` ("For most cases, use the `$/`
+    syntax shown above instead") and states it "must not include an `@{ref}`
+    suffix". So the pin check saw an empty ref and failed a VALID workflow for
+    not being pinned to a SHA -- a false failure that would have blocked
+    anyone adopting the preferred syntax.
+    """
+    write_workflow(tmp_path, "ci.yml",
+                   HEALTHY + "      - uses: $/.github/actions/retry\n")
+    assert conditions(gate, tmp_path, checks=[gate.check_action_pins]) == []
+
+
+def test_a_nested_local_action_manifest_is_discovered(gate, tmp_path):
+    """Composites live anywhere, and the workflow-side reference is exempt.
+
+    A single-level glob over `.github/actions/*/` missed a composite in
+    `.github/actions/team/deploy/`, while the `./` or `$/` reference to it is
+    exempt from the pin check by design -- so an `@main` dependency inside it
+    was invisible from both directions at once.
+    """
+    nested = tmp_path / ".github" / "actions" / "team" / "deploy"
+    nested.mkdir(parents=True)
+    (nested / "action.yml").write_text(
+        "name: deploy\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: some-org/dangerous@main\n",
+        encoding="utf-8",
+    )
+    # Somewhere else entirely, to prove the walk is not path-shaped.
+    elsewhere = tmp_path / "tools" / "ci"
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "action.yaml").write_text(
+        "name: elsewhere\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: other-org/also-mutable@v1\n",
+        encoding="utf-8",
+    )
+
+    composites = gate.load_composite_actions(tmp_path)
+    found = {p.name: p for p in composites}
+    assert len(composites) == 2, sorted(str(p) for p in composites)
+
+    findings = gate.Findings()
+    gate.check_action_pins(composites, findings)
+    where = " ".join(i["where"] for i in findings.failures)
+    assert "deploy" in where, findings.failures
+    assert "ci" in where, findings.failures
+
+
+def test_vendor_directories_are_not_walked(gate, tmp_path):
+    """The walk must not cost real time on a repository with dependencies."""
+    vendored = tmp_path / "node_modules" / "some-pkg"
+    vendored.mkdir(parents=True)
+    (vendored / "action.yml").write_text(
+        "name: vendored\n"
+        "runs:\n"
+        "  using: composite\n"
+        "  steps:\n"
+        "    - uses: whoever/whatever@main\n",
+        encoding="utf-8",
+    )
+    assert gate.load_composite_actions(tmp_path) == {}
+
+
 def test_missing_permissions_is_reported(gate, tmp_path):
     """No `permissions:` block means the token inherits the repo default."""
     write_workflow(tmp_path, "ci.yml",

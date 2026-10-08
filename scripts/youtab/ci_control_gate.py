@@ -98,15 +98,27 @@ VERSION_COMMENT_RE = re.compile(r"#\s*v?\d+(\.\d+)*")
 #: tj-actions/changed-files compromise was a widely trusted third-party action
 #: whose tags were rewritten, and nothing about the owner changes the argument.
 #:
-#: Only LOCAL actions are exempt: `./.github/actions/x` is this repository's
-#: own content, already covered by whatever protects the default branch, and
-#: its manifest is audited directly (see `load_composite_actions`).
+#: Only LOCAL actions are exempt: this repository's own content, already
+#: covered by whatever protects the default branch, with its manifest audited
+#: directly (see `load_composite_actions`).
+#:
+#: Two spellings, both documented:
+#:   `./path/to/dir`      a path in the checked-out workspace
+#:   `$/path/to/action`   the self repository at the RUNNING commit, which
+#:                        GitHub now prefers ("For most cases, use the `$/`
+#:                        syntax shown above instead") and which must NOT
+#:                        carry an `@{ref}` suffix
+#:
+#: Missing `$/` was not a gap in coverage but a false FAILURE: the reference
+#: has no ref to be a SHA, so the pin check rejected a valid workflow for
+#: "not pinned to a 40-character commit SHA" and would have blocked anyone
+#: adopting the preferred syntax.
 #:
 #: `docker://` used to be exempt too, which skipped the reference before any
 #: validation -- so `docker://image:latest` let upstream change the executed
 #: image with no commit here while the audit stayed green. Container actions
 #: are checked by `_docker_pin_problem` instead.
-PIN_EXEMPT_PREFIXES: tuple[str, ...] = ("./",)
+PIN_EXEMPT_PREFIXES: tuple[str, ...] = ("./", "$/")
 
 #: A container action is immutable only when it names a digest.
 DOCKER_DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
@@ -177,8 +189,33 @@ def load_composite_actions(root: Path) -> dict[Path, dict]:
     """
     import yaml
 
+    #: Directories that never hold this repository's own actions and would
+    #: cost real time to walk.
+    skip = {".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache",
+            ".pytest_cache", "dist", "build", ".youtab", "target", "site-packages"}
+
+    def manifests() -> list[Path]:
+        """Every `action.y{a,}ml` in the repository, at any depth.
+
+        A single-level glob over `.github/actions/*/` missed a composite in a
+        nested directory such as `.github/actions/team/deploy/`, or one kept
+        anywhere else -- GitHub permits same-repository composites in any
+        subfolder. Meanwhile the workflow-side `./` or `$/` reference to it is
+        exempt from the pin check by design, so an `@main` dependency inside
+        an unscanned manifest was invisible to the required gate from both
+        directions at once.
+        """
+        found: list[Path] = []
+        for candidate in root.rglob("action.y*ml"):
+            if any(part in skip for part in candidate.parts):
+                continue
+            if candidate.suffix not in (".yml", ".yaml"):
+                continue
+            found.append(candidate)
+        return sorted(found)
+
     out: dict[Path, dict] = {}
-    for path in sorted(root.glob(".github/actions/*/action.y*ml")):
+    for path in manifests():
         try:
             loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
         except Exception as exc:  # noqa: BLE001 - an unreadable manifest is a failure
@@ -326,24 +363,80 @@ def check_permissions(workflows: dict[Path, dict], f: Findings) -> None:
                        "the workflow actually needs")
 
 
+#: Expressions that resolve to the BASE of a pull request, which is the
+#: repository's own trusted code and therefore safe to check out under
+#: `pull_request_target`.
+SAFE_PR_TARGET_REFS = ("github.event.pull_request.base.sha",
+                       "github.event.pull_request.base.ref",
+                       "github.base_ref",
+                       "github.sha",
+                       "github.ref")
+
+
 def check_pull_request_target(workflows: dict[Path, dict], f: Findings) -> None:
-    """Condition 6: the standard CI takeover."""
-    head_refs = ("github.event.pull_request.head.sha",
-                 "github.event.pull_request.head.ref",
-                 "github.event.pull_request.merge_commit_sha")
+    """Condition 6: the standard CI takeover.
+
+    Allowlists the SAFE shapes rather than enumerating dangerous ones. The
+    first version listed three spellings of the pull request's head and
+    missed `github.head_ref` -- the standard alias, and the one the classic
+    takeover actually uses -- which is the trouble with a denylist of
+    expressions: the next spelling is always missing. GitHub keeps several,
+    and `github.head_ref` is populated on exactly these events.
+
+    So a checkout under `pull_request_target` is reported unless its `ref` is
+    one of three safe things: absent (the action checks out the BASE by
+    default, which is the whole reason `pull_request_target` is usable at
+    all), a literal with no expression in it, or an expression naming the
+    base.
+    """
     for path, workflow in workflows.items():
         if "__error__" in workflow:
             continue
         if "pull_request_target" not in triggers_of(workflow):
             continue
+
+        for job_key, job in (workflow.get("jobs") or {}).items():
+            for step in steps_of(job):
+                uses = str(step.get("uses") or "")
+                if not uses.startswith("actions/checkout"):
+                    continue
+                ref = str(((step.get("with") or {}).get("ref")) or "")
+                if not ref:
+                    continue                      # defaults to the base
+                if "${{" not in ref:
+                    continue                      # a literal branch or tag
+                if any(safe in ref for safe in SAFE_PR_TARGET_REFS):
+                    continue
+                f.fail(
+                    "pull_request_target checks out PR head", f"{path}:{job_key}",
+                    f"the workflow triggers on `pull_request_target` and checks out "
+                    f"`ref: {ref}`, which is not a base reference, so it runs the "
+                    f"pull request's own code with a write token and repository "
+                    f"secrets. Omit `ref` to take the base, or name "
+                    f"`github.event.pull_request.base.sha` explicitly.",
+                )
+
+        # A checkout is the usual vehicle but not the only one: a `run:` step
+        # can fetch and check out the head itself. This catches the head
+        # expressions anywhere else in the file, including `github.head_ref`,
+        # which the earlier list omitted.
         text = path.read_text(encoding="utf-8")
-        hit = next((r for r in head_refs if r in text), None)
-        if hit:
+        elsewhere = ("github.head_ref",
+                     "github.event.pull_request.head.sha",
+                     "github.event.pull_request.head.ref",
+                     "github.event.pull_request.merge_commit_sha")
+        hit = next((r for r in elsewhere if r in text), None)
+        if hit and not any(
+            i["condition"] == "pull_request_target checks out PR head"
+            and i["where"].startswith(str(path))
+            for i in f.items
+        ):
             f.fail(
-                "pull_request_target checks out PR head", str(path),
+                "pull_request_target references PR head", str(path),
                 f"the workflow triggers on `pull_request_target` and references "
-                f"`{hit}`, which runs the pull request's own code with a write token "
-                f"and repository secrets",
+                f"`{hit}` outside a checkout step; anything that materialises the "
+                f"pull request's own code here runs it with a write token and "
+                f"repository secrets",
             )
 
 
@@ -662,10 +755,26 @@ def check_required_checks(root: Path, workflows: dict[Path, dict],
     # still looked produced. These two are both CURRENT states: what main
     # does now, and what the change under review proposes. A context that
     # neither produces is genuinely unproducible, which is the condition.
-    revisions = [tip]
+    # ONE revision, and on a pull request it is the pull request's own head.
+    #
+    # Unioning it with main's tip looked safer and was not: a pull request
+    # that REMOVES or renames a required job is blocked -- its own run cannot
+    # emit that context -- while main's tip still reports the old name, so
+    # `required - produced` came out empty and the audit passed on a pull
+    # request that cannot merge. That is the same masking as the historical
+    # union, reached through a different door.
+    #
+    # The question this condition answers is "can the revision under review
+    # produce what is required", so the revision under review is the only one
+    # that can answer it. Outside a pull request there is no such revision and
+    # the default-branch tip is the subject.
+    #
+    # Timing is the one cost: the gate runs inside `python-security`, so a
+    # sibling job's context must already be registered. It is -- GitHub
+    # creates a check run when a job is QUEUED, and `observed_contexts` keys
+    # on presence rather than conclusion, so an `in_progress` leg counts.
     pr_head = _pull_request_head_sha()
-    if pr_head and pr_head != tip:
-        revisions.append(pr_head)
+    revisions = [pr_head] if pr_head else [tip]
     produced: set[str] = set()
     for revision in revisions:
         produced |= observed_contexts(repo, revision)
@@ -683,9 +792,9 @@ def check_required_checks(root: Path, workflows: dict[Path, dict],
             f"the ruleset requires this context and no check run with that exact name "
             f"was reported on "
             f"{', '.join(r[:9] for r in revisions)} "
-            f"({default_branch} tip"
-            + (" and this pull request's head" if len(revisions) > 1 else "")
-            + f"), so every pull request waits on it forever. GitHub matches required "
+            + ("(this pull request's head)" if pr_head
+               else f"({default_branch} tip)")
+            + f", so every pull request waits on it forever. GitHub matches required "
             f"checks on the reported JOB name -- a job with no `name` has its matrix "
             f"values appended, and a job with a constant `name` has the whole matrix "
             f"entry appended",
