@@ -1671,7 +1671,10 @@ def interactive_setup() -> None:
     print()
 
     try:
-        from youtab_agent_cli.config import get_env_var, set_env_var
+        from youtab_agent_cli.config import (
+            get_env_value as get_env_var,
+            save_env_value as set_env_var,
+        )
     except ImportError:
         print("youtab_agent_cli.config not available; set LINE_* vars manually in ~/.youtab-agent-runtime/.env")
         return
