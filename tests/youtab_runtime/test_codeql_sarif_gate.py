@@ -744,3 +744,60 @@ def test_remediating_one_whole_rule_is_not_a_coverage_breach(tmp_path):
     (tmp_path / "python.sarif").write_text(json.dumps(document))
 
     assert inspect(tmp_path, baseline) == 0
+
+
+# ---------------------------------------------------------------------------
+# Coverage metadata is DERIVED from the artifact, so a partial SARIF that
+# still marks its invocation successful yields zeros for it. The gate requires
+# every count positive, so such a baseline fails EVERY later run with the
+# cause three steps removed from the symptom. Refuse at generation time.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field,mutate,expected", [
+    (
+        "artifact_count",
+        lambda run: run.__setitem__("artifacts", []),
+        "artifact_count",
+    ),
+    (
+        "extracted_count",
+        lambda run: run["invocations"][0].__setitem__("toolExecutionNotifications", []),
+        "extracted_count",
+    ),
+    (
+        "query_count",
+        lambda run: run["tool"]["extensions"][0].__setitem__("rules", []),
+        "query_count",
+    ),
+])
+def test_regenerator_refuses_missing_coverage_metadata(tmp_path, field, mutate, expected):
+    """Mutation check: drop the coverage validation and each of these writes a
+    baseline that the gate then rejects on every run."""
+    regen = _regen_module()
+    _write_cycle_sarif(tmp_path, mutate)
+    with pytest.raises(SystemExit) as excinfo:
+        regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+    assert expected in str(excinfo.value)
+
+
+def test_regenerator_refuses_a_sarif_with_no_findings(tmp_path):
+    """A baseline of nothing makes the gate's own 'zero findings against a
+    nonempty baseline' guard unreachable, so everything afterwards passes."""
+    regen = _regen_module()
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([])))
+    with pytest.raises(SystemExit) as excinfo:
+        regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+    assert "zero findings" in str(excinfo.value)
+
+
+def test_regenerator_accepts_a_complete_artifact(tmp_path):
+    """The guard above must not reject a healthy artifact."""
+    regen = _regen_module()
+    _write_cycle_sarif(tmp_path)
+    baseline = regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+    assert baseline["artifact_count"] > 0
+    assert baseline["query_count"] > 0
+    assert baseline["extracted_count"] > 0
+    assert baseline["required_rules"]
+    assert baseline["findings"]

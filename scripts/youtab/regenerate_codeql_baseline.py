@@ -172,7 +172,7 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
         if (item.get("descriptor") or {}).get("id") == diagnostic and item.get("locations")
     })
 
-    return {
+    baseline = {
         "schema": 1,
         "language": language,
         "source_run": source_run,
@@ -187,6 +187,53 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
         "extracted_paths": extracted,
         "required_rules": sorted(severities),
     }
+
+    # The coverage metadata is DERIVED from the artifact, so a partial SARIF
+    # that still marks its invocation successful yields zeros here -- no
+    # `artifacts`, no rule descriptors, no extraction notifications -- and
+    # `build()` would return normally and let `main()` overwrite the reviewed
+    # baseline with it.
+    #
+    # The gate requires every one of these counts to be positive and
+    # `required_rules` to be non-empty, so such a baseline is rejected the
+    # moment it is used: "missing analysis coverage metadata". The regeneration
+    # workflow would have turned one degraded artifact into a committed
+    # baseline that fails EVERY subsequent CodeQL job, with the cause three
+    # steps removed from the symptom. Refuse here, where the artifact is still
+    # in hand and the fix is obvious.
+    coverage = {
+        "artifact_count": baseline["artifact_count"],
+        "query_count": baseline["query_count"],
+        "extracted_count": baseline["extracted_count"],
+    }
+    empty = sorted(name for name, value in coverage.items() if value <= 0)
+    if empty:
+        raise SystemExit(
+            f"SARIF reports no {', '.join(empty)} -- the analysis ran but produced no "
+            f"coverage metadata, which is a partial artifact even though its invocation "
+            f"is marked successful. The gate requires all of these to be positive and "
+            f"would reject the resulting baseline on every later run. Re-download from a "
+            f"complete run."
+        )
+    if len(set(baseline["extracted_paths"])) != baseline["extracted_count"]:
+        raise SystemExit(
+            "SARIF extraction inventory contains duplicates -- the gate requires "
+            "extracted_paths to be unique and the same length as extracted_count."
+        )
+    if not baseline["required_rules"]:
+        raise SystemExit(
+            "SARIF carries no rule identities, so required_rules would be empty and the "
+            "gate would reject the baseline. Re-download from a complete run."
+        )
+    if not baseline["findings"]:
+        raise SystemExit(
+            "SARIF reports zero findings. A baseline of nothing would make the gate's "
+            "own 'zero findings against a nonempty baseline' guard unreachable and "
+            "accept anything afterwards; this repository has never had a clean run, so "
+            "treat it as a partial artifact."
+        )
+
+    return baseline
 
 
 def summarize(old: dict | None, new: dict) -> None:
