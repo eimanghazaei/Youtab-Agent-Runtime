@@ -337,20 +337,20 @@ def emit_runtime_step(tool_name: Any, tool_args: Any) -> None:
             return
         from youtab_agent_cli import kanban_db as kb
 
-        # A cosmetic row must never pay cold initialization. `connect()` skips
-        # the cross-process init lock -- up to 10s -- plus header validation,
-        # the integrity probe and additive migrations only once this process
-        # has initialized the path. `busy_timeout_ms` does not bound any of
-        # that; it limits SQLite's own lock waits, which come afterwards. In a
-        # freshly spawned worker the cache is empty, so the first progress row
-        # would sit in front of the tool result on its way to the model and
-        # spend run budget on a row nothing depends on. By the time tools run
-        # the worker's claim and heartbeat have normally warmed it; when they
-        # have not, drop the row.
-        if not kb.initialized_in_this_process():
-            return
 
-        with kb.connect_closing(busy_timeout_ms=_STEP_BUSY_TIMEOUT_MS) as conn:
+        # `only_if_initialized` makes this a no-op on a cold database rather
+        # than paying for initialization. `connect()` skips the cross-process
+        # init lock -- bounded at 10s -- plus header validation, the integrity
+        # probe and additive migrations only once this process has initialized
+        # the path, and `busy_timeout_ms` bounds none of that; it limits
+        # SQLite's own lock waits, which come afterwards. In a freshly spawned
+        # worker the cache is empty, so this row would otherwise sit in front
+        # of the tool result on its way to the model and spend run budget on a
+        # row nothing depends on. By the time tools run, the worker's claim and
+        # heartbeat have normally warmed it; when they have not, the row is
+        # dropped by the ColdDatabase below.
+        with kb.connect_closing(busy_timeout_ms=_STEP_BUSY_TIMEOUT_MS,
+                                only_if_initialized=True) as conn:
             # One statement, not a SELECT fence followed by an INSERT. This
             # append runs in autocommit by design (see above: a cosmetic row
             # must not take write_txn's BEGIN IMMEDIATE retry boundary, which

@@ -1328,6 +1328,23 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # ---------------------------------------------------------------------------
 
 _INITIALIZED_PATHS: set[str] = set()
+
+
+class ColdDatabase(RuntimeError):
+    """Raised by ``connect(only_if_initialized=True)`` on a cold database.
+
+    "Cold" means this process has not initialized the path yet, so a connect
+    would pay the cross-process init lock -- bounded at
+    ``_INIT_LOCK_TIMEOUT_SECONDS``, 10 seconds -- plus header validation, the
+    integrity probe and additive migrations. A ``busy_timeout_ms`` does not
+    bound any of that; it limits SQLite's own lock waits, which come
+    afterwards.
+
+    Only a caller whose write is COSMETIC should ask for this: the
+    managed-run progress feed, whose row nothing depends on and which must
+    never sit in front of a tool result on its way to the model. Everything
+    else wants the initialization to happen.
+    """
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
@@ -2100,6 +2117,7 @@ def connect(
     *,
     board: Optional[str] = None,
     busy_timeout_ms: Optional[int] = None,
+    only_if_initialized: bool = False,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -2136,6 +2154,18 @@ def connect(
     # (no schema/migration writes run), so skip it entirely and just open the
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
+    # `only_if_initialized` is answered HERE, on the resolution this function
+    # already performs, rather than by a caller recomputing it. A separate
+    # probe did recompute it -- `kanban_db_path()` plus `path.resolve()` on the
+    # same config-derived value -- and that second sink is what made the python
+    # CodeQL leg report two new `py/path-injection` findings at severity 7.5.
+    # One resolution, one sink, and the decision lives next to the cache it
+    # reads.
+    if only_if_initialized and resolved not in _INITIALIZED_PATHS:
+        raise ColdDatabase(
+            f"kanban.db ({path.name}) is not initialized in this process; a cosmetic "
+            f"write must not pay cold initialization"
+        )
     if resolved in _INITIALIZED_PATHS:
         conn = _sqlite_connect(path, busy_timeout_ms=busy_timeout_ms)
         try:
@@ -2214,6 +2244,7 @@ def connect_closing(
     *,
     board: Optional[str] = None,
     busy_timeout_ms: Optional[int] = None,
+    only_if_initialized: bool = False,
 ):
     """Open a kanban DB connection and guarantee it is closed on exit.
 
@@ -2234,7 +2265,8 @@ def connect_closing(
     intentionally manage the connection lifetime (tests, long-lived
     callers) continue to work.
     """
-    conn = connect(db_path=db_path, board=board, busy_timeout_ms=busy_timeout_ms)
+    conn = connect(db_path=db_path, board=board, busy_timeout_ms=busy_timeout_ms,
+                   only_if_initialized=only_if_initialized)
     try:
         yield conn
     finally:
@@ -3835,41 +3867,6 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
-
-
-def initialized_in_this_process(
-    db_path: Optional[Path] = None, *, board: Optional[str] = None
-) -> bool:
-    """Whether `connect()` would take its FAST path for this database.
-
-    `connect()` skips the expensive first-open work -- the cross-process init
-    lock, header validation, the integrity probe, schema and additive
-    migrations -- only once this process has initialized the path, which it
-    records in `_INITIALIZED_PATHS`. Before that, a connect can wait up to
-    `_INIT_LOCK_TIMEOUT_SECONDS` (10s) on the init lock and then do real work.
-
-    A `busy_timeout_ms` does not bound any of that: it limits SQLite's own
-    lock waits inside `_sqlite_connect`, which runs after the boundary.
-
-    This exists for callers whose write is COSMETIC and must never be on a
-    tool's critical path -- the managed-run progress feed. A freshly spawned
-    worker has an empty cache, so its first progress row would otherwise pay
-    the whole cold path and delay the tool result reaching the model, burning
-    run budget for a row nothing depends on. Such a caller checks this first
-    and drops the row when the answer is False; by the time tools run, the
-    worker's own claim and heartbeat have normally warmed the cache already.
-
-    Resolution mirrors `connect()` exactly -- same `kanban_db_path` lookup,
-    same `str(path.resolve())` key -- so the two cannot disagree about which
-    database is being asked about.
-    """
-    try:
-        path = db_path if db_path is not None else kanban_db_path(board=board)
-        return str(path.resolve()) in _INITIALIZED_PATHS
-    except OSError:
-        # An unresolvable path is not warm by any definition; the caller drops
-        # the row rather than finding out the expensive way.
-        return False
 
 
 def append_event_if_run_active(

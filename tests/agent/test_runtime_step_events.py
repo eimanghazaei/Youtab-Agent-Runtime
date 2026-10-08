@@ -21,11 +21,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.conversation_loop import (
-    _runtime_step_phrase,
-    _scrub_step_text,
-    emit_runtime_step,
-)
+# Imported as a MODULE as well as by name, deliberately: `_drive_middleware`
+# monkeypatches `emit_runtime_step` on the module object, which cannot be done
+# through the bound name. Both forms of the same module in one file is
+# `py/import-and-import-from`, so the names come off the module here rather
+# than via a second `from` import.
+import agent.conversation_loop as conversation_loop
+
+_runtime_step_phrase = conversation_loop._runtime_step_phrase
+_scrub_step_text = conversation_loop._scrub_step_text
+emit_runtime_step = conversation_loop.emit_runtime_step
 from youtab_agent_cli import kanban_db as kb
 
 # Envelopes used by the ordering tests below. Named rather than inlined so
@@ -305,28 +310,52 @@ def test_a_cold_database_drops_the_step_instead_of_paying_for_init(
     result on its way to the model and spend run budget on a row nothing
     depends on.
 
+    The check lives inside ``connect()``, on the resolution it already
+    performs. A separate probe recomputed it -- ``kanban_db_path()`` plus
+    ``path.resolve()`` on the same config-derived value -- and that second
+    sink made the python CodeQL leg report two new ``py/path-injection``
+    findings at severity 7.5. One resolution, one sink.
+
     Simulated by emptying the per-process cache, which is exactly the state a
-    new worker starts in. The step is dropped and, critically,
-    ``connect_closing`` is never reached -- reaching it at all is what costs
-    the time.
+    new worker starts in.
     """
     task_id = _new_task()
     run_id = _claim(task_id)
     monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
     monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(run_id))
-
-    opened: list = []
-    real_connect = kb.connect_closing
-    monkeypatch.setattr(
-        kb, "connect_closing", lambda **kw: opened.append(kw) or real_connect(**kw)
-    )
     monkeypatch.setattr(kb, "_INITIALIZED_PATHS", set())
 
     emit_runtime_step("web_search", QUERY_ARGS)
 
-    assert opened == [], "a cold database must not even be opened for a progress row"
     monkeypatch.undo()
     assert _runtime_steps(task_id) == []
+
+
+def test_only_if_initialized_refuses_before_any_lock_work(kanban_home, monkeypatch):
+    """The contract the emitter relies on, asserted directly.
+
+    ``emit_runtime_step`` is fail-open and swallows everything, so it cannot
+    distinguish "dropped because cold" from "dropped because of a bug". This
+    pins the mechanism: a cold path raises ``ColdDatabase``, and it raises
+    BEFORE opening a connection -- reaching the connection at all is what
+    costs the time.
+    """
+    opened: list = []
+    monkeypatch.setattr(kb, "_sqlite_connect",
+                        lambda *a, **k: opened.append(a) or (_ for _ in ()).throw(
+                            AssertionError("should not have opened a connection")))
+    monkeypatch.setattr(kb, "_INITIALIZED_PATHS", set())
+
+    with pytest.raises(kb.ColdDatabase):
+        kb.connect(only_if_initialized=True)
+
+    assert opened == []
+
+    # And a warm path still connects normally -- the flag must not break the
+    # ordinary case.
+    monkeypatch.undo()
+    with kb.connect_closing(only_if_initialized=True) as conn:
+        assert conn.execute("SELECT 1").fetchone()[0] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -383,9 +412,9 @@ def _drive_middleware(monkeypatch, *, allows: bool, tool_result: object = "ok"):
     monkeypatch.setattr(
         relay_tools, "execute", lambda _n, args, cb, **_k: (cb(args), args)
     )
-    import agent.conversation_loop as _cl
     monkeypatch.setattr(
-        _cl, "emit_runtime_step", lambda name, args: emitted.append((name, args))
+        conversation_loop, "emit_runtime_step",
+        lambda name, args: emitted.append((name, args)),
     )
 
     ran: list = []
