@@ -487,6 +487,25 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             def coverage_breach(suspect: Counter[str], total: int) -> bool:
                 return sum(suspect.values()) >= max(10, -(-total * 10 // 100))
 
+            # Computed BEFORE any coverage check can abort, because the two
+            # can happen in the same scan and the coverage path used to hide
+            # the regression.
+            #
+            # The case: a legitimate cleanup removes 10% or more of the
+            # baseline, which trips `THIS RUN under-reports`, while the same
+            # scan also introduces a new finding. The raise happened before
+            # `new` was computed, so no new-finding location was ever printed
+            # and the message offered baseline regeneration as a valid
+            # response -- and regenerating from that artifact writes the new
+            # finding in as reviewed debt. Same failure mode as taking a
+            # positive delta for an incomplete baseline, reached from the
+            # other direction.
+            #
+            # So the new findings are printed with the coverage error, and the
+            # message states outright that regeneration is not available while
+            # any exist.
+            new_keys = current - baseline
+
             for label, quantity, suspect, total, explanation, remedy in (
                 ("the baseline records NOTHING for",
                  "{n} required queries that this run reports {k} times",
@@ -513,6 +532,17 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                     worst = ", ".join(
                         f"{rule} ({count})" for rule, count in suspect.most_common(5)
                     )
+                    if new_keys:
+                        for key in list(new_keys.elements())[:100]:
+                            rule, file, line, message = details[key]
+                            print(f"{file}:{line}: {rule}: {message[:300]}", file=sys.stderr)
+                        remedy = (
+                            f"BUT NOT BY REGENERATING: this run also introduces "
+                            f"{sum(new_keys.values())} NEW finding(s), printed above. A "
+                            f"refresh would record every one of them as reviewed debt, so "
+                            f"fix or triage those first and re-run; the coverage question "
+                            f"is answerable only against a run with no regression in it"
+                        )
                     raise ValueError(
                         f"{label} "
                         f"{quantity.format(n=len(suspect), k=sum(suspect.values()))} "

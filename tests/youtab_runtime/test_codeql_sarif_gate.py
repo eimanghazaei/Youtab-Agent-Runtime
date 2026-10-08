@@ -614,6 +614,48 @@ def test_losing_extracted_source_files_still_fails_closed(tmp_path, capsys):
     assert "2000" in message and "2932" in message, message
 
 
+def test_a_coverage_error_still_reports_a_concurrent_new_finding(tmp_path, capsys):
+    """A cleanup and a regression in the same scan must not hide the regression.
+
+    The coverage check aborts before `new = current - baseline` is computed,
+    so when a legitimate cleanup removes 10% or more of the baseline AND the
+    same scan introduces a new finding, the reader saw only "THIS RUN
+    under-reports" plus an invitation to rebuild the baseline. Rebuilding from
+    that artifact writes the new finding in as reviewed debt.
+
+    Here 90 of 100 `py/path-injection` findings are remediated (a real
+    cleanup, over the proportional floor) while one new `py/sql-injection`
+    finding appears. The gate must still refuse (exit 2, the coverage question
+    is genuinely unanswerable), but it must print the new finding and say
+    plainly that regeneration is not the way out.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash="known:1"), 1)]
+        + [(dataflow_finding("py/path-injection", line_hash=f"pi:{i}"), 1)
+           for i in range(100)],
+        ["py/sql-injection", *DATAFLOW_RULES],
+    )
+    results = (
+        [finding(line_hash="known:1"),
+         finding(uri="fresh.py", line_hash="brandnew:1")]          # the regression
+        + [dataflow_finding("py/path-injection", line_hash=f"pi:{i}")
+           for i in range(10)]                                      # 90 remediated
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif(results)))
+
+    assert inspect(tmp_path, baseline) == 2
+    message = capsys.readouterr().err
+    assert "THIS RUN under-reports" in message, message
+    # The new finding's location, not just a count.
+    assert "fresh.py" in message, message
+    assert "NOT BY REGENERATING" in message, message
+    assert "1 NEW finding" in message, message
+    # And the innocent remedy must be gone -- it is what caused the laundering.
+    assert "remediated in full" not in message, message
+
+
 def test_open_security_debt_is_disclosed_on_a_passing_run(tmp_path, capsys):
     """Green must never read as "clean".
 
