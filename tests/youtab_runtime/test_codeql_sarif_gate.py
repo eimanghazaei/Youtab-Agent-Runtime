@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from scripts.youtab.codeql_sarif_gate import finding_key, inspect
+from scripts.youtab.codeql_sarif_gate import finding_keys, inspect
 
 
 def sarif(results):
@@ -38,8 +38,21 @@ def finding(uri="app.py", line_hash="abc:1"):
     }
 
 
+def _accumulate(findings):
+    """Flatten (result, count) pairs into the baseline's key -> count map."""
+    out = {}
+    for result, count in findings:
+        for key in finding_keys(result):
+            out[key] = out.get(key, 0) + count
+    return out
+
+
 def write_baseline(path, findings):
-    total = sum(count for _, count in findings)
+    # Totals come from the EXPANDED key map, not the input pairs: a coalesced
+    # graph result contributes one key per message component, so the two
+    # differ and the gate validates `sum(findings.values()) == open_total`.
+    accumulated = _accumulate(findings)
+    total = sum(accumulated.values())
     path.write_text(json.dumps({
         "schema": 1,
         "source_run": "https://example.test/run/1",
@@ -52,7 +65,9 @@ def write_baseline(path, findings):
         "extracted_count": 1,
         "extracted_paths": ["app.py"],
         "required_rules": ["py/sql-injection"],
-        "findings": {finding_key(result): count for result, count in findings},
+        # One result can yield several keys (CodeQL coalesces graph
+        # diagnostics sharing a location), so accumulate rather than assign.
+        "findings": accumulated,
     }), encoding="utf-8")
 
 
@@ -194,6 +209,8 @@ def test_changed_html_or_yaml_requires_javascript_extraction(tmp_path, monkeypat
 # gate red on every pull request and on main. They are therefore compared as a
 # per-(rule, file) count ceiling instead.
 # ---------------------------------------------------------------------------
+
+NEWLINE = chr(10)
 
 CYCLE_RULE = "py/cyclic-import"
 
@@ -614,3 +631,60 @@ def test_regenerator_refuses_a_head_that_contradicts_sarif_provenance(tmp_path):
 
     # The matching SHA is accepted.
     assert regen.build(tmp_path, "python", "https://example.test/run/1", "b" * 40)
+
+
+def coalesced_cycle_finding(uri="app.py", modules=("pkg.a", "pkg.b"), line_hash="cyc:1"):
+    """One result carrying several diagnostics, as CodeQL emits them.
+
+    CodeQL joins diagnostics that land on the same location into a single
+    result with a newline-separated message. 105 keys in the committed Python
+    baseline were of this shape before they were split per component.
+    """
+    text = NEWLINE.join(
+        f"Import of module [{m}](1) begins an import cycle." for m in modules
+    )
+    return {
+        "ruleId": CYCLE_RULE,
+        "message": {"text": text},
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": uri},
+            "region": {"startLine": 11},
+        }}],
+        "partialFingerprints": {
+            "primaryLocationLineHash": line_hash,
+            "primaryLocationStartColumnFingerprint": "0",
+        },
+    }
+
+
+def test_fixing_one_of_two_coalesced_diagnostics_is_not_a_new_finding(tmp_path):
+    """The survivor of a coalesced pair must not be reported as new.
+
+    Baseline: one result carrying both `pkg.a` and `pkg.b`. Current run: only
+    `pkg.a` remains. Keyed on the joined message the identity would go from
+    `A
+B` to `A`, and `current - baseline` would call the SURVIVING finding
+    new -- blocking the very remediation it is meant to permit, with exactly
+    the phantom churn the module-name scheme exists to remove.
+
+    Per component it is one `absent` and zero `new`, so the fix passes.
+
+    Mutation check: key graph rules on the whole message instead of per
+    component and this goes red.
+    """
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(coalesced_cycle_finding(modules=("pkg.a", "pkg.b")), 1)])
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        cycle_finding(module="pkg.a", line_hash="now:1"),
+    ])))
+    assert inspect(tmp_path, baseline) == 0
+
+
+def test_a_coalesced_pair_gaining_a_third_diagnostic_still_fails(tmp_path):
+    """Splitting per component must not cost regression detection."""
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(coalesced_cycle_finding(modules=("pkg.a", "pkg.b")), 1)])
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        coalesced_cycle_finding(modules=("pkg.a", "pkg.b", "pkg.c"), line_hash="now:1"),
+    ])))
+    assert inspect(tmp_path, baseline) == 1

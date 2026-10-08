@@ -78,8 +78,8 @@ def file_of(key: str) -> str:
     return json.loads(key)[1]
 
 
-def graph_identity(message: str) -> str:
-    """The stable part of a graph-scoped finding's message.
+def graph_identities(message: str) -> list[str]:
+    """The stable identity of each component of a graph-scoped message.
 
     ``py/cyclic-import`` reports ``Import of module [pkg.mod](1) begins an
     import cycle.`` and ``py/import-and-import-from`` reports ``Module
@@ -93,21 +93,35 @@ def graph_identity(message: str) -> str:
     identical eight module names with identical multiplicities while the line
     numbers moved.
     """
-    return re.sub(r"\((\d+)\)", "", message).strip()
+    return [
+        stripped
+        for line in message.split("\n")
+        if (stripped := re.sub(r"\((\d+)\)", "", line).strip())
+    ]
 
 
-def finding_key(result: dict) -> str:
-    """A finding's identity, by rule class.
+def finding_keys(result: dict) -> list[str]:
+    """A finding's identities, by rule class. One result can yield several.
 
     Localized defects are keyed on ``primaryLocationLineHash``, which survives
-    the file moving around them. Graph-scoped rules cannot be: the defect is a
-    property of the module import graph but is reported once per participating
-    import statement, so editing any module in a cycle re-reports every member
-    at a shifted line and the hash changes for a defect that did not. Those are
-    keyed on the module name from the message instead -- stable under line
-    churn, and still distinct when the cycle itself changes, so fixing one
-    cycle and introducing another in the same file is a NEW finding rather than
-    a no-op at an unchanged count.
+    the file moving around them, and yield exactly one key.
+
+    Graph-scoped rules cannot use that hash: the defect is a property of the
+    module import graph but is reported once per participating import
+    statement, so editing any module in a cycle re-reports every member at a
+    shifted line and the hash changes for a defect that did not. They are
+    keyed on the module name from the message instead.
+
+    Those rules also need ONE KEY PER MESSAGE COMPONENT, not one per result.
+    CodeQL coalesces diagnostics that land on the same location into a single
+    result whose message is newline-joined -- 105 keys in the committed Python
+    baseline are of that shape, e.g. one result on
+    `agent/agent_runtime_helpers.py` carrying both `Import of module
+    [providers] …` and `Import of module [youtab_agent_cli.providers] …`.
+    Keyed on the joined string, fixing one of the two would change the
+    identity from `A\nB` to `B`, and the survivor would be reported as NEW --
+    reintroducing exactly the phantom churn this scheme exists to remove. Per
+    component, that same fix is one `absent` and zero `new`.
     """
     location = result["locations"][0]["physicalLocation"]
     uri = location["artifactLocation"]["uri"]
@@ -116,17 +130,33 @@ def finding_key(result: dict) -> str:
         raise ValueError("incomplete finding identity")
 
     if rule in GRAPH_SCOPED_RULES:
-        identity = graph_identity(str((result.get("message") or {}).get("text", "")))
-        if not identity:
+        components = graph_identities(str((result.get("message") or {}).get("text", "")))
+        if not components:
             raise ValueError(f"{rule}: graph-scoped finding carries no message to key on")
-        return json.dumps([rule, uri, identity], separators=(",", ":"))
+        return [json.dumps([rule, uri, c], separators=(",", ":")) for c in components]
 
     fingerprints = result["partialFingerprints"]
     line_hash = fingerprints["primaryLocationLineHash"]
     column = fingerprints["primaryLocationStartColumnFingerprint"]
     if not all(isinstance(value, str) and value for value in (line_hash, column)):
         raise ValueError("incomplete finding identity")
-    return json.dumps([rule, uri, line_hash, column], separators=(",", ":"))
+    return [json.dumps([rule, uri, line_hash, column], separators=(",", ":"))]
+
+
+def finding_key(result: dict) -> str:
+    """The single identity of a result that has exactly one.
+
+    Kept for callers that build one key per result. Raises on a coalesced
+    graph-scoped result rather than silently picking one component, because
+    picking one is the bug `finding_keys` exists to avoid.
+    """
+    keys = finding_keys(result)
+    if len(keys) != 1:
+        raise ValueError(
+            f"{result.get('ruleId')}: result carries {len(keys)} identities; "
+            "use finding_keys()"
+        )
+    return keys[0]
 
 
 def inspect(directory: Path, baseline_path: Path | None = None,
@@ -157,15 +187,15 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                 for result in results:
                     if any(item.get("status") == "accepted" for item in result.get("suppressions", [])):
                         continue
-                    key = finding_key(result)
                     location = result["locations"][0]["physicalLocation"]
-                    details[key] = (
-                        result["ruleId"],
-                        location["artifactLocation"]["uri"],
-                        int(location.get("region", {}).get("startLine") or 0),
-                        str((result.get("message") or {}).get("text", "")),
-                    )
-                    current[key] += 1
+                    for key in finding_keys(result):
+                        details[key] = (
+                            result["ruleId"],
+                            location["artifactLocation"]["uri"],
+                            int(location.get("region", {}).get("startLine") or 0),
+                            str((result.get("message") or {}).get("text", "")),
+                        )
+                        current[key] += 1
 
         open_security = 0
         if baseline_path is None:
@@ -338,7 +368,7 @@ def inspect(directory: Path, baseline_path: Path | None = None,
         print(f"CodeQL SARIF or baseline could not be verified: {exc}", file=sys.stderr)
         return 2
 
-    # One comparison mode. `finding_key` already gives graph-scoped rules an
+    # One comparison mode. `finding_keys` already gives graph-scoped rules an
     # identity that survives line churn (the module name from the message), so
     # they no longer need a per-file count ceiling -- and unlike that ceiling,
     # this still catches a REPLACEMENT: fixing one cycle in a file and

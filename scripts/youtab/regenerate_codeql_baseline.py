@@ -37,7 +37,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from codeql_sarif_gate import finding_key  # noqa: E402  (same directory)
+from codeql_sarif_gate import finding_keys  # noqa: E402  (same directory)
 
 EXPECTED_QUERIES = {
     "python": "codeql/python-queries",
@@ -152,7 +152,11 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
     for result in run["results"]:
         if any(item.get("status") == "accepted" for item in result.get("suppressions", [])):
             continue
-        findings[finding_key(result)] += 1
+        # One result can carry several identities: CodeQL coalesces
+        # graph diagnostics that share a location into one newline-joined
+        # message. See `finding_keys`.
+        for key in finding_keys(result):
+            findings[key] += 1
 
     open_total = sum(findings.values())
     open_security = sum(
