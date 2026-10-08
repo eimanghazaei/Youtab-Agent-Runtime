@@ -364,8 +364,6 @@ def observed_contexts(repo: str, revision: str) -> set[str]:
     waited forever for a context the current revision cannot produce.
     Availability is a property of the current revision.
     """
-    import subprocess
-
     try:
         out = subprocess.run(
             ["gh", "api", f"repos/{repo}/commits/{revision}/check-runs?per_page=100",
@@ -382,9 +380,6 @@ def observed_contexts(repo: str, revision: str) -> set[str]:
 def check_required_checks(root: Path, workflows: dict[Path, dict],
                           repo: str | None, f: Findings, require_remote: bool) -> None:
     """Conditions 1 and 2: the ruleset and the checks that actually run."""
-    import os
-    import subprocess
-
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not token:
         message = ("no GH_TOKEN/GITHUB_TOKEN, so the branch ruleset could not be read. "
