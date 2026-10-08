@@ -1,7 +1,18 @@
-# CodeQL security-and-quality analysis with a reviewed existing-debt baseline.
-# GitHub Code Scanning uploads are unavailable for this repository. The job
-# must fail on a missing SARIF, malformed SARIF, or new unsuppressed finding rather
-# than reporting a green check after an upload/configuration error.
+# CodeQL security-and-quality analysis, uploaded to GitHub Code Scanning.
+#
+# This workflow used to carry a 1.4 MB committed baseline and a custom SARIF
+# gate, because Code Scanning uploads were unavailable on a private repository
+# without Advanced Security. The repository is public now, so uploads are free
+# and that entire workaround is gone -- findings land in the native Code
+# Scanning UI, which has per-alert dismissal with a reason, severity filtering
+# and history that a JSON file in the tree could never provide.
+#
+# Advanced setup rather than GitHub's default setup, deliberately: default
+# setup only offers the `default` and `extended` query suites (the API rejects
+# anything else), and neither runs the QUALITY queries. Those are 7598 of this
+# repository's 9076 findings -- py/empty-except, py/cyclic-import,
+# py/unused-import and the rest. Keeping `security-and-quality` is the whole
+# reason this file still exists.
 name: CodeQL no-new-findings gate
 
 on:
@@ -15,6 +26,9 @@ on:
 permissions:
   contents: read
   actions: read
+  # Required to upload SARIF to Code Scanning. This is the permission that
+  # was pointless while uploads were unavailable.
+  security-events: write
 
 # Diff-informed analysis OFF. This is the single setting that made this gate
 # incoherent, and it is load-bearing -- deleting it silently shrinks every
@@ -92,16 +106,9 @@ jobs:
         uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
         with:
           category: "/language:${{ matrix.language }}"
-          upload: never
-          upload-database: false
-          output: results
-      - name: Preserve SARIF for finding triage
-        if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: codeql-sarif-${{ matrix.language }}-${{ github.sha }}
-          path: results/*.sarif
-          if-no-files-found: warn
-          retention-days: 7
-      - name: Fail on new CodeQL findings or missing SARIF
-        run: python scripts/youtab/codeql_sarif_gate.py results scripts/youtab/codeql_baselines/${{ matrix.language }}.json changed-files.bin
+          # Uploads by default. Code Scanning itself now does the job the
+          # committed baseline was imitating: it tracks which alerts are
+          # already known, which are new on this pull request, and which were
+          # dismissed and why -- and it reports NEW alerts on the pull request
+          # without a baseline file to keep in sync.
+          upload: always

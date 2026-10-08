@@ -10,12 +10,12 @@ and restricts dataflow query results to the lines the pull request touched.
 Two consequences, both of which this repository already paid for:
 
 1. The same tree yields a different finding count per event -- 7701 on a
-   pull request versus 8971 on a push to main -- so a baseline captured
-   under one event is not a valid comparison basis for the other. The
-   committed baseline had been captured from a ``pull_request`` run and
-   recorded zero findings for all 13 interprocedural dataflow queries, so
-   every push to main reported 1272 of them as new. The gate was red on main
-   continuously and was removed from the required checks.
+   pull request versus 8971 on a push to main. The committed baseline this
+   repository used to carry was captured from a ``pull_request`` run and
+   recorded zero findings for all 13 interprocedural dataflow queries, which
+   kept the gate red on main continuously. That baseline is gone now that
+   Code Scanning does the tracking, but the measurement asymmetry it exposed
+   is a property of the setting, not of the baseline.
 
 2. A pull request can introduce a dataflow vulnerability whose source and
    sink lines it does not itself touch. Diff-informed analysis drops that
@@ -101,23 +101,3 @@ def test_codeql_runs_on_push_to_main_and_pull_request(workflow: dict) -> None:
     assert "push" in triggers, "codeql.yml no longer runs on push"
     branches = (triggers.get("push") or {}).get("branches") or []
     assert "main" in branches, f"push trigger does not cover main: {branches!r}"
-
-
-def test_gate_step_still_passes_the_baseline(workflow: dict) -> None:
-    """The analyze job must invoke the gate WITH a baseline argument.
-
-    ``codeql_sarif_gate.py`` accepts a missing baseline (it then compares
-    against an empty one), so dropping the argument would turn every existing
-    finding into a "new" one -- or, read the other way, make the call look
-    fine while comparing against nothing.
-    """
-    steps = (workflow.get("jobs") or {}).get("analyze", {}).get("steps") or []
-    gate_runs = [
-        step["run"] for step in steps
-        if isinstance(step, dict) and "codeql_sarif_gate.py" in (step.get("run") or "")
-    ]
-    assert gate_runs, "the analyze job no longer runs codeql_sarif_gate.py"
-    for run in gate_runs:
-        assert "codeql_baselines" in run, (
-            f"the gate is invoked without a baseline path: {run!r}"
-        )
