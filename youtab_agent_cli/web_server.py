@@ -325,7 +325,12 @@ app.include_router(_memory_oauth_router)
 
 
 def _resolve_session_token() -> str:
-    return os.environ.get("YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
+    # File-backed (YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN_FILE) preferred; the inline
+    # env var is still honoured; otherwise a fresh ephemeral token is minted. The
+    # secret value never has to enter the process environment.
+    from youtab_agent_cli.secret_file import env_or_file
+
+    return env_or_file("YOUTAB_AGENT_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 
 
 _SESSION_TOKEN = _resolve_session_token()
@@ -14129,6 +14134,15 @@ def _clear_skills_prompt_cache() -> None:
 from youtab_agent_cli.web_routers import tools as _tools_routes  # noqa: E402
 
 app.include_router(_tools_routes.router)
+
+# AR-PROD-01: the Agent Runtime product surface (/api/runtime/v1). Service-
+# authenticated (runtime-service dashboard-auth provider) + gateway-forwarded
+# end-user identity; wraps the real kanban run engine. See
+# youtab_agent_cli/web_routers/runtime.py and
+# docs/architecture/AGENT_RUNTIME_CONNECTOR_CONTRACT.md.
+from youtab_agent_cli.web_routers import runtime as _runtime_routes  # noqa: E402
+
+app.include_router(_runtime_routes.router)
 from youtab_agent_cli.web_routers.tools import (  # noqa: E402,F401 — legacy re-exports; tests call these via web_server.<name>
     get_toolsets,
     toggle_toolset,

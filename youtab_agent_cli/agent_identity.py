@@ -23,6 +23,7 @@ that script for why a second roster in this repository would be a bug.
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -32,6 +33,14 @@ _ARTIFACT = Path(__file__).with_name("agent_identity.v1.json")
 # What a Runtime surface shows when no Agent claims the configured engine.
 # Deliberately the product name, not a provider and not a guess.
 GENERIC_AGENT_LABEL = "Youtab Agent"
+
+# The ECO product engine's profile id. The concrete model tag it runs on is
+# deployment-specific infrastructure (the on-prem Ollama serves a private tag
+# that must never be committed here or shown to a user). The generated roster
+# carries a provider-neutral placeholder; a deployment injects the real tag via
+# the protected server-side env below. Unset => the roster's default, unchanged.
+_ECO_PROFILE_ID = "eco.v01"
+_ECO_MODEL_ENV = "YOUTAB_ECO_MODEL"
 
 
 @dataclass(frozen=True)
@@ -97,6 +106,55 @@ def identity_for_profile(profile_id: str | None) -> PublicAgentIdentity | None:
     return _agents_by_id().get(profile_id)
 
 
+@lru_cache(maxsize=1)
+def _binding_by_profile() -> dict[str, tuple[str, str]]:
+    """Invert ``private_binding.by_provider_model`` to ``profile_id -> (provider, model)``.
+
+    The forward map is keyed by the substrate name ``"provider/model"``; the
+    Runtime needs the reverse direction to answer "what does this Agent run on?"
+    without any caller ever touching the two halves of a substrate name. Kept
+    here because this module owns the binding half of the artifact.
+    """
+    out: dict[str, tuple[str, str]] = {}
+    binding = _artifact().get("private_binding", {})
+    for key, profile_id in (binding.get("by_provider_model", {}) or {}).items():
+        if not isinstance(key, str) or not isinstance(profile_id, str) or "/" not in key:
+            continue
+        provider, _, model = key.partition("/")
+        provider, model = provider.strip(), model.strip()
+        if provider and model:
+            # First binding wins if a profile were ever multiply-bound (it isn't).
+            out.setdefault(profile_id, (provider, model))
+    return out
+
+
+def engine_binding_for_profile(profile_id: str | None) -> tuple[str, str] | None:
+    """Resolve an Agent ``profile_id`` to its bound ``(provider, model)``, or ``None``.
+
+    The inverse of :func:`identity_for_engine`: given the Agent, return the
+    substrate it runs on. ``None`` for an unknown *or* unbound profile — a known
+    Agent with no engine binding is a valid state (it runs on its profile
+    default), not an error. This is the only sanctioned reverse reader of the
+    binding half of the artifact.
+    """
+    if not profile_id:
+        return None
+    bound = _binding_by_profile().get(profile_id)
+    if bound is None:
+        return None
+    provider, model = bound
+    # Deployment-time infrastructure override (protected server-side settings):
+    # the ECO engine's concrete model tag is environment-specific and delivered
+    # by the deployment, not the committed artifact. Read at call time (not in
+    # the lru_cached inverter) so it tracks the process env. Applies to the ECO
+    # profile only; the provider (and every other profile) is untouched.
+    if profile_id == _ECO_PROFILE_ID:
+        override = (os.getenv(_ECO_MODEL_ENV) or "").strip()
+        if override:
+            model = override
+    return (provider, model)
+
+
 def identity_for_engine(provider: str | None, model: str | None) -> PublicAgentIdentity | None:
     """Resolve a configured provider/model pair to its Agent, or ``None``.
 
@@ -145,6 +203,7 @@ __all__ = [
     "label_for_qualified_model",
     "GENERIC_AGENT_LABEL",
     "PublicAgentIdentity",
+    "engine_binding_for_profile",
     "identity_for_engine",
     "identity_for_profile",
     "label_for_engine",
