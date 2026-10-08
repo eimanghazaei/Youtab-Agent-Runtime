@@ -1580,11 +1580,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     """
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
-        return tool_error(sensitive_err)
+        return tool_authorization_error(sensitive_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
-            return tool_error(cross_warning)
+            return tool_authorization_error(cross_warning)
     if _is_internal_file_tool_content(content):
         return tool_error(
             "Refusing to write internal read_file display text as file content. "
@@ -1708,11 +1708,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
-            return tool_error(sensitive_err)
+            return tool_authorization_error(sensitive_err)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
-                return tool_error(cross_warning)
+                return tool_authorization_error(cross_warning)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping

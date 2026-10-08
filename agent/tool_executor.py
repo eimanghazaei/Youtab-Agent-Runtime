@@ -585,7 +585,21 @@ def _run_agent_tool_execution_middleware(
             agent._iters_since_skill = 0
 
         _advance_start_order(_begin)
-        outcome = execute(final_args)
+        try:
+            outcome = execute(final_args)
+        except BaseException:
+            # A RAISED failure is still an authorized tool that ran. The
+            # executors around this one catch these and turn them into
+            # ordinary tool-error results, so without this the feed loses
+            # exactly the failing steps -- the same hole as treating every
+            # error envelope as a refusal, reached through the exception path
+            # instead of the return path.
+            #
+            # `result=None` is deliberate: None is not a refusal envelope, so
+            # the step is emitted. The emitter is fail-open and never raises,
+            # and the original exception is re-raised unchanged.
+            _emit_managed_progress(function_name, final_args, result=None)
+            raise
         # After execution, and only for a tool that was not refused by its own
         # handler -- see _emit_managed_progress.
         _emit_managed_progress(function_name, final_args, result=outcome)

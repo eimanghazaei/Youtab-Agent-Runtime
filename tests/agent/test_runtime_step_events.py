@@ -574,6 +574,76 @@ def test_the_browser_private_page_guards_mark_their_refusals(monkeypatch) -> Non
     assert tool_executor._is_authorization_refusal(refusal), refusal
 
 
+def test_a_raised_failure_still_records_a_step(monkeypatch) -> None:
+    """An authorized tool that THREW still ran.
+
+    The executors around this one catch exceptions and turn them into
+    ordinary tool-error results, so skipping the emitter on a raise loses
+    exactly the failing steps -- the same hole as treating every error
+    envelope as a refusal, reached through the exception path instead of the
+    return path. The exception itself must still propagate unchanged.
+    """
+    from agent import relay_tools, tool_executor
+
+    emitted: list = []
+    monkeypatch.setattr(
+        "youtab_agent_cli.middleware.apply_tool_request_middleware",
+        lambda _name, args, **_kw: SimpleNamespace(payload=args, trace=[]),
+    )
+    monkeypatch.setattr(
+        "youtab_agent_cli.middleware.run_tool_execution_middleware",
+        lambda _name, args, callback, **_kw: callback(args),
+    )
+    monkeypatch.setattr("youtab_agent_cli.plugins.resolve_pre_tool_block",
+                        lambda *_a, **_k: None)
+    monkeypatch.setattr(tool_executor, "_begin_tool_execution", lambda *_a, **_k: None)
+    monkeypatch.setattr(tool_executor, "_emit_terminal_post_tool_call",
+                        lambda *_a, **_k: None)
+    monkeypatch.setattr(relay_tools, "execute",
+                        lambda _n, args, cb, **_k: (cb(args), args))
+    monkeypatch.setattr(conversation_loop, "emit_runtime_step",
+                        lambda name, args: emitted.append((name, args)))
+
+    def boom(_args):
+        raise RuntimeError("provider exploded mid-call")
+
+    with pytest.raises(RuntimeError, match="provider exploded mid-call"):
+        tool_executor._run_agent_tool_execution_middleware(
+            _middleware_agent(True),
+            function_name="web_search",
+            function_args={"query": "best coffee"},
+            effective_task_id="task-1",
+            tool_call_id="call-1",
+            execute=boom,
+        )
+
+    assert emitted == [("web_search", {"query": "best coffee"})]
+
+
+def test_the_sensitive_path_write_guards_mark_their_refusals() -> None:
+    """`write_file` and `patch` refusals DO disclose, unlike terminal/browser.
+
+    I previously argued these rows were harmless because
+    `_runtime_step_detail` returns nothing for `terminal` and `browser_*`.
+    That is true of those two and false here: the detail for `write_file`,
+    `patch` and `read_file` is the path's basename. So an unmarked
+    `write_file(path="/etc/passwd")` refusal recorded
+    "Writing a file: passwd" -- the argument of a blocked call, durably, to
+    every dashboard subscriber.
+
+    `_check_sensitive_path` and `_check_cross_profile_path` now return the
+    explicit authorization disposition.
+    """
+    from agent import tool_executor
+    from tools.registry import tool_authorization_error
+
+    for message in ("Refusing to write to a sensitive path: /etc/passwd",
+                    "Refusing to cross profile boundary: ../other/profile"):
+        assert tool_executor._is_authorization_refusal(
+            tool_authorization_error(message)
+        ), message
+
+
 def test_the_executors_refusal_marker_matches_the_registrys() -> None:
     """``tool_executor`` duplicates the marker as a literal to stay off the
     import path of the whole tool surface. That duplication is only safe if
