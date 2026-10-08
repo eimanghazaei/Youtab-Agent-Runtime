@@ -39,10 +39,10 @@ from pathlib import Path
 
 from codeql_sarif_gate import finding_keys  # noqa: E402  (same directory)
 
-EXPECTED_QUERIES = {
-    "python": "codeql/python-queries",
-    "javascript-typescript": "codeql/javascript-queries",
-}
+# One source of truth for the per-language facts, shared with the gate so a
+# baseline cannot be built against a different query pack or extraction
+# diagnostic than the gate will later look for.
+from codeql_sarif_gate import LANGUAGES  # noqa: E402  (same directory)
 
 
 def is_security(rule: dict) -> bool:
@@ -70,9 +70,10 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
     paths = sorted(sarif_dir.glob("*.sarif"))
     if not paths:
         raise SystemExit(f"no *.sarif found in {sarif_dir}")
-    expected_queries = EXPECTED_QUERIES.get(language)
-    if not expected_queries:
-        raise SystemExit(f"unsupported language {language!r}; expected one of {sorted(EXPECTED_QUERIES)}")
+    spec = LANGUAGES.get(language)
+    if not spec:
+        raise SystemExit(f"unsupported language {language!r}; expected one of {sorted(LANGUAGES)}")
+    expected_queries = spec["queries"]
 
     findings: Counter[str] = Counter()
     severities: dict[str, bool] = {}
@@ -168,7 +169,7 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
         if severities.get(json.loads(key)[0], False)
     )
 
-    diagnostic = ("py" if language == "python" else "js") + "/diagnostics/successfully-extracted-files"
+    diagnostic = spec["diagnostic"]
     extracted = sorted({
         item["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
         for invocation in run["invocations"]
@@ -229,12 +230,32 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
             "SARIF carries no rule identities, so required_rules would be empty and the "
             "gate would reject the baseline. Re-download from a complete run."
         )
+    # A legitimately CLEAN analysis is allowed to produce an empty baseline,
+    # and for a small language that is the strongest gate there is: with
+    # nothing accepted, every future finding is new. `rust` reports 0 findings
+    # today.
+    #
+    # The earlier blanket refusal reasoned that an empty baseline "would make
+    # the gate's own 'zero findings against a nonempty baseline' guard
+    # unreachable and accept anything afterwards". The first half is true and
+    # the second does not follow: with an empty baseline `new = current -
+    # baseline` is the whole current set, so a later finding fails the gate at
+    # exit 1. That guard exists to catch a run that reports nothing against a
+    # baseline that has entries -- it is simply inapplicable here, not
+    # bypassed.
+    #
+    # What actually distinguishes "clean" from "partial artifact" is the
+    # coverage metadata checked immediately above -- a successful invocation,
+    # the expected query pack, and positive artifact / query / extraction
+    # counts. A truncated run fails those. So zero findings is accepted only
+    # together with evidence that the analysis really ran.
     if not baseline["findings"]:
-        raise SystemExit(
-            "SARIF reports zero findings. A baseline of nothing would make the gate's "
-            "own 'zero findings against a nonempty baseline' guard unreachable and "
-            "accept anything afterwards; this repository has never had a clean run, so "
-            "treat it as a partial artifact."
+        print(
+            f"NOTE: {language} reports zero findings. The baseline will be empty, which "
+            f"means NOTHING is accepted for this language -- every future finding fails "
+            f"the gate. That is intended for a clean language; if this run was supposed "
+            f"to have findings, re-download from a complete run instead of committing "
+            f"this."
         )
 
     return baseline
@@ -261,7 +282,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("sarif_dir", type=Path, help="directory holding the downloaded *.sarif")
-    parser.add_argument("language", choices=sorted(EXPECTED_QUERIES))
+    parser.add_argument("language", choices=sorted(LANGUAGES))
     parser.add_argument("--source-run", required=True,
                         help="URL of the workflow run the SARIF came from (recorded as provenance)")
     parser.add_argument("--source-head", required=True,

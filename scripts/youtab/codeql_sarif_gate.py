@@ -56,7 +56,72 @@ import os
 import re
 import sys
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+
+#: Everything that varies per analysed language, in one place.
+#:
+#: Previously these three facts were spread across two scripts as inline
+#: conditionals -- a two-entry dict for the query pack, `"py" if language ==
+#: "python" else "js"` for the extraction diagnostic, and a javascript
+#: extension tuple reached by `language != "python"`. That shape is why
+#: `actions`, `c-cpp` and `rust` could not be baseline-compared at all: every
+#: one of those expressions silently produced the javascript answer for them.
+#:
+#: `queries` and `diagnostic` are read off the real SARIF of each leg, not
+#: guessed:
+#:
+#:     actions  codeql/actions-queries  actions/diagnostics/successfully-extracted-files
+#:     c-cpp    codeql/cpp-queries      cpp/diagnostics/...     (note: cpp, not c-cpp)
+#:     rust     codeql/rust-queries     rust/diagnostics/...
+#:
+#: `extracted` decides which CHANGED files must appear in the run's extraction
+#: inventory. Over-claiming here turns an unrelated edit into a hard gate
+#: failure, so each predicate is scoped to what that extractor actually reads:
+#: the actions extractor takes workflow and composite-action YAML, not every
+#: `.yaml` in the tree.
+LANGUAGES: dict[str, dict[str, object]] = {
+    "python": {
+        "queries": "codeql/python-queries",
+        "diagnostic": "py/diagnostics/successfully-extracted-files",
+        "extracted": lambda name: name.endswith(".py"),
+    },
+    "javascript-typescript": {
+        "queries": "codeql/javascript-queries",
+        "diagnostic": "js/diagnostics/successfully-extracted-files",
+        "extracted": lambda name: (
+            name.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+                           ".html", ".yaml", ".yml"))
+            or PurePosixPath(name).name in ("package.json", "manifest.json")
+            or (PurePosixPath(name).name.startswith("tsconfig")
+                and name.endswith(".json"))
+        ),
+    },
+    "actions": {
+        "queries": "codeql/actions-queries",
+        "diagnostic": "actions/diagnostics/successfully-extracted-files",
+        # Workflow definitions and composite actions only. A `.yaml` elsewhere
+        # in the tree is not an actions source file and must not be required
+        # to appear in this leg's extraction inventory.
+        "extracted": lambda name: (
+            name.endswith((".yml", ".yaml"))
+            and (name.startswith(".github/")
+                 or PurePosixPath(name).name in ("action.yml", "action.yaml"))
+        ),
+    },
+    "c-cpp": {
+        "queries": "codeql/cpp-queries",
+        "diagnostic": "cpp/diagnostics/successfully-extracted-files",
+        "extracted": lambda name: name.endswith(
+            (".c", ".cc", ".cpp", ".cxx", ".c++", ".h", ".hh", ".hpp", ".hxx")
+        ),
+    },
+    "rust": {
+        "queries": "codeql/rust-queries",
+        "diagnostic": "rust/diagnostics/successfully-extracted-files",
+        "extracted": lambda name: name.endswith(".rs"),
+    },
+}
 
 # Rules whose result identity is not stable under unrelated edits, because the
 # defect is a graph property reported at each participating import statement.
@@ -218,10 +283,8 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             if sum(baseline.values()) != open_total or open_security + open_quality != open_total:
                 raise ValueError(f"{baseline_path}: inconsistent finding totals")
             language = document.get("language")
-            expected_queries = {
-                "python": "codeql/python-queries",
-                "javascript-typescript": "codeql/javascript-queries",
-            }.get(language)
+            spec = LANGUAGES.get(language)
+            expected_queries = spec["queries"] if spec else None
             artifact_count = document.get("artifact_count")
             query_count = document.get("query_count")
             extracted_count = document.get("extracted_count")
@@ -307,7 +370,7 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             actual_rules = {rule.get("id") for rule in query_sets[0]["rules"]}
             if not set(required_rules).issubset(actual_rules):
                 raise ValueError("CodeQL required query identities are missing")
-            diagnostic = ("py" if language == "python" else "js") + "/diagnostics/successfully-extracted-files"
+            diagnostic = spec["diagnostic"]
             extracted = {
                 item["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
                 for invocation in run["invocations"]
@@ -338,19 +401,12 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             if changed_files_path is not None:
                 changed = {name.decode("utf-8").replace("\\", "/") for name in
                            changed_files_path.read_bytes().split(b"\0") if name}
-                js_extensions = (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
-                                 ".html", ".yaml", ".yml")
+                is_source = spec["extracted"]
                 missing = sorted(
                     name for name in changed
-                    if Path(name).exists() and (
-                        name in baseline_extracted_paths or
-                        (language == "python" and name.endswith(".py")) or
-                        (language != "python" and (
-                            name.endswith(js_extensions) or
-                            Path(name).name in ("package.json", "manifest.json") or
-                            Path(name).name.startswith("tsconfig") and name.endswith(".json")
-                        ))
-                    ) and name not in extracted
+                    if Path(name).exists()
+                    and (name in baseline_extracted_paths or is_source(name))
+                    and name not in extracted
                 )
                 if missing:
                     raise ValueError(f"CodeQL did not extract changed source files: {missing[:10]}")

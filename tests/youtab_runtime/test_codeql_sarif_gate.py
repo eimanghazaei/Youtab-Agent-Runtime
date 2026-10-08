@@ -1047,14 +1047,82 @@ def test_regenerator_refuses_missing_coverage_metadata(tmp_path, field, mutate, 
     assert expected in str(excinfo.value)
 
 
-def test_regenerator_refuses_a_sarif_with_no_findings(tmp_path):
-    """A baseline of nothing makes the gate's own 'zero findings against a
-    nonempty baseline' guard unreachable, so everything afterwards passes."""
+def test_regenerator_accepts_a_clean_analysis_as_an_empty_baseline(tmp_path, capsys):
+    """Zero findings with intact coverage is a CLEAN run, not a broken one.
+
+    This used to be refused outright, reasoning that an empty baseline "makes
+    the gate's own 'zero findings against a nonempty baseline' guard
+    unreachable, so everything afterwards passes". The first half is true and
+    the second does not follow: with an empty baseline, ``new = current -
+    baseline`` is the entire current set, so the next finding fails at exit 1.
+    That guard exists for a run reporting nothing against a baseline that HAS
+    entries; it is inapplicable here rather than bypassed --
+    ``test_an_empty_baseline_still_fails_on_the_first_new_finding`` below
+    proves enforcement is intact.
+
+    The refusal also blocked gating three real languages. ``rust`` reports 0
+    findings in this repository, and an empty baseline is the strongest gate
+    available for it: nothing accepted, so anything new is new.
+
+    A loud NOTE is still printed, because "0 findings" is also what a
+    truncated artifact looks like to a human skimming the output.
+    """
     regen = _regen_module()
     (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([])))
-    with pytest.raises(SystemExit) as excinfo:
+
+    baseline = regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+
+    assert baseline["open_total"] == 0
+    assert baseline["findings"] == {}
+    # Coverage metadata must still be real -- that is what separates "clean"
+    # from "partial".
+    assert baseline["artifact_count"] > 0
+    assert baseline["query_count"] > 0
+    assert baseline["extracted_count"] > 0
+    assert "zero findings" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("field,mutate", [
+    ("artifacts", lambda run: run.__setitem__("artifacts", [])),
+    ("extensions", lambda run: run["tool"].__setitem__("extensions", [])),
+    ("notifications", lambda run: run["invocations"][0].__setitem__(
+        "toolExecutionNotifications", [])),
+])
+def test_regenerator_still_refuses_zero_findings_with_degraded_coverage(
+    tmp_path, field, mutate
+):
+    """Zero findings is accepted ONLY alongside evidence the analysis ran.
+
+    This is the half of the old blanket refusal that was load-bearing. A
+    truncated artifact can report zero findings while still marking its
+    invocation successful, and a baseline built from one would be committed as
+    "regenerated" and then rejected by the gate on every later run.
+    """
+    regen = _regen_module()
+    document = cycle_sarif([])
+    mutate(document["runs"][0])
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+
+    with pytest.raises(SystemExit):
         regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
-    assert "zero findings" in str(excinfo.value)
+
+
+def test_an_empty_baseline_still_fails_on_the_first_new_finding(tmp_path):
+    """The enforcement claim above, asserted rather than argued.
+
+    An empty baseline accepts nothing, so a single finding is new and the gate
+    exits 1. If this ever passed, the empty baseline really would be the hole
+    the old refusal feared.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(baseline, [], ["py/sql-injection"])
+    document = json.loads(baseline.read_text(encoding="utf-8"))
+    assert document["findings"] == {}, "fixture is not an empty baseline"
+    (tmp_path / "python.sarif").write_text(
+        json.dumps(sarif([finding(line_hash="brand:1")]))
+    )
+
+    assert inspect(tmp_path, baseline) == 1
 
 
 def test_regenerator_accepts_a_complete_artifact(tmp_path):

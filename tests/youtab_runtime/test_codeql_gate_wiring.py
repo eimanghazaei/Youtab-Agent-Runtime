@@ -104,18 +104,26 @@ def test_codeql_runs_on_push_to_main_and_pull_request(workflow: dict) -> None:
     assert "main" in branches, f"push trigger does not cover main: {branches!r}"
 
 
-def test_every_matrix_language_has_one_of_the_two_coverages(workflow: dict) -> None:
-    """No language may lose BOTH the comparator and native Code Scanning.
+def test_every_matrix_language_is_both_uploaded_and_gated(workflow: dict) -> None:
+    """Every leg needs BOTH mechanisms, and neither is optional per language.
 
-    The comparator needs a committed baseline, so it runs only where Code
-    Scanning's limits actually bite -- `python` (9076 findings against a
-    5000-result cap) and `javascript-typescript`. `actions`, `c-cpp` and
-    `rust` hold 3 findings between them, where a 5000 cap and a
-    severity-filtered results check cost nothing, so they rely on the upload.
+    The upload gives the native alert UI, dismissal with a reason and history.
+    The comparator gives enforcement, which the upload does not: a 5000-result
+    cap prioritised by severity, a results check that fails only for
+    error/critical/high, pull-request gating only for alerts whose every line
+    is in the diff, and extraction errors that surface for manual reading.
 
-    What must never happen is a leg that is neither gated nor uploaded, or a
-    `gate: true` leg whose baseline file is missing -- the job would fail on
-    every run with a path error. This pins both.
+    The comparator was briefly limited to python and javascript-typescript on
+    the argument that the other three hold few findings. That answered the
+    wrong question -- the severity gap does not depend on the finding count,
+    so a NEW `warning` in `actions`, `c-cpp` or `rust` would have published
+    and passed. This test is why that cannot come back: a leg must be in the
+    matrix, covered by the upload, AND have a committed baseline for the
+    comparator to read.
+
+    A missing baseline is specifically worth failing here rather than in CI,
+    because the gate step would fail on every run with a path error -- a
+    confusing symptom three steps from its cause.
     """
     import pathlib as _p
 
@@ -125,26 +133,62 @@ def test_every_matrix_language_has_one_of_the_two_coverages(workflow: dict) -> N
     analyze = [s for s in workflow["jobs"]["analyze"]["steps"]
                if "analyze@" in str(s.get("uses", ""))]
     assert len(analyze) == 1, "expected exactly one CodeQL analyze step"
-    assert analyze[0]["with"].get("upload") == "always", (
+    with_block = analyze[0].get("with") or {}
+    assert with_block.get("upload") == "always", (
         "every language relies on the upload for native tracking; "
-        f"upload is {analyze[0]['with'].get('upload')!r}"
+        f"upload is {with_block.get('upload')!r}"
+    )
+    assert with_block.get("output") == "results", (
+        "the comparator reads the LOCAL SARIF via `output:`; without it the "
+        f"gate step has nothing to read (output is {with_block.get('output')!r})"
     )
 
-    baselines = _p.Path(__file__).resolve().parents[2] / "scripts" / "youtab" / "codeql_baselines"
+    gate = [s for s in workflow["jobs"]["analyze"]["steps"]
+            if "codeql_sarif_gate.py" in str(s.get("run", ""))]
+    assert len(gate) == 1, "expected exactly one CodeQL comparator step"
+    assert not gate[0].get("if"), (
+        "the comparator step is conditional "
+        f"({gate[0].get('if')!r}); it must run for every language in the matrix"
+    )
+
+    baselines = (_p.Path(__file__).resolve().parents[2]
+                 / "scripts" / "youtab" / "codeql_baselines")
     for leg in include:
-        language, gated = leg["language"], leg.get("gate")
-        assert gated is not None, f"{language}: matrix leg does not declare `gate`"
+        language = leg["language"]
         path = baselines / f"{language}.json"
-        if gated:
-            assert path.is_file(), (
-                f"{language} is gated but {path.name} is missing -- the gate step "
-                "would fail on every run with a path error"
-            )
-        else:
-            assert not path.is_file(), (
-                f"{language} has a committed baseline at {path.name} but is not "
-                "gated, so that baseline is never compared against anything"
-            )
+        assert path.is_file(), (
+            f"{language} is in the CodeQL matrix but {path.name} is missing, so the "
+            "comparator step would fail on every run with a path error. Generate it "
+            "with scripts/youtab/regenerate_codeql_baseline.py from a complete run."
+        )
+
+
+def test_every_gated_language_is_known_to_the_gate(workflow: dict) -> None:
+    """A matrix leg the gate has no language spec for cannot be compared.
+
+    `codeql_sarif_gate.LANGUAGES` carries the query-pack name, the extraction
+    diagnostic id and the changed-source predicate for each language. A leg
+    missing from it is rejected at runtime as "missing analysis coverage
+    metadata", which reads like a corrupt baseline rather than an unsupported
+    language. Catch it here instead.
+    """
+    import sys
+    import pathlib as _p
+
+    scripts = _p.Path(__file__).resolve().parents[2] / "scripts" / "youtab"
+    sys.path.insert(0, str(scripts))
+    try:
+        from codeql_sarif_gate import LANGUAGES
+    finally:
+        sys.path.remove(str(scripts))
+
+    include = workflow["jobs"]["analyze"]["strategy"]["matrix"]["include"]
+    unknown = [leg["language"] for leg in include if leg["language"] not in LANGUAGES]
+    assert not unknown, (
+        f"CodeQL matrix languages with no entry in codeql_sarif_gate.LANGUAGES: "
+        f"{unknown}. Add the query pack, extraction diagnostic and changed-source "
+        f"predicate there, or the comparator cannot read that leg's SARIF."
+    )
 
 
 def test_all_codeql_action_steps_pin_the_same_release(workflow: dict) -> None:

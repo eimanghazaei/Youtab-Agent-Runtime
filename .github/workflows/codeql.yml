@@ -114,44 +114,47 @@ jobs:
         # CodeQL to extract it, and `none` is what default setup used for
         # c-cpp and rust when it analysed them successfully.
         include:
-          # `gate: true` means the fail-closed comparator below also runs.
-          # It needs a committed baseline, and a baseline is only worth
-          # carrying where Code Scanning's limits actually bite -- which is a
-          # function of volume:
+          # EVERY leg is baseline-compared. The comparator was briefly limited
+          # to python and javascript-typescript on the argument that `actions`,
+          # `c-cpp` and `rust` hold only three findings between them, so the
+          # 5000-result cap could not bite. That argument answered the wrong
+          # question: the cap is not the only thing the native check fails to
+          # do. It also fails a pull request only for error/critical/high, so a
+          # NEW `warning` or `recommendation` in any of those three would have
+          # published and passed, and the finding count has no bearing on that
+          # severity gap.
           #
-          #   python                 9076 findings -> capped at 5000. 4076
-          #                          dropped, quality-first because the cap
-          #                          sorts by severity. Gated.
-          #   javascript-typescript   110 findings -> under the cap today, but
-          #                          57 are security and the rest are quality
-          #                          that the results check would not fail on.
-          #                          Gated.
-          #   actions                   1 finding
-          #   c-cpp                     2 findings
-          #   rust                      0 findings
+          # What actually blocked gating them was mechanical, and keeping
+          # `output: results` removed it: a SARIF downloaded back from Code
+          # Scanning is stripped (`invocations: []`, no extraction
+          # diagnostics), so no baseline could be built from one. The local
+          # SARIF is complete, and the artifact step below preserves it for
+          # every language. Their baselines were generated from it:
           #
-          # The last three are below every limit that makes the comparator
-          # worth its baseline: nothing is dropped by a 5000 cap when there
-          # are 3 findings in total, and Code Scanning reports and tracks them
-          # natively. They are analysed and uploaded on every run, and their
-          # checks are required -- they are simply not baseline-compared.
-          # `tests/youtab_runtime/test_codeql_gate_wiring.py` pins this split
-          # so a language cannot quietly lose BOTH forms of coverage.
+          #   actions   1 finding   actions/code-injection/medium   (SECURITY)
+          #   c-cpp     2 findings  cpp/complex-condition, cpp/empty-if
+          #   rust      0 findings  -- an EMPTY baseline, which is the
+          #                            strongest gate there is: nothing is
+          #                            accepted, so any future finding is new
+          #
+          # The `actions` one is the case in point. It is a security finding in
+          # the workflow definitions, and a second one arriving as a `warning`
+          # is exactly what the native check would have let through.
+          #
+          # `tests/youtab_runtime/test_codeql_gate_wiring.py` requires every
+          # leg to be gated AND to have a committed baseline, so a language
+          # cannot be added to the matrix without one, and cannot quietly lose
+          # the comparator later.
           - language: python
             build-mode: none
-            gate: true
           - language: javascript-typescript
             build-mode: none
-            gate: true
           - language: actions
             build-mode: none
-            gate: false
           - language: c-cpp
             build-mode: none
-            gate: false
           - language: rust
             build-mode: none
-            gate: false
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -225,8 +228,8 @@ jobs:
           #
           # The gate below has none of those limits: it reads the full local
           # SARIF, compares every finding against the committed baseline
-          # regardless of severity or diff, and fails closed on artifact or
-          # extraction coverage loss.
+          # regardless of severity or diff, and fails closed on extraction
+          # coverage loss. It runs for every language in the matrix.
           upload: always
           output: results
       - name: Preserve SARIF for finding triage
@@ -238,5 +241,5 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
       - name: Fail on new CodeQL findings or missing SARIF
-        if: ${{ matrix.gate }}
+        # Unconditional: every language in the matrix is baseline-compared.
         run: python scripts/youtab/codeql_sarif_gate.py results scripts/youtab/codeql_baselines/${{ matrix.language }}.json changed-files.bin

@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "language": "actions",
+  "source_run": "https://github.com/eimanghazaei/Youtab-Agent-Runtime/actions/runs/37725469684",
+  "source_head": "811cc2bd14d7975446c59897d867d92b53edc7f2",
+  "open_total": 1,
+  "open_security": 1,
+  "open_quality": 0,
+  "findings": {
+    "[\"actions/code-injection/medium\",\".github/actions/get-app-token/action.yml\",\"28351245ab55f06:1\",\"18\"]": 1
+  },
+  "artifact_count": 6,
+  "query_count": 27,
+  "extracted_count": 6,
+  "extracted_paths": [
+    ".github/actions/detect-changes/action.yml",
+    ".github/actions/get-app-token/action.yml",
+    ".github/actions/nix-setup/action.yml",
+    ".github/actions/retry/action.yml",
+    ".github/workflows/codeql.yml",
+    ".github/workflows/youtab-ci.yml"
+  ],
+  "required_rules": [
+    "actions/artifact-poisoning/critical",
+    "actions/artifact-poisoning/medium",
+    "actions/cache-poisoning/code-injection",
+    "actions/cache-poisoning/direct-cache",
+    "actions/cache-poisoning/poisonable-step",
+    "actions/code-injection/critical",
+    "actions/code-injection/medium",
+    "actions/envpath-injection/critical",
+    "actions/envpath-injection/medium",
+    "actions/envvar-injection/critical",
+    "actions/envvar-injection/medium",
+    "actions/excessive-secrets-exposure",
+    "actions/if-expression-always-true/critical",
+    "actions/if-expression-always-true/high",
+    "actions/improper-access-control",
+    "actions/missing-workflow-permissions",
+    "actions/secrets-in-artifacts",
+    "actions/syntax-error",
+    "actions/unmasked-secret-exposure",
+    "actions/unnecessary-use-of-advanced-config",
+    "actions/unpinned-tag",
+    "actions/untrusted-checkout-toctou/critical",
+    "actions/untrusted-checkout-toctou/high",
+    "actions/untrusted-checkout/critical",
+    "actions/untrusted-checkout/high",
+    "actions/untrusted-checkout/medium",
+    "actions/vulnerable-action"
+  ]
+}
