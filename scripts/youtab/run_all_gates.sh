@@ -64,12 +64,20 @@ record sast $?
 # does not show up as a failing check, it shows up as a check that stops
 # failing, which nothing else looks for.
 #
-# --require-remote is NOT passed locally: without a token the ruleset cannot be
-# read, and the gate reports those two conditions as SKIPPED rather than
-# turning a blocked check into a PASS. Pass it where a token exists.
+# The controls themselves, not the product. Every other gate here inspects the
+# code; this one inspects the workflows, the action pins, the ruleset and the
+# CodeQL baselines -- the things that decide what "green" means. A defect there
+# does not show up as a failing check, it shows up as a check that stops
+# failing, which nothing else looks for.
+#
+# No strictness flag here on purpose. The gate decides for itself: with a token
+# an unreadable ruleset is a FAILURE, without one those two conditions report
+# SKIPPED and never PASS. Passing the flag conditionally from shell would be a
+# second place to drift from, and that split is where the hole came from -- the
+# CI step exported only YOUTAB_AGENT_PYTHON, so the conditions were skipped on
+# every CI run while this wrapper printed PASS.
 begin ci-control
-"$python_bin" scripts/youtab/ci_control_gate.py --root . \
-  --json "$evidence_dir/ci-control.json"
+"$python_bin" scripts/youtab/ci_control_gate.py --root .   --json "$evidence_dir/ci-control.json"
 record ci-control $?
 
 begin container-control-plane-isolation

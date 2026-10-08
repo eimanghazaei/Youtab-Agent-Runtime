@@ -340,7 +340,7 @@ def check_codeql_coherence(root: Path, workflows: dict[Path, dict], f: Findings)
                        f"be positive and will reject this baseline on every run")
 
 
-def observed_contexts(repo: str, revisions: list[str]) -> set[str]:
+def observed_contexts(repo: str, revision: str) -> set[str]:
     """Check-run names GitHub has actually reported on these commits.
 
     Deliberately NOT derived from the workflow files. Predicting a context
@@ -356,21 +356,27 @@ def observed_contexts(repo: str, revisions: list[str]) -> set[str]:
 
     So this asks the API what was reported, which is ground truth on both
     sides of the comparison.
+
+    ONE revision, never a union of several. The first version read five recent
+    default-branch commits and unioned them, which defeats the condition: a
+    renamed or removed context is still present in history, so
+    ``required - produced`` came out empty exactly while branch protection
+    waited forever for a context the current revision cannot produce.
+    Availability is a property of the current revision.
     """
     import subprocess
 
-    names: set[str] = set()
-    for revision in revisions:
-        try:
-            out = subprocess.run(
-                ["gh", "api", f"repos/{repo}/commits/{revision}/check-runs?per_page=100",
-                 "--jq", ".check_runs[].name"],
-                capture_output=True, text=True, timeout=90, check=True,
-            ).stdout
-        except Exception:  # noqa: BLE001 - a revision with no runs is not an error
-            continue
-        names |= {line.strip() for line in out.splitlines() if line.strip()}
-    return names
+    try:
+        out = subprocess.run(
+            ["gh", "api", f"repos/{repo}/commits/{revision}/check-runs?per_page=100",
+             "--jq", ".check_runs[].name"],
+            capture_output=True, text=True, timeout=90, check=True,
+        ).stdout
+    except Exception:  # noqa: BLE001 - reported by the caller as unevaluable
+        return set()
+    # Presence, not conclusion: a check still `in_progress` has registered its
+    # name, which is all availability means here.
+    return {line.strip() for line in out.splitlines() if line.strip()}
 
 
 def check_required_checks(root: Path, workflows: dict[Path, dict],
@@ -414,27 +420,51 @@ def check_required_checks(root: Path, workflows: dict[Path, dict],
                 for check in params.get("required_status_checks") or []:
                     if check.get("context"):
                         required.add(str(check["context"]))
+        # Short-circuit before resolving the tip: if nothing is required there
+        # is no availability question to answer, and this is itself the
+        # finding.
+        if not required:
+            f.fail("no required status checks", "rulesets",
+                   "no branch ruleset requires any status check, so every gate in "
+                   "this repository is advisory and nothing can block a merge")
+            return
         default_branch = json.loads(api("")).get("default_branch") or "main"
-        recent = api(f"commits?sha={default_branch}&per_page=5", "--jq", ".[].sha").split()
+        tip = api(f"commits?sha={default_branch}&per_page=1", "--jq", ".[0].sha").strip()
     except Exception as exc:  # noqa: BLE001
-        message = f"could not read the ruleset or recent commits for {repo}: {exc}"
+        # Distinguish "no permission" from "could not reach it", because the
+        # remedies are different and a bare failure here is unactionable.
+        # Reading rulesets is not one of the scopes a workflow `permissions:`
+        # block can grant, so the default GITHUB_TOKEN may be refused; that
+        # needs a token with repository administration read, supplied as a
+        # secret, not a retry.
+        text = str(exc)
+        scope = ("403" in text or "404" in text or "Not Found" in text
+                 or "Resource not accessible" in text)
+        message = (
+            f"could not read the ruleset for {repo}: {exc}"
+            + ("\n      The token cannot read rulesets. `permissions:` in a workflow "
+               "has no `administration` scope, so the default GITHUB_TOKEN is refused "
+               "here -- supply a token with repository administration:read as a secret, "
+               "or run this gate without --require-remote and audit the ruleset by hand."
+               if scope else "")
+        )
         (f.fail("ruleset unavailable", "rulesets", message) if require_remote
          else f.skip("required checks", message))
         return
 
-    if not required:
-        f.fail("no required status checks", "rulesets",
-               "no branch ruleset requires any status check, so every gate in this "
-               "repository is advisory and nothing can block a merge")
+    # The default-branch TIP, not this working tree's HEAD. The question is
+    # "can the branch this ruleset protects produce the contexts it requires",
+    # and the tip is the revision where every job has finished and registered
+    # its name. A local HEAD may be an unpushed commit with no runs at all.
+    if not tip:
+        message = f"could not resolve the tip of {default_branch}"
+        (f.fail("no observed check runs", "check-runs", message) if require_remote
+         else f.skip("required checks", message))
         return
-
-    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True,
-                          text=True, cwd=str(root)).stdout.strip()
-    revisions = [r for r in ([head] + recent) if r]
-    produced = observed_contexts(repo, revisions)
+    produced = observed_contexts(repo, tip)
     if not produced:
-        message = (f"no check runs found on {len(revisions)} recent revisions, so "
-                   f"conditions 1 and 2 could not be evaluated against observed names")
+        message = (f"no check runs on {default_branch} tip {tip[:9]}, so conditions 1 "
+                   f"and 2 could not be evaluated against observed names")
         (f.fail("no observed check runs", "check-runs", message) if require_remote
          else f.skip("required checks", message))
         return
@@ -444,10 +474,10 @@ def check_required_checks(root: Path, workflows: dict[Path, dict],
         f.fail(
             "required check nobody produces", context,
             f"the ruleset requires this context and no check run with that exact name "
-            f"was reported on any of the last {len(revisions)} revisions, so every "
-            f"pull request waits on it forever. GitHub matches required checks on the "
-            f"reported JOB name -- a job with no `name` has its matrix values appended, "
-            f"and a job with a constant `name` has the whole matrix entry appended",
+            f"was reported on {default_branch} tip {tip[:9]}, so every pull request "
+            f"waits on it forever. GitHub matches required checks on the reported JOB "
+            f"name -- a job with no `name` has its matrix values appended, and a job "
+            f"with a constant `name` has the whole matrix entry appended",
         )
 
     # Condition 2: a CodeQL leg that reports but cannot block.
@@ -460,6 +490,20 @@ def check_required_checks(root: Path, workflows: dict[Path, dict],
         )
 
 
+def remote_required_by_default() -> bool:
+    """Whether an unreadable ruleset should FAIL rather than skip.
+
+    True when a token is available, because then "could not read the ruleset"
+    is a real problem rather than a missing capability -- and a skip there
+    would mean the condition silently stopped running, which AGENTS.md
+    forbids converting into a PASS.
+
+    False on a workstation with no token, so a developer still gets the other
+    seven conditions instead of a failure they cannot act on.
+    """
+    return bool(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -467,13 +511,27 @@ def main() -> int:
     ap.add_argument("--json", dest="json_out", default=None)
     ap.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY"),
                     help="owner/name, for reading the branch ruleset")
-    ap.add_argument("--require-remote", action="store_true",
-                    help="treat an unreadable ruleset as a FAILURE rather than a "
-                         "skip. Use in CI, where the token exists and a skip would "
-                         "mean the check silently stopped running.")
+    ap.add_argument("--require-remote", dest="require_remote",
+                    action="store_true", default=None,
+                    help="treat an unreadable ruleset as a FAILURE rather than a skip")
+    ap.add_argument("--no-require-remote", dest="require_remote",
+                    action="store_false",
+                    help="never fail on an unreadable ruleset, even with a token")
     args = ap.parse_args()
 
     root = args.root.resolve()
+    # Strictness follows CAPABILITY by default, decided here rather than by the
+    # caller. The wrapper used to pass the flag conditionally from shell, which
+    # is a second place to drift from -- and the hole this closes came from
+    # exactly that kind of split: the CI step exported only
+    # YOUTAB_AGENT_PYTHON, `gh` needs GH_TOKEN explicitly inside a workflow, so
+    # the two ruleset conditions were skipped on every CI run while the wrapper
+    # printed PASS. Now exporting the token is the only thing CI has to do, and
+    # both flags remain for forcing either way.
+    require_remote = (
+        remote_required_by_default() if args.require_remote is None
+        else args.require_remote
+    )
     f = Findings()
     workflows = load_workflows(root)
     if not workflows:
@@ -484,7 +542,7 @@ def main() -> int:
     check_pull_request_target(workflows, f)
     check_gates_can_fail(workflows, f)
     check_codeql_coherence(root, workflows, f)
-    check_required_checks(root, workflows, args.repo, f, args.require_remote)
+    check_required_checks(root, workflows, args.repo, f, require_remote)
 
     for item in f.items:
         marker = "FAIL" if item["status"] == "fail" else "SKIP"
