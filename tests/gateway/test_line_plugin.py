@@ -46,6 +46,8 @@ validate_config = _line.validate_config
 _standalone_send = _line._standalone_send
 _env_enablement = _line._env_enablement
 _MessageDeduplicator = _line._MessageDeduplicator
+_LineClient = _line._LineClient
+LINE_CONTENT_URL_FMT = _line.LINE_CONTENT_URL_FMT
 
 
 # ---------------------------------------------------------------------------
@@ -507,3 +509,84 @@ class TestMediaPublicUrlGuard:
         assert not result.success
         assert "LINE_PUBLIC_URL" in (result.error or "")
 
+
+
+
+# ---------------------------------------------------------------------------
+# 10. Inbound media content URL construction
+# ---------------------------------------------------------------------------
+
+class _CapturingResponse:
+    status = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def read(self):
+        return b"content-bytes"
+
+
+class _CapturingSession:
+    """Records the URL ``fetch_content`` asks aiohttp for."""
+
+    urls: list = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def get(self, url, headers=None, **kwargs):
+        _CapturingSession.urls.append(url)
+        return _CapturingResponse()
+
+
+class TestContentUrlConstruction:
+    """``message_id`` comes straight out of the webhook body (``msg["id"]``),
+    so it is percent-encoded before it becomes a path segment. Unencoded it
+    could carry ``/``, ``?`` or ``#`` and steer this request — which sends the
+    channel access token — at a different LINE endpoint.
+    """
+
+    def _fetch(self, message_id):
+        import aiohttp
+
+        _CapturingSession.urls = []
+        client = _LineClient("channel-token")
+        with patch.object(aiohttp, "ClientSession", _CapturingSession):
+            body = asyncio.new_event_loop().run_until_complete(
+                client.fetch_content(message_id)
+            )
+        assert body == b"content-bytes"
+        assert len(_CapturingSession.urls) == 1
+        return _CapturingSession.urls[0]
+
+    def test_ordinary_message_id_is_unchanged(self):
+        url = self._fetch("461230966365716529")
+        assert url == LINE_CONTENT_URL_FMT.format(message_id="461230966365716529")
+
+    @pytest.mark.parametrize(
+        "message_id",
+        [
+            pytest.param("../../v2/bot/channel/webhook/endpoint", id="path-traversal"),
+            pytest.param("1/content?x=1", id="extra-path-and-query"),
+            pytest.param("1#frag", id="fragment"),
+            pytest.param("1?redirect=http://evil.example", id="query-injection"),
+        ],
+    )
+    def test_hostile_message_id_cannot_leave_its_path_segment(self, message_id):
+        url = self._fetch(message_id)
+        prefix, suffix = LINE_CONTENT_URL_FMT.split("{message_id}")
+        assert url.startswith(prefix) and url.endswith(suffix)
+        segment = url[len(prefix):len(url) - len(suffix)]
+        # The whole hostile value survives as ONE opaque segment: no delimiter
+        # it supplied is left live.
+        assert not any(c in segment for c in "/?#")
+        assert segment == _line._urlquote(message_id, safe="")
