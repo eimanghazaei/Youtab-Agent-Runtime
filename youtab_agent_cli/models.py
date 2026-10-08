@@ -3113,6 +3113,11 @@ def _credential_fingerprint(provider: str) -> str:
             if bev:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
     except Exception:
+        # Best-effort: the registry only contributes the provider's env-var
+        # component of this fingerprint. If it cannot be read, `parts` simply
+        # lacks those entries and the key becomes coarser -- a later change to
+        # one of those env vars may then not invalidate the cached catalog.
+        # That is preferred over making the key uncomputable entirely.
         pass
 
     # A profile inference bearer rotates without changing its account or
