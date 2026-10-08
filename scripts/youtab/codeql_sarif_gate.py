@@ -80,6 +80,67 @@ from pathlib import Path, PurePosixPath
 #: failure, so each predicate is scoped to what that extractor actually reads:
 #: the actions extractor takes workflow and composite-action YAML, not every
 #: `.yaml` in the tree.
+#: CVSS-style bands, matching how Code Scanning labels `security-severity`.
+#: `None` means the rule carries no security severity at all -- a QUALITY
+#: finding, which is the bulk of `security-and-quality` and is deliberately
+#: not budgeted here.
+SEVERITY_BANDS: tuple[tuple[str, float], ...] = (
+    ("critical", 9.0),
+    ("high", 7.0),
+    ("medium", 4.0),
+    ("low", 0.0),
+)
+
+
+def severity_band(value: object) -> str | None:
+    """The band a rule's ``security-severity`` falls in, or None for quality."""
+    if value is None:
+        return None
+    try:
+        score = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    for name, floor in SEVERITY_BANDS:
+        if score >= floor:
+            return name
+    return "low"
+
+
+def rule_severities(run: dict) -> dict[str, object]:
+    """``{rule id: security-severity}`` across every query pack in the run."""
+    out: dict[str, object] = {}
+    for extension in (run.get("tool") or {}).get("extensions") or []:
+        for rule in extension.get("rules") or []:
+            if isinstance(rule.get("id"), str):
+                out[rule["id"]] = (rule.get("properties") or {}).get(
+                    "security-severity"
+                )
+    return out
+
+
+def count_by_band(run: dict) -> dict[str, int]:
+    """Findings per severity band for one CodeQL run.
+
+    Counted off the RESULTS rather than the baseline's key map, because the
+    budget has to be comparable across a baseline refresh -- that is the whole
+    point of it. Suppressed results are skipped the same way the finding
+    inventory skips them.
+    """
+    severities = rule_severities(run)
+    counts: dict[str, int] = {name: 0 for name, _ in SEVERITY_BANDS}
+    counts["security"] = 0
+    for result in run.get("results") or []:
+        if any(item.get("status") == "accepted"
+               for item in result.get("suppressions", [])):
+            continue
+        band = severity_band(severities.get(result.get("ruleId")))
+        if band is None:
+            continue
+        counts[band] += 1
+        counts["security"] += 1
+    return counts
+
+
 LANGUAGES: dict[str, dict[str, object]] = {
     "python": {
         "queries": "codeql/python-queries",
@@ -259,6 +320,9 @@ def inspect(directory: Path, baseline_path: Path | None = None,
 
     current: Counter[str] = Counter()
     details: dict[str, tuple[str, str, int, str]] = {}
+    # Hoisted so the summary after the try block can report them; set inside.
+    band_counts: dict[str, int] = {}
+    band_budget: dict[str, object] = {}
     run_metadata: list[dict] = []
     try:
         for path in paths:
@@ -436,6 +500,65 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                 )
                 if missing:
                     raise ValueError(f"CodeQL did not extract changed source files: {missing[:10]}")
+            # ---------------------------------------------------------------
+            # THE SEVERITY RATCHET
+            #
+            # Everything else in this gate answers "did anything get worse
+            # relative to a fixed set of accepted findings". That holds the
+            # line and never moves it, and it is blind in one direction that
+            # matters: a refresh taken after a genuine cleanup can admit a NEW
+            # critical finding as accepted debt, because per-key comparison
+            # against the NEW baseline then sees nothing new.
+            #
+            # The budget closes that. It is counted off the RESULTS, so it
+            # survives a baseline refresh, and `regenerate_codeql_baseline.py`
+            # refuses to raise it. The numbers it starts from, measured:
+            #
+            #   python                   5 critical, 1146 high, 221 medium
+            #   javascript-typescript    0 critical,   33 high,  24 medium
+            #   actions / c-cpp / rust   0 critical,    0 high
+            #
+            # The critical budget is the sharp end: 5 for python
+            # (py/full-ssrf and py/partial-ssrf at 9.1), zero everywhere else.
+            # A sixth critical finding anywhere fails this gate and cannot be
+            # regenerated away.
+            budget = document.get("severity_budget")
+            if not isinstance(budget, dict) or not budget:
+                raise ValueError(
+                    f"{baseline_path}: no severity_budget. The ratchet cannot be "
+                    f"dropped by regenerating with an older script -- rebuild the "
+                    f"baseline with scripts/youtab/regenerate_codeql_baseline.py."
+                )
+            observed = count_by_band(run)
+            band_budget, band_counts = budget, observed
+            breaches = sorted(
+                (band, int(budget[band]), observed.get(band, 0))
+                for band in budget
+                if isinstance(budget.get(band), int)
+                and observed.get(band, 0) > int(budget[band])
+            )
+            if breaches:
+                severities = rule_severities(run)
+                worst = Counter(
+                    str(result.get("ruleId"))
+                    for result in run.get("results") or []
+                    if severity_band(severities.get(result.get("ruleId")))
+                    in {band for band, _b, _o in breaches}
+                )
+                detail = ", ".join(
+                    f"{band} {seen} > {allowed}" for band, allowed, seen in breaches
+                )
+                raise ValueError(
+                    f"CodeQL severity budget exceeded ({detail}). Rules in the "
+                    f"breached bands: "
+                    f"{', '.join(f'{r} ({n})' for r, n in worst.most_common(8))}. "
+                    f"This is a RATCHET: the budget may only go down, and "
+                    f"regenerating the baseline will not raise it. Fix the finding, "
+                    f"or raise the budget deliberately with the regenerator's "
+                    f"--accept-severity-regression and a reason that will be read in "
+                    f"review."
+                )
+
             if baseline and not current:
                 raise ValueError("CodeQL reported zero findings against a nonempty baseline")
             # The all-zero case above is the obvious mismatch. The costly case
@@ -673,6 +796,22 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             f"baseline as accepted. Green means no new findings were added, NOT that the "
             f"tree is clean. This number must only ever go down."
         )
+    # The band breakdown, printed on PASS as well as failure. "9076 open" hides
+    # whether any of it is critical; this does not. The budget line is what a
+    # reader needs to see trending downward over time.
+    if band_counts:
+        shown = ", ".join(
+            f"{band} {band_counts.get(band, 0)}"
+            + (f"/{band_budget[band]}" if isinstance(band_budget.get(band), int) else "")
+            for band, _floor in SEVERITY_BANDS
+            if band_counts.get(band, 0) or isinstance(band_budget.get(band), int)
+        )
+        print(f"SEVERITY: {shown}  (counts/budget; the budget may only go down)")
+        if band_counts.get("critical"):
+            print(
+                f"  {band_counts['critical']} CRITICAL finding(s) are accepted debt in "
+                f"this baseline. They are not new, and they are not fixed."
+            )
     if stale:
         # Not a failure -- see the module docstring. Loud, because a baseline
         # carrying findings that no longer exist will silently re-accept them

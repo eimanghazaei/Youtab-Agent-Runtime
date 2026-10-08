@@ -65,6 +65,12 @@ def write_baseline(path, findings):
         "extracted_count": 1,
         "extracted_paths": ["app.py"],
         "required_rules": ["py/sql-injection"],
+        # The gate requires a severity_budget so the ratchet cannot be dropped
+        # by regenerating with an older script. These fixtures' rules carry no
+        # `security-severity`, so every finding is a QUALITY one and a zero
+        # budget is the correct value, not a placeholder.
+        "severity_budget": {"critical": 0, "high": 0, "medium": 0,
+                            "low": 0, "security": 0},
         # One result can yield several keys (CodeQL coalesces graph
         # diagnostics sharing a location), so accumulate rather than assign.
         "findings": accumulated,
@@ -654,6 +660,224 @@ def test_a_coverage_error_still_reports_a_concurrent_new_finding(tmp_path, capsy
     assert "1 NEW finding" in message, message
     # And the innocent remedy must be gone -- it is what caused the laundering.
     assert "remediated in full" not in message, message
+
+
+# ---------------------------------------------------------------------------
+# The severity ratchet
+#
+# Everything else here answers "did anything get worse against a fixed set of
+# accepted findings". That holds the line and never moves it, and it is blind
+# in one direction: a refresh taken after a genuine cleanup can admit a NEW
+# critical finding as accepted debt, because per-key comparison against the
+# NEW baseline then sees nothing new.
+#
+# Measured on the real baselines when this was written: python carried 5
+# critical (py/full-ssrf, py/partial-ssrf at 9.1) and 1146 high; javascript
+# carried 33 high. A green check was reporting "none of those 1184 got worse".
+# ---------------------------------------------------------------------------
+SEV_RULE = "py/full-ssrf"
+
+
+def severity_sarif(results, *, score="9.1"):
+    """A SARIF whose extra rule carries a real ``security-severity``."""
+    document = sarif(results)
+    document["runs"][0]["tool"]["extensions"][0]["rules"].append(
+        {"id": SEV_RULE, "properties": {"security-severity": score}}
+    )
+    return document
+
+
+def severity_finding(uri="app.py", line_hash="ssrf:1"):
+    return {
+        "ruleId": SEV_RULE,
+        "message": {"text": "Server-side request forgery"},
+        "locations": [{"physicalLocation": {
+            "artifactLocation": {"uri": uri},
+            "region": {"startLine": 11},
+        }}],
+        "partialFingerprints": {
+            "primaryLocationLineHash": line_hash,
+            "primaryLocationStartColumnFingerprint": "3",
+        },
+    }
+
+
+def _baseline_with_budget(path, findings, budget):
+    write_baseline(path, findings)
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["severity_budget"] = budget
+    document["required_rules"] = ["py/sql-injection", SEV_RULE]
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_a_baseline_without_a_severity_budget_is_refused(tmp_path, capsys):
+    """The ratchet must not be droppable by regenerating with an old script.
+
+    If a missing budget were tolerated, the whole control could be removed by
+    checking in a baseline built before it existed -- a silent downgrade with
+    a green check.
+    """
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(finding(line_hash="known:1"), 1)])
+    document = json.loads(baseline.read_text(encoding="utf-8"))
+    del document["severity_budget"]
+    baseline.write_text(json.dumps(document), encoding="utf-8")
+    (tmp_path / "python.sarif").write_text(
+        json.dumps(sarif([finding(line_hash="known:1")]))
+    )
+
+    assert inspect(tmp_path, baseline) == 2
+    assert "no severity_budget" in capsys.readouterr().err
+
+
+def test_a_run_at_exactly_its_budget_passes(tmp_path, capsys):
+    """The ratchet must not fail the state it was captured from."""
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_budget(
+        baseline,
+        [(finding(line_hash="known:1"), 1), (severity_finding(), 1)],
+        {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1},
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(severity_sarif([
+        finding(line_hash="known:1"), severity_finding(),
+    ])))
+
+    assert inspect(tmp_path, baseline) == 0
+    out = capsys.readouterr().out
+    assert "critical 1/1" in out, out
+    # The count must be stated on a PASSING run, not only on failure.
+    assert "1 CRITICAL finding(s) are accepted debt" in out, out
+
+
+def test_exceeding_a_severity_budget_fails_closed(tmp_path, capsys):
+    """One more critical finding than the budget allows is a hard stop.
+
+    Exit 2, not 1: this is not "a new finding to triage", it is a control
+    boundary, and the message has to say that regenerating will not move it --
+    otherwise the obvious next step is the one that launders the finding.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_budget(
+        baseline,
+        [(finding(line_hash="known:1"), 1), (severity_finding(), 1)],
+        {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1},
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(severity_sarif([
+        finding(line_hash="known:1"),
+        severity_finding(),
+        severity_finding(uri="other.py", line_hash="ssrf:2"),   # the sixth
+    ])))
+
+    assert inspect(tmp_path, baseline) == 2
+    message = capsys.readouterr().err
+    assert "severity budget exceeded" in message, message
+    assert "critical 2 > 1" in message, message
+    assert SEV_RULE in message, message
+    assert "RATCHET" in message, message
+    assert "will not raise it" in message, message
+
+
+def test_the_budget_catches_a_replacement_the_baseline_would_absorb(tmp_path):
+    """The case the per-key comparison alone cannot be relied on for.
+
+    Here the baseline has been refreshed, so per-key comparison is clean --
+    the critical finding in the SARIF is in the baseline's own key map. What
+    is NOT clean is that the refresh carried one more critical than the budget
+    the previous baseline set. Only the budget sees that.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_budget(
+        baseline,
+        # Two criticals recorded as accepted debt...
+        [(severity_finding(), 1), (severity_finding(uri="b.py", line_hash="ssrf:2"), 1)],
+        # ...but the budget, carried forward from before the refresh, allows one.
+        {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1},
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(severity_sarif([
+        severity_finding(), severity_finding(uri="b.py", line_hash="ssrf:2"),
+    ])))
+
+    # Nothing is NEW by key, so without the budget this would be exit 0.
+    assert inspect(tmp_path, baseline) == 2
+
+
+def test_the_regenerator_refuses_to_raise_a_budget(tmp_path, capsys):
+    """The half of the ratchet that cannot live in the gate.
+
+    The gate compares a run against a committed budget; nothing there stops
+    someone committing a HIGHER budget. And raising it is the easy mistake
+    rather than a malicious one -- a refresh is the documented response to a
+    cleanup, the diff is a megabyte of JSON, and a new critical finding moves
+    one integer inside it.
+    """
+    regen = _regen_module()
+    out = tmp_path / "baseline.json"
+    _write_cycle_sarif(tmp_path)
+    first = regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+    first["severity_budget"] = {"critical": 0, "high": 0, "medium": 0,
+                                "low": 0, "security": 0}
+    out.write_text(json.dumps(first), encoding="utf-8")
+
+    second = dict(first)
+    second["severity_budget"] = {"critical": 1, "high": 0, "medium": 0,
+                                 "low": 0, "security": 1}
+
+    with pytest.raises(SystemExit) as excinfo:
+        regen.enforce_ratchet(first, second, None)
+    message = str(excinfo.value)
+    assert "RAISES a severity budget" in message, message
+    assert "critical 0 -> 1" in message, message
+    assert "--accept-severity-regression" in message, message
+
+
+@pytest.mark.parametrize("reason", [None, "", "oops", "known issue"])
+def test_the_escape_hatch_requires_a_reason_worth_reading(tmp_path, reason):
+    """A one-word reason is how an escape hatch becomes the default path."""
+    regen = _regen_module()
+    before = {"severity_budget": {"critical": 0, "security": 0}}
+    after = {"severity_budget": {"critical": 1, "security": 1}}
+    with pytest.raises(SystemExit):
+        regen.enforce_ratchet(before, after, reason)
+
+
+def test_the_escape_hatch_records_its_reason_in_the_baseline(tmp_path):
+    """A deliberate raise is allowed, and leaves evidence in the diff."""
+    regen = _regen_module()
+    before = {"severity_budget": {"critical": 0, "security": 0}}
+    after = {"severity_budget": {"critical": 1, "security": 1}}
+    reason = "accepted: py/full-ssrf in the offline installer probe, tracked in ADR-0007"
+
+    regen.enforce_ratchet(before, after, reason)
+
+    assert after["severity_budget_raised"]["reason"] == reason
+    assert "critical 0 -> 1" in after["severity_budget_raised"]["detail"]
+
+
+def test_lowering_a_budget_is_always_allowed(tmp_path):
+    """The ratchet only resists one direction; fixing things must be free."""
+    regen = _regen_module()
+    before = {"severity_budget": {"critical": 5, "high": 1146, "security": 1372}}
+    after = {"severity_budget": {"critical": 4, "high": 1100, "security": 1300}}
+
+    regen.enforce_ratchet(before, after, None)
+
+    assert "severity_budget_raised" not in after
+
+
+def test_quality_findings_are_not_ratcheted(tmp_path):
+    """Only the security bands, deliberately.
+
+    Quality findings churn with ordinary refactoring. Budgeting them would
+    make the escape hatch routine, and an escape hatch used routinely is not
+    a control.
+    """
+    regen = _regen_module()
+    before = {"severity_budget": {"critical": 0, "security": 0}}
+    after = {"severity_budget": {"critical": 0, "security": 0}}
+
+    regen.enforce_ratchet(before, after, None)
+
+    assert "severity_budget_raised" not in after
 
 
 def test_open_security_debt_is_disclosed_on_a_passing_run(tmp_path, capsys):

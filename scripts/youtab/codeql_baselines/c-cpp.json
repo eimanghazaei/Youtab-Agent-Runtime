@@ -197,5 +197,12 @@
     "cpp/world-writable-file-creation",
     "cpp/wrong-number-format-arguments",
     "cpp/wrong-type-format-argument"
-  ]
+  ],
+  "severity_budget": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "security": 0
+  }
 }

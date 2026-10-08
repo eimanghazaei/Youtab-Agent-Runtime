@@ -42,7 +42,11 @@ from codeql_sarif_gate import finding_keys  # noqa: E402  (same directory)
 # One source of truth for the per-language facts, shared with the gate so a
 # baseline cannot be built against a different query pack or extraction
 # diagnostic than the gate will later look for.
-from codeql_sarif_gate import LANGUAGES  # noqa: E402  (same directory)
+from codeql_sarif_gate import (  # noqa: E402  (same directory)
+    LANGUAGES,
+    SEVERITY_BANDS,
+    count_by_band,
+)
 
 
 def is_security(rule: dict) -> bool:
@@ -191,6 +195,11 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
         "extracted_count": len(extracted),
         "extracted_paths": extracted,
         "required_rules": sorted(severities),
+        # The ratchet. Counted off the RESULTS so it stays comparable across a
+        # refresh, which is what lets `main()` below refuse to raise it. The
+        # gate rejects a baseline that has no budget, so this control cannot be
+        # dropped by regenerating with an older copy of this script.
+        "severity_budget": count_by_band(run),
     }
 
     # The coverage metadata is DERIVED from the artifact, so a partial SARIF
@@ -261,6 +270,62 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
     return baseline
 
 
+def enforce_ratchet(old: dict | None, new: dict, accepted_reason: str | None) -> None:
+    """Refuse to write a baseline that raises any severity budget.
+
+    This is the half of the ratchet that cannot live in the gate. The gate
+    compares a run against a committed budget; nothing there stops someone
+    committing a HIGHER budget. And raising it is the easy mistake, not a
+    malicious one: a refresh is the documented response to a legitimate
+    cleanup, the diff is a megabyte of JSON, and a new `py/full-ssrf` arriving
+    in the same refresh moves one integer inside it.
+
+    Quality bands are not ratcheted -- only the security ones, plus the
+    `security` total. Quality findings churn with ordinary refactoring and
+    budgeting them would make the escape hatch routine, which is how a control
+    stops being read.
+    """
+    if old is None:
+        return
+    before = old.get("severity_budget") or {}
+    after = new.get("severity_budget") or {}
+    if not isinstance(before, dict):
+        return
+    ratcheted = [name for name, _floor in SEVERITY_BANDS] + ["security"]
+    raised = [
+        (name, int(before[name]), int(after.get(name, 0)))
+        for name in ratcheted
+        if isinstance(before.get(name), int)
+        and int(after.get(name, 0)) > int(before[name])
+    ]
+    if not raised:
+        return
+    detail = "; ".join(f"{name} {was} -> {now}" for name, was, now in raised)
+    if not accepted_reason:
+        raise SystemExit(
+            f"REFUSING to write this baseline: it RAISES a severity budget ({detail}).\n"
+            f"\n"
+            f"A refresh is meant to remove findings that were fixed. Raising a budget "
+            f"means this artifact contains security findings the previous baseline did "
+            f"not, and writing it would record them as reviewed debt -- inside a diff "
+            f"too large to notice them in.\n"
+            f"\n"
+            f"Fix the findings, or, if they are genuinely accepted, re-run with\n"
+            f"  --accept-severity-regression \"<why, in a sentence a reviewer will read>\"\n"
+            f"which records the reason IN the baseline so it shows up in review."
+        )
+    if len(accepted_reason.split()) < 5:
+        raise SystemExit(
+            f"--accept-severity-regression needs a real reason, not "
+            f"{accepted_reason!r}. It is written into the baseline and read in review."
+        )
+    new["severity_budget_raised"] = {
+        "detail": detail,
+        "reason": accepted_reason,
+    }
+    print(f"WARNING: severity budget RAISED ({detail}) -- reason recorded in the baseline.")
+
+
 def summarize(old: dict | None, new: dict) -> None:
     if old is None:
         print(f"new baseline: {new['open_total']} findings "
@@ -270,6 +335,13 @@ def summarize(old: dict | None, new: dict) -> None:
     removed, added = before - after, after - before
     print(f"open_total {old.get('open_total')} -> {new['open_total']} "
           f"({new['open_security']} security / {new['open_quality']} quality)")
+    was, now = old.get("severity_budget") or {}, new.get("severity_budget") or {}
+    moved = [
+        f"{name} {was.get(name, 0)} -> {now.get(name, 0)}"
+        for name, _floor in SEVERITY_BANDS
+        if was.get(name, 0) != now.get(name, 0)
+    ]
+    print("  severity budget: " + ("; ".join(moved) if moved else "unchanged"))
     print(f"  removed (fixed or no longer reported): {sum(removed.values())}")
     print(f"  added   (NEW -- review each one)     : {sum(added.values())}")
     for label, delta in (("removed", removed), ("added", added)):
@@ -291,17 +363,25 @@ def main() -> int:
                         help="output path (default: scripts/youtab/codeql_baselines/<language>.json)")
     parser.add_argument("--stdout", action="store_true",
                         help="print the baseline instead of writing it")
+    parser.add_argument("--accept-severity-regression", default=None, metavar="REASON",
+                        help="deliberately RAISE a severity budget, recording REASON in "
+                             "the baseline. Refused without this flag.")
     args = parser.parse_args()
 
     baseline = build(args.sarif_dir, args.language, args.source_run, args.source_head)
-    rendered = json.dumps(baseline, indent=2, sort_keys=False) + "\n"
 
     if args.stdout:
+        rendered = json.dumps(baseline, indent=2, sort_keys=False) + "\n"
         sys.stdout.write(rendered)
         return 0
 
     out = args.out or (Path(__file__).resolve().parent / "codeql_baselines" / f"{args.language}.json")
     old = json.loads(out.read_text(encoding="utf-8")) if out.exists() else None
+    # Before anything is written, and before the human-readable summary, so a
+    # refused refresh cannot leave a half-written baseline or a summary that
+    # reads like success.
+    enforce_ratchet(old, baseline, args.accept_severity_regression)
+    rendered = json.dumps(baseline, indent=2, sort_keys=False) + "\n"
     summarize(old, baseline)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(rendered, encoding="utf-8")
