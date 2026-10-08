@@ -2907,21 +2907,37 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # managed-run progress feed reads it and does not record a refused call as
     # work; without it the durable feed asserts that a blocked tool ran.
     #
-    # It is on the seventeen guards in this module that refuse BEFORE the
-    # action happens, and deliberately NOT on these eight, which are not
-    # authorization decisions -- marking them would suppress a row for work
-    # that really occurred, or hide a failure the feed should show:
+    # THE CRITERION IS ORDERING, NOT THE MESSAGE. A guard carries the marker
+    # only when it returns BEFORE the tool's action happens. Twelve do. The
+    # other thirteen error returns in this module do not, and five of those
+    # were marked on a first pass by matching on "Blocked:" text instead of
+    # reading the control flow -- which is the mistake this comment exists to
+    # prevent.
     #
-    #   the two post-redirect guards in this function, because
-    #       `_run_browser_command(open)` has already SUCCEEDED by then -- the
-    #       page was fetched and the result is withheld afterwards, with the
-    #       session reset to about:blank. The navigation happened.
-    #   the navigation-failed return below it      (runtime failure)
-    #   browser_scroll's invalid `direction`       (input validation)
-    #   _browser_eval's generic error return       (runtime failure)
-    #   _camofox_eval's "JS eval unsupported"      (capability, not policy)
-    #   _camofox_eval's generic tool_error         (runtime failure)
-    #   browser_vision's missing screenshot file   (runtime failure)
+    # Those five are POST-ACTION result-withholding guards: the action already
+    # ran and the guard refuses to hand back what it produced.
+    # ``browser_snapshot`` has taken the snapshot ("before returning the
+    # snapshot"), ``browser_back`` has executed the history move ("Re-check
+    # post-navigation"), both ``_browser_eval`` rechecks are labelled
+    # "Post-eval ... withhold the result", and ``browser_get_images`` has run
+    # its eval. Suppressing their steps deleted a TRUE row for work that
+    # really happened, which AGENTS.md's capability posture forbids outright:
+    # a mitigation must preserve the feature while enforcing the boundary, and
+    # the trace is part of the feature.
+    #
+    # Also unmarked, and not authorization decisions at all: the two
+    # post-redirect guards below, the navigation-failed return, scroll's
+    # invalid `direction` (input validation), _browser_eval's generic error,
+    # _camofox_eval's "JS eval unsupported" (a capability limit) and its
+    # generic tool_error, and browser_vision's missing screenshot file.
+    #
+    # The twelve that ARE marked, each verified by reading its ordering:
+    # these six pre-navigation guards; `_blocked_private_page_action`, whose
+    # three callers (click/type/press) all return it before their command;
+    # both `browser_console` guards; `_browser_eval`'s expression pre-scan;
+    # `_camofox_eval`'s page check; and `browser_vision`, whose own comment is
+    # "Re-check the current URL before capturing anything" -- the
+    # `_run_browser_command` above it only reads the URL.
     if _PREFIX_RE.search(url) or _PREFIX_RE.search(url_decoded):
         return json.dumps({
             "success": False,
@@ -3196,7 +3212,6 @@ def browser_snapshot(
                     if _current_url and not _is_safe_url(_current_url):
                         return json.dumps({
                             "success": False,
-                            "authorization": "denied",
                             "error": (
                                 "Blocked: page URL targets a private or internal address "
                                 f"({_current_url}). This may have been caused by a "
@@ -3419,7 +3434,6 @@ def browser_back(task_id: Optional[str] = None) -> str:
             if _blocked_url:
                 return json.dumps({
                     "success": False,
-                    "authorization": "denied",
                     "error": (
                         "Blocked: page URL targets a private or internal address "
                         f"({_blocked_url}). Browser history navigation (back) "
@@ -3851,7 +3865,6 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
                     if _blocked_url:
                         return json.dumps({
                             "success": False,
-                            "authorization": "denied",
                             "error": (
                                 "Blocked: page URL targets a private or internal "
                                 f"address ({_blocked_url}). This may have been "
@@ -3941,7 +3954,6 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         if _blocked_url:
             return json.dumps({
                 "success": False,
-                "authorization": "denied",
                 "error": (
                     "Blocked: page URL targets a private or internal address "
                     f"({_blocked_url}). This may have been caused by a "
@@ -4108,7 +4120,6 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
             if _blocked_url:
                 return json.dumps({
                     "success": False,
-                    "authorization": "denied",
                     "error": (
                         "Blocked: page URL targets a private or internal address "
                         f"({_blocked_url}). This may have been caused by a "

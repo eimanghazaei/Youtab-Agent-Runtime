@@ -8,10 +8,16 @@ envelope for both and inferring from the envelope was wrong in the costly
 direction -- an authorized call that ran and then failed stopped appearing in
 the feed at all.
 
-`browser_tool` has twenty-five error returns. Seventeen refuse before the
-action happens and carry the marker; eight do not and must not, because
-marking them would suppress a row for work that really occurred or hide a
-failure worth seeing. Both halves are asserted here: the inventory test pins
+`browser_tool` has twenty-five error returns. TWELVE refuse before the
+action happens and carry the marker; thirteen do not and must not.
+
+The criterion is ORDERING, not the message text. Five guards were marked on
+a first pass by matching on "Blocked:" instead of reading the control flow,
+and they are post-action result-withholding guards -- the snapshot had been
+taken, the history move executed, the eval run. Suppressing their steps
+deleted a TRUE row for work that really happened, which AGENTS.md's
+capability posture forbids: a mitigation must preserve the feature while
+enforcing the boundary, and the trace is part of the feature. Both halves are asserted here: the inventory test pins
 the counts so a new guard cannot be added without a decision, and the
 behavioural tests drive the real guards rather than asserting on source.
 """
@@ -32,25 +38,29 @@ BROWSER_TOOL = REPO_ROOT / "tools" / "browser_tool.py"
 #: (browser_click, browser_type, browser_press).
 EXPECTED_MARKED = {
     "browser_navigate": 6,
-    "browser_snapshot": 1,
-    "browser_back": 1,
     "_blocked_private_page_action": 1,
     "browser_console": 2,
-    "_browser_eval": 3,
+    "_browser_eval": 1,
     "_camofox_eval": 1,
-    "browser_get_images": 1,
     "browser_vision": 1,
 }
 
 #: Error returns that are NOT authorization decisions, and why. Marking any of
 #: these would delete a legitimate progress row.
 EXPECTED_UNMARKED = {
-    # Two post-redirect guards: `_run_browser_command(open)` has already
-    # succeeded, so the page WAS fetched; these withhold the result and reset
-    # the session to about:blank. The navigation happened.
-    "browser_navigate": 3,       # + the navigation-failed runtime return
+    # browser_navigate: the two post-redirect guards (the open command had
+    # already succeeded) plus the navigation-failed runtime return.
+    "browser_navigate": 3,
+    # POST-ACTION result withholding: the snapshot was taken, the history
+    # move executed, the eval ran. The work happened, so the step is true and
+    # suppressing it would delete a trace row.
+    "browser_snapshot": 1,
+    "browser_back": 1,
+    "browser_get_images": 1,
+    # one generic runtime error + the two "Post-eval ... withhold the result"
+    # rechecks
+    "_browser_eval": 3,
     "browser_scroll": 1,         # invalid `direction` -- input validation
-    "_browser_eval": 1,          # generic runtime error
     "_camofox_eval": 2,          # JS-eval unsupported (capability) + generic
     "browser_vision": 1,         # screenshot file missing -- runtime
 }
@@ -190,6 +200,27 @@ def test_the_console_eval_policy_refusal_is_detected(monkeypatch) -> None:
     assert payload["authorization"] == "denied"
     assert "document.cookie" in payload["error"]
     assert _detects(raw), raw
+
+
+def test_a_post_action_withholding_payload_is_not_detected_as_a_refusal() -> None:
+    """The half that must keep emitting, and the one I got wrong first.
+
+    `browser_snapshot` and `browser_back` run their action and THEN discover
+    the page is private, so they withhold a result that already exists. The
+    work happened; the step is true. Marking these suppressed it.
+
+    Asserted on the real payload shape those guards produce, so a future
+    re-marking fails here as well as in the inventory test.
+    """
+    from agent import tool_executor
+
+    withheld = json.dumps({
+        "success": False,
+        "error": ("Blocked: page URL targets a private or internal address "
+                  "(http://169.254.169.254/). Browser history navigation "
+                  "(back) landed on this address."),
+    })
+    assert not tool_executor._is_authorization_refusal(withheld), withheld
 
 
 def test_an_ordinary_browser_failure_is_not_detected_as_a_refusal() -> None:
