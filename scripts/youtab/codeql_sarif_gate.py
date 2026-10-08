@@ -364,16 +364,27 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             # the exact hole this check exists to close, reopened by the
             # constant.
             #
-            # `>= 3` rules stays, so completely remediating ONE rule is never
-            # a coverage alarm. The 10% floor is of the side the missing
-            # findings come from, with an absolute floor of 10 so a tiny
-            # baseline cannot trip on single digits. A deliberate remediation
-            # large enough to cross it does fire -- and the right response to
-            # that is exactly what the message says: read them, then rebuild
-            # the baseline.
+            # VOLUME ONLY -- there is deliberately no condition on the number
+            # of rules. A `len(suspect) >= 3` floor was here to keep
+            # remediating one whole rule from raising an alarm, and it opened
+            # a hole big enough to drive the original bug through: losing just
+            # `py/clear-text-logging-sensitive-data` (734) and
+            # `py/path-injection` (279) is 1013 findings, over the
+            # proportional floor of 908, but `len(suspect) == 2` so the check
+            # never fired and all 1013 filed as non-enforcing `absent`. Two
+            # queries are exactly how many a partial failure needs to take.
+            #
+            # The floor is 10% of the side the missing findings come from,
+            # with an absolute floor of 10 so a tiny baseline cannot trip on
+            # single digits.
+            #
+            # The cost is that a deliberate remediation large enough to cross
+            # that floor now stops the gate too. That is the correct outcome,
+            # not a false positive: remediating 10% of the baseline is exactly
+            # when the baseline should be rebuilt, and the message below names
+            # remediation as one of the two causes so the reader is not sent
+            # hunting for a scanner fault that is not there.
             def coverage_breach(suspect: Counter[str], total: int) -> bool:
-                if len(suspect) < 3:
-                    return False
                 return sum(suspect.values()) >= max(10, -(-total * 10 // 100))
 
             for label, suspect, total, explanation in (
@@ -393,12 +404,14 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                     )
                     raise ValueError(
                         f"{label} {len(suspect)} required queries accounting for "
-                        f"{sum(suspect.values())} findings ({worst}). This is a coverage "
-                        f"mismatch, not a regression: {explanation}. Check that codeql.yml "
-                        f"still sets CODEQL_ACTION_DIFF_INFORMED_QUERIES=false and that the "
-                        f"analysis completed, then rebuild the baseline from a full run. Do "
-                        f"NOT refresh it to clear this without reading the findings first -- "
-                        f"a refresh accepts every one as reviewed debt."
+                        f"{sum(suspect.values())} findings ({worst}). Two causes look "
+                        f"identical from here and they need opposite responses. Either "
+                        f"{explanation} -- check that codeql.yml still sets "
+                        f"CODEQL_ACTION_DIFF_INFORMED_QUERIES=false and that every "
+                        f"invocation completed -- or those queries really were remediated "
+                        f"in full, which is the one case where rebuilding the baseline from "
+                        f"a complete run is the right move. Read the findings before you "
+                        f"decide: a refresh accepts every one of them as reviewed debt."
                     )
     except (OSError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         print(f"CodeQL SARIF or baseline could not be verified: {exc}", file=sys.stderr)

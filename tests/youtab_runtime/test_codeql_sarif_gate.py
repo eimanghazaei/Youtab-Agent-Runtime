@@ -725,13 +725,63 @@ def test_coverage_breach_is_proportional_not_an_absolute_count(tmp_path):
     assert inspect(tmp_path, baseline) == 2
 
 
-def test_remediating_one_whole_rule_is_not_a_coverage_breach(tmp_path):
-    """Emptying a single rule, however large, stays an ordinary pass.
+def test_two_high_volume_queries_vanishing_is_a_coverage_breach(tmp_path):
+    """Two queries are exactly how many a partial failure needs to take.
 
-    34 of 110 findings is well over the proportional floor, but it is one
-    rule -- which is remediation, not a coverage change. The `>= 3` rules
-    condition is what separates them.
+    A `len(suspect) >= 3` floor was here to keep remediating one whole rule
+    from raising an alarm, and it opened a hole big enough to drive the
+    original bug through. On the real Python baseline, losing only
+    `py/clear-text-logging-sensitive-data` (734) and `py/path-injection`
+    (279) is 1013 findings -- over the proportional floor of 908 -- but
+    `len(suspect) == 2`, so the check never fired and all 1013 filed as
+    non-enforcing `absent`. Green gate.
+
+    Those proportions are reproduced here: two rules holding 1013 of a
+    9076-finding baseline, both gone.
+
+    Mutation check: reinstate a `len(suspect) >= 3` condition and this goes
+    green.
     """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash="syntactic:1"), 8063),
+         (dataflow_finding("py/clear-text-logging-sensitive-data", line_hash="ctl:1"), 734),
+         (dataflow_finding("py/path-injection", line_hash="pi:1"), 279)],
+        ["py/sql-injection", "py/clear-text-logging-sensitive-data", "py/path-injection"],
+    )
+    document = sarif([finding(line_hash="syntactic:1")])
+    for rule in ("py/clear-text-logging-sensitive-data", "py/path-injection"):
+        document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": rule})
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+
+    assert inspect(tmp_path, baseline) == 2
+
+
+def test_remediating_a_small_rule_entirely_is_still_an_ordinary_pass(tmp_path):
+    """Below the proportional floor, a whole rule going to zero is just a fix.
+
+    This is the case the rule-count floor was protecting, and the volume
+    floor protects it properly: 9 findings out of 9076 is remediation, and
+    the gate should not editorialise about it.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash="syntactic:1"), 9067),
+         (dataflow_finding("py/partial-ssrf", line_hash="ssrf:1"), 9)],
+        ["py/sql-injection", "py/partial-ssrf"],
+    )
+    document = sarif([finding(line_hash="syntactic:1")])
+    document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": "py/partial-ssrf"})
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+
+    assert inspect(tmp_path, baseline) == 0
+
+
+def test_the_coverage_message_names_remediation_as_a_cause(tmp_path, capsys):
+    """A large deliberate remediation now trips the gate too, so the message
+    must not send the reader hunting for a scanner fault that is not there."""
     baseline = tmp_path / "baseline.json"
     _baseline_requiring(
         baseline,
@@ -743,7 +793,10 @@ def test_remediating_one_whole_rule_is_not_a_coverage_breach(tmp_path):
     document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": "py/path-injection"})
     (tmp_path / "python.sarif").write_text(json.dumps(document))
 
-    assert inspect(tmp_path, baseline) == 0
+    assert inspect(tmp_path, baseline) == 2
+    err = capsys.readouterr().err
+    assert "remediated in full" in err
+    assert "Read the findings before you decide" in err
 
 
 # ---------------------------------------------------------------------------
