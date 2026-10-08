@@ -438,3 +438,55 @@ class TestBlueBubblesWebhookRegistration:
         assert len(deleted_ids) == 2
 
 
+
+
+class TestBlueBubblesLogRedaction:
+    """``_redact`` scrubs webhook-derived text on its way into the log.
+
+    Its patterns therefore run on attacker-supplied input and must stay
+    linear. An unbounded ``+`` in front of a required literal makes ``sub``
+    retry the maximal run at every start offset, which is quadratic: a 32 KB
+    run of local-part characters with no ``@`` cost ~3.5 s, and
+    ``<run>@<run>`` ~11.6 s, of gateway CPU per redacted line.
+    """
+
+    def test_redacts_emails_and_phone_numbers(self):
+        from gateway.platforms.bluebubbles import _redact
+
+        assert _redact("mail a.b+tag-1@example.co.uk now") == "mail [REDACTED] now"
+        assert _redact("mail first.last@sub.domain.example.com") == "mail [REDACTED]"
+        assert _redact("mail USER_99@mail-server.example.org") == "mail [REDACTED]"
+        assert _redact("call +15551234567 now") == "call [REDACTED] now"
+        assert _redact("no identifiers here") == "no identifiers here"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param("a" * 32768, id="long-local-part-no-at"),
+            pytest.param("a" * 32768 + "@" + "b" * 32768, id="long-run-at-long-run"),
+            pytest.param(("a" * 64 + "@") * 512, id="repeated-unterminated-addresses"),
+        ],
+    )
+    def test_redaction_stays_cheap_on_adversarial_input(self, payload):
+        """Budget is ~70x the linear cost and ~6x under the quadratic cost, so
+        this fails loudly if an unbounded quantifier comes back but does not
+        flake on a slow or contended runner."""
+        import time
+
+        from gateway.platforms.bluebubbles import _redact
+
+        started = time.perf_counter()
+        _redact(payload)
+        elapsed = time.perf_counter() - started
+        assert elapsed < 2.0, f"_redact took {elapsed:.2f}s on {len(payload)} chars"
+
+    def test_local_part_longer_than_rfc_maximum_is_redacted_from_the_tail(self):
+        """Bounding the local part at the RFC 5321 maximum (64) is what makes
+        the pattern linear, so a longer run is matched from its last 64
+        characters and the overflow prefix survives. Such a string is not a
+        valid address, and the part that is one is still redacted."""
+        from gateway.platforms.bluebubbles import _redact
+
+        out = _redact("x" * 70 + "@example.com")
+        assert "@example.com" not in out
+        assert out == "x" * 6 + "[REDACTED]"

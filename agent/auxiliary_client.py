@@ -2221,6 +2221,11 @@ def _try_youtab(vision: bool = False) -> Tuple[Optional[OpenAI], Optional[str]]:
             _mark_provider_unhealthy("youtab", ttl=_remaining)
             return None, None
     except Exception:
+        # The cross-session guard is advisory: it only skips work we already
+        # know would be rate-limited. If it cannot be consulted at all (module
+        # absent, state unreadable) the correct behaviour is to go on and let
+        # the request path deal with a 429 itself, so there is nothing to do
+        # here but continue.
         pass
 
     from youtab_agent_cli.auth import get_local_inference_token_state
