@@ -96,6 +96,50 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
     if (run.get("automationDetails") or {}).get("id") != f"/language:{language}/":
         raise SystemExit(f"SARIF is not a /language:{language}/ analysis")
 
+    # Everything below mirrors a check `codeql_sarif_gate.inspect` already
+    # makes. A baseline built from an artifact the gate would reject is worse
+    # than no baseline: it passes review as "regenerated", then fails the
+    # advertised round-trip on the next run with no obvious cause.
+
+    # The workflow uploads the SARIF under `if: always()`, so a FAILED CodeQL
+    # run still leaves a downloadable artifact. Building a baseline from a
+    # partial analysis would bake its missing results in as accepted debt.
+    if not any(item.get("executionSuccessful") is True
+               for item in run.get("invocations", [])):
+        raise SystemExit(
+            "SARIF records no successful invocation -- this is the artifact of a FAILED "
+            "or partial CodeQL run (the workflow uploads on always()). Re-run the "
+            "analysis and download the artifact from a green run; a baseline built from "
+            "this would record the missing results as accepted debt."
+        )
+
+    # The gate requires the baseline to have come from `security-and-quality`.
+    # A SARIF produced with the default suite has fewer queries, so a baseline
+    # built from one silently drops whole rule classes to zero.
+    queries = (run.get("properties") or {}).get("codeqlConfigSummary", {}).get("queries")
+    if queries != [{"type": "builtinSuite", "uses": "security-and-quality"}]:
+        raise SystemExit(
+            f"SARIF was produced with query suite {queries!r}, not the "
+            "security-and-quality suite the gate requires. A baseline built from it "
+            "would zero out every rule the narrower suite does not run."
+        )
+
+    # `--source-head` is recorded as the baseline's provenance and nothing
+    # downstream re-derives it, so a mistyped SHA or the wrong run's artifact
+    # yields a baseline that is accepted while describing a different tree.
+    revisions = {
+        item.get("revisionId")
+        for item in run.get("versionControlProvenance") or []
+        if item.get("revisionId")
+    }
+    if revisions and source_head not in revisions:
+        raise SystemExit(
+            f"--source-head {source_head} does not match the SARIF's own provenance "
+            f"({', '.join(sorted(revisions))}). Either the wrong run's artifact was "
+            "downloaded or the SHA was mistyped; the baseline would claim to describe a "
+            "tree it was not built from."
+        )
+
     query_sets = [item for item in run["tool"].get("extensions", [])
                   if item.get("name") == expected_queries]
     if len(query_sets) != 1:

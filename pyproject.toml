@@ -141,6 +141,19 @@ dependencies = [
   # messaging-platform attachment -- on every install, so the floor is
   # load-bearing. Keep in lockstep with the `tool.vision` pin in
   # tools/lazy_deps.py; test_project_metadata.py enforces that coupling.
+  #
+  # Known cost, accepted deliberately: 12.3.0 ships manylinux_2_27 and
+  # manylinux_2_28 wheels where 12.2.0 also shipped manylinux_2_17
+  # (manylinux2014). So on a glibc between 2.17 and 2.26 -- CentOS/RHEL 7 and
+  # relatives -- `uv sync --locked` now falls back to Pillow's sdist, and the
+  # installer does not provision its native build dependencies, so the install
+  # fails rather than degrading. Taken anyway: the project declares no glibc
+  # floor and no OS-version gate, RHEL 7 reached end of maintenance in June
+  # 2024 and cannot supply the required Python >= 3.11 from system packages,
+  # and 20 advisories on a path that decodes attacker-supplied images is the
+  # larger exposure. If a glibc < 2.27 host does need supporting, the fix is a
+  # declared support floor plus build dependencies in the installer -- not
+  # holding this pin back.
   "Pillow==12.3.0",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on

@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -77,27 +78,53 @@ def file_of(key: str) -> str:
     return json.loads(key)[1]
 
 
-def split_by_identity(counts: Counter[str]) -> tuple[Counter[str], Counter[tuple[str, str]]]:
-    """Partition findings into exact-key and per-file-count buckets."""
-    exact: Counter[str] = Counter()
-    scoped: Counter[tuple[str, str]] = Counter()
-    for key, count in counts.items():
-        rule = rule_of(key)
-        if rule in GRAPH_SCOPED_RULES:
-            scoped[(rule, file_of(key))] += count
-        else:
-            exact[key] += count
-    return exact, scoped
+def graph_identity(message: str) -> str:
+    """The stable part of a graph-scoped finding's message.
+
+    ``py/cyclic-import`` reports ``Import of module [pkg.mod](1) begins an
+    import cycle.`` and ``py/import-and-import-from`` reports ``Module
+    'pkg.mod' is imported with both 'import' and 'import from'.`` -- in both
+    the module name is the defect's identity, and it does not move when an
+    unrelated line in the file does. The ``(1)`` is a SARIF relatedLocations
+    index, so it is stripped: it is presentation, not identity.
+
+    Verified stable: across a diff-informed pull-request run and a full push
+    run of the same tree, `youtab_agent_cli/update_cmd.py` produced the
+    identical eight module names with identical multiplicities while the line
+    numbers moved.
+    """
+    return re.sub(r"\((\d+)\)", "", message).strip()
 
 
 def finding_key(result: dict) -> str:
+    """A finding's identity, by rule class.
+
+    Localized defects are keyed on ``primaryLocationLineHash``, which survives
+    the file moving around them. Graph-scoped rules cannot be: the defect is a
+    property of the module import graph but is reported once per participating
+    import statement, so editing any module in a cycle re-reports every member
+    at a shifted line and the hash changes for a defect that did not. Those are
+    keyed on the module name from the message instead -- stable under line
+    churn, and still distinct when the cycle itself changes, so fixing one
+    cycle and introducing another in the same file is a NEW finding rather than
+    a no-op at an unchanged count.
+    """
     location = result["locations"][0]["physicalLocation"]
     uri = location["artifactLocation"]["uri"]
+    rule = result["ruleId"]
+    if not isinstance(rule, str) or not rule or not isinstance(uri, str) or not uri:
+        raise ValueError("incomplete finding identity")
+
+    if rule in GRAPH_SCOPED_RULES:
+        identity = graph_identity(str((result.get("message") or {}).get("text", "")))
+        if not identity:
+            raise ValueError(f"{rule}: graph-scoped finding carries no message to key on")
+        return json.dumps([rule, uri, identity], separators=(",", ":"))
+
     fingerprints = result["partialFingerprints"]
     line_hash = fingerprints["primaryLocationLineHash"]
     column = fingerprints["primaryLocationStartColumnFingerprint"]
-    rule = result["ruleId"]
-    if not all(isinstance(value, str) and value for value in (rule, uri, line_hash, column)):
+    if not all(isinstance(value, str) and value for value in (line_hash, column)):
         raise ValueError("incomplete finding identity")
     return json.dumps([rule, uri, line_hash, column], separators=(",", ":"))
 
@@ -255,58 +282,78 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             # key-by-key it reads as 1272 NEW findings. The obvious next move
             # -- refresh the baseline -- would then accept 1272 security
             # findings as reviewed debt. So refuse to judge instead.
-            suspect = Counter()
+            # Both rule-coverage sets are built ONCE. Doing the baseline
+            # membership test inline per current finding is quadratic -- 8971
+            # keys reparsed for each of 8971 findings -- and that cost is paid
+            # on every CodeQL job before any comparison happens.
+            required_set = set(required_rules or ())
+            baseline_rule_totals: Counter[str] = Counter()
+            for key, count in baseline.items():
+                baseline_rule_totals[rule_of(key)] += count
+            current_rule_totals: Counter[str] = Counter()
             for key, count in current.items():
-                rule = rule_of(key)
-                if rule in set(required_rules or ()) and not any(
-                    rule_of(k) == rule for k in baseline
-                ):
-                    suspect[rule] += count
-            if len(suspect) >= 3 and sum(suspect.values()) > 100:
-                worst = ", ".join(
-                    f"{rule} ({count})" for rule, count in suspect.most_common(5)
-                )
-                raise ValueError(
-                    f"baseline under-records {len(suspect)} required queries that this run "
-                    f"reports {sum(suspect.values())} findings for ({worst}). This is an "
-                    f"event mismatch, not a regression: the baseline was captured under "
-                    f"CodeQL's diff-informed analysis (the pull_request default, which clips "
-                    f"dataflow results to the diff) and is being compared against a full "
-                    f"analysis. Check that codeql.yml still sets "
-                    f"CODEQL_ACTION_DIFF_INFORMED_QUERIES=false, then rebuild the baseline "
-                    f"from a full run. Do NOT refresh it to clear this without reading the "
-                    f"findings first -- a refresh accepts every one as reviewed debt."
-                )
+                current_rule_totals[rule_of(key)] += count
+
+            # Direction 1: the baseline is missing a required query this run
+            # reports in bulk.
+            missing_in_baseline = Counter({
+                rule: count for rule, count in current_rule_totals.items()
+                if rule in required_set and rule not in baseline_rule_totals
+            })
+            # Direction 2: THIS RUN is missing a required query the baseline
+            # records in bulk. Symmetric and just as dangerous: a run that
+            # loses its interprocedural output still reports every syntactic
+            # finding, so `current` is nonempty and the all-zero check above
+            # passes. Those 1272 dataflow findings would land in `absent`,
+            # which is not enforcing -- a partial scanner failure would score
+            # a GREEN security gate. Fail closed on it instead.
+            missing_in_current = Counter({
+                rule: count for rule, count in baseline_rule_totals.items()
+                if rule in required_set and rule not in current_rule_totals
+            })
+
+            for label, suspect, explanation in (
+                ("baseline under-records", missing_in_baseline,
+                 "the baseline was captured under CodeQL's diff-informed analysis (the "
+                 "pull_request default, which clips dataflow results to the diff) and is "
+                 "being compared against a full analysis"),
+                ("THIS RUN under-reports", missing_in_current,
+                 "this run lost the output of queries the baseline records, which is what a "
+                 "partially failed analysis or a re-enabled diff-informed run looks like"),
+            ):
+                if len(suspect) >= 3 and sum(suspect.values()) > 100:
+                    worst = ", ".join(
+                        f"{rule} ({count})" for rule, count in suspect.most_common(5)
+                    )
+                    raise ValueError(
+                        f"{label} {len(suspect)} required queries accounting for "
+                        f"{sum(suspect.values())} findings ({worst}). This is a coverage "
+                        f"mismatch, not a regression: {explanation}. Check that codeql.yml "
+                        f"still sets CODEQL_ACTION_DIFF_INFORMED_QUERIES=false and that the "
+                        f"analysis completed, then rebuild the baseline from a full run. Do "
+                        f"NOT refresh it to clear this without reading the findings first -- "
+                        f"a refresh accepts every one as reviewed debt."
+                    )
     except (OSError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
         print(f"CodeQL SARIF or baseline could not be verified: {exc}", file=sys.stderr)
         return 2
 
-    current_exact, current_scoped = split_by_identity(current)
-    baseline_exact, baseline_scoped = split_by_identity(baseline)
-
-    # Exact-key rules: any key not seen before is a new finding.
-    new = current_exact - baseline_exact
-    absent = baseline_exact - current_exact
-
-    # Graph-scoped rules: only a per-file INCREASE is a regression. Counter
-    # subtraction drops non-positive values, so this is exactly "went up".
-    scoped_regressions = current_scoped - baseline_scoped
-    scoped_absent = baseline_scoped - current_scoped
+    # One comparison mode. `finding_key` already gives graph-scoped rules an
+    # identity that survives line churn (the module name from the message), so
+    # they no longer need a per-file count ceiling -- and unlike that ceiling,
+    # this still catches a REPLACEMENT: fixing one cycle in a file and
+    # introducing a different one leaves the count unchanged but changes the
+    # key, so it surfaces as new rather than passing silently.
+    new = current - baseline
+    absent = baseline - current
 
     for key in list(new.elements())[:100]:
         rule, file, line, message = details[key]
         print(f"{file}:{line}: {rule}: {message[:300]}", file=sys.stderr)
-    for (rule, file), delta in sorted(scoped_regressions.items()):
-        was = baseline_scoped[(rule, file)]
-        print(
-            f"{file}: {rule}: {was + delta} findings, up {delta} from {was} in the baseline",
-            file=sys.stderr,
-        )
-    failures = sum(new.values()) + sum(scoped_regressions.values())
-    stale = sum(absent.values()) + sum(scoped_absent.values())
+    failures = sum(new.values())
+    stale = sum(absent.values())
     summary = (
         f"CodeQL SARIF: {sum(current.values())} open, {sum(new.values())} new, "
-        f"{sum(scoped_regressions.values())} graph-scoped increases, "
         f"{stale} absent from current SARIF against "
         f"{baseline_path if baseline_path else 'empty baseline'}"
     )

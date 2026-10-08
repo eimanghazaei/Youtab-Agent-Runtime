@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from scripts.youtab.codeql_sarif_gate import finding_key, inspect
 
 
@@ -196,10 +198,13 @@ def test_changed_html_or_yaml_requires_javascript_extraction(tmp_path, monkeypat
 CYCLE_RULE = "py/cyclic-import"
 
 
-def cycle_finding(uri="app.py", line_hash="cyc:1"):
+def cycle_finding(uri="app.py", line_hash="cyc:1", module="pkg.config"):
+    # The MODULE NAME is the identity now, not the line hash -- `finding_key`
+    # keys graph-scoped rules on the message. `(1)` is a relatedLocations
+    # index and is stripped, so it is included here to pin that stripping.
     return {
         "ruleId": CYCLE_RULE,
-        "message": {"text": "Import of module begins an import cycle."},
+        "message": {"text": f"Import of module [{module}](1) begins an import cycle."},
         "locations": [{"physicalLocation": {
             "artifactLocation": {"uri": uri},
             "region": {"startLine": 11},
@@ -220,22 +225,41 @@ def cycle_sarif(results):
 def test_graph_scoped_line_hash_churn_is_not_a_new_finding(tmp_path):
     """The regression this gate shipped with: same defect, shifted line.
 
-    Baseline records two cycle findings in app.py. The current run reports two
-    cycle findings in app.py at completely different line hashes -- which is
-    what happens when an unrelated module in the same cycle is edited. Count is
-    unchanged, so this must pass. Before the per-file count comparison it
-    reported "2 new, 2 absent" and failed.
+    Two cycle findings on `pkg.config`, re-reported at completely different
+    line hashes -- what happens when an unrelated module in the same cycle is
+    edited. The module name is unchanged, so the key is unchanged and this
+    must pass. Keyed on the line hash it reported "2 new, 2 absent" and failed.
     """
     baseline = tmp_path / "baseline.json"
-    write_baseline(baseline, [
-        (cycle_finding(line_hash="was:1"), 1),
-        (cycle_finding(line_hash="was:2"), 1),
-    ])
+    write_baseline(baseline, [(cycle_finding(line_hash="was:1"), 2)])
     (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
         cycle_finding(line_hash="now:1"),
         cycle_finding(line_hash="now:2"),
     ])))
     assert inspect(tmp_path, baseline) == 0
+
+
+def test_graph_scoped_replacement_at_an_unchanged_count_is_caught(tmp_path):
+    """A swap that leaves the per-file COUNT identical must still fail.
+
+    One cycle on `pkg.config` is fixed and a new one on `pkg.auth` appears in
+    the same file. The count is unchanged, so a per-(rule, file) count ceiling
+    saw nothing -- both subtractions were empty and the gate exited 0, which
+    silently broke the no-new-findings guarantee during ordinary cycle
+    refactors. Keying on the module name makes it one `new` and one `absent`.
+
+    Mutation check: aggregate graph rules to a per-(rule, file) count and this
+    goes green when it must not -- verified directly, the count ceiling sees
+    1 - 1 = 0 in both directions here. (Keying on the line hash would also
+    catch THIS case; what it cannot survive is the churn in the test above.
+    The two tests pin the two halves.)
+    """
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(cycle_finding(module="pkg.config"), 1)])
+    (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
+        cycle_finding(module="pkg.auth", line_hash="now:1"),
+    ])))
+    assert inspect(tmp_path, baseline) == 1
 
 
 def test_graph_scoped_count_increase_in_a_file_still_fails(tmp_path):
@@ -245,7 +269,7 @@ def test_graph_scoped_count_increase_in_a_file_still_fails(tmp_path):
     (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
         cycle_finding(line_hash="now:1"),
         cycle_finding(line_hash="now:2"),
-    ])))
+    ] * 1 + [cycle_finding(module="pkg.extra")])))
     assert inspect(tmp_path, baseline) == 1
 
 
@@ -268,16 +292,16 @@ def test_graph_scoped_decrease_passes_and_does_not_mask_exact_rules(tmp_path):
     """
     baseline = tmp_path / "baseline.json"
     write_baseline(baseline, [
-        (cycle_finding(line_hash="was:1"), 1),
-        (cycle_finding(line_hash="was:2"), 1),
+        (cycle_finding(module="pkg.config"), 1),
+        (cycle_finding(module="pkg.other"), 1),
     ])
     (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
-        cycle_finding(line_hash="now:1"),
+        cycle_finding(module="pkg.config", line_hash="now:1"),
     ])))
     assert inspect(tmp_path, baseline) == 0
 
     (tmp_path / "python.sarif").write_text(json.dumps(cycle_sarif([
-        cycle_finding(line_hash="now:1"),
+        cycle_finding(module="pkg.config", line_hash="now:1"),
         finding(line_hash="brand-new:1"),
     ])))
     assert inspect(tmp_path, baseline) == 1
@@ -464,3 +488,129 @@ def test_open_security_debt_is_disclosed_on_a_passing_run(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "OPEN SECURITY DEBT: 1 security findings" in out
     assert "only ever go down" in out
+
+
+def test_a_run_that_loses_required_queries_is_refused(tmp_path):
+    """The reverse of the baseline-mismatch case, and just as dangerous.
+
+    A run that loses its interprocedural output still reports every syntactic
+    finding, so `current` is nonempty and the all-zero guard passes. Those
+    dataflow findings land in `absent`, which is NOT enforcing -- so a partial
+    scanner failure would score a green security gate. This must fail closed.
+
+    Mutation check: delete the `missing_in_current` branch and this goes green.
+    """
+    baseline = tmp_path / "baseline.json"
+    findings = [(finding(line_hash="known:1"), 1)]
+    for rule in DATAFLOW_RULES:
+        findings += [(dataflow_finding(rule, line_hash=f"{rule}:{i}"), 1) for i in range(40)]
+    _baseline_requiring(baseline, findings, ["py/sql-injection", *DATAFLOW_RULES])
+
+    # Current run: the syntactic finding survives, all dataflow output is gone.
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif([
+        finding(line_hash="known:1"),
+    ])))
+
+    assert inspect(tmp_path, baseline) == 2
+
+
+def test_losing_a_handful_of_dataflow_findings_is_not_a_coverage_failure(tmp_path):
+    """Fixing findings must stay an ordinary pass, not a coverage alarm.
+
+    Same shape as above but the queries still report -- only some findings are
+    gone. That is remediation, and `absent` is the right place for it.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash="known:1"), 1),
+         (dataflow_finding("py/partial-ssrf", line_hash="ssrf:1"), 1),
+         (dataflow_finding("py/path-injection", line_hash="pi:1"), 1),
+         (dataflow_finding("py/log-injection", line_hash="li:1"), 1)],
+        ["py/sql-injection", *DATAFLOW_RULES],
+    )
+    (tmp_path / "python.sarif").write_text(json.dumps(dataflow_sarif([
+        finding(line_hash="known:1"),
+        dataflow_finding("py/partial-ssrf", line_hash="ssrf:1"),
+        dataflow_finding("py/path-injection", line_hash="pi:1"),
+    ])))
+    assert inspect(tmp_path, baseline) == 0
+
+
+# ---------------------------------------------------------------------------
+# regenerate_codeql_baseline.py must refuse what the gate would reject.
+#
+# A baseline built from an artifact the gate rejects is worse than no baseline:
+# it passes review as "regenerated", then fails the advertised round-trip on
+# the next run with no obvious cause.
+# ---------------------------------------------------------------------------
+
+
+def _regen_module():
+    import importlib.util
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    path = _Path(__file__).resolve().parents[2] / "scripts" / "youtab" / "regenerate_codeql_baseline.py"
+    spec = importlib.util.spec_from_file_location("regen_baseline_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    _sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        _sys.path.remove(str(path.parent))
+    return module
+
+
+def _write_cycle_sarif(tmp_path, mutate=None):
+    document = cycle_sarif([finding(line_hash="a:1")])
+    if mutate:
+        mutate(document["runs"][0])
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+
+
+def test_regenerator_refuses_a_failed_analysis(tmp_path):
+    """The workflow uploads SARIF under `always()`, so a FAILED run leaves a
+    downloadable artifact. Building a baseline from it would bake its missing
+    results in as accepted debt."""
+    regen = _regen_module()
+    _write_cycle_sarif(tmp_path, lambda run: run["invocations"].clear())
+    with pytest.raises(SystemExit) as excinfo:
+        regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+    assert "successful invocation" in str(excinfo.value)
+
+
+def test_regenerator_refuses_the_wrong_query_suite(tmp_path):
+    """A narrower suite silently zeroes out every rule it does not run."""
+    regen = _regen_module()
+    _write_cycle_sarif(
+        tmp_path,
+        lambda run: run["properties"]["codeqlConfigSummary"].__setitem__(
+            "queries", [{"type": "builtinSuite", "uses": "security-extended"}]
+        ),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+    assert "security-and-quality" in str(excinfo.value)
+
+
+def test_regenerator_refuses_a_head_that_contradicts_sarif_provenance(tmp_path):
+    """Guards the wrong run's artifact and a mistyped --source-head.
+
+    Only enforced when the SARIF actually carries `versionControlProvenance`;
+    the artifacts this repository produces do not, so the check is conditional
+    by necessity rather than by choice.
+    """
+    regen = _regen_module()
+    _write_cycle_sarif(
+        tmp_path,
+        lambda run: run.__setitem__(
+            "versionControlProvenance", [{"revisionId": "b" * 40}]
+        ),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        regen.build(tmp_path, "python", "https://example.test/run/1", "a" * 40)
+    assert "provenance" in str(excinfo.value)
+
+    # The matching SHA is accepted.
+    assert regen.build(tmp_path, "python", "https://example.test/run/1", "b" * 40)
