@@ -118,10 +118,22 @@ begin unit-integration-e2e
 # passes on retry is not genuinely green. Every test here must pass on its
 # first execution. Do not remove this flag to quiet an intermittent failure;
 # fix the flake at its root cause instead.
+# `tests/test_project_metadata.py` is named explicitly because it sits at the
+# ROOT of `tests/`, and the three roots above are directories -- so nothing in
+# this gate collected it. It is the guard that keeps a pyproject extra pin from
+# drifting below the `tools/lazy_deps.py` pin for the same package, which is
+# exactly how `youtab update` silently downgrades a package back under a
+# CVE-fixed floor (the aiohttp #31817 case, and the anthropic
+# CVE-2026-34450/34452 pair found alongside it). It has never run here, which
+# is why `Pillow==12.2.0` sat 20 advisories behind its fixed version with
+# every gate reporting green. The runner takes explicit `.py` files as roots
+# (see `_discover_files` in scripts/run_tests_parallel.py), so this costs one
+# file and under a second.
 scripts/run_tests.sh \
   tests/youtab_runtime \
   tests/youtab_agent_cli \
   tests/tools \
+  tests/test_project_metadata.py \
   --file-retries 0 \
   -q | tee "$evidence_dir/unit-integration-e2e.log"
 record unit-integration-e2e $?

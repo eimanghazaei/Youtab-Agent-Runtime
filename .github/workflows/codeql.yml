@@ -16,6 +16,43 @@ permissions:
   contents: read
   actions: read
 
+# Diff-informed analysis OFF. This is the single setting that made this gate
+# incoherent, and it is load-bearing -- deleting it silently shrinks every
+# pull-request analysis back to the diff.
+#
+# The CodeQL action enables diff-informed queries by default on
+# `pull_request` (`defaultValue: true` for `Feature.DiffInformedQueries` in
+# the action's src/feature-flags.ts at the SHA pinned below, gated on CLI
+# >= 2.21.0; this runner is on 2.26.4). It builds a "diff range extension
+# pack" and restricts DATAFLOW query results to lines the pull request
+# touched. Syntactic queries are unaffected.
+#
+# So the same tree produced two different answers depending on the event,
+# and the gate was comparing across them:
+#
+#   pull_request run   7701 findings  (taint-tracking clipped to the diff)
+#   push-to-main run   8971 findings  (full taint-tracking)
+#
+# The committed baseline had been captured from a `pull_request` run, so it
+# recorded 0 findings for all 13 interprocedural dataflow queries -- while
+# every push to main measured 1272 of them and reported them as new. That is
+# why this gate was red on main continuously, and why it was dropped from
+# the required checks.
+#
+# The second, worse half: a pull request can introduce a dataflow
+# vulnerability whose source and sink lines it does not itself touch. Under
+# diff-informed analysis the pull-request scan drops that result and reports
+# green; the finding then appears on main after the merge, where nothing is
+# gating. A gate that cannot see a class of regression on the pull request is
+# not gating that class.
+#
+# Turning it off costs wall-clock on pull requests (this job already runs
+# 23-28 min) and buys a single, comparable measurement for every event, which
+# is the only basis on which a no-new-findings baseline means anything.
+# `tests/youtab_runtime/test_codeql_gate_wiring.py` fails if this is removed.
+env:
+  CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
+
 jobs:
   analyze:
     name: CodeQL analyze

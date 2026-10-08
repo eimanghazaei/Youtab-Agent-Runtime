@@ -572,6 +572,18 @@ def _validate_post_login_target(raw: str) -> str:
         return ""
     from urllib.parse import unquote
     decoded = unquote(raw)
+    # Reject backslashes anywhere. The ``startswith("//")`` test below stops
+    # ``//evil.example``, but browsers implement the WHATWG URL spec, which
+    # treats ``\`` as equivalent to ``/`` in a special-scheme URL -- so
+    # ``/\evil.example`` and ``/\/evil.example`` are resolved by Chrome,
+    # Firefox and Safari as ``//evil.example``: an off-origin,
+    # protocol-relative target. The ``unquote`` above is why this tests
+    # ``decoded`` and not ``raw`` -- the encoded form
+    # (``%2f%5cevil.example``) arrives here already decoded and has to be
+    # caught by the same check. No same-origin path this validator exists to
+    # allow contains a backslash.
+    if "\\" in decoded:
+        return ""
     if not decoded.startswith("/") or decoded.startswith("//"):
         return ""
     # Don't loop back to login pages or auth flow.

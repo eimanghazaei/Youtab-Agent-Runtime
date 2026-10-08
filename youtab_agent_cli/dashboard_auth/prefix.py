@@ -34,7 +34,20 @@ _MAX_PREFIX_LENGTH = 256
 # Characters that, if present in a public_url or prefix value, indicate
 # either a typo or a header-injection attempt. Reject the whole value
 # rather than try to sanitise — the operator can fix their config.
-_REJECT_CHARS = frozenset(('"', "'", "<", ">", " ", "\n", "\r", "\t"))
+#
+# The backslash is in this set for a specific reason, and removing it
+# reopens an open redirect. The ``"//" in p`` check in
+# :func:`normalise_prefix` rejects ``//evil.example``, but browsers
+# implement the WHATWG URL spec, which treats ``\`` as equivalent to ``/``
+# in a special-scheme URL. So ``X-Forwarded-Prefix: \evil.example``
+# normalised to ``/\evil.example``, reached
+# ``login_url = f"{_prefix(request)}/login"`` in routes.py, and was emitted
+# as ``Location: /\evil.example/login`` -- which Chrome, Firefox and Safari
+# all resolve as ``//evil.example/login``: a protocol-relative URL pointing
+# at an attacker-controlled host. A path prefix has no legitimate use for a
+# backslash, so reject it outright rather than trying to detect the
+# ``/``-equivalence per position.
+_REJECT_CHARS = frozenset(('"', "'", "<", ">", " ", "\n", "\r", "\t", "\\"))
 
 # Remember which (source, value) pairs we've already warned about.
 # ``resolve_public_url`` runs on every authenticated request, so an
