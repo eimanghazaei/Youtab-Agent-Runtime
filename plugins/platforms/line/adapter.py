@@ -532,9 +532,15 @@ class _LineClient:
             logger.debug("LINE loading indicator failed: %s", exc)
 
     async def fetch_content(self, message_id: str) -> bytes:
-        """Download an inbound media message's binary content."""
+        """Download an inbound media message's binary content.
+
+        ``message_id`` arrives straight from the webhook body, so it is
+        percent-encoded before it becomes a path segment. Unencoded it could
+        carry ``/``, ``?`` or ``#`` and walk this request onto a different
+        LINE endpoint while still carrying the channel access token.
+        """
         import aiohttp
-        url = LINE_CONTENT_URL_FMT.format(message_id=message_id)
+        url = LINE_CONTENT_URL_FMT.format(message_id=_urlquote(message_id, safe=""))
         timeout = aiohttp.ClientTimeout(total=30.0)
         async with aiohttp.ClientSession(timeout=timeout, trust_env=True) as session:
             async with session.get(url, headers={"Authorization": f"Bearer {self._token}"}) as resp:
