@@ -69,7 +69,14 @@ env:
 
 jobs:
   analyze:
-    name: CodeQL analyze
+    # The name is pinned to the language ALONE and must stay that way. With a
+    # bare `name: CodeQL analyze`, GitHub derives the check context from the
+    # whole matrix entry, so adding `build-mode` renamed every context to
+    # `CodeQL analyze (python, none)` and silently orphaned the
+    # `CodeQL analyze (python)` entries in the `main-required-gates` ruleset --
+    # which blocks every pull request forever, waiting on a status nothing
+    # produces. Renaming this is a two-place change, here and in the ruleset.
+    name: CodeQL analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
