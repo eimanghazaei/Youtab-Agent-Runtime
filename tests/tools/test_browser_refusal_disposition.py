@@ -197,10 +197,46 @@ def _get_images_after_run(monkeypatch):
     return browser_tool.browser_get_images()
 
 
+def _camofox_eval_after_run(monkeypatch):
+    """The Camofox eval path, which posts the expression BEFORE rechecking.
+
+    `_camofox_eval` imports `_ensure_tab` and `_post` from
+    `tools.browser_camofox` inside the function body, so that module is the
+    patch target rather than `browser_tool`.
+    """
+    from tools import browser_camofox
+
+    posted: list[str] = []
+
+    def post(path, body=None, **_kwargs):
+        posted.append(path)
+        return {"result": "null"}
+
+    monkeypatch.setattr(browser_camofox, "_ensure_tab",
+                        lambda _task: {"tab_id": "t1", "user_id": "u1"})
+    monkeypatch.setattr(browser_camofox, "_post", post)
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda _t: True)
+    monkeypatch.setattr(browser_tool, "_camofox_current_page_private_url",
+                        lambda *_a, **_k: "http://10.0.0.1/")
+
+    payload = browser_tool._camofox_eval("location='http://10.0.0.1/'")
+
+    # The point of the case: the expression was DELIVERED to the page before
+    # the guard looked. Asserted rather than assumed, because assuming it is
+    # how this guard got misclassified in the first place -- an audit of the
+    # lines between `def` and the guard missed the `_post` above it.
+    assert any("/evaluate" in p for p in posted), (
+        "this driver only tests a POST-action guard if the eval really ran: "
+        + repr(posted)
+    )
+    return payload
+
+
 POST_ACTION = [
     pytest.param(_snapshot_after_run, id="snapshot:after-the-snapshot"),
     pytest.param(_back_after_run, id="back:after-the-history-move"),
     pytest.param(_get_images_after_run, id="get_images:after-the-eval"),
+    pytest.param(_camofox_eval_after_run, id="camofox_eval:after-the-eval"),
 ]
 
 

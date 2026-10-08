@@ -573,13 +573,22 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
 def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str], action: str) -> Optional[str]:
     """Return a blocked payload when the current Camofox page is private/internal.
 
-    Mirrors the eval-path guard added for ``_camofox_eval`` (browser_tool.py):
-    Camofox snapshot / vision / image-extraction all read current page state, so
-    on a non-local backend they can leak the content of an intranet/metadata
+    Camofox snapshot / vision / image-extraction all read current page state,
+    so on a non-local backend they can leak the content of an intranet/metadata
     page the terminal itself can't reach.  The gate matches ``browser_snapshot``
     / ``browser_vision`` — only active when the SSRF guard applies (non-local
     backend, not a local sidecar, ``allow_private_urls`` unset).  Fail-open on
     probe failure, matching the sibling guards.
+
+    This one is marked ``"authorization": "denied"`` and stays marked, but NOT
+    by analogy to ``_camofox_eval``, which an earlier version of this docstring
+    pointed at: that guard turned out to run AFTER its expression had already
+    been posted to ``/evaluate``, so it is post-action and is now unmarked.
+    This helper is pre-action at every one of its six call sites --
+    ``camofox_snapshot``, ``_click``, ``_type``, ``_press``, ``_get_images``
+    and ``_vision`` each return it immediately after ``_get_session`` and
+    before any ``_post`` -- which is the ordering that justifies the marker.
+    Probing the current URL to decide is not the tool's action.
 
     Imports are deferred to call time because ``browser_tool`` imports this
     module; importing it at module load would create a circular import.

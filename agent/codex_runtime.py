@@ -384,6 +384,39 @@ def _codex_item_to_preview(item: dict) -> Any:
     return None
 
 
+# Mirrors tools.registry.TOOL_AUTHORIZATION_DENIED, duplicated as a literal
+# for the same reason agent.tool_executor does: this module is loaded on the
+# Codex turn path and tools.registry pulls in the whole tool surface. A wrong
+# value here fails OPEN -- a progress row for a blocked call, which is visible
+# -- and the suite asserts the two agree.
+_TOOL_AUTHORIZATION_DENIED = "denied"
+
+
+def _refusal_envelope(value: Any) -> bool:
+    """Whether `value` IS a handler envelope marked as an authorization refusal.
+
+    Top level only, deliberately. `value` is either the object the handler
+    returned or the JSON string it returned; in both cases the marker is a key
+    of that object and of nothing nested inside it. Mirrors
+    `agent.tool_executor._is_authorization_refusal`, including the substring
+    probe that keeps a megabyte of file content from being parsed to answer a
+    progress-reporting question.
+    """
+    if isinstance(value, dict):
+        return value.get("authorization") == _TOOL_AUTHORIZATION_DENIED
+    if not isinstance(value, str):
+        return False
+    text = value.lstrip()
+    if not text.startswith("{") or '"authorization"' not in text:
+        return False
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return (isinstance(parsed, dict)
+            and parsed.get("authorization") == _TOOL_AUTHORIZATION_DENIED)
+
+
 def _codex_item_refused(item: dict) -> bool:
     """Whether a completed codex item carries a handler-level REFUSAL.
 
@@ -409,38 +442,55 @@ def _codex_item_refused(item: dict) -> bool:
     all, and Youtab's browser and file guards all arrive through the internal
     server, so nothing legitimate is lost.
 
-    Within that channel the result is searched RECURSIVELY for
-    `authorization == "denied"` (`tools.registry.TOOL_AUTHORIZATION_DENIED`),
-    descending into nested containers and parsing strings that are themselves
-    JSON, which is how FastMCP hands a tool's text back.
+    Restricting the CHANNEL was only half of it. Within that channel the
+    marker is read off the ENVELOPE -- the top level of the object the
+    handler itself returned -- and never from the data inside it.
+
+    An earlier version searched the result recursively, descending into
+    nested containers and parsing strings that were themselves JSON. That
+    read a tool's own OUTPUT as its disposition. Three internal tools return
+    text verbatim at a shallow key -- `execute_code`'s stdout
+    (`tools/code_execution_tool.py`), `read_terminal`
+    (`tools/read_terminal_tool.py`), and the command output tails in
+    `tools/process_registry.py` -- so code that merely PRINTED
+    `{"authorization": "denied"}` deleted its own "Running code" row from the
+    durable trace, which is the one place a reviewer would look to find out
+    what the run did. Tool results are untrusted input (AGENTS.md), and that
+    applies to the internal server's payloads too: the server is trusted to
+    report ITS OWN verdict, not to vouch for bytes it was handed.
+
+    The descent also bought nothing. Every refusing site -- all nineteen
+    literals plus `tools.registry.tool_authorization_error`, whose envelope
+    is `{"error": ..., "authorization": "denied"}` -- puts the key at the top
+    level of its own object. Nothing legitimate nests it, and
+    `agent.tool_executor._is_authorization_refusal`, the same marker on the
+    non-Codex path, has always been top-level only; this makes the two
+    agree.
+
+    So exactly two shapes are honoured: the handler's object itself, and that
+    object wrapped once in FastMCP's content list, which is the TRANSPORT
+    rather than part of the payload. `contentItems` is not among the fields
+    checked because it belongs to `dynamicToolCall`, which this function has
+    already returned False for.
     """
     if (item.get("type") != "mcpToolCall"
             or item.get("server") != _INTERNAL_MCP_SERVER):
         return False
-    def carries(value: Any, depth: int = 0) -> bool:
-        if depth > 6:
-            return False
-        if isinstance(value, dict):
-            if value.get("authorization") == "denied":
-                return True
-            return any(carries(v, depth + 1) for v in value.values())
-        if isinstance(value, (list, tuple)):
-            return any(carries(v, depth + 1) for v in value)
-        if isinstance(value, str):
-            text = value.lstrip()
-            # Only parse what looks like JSON, and only when the marker could
-            # be in it at all -- this runs on every completed tool call.
-            if not text.startswith(("{", "[")) or "authorization" not in value:
-                return False
-            try:
-                return carries(json.loads(text), depth + 1)
-            except (TypeError, ValueError):
-                return False
-        return False
 
-    for field in ("result", "contentItems", "error"):
-        if field in item and carries(item.get(field)):
+    for field in ("result", "error"):
+        value = item.get(field)
+        if _refusal_envelope(value):
             return True
+        # FastMCP hands the handler's JSON back as TEXT inside a content
+        # list. Unwrap exactly that one level, and only each entry's `text`:
+        # anything deeper is the tool's data, not its verdict.
+        if isinstance(value, dict):
+            entries = value.get("content")
+            if isinstance(entries, list):
+                for entry in entries:
+                    if (isinstance(entry, dict)
+                            and _refusal_envelope(entry.get("text"))):
+                        return True
     return False
 
 

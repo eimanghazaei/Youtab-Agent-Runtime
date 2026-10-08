@@ -2914,16 +2914,24 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # reading the control flow -- which is the mistake this comment exists to
     # prevent.
     #
-    # Those five are POST-ACTION result-withholding guards: the action already
+    # Those six are POST-ACTION result-withholding guards: the action already
     # ran and the guard refuses to hand back what it produced.
     # ``browser_snapshot`` has taken the snapshot ("before returning the
     # snapshot"), ``browser_back`` has executed the history move ("Re-check
     # post-navigation"), both ``_browser_eval`` rechecks are labelled
-    # "Post-eval ... withhold the result", and ``browser_get_images`` has run
-    # its eval. Suppressing their steps deleted a TRUE row for work that
-    # really happened, which AGENTS.md's capability posture forbids outright:
-    # a mitigation must preserve the feature while enforcing the boundary, and
-    # the trace is part of the feature.
+    # "Post-eval ... withhold the result", ``browser_get_images`` has run its
+    # eval, and ``_camofox_eval`` has already POSTed the expression to
+    # ``/tabs/{tab_id}/evaluate``. Suppressing their steps deleted a TRUE row
+    # for work that really happened, which AGENTS.md's capability posture
+    # forbids outright: a mitigation must preserve the feature while enforcing
+    # the boundary, and the trace is part of the feature.
+    #
+    # ``_camofox_eval`` was the one that took two passes, and the reason is
+    # worth keeping: the first audit read only the lines between its ``def``
+    # and the guard, saw no action in that window, and called it pre-action.
+    # The ``_post`` is eight lines into the function, above the envelope
+    # parsing -- outside the window, and decisive. Read the whole function,
+    # not the neighbourhood of the guard.
     #
     # Also unmarked, and not authorization decisions at all: the two
     # post-redirect guards below, the navigation-failed return, scroll's
@@ -2931,13 +2939,19 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # _camofox_eval's "JS eval unsupported" (a capability limit) and its
     # generic tool_error, and browser_vision's missing screenshot file.
     #
-    # The twelve that ARE marked, each verified by reading its ordering:
+    # The eleven that ARE marked, each verified by reading its ordering:
     # these six pre-navigation guards; `_blocked_private_page_action`, whose
     # three callers (click/type/press) all return it before their command;
-    # both `browser_console` guards; `_browser_eval`'s expression pre-scan;
-    # `_camofox_eval`'s page check; and `browser_vision`, whose own comment is
+    # both `browser_console` guards; `_browser_eval`'s expression pre-scan
+    # (which inspects the expression WITHOUT evaluating it, unlike the
+    # post-eval rechecks above); and `browser_vision`, whose own comment is
     # "Re-check the current URL before capturing anything" -- the
     # `_run_browser_command` above it only reads the URL.
+    #
+    # Reading the current URL to decide is not itself the tool's action, which
+    # is why `browser_vision` and `_camofox_private_page_block` stay marked
+    # while the post-eval rechecks do not: the former probe, the latter have
+    # already done the thing.
     if _PREFIX_RE.search(url) or _PREFIX_RE.search(url_decoded):
         return json.dumps({
             "success": False,
@@ -4006,12 +4020,17 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
             except (json.JSONDecodeError, ValueError):
                 pass
 
+        # POST-ACTION, so NOT marked `"authorization": "denied"` -- the
+        # expression was already sent to `/tabs/{tab_id}/evaluate` above and
+        # has run in the page. If it navigated somewhere private this withholds
+        # the RESULT of work that happened; the step belongs in the trace. The
+        # equivalent post-eval recheck in `_browser_eval` is unmarked for the
+        # same reason. See the note above the pre-navigation guards.
         if _eval_ssrf_guard_active(task_id or "default"):
             _blocked_url = _camofox_current_page_private_url(tab_id, user_id)
             if _blocked_url:
                 return json.dumps({
                     "success": False,
-                    "authorization": "denied",
                     "error": (
                         "Blocked: page URL targets a private or internal address "
                         f"({_blocked_url}). This may have been caused by a "
