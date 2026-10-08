@@ -1201,7 +1201,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # the Python process cwd, which can differ.
         block_error = get_read_block_error(str(_resolved))
         if block_error:
-            return tool_error(block_error)
+            # An authorization refusal, not a failure -- see
+            # tools/registry.TOOL_AUTHORIZATION_DENIED. The managed-run
+            # progress feed must not record a blocked read as work, and it
+            # cannot tell this apart from "the file was unreadable" without
+            # the marker.
+            return tool_authorization_error(block_error)
 
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
@@ -1927,7 +1932,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 # ---------------------------------------------------------------------------
 # Schemas + Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_authorization_error, tool_error
 
 
 def _check_file_reqs():

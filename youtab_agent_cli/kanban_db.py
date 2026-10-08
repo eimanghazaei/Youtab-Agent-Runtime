@@ -3837,6 +3837,41 @@ def _append_event(
     )
 
 
+def initialized_in_this_process(
+    db_path: Optional[Path] = None, *, board: Optional[str] = None
+) -> bool:
+    """Whether `connect()` would take its FAST path for this database.
+
+    `connect()` skips the expensive first-open work -- the cross-process init
+    lock, header validation, the integrity probe, schema and additive
+    migrations -- only once this process has initialized the path, which it
+    records in `_INITIALIZED_PATHS`. Before that, a connect can wait up to
+    `_INIT_LOCK_TIMEOUT_SECONDS` (10s) on the init lock and then do real work.
+
+    A `busy_timeout_ms` does not bound any of that: it limits SQLite's own
+    lock waits inside `_sqlite_connect`, which runs after the boundary.
+
+    This exists for callers whose write is COSMETIC and must never be on a
+    tool's critical path -- the managed-run progress feed. A freshly spawned
+    worker has an empty cache, so its first progress row would otherwise pay
+    the whole cold path and delay the tool result reaching the model, burning
+    run budget for a row nothing depends on. Such a caller checks this first
+    and drops the row when the answer is False; by the time tools run, the
+    worker's own claim and heartbeat have normally warmed the cache already.
+
+    Resolution mirrors `connect()` exactly -- same `kanban_db_path` lookup,
+    same `str(path.resolve())` key -- so the two cannot disagree about which
+    database is being asked about.
+    """
+    try:
+        path = db_path if db_path is not None else kanban_db_path(board=board)
+        return str(path.resolve()) in _INITIALIZED_PATHS
+    except OSError:
+        # An unresolvable path is not warm by any definition; the caller drops
+        # the row rather than finding out the expensive way.
+        return False
+
+
 def append_event_if_run_active(
     conn: sqlite3.Connection,
     task_id: str,

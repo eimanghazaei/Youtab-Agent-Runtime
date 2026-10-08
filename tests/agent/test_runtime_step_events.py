@@ -28,6 +28,25 @@ from agent.conversation_loop import (
 )
 from youtab_agent_cli import kanban_db as kb
 
+# Envelopes used by the ordering tests below. Named rather than inlined so
+# the marker that distinguishes a refusal from a failure is readable.
+QUERY_ARGS = '{"query": "x"}'
+REFUSAL_READ_BLOCK = (
+    '{"error": "Blocked: Youtab internal path", "authorization": "denied"}'
+)
+REFUSAL_EDIT_APPROVAL = (
+    '{"error": "Edit approval denied by ACP client; file was not modified.", '
+    '"authorization": "denied"}'
+)
+REFUSAL_REORDERED = (
+    '{"authorization": "denied", "success": false, "error": "nope"}'
+)
+FAILURE_PROVIDER_TIMEOUT = '{"error": "search provider timed out after 30s"}'
+FAILURE_NOT_FOUND = '{"error": "file not found"}'
+FAILURE_MENTIONS_AUTH = (
+    '{"error": "authorization header missing from the upstream response"}'
+)
+
 
 # ---------------------------------------------------------------------------
 # Pure phrase / scrub logic
@@ -245,18 +264,69 @@ def test_step_event_is_attributed_to_the_worker_attempt(kanban_home, monkeypatch
     assert events[0].run_id == run_id
 
 
-def test_step_event_without_an_attempt_id_still_records(kanban_home, monkeypatch):
-    """A missing or malformed attempt id must not lose the step (fail-open)."""
+@pytest.mark.parametrize("raw", ["not-an-int", "", "  ", "12.5", "1e3"])
+def test_a_step_without_a_valid_attempt_id_is_dropped(kanban_home, monkeypatch, raw):
+    """No valid attempt id means no row -- the opposite of the old fail-open.
+
+    This used to record the step with ``run_id=None`` so that a malformed id
+    could not lose it. That fallback defeated the fence it sits beside: with
+    ``current_run_id`` out of the predicate, a reclaimed worker whose attempt
+    has been superseded keeps appending unattributed steps to a task that is
+    running again under a NEW attempt, and the dashboard broadcasts every one,
+    so a live attempt's feed interleaves with a dead one's.
+
+    Nothing legitimate reaches this path. The dispatcher always exports
+    ``YOUTAB_AGENT_KANBAN_RUN_ID = str(task.current_run_id)`` when it spawns a
+    worker, so a missing or non-numeric value in a process that DOES carry
+    ``YOUTAB_AGENT_KANBAN_TASK`` is an anomaly -- and losing one cosmetic row
+    during an anomaly is the cheap side of that trade.
+    """
     task_id = _new_task()
     _claim(task_id)
     monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
-    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", "not-an-int")
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", raw)
 
-    emit_runtime_step("web_search", '{"query": "x"}')
+    emit_runtime_step("web_search", QUERY_ARGS)
 
-    events = _runtime_steps(task_id)
-    assert len(events) == 1
-    assert events[0].run_id is None
+    assert _runtime_steps(task_id) == []
+
+
+def test_a_cold_database_drops_the_step_instead_of_paying_for_init(
+    kanban_home, monkeypatch
+):
+    """A cosmetic row must never pay cold initialization.
+
+    ``connect()`` skips the cross-process init lock -- bounded at
+    ``_INIT_LOCK_TIMEOUT_SECONDS``, 10 seconds -- plus header validation, the
+    integrity probe and additive migrations only once this process has
+    initialized the path. A ``busy_timeout_ms`` does not bound any of that; it
+    limits SQLite's own lock waits, which come afterwards. So in a freshly
+    spawned worker the first progress row would sit in front of the tool
+    result on its way to the model and spend run budget on a row nothing
+    depends on.
+
+    Simulated by emptying the per-process cache, which is exactly the state a
+    new worker starts in. The step is dropped and, critically,
+    ``connect_closing`` is never reached -- reaching it at all is what costs
+    the time.
+    """
+    task_id = _new_task()
+    run_id = _claim(task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(run_id))
+
+    opened: list = []
+    real_connect = kb.connect_closing
+    monkeypatch.setattr(
+        kb, "connect_closing", lambda **kw: opened.append(kw) or real_connect(**kw)
+    )
+    monkeypatch.setattr(kb, "_INITIALIZED_PATHS", set())
+
+    emit_runtime_step("web_search", QUERY_ARGS)
+
+    assert opened == [], "a cold database must not even be opened for a progress row"
+    monkeypatch.undo()
+    assert _runtime_steps(task_id) == []
 
 
 # ---------------------------------------------------------------------------
@@ -347,16 +417,15 @@ def test_step_is_recorded_once_the_tool_is_authorized(monkeypatch):
 
 
 @pytest.mark.parametrize("refusal", [
-    # tools/registry.tool_error -- the read_file internal-path / credential
-    # denylist (get_read_block_error) returns through this.
-    '{"error": "Blocked: Youtab internal path"}',
-    # acp_adapter.edit_approval hand-rolls the same shape for write_file/patch.
-    '{"error": "Edit approval denied by ACP client; file was not modified."}',
+    # What read_file's internal-path / credential denylist now returns.
+    REFUSAL_READ_BLOCK,
+    # What acp_adapter.edit_approval returns for write_file / patch.
+    REFUSAL_EDIT_APPROVAL,
     # A handler that returns the object rather than a JSON string.
-    {"error": "denied"},
-    # A different key order, which the cheap prefix test does not catch and the
-    # bounded json.loads fallback does.
-    '{"success": false, "error": "denied"}',
+    {"error": "nope", "authorization": "denied"},
+    # Key order must not matter: the marker is found by parsing, not by a
+    # prefix test over the raw text.
+    REFUSAL_REORDERED,
 ])
 def test_no_step_when_the_tool_itself_refuses(monkeypatch, refusal):
     """Middleware clearance is not authorization -- the handler checks too.
@@ -375,6 +444,59 @@ def test_no_step_when_the_tool_itself_refuses(monkeypatch, refusal):
     assert ran == [{"query": "best coffee"}]   # the handler was reached
     assert emitted == []                        # and recorded nothing
     assert outcome.blocked is False             # not a middleware block
+
+
+@pytest.mark.parametrize("failure", [
+    # web_search_tool returns this shape when its provider raises: the call
+    # was authorized, it ran, and then it failed.
+    FAILURE_PROVIDER_TIMEOUT,
+    FAILURE_NOT_FOUND,
+    {"error": "connection reset"},
+    # An error that merely mentions the word is not a refusal.
+    FAILURE_MENTIONS_AUTH,
+])
+def test_an_ordinary_failure_after_execution_still_records_a_step(
+    monkeypatch, failure
+):
+    """The feed must not go blank exactly when something goes wrong.
+
+    The first version of this check treated every ``tool_error(...)`` envelope
+    as an authorization refusal. Handlers use that same envelope for ordinary
+    post-execution failures, so an authorized search that really ran and then
+    timed out produced no progress row at all -- the feed went blank during
+    precisely the runs worth reading. Refusal is now carried by the refusing
+    site (``tools.registry.TOOL_AUTHORIZATION_DENIED``) rather than inferred
+    from the envelope.
+    """
+    emitted, ran, outcome = _drive_middleware(
+        monkeypatch, allows=True, tool_result=failure
+    )
+    assert ran == [{"query": "best coffee"}]
+    assert emitted == [("web_search", {"query": "best coffee"})], failure
+    assert outcome.blocked is False
+
+
+def test_the_executors_refusal_marker_matches_the_registrys() -> None:
+    """``tool_executor`` duplicates the marker as a literal to stay off the
+    import path of the whole tool surface. That duplication is only safe if
+    something fails when the two drift."""
+    from agent import tool_executor
+    from tools.registry import TOOL_AUTHORIZATION_DENIED
+
+    assert tool_executor._TOOL_AUTHORIZATION_DENIED == TOOL_AUTHORIZATION_DENIED
+
+
+def test_the_registry_helper_produces_what_the_executor_detects() -> None:
+    """End to end on the envelope, so a change to either side shows up here."""
+    from agent import tool_executor
+    from tools.registry import tool_authorization_error, tool_error
+
+    assert tool_executor._is_authorization_refusal(
+        tool_authorization_error("Blocked: Youtab internal path")
+    )
+    assert not tool_executor._is_authorization_refusal(
+        tool_error("provider timed out")
+    )
 
 
 def test_a_large_successful_result_is_not_parsed_to_decide(monkeypatch):

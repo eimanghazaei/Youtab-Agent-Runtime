@@ -351,37 +351,60 @@ def _managed_values(
     )
 
 
-def _is_denied_tool_result(result: Any) -> bool:
-    """Whether a tool's own return value is a refusal rather than an outcome.
+# Mirrors tools.registry.TOOL_AUTHORIZATION_DENIED. Duplicated as a literal
+# rather than imported because this module is on the hot tool-dispatch path and
+# tools.registry pulls in the whole tool surface; a wrong value here fails open
+# (a progress row for a blocked call), which is visible, and the test suite
+# asserts the two agree.
+_TOOL_AUTHORIZATION_DENIED = "denied"
 
-    Tool-internal authorization does not go through the middleware above; it
-    lives inside the handlers and signals refusal by RETURNING an error. Both
-    of the paths that matter here produce the same shape --
-    ``tools/registry.tool_error`` builds ``{"error": message}`` and
-    ``acp_adapter.edit_approval`` hand-rolls the same JSON -- and in both the
-    ``error`` key is serialized first, so the cheap prefix test is exact for
-    them rather than a heuristic.
+# A refusal envelope is short. Anything larger is a real result, and parsing a
+# megabyte of tool output to answer a progress-reporting question is not worth
+# it on every successful call.
+_REFUSAL_PARSE_LIMIT = 4096
 
-    The bounded ``json.loads`` fallback covers any other handler that returns
-    an error object with a different key order. It is capped because tool
-    results carry whole file contents and parsing a megabyte of JSON on every
-    successful call, to answer a question about progress reporting, would be a
-    real cost for no benefit: a refusal is short.
+
+def _is_authorization_refusal(result: Any) -> bool:
+    """Whether a tool's return value is an AUTHORIZATION REFUSAL.
+
+    Deliberately narrow: only the explicit
+    `tools.registry.TOOL_AUTHORIZATION_DENIED` marker counts. The first
+    version of this treated every `tool_error(...)` envelope as a refusal, and
+    that was wrong in the costly direction -- handlers use the same envelope
+    for ordinary post-execution failures (`web_search_tool` returns
+    `tool_error(error_msg)` when its provider raises), so an authorized search
+    that really ran and then timed out emitted no progress row at all. The
+    feed went blank exactly when something went wrong, which is when it is
+    most worth reading.
+
+    So refusal is CARRIED by the refusing site rather than inferred here:
+    `read_file`'s internal-path and credential denylist returns
+    `tool_authorization_error(...)`, and `acp_adapter.edit_approval` sets the
+    same key. A new refusal path has to opt in, which is the right default --
+    the failure mode of forgetting is a progress row for a blocked call, which
+    is visible, rather than a silently missing feed.
+
+    The bounded `json.loads` is the cost control. Tool results carry whole
+    file contents, and a successful `read_file` can be a megabyte of JSON;
+    parsing that on every call to answer a question about progress reporting
+    would be real cost for no benefit. A refusal envelope is short, so
+    anything over the cap is by construction not one.
     """
     if isinstance(result, dict):
-        return "error" in result
+        return result.get("authorization") == _TOOL_AUTHORIZATION_DENIED
     if not isinstance(result, str):
         return False
     text = result.lstrip()
-    if text.startswith('{"error"'):
-        return True
-    if not text.startswith("{") or len(text) > 4096:
+    if not text.startswith("{") or len(text) > _REFUSAL_PARSE_LIMIT:
         return False
     try:
         parsed = json.loads(text)
     except (ValueError, TypeError):
         return False
-    return isinstance(parsed, dict) and "error" in parsed
+    return (
+        isinstance(parsed, dict)
+        and parsed.get("authorization") == _TOOL_AUTHORIZATION_DENIED
+    )
 
 
 def _emit_managed_progress(
@@ -390,7 +413,13 @@ def _emit_managed_progress(
     """Record the managed-run progress step for a tool that actually ran.
 
     Emitted AFTER ``execute``, not before it, and skipped when the tool
-    refused. The middleware above clears policy, scope and guardrails, but
+    REFUSED -- refused specifically, not merely failed. The distinction is
+    carried by the refusing site via
+    ``tools.registry.TOOL_AUTHORIZATION_DENIED``, because handlers use one
+    error envelope for both and an authorized call that ran and then failed
+    must still appear in the feed. See ``_is_authorization_refusal``.
+
+    The middleware above clears policy, scope and guardrails, but
     tool-specific authorization runs inside the handler: ``read_file``
     applies the Youtab internal-path and credential-store denylist
     (``tools/file_tools.py``, ``get_read_block_error``), and
@@ -418,7 +447,7 @@ def _emit_managed_progress(
     vocabulary and importing it at module scope would add an import-time edge
     between the two.
     """
-    if _is_denied_tool_result(result):
+    if _is_authorization_refusal(result):
         return
     try:
         from agent.conversation_loop import emit_runtime_step

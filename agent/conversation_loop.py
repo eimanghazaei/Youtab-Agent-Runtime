@@ -318,7 +318,37 @@ def emit_runtime_step(tool_name: Any, tool_args: Any) -> None:
             attempt_id = int(attempt) if attempt else None
         except ValueError:
             attempt_id = None
+        if attempt_id is None:
+            # No valid attempt id means NO row. This used to fall back to the
+            # status-only fence ("fail-open so a malformed id does not lose
+            # the step"), and that fallback is what the fence was for: with
+            # `current_run_id` out of the predicate, a reclaimed worker whose
+            # attempt has been superseded keeps appending unattributed steps
+            # to a task that is running again under a NEW attempt. The
+            # dashboard broadcasts every insert, so the live attempt's feed
+            # interleaves with a dead one's.
+            #
+            # Nothing legitimate reaches here: the dispatcher always exports
+            # `YOUTAB_AGENT_KANBAN_RUN_ID = str(task.current_run_id)` when it
+            # spawns a worker (youtab_agent_cli/kanban_db.py), so a missing or
+            # non-numeric value in a process that DOES carry
+            # YOUTAB_AGENT_KANBAN_TASK is an anomaly. Losing one cosmetic row
+            # in an anomaly is the cheap side of this trade.
+            return
         from youtab_agent_cli import kanban_db as kb
+
+        # A cosmetic row must never pay cold initialization. `connect()` skips
+        # the cross-process init lock -- up to 10s -- plus header validation,
+        # the integrity probe and additive migrations only once this process
+        # has initialized the path. `busy_timeout_ms` does not bound any of
+        # that; it limits SQLite's own lock waits, which come afterwards. In a
+        # freshly spawned worker the cache is empty, so the first progress row
+        # would sit in front of the tool result on its way to the model and
+        # spend run budget on a row nothing depends on. By the time tools run
+        # the worker's claim and heartbeat have normally warmed it; when they
+        # have not, drop the row.
+        if not kb.initialized_in_this_process():
+            return
 
         with kb.connect_closing(busy_timeout_ms=_STEP_BUSY_TIMEOUT_MS) as conn:
             # One statement, not a SELECT fence followed by an INSERT. This
