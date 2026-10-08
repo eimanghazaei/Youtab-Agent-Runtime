@@ -342,16 +342,40 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                 if rule in required_set and rule not in current_rule_totals
             })
 
-            for label, suspect, explanation in (
+            # The volume threshold is PROPORTIONAL, not absolute. An absolute
+            # floor silently disables this check for whichever language has
+            # the smaller result set: calibrated on Python's 1272 missing
+            # dataflow findings, a `> 100` floor never fires for
+            # javascript-typescript, whose entire baseline is 110 findings
+            # with ~53 across 13 dataflow rules. A JS scan that lost all of
+            # its dataflow output would therefore have scored a green gate --
+            # the exact hole this check exists to close, reopened by the
+            # constant.
+            #
+            # `>= 3` rules stays, so completely remediating ONE rule is never
+            # a coverage alarm. The 10% floor is of the side the missing
+            # findings come from, with an absolute floor of 10 so a tiny
+            # baseline cannot trip on single digits. A deliberate remediation
+            # large enough to cross it does fire -- and the right response to
+            # that is exactly what the message says: read them, then rebuild
+            # the baseline.
+            def coverage_breach(suspect: Counter[str], total: int) -> bool:
+                if len(suspect) < 3:
+                    return False
+                return sum(suspect.values()) >= max(10, -(-total * 10 // 100))
+
+            for label, suspect, total, explanation in (
                 ("baseline under-records", missing_in_baseline,
+                 sum(current_rule_totals.values()),
                  "the baseline was captured under CodeQL's diff-informed analysis (the "
                  "pull_request default, which clips dataflow results to the diff) and is "
                  "being compared against a full analysis"),
                 ("THIS RUN under-reports", missing_in_current,
+                 sum(baseline_rule_totals.values()),
                  "this run lost the output of queries the baseline records, which is what a "
                  "partially failed analysis or a re-enabled diff-informed run looks like"),
             ):
-                if len(suspect) >= 3 and sum(suspect.values()) > 100:
+                if coverage_breach(suspect, total):
                     worst = ", ".join(
                         f"{rule} ({count})" for rule, count in suspect.most_common(5)
                     )

@@ -688,3 +688,59 @@ def test_a_coalesced_pair_gaining_a_third_diagnostic_still_fails(tmp_path):
         coalesced_cycle_finding(modules=("pkg.a", "pkg.b", "pkg.c"), line_hash="now:1"),
     ])))
     assert inspect(tmp_path, baseline) == 1
+
+
+def test_coverage_breach_is_proportional_not_an_absolute_count(tmp_path):
+    """A small-language scan that loses its dataflow output must still fail.
+
+    The threshold used to be an absolute `> 100`, calibrated on Python's 1272
+    missing dataflow findings. The javascript-typescript baseline is 110
+    findings TOTAL with ~53 across 13 dataflow rules, so a JS scan that lost
+    all of its dataflow output produced `len(suspect) == 13` and
+    `sum(suspect) == 53` -- under the floor, so the check never fired and
+    every missing finding was filed as non-enforcing `absent`. Green gate on
+    a partially failed scan.
+
+    This reproduces those proportions: a 110-finding baseline where 53 sit in
+    dataflow rules, and a current run that keeps only the syntactic ones.
+
+    Mutation check: restore an absolute `sum(...) > 100` floor and this goes
+    green.
+    """
+    dataflow_counts = [14, 13, 7, 4, 3, 3, 2, 2, 1, 1, 1, 1, 1]   # 53 across 13 rules
+    rules = [f"py/dataflow-probe-{i}" for i in range(len(dataflow_counts))]
+
+    findings = [(finding(line_hash="syntactic:1"), 57)]            # 57 + 53 = 110
+    for rule, count in zip(rules, dataflow_counts):
+        findings.append((dataflow_finding(rule, line_hash=f"{rule}:1"), count))
+
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(baseline, findings, ["py/sql-injection", *rules])
+
+    document = sarif([finding(line_hash="syntactic:1")])
+    for rule in rules:
+        document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": rule})
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+
+    assert inspect(tmp_path, baseline) == 2
+
+
+def test_remediating_one_whole_rule_is_not_a_coverage_breach(tmp_path):
+    """Emptying a single rule, however large, stays an ordinary pass.
+
+    34 of 110 findings is well over the proportional floor, but it is one
+    rule -- which is remediation, not a coverage change. The `>= 3` rules
+    condition is what separates them.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(finding(line_hash="syntactic:1"), 76),
+         (dataflow_finding("py/path-injection", line_hash="pi:1"), 34)],
+        ["py/sql-injection", "py/path-injection"],
+    )
+    document = sarif([finding(line_hash="syntactic:1")])
+    document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": "py/path-injection"})
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+
+    assert inspect(tmp_path, baseline) == 0
