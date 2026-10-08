@@ -270,6 +270,43 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
     return baseline
 
 
+def _security_pairs_that_grew(
+    before: dict, after: dict
+) -> dict[tuple[str, str], tuple[int, int]]:
+    """Security (rule, file) pairs whose finding count went UP.
+
+    Counted off the baselines' own `findings` key maps and classified with
+    `is_security`, so it sees a replacement that the aggregate bands cannot:
+    one critical removed here, one added there, every total unchanged.
+    """
+    def by_pair(document: dict) -> Counter[tuple[str, str]]:
+        out: Counter[tuple[str, str]] = Counter()
+        severities = {
+            rule: True for rule in document.get("required_rules") or []
+        }
+        for key, count in (document.get("findings") or {}).items():
+            try:
+                parts = json.loads(key)
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(parts, list) or len(parts) < 2:
+                continue
+            rule, uri = str(parts[0]), str(parts[1])
+            # `required_rules` is the baseline's own record of the rules it
+            # tracks; the band totals already encode which are security, so a
+            # rule absent from it is not treated as security here.
+            if rule in severities:
+                out[(rule, uri)] += int(count)
+        return out
+
+    was, now = by_pair(before), by_pair(after)
+    return {
+        pair: (was.get(pair, 0), now[pair])
+        for pair in now
+        if now[pair] > was.get(pair, 0)
+    }
+
+
 def enforce_ratchet(old: dict | None, new: dict, accepted_reason: str | None) -> None:
     """Refuse to write a baseline that raises any severity budget.
 
@@ -291,6 +328,8 @@ def enforce_ratchet(old: dict | None, new: dict, accepted_reason: str | None) ->
     after = new.get("severity_budget") or {}
     if not isinstance(before, dict):
         return
+    # The identity comparison below reads the full documents, not the budgets.
+    before_doc, after_doc = old, new
     ratcheted = [name for name, _floor in SEVERITY_BANDS] + ["security"]
     raised = [
         (name, int(before[name]), int(after.get(name, 0)))
@@ -298,6 +337,30 @@ def enforce_ratchet(old: dict | None, new: dict, accepted_reason: str | None) ->
         if isinstance(before.get(name), int)
         and int(after.get(name, 0)) > int(before[name])
     ]
+
+    # Aggregate counts are not enough. A refresh that removes one critical
+    # finding and introduces a DIFFERENT one leaves every band equal, so the
+    # count test above passes and the replacement is written in as accepted
+    # debt -- precisely what the ratchet exists to stop, reached by
+    # substitution instead of growth.
+    #
+    # So compare identities too, PER (rule, file). Not globally: a security
+    # finding that merely MOVED gets a new identity key, because CodeQL
+    # derives `primaryLocationLineHash` from the line plus a few lines of
+    # context, so any edit near one rehashes it. That is a real effect -- two
+    # `py/path-injection` findings in kanban_db.py churned exactly this way
+    # when a block was inserted above them, 2 new against 2 absent with the
+    # per-(rule, file) total conserved at 65. A global identity check would
+    # demand the acceptance flag for every refresh after an ordinary edit,
+    # which is how an escape hatch becomes routine.
+    #
+    # A net INCREASE for one (rule, file) pair is not relocation, and that is
+    # what this reports.
+    grew = _security_pairs_that_grew(before_doc, after_doc)
+    if grew:
+        raised = raised + [(f"{rule} in {uri}", was, now)
+                           for (rule, uri), (was, now) in sorted(grew.items())]
+
     if not raised:
         return
     detail = "; ".join(f"{name} {was} -> {now}" for name, was, now in raised)

@@ -853,6 +853,89 @@ def test_the_escape_hatch_records_its_reason_in_the_baseline(tmp_path):
     assert "critical 0 -> 1" in after["severity_budget_raised"]["detail"]
 
 
+def _doc(pairs, budget):
+    """A baseline-shaped document: findings keyed per (rule, uri, hash)."""
+    return {
+        "findings": {json.dumps([r, u, h, "1"]): n for r, u, h, n in pairs},
+        "required_rules": sorted({r for r, _u, _h, _n in pairs}),
+        "severity_budget": budget,
+    }
+
+
+def test_a_same_band_security_replacement_is_refused(tmp_path):
+    """The hole the aggregate-count ratchet had.
+
+    A refresh that removes one critical finding and introduces a DIFFERENT
+    one in another file leaves every band total equal, so `after > before`
+    passed and the replacement was written in as accepted debt -- exactly
+    what the ratchet exists to stop, reached by substitution instead of
+    growth.
+    """
+    regen = _regen_module()
+    budget = {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1}
+    before = _doc([("py/full-ssrf", "a.py", "h1", 1)], budget)
+    after = _doc([("py/full-ssrf", "b.py", "h2", 1)], dict(budget))
+
+    with pytest.raises(SystemExit) as excinfo:
+        regen.enforce_ratchet(before, after, None)
+    message = str(excinfo.value)
+    assert "py/full-ssrf in b.py" in message, message
+    assert "--accept-severity-regression" in message, message
+
+
+def test_a_pure_relocation_is_not_treated_as_a_replacement(tmp_path):
+    """The false positive a global identity check would have caused.
+
+    CodeQL derives `primaryLocationLineHash` from the line plus a few lines
+    of context, so any edit near a finding rehashes it. Measured: two
+    `py/path-injection` findings in kanban_db.py churned exactly this way
+    when a block was inserted above them -- 2 new against 2 absent with the
+    per-(rule, file) total conserved at 65.
+
+    Comparing identities globally would demand the acceptance flag for every
+    refresh after an ordinary edit, and an escape hatch used routinely is not
+    a control. So the comparison is per (rule, file), where a conserved count
+    is a relocation.
+    """
+    regen = _regen_module()
+    budget = {"critical": 2, "high": 0, "medium": 0, "low": 0, "security": 2}
+    before = _doc([("py/path-injection", "kanban_db.py", "old1", 1),
+                   ("py/path-injection", "kanban_db.py", "old2", 1)], budget)
+    after = _doc([("py/path-injection", "kanban_db.py", "new1", 1),
+                  ("py/path-injection", "kanban_db.py", "new2", 1)], dict(budget))
+
+    regen.enforce_ratchet(before, after, None)   # must not raise
+
+    assert "severity_budget_raised" not in after
+
+
+def test_a_net_increase_in_one_file_is_still_refused(tmp_path):
+    """Relocation is forgiven; growth in the same file is not."""
+    regen = _regen_module()
+    budget = {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1}
+    before = _doc([("py/full-ssrf", "a.py", "h1", 1)], budget)
+    after = _doc([("py/full-ssrf", "a.py", "h1", 1),
+                  ("py/full-ssrf", "a.py", "h2", 1)],
+                 {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1})
+
+    with pytest.raises(SystemExit) as excinfo:
+        regen.enforce_ratchet(before, after, None)
+    assert "py/full-ssrf in a.py" in str(excinfo.value)
+
+
+def test_a_replacement_can_still_be_accepted_with_a_reason(tmp_path):
+    """The escape hatch must cover identity growth too, not just counts."""
+    regen = _regen_module()
+    budget = {"critical": 1, "high": 0, "medium": 0, "low": 0, "security": 1}
+    before = _doc([("py/full-ssrf", "a.py", "h1", 1)], budget)
+    after = _doc([("py/full-ssrf", "b.py", "h2", 1)], dict(budget))
+    reason = "accepted: the probe moved to b.py in ADR-0007 and is unreachable there"
+
+    regen.enforce_ratchet(before, after, reason)
+
+    assert after["severity_budget_raised"]["reason"] == reason
+
+
 def test_lowering_a_budget_is_always_allowed(tmp_path):
     """The ratchet only resists one direction; fixing things must be free."""
     regen = _regen_module()

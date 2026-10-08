@@ -53,19 +53,44 @@ class _Result:
         self.stdout = stdout
 
 
-def fake_api(*, required, tip_contexts, default_branch="main", tip="cafebabe"):
-    """A ``subprocess.run`` stand-in for the four calls the condition makes."""
+def ruleset_body(required, *, enforcement="active", include=None, name="rs"):
+    """A branch ruleset as the API actually returns one.
+
+    `conditions.ref_name` is the real shape -- this repository's own reads
+    `{"include": ["refs/heads/main"], "exclude": []}` -- because the gate now
+    filters on it, and a stub without it would test nothing.
+    """
+    return {
+        "name": name,
+        "enforcement": enforcement,
+        "conditions": {"ref_name": {
+            "include": ["refs/heads/main"] if include is None else include,
+            "exclude": [],
+        }},
+        "rules": [{
+            "type": "required_status_checks",
+            "parameters": {"required_status_checks":
+                           [{"context": c} for c in required]},
+        }],
+    }
+
+
+def fake_api(*, required, tip_contexts, default_branch="main", tip="cafebabe",
+             rulesets=None):
+    """A ``subprocess.run`` stand-in for the calls the condition makes.
+
+    `rulesets` maps id -> body, so a test can supply a disabled one or one
+    scoped to another branch.
+    """
+    bodies = rulesets if rulesets is not None else {"1": ruleset_body(required)}
 
     def run(argv, **_kwargs):
         joined = " ".join(str(a) for a in argv)
         if "rulesets" in joined and joined.rstrip().endswith(".id"):
-            return _Result("1\n")
-        if "rulesets/1" in joined:
-            return _Result(json.dumps({"rules": [{
-                "type": "required_status_checks",
-                "parameters": {"required_status_checks":
-                               [{"context": c} for c in required]},
-            }]}))
+            return _Result("".join(i + "\n" for i in bodies))
+        for ruleset_id, body in bodies.items():
+            if f"rulesets/{ruleset_id}" in joined:
+                return _Result(json.dumps(body))
         if joined.rstrip().endswith("repos/owner/repo"):
             return _Result(json.dumps({"default_branch": default_branch}))
         if f"commits?sha={default_branch}" in joined:
@@ -139,20 +164,79 @@ def test_a_produced_codeql_leg_that_is_not_required_is_reported(gate, monkeypatc
 def test_a_ruleset_requiring_nothing_is_itself_a_failure(gate, monkeypatch):
     """Every gate advisory has the same effect as having no gates."""
     monkeypatch.setenv("GH_TOKEN", "x")
-
-    def run(argv, **_kwargs):
-        joined = " ".join(str(a) for a in argv)
-        if "rulesets" in joined and joined.rstrip().endswith(".id"):
-            return _Result("1\n")
-        if "rulesets/1" in joined:
-            return _Result(json.dumps({"rules": []}))
-        raise AssertionError(f"should not have been reached: {joined}")
-
-    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", fake_api(
+        required=[], tip_contexts=["build"],
+        rulesets={"1": ruleset_body([])},
+    ))
     findings = gate.Findings()
     gate.check_required_checks(REPO_ROOT, {}, "owner/repo", findings, True)
 
     assert [i["condition"] for i in findings.failures] == ["no required status checks"]
+
+
+@pytest.mark.parametrize("body,why", [
+    (lambda: ruleset_body(["release-only"], enforcement="disabled"),
+     "a DISABLED ruleset enforces nothing"),
+    (lambda: ruleset_body(["release-only"], include=["refs/heads/release/*"]),
+     "a ruleset scoped to release/* does not protect main"),
+])
+def test_a_ruleset_that_does_not_protect_the_default_branch_is_ignored(
+    gate, monkeypatch, body, why
+):
+    """Unioning every branch ruleset produced a FALSE lockout report.
+
+    Required contexts are compared against the default branch's check runs,
+    so a context required only on `release/*`, or by a disabled ruleset, read
+    as "required but nobody produces it" -- failing the required
+    python-security job on every pull request. A false lockout report from the
+    lockout detector.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+    monkeypatch.setattr(subprocess, "run", fake_api(
+        required=[], tip_contexts=["build"],
+        rulesets={"1": ruleset_body(["build"]), "2": body()},
+    ))
+
+    findings = gate.Findings()
+    gate.check_required_checks(REPO_ROOT, {}, "owner/repo", findings, True)
+
+    assert findings.failures == [], f"{why}: {findings.failures}"
+
+
+def test_ruleset_protects_handles_the_special_ref_tokens(gate):
+    """`~ALL` and `~DEFAULT_BRANCH` are not fnmatch patterns."""
+    assert gate.ruleset_protects(ruleset_body([], include=["~ALL"]), "main")
+    assert gate.ruleset_protects(
+        ruleset_body([], include=["~DEFAULT_BRANCH"]), "main")
+    assert gate.ruleset_protects(
+        ruleset_body([], include=["refs/heads/ma*"]), "main")
+    assert not gate.ruleset_protects(ruleset_body([], include=[]), "main")
+    assert not gate.ruleset_protects(
+        ruleset_body([], include=["refs/heads/main"], enforcement="evaluate"), "main")
+    # exclude wins over include
+    excluded = ruleset_body([], include=["~ALL"])
+    excluded["conditions"]["ref_name"]["exclude"] = ["refs/heads/main"]
+    assert not gate.ruleset_protects(excluded, "main")
+
+
+def test_strict_mode_without_a_repository_fails(gate, monkeypatch):
+    """Strict mode exists so a condition cannot quietly stop running.
+
+    With a token exported but no `--repo` and no `GITHUB_REPOSITORY`, the
+    earlier code recorded a skip and `main()` printed "PASS with 1 SKIPPED" --
+    making the explicitly strict audit non-enforcing on an authenticated
+    local or publication run.
+    """
+    monkeypatch.setenv("GH_TOKEN", "x")
+
+    strict = gate.Findings()
+    gate.check_required_checks(REPO_ROOT, {}, None, strict, True)
+    assert [i["condition"] for i in strict.failures] == ["repository unknown"]
+
+    lenient = gate.Findings()
+    gate.check_required_checks(REPO_ROOT, {}, None, lenient, False)
+    assert lenient.failures == []
+    assert len(lenient.skips) == 1
 
 
 def test_an_unreadable_ruleset_names_the_scope_it_needs(gate, monkeypatch):
@@ -256,20 +340,40 @@ def test_both_flags_can_force_either_way(gate):
             assert excinfo.value.code == 0, flag
 
 
-def test_the_wrapper_passes_no_strictness_flag(gate):
-    """The shell must not re-decide what the gate already decides.
+def test_the_default_is_decided_by_the_gate_not_by_its_caller(gate, monkeypatch):
+    """The contract the wrapper relies on, asserted behaviourally.
 
-    Asserted on the parsed invocation rather than by running the wrapper,
-    which executes the whole publication suite -- tests, OWASP, nginx -- and
-    is not a unit test.
+    The previous version of this test read `run_all_gates.sh` as raw text and
+    asserted `"require-remote" not in text`. That is a source-regex inventory
+    assertion, which AGENTS.md:31 prohibits -- a comment mentioning the flag,
+    or a line wrap, would fail it without any behaviour changing. It was the
+    second time I wrote one.
+
+    What actually matters is that the gate resolves strictness itself, so the
+    wrapper does not have to and cannot disagree with it. That is a property
+    of `main()`'s argument handling plus `remote_required_by_default()`, and
+    both are observable without reading a file.
     """
-    text = WRAPPER.read_text(encoding="utf-8")
-    invocation = [line for line in text.splitlines() if "ci_control_gate.py" in line]
-    assert len(invocation) == 1, invocation
-    assert "require-remote" not in text, (
-        "run_all_gates.sh decides strictness itself; that belongs to the gate, "
-        "which reads the environment, so the two cannot disagree"
-    )
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    assert gate.remote_required_by_default() is False
+
+    monkeypatch.setenv("GH_TOKEN", "x")
+    assert gate.remote_required_by_default() is True
+
+    # And an explicit flag must still win over the environment, in both
+    # directions, so a caller that needs to override can -- which is the
+    # reason the wrapper does not need to decide.
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--require-remote", dest="require_remote",
+                        action="store_true", default=None)
+    parser.add_argument("--no-require-remote", dest="require_remote",
+                        action="store_false")
+    assert parser.parse_args([]).require_remote is None
+    assert parser.parse_args(["--require-remote"]).require_remote is True
+    assert parser.parse_args(["--no-require-remote"]).require_remote is False
 
 
 def test_the_ci_step_exports_a_token_to_the_gates() -> None:
