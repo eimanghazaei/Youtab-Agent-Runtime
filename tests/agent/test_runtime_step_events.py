@@ -668,18 +668,42 @@ def test_the_registry_helper_produces_what_the_executor_detects() -> None:
 
 
 def test_a_large_successful_result_is_not_parsed_to_decide(monkeypatch):
-    """The refusal test must not parse megabyte tool results.
+    """A big result must still emit, and must not be parsed to find out.
 
-    Tool results carry whole file contents. A successful `read_file` can be a
-    megabyte of JSON, and parsing it on every call to answer a question about
-    progress reporting would be a real cost for no benefit -- a refusal is
-    short. So the fallback is capped, and a large successful result must still
-    emit.
+    Tool results carry whole file contents, so a successful `read_file` can be
+    a megabyte of JSON. The substring probe rejects it after one scan without
+    parsing, which is what the old size cap was for -- the cap just also broke
+    the case below.
     """
-    big = '{"content": "' + "x" * 10000 + '"}'
-    emitted, ran, outcome = _drive_middleware(monkeypatch, allows=True, tool_result=big)
+    big = '{"content": "' + "x" * 20000 + '"}'
+    emitted, ran, _outcome = _drive_middleware(monkeypatch, allows=True, tool_result=big)
     assert emitted == [("web_search", {"query": "best coffee"})]
     assert ran == [{"query": "best coffee"}]
+
+
+def test_a_large_MARKED_refusal_is_still_recognised(monkeypatch):
+    """The hole the size cap had, and the reason it is gone.
+
+    A 4096-character cap meant a correctly marked refusal was ignored solely
+    because its envelope was large -- and that is reachable, not theoretical:
+    gateway ask mode echoes the full command back in its pending-approval
+    payload, and the approval parser accepts compound commands well past any
+    cap one would pick. The feed then recorded "Running a command" for a
+    command that never ran, which is exactly what the marker exists to
+    prevent.
+
+    9000 characters is over the old cap by more than twice.
+    """
+    from tools.registry import tool_authorization_error
+
+    refusal = tool_authorization_error("Command denied: " + "x" * 9000)
+    assert len(refusal) > 4096, "fixture is not larger than the old cap"
+
+    emitted, ran, _outcome = _drive_middleware(
+        monkeypatch, allows=True, tool_result=refusal
+    )
+    assert ran == [{"query": "best coffee"}]
+    assert emitted == [], "a marked refusal must not be recorded as work"
 
 
 def test_plain_text_and_non_string_results_still_emit(monkeypatch):

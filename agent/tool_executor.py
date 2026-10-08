@@ -358,10 +358,19 @@ def _managed_values(
 # asserts the two agree.
 _TOOL_AUTHORIZATION_DENIED = "denied"
 
-# A refusal envelope is short. Anything larger is a real result, and parsing a
-# megabyte of tool output to answer a progress-reporting question is not worth
-# it on every successful call.
-_REFUSAL_PARSE_LIMIT = 4096
+# The probe that decides whether a result is worth parsing at all.
+#
+# A size cap was here first and had a hole: a CORRECTLY marked refusal was
+# ignored because its envelope was large. Gateway ask mode echoes the full
+# command back in its pending-approval payload, and the approval parser
+# accepts compound commands well past any cap one would pick, so the feed
+# recorded "Running a command" for a command that never ran.
+#
+# A substring probe has no such threshold. It is one scan over a string
+# already in memory; only a result actually carrying the key is parsed, at any
+# size; and a megabyte of file content is still rejected without being
+# parsed, which is what the cap was for.
+_AUTHORIZATION_KEY = '"authorization"'
 
 
 def _is_authorization_refusal(result: Any) -> bool:
@@ -384,18 +393,26 @@ def _is_authorization_refusal(result: Any) -> bool:
     the failure mode of forgetting is a progress row for a blocked call, which
     is visible, rather than a silently missing feed.
 
-    The bounded `json.loads` is the cost control. Tool results carry whole
-    file contents, and a successful `read_file` can be a megabyte of JSON;
-    parsing that on every call to answer a question about progress reporting
-    would be real cost for no benefit. A refusal envelope is short, so
-    anything over the cap is by construction not one.
+    Cost is controlled by a SUBSTRING PROBE, not a size cap. Tool results
+    carry whole file contents and a successful `read_file` can be a megabyte
+    of JSON, so parsing every result to answer a progress-reporting question
+    would be real cost for no benefit -- but a cap was the wrong way to avoid
+    that and had a hole of its own: gateway ask mode echoes the full command
+    back in its pending-approval payload, and the approval parser accepts
+    compound commands well past any cap one would pick, so a correctly marked
+    refusal was ignored solely because its envelope was large.
+
+    Probing for the key first has neither problem. A result without the
+    marker is rejected after one substring scan and never parsed; a result
+    with it is parsed however large it is. There is no size at which a
+    refusal stops being recognised.
     """
     if isinstance(result, dict):
         return result.get("authorization") == _TOOL_AUTHORIZATION_DENIED
     if not isinstance(result, str):
         return False
     text = result.lstrip()
-    if not text.startswith("{") or len(text) > _REFUSAL_PARSE_LIMIT:
+    if not text.startswith("{") or _AUTHORIZATION_KEY not in text:
         return False
     try:
         parsed = json.loads(text)
