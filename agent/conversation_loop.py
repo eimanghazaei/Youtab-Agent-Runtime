@@ -176,9 +176,21 @@ _RUNTIME_STEP_PHRASES = {
 _STEP_SUPPLEMENT_RE = re.compile(
     # A bare scheme + credential.
     #
-    # `bearer` keeps an eight-character floor, because it is an ordinary
-    # English word and "bearer of bad news" must not be redacted. A Bearer
-    # token shorter than eight characters is not a real token.
+    # NO length floor on either scheme now.
+    #
+    # `bearer` had one to keep "bearer of bad news" out of the match, and that
+    # reasoning was wrong in the direction that costs something: RFC 6750
+    # defines b64token as `1*(ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" /
+    # "/") *"="`, so `Bearer abc123` is a perfectly valid credential and the
+    # floor left it intact in a row that is persisted and broadcast.
+    #
+    # Unlike `basic`, a Bearer token is OPAQUE -- there is no structure to
+    # test, so there is no way to tell a short token from a short word. Any
+    # attempt would be a prose allowlist, which is the thing this module's
+    # own comment warns against. So it fails closed, and the cost is bounded
+    # and visible: "bearer of bad news" in a search query becomes
+    # "[redacted]". This file's rule is already written down -- "a dropped
+    # progress row costs nothing; a leaked one cannot be recalled."
     #
     # `basic` CANNOT use a length floor: Basic credentials have no minimum
     # encoded length -- `Basic dTpw` is `u:p`, four characters -- so the floor
@@ -195,7 +207,7 @@ _STEP_SUPPLEMENT_RE = re.compile(
     #     YWRtaW46cGFzcw== -> admin:pass   redacted
     #     setup / basic    -> not base64   kept
     #     plan / auth      -> no colon     kept
-    r"\bbearer\s+\S{8,}"
+    r"\bbearer\s+\S+"
     r"|\bbasic\s+(?P<basic>[A-Za-z0-9+/=]{4,})"
     # The auth header name in ASSIGNMENT form. The governed redactor covers
     # the header form ("Authorization: X") and api_key=/token=, but not

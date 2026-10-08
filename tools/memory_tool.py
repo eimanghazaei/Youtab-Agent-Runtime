@@ -944,7 +944,11 @@ def _apply_write_gate(action: str, target: str, content: Optional[str],
         return None
 
     if decision.blocked:
-        return tool_error(decision.message, success=False)
+        # An authorization refusal, not a failure: the governed write never
+        # happened, so the managed-run progress feed must not record
+        # "Updating memory" for it.
+        # See tools/registry.TOOL_AUTHORIZATION_DENIED.
+        return tool_authorization_error(decision.message, success=False)
 
     # stage
     payload = {
@@ -997,7 +1001,11 @@ def _apply_batch_write_gate(target: str, operations: List[Dict[str, Any]]) -> Op
         return None
 
     if decision.blocked:
-        return tool_error(decision.message, success=False)
+        # An authorization refusal, not a failure: the governed write never
+        # happened, so the managed-run progress feed must not record
+        # "Updating memory" for it.
+        # See tools/registry.TOOL_AUTHORIZATION_DENIED.
+        return tool_authorization_error(decision.message, success=False)
 
     payload = {"action": "batch", "target": target, "operations": operations}
     record = wa.stage_write(
@@ -1218,7 +1226,7 @@ MEMORY_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_authorization_error, tool_error
 
 registry.register(
     name="memory",

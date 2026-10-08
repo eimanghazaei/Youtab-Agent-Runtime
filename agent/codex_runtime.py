@@ -399,11 +399,24 @@ def _codex_item_refused(item: dict) -> bool:
     original query for a search that never ran, and Youtab's own browser and
     file guards return the same marked envelopes through this path.
 
-    So the result is searched RECURSIVELY for
+    The scan is restricted to `mcpToolCall` items from the INTERNAL server.
+    That restriction is the security half: tool results are untrusted input
+    (AGENTS.md), and an external MCP tool that fetches or echoes arbitrary
+    JSON could otherwise return a nested `{"authorization": "denied"}` and
+    suppress its own progress row with content it controls. Only Youtab's own
+    handler channel may assert a refusal. Codex's built-ins
+    (`commandExecution`, `fileChange`, `webSearch`) never carry this marker at
+    all, and Youtab's browser and file guards all arrive through the internal
+    server, so nothing legitimate is lost.
+
+    Within that channel the result is searched RECURSIVELY for
     `authorization == "denied"` (`tools.registry.TOOL_AUTHORIZATION_DENIED`),
     descending into nested containers and parsing strings that are themselves
     JSON, which is how FastMCP hands a tool's text back.
     """
+    if (item.get("type") != "mcpToolCall"
+            or item.get("server") != _INTERNAL_MCP_SERVER):
+        return False
     def carries(value: Any, depth: int = 0) -> bool:
         if depth > 6:
             return False
@@ -429,6 +442,37 @@ def _codex_item_refused(item: dict) -> bool:
         if field in item and carries(item.get(field)):
             return True
     return False
+
+
+def _codex_item_ran(item: dict) -> bool:
+    """Whether a completed item shows evidence the tool actually EXECUTED.
+
+    Used to tell a tool that ran and failed from one that never ran, so a
+    failure still produces a progress row. Suppressing every error completion
+    recreated on this runtime the exact gap already fixed for the native
+    executor: the trace disappears precisely when something goes wrong, which
+    is when it is worth reading.
+
+    The evidence is per item type and is read off the item rather than
+    assumed:
+
+      commandExecution  an `exitCode` is the process's own result, so its
+                        presence proves the command ran. Absent, there is no
+                        evidence it did.
+      fileChange        codex names the outcome in `status`; the declined
+                        vocabulary is treated as "did not run" and anything
+                        else -- including a plain failure -- as "ran".
+      everything else   an error reported by a provider or a tool means the
+                        call was made.
+    """
+    item_type = item.get("type") or ""
+    if item_type == "commandExecution":
+        return item.get("exitCode") is not None
+    if item_type == "fileChange":
+        status = str(item.get("status") or "").strip().lower()
+        return status not in {"declined", "rejected", "denied", "cancelled",
+                              "canceled", "aborted", "not_approved"}
+    return True
 
 
 def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
@@ -600,19 +644,20 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         # approval AFTER the item starts, so a step emitted there would claim
         # work for a command the user may still decline.
         #
-        # Emitted only when the completion is NOT an error, and that is a
-        # deliberate limitation rather than a preference. On the native path a
-        # refusal is distinguishable from a failure by an explicit
-        # `authorization: "denied"` marker, so failures still produce a step.
-        # Here the only signal is `is_error`, which conflates the two: a
-        # `commandExecution` item carries `aggregatedOutput` and `exitCode` and
-        # no status field (only `fileChange` has one), so whether a DECLINED
-        # command still arrives as `item/completed` could not be established.
-        # Recording "Running a command" for a command the user refused is the
-        # failure this whole feed has been corrected for twice, so the
-        # ambiguous half is skipped. If codex gains a decision field on these
-        # items, failures can be emitted too and this comment is the place to
-        # start.
+        # A tool that RAN still gets a row, even when it failed. Dropping
+        # every error completion recreated here the gap already fixed for the
+        # native executor -- the trace vanishing exactly when something goes
+        # wrong -- and AGENTS.md's capability posture is explicit that a
+        # mitigation must preserve the feature, trace included.
+        #
+        # So the two questions are asked separately: `_codex_item_refused`
+        # answers "did Youtab's own handler refuse this", and
+        # `_codex_item_ran` answers "is there evidence it executed". A failure
+        # with evidence is traced; only the case with neither -- no refusal
+        # marker and no sign it ran, such as a `commandExecution` with no
+        # `exitCode` -- is skipped, because recording "Running a command" for
+        # a command that never started is the failure this feed has been
+        # corrected for twice.
         #
         # No double emission: Youtab's own tools reached through the internal
         # MCP server run in a separate youtab-agent-tools-mcp-server
@@ -621,7 +666,18 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         #
         # Guarded like every other callback here -- progress reporting must
         # never tear down the turn loop.
-        if not is_error and not _codex_item_refused(item):
+        # `is_error` does not enter this decision at all, and that is the
+        # point. A `commandExecution` with no `exitCode` reports
+        # `is_error=False` -- there is no failing exit code to report -- so
+        # gating on `not is_error` let exactly the never-ran case through
+        # while still dropping the ran-and-failed one. Asking only "was it
+        # refused" and "did it run" gets both right:
+        #
+        #   exit 0        refused=False ran=True   -> row
+        #   exit 1        refused=False ran=True   -> row  (the fix)
+        #   no exitCode   refused=False ran=False  -> none (the fix)
+        #   internal refusal            refused=True   -> none
+        if not _codex_item_refused(item) and _codex_item_ran(item):
             try:
                 from agent.conversation_loop import emit_runtime_step
 

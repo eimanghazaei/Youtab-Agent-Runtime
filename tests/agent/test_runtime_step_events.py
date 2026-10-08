@@ -665,19 +665,38 @@ def test_a_short_basic_credential_is_redacted(text):
 @pytest.mark.parametrize("text", [
     "basic setup for the project",
     "basic auth plan",
-    "bearer of bad news",
     "the basic idea",
 ])
-def test_prose_that_looks_like_a_scheme_survives(text):
-    """The reason the floor was there, kept without the floor.
+def test_basic_prose_survives_because_it_is_not_base64_of_a_pair(text):
+    """`basic` keeps prose, because a Basic credential has a structure.
 
-    Dropping the length rule for `basic` alone would redact ordinary prose,
-    so the discriminator is what a Basic credential IS: base64 of
-    `user:password`. `setup` and `basic` are not valid base64; `plan` and
-    `auth` decode without a colon. `bearer` keeps its floor because a Bearer
-    token shorter than eight characters is not a token.
+    It is base64 of `user:password`, so the decode test separates the two
+    without any length rule: `setup` and `basic` are not valid base64, and
+    `plan` and `auth` decode without a colon.
     """
     assert _scrub_step_text(text, max_chars=120) == text, text
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Bearer abc123", "[redacted]"),
+    ("Bearer x", "[redacted]"),
+    ("bearer of bad news", "[redacted] bad news"),
+])
+def test_bearer_fails_closed_even_over_prose(text, expected):
+    """A Bearer token is OPAQUE, so prose cannot be told from a secret.
+
+    RFC 6750 defines b64token as `1*(ALPHA / DIGIT / "-" / "." / "_" / "~" /
+    "+" / "/") *"="`, so `Bearer abc123` is a valid credential and the old
+    eight-character floor left it intact in a persisted, broadcast row. There
+    is no structure to test the way there is for Basic, and any attempt would
+    be a prose allowlist -- the thing this module's comment warns against.
+
+    So it fails closed, and the cost is recorded here rather than hidden:
+    "bearer of bad news" loses its first two words. This file's own rule is
+    that a dropped progress row costs nothing and a leaked one cannot be
+    recalled.
+    """
+    assert _scrub_step_text(text, max_chars=120) == expected, text
 
 
 def test_the_search_files_path_guard_marks_its_refusal(monkeypatch) -> None:
@@ -709,6 +728,57 @@ def test_the_search_files_path_guard_marks_its_refusal(monkeypatch) -> None:
 
     assert payload.get("authorization") == "denied", payload
     assert "Blocked:" in payload["error"], payload
+    assert tool_executor._is_authorization_refusal(raw_result), raw_result
+
+
+def test_the_memory_write_gate_marks_its_refusals(monkeypatch) -> None:
+    """A denied governed write never happened.
+
+    `_apply_write_gate` and `_apply_batch_write_gate` returned a plain
+    `tool_error` when `decision.blocked`, so the feed recorded "Updating
+    memory" for a mutation the gate refused.
+    """
+    from agent import tool_executor
+    from tools import memory_tool, write_approval
+
+    # `wa` is imported INSIDE the function from tools.write_approval, so the
+    # module is the patch target rather than a name on memory_tool.
+    blocked = SimpleNamespace(allow=False, blocked=True,
+                              message="Memory write denied by policy")
+    monkeypatch.setattr(write_approval, "evaluate_gate",
+                        lambda *_a, **_k: blocked)
+    payload = memory_tool._apply_write_gate("add", "soul", "content", None)
+
+    assert payload is not None, "the gate did not fire"
+    assert tool_executor._is_authorization_refusal(payload), payload
+
+
+def test_the_execute_code_guard_marks_its_refusal(monkeypatch) -> None:
+    """A denied `execute_code` starts no sandbox process.
+
+    The guard returned a hand-rolled JSON error with no marker, so the feed
+    recorded "Running code" for arbitrary code that was refused.
+
+    Driven through the real `execute_code` with the guard stubbed to deny,
+    rather than asserting on a payload the test wrote itself -- the first
+    version did that and could not have caught a change in
+    `code_execution_tool`.
+    """
+    from agent import tool_executor
+    from tools import approval, code_execution_tool
+
+    # Imported INSIDE `execute_code` from tools.approval, so that module is
+    # the patch target.
+    monkeypatch.setattr(
+        approval, "check_execute_code_guard",
+        lambda *_a, **_k: {"approved": False,
+                           "message": "execute_code denied by policy"},
+    )
+    raw_result = code_execution_tool.execute_code(code="import os; os.system('x')")
+    payload = json.loads(raw_result)
+
+    assert payload.get("authorization") == "denied", payload
+    assert payload.get("status") == "error", payload
     assert tool_executor._is_authorization_refusal(raw_result), raw_result
 
 
