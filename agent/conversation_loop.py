@@ -143,6 +143,18 @@ _RUNTIME_STEP_PHRASES = {
     "skill_view": "Reading a skill",
     "image_generate": "Generating an image",
     "delegate_task": "Delegating a subtask",
+    # Codex app-server built-ins. `_codex_item_to_tool_name` maps
+    # commandExecution -> exec_command and fileChange -> apply_patch, and its
+    # webSearch maps to `web_search` which is already above. Codex's
+    # mcpToolCall items for Youtab's own tools arrive under their BARE names
+    # (the namespace is stripped by design), so they match the entries above
+    # without any translation.
+    #
+    # The phrases are the same ones the native equivalents use, because the
+    # work is the same work -- a managed run should not read differently
+    # depending on which runtime executed the tool.
+    "exec_command": "Running a command",
+    "apply_patch": "Editing a file",
 }
 
 # Conservative, self-contained secret scrub (the governed redaction module is not
@@ -233,8 +245,19 @@ def _runtime_step_detail(tool_name: str, raw_args: Any) -> str:
     if name in ("web_search", "session_search"):
         q = args.get("query") or args.get("q") or ""
         return _scrub_step_text(q, max_chars=_STEP_MAX_DETAIL)
-    if name in ("read_file", "write_file", "patch"):
+    if name in ("read_file", "write_file", "patch", "apply_patch"):
         path = str(args.get("path") or args.get("file_path") or "")
+        if not path:
+            # Codex's fileChange shape, which has no `path` of its own:
+            #     {"changes": [{"kind": "update", "path": "a.py"}, ...]}
+            # Take the first path so an `apply_patch` step is as informative
+            # as the native `patch` one instead of silently detail-less.
+            changes = args.get("changes")
+            if isinstance(changes, list):
+                for change in changes:
+                    if isinstance(change, dict) and change.get("path"):
+                        path = str(change["path"])
+                        break
         base = path.replace("\\", "/").rsplit("/", 1)[-1]
         return _scrub_step_text(base, max_chars=_STEP_MAX_DETAIL)
     return ""

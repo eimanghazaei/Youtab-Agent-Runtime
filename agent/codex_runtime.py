@@ -534,13 +534,54 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                     name, exc_info=True,
                 )
         complete_cb = getattr(agent, "tool_complete_callback", None)
+        completed_args = prior[1] if prior is not None else _codex_item_to_args(item)
         if complete_cb is not None:
-            args = prior[1] if prior is not None else _codex_item_to_args(item)
             try:
-                complete_cb(_stable_call_id(item, name), name, args, result)
+                complete_cb(_stable_call_id(item, name), name, completed_args, result)
             except Exception:
                 logger.debug(
                     "tool_complete_callback raised for %s", name, exc_info=True,
+                )
+
+        # Managed-run progress feed. `run_conversation` returns into
+        # `_run_codex_app_server_turn` before the tool executor is reached, so
+        # `agent/tool_executor._emit_managed_progress` never runs on this
+        # runtime -- without this, a managed worker with
+        # `openai_runtime=codex_app_server` has a heartbeat-only feed.
+        #
+        # This is the correct seam rather than `item/started`: codex asks for
+        # approval AFTER the item starts, so a step emitted there would claim
+        # work for a command the user may still decline.
+        #
+        # Emitted only when the completion is NOT an error, and that is a
+        # deliberate limitation rather than a preference. On the native path a
+        # refusal is distinguishable from a failure by an explicit
+        # `authorization: "denied"` marker, so failures still produce a step.
+        # Here the only signal is `is_error`, which conflates the two: a
+        # `commandExecution` item carries `aggregatedOutput` and `exitCode` and
+        # no status field (only `fileChange` has one), so whether a DECLINED
+        # command still arrives as `item/completed` could not be established.
+        # Recording "Running a command" for a command the user refused is the
+        # failure this whole feed has been corrected for twice, so the
+        # ambiguous half is skipped. If codex gains a decision field on these
+        # items, failures can be emitted too and this comment is the place to
+        # start.
+        #
+        # No double emission: Youtab's own tools reached through the internal
+        # MCP server run in a separate youtab-agent-tools-mcp-server
+        # subprocess that never calls `emit_runtime_step`, so the codex-level
+        # event is the only one.
+        #
+        # Guarded like every other callback here -- progress reporting must
+        # never tear down the turn loop.
+        if not is_error:
+            try:
+                from agent.conversation_loop import emit_runtime_step
+
+                emit_runtime_step(name, completed_args)
+            except Exception:
+                logger.debug(
+                    "emit_runtime_step raised for %s", name, exc_info=True,
                 )
 
     def _fire_text_delta(params: dict) -> None:
