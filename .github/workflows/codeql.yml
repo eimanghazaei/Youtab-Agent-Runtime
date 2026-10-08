@@ -75,7 +75,37 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [python, javascript-typescript]
+        # Every language in the tree, because default setup and an advanced
+        # workflow cannot coexist: GitHub rejects every advanced upload while
+        # default setup is enabled ("CodeQL analyses from advanced
+        # configurations cannot be processed when the default setup is
+        # enabled"), for ALL languages, not just the overlapping ones. So this
+        # workflow has to cover everything or those languages get nothing.
+        #
+        #   python                 58.9 MB
+        #   javascript-typescript  16.5 MB  (js + ts + the `javascript`/
+        #                                   `typescript` aliases collapse here)
+        #   rust                    243 KB  apps/bootstrap-installer/src-tauri
+        #                                   -- a Tauri installer that runs
+        #                                   PowerShell and performs updates
+        #   c-cpp                   9.6 KB  native/fts5_cjk/fts5_cjk.c
+        #                                   -- a SQLite FTS5 CJK tokenizer
+        #   actions                         the workflow definitions
+        #
+        # build-mode: none everywhere -- nothing here needs a compile for
+        # CodeQL to extract it, and `none` is what default setup used for
+        # c-cpp and rust when it analysed them successfully.
+        include:
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
+          - language: c-cpp
+            build-mode: none
+          - language: rust
+            build-mode: none
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,6 +131,7 @@ jobs:
         uses: github/codeql-action/init@6f5948dfacef28e207b48d0905cf90c03365536d # v3
         with:
           languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
           queries: security-and-quality
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
