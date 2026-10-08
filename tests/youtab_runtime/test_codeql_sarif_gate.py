@@ -761,22 +761,61 @@ def test_two_high_volume_queries_vanishing_is_a_coverage_breach(tmp_path):
 def test_remediating_a_small_rule_entirely_is_still_an_ordinary_pass(tmp_path):
     """Below the proportional floor, a whole rule going to zero is just a fix.
 
-    This is the case the rule-count floor was protecting, and the volume
-    floor protects it properly: 9 findings out of 9076 is remediation, and
-    the gate should not editorialise about it.
+    Built with DISTINCT findings so the baseline counts are ones a SARIF can
+    actually produce: 191 syntactic results plus 9 in one dataflow rule, and
+    the current run keeps all 191 and none of the 9. Deficit 9, floor 20 --
+    remediation, and the gate should not editorialise about it.
+
+    The earlier version of this test declared a count of 9067 for a single
+    key that the SARIF emitted once, which the fully-missing-rule measure
+    happened to tolerate and the deficit measure correctly does not. The
+    fixture was wrong, not the check.
     """
+    syntactic = [finding(line_hash=f"syn:{i}") for i in range(191)]
+    ssrf = [dataflow_finding("py/partial-ssrf", line_hash=f"ssrf:{i}") for i in range(9)]
+
     baseline = tmp_path / "baseline.json"
     _baseline_requiring(
         baseline,
-        [(finding(line_hash="syntactic:1"), 9067),
-         (dataflow_finding("py/partial-ssrf", line_hash="ssrf:1"), 9)],
+        [(f, 1) for f in syntactic + ssrf],
         ["py/sql-injection", "py/partial-ssrf"],
     )
-    document = sarif([finding(line_hash="syntactic:1")])
+    document = sarif(syntactic)
     document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": "py/partial-ssrf"})
     (tmp_path / "python.sarif").write_text(json.dumps(document))
 
     assert inspect(tmp_path, baseline) == 0
+
+
+def test_partial_loss_within_surviving_queries_is_caught(tmp_path):
+    """The hole the fully-missing-rule measure left wide open.
+
+    A degraded analysis that retains even ONE result per query has no
+    fully-missing rule at all, so nothing was suspect and every lost finding
+    filed as non-enforcing `absent`. On the real baselines a run keeping one
+    result per rule loses 9009 of 9076 (python) and 87 of 110 (JS), and the
+    gate returned 0 for both -- the whole analysis could evaporate and the
+    security gate would pass.
+
+    Here: 200 findings across two rules, reduced to one result each.
+
+    Mutation check: measure only rules whose current count is zero and this
+    goes green.
+    """
+    syntactic = [finding(line_hash=f"syn:{i}") for i in range(100)]
+    ssrf = [dataflow_finding("py/partial-ssrf", line_hash=f"ssrf:{i}") for i in range(100)]
+
+    baseline = tmp_path / "baseline.json"
+    _baseline_requiring(
+        baseline,
+        [(f, 1) for f in syntactic + ssrf],
+        ["py/sql-injection", "py/partial-ssrf"],
+    )
+    document = sarif([syntactic[0], ssrf[0]])
+    document["runs"][0]["tool"]["extensions"][0]["rules"].append({"id": "py/partial-ssrf"})
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+
+    assert inspect(tmp_path, baseline) == 2
 
 
 def test_the_coverage_message_names_remediation_as_a_cause(tmp_path, capsys):
