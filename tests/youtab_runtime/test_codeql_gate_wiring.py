@@ -304,12 +304,23 @@ CHANGED_SOURCE_CASES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
         ("agent/conversation_loop.py", "src/lib.rs", "Cargo.toml"),
     ),
     "c-cpp": (
-        ("native/fts5_cjk/fts5_cjk.c", "a.cpp", "a.cc", "a.cxx", "a.h", "a.hpp"),
-        ("agent/conversation_loop.py", "src/lib.rs", "Makefile"),
+        # CodeQL's full documented set, headers included. `.h++` was missing
+        # while `.c++` was present.
+        ("native/fts5_cjk/fts5_cjk.c", "a.cpp", "a.c++", "a.cc", "a.cxx",
+         "a.h", "a.hh", "a.hpp", "a.hxx", "a.h++"),
+        ("agent/conversation_loop.py", "src/lib.rs", "Makefile", "a.rs"),
     ),
     "rust": (
         ("apps/bootstrap-installer/src-tauri/src/main.rs", "src/lib.rs"),
-        ("Cargo.toml", "Cargo.lock", "agent/conversation_loop.py"),
+        # `Cargo.toml` is excluded DESPITE CodeQL's docs listing it for Rust.
+        # This repository tracks apps/bootstrap-installer/src-tauri/Cargo.toml
+        # and the rust extraction inventory holds 9 paths, all `.rs` -- it is
+        # not among them. Claiming it on the documentation's authority would
+        # have made the changed-file check exit 2 on every pull request that
+        # edits it, which is why these predicates are verified against the
+        # committed inventories and not transcribed from the docs.
+        ("Cargo.toml", "apps/bootstrap-installer/src-tauri/Cargo.toml",
+         "Cargo.lock", "agent/conversation_loop.py"),
     ),
 }
 

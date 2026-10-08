@@ -131,8 +131,15 @@ LANGUAGES: dict[str, dict[str, object]] = {
     "c-cpp": {
         "queries": "codeql/cpp-queries",
         "diagnostic": "cpp/diagnostics/successfully-extracted-files",
+        # The full documented set. `.h++` was missing while `.c++` was
+        # present, which was an oversight rather than a decision: a newly
+        # added `.h++` header that CodeQL silently skipped would not have been
+        # demanded by the changed-file check, and with the existing
+        # translation unit still extracted the aggregate coverage threshold
+        # stays green, so the miss would not surface anywhere.
         "extracted": lambda name: name.endswith(
-            (".c", ".cc", ".cpp", ".cxx", ".c++", ".h", ".hh", ".hpp", ".hxx")
+            (".c", ".cc", ".cpp", ".cxx", ".c++",
+             ".h", ".hh", ".hpp", ".hxx", ".h++")
         ),
     },
     "rust": {
