@@ -241,8 +241,20 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             if len(run_metadata) != 1:
                 raise ValueError("expected exactly one CodeQL analysis run per language")
             run = run_metadata[0]
-            if not any(item.get("executionSuccessful") is True for item in run.get("invocations", [])):
-                raise ValueError("CodeQL analysis invocation was not successful")
+            # EVERY invocation, not any. `any` accepted a run whose statuses
+            # were [true, false] -- a partially failed analysis, whose missing
+            # results then read as `absent` rather than as a coverage
+            # problem. An empty list is also a failure: a run that records no
+            # invocation at all has not demonstrated that it ran.
+            invocations = run.get("invocations") or []
+            if not invocations or not all(
+                item.get("executionSuccessful") is True for item in invocations
+            ):
+                statuses = [item.get("executionSuccessful") for item in invocations]
+                raise ValueError(
+                    f"CodeQL analysis did not succeed in every invocation "
+                    f"(executionSuccessful={statuses or 'none recorded'})"
+                )
             if (run.get("automationDetails") or {}).get("id") != f"/language:{language}/":
                 raise ValueError("CodeQL analysis language does not match baseline")
             queries = (run.get("properties") or {}).get("codeqlConfigSummary", {}).get("queries")

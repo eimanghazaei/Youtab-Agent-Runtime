@@ -801,3 +801,56 @@ def test_regenerator_accepts_a_complete_artifact(tmp_path):
     assert baseline["extracted_count"] > 0
     assert baseline["required_rules"]
     assert baseline["findings"]
+
+
+# ---------------------------------------------------------------------------
+# A run must succeed in EVERY invocation. `any(...)` accepted statuses of
+# [true, false] -- a partially failed analysis -- and its missing results then
+# read as `absent` rather than as a coverage problem.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("statuses", [
+    [True, False],
+    [False, True],
+    [True, None],
+    [],
+])
+def test_gate_requires_every_invocation_to_succeed(tmp_path, statuses):
+    """Mutation check: change `all` back to `any` and the [true, False] and
+    [true, None] cases go green."""
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(finding(line_hash="known:1"), 1)])
+    document = sarif([finding(line_hash="known:1")])
+    template = document["runs"][0]["invocations"][0]
+    document["runs"][0]["invocations"] = [
+        {**template, "executionSuccessful": status} for status in statuses
+    ]
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+    assert inspect(tmp_path, baseline) == 2
+
+
+def test_gate_accepts_several_successful_invocations(tmp_path):
+    """Requiring all of them must not reject a healthy multi-invocation run."""
+    baseline = tmp_path / "baseline.json"
+    write_baseline(baseline, [(finding(line_hash="known:1"), 1)])
+    document = sarif([finding(line_hash="known:1")])
+    template = document["runs"][0]["invocations"][0]
+    document["runs"][0]["invocations"] = [dict(template), dict(template)]
+    (tmp_path / "python.sarif").write_text(json.dumps(document))
+    assert inspect(tmp_path, baseline) == 0
+
+
+def test_regenerator_requires_every_invocation_to_succeed(tmp_path):
+    """Same rule on the generation side."""
+    regen = _regen_module()
+    _write_cycle_sarif(
+        tmp_path,
+        lambda run: run.__setitem__("invocations", [
+            {**run["invocations"][0], "executionSuccessful": True},
+            {**run["invocations"][0], "executionSuccessful": False},
+        ]),
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        regen.build(tmp_path, "python", "https://example.test/run/1", "0" * 40)
+    assert "successful invocation" in str(excinfo.value)

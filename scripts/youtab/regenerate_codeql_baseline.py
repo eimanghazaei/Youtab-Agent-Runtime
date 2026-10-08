@@ -104,8 +104,12 @@ def build(sarif_dir: Path, language: str, source_run: str, source_head: str) -> 
     # The workflow uploads the SARIF under `if: always()`, so a FAILED CodeQL
     # run still leaves a downloadable artifact. Building a baseline from a
     # partial analysis would bake its missing results in as accepted debt.
-    if not any(item.get("executionSuccessful") is True
-               for item in run.get("invocations", [])):
+    # EVERY invocation, not any: a run with statuses [true, false] is a
+    # partially failed analysis, and `any` accepted it.
+    invocations = run.get("invocations") or []
+    if not invocations or not all(
+        item.get("executionSuccessful") is True for item in invocations
+    ):
         raise SystemExit(
             "SARIF records no successful invocation -- this is the artifact of a FAILED "
             "or partial CodeQL run (the workflow uploads on always()). Re-run the "
