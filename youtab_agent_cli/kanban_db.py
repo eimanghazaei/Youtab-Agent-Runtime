@@ -1367,7 +1367,9 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
-def _sqlite_connect(path: Path) -> sqlite3.Connection:
+def _sqlite_connect(
+    path: Path, *, busy_timeout_ms: Optional[int] = None
+) -> sqlite3.Connection:
     """Open a Kanban SQLite connection with consistent lock waiting.
 
     Uses ``connect_tracked`` so the live-connection registry knows this file
@@ -1378,7 +1380,8 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     """
     from youtab_agent_cli.sqlite_safe_read import connect_tracked
 
-    busy_timeout_ms = _resolve_busy_timeout_ms()
+    if busy_timeout_ms is None:
+        busy_timeout_ms = _resolve_busy_timeout_ms()
     conn = connect_tracked(
         path,
         connect_fn=sqlite3.connect,
@@ -2096,6 +2099,7 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    busy_timeout_ms: Optional[int] = None,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -2133,7 +2137,7 @@ def connect(
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
     if resolved in _INITIALIZED_PATHS:
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, busy_timeout_ms=busy_timeout_ms)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -2164,7 +2168,7 @@ def connect(
         # via _INITIALIZED_PATHS so it only runs once per process per path.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, busy_timeout_ms=busy_timeout_ms)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -2209,6 +2213,7 @@ def connect_closing(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    busy_timeout_ms: Optional[int] = None,
 ):
     """Open a kanban DB connection and guarantee it is closed on exit.
 
@@ -2229,7 +2234,7 @@ def connect_closing(
     intentionally manage the connection lifetime (tests, long-lived
     callers) continue to work.
     """
-    conn = connect(db_path=db_path, board=board)
+    conn = connect(db_path=db_path, board=board, busy_timeout_ms=busy_timeout_ms)
     try:
         yield conn
     finally:

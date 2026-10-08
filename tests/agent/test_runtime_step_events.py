@@ -87,7 +87,9 @@ def test_secret_in_query_is_scrubbed_from_the_line():
         "web_search", '{"query": "login token=sk-ABCD1234EFGH5678IJKL please"}'
     )
     assert "sk-ABCD1234EFGH5678IJKL" not in s
-    assert "[redacted]" in s
+    # The governed redactor masks head/tail (``sk-ABC...IJKL``) rather than
+    # emitting a fixed token, so assert the credential is gone, not the mask.
+    assert "ABCD1234EFGH" not in s
 
 
 def test_url_credentials_and_jwt_are_scrubbed():
@@ -179,6 +181,17 @@ def _new_task() -> str:
     return t if isinstance(t, str) else getattr(t, "id", str(t))
 
 
+def _claim(task_id: str) -> int:
+    """Take the task ready -> running and return its attempt id.
+
+    emit_runtime_step fences on the live attempt the way heartbeat_worker does,
+    so a step only lands while the task is running under that run id.
+    """
+    with kb.connect_closing() as conn:
+        kb.claim_task(conn, task_id)
+        return kb.get_task(conn, task_id).current_run_id
+
+
 def _runtime_steps(task_id: str) -> list:
     with kb.connect_closing() as conn:
         return [e for e in kb.list_events(conn, task_id) if e.kind == "runtime_step"]
@@ -192,7 +205,9 @@ def test_no_event_when_not_a_managed_run(kanban_home):
 
 def test_managed_run_emits_plain_string_step(kanban_home, monkeypatch):
     task_id = _new_task()
+    run_id = _claim(task_id)
     monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(run_id))
     emit_runtime_step("web_search", '{"query": "best coffee"}')
     steps = [e.payload for e in _runtime_steps(task_id)]
     assert steps == ["Searching the web: best coffee"]
@@ -203,6 +218,7 @@ def test_managed_run_emits_plain_string_step(kanban_home, monkeypatch):
 
 def test_emit_is_fail_open_on_bad_input(kanban_home, monkeypatch):
     task_id = _new_task()
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(_claim(task_id)))
     monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
 
     class _Boom:
@@ -218,19 +234,21 @@ def test_step_event_is_attributed_to_the_worker_attempt(kanban_home, monkeypatch
     """Steps carry the attempt id the dispatcher gave the worker, like the
     heartbeat/terminal events, so they stay grouped after a reclaim or retry."""
     task_id = _new_task()
+    run_id = _claim(task_id)
     monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
-    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", "42")
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(run_id))
 
     emit_runtime_step("web_search", '{"query": "x"}')
 
     events = _runtime_steps(task_id)
     assert len(events) == 1
-    assert events[0].run_id == 42
+    assert events[0].run_id == run_id
 
 
 def test_step_event_without_an_attempt_id_still_records(kanban_home, monkeypatch):
     """A missing or malformed attempt id must not lose the step (fail-open)."""
     task_id = _new_task()
+    _claim(task_id)
     monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
     monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", "not-an-int")
 
@@ -320,3 +338,73 @@ def test_step_is_recorded_once_the_tool_is_authorized(monkeypatch):
     assert ran == [{"query": "best coffee"}]
     assert emitted == [("web_search", {"query": "best coffee"})]
     assert outcome.blocked is False
+
+
+def test_google_api_key_in_a_query_is_redacted(kanban_home, monkeypatch):
+    """A prefix allowlist maintained in this module kept missing the next shape
+    (Bearer, cookies, AWS_SECRET_ACCESS_KEY, then AIza). The line now goes
+    through the governed redactor, which owns that universe."""
+    task_id = _new_task()
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(_claim(task_id)))
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
+    key = "AIzaSyA12345678901234567890123456789012345"
+
+    emit_runtime_step("web_search", '{"query": "maps %s please"}' % key)
+
+    payloads = [e.payload for e in _runtime_steps(task_id)]
+    assert payloads, "the step should still be recorded"
+    assert key not in payloads[0]
+    assert "AIzaSyA1234" not in payloads[0]
+
+
+def test_step_is_dropped_for_a_superseded_attempt(kanban_home, monkeypatch):
+    """A reclaimed or un-killable worker must not keep appending steps to an
+    attempt that is no longer current -- the dashboard broadcasts every insert.
+    Mirrors heartbeat_worker(..., expected_run_id=...)."""
+    task_id = _new_task()
+    run_id = _claim(task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(run_id + 1))
+
+    emit_runtime_step("web_search", '{"query": "x"}')
+
+    assert _runtime_steps(task_id) == []
+
+
+def test_step_is_dropped_once_the_task_stops_running(kanban_home, monkeypatch):
+    task_id = _new_task()
+    run_id = _claim(task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(run_id))
+    with kb.connect_closing() as conn:
+        conn.execute("UPDATE tasks SET status='done' WHERE id = ?", (task_id,))
+
+    emit_runtime_step("web_search", '{"query": "x"}')
+
+    assert _runtime_steps(task_id) == []
+
+
+def test_no_step_from_a_delegated_child_context(kanban_home, monkeypatch):
+    """A delegate_task child runs in the same process and inherits the parent's
+    task and run id. write_txn would have refused the write via
+    _assert_not_delegated_child_mutation; an autocommit append bypasses that, so
+    the boundary is checked explicitly. Otherwise every child tool shows up as
+    parent work in the parent's durable feed."""
+    from agent import delegation_context
+
+    task_id = _new_task()
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_RUN_ID", str(_claim(task_id)))
+    monkeypatch.setenv("YOUTAB_AGENT_KANBAN_TASK", task_id)
+
+    monkeypatch.setattr(
+        delegation_context, "is_delegated_child_process_context", lambda: True
+    )
+    emit_runtime_step("web_search", '{"query": "child work"}')
+    assert _runtime_steps(task_id) == []
+
+    # Non-vacuity: the same call records once the context is not a child.
+    monkeypatch.setattr(
+        delegation_context, "is_delegated_child_process_context", lambda: False
+    )
+    emit_runtime_step("web_search", '{"query": "parent work"}')
+    assert len(_runtime_steps(task_id)) == 1

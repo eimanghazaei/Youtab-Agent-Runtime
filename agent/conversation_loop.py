@@ -147,39 +147,40 @@ _RUNTIME_STEP_PHRASES = {
 
 # Conservative, self-contained secret scrub (the governed redaction module is not
 # available on this code path): obvious key/token/JWT shapes and URL credentials.
-_STEP_SECRET_RE = re.compile(
-    r"\b(?:sk|pk|ghp|gho|github_pat|xox[baprs]|AKIA|ASIA)[-_A-Za-z0-9]{8,}\b"
-    # key=value / key: value. The credential may be introduced by an auth scheme
-    # ("Authorization: Bearer <token>"); without consuming that scheme the
-    # trailing \S+ would stop at the space and leave the credential in the clear.
-    # The keyword need not sit immediately before the separator:
-    # ``AWS_SECRET_ACCESS_KEY=`` puts ``_ACCESS_KEY`` between ``secret`` and
-    # ``=``, so a trailing name tail is consumed too.
-    r"|(?:api[_-]?key|token|secret|password|passwd|pwd|authorization)[\w-]*\s*[:=]\s*"
-    r"(?:(?:bearer|basic|token|digest)\s+)?\S+"
-    # A bare scheme + credential with no key prefix ("Bearer <token>"). The length
-    # floor keeps ordinary prose ("bearer of bad news") out of the match.
-    r"|\bbearer\s+\S{8,}"
+# agent/redact.py is the governed redactor and owns the credential-PREFIX
+# universe (sk-, ghp_, xox*, AKIA, AIza, JWTs, ENV assignments, auth headers,
+# connection strings, URL userinfo and query credentials). It is shared and
+# centrally maintained, so this module must not keep a competing prefix
+# allowlist: each attempt to do so missed the next shape - Bearer, then
+# cookies, then AWS_SECRET_ACCESS_KEY, then AIza.
+#
+# Measured against that redactor, two STRUCTURAL classes remain uncovered, and
+# they do not grow the way a prefix list does:
+#   1. a bare auth scheme with no header name ("Bearer <token>");
+#   2. Cookie / Set-Cookie values and framework session names.
+# Those are supplemented here. Contributing them upstream would benefit every
+# caller and deserves its own bounded change: agent/redact.py redacts all
+# product logging, so widening it needs its own review.
+_STEP_SUPPLEMENT_RE = re.compile(
+    # A bare scheme + credential. The length floor keeps ordinary prose
+    # ("bearer of bad news") out of the match.
+    r"\b(?:bearer|basic)\s+\S{8,}"
+    # The auth header name in ASSIGNMENT form. The governed redactor covers
+    # the header form ("Authorization: X") and api_key=/token=, but not
+    # "authorization=X".
+    r"|\bauthorization\s*[:=]\s*\S+"
     # A Cookie / Set-Cookie header is credential material wholesale: it holds
-    # one or more name=value pairs, any of which may be a live session. Redact
-    # the whole header value, bounded to the line so later text survives.
+    # one or more name=value pairs, any of which may be a live session.
+    # Bounded to the line so text after it survives.
     r"|(?:set-)?cookie\s*[:=]\s*[^\r\n]+"
     # Cookie names that are never ordinary prose, so any value length goes.
     r"|\b[\w-]*(?:phpsessid|jsessionid|session[_-]?id|sessid|csrftoken|csrf|xsrf)"
     r"[\w-]*\s*[:=]\s*\S+"
-    # The bare word "session" takes a length floor so prose ("session: started")
-    # survives while a real session identifier does not.
-    r"|\bsession\s*[:=]\s*\S{8,}"
-    r"|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b",
+    # The bare word "session" takes a length floor so prose survives.
+    r"|\bsession\s*[:=]\s*\S{8,}",
     re.IGNORECASE,
 )
-_STEP_URL_USERINFO_RE = re.compile(r"\b([a-z][a-z0-9+.\-]*://)[^/\s@]+@", re.IGNORECASE)
-_STEP_URL_SECRET_QUERY_RE = re.compile(
-    r"([?&](?:access[_-]?token|refresh[_-]?token|client[_-]?secret|"
-    r"api[_-]?key|token|auth|sig|signature|secret|password|passwd|pwd|key|"
-    r"session|sid|code)=)[^&#\s]+",
-    re.IGNORECASE,
-)
+
 _STEP_MAX_DETAIL = 48
 _STEP_MAX_SUMMARY = 120
 # A progress row is cosmetic; it must never inherit the board's 120s wait.
@@ -187,12 +188,28 @@ _STEP_BUSY_TIMEOUT_MS = 500
 
 
 def _scrub_step_text(text: Any, *, max_chars: int) -> str:
-    """Strip inline secrets / URL credentials, collapse whitespace, bound length."""
+    """Redact credentials, collapse whitespace, bound length.
+
+    Fails CLOSED: this line is persisted and broadcast to task viewers, so if
+    the governed redactor cannot run the caller gets "" and nothing is
+    emitted. A dropped progress row costs nothing; a leaked one cannot be
+    recalled.
+    """
     if not isinstance(text, str):
         text = str(text)
-    s = _STEP_URL_USERINFO_RE.sub(r"\1[redacted]@", text)
-    s = _STEP_URL_SECRET_QUERY_RE.sub(r"\1[redacted]", s)
-    s = _STEP_SECRET_RE.sub("[redacted]", s)
+    try:
+        from agent.redact import redact_sensitive_text
+
+        # force=True so a logging preference cannot re-expose this, and
+        # redact_url_credentials=True because a persisted, broadcast row is a
+        # non-navigation egress boundary.
+        s = redact_sensitive_text(text, force=True, redact_url_credentials=True)
+    except Exception:  # noqa: BLE001 - fail closed, never emit raw text.
+        logger.debug("step redaction unavailable; dropping line", exc_info=True)
+        return ""
+    if not isinstance(s, str):
+        return ""
+    s = _STEP_SUPPLEMENT_RE.sub("[redacted]", s)
     s = " ".join(s.split())
     if len(s) > max_chars:
         s = s[:max_chars].rstrip() + "…"
@@ -249,28 +266,53 @@ def emit_runtime_step(tool_name: Any, tool_args: Any) -> None:
     """Record a controlled progress line for a MANAGED run; no-op otherwise.
 
     Called from the tool executor *after* authorization succeeds and execution
-    actually begins. Emitting earlier (per batch, before dispatch) recorded work
-    that a plugin policy, a scope check or ``_tool_guardrails.before_call`` then
+    begins. Emitting earlier (per batch, before dispatch) recorded work that a
+    plugin policy, a scope check or ``_tool_guardrails.before_call`` then
     rejected, and pushed model-proposed arguments into the durable feed before
     they were validated.
 
-    Fail-open and kept off the critical path. The row is cosmetic, so the
-    connection takes a short telemetry-specific busy timeout rather than the
-    board's 120s default, and the single-row append runs in SQLite autocommit
-    instead of through ``write_txn``, whose BEGIN IMMEDIATE retry boundary could
-    otherwise stall a tool for minutes during a worker stampede. Under
-    contention the step is dropped in well under a second; the tool still runs.
+    Three boundaries this must respect, all of them enforced below:
+
+    * A delegate_task child runs in the SAME process under
+      ``delegated_child_context`` and inherits the parent\'s task and run id.
+      ``write_txn`` would have refused the write via
+      ``_assert_not_delegated_child_mutation``; appending in autocommit
+      bypasses that, so the child boundary is checked explicitly here. Without
+      it, every child tool appears as parent work in the parent\'s run feed.
+    * The row is fenced to the live attempt the way
+      ``heartbeat_worker(..., expected_run_id=...)`` fences its update. A
+      reclaimed or un-killable worker must not keep appending steps to an
+      attempt that has ended, because the dashboard broadcasts every insert.
+    * The row is cosmetic, so the connection is opened WITH a short
+      telemetry-specific busy timeout rather than having one applied after the
+      board default already waited, and the single-row append runs in SQLite
+      autocommit instead of through ``write_txn``, whose BEGIN IMMEDIATE retry
+      boundary could stall a tool for minutes during a worker stampede. One
+      cold-open per worker process may still pay the normal first-connect
+      initialization; that is per process, not per tool.
+
+    Fail-open on error, and fail-CLOSED on redaction: a step that cannot be
+    scrubbed is dropped rather than emitted.
     """
     task_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
     if not task_id:
         return
     try:
+        from agent.delegation_context import is_delegated_child_process_context
+
+        if is_delegated_child_process_context():
+            return
+    except Exception:  # noqa: BLE001 - cannot prove we are not a child: stay out.
+        logger.debug("delegation context unavailable; skipping step", exc_info=True)
+        return
+    try:
         summary = _runtime_step_phrase(tool_name, tool_args)
         if not summary:
             return
-        # The dispatcher hands the worker its attempt id (``YOUTAB_AGENT_KANBAN_RUN_ID``).
-        # Record it, like the heartbeat/terminal events do, so steps stay grouped with
-        # the attempt that produced them after a reclaim or retry.
+        # The dispatcher hands the worker its attempt id
+        # (``YOUTAB_AGENT_KANBAN_RUN_ID``). Record it, like the heartbeat and
+        # terminal events do, so steps stay grouped with the attempt that
+        # produced them after a reclaim or retry.
         attempt = (os.environ.get("YOUTAB_AGENT_KANBAN_RUN_ID") or "").strip()
         try:
             attempt_id = int(attempt) if attempt else None
@@ -278,11 +320,24 @@ def emit_runtime_step(tool_name: Any, tool_args: Any) -> None:
             attempt_id = None
         from youtab_agent_cli import kanban_db as kb
 
-        with kb.connect_closing() as conn:
-            # Per-connection, so the board's default is untouched for every other
-            # caller. PRAGMA assignments cannot be parameter-bound.
-            conn.execute(f"PRAGMA busy_timeout={_STEP_BUSY_TIMEOUT_MS}")
-            kb._append_event(conn, task_id, "runtime_step", summary, run_id=attempt_id)
+        with kb.connect_closing(busy_timeout_ms=_STEP_BUSY_TIMEOUT_MS) as conn:
+            if attempt_id is None:
+                row = conn.execute(
+                    "SELECT 1 FROM tasks WHERE id = ? AND status = \'running\'",
+                    (task_id,),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT 1 FROM tasks WHERE id = ? AND status = \'running\' "
+                    "AND current_run_id = ?",
+                    (task_id, attempt_id),
+                ).fetchone()
+            if row is None:
+                # The attempt is over, or this row belongs to a superseded one.
+                return
+            kb._append_event(
+                conn, task_id, "runtime_step", summary, run_id=attempt_id
+            )
     except Exception:  # noqa: BLE001 - progress is best-effort, never fatal.
         logger.debug("runtime step emit failed; continuing", exc_info=True)
 
