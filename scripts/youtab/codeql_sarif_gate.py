@@ -260,8 +260,46 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             queries = (run.get("properties") or {}).get("codeqlConfigSummary", {}).get("queries")
             if queries != [{"type": "builtinSuite", "uses": "security-and-quality"}]:
                 raise ValueError("CodeQL security-and-quality suite was not used")
-            if len(run.get("artifacts", [])) < artifact_count * 0.9:
-                raise ValueError("CodeQL analyzed artifact coverage dropped unexpectedly")
+            # `artifacts` is NOT a coverage metric, and enforcing on it was a
+            # false positive waiting for a CodeQL upgrade. It arrived:
+            #
+            #   baseline (bundle 2.2x)  artifacts 6735, extracted 2932
+            #   this run (bundle 2.27.1) artifacts 2932, extracted 2932
+            #
+            # Zero source files were lost -- the extraction inventories are
+            # identical set-for-set, and the run reported the same 110
+            # findings -- but `artifacts` fell 56% and failed the 90% floor,
+            # so `CodeQL analyze (javascript-typescript)` went red on a tree
+            # with no regression in it. In 2.27.1 the index holds exactly the
+            # extracted set; before, it also carried ~3803 entries that were
+            # referenced but never extracted.
+            #
+            # That membership rule is a SARIF serialisation detail of the
+            # CodeQL release, not a property of the analysis, so it cannot
+            # carry a fail-closed gate across a version bump. The enforcing
+            # coverage check is the extraction inventory below, which is the
+            # defined quantity -- the files CodeQL reports it SUCCESSFULLY
+            # EXTRACTED, via `*/diagnostics/successfully-extracted-files` --
+            # and it is strictly the stronger of the two: the changed-files
+            # check beneath it also requires every edited source file to
+            # appear in that set, which no count of `artifacts` would catch.
+            #
+            # Kept as a reported signal rather than deleted, because a real
+            # collapse here is still worth seeing in the log next to the
+            # number that does gate -- and ONE case stays fatal: an index that
+            # is entirely EMPTY against a baseline that recorded entries. That
+            # is not a release listing a different set, it is a SARIF carrying
+            # no artifact index at all, which no complete run produces. 2.27.1
+            # still lists 2932 of them; the degenerate case is a malformed or
+            # truncated artifact and must not be allowed to clear a baseline.
+            artifact_now = len(run.get("artifacts", []))
+            if artifact_count > 0 and artifact_now == 0:
+                raise ValueError(
+                    "CodeQL SARIF carries an empty `artifacts` index against a baseline "
+                    f"recording {artifact_count}. A complete run always lists the files it "
+                    "analyzed, so this is a truncated or malformed artifact rather than a "
+                    "CodeQL version difference."
+                )
             query_sets = [item for item in run["tool"].get("extensions", [])
                           if item.get("name") == expected_queries]
             if len(query_sets) != 1 or len(query_sets[0].get("rules", [])) < query_count:
@@ -276,8 +314,27 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                 for item in invocation.get("toolExecutionNotifications", [])
                 if (item.get("descriptor") or {}).get("id") == diagnostic and item.get("locations")
             }
+            # THE enforcing coverage check. Same proportional shape the
+            # `artifacts` check used to have, on a metric that means
+            # something: a 10% drop in successfully-extracted source files is
+            # a partial analysis however healthy the invocation claims to be.
             if len(extracted) < extracted_count * 0.9:
-                raise ValueError("CodeQL source extraction coverage dropped unexpectedly")
+                raise ValueError(
+                    f"CodeQL source extraction coverage dropped unexpectedly: "
+                    f"{len(extracted)} files extracted against {extracted_count} in the "
+                    f"baseline ({len(set(baseline_extracted_paths) - extracted)} baselined "
+                    f"files absent). Below 90% this is a partial analysis, not a tree that "
+                    f"shrank -- re-run before touching the baseline."
+                )
+            if artifact_now < extracted_count * 0.9:
+                # Reported, never fatal -- see the note above the assignment.
+                print(
+                    f"NOTE: the SARIF `artifacts` index lists {artifact_now} entries "
+                    f"against {artifact_count} in the baseline, while source extraction is "
+                    f"intact at {len(extracted)}/{extracted_count}. The index's membership "
+                    f"rule changes between CodeQL releases, so this is expected after a "
+                    f"bundle bump and is not enforced."
+                )
             if changed_files_path is not None:
                 changed = {name.decode("utf-8").replace("\\", "/") for name in
                            changed_files_path.read_bytes().split(b"\0") if name}

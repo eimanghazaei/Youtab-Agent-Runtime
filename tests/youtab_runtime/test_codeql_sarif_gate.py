@@ -542,6 +542,78 @@ def test_a_query_absent_from_the_baseline_entirely_is_still_a_coverage_breach(tm
     assert inspect(tmp_path, baseline) == 2
 
 
+def _wide_sarif(*, extracted: int, artifacts: int):
+    """A SARIF whose extraction inventory and `artifacts` index differ in size.
+
+    They are independent arrays in the format, and CodeQL has populated them
+    with different sets in different releases, which is the whole point of the
+    two tests below.
+    """
+    document = sarif([finding(line_hash="known:1")])
+    run = document["runs"][0]
+    run["invocations"][0]["toolExecutionNotifications"] = [
+        {"descriptor": {"id": "py/diagnostics/successfully-extracted-files"},
+         "locations": [{"physicalLocation": {"artifactLocation": {"uri": f"src/f{i}.py"}}}]}
+        for i in range(extracted)
+    ]
+    run["artifacts"] = [{"location": {"uri": f"src/f{i}.py"}} for i in range(artifacts)]
+    return document
+
+
+def _baseline_with_coverage(path, *, extracted: int, artifact_count: int):
+    write_baseline(path, [(finding(line_hash="known:1"), 1)])
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["extracted_count"] = extracted
+    document["extracted_paths"] = [f"src/f{i}.py" for i in range(extracted)]
+    document["artifact_count"] = artifact_count
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+
+def test_a_shrinking_artifacts_index_alone_does_not_fail_the_gate(tmp_path):
+    """Regression: a CodeQL bundle bump turned the gate red on a clean tree.
+
+    Real numbers from the javascript-typescript leg. The committed baseline
+    was captured on bundle 2.2x, which listed 6735 entries in `artifacts`
+    while extracting 2932 source files. Bundle 2.27.1 lists exactly the
+    extracted set, so `artifacts` reported 2932 -- a 56% fall that failed the
+    90% floor, on a run whose extraction inventory was identical set-for-set
+    and whose findings were the same 110.
+
+    `artifacts` membership is a SARIF serialisation detail of the release, so
+    it cannot carry a fail-closed gate. The extraction inventory is intact
+    here and that is what must decide.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_coverage(baseline, extracted=2932, artifact_count=6735)
+    (tmp_path / "python.sarif").write_text(
+        json.dumps(_wide_sarif(extracted=2932, artifacts=2932))
+    )
+
+    assert inspect(tmp_path, baseline) == 0
+
+
+def test_losing_extracted_source_files_still_fails_closed(tmp_path, capsys):
+    """The enforcing half must be untouched by the fix above.
+
+    Same baseline, but the run extracted 2000 of the 2932 files (68%). That is
+    a partial analysis whatever the invocation claims, and it must refuse to
+    judge -- including when `artifacts` looks healthy, which is the shape that
+    would fool a check reading the index instead.
+    """
+    baseline = tmp_path / "baseline.json"
+    _baseline_with_coverage(baseline, extracted=2932, artifact_count=6735)
+    (tmp_path / "python.sarif").write_text(
+        json.dumps(_wide_sarif(extracted=2000, artifacts=6735))
+    )
+
+    assert inspect(tmp_path, baseline) == 2
+    message = capsys.readouterr().err
+    assert "source extraction coverage dropped" in message, message
+    # The numbers have to be in the message: "dropped unexpectedly" with no
+    # figures sent the reader to the baseline rather than to the run.
+    assert "2000" in message and "2932" in message, message
+
+
 def test_open_security_debt_is_disclosed_on_a_passing_run(tmp_path, capsys):
     """Green must never read as "clean".
 
