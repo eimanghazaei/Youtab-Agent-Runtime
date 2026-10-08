@@ -351,16 +351,75 @@ def _managed_values(
     )
 
 
-def _emit_managed_progress(function_name: str, function_args: dict) -> None:
-    """Record the managed-run progress step for a tool that is about to run.
+def _is_denied_tool_result(result: Any) -> bool:
+    """Whether a tool's own return value is a refusal rather than an outcome.
 
-    Called only once policy, scope and guardrail checks have passed, so the
-    durable event feed never claims a rejected tool ran. ``emit_runtime_step``
-    is itself a no-op outside a managed run and fail-open on any error; this
-    wrapper only has to survive the deferred import, which stays deferred
-    because conversation_loop owns the step vocabulary and importing it at
-    module scope would add an import-time edge between the two.
+    Tool-internal authorization does not go through the middleware above; it
+    lives inside the handlers and signals refusal by RETURNING an error. Both
+    of the paths that matter here produce the same shape --
+    ``tools/registry.tool_error`` builds ``{"error": message}`` and
+    ``acp_adapter.edit_approval`` hand-rolls the same JSON -- and in both the
+    ``error`` key is serialized first, so the cheap prefix test is exact for
+    them rather than a heuristic.
+
+    The bounded ``json.loads`` fallback covers any other handler that returns
+    an error object with a different key order. It is capped because tool
+    results carry whole file contents and parsing a megabyte of JSON on every
+    successful call, to answer a question about progress reporting, would be a
+    real cost for no benefit: a refusal is short.
     """
+    if isinstance(result, dict):
+        return "error" in result
+    if not isinstance(result, str):
+        return False
+    text = result.lstrip()
+    if text.startswith('{"error"'):
+        return True
+    if not text.startswith("{") or len(text) > 4096:
+        return False
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(parsed, dict) and "error" in parsed
+
+
+def _emit_managed_progress(
+    function_name: str, function_args: dict, *, result: Any
+) -> None:
+    """Record the managed-run progress step for a tool that actually ran.
+
+    Emitted AFTER ``execute``, not before it, and skipped when the tool
+    refused. The middleware above clears policy, scope and guardrails, but
+    tool-specific authorization runs inside the handler: ``read_file``
+    applies the Youtab internal-path and credential-store denylist
+    (``tools/file_tools.py``, ``get_read_block_error``), and
+    ``write_file``/``patch`` can still be refused by ACP edit approval
+    (``acp_adapter/edit_approval.maybe_require_edit_approval``). Emitting
+    before ``execute`` meant a managed run recorded "Reading auth.json" --
+    the basename of a file the agent was never allowed to open -- and
+    asserted that a refused tool was running. The dashboard broadcasts every
+    insert, so that row is durable and visible.
+
+    This module already claimed the opposite ("never claims a rejected tool
+    ran"); it was true only of the middleware rejections, and is now true of
+    tool-internal ones too.
+
+    The cost is liveness: the row lands when the tool finishes rather than
+    when it starts, so a slow tool shows nothing while it works. That is the
+    right way round -- a progress feed that is briefly behind is a worse
+    product than one that discloses blocked arguments, and only the second is
+    a governance problem (AGENTS.md: no capability may self-authorize an
+    effect; tool results are untrusted until validated).
+
+    ``emit_runtime_step`` is itself a no-op outside a managed run and
+    fail-open on any error; this wrapper only has to survive the deferred
+    import, which stays deferred because conversation_loop owns the step
+    vocabulary and importing it at module scope would add an import-time edge
+    between the two.
+    """
+    if _is_denied_tool_result(result):
+        return
     try:
         from agent.conversation_loop import emit_runtime_step
     except Exception:  # noqa: BLE001 - progress must never block a tool.
@@ -497,8 +556,11 @@ def _run_agent_tool_execution_middleware(
             agent._iters_since_skill = 0
 
         _advance_start_order(_begin)
-        _emit_managed_progress(function_name, final_args)
-        return execute(final_args)
+        outcome = execute(final_args)
+        # After execution, and only for a tool that was not refused by its own
+        # handler -- see _emit_managed_progress.
+        _emit_managed_progress(function_name, final_args, result=outcome)
+        return outcome
 
     def _youtab_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(

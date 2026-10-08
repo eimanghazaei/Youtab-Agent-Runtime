@@ -282,8 +282,15 @@ def _middleware_agent(allows: bool):
     )
 
 
-def _drive_middleware(monkeypatch, *, allows: bool):
-    """Run the real executor middleware, recording progress emissions."""
+def _drive_middleware(monkeypatch, *, allows: bool, tool_result: object = "ok"):
+    """Run the real executor middleware, recording progress emissions.
+
+    ``emit_runtime_step`` is what gets stubbed, NOT
+    ``_emit_managed_progress`` -- the refusal gate lives in the latter, so
+    patching it would stub out the behaviour under test. ``tool_result`` is
+    what the tool handler returns, which is how a tool-internal refusal is
+    signalled.
+    """
     from agent import relay_tools, tool_executor
 
     emitted: list = []
@@ -306,10 +313,9 @@ def _drive_middleware(monkeypatch, *, allows: bool):
     monkeypatch.setattr(
         relay_tools, "execute", lambda _n, args, cb, **_k: (cb(args), args)
     )
+    import agent.conversation_loop as _cl
     monkeypatch.setattr(
-        tool_executor,
-        "_emit_managed_progress",
-        lambda name, args: emitted.append((name, args)),
+        _cl, "emit_runtime_step", lambda name, args: emitted.append((name, args))
     )
 
     ran: list = []
@@ -319,7 +325,7 @@ def _drive_middleware(monkeypatch, *, allows: bool):
         function_args={"query": "best coffee"},
         effective_task_id="task-1",
         tool_call_id="call-1",
-        execute=lambda args: ran.append(args) or "ok",
+        execute=lambda args: ran.append(args) or tool_result,
     )
     return emitted, ran, outcome
 
@@ -338,6 +344,61 @@ def test_step_is_recorded_once_the_tool_is_authorized(monkeypatch):
     assert ran == [{"query": "best coffee"}]
     assert emitted == [("web_search", {"query": "best coffee"})]
     assert outcome.blocked is False
+
+
+@pytest.mark.parametrize("refusal", [
+    # tools/registry.tool_error -- the read_file internal-path / credential
+    # denylist (get_read_block_error) returns through this.
+    '{"error": "Blocked: Youtab internal path"}',
+    # acp_adapter.edit_approval hand-rolls the same shape for write_file/patch.
+    '{"error": "Edit approval denied by ACP client; file was not modified."}',
+    # A handler that returns the object rather than a JSON string.
+    {"error": "denied"},
+    # A different key order, which the cheap prefix test does not catch and the
+    # bounded json.loads fallback does.
+    '{"success": false, "error": "denied"}',
+])
+def test_no_step_when_the_tool_itself_refuses(monkeypatch, refusal):
+    """Middleware clearance is not authorization -- the handler checks too.
+
+    Policy, scope and guardrails all pass here, and the tool is reached. It
+    then refuses on its own account: `read_file` applies the Youtab
+    internal-path and credential-store denylist, and `write_file`/`patch` can
+    be refused by ACP edit approval. Emitting before `execute` recorded
+    "Reading auth.json" -- the basename of a file the agent was never allowed
+    to open -- and asserted that a refused tool was running, durably, to every
+    dashboard subscriber.
+    """
+    emitted, ran, outcome = _drive_middleware(
+        monkeypatch, allows=True, tool_result=refusal
+    )
+    assert ran == [{"query": "best coffee"}]   # the handler was reached
+    assert emitted == []                        # and recorded nothing
+    assert outcome.blocked is False             # not a middleware block
+
+
+def test_a_large_successful_result_is_not_parsed_to_decide(monkeypatch):
+    """The refusal test must not parse megabyte tool results.
+
+    Tool results carry whole file contents. A successful `read_file` can be a
+    megabyte of JSON, and parsing it on every call to answer a question about
+    progress reporting would be a real cost for no benefit -- a refusal is
+    short. So the fallback is capped, and a large successful result must still
+    emit.
+    """
+    big = '{"content": "' + "x" * 10000 + '"}'
+    emitted, ran, outcome = _drive_middleware(monkeypatch, allows=True, tool_result=big)
+    assert emitted == [("web_search", {"query": "best coffee"})]
+    assert ran == [{"query": "best coffee"}]
+
+
+def test_plain_text_and_non_string_results_still_emit(monkeypatch):
+    """Not every tool returns JSON; those must not be read as refusals."""
+    for value in ("ok", "", None, 42, ["a"], '{"results": []}'):
+        emitted, _ran, _outcome = _drive_middleware(
+            monkeypatch, allows=True, tool_result=value
+        )
+        assert emitted == [("web_search", {"query": "best coffee"})], value
 
 
 def test_google_api_key_in_a_query_is_redacted(kanban_home, monkeypatch):
