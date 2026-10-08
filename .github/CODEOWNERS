@@ -1,0 +1,71 @@
+# Code owners — reviewers GitHub requests automatically, and (with
+# `require_code_owner_review` on the `main-required-gates` ruleset) the only
+# reviewers whose approval satisfies the gate for these paths.
+#
+# Scoped deliberately rather than claiming the whole tree. The point is to make
+# the paths where a malicious or careless change does the most damage impossible
+# to land without an owner looking: the CI definition itself, the gates that
+# decide what "green" means, the dependency pins, and the authentication
+# boundary. A `*` catch-all would mean every typo fix needs the same ceremony,
+# which is how CODEOWNERS files end up being bypassed instead of followed.
+#
+# Order matters: later patterns win, so the specific blocks come after the
+# general ones.
+
+# ---------------------------------------------------------------------------
+# CI, gates and release machinery
+#
+# A change here can turn every other control off. `codeql_sarif_gate.py` and
+# `run_all_gates.sh` decide what passes; `codeql_baselines/` decides what is
+# already-accepted debt, and a silent refresh there launders new findings into
+# it. `codeql.yml` carries CODEQL_ACTION_DIFF_INFORMED_QUERIES, without which
+# pull-request analysis stops seeing whole classes of regression.
+# ---------------------------------------------------------------------------
+/.github/                       @eimanghazaei
+/.github/workflows/             @eimanghazaei
+/.github/CODEOWNERS             @eimanghazaei
+/scripts/youtab/                @eimanghazaei
+/scripts/run_tests.sh           @eimanghazaei
+/scripts/run_tests_parallel.py  @eimanghazaei
+/scripts/release.py             @eimanghazaei
+/scripts/install.sh             @eimanghazaei
+
+# ---------------------------------------------------------------------------
+# Supply chain
+#
+# The exact-pin policy is only worth anything if moving a pin is reviewed.
+# `tools/lazy_deps.py` must stay in lockstep with the pyproject extras --
+# `tests/test_project_metadata.py` enforces that, and both belong to the same
+# owner for the same reason.
+# ---------------------------------------------------------------------------
+/pyproject.toml                 @eimanghazaei
+/uv.lock                        @eimanghazaei
+/package.json                   @eimanghazaei
+/package-lock.json              @eimanghazaei
+/tools/lazy_deps.py             @eimanghazaei
+/Dockerfile                     @eimanghazaei
+/docker-compose.yml             @eimanghazaei
+/.npmrc                         @eimanghazaei
+
+# ---------------------------------------------------------------------------
+# Authentication and the trust boundary
+#
+# `dashboard_auth/` is the externally-reachable edge: it verifies Cloudflare
+# Access assertions, issues session cookies, and resolves the redirect targets
+# that a backslash bypass turned into an open redirect. `access_jwt.py` is the
+# JWT verification path the PyJWT algorithm-confusion advisory applies to.
+# ---------------------------------------------------------------------------
+/youtab_agent_cli/dashboard_auth/  @eimanghazaei
+/youtab_agent_cli/access_jwt.py    @eimanghazaei
+/youtab_agent_cli/auth.py          @eimanghazaei
+/agent/credential_pool.py          @eimanghazaei
+/security/                         @eimanghazaei
+/SECURITY.md                       @eimanghazaei
+
+# ---------------------------------------------------------------------------
+# Governance
+#
+# The architectural invariants and the ADRs that are supposed to record them.
+# ---------------------------------------------------------------------------
+/AGENTS.md                      @eimanghazaei
+/docs/architecture/             @eimanghazaei

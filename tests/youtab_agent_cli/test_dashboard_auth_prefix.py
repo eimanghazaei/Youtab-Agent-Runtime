@@ -147,6 +147,43 @@ class TestForwardedPrefixNormalisation:
         assert len(warnings) == 1
         assert "longer than 256 characters" in warnings[0].getMessage()
 
+    # -- WHATWG backslash equivalence -------------------------------------
+    #
+    # ``"//" in p`` rejects ``//evil.example``, but browsers implement the
+    # WHATWG URL spec, where ``\`` is equivalent to ``/`` in a
+    # special-scheme URL. A prefix of ``\evil.example`` normalised to
+    # ``/\evil.example``, reached ``f"{_prefix(request)}/login"`` in
+    # routes.py, and shipped as ``Location: /\evil.example/login`` -- which
+    # Chrome, Firefox and Safari resolve as ``//evil.example/login``. That is
+    # an open redirect to an attacker-controlled host, reachable by anyone
+    # who can set a request header.
+    #
+    # Mutation check: drop "\\" from prefix_mod._REJECT_CHARS and every
+    # assertion in this test goes red.
+
+    @pytest.mark.parametrize("header", [
+        "\evil.example",
+        "/\evil.example",
+        "/\/evil.example",
+        "/youtab\..\..",
+        "\\evil.example",
+    ])
+    def test_backslash_prefix_is_rejected_not_normalised(self, header):
+        """A backslash anywhere in the prefix must void it entirely."""
+        prefix_mod._warned_malformed_prefixes.clear()
+        assert prefix_mod.normalise_prefix(header) == ""
+
+    @pytest.mark.parametrize("header,expected", [
+        ("/youtab", "/youtab"),
+        ("/youtab/sub", "/youtab/sub"),
+        ("youtab", "/youtab"),
+        ("/youtab/", "/youtab"),
+    ])
+    def test_legitimate_prefixes_still_normalise(self, header, expected):
+        """The backslash rule must not cost us any real reverse-proxy mount."""
+        prefix_mod._warned_malformed_prefixes.clear()
+        assert prefix_mod.normalise_prefix(header) == expected
+
 
 # ---------------------------------------------------------------------------
 # Gate middleware: Location: header and 401 envelope respect prefix

@@ -576,6 +576,29 @@ class TestValidatePostLoginTarget:
             ) == ""
         )
 
+    def test_rejects_backslash_off_origin_targets(self):
+        """Browsers treat ``\`` as ``/`` in a special-scheme URL (WHATWG).
+
+        ``startswith("//")`` stops ``//evil.example``, but ``/\evil.example``
+        slipped through and Chrome, Firefox and Safari all resolve it as
+        ``//evil.example`` -- an off-origin redirect. The validator
+        ``unquote``s first, so the percent-encoded form has to be caught by
+        the same rule.
+
+        Mutation check: delete the ``"\\" in decoded`` guard in
+        ``_validate_post_login_target`` and every assertion here goes red.
+        """
+        from youtab_agent_cli.dashboard_auth.routes import _validate_post_login_target
+        assert _validate_post_login_target("/\evil.example") == ""
+        assert _validate_post_login_target("/\/evil.example") == ""
+        assert _validate_post_login_target("\\evil.example") == ""
+        assert _validate_post_login_target("/\evil.example/path?a=1") == ""
+        # Percent-encoded: %2f%5c -> /\
+        assert _validate_post_login_target("%2f%5cevil.example") == ""
+        assert _validate_post_login_target("%2F%5Cevil.example") == ""
+        # A legitimate same-origin path is untouched by the new rule.
+        assert _validate_post_login_target("/sessions") == "/sessions"
+
 
 
 # ---------------------------------------------------------------------------
