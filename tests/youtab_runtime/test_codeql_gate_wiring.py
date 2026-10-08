@@ -101,3 +101,46 @@ def test_codeql_runs_on_push_to_main_and_pull_request(workflow: dict) -> None:
     assert "push" in triggers, "codeql.yml no longer runs on push"
     branches = (triggers.get("push") or {}).get("branches") or []
     assert "main" in branches, f"push trigger does not cover main: {branches!r}"
+
+
+def test_every_matrix_language_has_one_of_the_two_coverages(workflow: dict) -> None:
+    """No language may lose BOTH the comparator and native Code Scanning.
+
+    The comparator needs a committed baseline, so it runs only where Code
+    Scanning's limits actually bite -- `python` (9076 findings against a
+    5000-result cap) and `javascript-typescript`. `actions`, `c-cpp` and
+    `rust` hold 3 findings between them, where a 5000 cap and a
+    severity-filtered results check cost nothing, so they rely on the upload.
+
+    What must never happen is a leg that is neither gated nor uploaded, or a
+    `gate: true` leg whose baseline file is missing -- the job would fail on
+    every run with a path error. This pins both.
+    """
+    import pathlib as _p
+
+    include = workflow["jobs"]["analyze"]["strategy"]["matrix"]["include"]
+    assert include, "the CodeQL matrix is empty"
+
+    analyze = [s for s in workflow["jobs"]["analyze"]["steps"]
+               if "analyze@" in str(s.get("uses", ""))]
+    assert len(analyze) == 1, "expected exactly one CodeQL analyze step"
+    assert analyze[0]["with"].get("upload") == "always", (
+        "every language relies on the upload for native tracking; "
+        f"upload is {analyze[0]['with'].get('upload')!r}"
+    )
+
+    baselines = _p.Path(__file__).resolve().parents[2] / "scripts" / "youtab" / "codeql_baselines"
+    for leg in include:
+        language, gated = leg["language"], leg.get("gate")
+        assert gated is not None, f"{language}: matrix leg does not declare `gate`"
+        path = baselines / f"{language}.json"
+        if gated:
+            assert path.is_file(), (
+                f"{language} is gated but {path.name} is missing -- the gate step "
+                "would fail on every run with a path error"
+            )
+        else:
+            assert not path.is_file(), (
+                f"{language} has a committed baseline at {path.name} but is not "
+                "gated, so that baseline is never compared against anything"
+            )

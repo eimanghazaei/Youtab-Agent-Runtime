@@ -103,16 +103,44 @@ jobs:
         # CodeQL to extract it, and `none` is what default setup used for
         # c-cpp and rust when it analysed them successfully.
         include:
+          # `gate: true` means the fail-closed comparator below also runs.
+          # It needs a committed baseline, and a baseline is only worth
+          # carrying where Code Scanning's limits actually bite -- which is a
+          # function of volume:
+          #
+          #   python                 9076 findings -> capped at 5000. 4076
+          #                          dropped, quality-first because the cap
+          #                          sorts by severity. Gated.
+          #   javascript-typescript   110 findings -> under the cap today, but
+          #                          57 are security and the rest are quality
+          #                          that the results check would not fail on.
+          #                          Gated.
+          #   actions                   1 finding
+          #   c-cpp                     2 findings
+          #   rust                      0 findings
+          #
+          # The last three are below every limit that makes the comparator
+          # worth its baseline: nothing is dropped by a 5000 cap when there
+          # are 3 findings in total, and Code Scanning reports and tracks them
+          # natively. They are analysed and uploaded on every run, and their
+          # checks are required -- they are simply not baseline-compared.
+          # `tests/youtab_runtime/test_codeql_gate_wiring.py` pins this split
+          # so a language cannot quietly lose BOTH forms of coverage.
           - language: python
             build-mode: none
+            gate: true
           - language: javascript-typescript
             build-mode: none
+            gate: true
           - language: actions
             build-mode: none
+            gate: false
           - language: c-cpp
             build-mode: none
+            gate: false
           - language: rust
             build-mode: none
+            gate: false
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -144,9 +172,47 @@ jobs:
         uses: github/codeql-action/analyze@6f5948dfacef28e207b48d0905cf90c03365536d # v3
         with:
           category: "/language:${{ matrix.language }}"
-          # Uploads by default. Code Scanning itself now does the job the
-          # committed baseline was imitating: it tracks which alerts are
-          # already known, which are new on this pull request, and which were
-          # dismissed and why -- and it reports NEW alerts on the pull request
-          # without a baseline file to keep in sync.
+          # BOTH: upload for visibility, and keep the local SARIF for the
+          # gate below. These are not alternatives -- the gate reads
+          # `output:` off the runner, the upload is a separate side effect,
+          # and each covers what the other cannot.
+          #
+          # Code Scanning gives the alert UI, per-alert dismissal with a
+          # reason, severity filtering and history. What it does NOT give is
+          # enforcement, for four documented reasons:
+          #
+          #   1. A SARIF run is capped at 5000 results, prioritised by
+          #      severity. This repository's python analysis reports 9076, and
+          #      every upload lands at exactly results=5000 -- so ~4076
+          #      findings are dropped, and because the cap sorts by severity
+          #      the ones dropped are the QUALITY findings, which carry no
+          #      security severity. Those are the 7598 that justify running
+          #      `security-and-quality` at all.
+          #   2. The "Code scanning results" check fails by default only for
+          #      error/critical/high. A new `warning` or `recommendation` --
+          #      most of the quality suite -- publishes and passes.
+          #   3. An alert only gates a pull request when ALL of its reported
+          #      lines are in the diff. The interprocedural case this
+          #      workflow disables diff-informed queries to catch is exactly
+          #      the case whose source and sink are NOT in the diff.
+          #   4. Nonfatal extraction errors and skipped source files do not
+          #      fail the upload; they surface on the tool-status page for
+          #      manual reading.
+          #
+          # The gate below has none of those limits: it reads the full local
+          # SARIF, compares every finding against the committed baseline
+          # regardless of severity or diff, and fails closed on artifact or
+          # extraction coverage loss.
           upload: always
+          output: results
+      - name: Preserve SARIF for finding triage
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: codeql-sarif-${{ matrix.language }}-${{ github.sha }}
+          path: results/*.sarif
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Fail on new CodeQL findings or missing SARIF
+        if: ${{ matrix.gate }}
+        run: python scripts/youtab/codeql_sarif_gate.py results scripts/youtab/codeql_baselines/${{ matrix.language }}.json changed-files.bin
