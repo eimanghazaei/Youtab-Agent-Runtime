@@ -1328,6 +1328,23 @@ CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_
 # ---------------------------------------------------------------------------
 
 _INITIALIZED_PATHS: set[str] = set()
+
+
+class ColdDatabase(RuntimeError):
+    """Raised by ``connect(only_if_initialized=True)`` on a cold database.
+
+    "Cold" means this process has not initialized the path yet, so a connect
+    would pay the cross-process init lock -- bounded at
+    ``_INIT_LOCK_TIMEOUT_SECONDS``, 10 seconds -- plus header validation, the
+    integrity probe and additive migrations. A ``busy_timeout_ms`` does not
+    bound any of that; it limits SQLite's own lock waits, which come
+    afterwards.
+
+    Only a caller whose write is COSMETIC should ask for this: the
+    managed-run progress feed, whose row nothing depends on and which must
+    never sit in front of a tool result on its way to the model. Everything
+    else wants the initialization to happen.
+    """
 _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
@@ -1367,7 +1384,9 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
-def _sqlite_connect(path: Path) -> sqlite3.Connection:
+def _sqlite_connect(
+    path: Path, *, busy_timeout_ms: Optional[int] = None
+) -> sqlite3.Connection:
     """Open a Kanban SQLite connection with consistent lock waiting.
 
     Uses ``connect_tracked`` so the live-connection registry knows this file
@@ -1378,7 +1397,8 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
     """
     from youtab_agent_cli.sqlite_safe_read import connect_tracked
 
-    busy_timeout_ms = _resolve_busy_timeout_ms()
+    if busy_timeout_ms is None:
+        busy_timeout_ms = _resolve_busy_timeout_ms()
     conn = connect_tracked(
         path,
         connect_fn=sqlite3.connect,
@@ -2096,6 +2116,8 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    busy_timeout_ms: Optional[int] = None,
+    only_if_initialized: bool = False,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -2132,8 +2154,20 @@ def connect(
     # (no schema/migration writes run), so skip it entirely and just open the
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
+    # `only_if_initialized` is answered HERE, on the resolution this function
+    # already performs, rather than by a caller recomputing it. A separate
+    # probe did recompute it -- `kanban_db_path()` plus `path.resolve()` on the
+    # same config-derived value -- and that second sink is what made the python
+    # CodeQL leg report two new `py/path-injection` findings at severity 7.5.
+    # One resolution, one sink, and the decision lives next to the cache it
+    # reads.
+    if only_if_initialized and resolved not in _INITIALIZED_PATHS:
+        raise ColdDatabase(
+            f"kanban.db ({path.name}) is not initialized in this process; a cosmetic "
+            f"write must not pay cold initialization"
+        )
     if resolved in _INITIALIZED_PATHS:
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, busy_timeout_ms=busy_timeout_ms)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -2164,7 +2198,7 @@ def connect(
         # via _INITIALIZED_PATHS so it only runs once per process per path.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, busy_timeout_ms=busy_timeout_ms)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -2209,6 +2243,8 @@ def connect_closing(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    busy_timeout_ms: Optional[int] = None,
+    only_if_initialized: bool = False,
 ):
     """Open a kanban DB connection and guarantee it is closed on exit.
 
@@ -2229,7 +2265,8 @@ def connect_closing(
     intentionally manage the connection lifetime (tests, long-lived
     callers) continue to work.
     """
-    conn = connect(db_path=db_path, board=board)
+    conn = connect(db_path=db_path, board=board, busy_timeout_ms=busy_timeout_ms,
+                   only_if_initialized=only_if_initialized)
     try:
         yield conn
     finally:
@@ -3808,7 +3845,7 @@ def _append_event(
     conn: sqlite3.Connection,
     task_id: str,
     kind: str,
-    payload: Optional[dict] = None,
+    payload: Optional[dict | str] = None,
     *,
     run_id: Optional[int] = None,
 ) -> None:
@@ -3818,6 +3855,10 @@ def _append_event(
     events by attempt. For events that aren't scoped to a single run
     (task created/edited/archived, dependency promotion) leave it None
     and the row carries NULL.
+
+    ``payload`` is usually a dict; a plain string is also accepted and is
+    stored (and read back by :func:`list_events`) as a JSON string, so an
+    event can carry a single human-readable line (e.g. a progress step).
     """
     now = int(time.time())
     pl = json.dumps(payload, ensure_ascii=False) if payload else None
@@ -3826,6 +3867,65 @@ def _append_event(
         "VALUES (?, ?, ?, ?, ?)",
         (task_id, run_id, kind, pl, now),
     )
+
+
+def append_event_if_run_active(
+    conn: sqlite3.Connection,
+    task_id: str,
+    kind: str,
+    payload: Optional[dict | str] = None,
+    *,
+    run_id: Optional[int] = None,
+) -> bool:
+    """Append an event row ONLY if the task is still running that attempt.
+
+    The predicate and the write are a single statement, which is the whole
+    point. The caller this exists for -- the best-effort ``runtime_step``
+    emitter in ``agent/conversation_loop.py`` -- runs in SQLite autocommit, by
+    design: it must not take ``write_txn``'s BEGIN IMMEDIATE retry boundary,
+    which can stall a tool for minutes during a worker stampede over a row
+    that is purely cosmetic.
+
+    Autocommit means a ``SELECT`` fence followed by an ``INSERT`` is two
+    transactions with a window between them. A worker that is being reclaimed
+    or has not noticed its attempt ended passes the ``SELECT``, the dispatcher
+    completes or supersedes the task, and the ``INSERT`` still lands -- and
+    because the dashboard broadcasts every insert, a finished task visibly
+    grows steps, or steps from a dead attempt interleave with the live one.
+    Short window, but these writes happen once per tool call for the whole
+    lifetime of every worker, and reclaim is the normal path after a crash or
+    a timeout rather than an exotic one.
+
+    ``INSERT INTO ... SELECT ... FROM tasks WHERE <predicate>`` closes it:
+    the predicate IS the row source, so SQLite evaluates it inside the
+    implicit transaction that performs the insert. No rows from ``tasks``
+    means no row inserted and nothing broadcast.
+
+    Returns True if the row was written, False if the attempt had already
+    ended or been superseded. Unlike :func:`_append_event` this is safe to
+    call outside an open transaction, and it is the only append that fences
+    itself; every other caller already holds ``write_txn``.
+    """
+    now = int(time.time())
+    pl = json.dumps(payload, ensure_ascii=False) if payload else None
+    if run_id is None:
+        cursor = conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "SELECT ?, ?, ?, ?, ? FROM tasks "
+            " WHERE id = ? AND status = 'running'",
+            (task_id, run_id, kind, pl, now, task_id),
+        )
+    else:
+        # Fenced to the live attempt as well: `current_run_id` moves on a
+        # reclaim, so a stale worker's run_id no longer matches and its
+        # steps stop at the database rather than at a check it already passed.
+        cursor = conn.execute(
+            "INSERT INTO task_events (task_id, run_id, kind, payload, created_at) "
+            "SELECT ?, ?, ?, ?, ? FROM tasks "
+            " WHERE id = ? AND status = 'running' AND current_run_id = ?",
+            (task_id, run_id, kind, pl, now, task_id, run_id),
+        )
+    return cursor.rowcount > 0
 
 
 def _end_run(

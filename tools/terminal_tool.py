@@ -2475,6 +2475,11 @@ def terminal_tool(
                         "exit_code": -1,
                         "error": "",
                         "status": "pending_approval",
+                        # An authorization refusal, not a failure: nothing ran.
+                        # Without this the managed-run progress feed records
+                        # "Running a command" for a command still awaiting
+                        # approval. See tools/registry.TOOL_AUTHORIZATION_DENIED.
+                        "authorization": "denied",
                         "approval_pending": True,
                         "command": approval.get("command", command),
                         "description": approval.get("description", "command flagged"),
@@ -2492,7 +2497,9 @@ def terminal_tool(
                     "output": "",
                     "exit_code": -1,
                     "error": approval.get("message", fallback_msg),
-                    "status": "blocked"
+                    "status": "blocked",
+                    # See the pending_approval branch above.
+                    "authorization": "denied",
                 }, ensure_ascii=False)
             # Track whether approval was explicitly granted by the user
             if approval.get("user_approved"):
@@ -2513,7 +2520,9 @@ def terminal_tool(
                     "output": "",
                     "exit_code": -1,
                     "error": workdir_error,
-                    "status": "blocked"
+                    "status": "blocked",
+                    # See the pending_approval branch above.
+                    "authorization": "denied",
                 }, ensure_ascii=False)
 
         # Prepare command for execution

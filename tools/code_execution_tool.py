@@ -1243,6 +1243,11 @@ def execute_code(
         return json.dumps({
             "status": "error",
             "error": _guard.get("message") or "execute_code blocked by approval guard.",
+            # An authorization refusal, not a failure: this returns before any
+            # sandbox process is started, so the managed-run progress feed must
+            # not record "Running code" for arbitrary code that was denied.
+            # See tools/registry.TOOL_AUTHORIZATION_DENIED.
+            "authorization": "denied",
             "tool_calls_made": 0,
             "duration_seconds": 0,
         }, ensure_ascii=False)

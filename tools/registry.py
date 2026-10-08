@@ -858,6 +858,33 @@ def tool_error(message, **extra) -> str:
     return json.dumps(result, ensure_ascii=False)
 
 
+#: Marks a tool result as an AUTHORIZATION REFUSAL rather than a failure.
+#:
+#: Handlers use `tool_error` for both -- `web_search_tool` returns
+#: `tool_error(error_msg)` when its provider raises, and `read_file` returns
+#: `tool_error(...)` when the Youtab internal-path denylist refuses the read.
+#: The envelope is identical, so anything downstream that needs to tell them
+#: apart cannot do it by inspecting the error text. Callers that REFUSE on
+#: policy grounds say so with this key; everything else stays an ordinary
+#: failure.
+#:
+#: The managed-run progress feed is the consumer: a refused call must not be
+#: recorded as work (it would disclose the arguments of a blocked call and
+#: assert that it ran), while a call that was authorized, ran, and then failed
+#: must still appear -- the feed is least useful if it goes blank exactly when
+#: something goes wrong.
+TOOL_AUTHORIZATION_DENIED = "denied"
+
+
+def tool_authorization_error(message, **extra) -> str:
+    """Return a JSON error string marked as an authorization refusal.
+
+    >>> tool_authorization_error("Blocked: Youtab internal path")
+    '{"error": "Blocked: Youtab internal path", "authorization": "denied"}'
+    """
+    return tool_error(message, authorization=TOOL_AUTHORIZATION_DENIED, **extra)
+
+
 def tool_result(data=None, **kwargs) -> str:
     """Return a JSON result string for tool handlers.
 

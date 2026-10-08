@@ -1201,7 +1201,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # the Python process cwd, which can differ.
         block_error = get_read_block_error(str(_resolved))
         if block_error:
-            return tool_error(block_error)
+            # An authorization refusal, not a failure -- see
+            # tools/registry.TOOL_AUTHORIZATION_DENIED. The managed-run
+            # progress feed must not record a blocked read as work, and it
+            # cannot tell this apart from "the file was unreadable" without
+            # the marker.
+            return tool_authorization_error(block_error)
 
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
@@ -1575,11 +1580,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     """
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
-        return tool_error(sensitive_err)
+        return tool_authorization_error(sensitive_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
-            return tool_error(cross_warning)
+            return tool_authorization_error(cross_warning)
     if _is_internal_file_tool_content(content):
         return tool_error(
             "Refusing to write internal read_file display text as file content. "
@@ -1703,11 +1708,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
-            return tool_error(sensitive_err)
+            return tool_authorization_error(sensitive_err)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
-                return tool_error(cross_warning)
+                return tool_authorization_error(cross_warning)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
@@ -1885,7 +1890,12 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             resolved_path = None
         block_error = get_read_block_error(str(resolved_path) if resolved_path else path)
         if block_error:
-            return tool_error(block_error)
+            # An authorization refusal, not a failure: this returns before
+            # `file_ops.search` runs, so nothing was searched. Without the
+            # marker the managed-run progress feed records "Searching the
+            # files" for a refused call.
+            # See tools/registry.TOOL_AUTHORIZATION_DENIED.
+            return tool_authorization_error(block_error)
 
         file_ops = _get_file_ops(task_id)
         result = file_ops.search(
@@ -1927,7 +1937,7 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
 # ---------------------------------------------------------------------------
 # Schemas + Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_authorization_error, tool_error
 
 
 def _check_file_reqs():
