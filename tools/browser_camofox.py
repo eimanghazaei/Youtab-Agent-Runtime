@@ -601,6 +601,10 @@ def _camofox_private_page_block(session: Dict[str, Any], task_id: Optional[str],
             f"({blocked_url}). Refusing to {action} on this page in this "
             "browser mode."
         ),
+        # An authorization refusal, not a failure: the action never ran, so the
+        # managed-run progress feed must not record it as work.
+        # See tools/registry.TOOL_AUTHORIZATION_DENIED.
+        "authorization": "denied",
     }, ensure_ascii=False)
 
 

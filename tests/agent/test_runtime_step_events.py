@@ -476,6 +476,75 @@ def test_an_ordinary_failure_after_execution_still_records_a_step(
     assert outcome.blocked is False
 
 
+def test_the_terminal_approval_gate_marks_its_refusals(monkeypatch) -> None:
+    """The dangerous-command gate refuses by RETURNING, so it must say so.
+
+    ``terminal_tool`` runs ``_check_all_guards`` itself; a denial never reaches
+    the executor middleware. Both of its outcomes mean the command did not
+    run -- ``blocked`` outright, and ``pending_approval`` in gateway "ask"
+    mode where it has not run YET -- so a progress row saying "Running a
+    command" is false in both cases.
+
+    Driven through the real ``terminal_tool`` entry point with the guard
+    stubbed, rather than by asserting on the source, so a future rewrite of
+    the payload keeps being checked.
+    """
+    import json as _json
+
+    from agent import tool_executor
+    from tools import terminal_tool as tt
+
+    for approval in (
+        {"approved": False, "status": "blocked",
+         "message": "Command denied: rm -rf /. Use the approval prompt.",
+         "description": "destructive"},
+        {"approved": False, "status": "pending_approval",
+         "command": "rm -rf /", "description": "destructive",
+         "pattern_key": "rm-rf", "allow_permanent": True},
+    ):
+        monkeypatch.setattr(tt, "_check_all_guards", lambda *a, **k: approval)
+        raw = tt.terminal_tool(command="rm -rf /")
+        payload = _json.loads(raw)
+
+        assert payload.get("authorization") == "denied", (
+            f"the {approval['status']} payload is not marked as an authorization "
+            f"refusal, so the progress feed records it as work: {payload}"
+        )
+        assert tool_executor._is_authorization_refusal(raw), (
+            f"the executor does not recognise the {approval['status']} payload"
+        )
+
+
+def test_the_browser_private_page_guards_mark_their_refusals(monkeypatch) -> None:
+    """Camofox and raw-CDP private-address guards refuse by returning too.
+
+    Same shape as the terminal gate: these run inside the handler, below the
+    executor middleware, and the action never happens. A row saying
+    "Browsing the web" or "Using the browser" is false.
+    """
+    from agent import tool_executor
+    from tools import browser_camofox as bc
+    from tools import browser_cdp_tool as cdp
+    from tools import browser_tool
+
+    # The guard defers both imports to call time (browser_tool imports this
+    # module, so a module-scope import would be circular), which is why these
+    # are patched on browser_tool rather than on browser_camofox.
+    monkeypatch.setattr(browser_tool, "_eval_ssrf_guard_active", lambda *a, **k: True)
+    monkeypatch.setattr(
+        browser_tool, "_camofox_current_page_private_url",
+        lambda tab_id, user_id: "http://169.254.169.254/",
+    )
+    refusal = bc._camofox_private_page_block(
+        {"tab_id": "t1", "user_id": "u1"}, "task-1", "click"
+    )
+    assert refusal is not None, "the guard did not fire on a private address"
+    assert tool_executor._is_authorization_refusal(refusal), refusal
+
+    refusal = cdp._private_page_guard_error("http://169.254.169.254/", "Runtime.evaluate")
+    assert tool_executor._is_authorization_refusal(refusal), refusal
+
+
 def test_the_executors_refusal_marker_matches_the_registrys() -> None:
     """``tool_executor`` duplicates the marker as a literal to stay off the
     import path of the whole tool surface. That duplication is only safe if
