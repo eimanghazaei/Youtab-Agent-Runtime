@@ -13,9 +13,10 @@ Two consequences, both of which this repository already paid for:
    pull request versus 8971 on a push to main. The committed baseline this
    repository used to carry was captured from a ``pull_request`` run and
    recorded zero findings for all 13 interprocedural dataflow queries, which
-   kept the gate red on main continuously. That baseline is gone now that
-   Code Scanning does the tracking, but the measurement asymmetry it exposed
-   is a property of the setting, not of the baseline.
+   kept the gate red on main continuously. That baseline has since been
+   rebuilt from a push run, and the asymmetry it exposed is a property of
+   this setting rather than of the baseline -- which is why the setting, not
+   the baseline, is what this module pins.
 
 2. A pull request can introduce a dataflow vulnerability whose source and
    sink lines it does not itself touch. Diff-informed analysis drops that

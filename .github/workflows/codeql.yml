@@ -1,11 +1,22 @@
 # CodeQL security-and-quality analysis, uploaded to GitHub Code Scanning.
 #
-# This workflow used to carry a 1.4 MB committed baseline and a custom SARIF
-# gate, because Code Scanning uploads were unavailable on a private repository
-# without Advanced Security. The repository is public now, so uploads are free
-# and that entire workaround is gone -- findings land in the native Code
-# Scanning UI, which has per-alert dismissal with a reason, severity filtering
-# and history that a JSON file in the tree could never provide.
+# TWO mechanisms, deliberately, because neither covers what the other does.
+#
+# The committed baseline and the custom SARIF comparator were written when
+# Code Scanning uploads were unavailable on a private repository without
+# Advanced Security. The repository is public now, so uploads are free -- but
+# they are NOT a replacement for the comparator, and the plan to drop it in
+# their favour was reversed. The upload gives the native alert UI, per-alert
+# dismissal with a reason, severity filtering and history that a JSON file in
+# the tree never could. What it does not give is enforcement: a 5000-result
+# cap that discards ~4076 of this repository's python findings quality-first,
+# a results check that fails only on error/critical/high, PR gating only for
+# alerts whose every line is in the diff, and extraction errors that surface
+# for manual reading rather than failing the run. The four limits are set out
+# against the analyze step below.
+#
+# So: `upload: always` AND `output: results`, the comparator reading the full
+# local SARIF, and the artifact kept for baseline regeneration.
 #
 # Advanced setup rather than GitHub's default setup, deliberately: default
 # setup only offers the `default` and `extended` query suites (the API rejects
