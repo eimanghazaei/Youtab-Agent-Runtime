@@ -336,23 +336,33 @@ def inspect(directory: Path, baseline_path: Path | None = None,
             for key, count in current.items():
                 current_rule_totals[rule_of(key)] += count
 
-            # Direction 1: the baseline is missing a required query this run
-            # reports in bulk.
-            missing_in_baseline = Counter({
-                rule: count for rule, count in current_rule_totals.items()
-                if rule in required_set and rule not in baseline_rule_totals
-            })
-            # Direction 2: THIS RUN is missing a required query the baseline
-            # records in bulk. Symmetric and just as dangerous: a run that
-            # loses its interprocedural output still reports every syntactic
-            # finding, so `current` is nonempty and the all-zero check above
-            # passes. Those 1272 dataflow findings would land in `absent`,
-            # which is not enforcing -- a partial scanner failure would score
-            # a GREEN security gate. Fail closed on it instead.
-            missing_in_current = Counter({
-                rule: count for rule, count in baseline_rule_totals.items()
-                if rule in required_set and rule not in current_rule_totals
-            })
+            # PER-RULE DEFICITS, not "the rule vanished entirely".
+            #
+            # Measuring only rules whose count reached ZERO left the largest
+            # hole this check has had. A degraded analysis that retains even
+            # ONE result per query has no fully-missing rule at all, so
+            # nothing was suspect and every lost finding filed as
+            # non-enforcing `absent`. Measured on the real baselines, a run
+            # keeping one result per rule loses:
+            #
+            #     python                 9009 of 9076   (99.3%)
+            #     javascript-typescript    87 of  110   (79.1%)
+            #
+            # and the gate returned 0 for both. Essentially the whole
+            # analysis could evaporate and the security gate would pass.
+            #
+            # Comparing per-rule counts subsumes the old test -- a vanished
+            # rule is just a deficit equal to its whole count -- and catches
+            # partial loss, which is what a real degradation looks like.
+            deficits_in_current: Counter[str] = Counter()   # baseline had more
+            deficits_in_baseline: Counter[str] = Counter()  # this run has more
+            for rule in required_set:
+                was = baseline_rule_totals.get(rule, 0)
+                now = current_rule_totals.get(rule, 0)
+                if was > now:
+                    deficits_in_current[rule] = was - now
+                elif now > was:
+                    deficits_in_baseline[rule] = now - was
 
             # The volume threshold is PROPORTIONAL, not absolute. An absolute
             # floor silently disables this check for whichever language has
@@ -388,12 +398,12 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                 return sum(suspect.values()) >= max(10, -(-total * 10 // 100))
 
             for label, suspect, total, explanation in (
-                ("baseline under-records", missing_in_baseline,
+                ("baseline under-records", deficits_in_baseline,
                  sum(current_rule_totals.values()),
                  "the baseline was captured under CodeQL's diff-informed analysis (the "
                  "pull_request default, which clips dataflow results to the diff) and is "
                  "being compared against a full analysis"),
-                ("THIS RUN under-reports", missing_in_current,
+                ("THIS RUN under-reports", deficits_in_current,
                  sum(baseline_rule_totals.values()),
                  "this run lost the output of queries the baseline records, which is what a "
                  "partially failed analysis or a re-enabled diff-informed run looks like"),
@@ -403,8 +413,8 @@ def inspect(directory: Path, baseline_path: Path | None = None,
                         f"{rule} ({count})" for rule, count in suspect.most_common(5)
                     )
                     raise ValueError(
-                        f"{label} {len(suspect)} required queries accounting for "
-                        f"{sum(suspect.values())} findings ({worst}). Two causes look "
+                        f"{label} {len(suspect)} required queries by {sum(suspect.values())} "
+                        f"findings ({worst}). Two causes look "
                         f"identical from here and they need opposite responses. Either "
                         f"{explanation} -- check that codeql.yml still sets "
                         f"CODEQL_ACTION_DIFF_INFORMED_QUERIES=false and that every "
