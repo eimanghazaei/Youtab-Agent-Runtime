@@ -100,13 +100,32 @@ LANGUAGES: dict[str, dict[str, object]] = {
     "actions": {
         "queries": "codeql/actions-queries",
         "diagnostic": "actions/diagnostics/successfully-extracted-files",
-        # Workflow definitions and composite actions only. A `.yaml` elsewhere
-        # in the tree is not an actions source file and must not be required
-        # to appear in this leg's extraction inventory.
+        # EXACTLY the extractor's supported paths:
+        # `.github/workflows/*.y{a,}ml` and `**/action.y{a,}ml`. Nothing else.
+        #
+        # `.github/` as the prefix was too broad and would have blocked valid
+        # pull requests. Measured against this repository's own tracked files
+        # and the actions extraction inventory:
+        #
+        #     .github/workflows/codeql.yml               extracted
+        #     .github/workflows/youtab-ci.yml            extracted
+        #     .github/actions/*/action.yml   (4 files)   extracted
+        #     .github/dependabot.yml                     NOT extracted
+        #     .github/ISSUE_TEMPLATE/*.yml   (4 files)   NOT extracted
+        #
+        # Those last five are real, tracked, and routinely edited --
+        # `dependabot.yml` especially. Under the old prefix, touching any one
+        # of them made the changed-file check demand it from an inventory
+        # CodeQL never puts it in, so the gate exited 2 and blocked the pull
+        # request with "CodeQL did not extract changed source files". A
+        # required check failing on a file the extractor does not read is a
+        # self-inflicted outage, which is exactly the over-claiming this
+        # predicate was supposed to avoid.
         "extracted": lambda name: (
-            name.endswith((".yml", ".yaml"))
-            and (name.startswith(".github/")
-                 or PurePosixPath(name).name in ("action.yml", "action.yaml"))
+            (name.startswith(".github/workflows/")
+             and name.count("/") == 2
+             and name.endswith((".yml", ".yaml")))
+            or PurePosixPath(name).name in ("action.yml", "action.yaml")
         ),
     },
     "c-cpp": {

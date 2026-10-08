@@ -237,3 +237,120 @@ def test_all_codeql_action_steps_pin_the_same_release(workflow: dict) -> None:
         f"github/codeql-action is pinned to {ref!r} rather than a full commit SHA; "
         "a floating tag can move under the workflow between runs"
     )
+
+
+def _gate_languages():
+    import sys
+    import pathlib as _p
+
+    scripts = _p.Path(__file__).resolve().parents[2] / "scripts" / "youtab"
+    sys.path.insert(0, str(scripts))
+    try:
+        from codeql_sarif_gate import LANGUAGES
+
+        return LANGUAGES, scripts
+    finally:
+        sys.path.remove(str(scripts))
+
+
+#: Files each extractor DOES read, and files it does not. The second column
+#: is the one that matters: the changed-file check demands every CHANGED file
+#: the predicate calls source to appear in the run's extraction inventory, and
+#: exits 2 when one does not. So a predicate that claims more than its
+#: extractor reads is not a loose approximation -- it is a required check that
+#: fails on a file CodeQL was never going to look at.
+#:
+#: That happened. The `actions` predicate matched every `.y{a,}ml` under
+#: `.github/`, while the extractor covers only `.github/workflows/*.y{a,}ml`
+#: and `**/action.y{a,}ml`. This repository tracks five files in the gap --
+#: `.github/dependabot.yml` and four `.github/ISSUE_TEMPLATE/*.yml` -- and
+#: `dependabot.yml` is edited routinely, so the gate would have blocked those
+#: pull requests with "CodeQL did not extract changed source files".
+#:
+#: Stated as cases rather than derived from the committed inventories, because
+#: those are not sound ground truth here: `python` and `javascript-typescript`
+#: were captured at 48243e2a, which predates files now in the tree, and the
+#: three newer baselines name a pull-request MERGE commit that is absent from
+#: a fresh clone. A derived test would drift or skip rather than fail.
+#:
+#: Under-claiming is deliberately not asserted. It is not a hole: the gate's
+#: condition is `name in baseline_extracted_paths or is_source(name)`, so a
+#: file already in the inventory is checked whether the predicate claims it or
+#: not. The `python` extractor reads `.yaml` as well as `.py`, for instance,
+#: and that costs nothing.
+CHANGED_SOURCE_CASES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "actions": (
+        (".github/workflows/codeql.yml",
+         ".github/workflows/ci.yaml",
+         ".github/actions/retry/action.yml",
+         "action.yml",
+         "deep/nested/dir/action.yaml"),
+        (".github/dependabot.yml",
+         ".github/ISSUE_TEMPLATE/bug_report.yml",
+         ".github/ISSUE_TEMPLATE/config.yml",
+         # The extractor does not recurse below workflows/.
+         ".github/workflows/nested/deep.yml",
+         ".github/workflows/README.md",
+         "docker-compose.yml",
+         "web/pnpm-workspace.yaml"),
+    ),
+    "python": (
+        ("agent/conversation_loop.py", "scripts/youtab/codeql_sarif_gate.py"),
+        ("README.md", "pyproject.toml", "native/fts5_cjk/fts5_cjk.c"),
+    ),
+    "javascript-typescript": (
+        ("web/src/app.ts", "web/src/app.tsx", "a.js", "a.mjs", "a.cjs",
+         "page.html", "package.json", "tsconfig.json", "tsconfig.build.json"),
+        ("agent/conversation_loop.py", "src/lib.rs", "Cargo.toml"),
+    ),
+    "c-cpp": (
+        ("native/fts5_cjk/fts5_cjk.c", "a.cpp", "a.cc", "a.cxx", "a.h", "a.hpp"),
+        ("agent/conversation_loop.py", "src/lib.rs", "Makefile"),
+    ),
+    "rust": (
+        ("apps/bootstrap-installer/src-tauri/src/main.rs", "src/lib.rs"),
+        ("Cargo.toml", "Cargo.lock", "agent/conversation_loop.py"),
+    ),
+}
+
+
+def test_every_language_has_changed_source_cases() -> None:
+    """A new language must arrive with its boundary pinned.
+
+    Without this, adding a leg to `LANGUAGES` and the matrix would silently
+    ship an untested predicate -- and an over-broad one blocks pull requests
+    on files its extractor never reads.
+    """
+    languages, _ = _gate_languages()
+    missing = sorted(set(languages) - set(CHANGED_SOURCE_CASES))
+    assert not missing, (
+        f"languages in codeql_sarif_gate.LANGUAGES with no entry in "
+        f"CHANGED_SOURCE_CASES: {missing}. Add the files its extractor reads and, "
+        f"more importantly, nearby files it does not."
+    )
+    stale = sorted(set(CHANGED_SOURCE_CASES) - set(languages))
+    assert not stale, f"CHANGED_SOURCE_CASES names unknown languages: {stale}"
+
+
+@pytest.mark.parametrize("language", sorted(CHANGED_SOURCE_CASES))
+def test_changed_source_predicate_claims_exactly_its_extractors_files(
+    language: str,
+) -> None:
+    """Each predicate must claim its own sources and nothing adjacent."""
+    languages, _ = _gate_languages()
+    is_source = languages[language]["extracted"]
+    sources, not_sources = CHANGED_SOURCE_CASES[language]
+
+    for name in sources:
+        assert is_source(name), (
+            f"{language}: {name} is a source file for this extractor but the "
+            f"predicate does not claim it"
+        )
+    for name in not_sources:
+        assert not is_source(name), (
+            f"{language}: {name} is NOT read by this extractor, so claiming it "
+            f"makes the changed-file check exit 2 on any pull request that edits "
+            f"it -- a required check failing on a file CodeQL never looks at"
+        )
+
+
