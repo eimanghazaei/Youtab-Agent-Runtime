@@ -65,7 +65,7 @@ different router than production builds.
 | 12 | Tenant/user event filtering | QUEUED | scope gate exists; payload filtering does not |
 | 13 | Governed CSRF secret-file contract | QUEUED | `YOUTAB_CSRF_SECRET_FILE`, ≥32 bytes, fail closed |
 | 14 | Agent Intelligence Floor | QUEUED | needs a measured baseline before it can gate |
-| 15 | Cognitive-growth & persistent-memory ADR | QUEUED | blocking prerequisite for Sandbox/Workspace |
+| 15 | Cognitive-growth, memory & verified-execution ADRs | **PROPOSED** — ADR-0002 (revised) + ADR-0003 companion, awaiting Owner ratification | `docs/architecture/ADR-0002-cognitive-growth-and-persistent-memory.md`, `docs/architecture/ADR-0003-verified-execution.md`; **ADR-0003 verified-execution foundation is sequenced ahead of MemoryBus and governs the dependent slices #26, #27, #30 and #32**; **Living Canon** aligned with `docs/architecture/CODE_AGENT_WORKSPACE_CONTRACT.md`; blocks #16/#17/#19 and #26–#32 until ratified |
 | 16 | Secret Broker & Provider Proxy | QUEUED | ADR first |
 | 17 | Capability engine & execution sandbox | QUEUED | ADR first |
 | 18 | Safe snapshot/rollback service | QUEUED | kit engine rejected: deletes post-snapshot user files |
@@ -76,6 +76,24 @@ different router than production builds.
 | 23 | Kanban → Orchestrator Board migration | QUEUED | product workstream |
 | 24 | Frontend Agent launcher PR #72 | **PARKED** | separate repository |
 | 25 | Runtime PR #8 | **EVIDENCE ONLY** | untouched; `972f48be7` |
+| 28 | **[FOUNDATION — built first]** Independent Verifier & Verified-Completion state machine | QUEUED | ADR-0003 first; **precedes #26/#27 and governs the dependent slices #26, #27, #30, #32**; system/Brain-side authority; **verifier-signed, replay-bound** transition (key in HSM/KMS, absent from runtime/workspace/toolchain); an agent may never self-mark `VERIFIED_COMPLETE`; fail-closed + isolated toolchain; completion-record/evidence/attempt-history stores stand on their own (do not wait on #26) but are erasable under ADR-0002 §5; **the foundation slices #28/#29/#31 cannot self-verify — their acceptance is Owner-side independent evidence + review until a second independent verifier exists** |
+| 29 | **[FOUNDATION — built first]** Goal-persistence & corrective loop | QUEUED | ADR-0003 first; **part of the foundation before #26/#27**; bounded corrective tasks; criteria never silently weakened |
+| 31 | **[FOUNDATION — built first]** Backend execution-event / evidence contract | QUEUED | ADR-0003 §4 first; **part of the foundation before #26/#27**; sequenced, redacted, resumable; no "Complete" before VERIFIED_COMPLETE |
+| 26 | MemoryBus service (agent-owned + Simorgh-consolidated namespaces) | QUEUED | **after the ADR-0003 verified-execution foundation (#28/#29/#31)**; ADR-0002; engine-independent; deletion/erasure/retention/legal-hold; **reports completion only via the independent Verifier** |
+| 27 | Governed learning & promotion pipeline | QUEUED | **after the ADR-0003 foundation (#28/#29/#31)**; ADR-0002 + **needs Simorgh consolidation authority** (Simorgh arch integration order); de-identify→classify→screen→verify→promote; no raw private data; corroboration-not-volume; **verified completion only** |
+| 30 | Sub-agent orchestration & accountability | QUEUED | ADR-0003; dynamic scaling; single-integrator branch; no shared worktree; part of/after the foundation |
+| 32 | Frontend Agent/Code live-execution surfaces | QUEUED | separate frontend repo; consumes #31; extends #24; after backend contract |
+
+> **Implementation order (corrected).** Row numbers are stable identifiers, not sequence. The corrected
+> build sequence, gated on Owner ratification of ADR-0002 + ADR-0003, is: **(1) the ADR-0003
+> verified-execution foundation first — #28 Verifier & fail-closed completion state machine, #29
+> goal-persistence corrective loop, #31 backend evidence/event contract** — which then **governs every
+> later slice**; **(2) #26 MemoryBus; (3) #27 learning pipeline; (4) #30 orchestration; (5) #32
+> frontend.** No later slice may declare its own completion: an agent can never mark its own work
+> `VERIFIED_COMPLETE`. This architecture is **Living Canon** (per
+> `docs/architecture/CODE_AGENT_WORKSPACE_CONTRACT.md`) — revisable, extendable, versionable and
+> supersedable through reviewed ADR/PR changes carrying reason, migration, rollback, security impact and
+> executable evidence.
 
 ## Known constraints
 
