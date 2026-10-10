@@ -62,6 +62,13 @@ from agent.i18n import t
 from youtab_agent_cli.config import cfg_get
 from youtab_agent_cli.fallback_config import get_fallback_chain
 
+def _restart_watcher_popen(*args, **kwargs):
+    """Keep watcher failure injection local; retain current process mediation."""
+    import subprocess
+
+    return subprocess.Popen(*args, **kwargs)
+
+
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
@@ -9518,7 +9525,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Mirrors the canonical fallback in
             # youtab_agent_cli/gateway_windows.py::_spawn_detached.
             try:
-                subprocess.Popen(
+                _restart_watcher_popen(
                     watcher_argv,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -9527,7 +9534,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except OSError:
                 try:
-                    subprocess.Popen(
+                    _restart_watcher_popen(
                         watcher_argv,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
