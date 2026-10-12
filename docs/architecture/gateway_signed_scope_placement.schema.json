@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://youtab.dev/schemas/youtab.scope-placement.v1.json",
+  "title": "youtab.scope-placement.v1",
+  "description": "Machine-readable interface request (item 8): a Gateway/Workspace-Authority-signed placement token that cryptographically binds the memory scope dimensions absent from the base BrainCommandEnvelope. Until a token of this shape is verifiable by the Runtime, LIVE multi-tenant/workspace memory stays DISABLED and admission-supplied values NEVER authorize retrieval or persistence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "algorithm", "issuer", "command_id", "trace_id", "tenant_id", "principal_id",
+    "organization_id", "workspace_id", "agent_id", "run_id", "purpose",
+    "delegation_authority_ref", "nonce", "issued_at", "expires_at", "key_id", "signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "youtab.scope-placement.v1" },
+    "algorithm": { "enum": ["ed25519"],
+      "description": "Signature algorithm; Runtime enforces an allowlist (ed25519 only)." },
+    "command_id": { "type": "string", "minLength": 8, "maxLength": 128,
+      "description": "Binds this placement to the BrainCommandEnvelope it accompanies." },
+    "trace_id": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "tenant_id": { "type": "string", "minLength": 3, "maxLength": 128,
+      "description": "Must equal the envelope tenant_id (cross-check)." },
+    "principal_id": { "type": "string", "minLength": 3, "maxLength": 128,
+      "description": "Must equal the envelope user_id (cross-check)." },
+    "organization_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$" },
+    "workspace_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$" },
+    "agent_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$" },
+    "run_id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$",
+      "description": "The Durable-Execution run/task id (may equal task_id)." },
+    "purpose": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$" },
+    "delegation_authority_ref": { "type": "string", "minLength": 1, "maxLength": 256,
+      "description": "Reference to the delegation/authority grant that authorizes this principal+agent to act in this workspace." },
+    "nonce": { "type": "string", "minLength": 16, "maxLength": 256,
+      "description": "Replay protection; Runtime records (tenant_id, nonce)." },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time",
+      "description": "Placement is rejected at/after this instant (stale-token fail-closed)." },
+    "key_id": { "type": "string", "minLength": 3, "maxLength": 128,
+      "description": "Gateway signing key id for rotation." },
+    "signature": { "type": "string", "minLength": 40, "maxLength": 256,
+      "description": "Ed25519 signature over the canonical payload (excluding signature), verifiable with the Gateway public key. Same discipline as BrainCommandEnvelope.verify()." }
+  },
+  "x-runtime-requirements": {
+    "canonical_serialization": "JSON of all fields EXCEPT signature, ensure_ascii=false, sort_keys=true, separators (',',':') — identical to BrainCommandEnvelope.canonical_payload().",
+    "algorithm_allowlist": ["ed25519"],
+    "verification": "PlacementVerifier.verify (youtab_runtime/memory/placement.py) checks algorithm allowlist, issuer, issued_at<=now<expires_at, cross-checks command_id/trace_id/tenant_id/principal_id against the BrainCommandEnvelope, verifies the Ed25519 signature with the Gateway public key for key_id, and rejects a replayed (tenant_id, nonce). Only then does it emit a VerifiedPlacement.",
+    "verification_result_type": "VerifiedPlacement (verified=True literal). JSON-schema validation alone is NOT authorization; only a VerifiedPlacement may build a live MemoryScope. Runtime code must consume VerifiedPlacement, never a raw SignedScopePlacement.",
+    "fail_closed": "If the token is absent, malformed, wrong-algorithm, wrong-issuer, expired, cross-tenant/principal/command/trace mismatched, replayed, or signed by an unknown key, verification raises PlacementError and the Runtime refuses LIVE retrieval/persistence. Admission-supplied unsigned values are for local single-principal operation only and never authorize server retrieval/persistence.",
+    "replay_cache": "Runtime keeps a (tenant_id, nonce) replay cache; a durable cross-process cache is required for a live deployment.",
+    "key_rotation_revocation": "key_id selects the Gateway public key; rotation adds a new key_id, revocation removes it from the Runtime key map (unknown key_id -> refused).",
+    "negative_tests_present": [
+      "forged/wrong-key signature", "mismatched tenant/principal", "expired token",
+      "replayed nonce", "unknown key_id", "command/trace mismatch", "non-forgeable VerifiedPlacement"
+    ],
+    "consumer": "youtab_runtime.memory.placement.PlacementVerifier -> VerifiedPlacement -> MemoryScope; retrieval pipeline requires request.scope == verified.scope."
+  }
+}
