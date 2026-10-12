@@ -152,3 +152,14 @@ def test_string_api_keys_are_not_retained_in_cache_key_repr():
     assert second_secret not in rendered
 
 
+def test_string_api_key_cache_discriminator_is_stable_and_secret_free():
+    secret = "synthetic-secret-AAA123"
+    first = aux._runtime_cache_discriminator("api_key", secret)
+    again = aux._runtime_cache_discriminator("api_key", secret)
+    other = aux._runtime_cache_discriminator("api_key", "synthetic-secret-BBB456")
+
+    assert first == again
+    assert first != other
+    assert secret not in repr(first)
+
+

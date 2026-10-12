@@ -1510,6 +1510,22 @@ def test_dump_api_request_debug_uses_responses_url(monkeypatch, tmp_path):
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/responses"
 
 
+def test_request_dump_stdout_reports_path_without_request_body(monkeypatch, tmp_path, capsys):
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+    monkeypatch.setenv("YOUTAB_AGENT_DUMP_REQUEST_STDOUT", "1")
+    private_context = "private-context-marker-AAA123"
+
+    dump_file = agent._dump_api_request_debug(
+        {"messages": [{"role": "user", "content": private_context}]},
+        reason="preflight",
+    )
+
+    output = capsys.readouterr().out
+    assert str(dump_file) in output
+    assert private_context not in output
+
+
 def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path):
     """Debug dumps should show /chat/completions URL for chat_completions mode."""
     import json

@@ -1809,7 +1809,7 @@ def dump_api_request_debug(
         safe_sid = _ra()._safe_session_filename_component(agent.session_id)
         dump_file = agent.logs_dir / f"request_dump_{safe_sid}_{timestamp}.json"
 
-        # Redact secrets before persisting/printing. This dump captures the
+        # Redact secrets before persisting. This dump captures the
         # full request body (system prompt, tool defs, context-embedded
         # values), and this path fires unconditionally on API errors — so it
         # otherwise lands any context-embedded secret in cleartext on disk.
@@ -1824,7 +1824,7 @@ def dump_api_request_debug(
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
         if env_var_enabled("YOUTAB_AGENT_DUMP_REQUEST_STDOUT"):
-            print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
+            print(f"{agent.log_prefix}Request debug dump saved locally: {dump_file}")
 
         return dump_file
     except Exception as dump_error:
