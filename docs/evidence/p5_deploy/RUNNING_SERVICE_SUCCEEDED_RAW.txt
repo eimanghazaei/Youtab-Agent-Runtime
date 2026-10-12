@@ -1,0 +1,61 @@
+# P5 SUCCEEDED run — redacted raw HTTP + PG + logs (live gateway-run service)
+# Source SHA cc5c4f7d / image youtab-agent-runtime:p5-cc5c4f7d ; secrets REDACTED
+# run_id=run_795e0e80d51b4f0d8d5b17375958ceb3  provider=custom(mock SSE)  backend=postgres
+
+=== POST /v1/runs (request headers redacted: Authorization: Bearer <REDACTED>) ===
+POST /v1/runs  body: {"input":"do the customer task"}
+
+=== GET /v1/runs/{id} (verbose, headers) ===
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Permissions-Policy: camera=(), microphone=(), geolocation=()
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+X-XSS-Protection: 0
+Referrer-Policy: no-referrer
+Content-Length: 297
+Date: Wed, 23 Sep 2026 10:01:10 GMT
+Server: Python/3.13 aiohttp/3.14.1
+
+{"object": "youtab.run", "run_id": "run_795e0e80d51b4f0d8d5b17375958ceb3", "status": "completed", "created_at": 1790157428.1319869, "updated_at": 1790157428.4978466, "session_id": "run_795e0e80d51b4f0d8d5b17375958ceb3", "output": "CUSTOMER_TASK_OK_42", "error": null, "recovered_from_store": true}
+
+=== GET /v1/runs/{id}/result ===
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Content-Security-Policy: default-src 'none'; frame-ancestors 'none'
+Permissions-Policy: camera=(), microphone=(), geolocation=()
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+X-Content-Type-Options: nosniff
+X-Frame-Options: DENY
+X-XSS-Protection: 0
+Referrer-Policy: no-referrer
+Content-Length: 170
+Date: Wed, 23 Sep 2026 10:01:10 GMT
+Server: Python/3.13 aiohttp/3.14.1
+
+{"object": "youtab.run.result", "run_id": "run_795e0e80d51b4f0d8d5b17375958ceb3", "status": "completed", "terminal": true, "output": "CUSTOMER_TASK_OK_42", "error": null}
+
+=== GET /v1/runs/{id}/events?from_seq=0 (durable replay after restart) ===
+id: 1
+data: {"seq": 1, "kind": "accepted", "state": "QUEUED"}
+
+id: 2
+data: {"seq": 2, "kind": "status.running", "state": "RUNNING", "adapter": true}
+
+id: 3
+data: {"seq": 3, "kind": "progress", "step": "reasoning.available", "metric": {"tool": null}, "checkpoint_ref": null}
+
+id: 4
+data: {"seq": 4, "kind": "status.completed", "state": "SUCCEEDED", "adapter": true}
+
+: stream closed
+
+
+=== PostgreSQL physical row ===
+run_795e0e80d51b4f0d8d5b17375958ceb3|SUCCEEDED|CUSTOMER_TASK_OK_42
+
+=== service logs (redacted; last durable lines for this run) ===
+WARNING gateway.platforms.api_server: [Api_Server] API server is network-accessible (0.0.0.0) AND the terminal backend is 'local' (unsandboxed). Agent work dispatched through this endpoint runs as the host user with full terminal/file access. Strongly consider a sandboxed backend (terminal.backend: docker) and firewalling this port to trusted networks only.
+WARNING gateway.platforms.api_server: [Api_Server] API server is network-accessible (0.0.0.0) AND the terminal backend is 'local' (unsandboxed). Agent work dispatched through this endpoint runs as the host user with full terminal/file access. Strongly consider a sandboxed backend (terminal.backend: docker) and firewalling this port to trusted networks only.

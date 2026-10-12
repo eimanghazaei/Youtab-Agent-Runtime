@@ -671,6 +671,169 @@ class ProcessRegistry:
             except (psutil.AccessDenied, OSError):
                 pass
 
+    # ----- Effect-descendant teardown (durable fail-stop) -----
+
+    def _enumerate_owned_descendants(self):
+        """Return ``({pid: start_time}, enumeration_ok)`` for CURRENT owned
+        descendants: registry host sessions plus the live OS descendant tree of
+        this process. ``enumeration_ok`` is False if either source raises — the
+        caller must then treat containment as unverifiable (fail-closed)."""
+        me = os.getpid()
+        found: Dict[int, Optional[int]] = {}
+        ok = True
+        try:
+            with self._lock:
+                sessions = list(self._running.values())
+        except Exception:
+            ok = False
+            sessions = []
+            logger.debug("reap: registry snapshot failed", exc_info=True)
+        for sess in sessions:
+            pid = getattr(sess, "pid", None)
+            if (pid and pid != me
+                    and getattr(sess, "pid_scope", "host") == "host"
+                    and not getattr(sess, "exited", False)):
+                found.setdefault(pid, getattr(sess, "host_start_time", None))
+        try:
+            import psutil
+            for child in psutil.Process(me).children(recursive=True):
+                cpid = child.pid
+                if cpid and cpid != me:
+                    found.setdefault(cpid, self._safe_host_start_time(cpid))
+        except Exception:
+            ok = False
+            logger.critical(
+                "reap: descendant-tree enumeration FAILED — containment "
+                "unverifiable (fail-closed)", exc_info=True,
+            )
+        return found, ok
+
+    def reap_effect_descendants(self, *, deadline_s: float = 8.0) -> Dict[str, Any]:
+        """Idempotent, synchronous teardown of every effect-capable descendant.
+
+        The durable ``/v1/runs`` fail-stop calls this AFTER cooperative interrupt
+        and BEFORE ``os._exit(75)`` so no already-spawned descendant can complete a
+        NEW external effect after run-authority loss. This is the SOLE
+        process-tree reaper for that path (no second mechanism): it reuses this
+        registry's start-time-guarded :meth:`_terminate_host_pid`, targeting both
+        registry host sessions and the live OS descendant tree of THIS process.
+
+        Fail-closed invariants:
+          * ENUMERATION MUST SUCCEED. If the registry snapshot or the descendant
+            tree cannot be read, the descendant set is unknown → ``contained``
+            is False. Never a vacuous True.
+          * IDENTITY REQUIRED. A target is signalled ONLY when its kernel
+            start-time is known and matches (:meth:`_host_pid_is_ours`). A target
+            with no obtainable start-time is NEVER signalled (killing an
+            unknown-identity PID could hit a stranger the number was recycled
+            onto) and makes the reap NOT contained.
+          * CHILD-SPAWN RACE. Enumeration is a snapshot, so the sweep REPEATS: a
+            child spawned by a not-yet-killed descendant during teardown is
+            caught on the next sweep. The loop ends only on a clean sweep (no live
+            owned descendant) or when the deadline is spent. A killed process
+            cannot spawn more, so the live-owned set strictly shrinks → converges.
+          * OVERALL DEADLINE. ``deadline_s`` bounds the WHOLE operation (all
+            sweeps + terminations + settle). When spent, no further target is
+            signalled and ``contained`` is False (``budget_exceeded``). Worst-case
+            overrun is one in-flight :meth:`_terminate_host_pid` internal timeout
+            (POSIX SIGTERM grace, or Windows ``taskkill`` <=10 s). ``elapsed_s`` is
+            returned so the realised bound is observable.
+          * IDEMPOTENT; FAIL-CLOSED. Callers treat ``contained=False`` as
+            unverified cleanup — never applied, never blind-retried.
+
+        Known limit: a descendant that BOTH detaches off the gateway tree
+        (``start_new_session`` / reparented to init) AND is not registered here is
+        neither a live descendant nor a tracked session, so it cannot be found.
+        Spawners must keep such workers registry-registered (the start-time guard
+        is the catch-all). See R5_EFFECT_FENCE_PROOF.md.
+
+        Returns ``{contained, enumeration_ok, targets, signalled, verified_dead,
+        unverified, unidentified, budget_exceeded, sweeps, elapsed_s, deadline_s,
+        platform}``.
+        """
+        started = time.monotonic()
+        end = started + max(deadline_s, 0.0)
+        all_seen: Dict[int, Optional[int]] = {}
+        signalled: set = set()
+        unidentified: set = set()
+        enumeration_ok = True
+        budget_exceeded = False
+        sweeps = 0
+
+        while True:
+            found, ok = self._enumerate_owned_descendants()
+            if not ok:
+                enumeration_ok = False
+                break
+            sweeps += 1
+            for pid, start in found.items():
+                all_seen.setdefault(pid, start)
+            # Which discovered descendants are still ours and alive this sweep?
+            live_owned: List[tuple] = []
+            for pid, start in found.items():
+                if start is None:
+                    unidentified.add(pid)  # unknown identity: never signal
+                    continue
+                if self._host_pid_is_ours(pid, start):
+                    live_owned.append((pid, start))
+            if not live_owned:
+                break  # clean sweep — converged
+            if time.monotonic() >= end:
+                budget_exceeded = True
+                break
+            for pid, start in live_owned:
+                if time.monotonic() >= end:
+                    budget_exceeded = True
+                    break
+                try:
+                    self._terminate_host_pid(pid, start)
+                    signalled.add(pid)
+                except Exception:
+                    logger.debug("reap: terminate pid %s failed", pid, exc_info=True)
+            if budget_exceeded:
+                break
+            time.sleep(0.05)
+
+        # Final verification across everything ever seen (identity required).
+        unverified = sorted(
+            pid for pid, start in all_seen.items()
+            if start is not None and self._host_pid_is_ours(pid, start)
+        )
+        verified_dead = sorted(
+            pid for pid in all_seen
+            if pid not in unverified and pid not in unidentified
+        )
+        contained = (
+            enumeration_ok
+            and not unverified
+            and not unidentified
+            and not budget_exceeded
+        )
+        elapsed_s = round(time.monotonic() - started, 3)
+        result: Dict[str, Any] = {
+            "contained": contained,
+            "enumeration_ok": enumeration_ok,
+            "targets": len(all_seen),
+            "signalled": sorted(signalled),
+            "verified_dead": verified_dead,
+            "unverified": unverified,
+            "unidentified": sorted(unidentified),
+            "budget_exceeded": budget_exceeded,
+            "sweeps": sweeps,
+            "elapsed_s": elapsed_s,
+            "deadline_s": deadline_s,
+            "platform": ("windows" if _IS_WINDOWS else "posix"),
+        }
+        if not contained:
+            logger.critical(
+                "effect-descendant reap NOT contained (fail-closed): "
+                "enumeration_ok=%s unverified=%s unidentified=%s budget_exceeded=%s "
+                "sweeps=%d elapsed=%.3fs — cleanup unverified, not applied, no retry",
+                enumeration_ok, unverified, sorted(unidentified), budget_exceeded,
+                sweeps, elapsed_s,
+            )
+        return result
+
     # ----- Spawn -----
 
     @staticmethod
@@ -2083,6 +2246,15 @@ class ProcessRegistry:
 
 # Module-level singleton
 process_registry = ProcessRegistry()
+
+
+def reap_effect_descendants(*, deadline_s: float = 2.0) -> Dict[str, Any]:
+    """Module-level entry for the durable fail-stop's descendant teardown.
+
+    Delegates to the single :data:`process_registry` authority (no second
+    reaper). See :meth:`ProcessRegistry.reap_effect_descendants`.
+    """
+    return process_registry.reap_effect_descendants(deadline_s=deadline_s)
 
 
 def _format_age(seconds: float) -> str:

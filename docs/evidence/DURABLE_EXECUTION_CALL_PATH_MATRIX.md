@@ -1,0 +1,25 @@
+# Durable Execution — Call-Path Matrix (Phase 1)
+
+Base `c7650a1b` (origin/main), runtime `0.19.1`. Each row traces:
+`entry surface → request owner → durable task creation → worker/child → checkpoint → effect → receipt → result persistence → UI delivery → reconnect recovery`.
+
+Cells marked **RAM** = in-memory only (lost on restart). **✗** = absent. **≈** = partial.
+
+| Entry surface | request owner | durable task creation | worker / child | checkpoint (exec state) | effect | receipt / idempotency | result persistence | UI delivery | reconnect recovery |
+|---|---|---|---|---|---|---|---|---|---|
+| **Desktop chat** (JSON-RPC/WS `/api/ws`) | `tui_gateway/server.py` (parked sessions) | session row in `state.db` (not a task row) | in-backend turn (not a child) | ✗ (transcript only) | via tools/approval | ✗ per-turn | `state.db` messages (`api_server.py:1818-1826`) | JSON-RPC deltas; honest event-driven progress | `session.resume` 20s grace + transcript replay (`methods_session.py:305`); **no last-seq cursor** |
+| **Browser /chat** (PTY `/api/pty`+`/api/events`) | `youtab_agent_cli/pty_session.py` | ✗ (PTY only) | PTY-hosted turn | ✗ | via tools/approval | ✗ | `state.db` transcript | PTY stream | reattach by `?attach=` token: 1 MB ring buffer, 30-min TTL (`pty_session.py:81`); legacy path **kills PTY on disconnect** (`web_server.py:16256`) |
+| **API `/v1/runs`** (async) | `gateway/platforms/api_server.py:1844-1848` | **RAM** `_run_statuses`/`_run_streams` (`:1240-1250`), TTL 1h/5m | in-backend run | ✗ | via tools/approval | ✗ | **RAM** (lost on restart) | SSE single-consumer queue | ✗ **none**: `finally` pops queue on disconnect (`:6539`); reconnect gets 404 |
+| **API `/v1/responses`** | `api_server.py:639` `ResponseStore` | SQLite `response_store.db` (`:656`) | in-backend run | ≈ snapshot (`:4383`) in_progress/incomplete/completed | via tools/approval | ✗ | **disk-durable** by id | SSE w/ `sequence_number` (`:4342`) | poll `GET /v1/responses/{id}`; **no Last-Event-ID replay** |
+| **Telegram / messaging** | `gateway/platforms/base.py` | delivery obligation (`delivery_ledger.py`) **before send** | event-driven (poll/webhook), not socket-bound | ✗ | reply = the effect | **✓** obligation_id sha256[:24] (`delivery_ledger.py:180-185`) | `state.db` + obligation ledger | platform send `:6016-6072` | **✓** crash-redelivery on next boot (`pending`→plain, `attempting`→RECOVERED_MARKER) |
+| **Kanban dispatcher** | `youtab_agent_cli/kanban_db.py` | **✓** `tasks` row at create (`:2820`) **before work**; `task_runs` epoch at claim (`:4079`) | forked worker (`_default_spawn`, `:7822` PID) | ≈ `task_events` journal (`:1240`); no plan/step exec-checkpoint | via tools/approval; effect-then-die not idempotent (`:7442-7450`) | ≈ whole-task `idempotency_key` only (no per-step) | `tasks.result` + events; atomic `complete_task` (`:4689`) | kanban dashboard plugin | claim lease + fencing (`claim_lock`+run epoch), PID-death reclaim (`:7371`), breaker→`blocked` (`:6595`) |
+| **delegate_task (async/bg)** | `tools/async_delegation.py` | **✓** `delegation_id`+spec → `state.db` before submit (`:200-226`) | daemon-pool child (`:751`), own `task_id` | ✗ | via tools/approval | ✗ | `_persist_completion` (`:273`); completion queue re-enters conversation | parent turn / completion event | **✓** `recover_abandoned_delegations` (`:293`), `restore_undelivered_completions` (`:344`); stale monitor `:1108` |
+| **delegate_task (sync)** | `tools/delegate_tool.py` | ✗ **RAM** future only (`:2151-2192`) | daemon-executor thread | ✗ | via tools/approval | ✗ | ✗ (returned inline) | parent turn | ✗ configured timeout → `summary:None` (`:2278-2295`); soft interrupt, thread abandoned |
+| **One Brain contracts** (authority boundary) | `youtab_runtime/worker.py` (one-shot stdin→stdout) | ✗ **RAM** nonce set (`policy.py:53`) | validated command envelope | ✗ | `EffectProposal` gate (`contracts.py:113`) | ✗ (no persisted receipt) | ✗ | ✗ (not wired to kanban row) | ✗ |
+
+## Observations driving Phase 3 design
+
+1. **Two durable task substrates already exist** — kanban (`tasks`/`task_runs`/`task_events`, fenced leases, reserved workflow columns) and async_delegation (`state.db`), plus two effect-style ledgers (delivery, cron). The One Brain contracts give a **typed** state/effect vocabulary but persist nothing. The durable-execution layer should **bridge** the signed `BrainCommand`/`EffectProposal`/`CompletionReport` vocabulary onto the kanban durable store, not invent a third store.
+2. **The interactive turn surfaces (desktop WS, browser PTY, `/v1/runs`) have the weakest durability** — no task row, no exec checkpoint, RAM-only run state, no reconnect-from-sequence. This is where "accepted task must never disappear" is most at risk.
+3. **Telegram + kanban are the strongest** (ledger-backed, fenced, reconciled) — they are the reference pattern to extend to the interactive surfaces.
+4. **Windows** weakens two things: MCP `killpg`/parent-death watchdog are POSIX-only, and app-close tree-kills the backend (Win/Linux), abandoning in-flight turns.

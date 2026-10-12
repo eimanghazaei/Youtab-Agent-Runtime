@@ -12,6 +12,7 @@ import contextvars
 import fnmatch
 import functools
 import hashlib
+import json
 import logging
 import os
 import re
@@ -21,7 +22,7 @@ import tempfile
 import threading
 import time
 import unicodedata
-from typing import Optional
+from typing import Any, Optional
 from youtab_agent_cli.config import cfg_get
 
 from tools.interrupt import is_interrupted
@@ -2215,7 +2216,10 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             approval_id: Optional[str] = None,
+                             effect_binding: Optional[dict] = None,
+                             before_release=None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2233,6 +2237,16 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
+        if approval_id is not None:
+            # An API approval must resolve exactly the waiter whose durable
+            # request was decided. Keep the queue locked across the durable
+            # CAS and event.set(): no timeout/drop or second request can swap
+            # the target between those operations.
+            if (resolve_all or queue[0].data.get("approval_id") != approval_id
+                    or queue[0].data.get("effect_binding") != effect_binding):
+                return 0
+            if before_release is not None:
+                before_release()
         if resolve_all:
             targets = list(queue)
             queue.clear()
@@ -2844,11 +2858,22 @@ def _smart_approve(command: str, description: str) -> str:
         return "escalate"
 
 
+def _exact_effect_binding(kind: str, raw_input: Any, context: Any) -> dict:
+    """Hash the exact gated input without exposing secrets to an API client."""
+    canonical = json.dumps(
+        {"kind": kind, "input": raw_input, "context": context},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return {"kind": kind, "arguments_digest": hashlib.sha256(canonical).hexdigest()}
+
+
 def _run_approval_gate(
     *,
     pattern_key: str,
     description: str,
     display_target: str,
+    effect_binding: Optional[dict] = None,
     approval_callback=None,
     cron_deny_message: str,
     autoapprove_log_prefix: str,
@@ -2902,7 +2927,7 @@ def _run_approval_gate(
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    if not os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") and is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
     if approval_callback is None:
@@ -2974,6 +2999,8 @@ def _run_approval_gate(
                 "allow_permanent": True,
                 "allow_session": True,
             }
+            if effect_binding is not None:
+                approval_data["effect_binding"] = effect_binding
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
@@ -3122,7 +3149,7 @@ def check_dangerous_command(command: str, env_type: str,
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled():
         return {"approved": True, "message": None}
 
-    if _command_matches_permanent_allowlist(command):
+    if not os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") and _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
@@ -3133,6 +3160,9 @@ def check_dangerous_command(command: str, env_type: str,
         pattern_key=pattern_key,
         description=description,
         display_target=command,
+        effect_binding=_exact_effect_binding(
+            "terminal_command", command, f"{env_type}:{has_host_access}"
+        ),
         approval_callback=approval_callback,
         cron_deny_message=(
             f"BLOCKED: Command flagged as dangerous ({description}) "
@@ -3153,6 +3183,8 @@ def request_tool_approval(
     *,
     rule_key: str = "",
     approval_callback=None,
+    tool_args: Optional[dict] = None,
+    effect_context: Optional[dict] = None,
 ) -> dict:
     """Escalate an arbitrary tool call to the human-approval gate.
 
@@ -3210,10 +3242,24 @@ def request_tool_approval(
     # executes; it only labels the gate. Namespaced identically.
     display_target = f"<{tool_name}> (plugin approval rule)"
 
+    effect_binding = None
+    if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+        if not isinstance(tool_args, dict) or not isinstance(effect_context, dict):
+            return {"approved": False, "message": "BLOCKED: exact plugin tool arguments unavailable"}
+        try:
+            effect_binding = _exact_effect_binding(
+                "plugin_tool_call", {"tool_name": tool_name, "arguments": tool_args},
+                {**effect_context, "approval_rule_key": rule_key,
+                 "approval_reason": description},
+            )
+        except (TypeError, ValueError):
+            return {"approved": False, "message": "BLOCKED: plugin tool arguments cannot be bound"}
+
     return _run_approval_gate(
         pattern_key=pattern_key,
         description=description,
         display_target=display_target,
+        effect_binding=effect_binding,
         approval_callback=approval_callback,
         cron_deny_message=(
             f"BLOCKED: Tool '{tool_name}' requires approval ({description}) "
@@ -3434,7 +3480,7 @@ def check_all_command_guards(command: str, env_type: str,
     if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
-    if _command_matches_permanent_allowlist(command):
+    if not os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") and _command_matches_permanent_allowlist(command):
         return {"approved": True, "message": None}
 
     is_cli = _is_interactive_cli()
@@ -3572,11 +3618,11 @@ def check_all_command_guards(command: str, env_type: str,
         rule_id = findings[0].get("rule_id", "unknown") if findings else "unknown"
         tirith_key = f"tirith:{rule_id}"
         tirith_desc = _format_tirith_description(tirith_result)
-        if not is_approved(session_key, tirith_key):
+        if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") or not is_approved(session_key, tirith_key):
             warnings.append((tirith_key, tirith_desc, True))
 
     if is_dangerous:
-        if not is_approved(session_key, pattern_key):
+        if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") or not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
     # Nothing to warn about
@@ -3682,6 +3728,9 @@ def check_all_command_guards(command: str, env_type: str,
                 # a session tier independently of the permanent tier.
                 "allow_session": not smart_denied_for_owner,
             }
+            approval_data["effect_binding"] = _exact_effect_binding(
+                "terminal_command", command, f"{env_type}:{has_host_access}"
+            )
             if smart_denied_for_owner:
                 approval_data["smart_denied"] = True
             decision = _await_gateway_decision(
@@ -3931,7 +3980,7 @@ def check_execute_code_guard(code: str, env_type: str,
     # Check session/permanent approval — same gate as check_all_command_guards.
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts the user (#39275).
-    if is_approved(session_key, pattern_key):
+    if not os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND") and is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
     # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
@@ -4027,6 +4076,9 @@ def check_execute_code_guard(code: str, env_type: str,
         "description": display_description,
         "allow_permanent": not smart_denied_for_owner,
         "allow_session": not smart_denied_for_owner,
+        "effect_binding": _exact_effect_binding(
+            "execute_code", code, f"{env_type}:{has_host_access}"
+        ),
     }
     if smart_denied_for_owner:
         approval_data["smart_denied"] = True
@@ -4098,6 +4150,8 @@ def request_elicitation_consent(
     *,
     timeout_seconds: int | None = None,
     surface: str = "mcp-elicitation",
+    server_name: str = "",
+    requested_schema: Optional[dict] = None,
 ) -> str:
     """Route an MCP elicitation request to whichever approval surface owns
     the active session and return a normalized result.
@@ -4136,6 +4190,18 @@ def request_elicitation_consent(
             "pattern_key": "mcp_elicitation",
             "pattern_keys": ["mcp_elicitation"],
         }
+        if os.environ.get("YOUTAB_AGENT_DURABLE_RUNSTORE_BACKEND"):
+            if not server_name or not isinstance(requested_schema, dict):
+                return "decline"
+            try:
+                approval_data["effect_binding"] = _exact_effect_binding(
+                    "mcp_elicitation",
+                    {"server_name": server_name, "message": message,
+                     "requested_schema": requested_schema},
+                    {"surface": surface, "session_key": session_key},
+                )
+            except (TypeError, ValueError):
+                return "decline"
         try:
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface=surface,

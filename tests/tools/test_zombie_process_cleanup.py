@@ -505,7 +505,7 @@ class TestDelegationCleanup:
 
         child.run_conversation.side_effect = run_conversation
 
-        # Hold `submit()` open until the child has actually registered its
+        # Hold the timed `result()` wait until the child has registered its
         # turn, so the timeout below is racing nothing.
         #
         # `_run_single_child` submits the child and then waits
@@ -519,20 +519,31 @@ class TestDelegationCleanup:
         # times out *mid-turn* keeps its relay session until its own turn
         # exits, and a child that never started has no turn to keep.
         #
-        # Gating submit orders the two without changing either. The timeout
-        # still fires, on a child provably inside its turn.
+        # Durable admission now opens a start gate *after* submit returns.
+        # Waiting inside submit would deadlock that admission path. Gate only
+        # the parent wait, after admission has released the child.
         from tools import daemon_pool
 
         real_executor = daemon_pool.DaemonThreadPoolExecutor
 
-        class _StartGatedExecutor(real_executor):
-            def submit(self, fn, /, *args, **kwargs):
-                future = super().submit(fn, *args, **kwargs)
+        class _StartGatedFuture:
+            def __init__(self, future):
+                self._future = future
+
+            def result(self, timeout=None):
                 if not child_started.wait(timeout=30):
                     raise AssertionError(
                         "child worker never began its turn within 30s"
                     )
-                return future
+                return self._future.result(timeout=timeout)
+
+            def __getattr__(self, name):
+                return getattr(self._future, name)
+
+        class _StartGatedExecutor(real_executor):
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                return _StartGatedFuture(future)
 
         monkeypatch.setattr(daemon_pool, "DaemonThreadPoolExecutor", _StartGatedExecutor)
 
@@ -545,7 +556,9 @@ class TestDelegationCleanup:
             )
 
             assert child_started.is_set()
-            assert result["status"] == "timeout"
+            assert result["status"] == "running"
+            assert result["detached"] is True
+            assert result["exit_reason"] == "wait_budget_detached"
             assert relay_runtime.SESSION_COORDINATOR.has_active_turn(
                 profile_key=str(profile_home),
                 session_id=child.session_id,

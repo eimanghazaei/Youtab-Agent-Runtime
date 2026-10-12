@@ -1,0 +1,85 @@
+# P5 client-observable terminal contract — raw pre-fault / pre-restart / post-restart (+ live SSE)
+# RC image: youtab-agent-runtime:p5-rc-77b2b2c4b
+# embedded source SHA: 77b2b2c4b740ba256596cb4e4c7514dfcd5b42fe
+# image Id (config digest): sha256:8eefb02c101fcef5654cded0e3c3c285376c191ac93d50c10f4ce0e041bfe343
+# distribution tarball sha256: c0d1ceee98c61ce3cee6540d422cc966233f5bf6ce8da72e20b150b775b189ac
+# secrets REDACTED; external client = curlimages/curl container over the TLS edge
+# Fault: PostgreSQL stopped AFTER admission + RUNNING persist, BEFORE terminal persist.
+
+############ HTTP capture (pre-fault happy path / pre-restart / post-restart) ############
+########## PRE-FAULT (happy path, PG up) ##########
+run_id=run_bf14ae6e92774e889f643d6c5ff4cf5d
+--- GET /v1/runs/{id} ---
+{"object": "youtab.run", "run_id": "run_bf14ae6e92774e889f643d6c5ff4cf5d", "status": "completed", "updated_at": 1790162644.088043, "created_at": 1790162605.225836, "session_id": "run_bf14ae6e92774e889f643d6c5ff4cf5d", "model": "youtab-agent-runtime", "last_event": "run.completed", "output": "CUSTOMER_TASK_OK_42", "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}}
+--- GET /result ---
+{"object": "youtab.run.result", "run_id": "run_bf14ae6e92774e889f643d6c5ff4cf5d", "status": "completed", "terminal": true, "output": "CUSTOMER_TASK_OK_42", "error": null}
+--- SSE replay (durable events) ---
+id: 1
+data: {"seq": 1, "kind": "accepted", "state": "QUEUED"}
+
+id: 2
+data: {"seq": 2, "kind": "admitted", "owner": "pid:123", "state": "QUEUED"}
+
+id: 3
+data: {"seq": 3, "kind": "status.running", "state": "RUNNING", "adapter": true}
+
+id: 4
+data: {"seq": 4, "kind": "progress", "step": "reasoning.available", "metric": {"tool": null}, "checkpoint_ref": null}
+
+id: 5
+data: {"seq": 5, "kind": "status.completed", "state": "SUCCEEDED", "adapter": true}
+
+data: {"event": "message.delta", "run_id": "run_bf14ae6e92774e889f643d6c5ff4cf5d", "timestamp": 1790162644.0198805, "delta": "CUSTOMER_TASK_OK_42"}
+
+data: {"event": "reasoning.available", "run_id": "run_bf14ae6e92774e889f643d6c5ff4cf5d", "timestamp": 1790162644.021965, "text": "CUSTOMER_TASK_OK_42"}
+
+data: {"event": "run.completed", "run_id": "run_bf14ae6e92774e889f643d6c5ff4cf5d", "timestamp": 1790162644.1125731, "output": "CUSTOMER_TASK_OK_42", "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}}
+
+: stream closed
+
+--- PG row ---
+run_bf14ae6e92774e889f643d6c5ff4cf5d|SUCCEEDED|CUSTOMER_TASK_OK_42
+
+########## PRE-RESTART (PG down, run finished in-memory) ##########
+run_id=run_fe46e419081f4953a496be60e3172719
+--- GET /v1/runs/{id} (pre-restart) ---
+{"object": "youtab.run", "run_id": "run_fe46e419081f4953a496be60e3172719", "status": "reconciliation_required", "updated_at": 1790162713.249895, "created_at": 1790162677.4348028, "session_id": "run_fe46e419081f4953a496be60e3172719", "model": "youtab-agent-runtime", "last_event": "run.reconciliation_required", "durable": false, "pending_status": "completed", "reconciliation_reason": "terminal_durable_commit_failed"}
+--- GET /result (pre-restart) ---
+{"object": "youtab.run.result", "run_id": "run_fe46e419081f4953a496be60e3172719", "status": "reconciliation_required", "terminal": false, "output": null, "error": null}
+--- PG durable row BEFORE restart-reconcile (should be RUNNING, terminal never written) ---
+run_fe46e419081f4953a496be60e3172719|RUNNING|NULL
+
+########## POST-RESTART (in-memory lost; served from durable store) ##########
+--- GET /v1/runs/{id} (post-restart) ---
+{"object": "youtab.run", "run_id": "run_fe46e419081f4953a496be60e3172719", "status": "unknown", "created_at": 1790162677.4118564, "updated_at": 1790162770.6025462, "session_id": "run_fe46e419081f4953a496be60e3172719", "output": null, "error": null, "recovered_from_store": true}
+--- GET /result (post-restart) ---
+{"object": "youtab.run.result", "run_id": "run_fe46e419081f4953a496be60e3172719", "status": "unknown", "terminal": false, "output": null, "error": null}
+--- PG durable row AFTER startup reconcile ---
+run_fe46e419081f4953a496be60e3172719|UNKNOWN|NULL
+--- gw startup reconcile log ---
+WARNING gateway.run: No env user allowlists configured. Messaging platforms default to pairing/allowlist policies and will deny unknown senders unless you configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id) or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true plus dm_policy/group_policy: open on the platform.
+WARNING gateway.run: No env user allowlists configured. Messaging platforms default to pairing/allowlist policies and will deny unknown senders unless you configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id) or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true plus dm_policy/group_policy: open on the platform.
+WARNING gateway.platforms.api_server: startup reconcile: 1 abandoned run(s) moved to UNKNOWN: run_fe46e419081f4953a496be60e3172719
+
+############ LIVE SSE through the fault (faulted run #3) ############
+# consumer connected BEFORE the fault, streamed across it (curl -N).
+data: {"event": "message.delta", "run_id": "run_a02e998136bd4bf68d00c7eaace4c10f", "timestamp": 1790162867.347196, "delta": "CUSTOMER_TASK_OK_42"}
+
+data: {"event": "reasoning.available", "run_id": "run_a02e998136bd4bf68d00c7eaace4c10f", "timestamp": 1790162867.3493571, "text": "CUSTOMER_TASK_OK_42"}
+
+data: {"event": "run.reconciliation_required", "run_id": "run_a02e998136bd4bf68d00c7eaace4c10f", "timestamp": 1790162890.9488785, "reason": "terminal_durable_commit_failed"}
+
+: stream closed
+
+# contract: run.reconciliation_required emitted (reason terminal_durable_commit_failed);
+#           NO run.completed terminal SSE; message.delta is live token stream, not a result.
+
+############ VERDICT ############
+Defect 1 (uncommitted output exposed): FIXED — pre-restart GET/result show
+  status=reconciliation_required, output=null (CUSTOMER_TASK_OK_42 withheld).
+Defect 2 (regress to running after restart): FIXED — post-restart GET/result
+  show status=unknown (durable UNKNOWN via startup reconcile), output=null,
+  recovered_from_store=true; NOT running. Durable row: UNKNOWN.
+Terminal SSE emitted only after durable commit: FIXED — happy path emits
+  run.completed after status.completed(SUCCEEDED) is durably written; fault
+  path emits run.reconciliation_required and no terminal completion.

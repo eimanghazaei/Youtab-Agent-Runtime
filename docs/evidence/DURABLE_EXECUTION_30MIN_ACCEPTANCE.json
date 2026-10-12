@@ -1,0 +1,36 @@
+{
+  "start_wall": 1790111673.9909465,
+  "pid": 58456,
+  "duration_target": 1800.0,
+  "events": [
+    {
+      "phase": "accepted",
+      "status_code": 202,
+      "run_id": "run_411bda20cbc142c8abaeb20f68d733e7",
+      "within_10s": true,
+      "t": 0.6
+    },
+    {
+      "phase": "checkpoint_600",
+      "elapsed": 601.1,
+      "status": "running",
+      "alive": true,
+      "retrievable": true,
+      "result_status": "running",
+      "progress_seq": 32,
+      "durable_events": 32,
+      "t": 601.3
+    },
+    {
+      "phase": "final",
+      "status": "SUCCEEDED",
+      "completions": 1,
+      "exactly_once": true,
+      "result_ref": "DONE-1790113477",
+      "total_durable_events": 93,
+      "result_terminal": true,
+      "verdict": "PASS",
+      "t": 1823.1
+    }
+  ]
+}

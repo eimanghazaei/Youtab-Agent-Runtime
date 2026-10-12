@@ -2282,6 +2282,12 @@ def resolve_pre_tool_block(
                 tool_name,
                 details.message or "",
                 rule_key=details.rule_key or tool_name,
+                tool_args=args,
+                effect_context={
+                    "task_id": task_id, "session_id": session_id,
+                    "tool_call_id": tool_call_id, "turn_id": turn_id,
+                    "api_request_id": api_request_id,
+                },
             )
         except Exception:
             # Fail-closed: if the gate itself errors, block rather than

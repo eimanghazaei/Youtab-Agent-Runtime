@@ -1960,6 +1960,111 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         )
 
 
+def _admit_durable_child(child_task_id, child):
+    """Record the durable run at ADMISSION (before the child's work is awaited),
+    owned by this parent process, so a child is tracked even if the parent dies
+    before the wait budget elapses. Returns the RunStore or None (best-effort).
+
+    Ownership boundary: the sync child runs in a thread of THIS process. On a
+    parent-PROCESS death the thread dies with it; reconcile_dead_owner then moves
+    the run to UNKNOWN (identity/status recoverable, execution NOT resumable for an
+    in-process child). Parent-WAIT expiry (parent alive) is different: the thread
+    continues and the child is detached."""
+    try:
+        import os as _os
+
+        from youtab_runtime.durable_run_store import RunIdentity, create_run_store
+
+        store = create_run_store("sqlite")
+        if store.get_run(child_task_id) is None:
+            # Atomic admission: create + fenced ownership + RUNNING in one txn, so
+            # there is no created-but-ownerless window a parent crash could leave.
+            store.admit(RunIdentity(
+                task_id=child_task_id, run_id=child_task_id, tenant_id="local",
+                organization_id="local", workspace_id="local", principal_id="local",
+                agent_id=str(getattr(child, "model", None) or "agent"), operation="delegate",
+            ), owner=f"pid:{_os.getpid()}")
+        return store
+    except Exception:
+        logger.debug("durable admission record failed for %s", child_task_id, exc_info=True)
+        return None
+
+
+def _record_child_terminal(store, child_task_id, *, ok, result=None, error=None):
+    """Record a delegated child's terminal state under its admission task_id."""
+    if store is None:
+        return
+    try:
+        from youtab_runtime.durable_run_store import RunState
+        if ok:
+            summ = result.get("final_response") if isinstance(result, dict) else None
+            store.set_state(child_task_id, RunState.SUCCEEDED, strict=False,
+                            result_ref=(str(summ) if summ else None), kind="delegate.completed")
+        else:
+            store.set_state(child_task_id, RunState.FAILED, strict=False,
+                            error_ref=f"error://{error}" if error else None, kind="delegate.failed")
+    except Exception:
+        logger.debug("durable terminal record failed for %s", child_task_id, exc_info=True)
+
+
+def _detach_timed_out_child(*, child, child_future, child_task_id, task_index,
+                            api_calls, duration, child_timeout,
+                            diagnostic_path=None) -> Dict[str, Any]:
+    """Parent wait budget elapsed on a PROGRESSING child: detach instead of kill.
+
+    The child keeps running (not interrupted); its eventual result is captured
+    durably in the canonical RunStore keyed by the child task id so the parent (or
+    a later reconnect) can retrieve it. Returns a typed non-terminal result —
+    RUNNING + task_id + recovery action — never a bare summary=None.
+    """
+    recovery = "durable capture unavailable; child continues in-process"
+    try:
+        from youtab_runtime.durable_run_store import (
+            RunIdentity, RunState, create_run_store,
+        )
+
+        store = create_run_store("sqlite")
+        if store.get_run(child_task_id) is None:
+            store.create_run(RunIdentity(
+                task_id=child_task_id, run_id=child_task_id, tenant_id="local",
+                organization_id="local", workspace_id="local", principal_id="local",
+                agent_id=str(getattr(child, "model", None) or "agent"), operation="delegate",
+            ))
+        store.set_state(child_task_id, RunState.RUNNING, strict=False, kind="delegate.detached")
+
+        def _persist_terminal(fut) -> None:
+            try:
+                r = fut.result()
+                summ = r.get("final_response") if isinstance(r, dict) else None
+                store.set_state(child_task_id, RunState.SUCCEEDED, strict=False,
+                                result_ref=(str(summ) if summ else None),
+                                kind="delegate.completed")
+            except BaseException as exc:  # noqa: BLE001
+                store.set_state(child_task_id, RunState.FAILED, strict=False,
+                                error_ref=f"error://{type(exc).__name__}",
+                                kind="delegate.failed")
+
+        child_future.add_done_callback(_persist_terminal)
+        recovery = f"reconnect via RunStore.get_run({child_task_id!r}) / wait_for_terminal"
+    except Exception:
+        logger.debug("durable detach capture failed for %s", child_task_id, exc_info=True)
+    return {
+        "task_index": task_index,
+        "status": "running",
+        "task_id": child_task_id,
+        "detached": True,
+        "summary": None,
+        "note": "parent wait budget elapsed; child continues under its lease and was NOT killed",
+        "recovery_action": recovery,
+        "api_calls": api_calls,
+        "duration_seconds": duration,
+        "wait_budget_seconds": child_timeout,
+        "exit_reason": "wait_budget_detached",
+        "diagnostic_path": diagnostic_path,
+        "_child_role": getattr(child, "_delegate_role", None),
+    }
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -2184,14 +2289,76 @@ def _run_single_child(
                 )
 
         _child_context = contextvars.copy_context()
-        _child_future = _timeout_executor.submit(
-            _child_context.run,
-            _run_with_thread_capture,
-        )
+        # Start barrier: a submitted thread can begin before submit() returns, so
+        # the child must NOT run any effectful work until durable admission has
+        # COMMITTED. The child blocks on this gate; the parent commits the durable
+        # run (validate authority -> create run/task_id -> fenced ownership ->
+        # deadline/admitted state) and only THEN releases the gate. On admission
+        # failure the gate opens with permit=denied and the child aborts before any
+        # side effect — never an untracked effectful child, never an unbacked
+        # RUNNING response. This closes the submit->admission race.
+        _start_gate = threading.Event()
+        _admission = {"ok": False}
+        _ADMISSION_WAIT_S = 30.0
+
+        def _gated_worker():
+            if not _start_gate.wait(timeout=_ADMISSION_WAIT_S):
+                raise RuntimeError("durable admission did not complete; child not started")
+            if not _admission["ok"]:
+                raise RuntimeError(
+                    "durable admission failed; child execution aborted before any effect"
+                )
+            return _run_with_thread_capture()
+
+        _child_future = _timeout_executor.submit(_child_context.run, _gated_worker)
+        # Durable admission in the PARENT thread, BEFORE the child is permitted to
+        # execute. On failure, release no execution permit and hold no side effect.
+        _durable_store = _admit_durable_child(child_task_id, child)
+        _admission["ok"] = _durable_store is not None
+        _start_gate.set()
         try:
             result = _child_future.result(timeout=child_timeout)
+            _record_child_terminal(_durable_store, child_task_id, ok=True, result=result)
         except Exception as _timeout_exc:
-            # Signal the child to stop so its thread can exit cleanly.
+            is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
+            duration = round(time.monotonic() - child_start, 2)
+            # The configured child_timeout is a PARENT WAIT budget, not a task
+            # kill. A FuturesTimeoutError means the admitted child is STILL
+            # RUNNING past the budget — it is alive, so it is DETACHED
+            # UNCONDITIONALLY (api_calls is NOT a termination signal: a legitimate
+            # child may think, wait, or run a long tool before its first API call,
+            # and one past API call does not prove current progress). The child is
+            # never interrupted here; its result is captured durably for reconnect.
+            # Stall/liveness is a SEPARATE mechanism (RunStore.detect_stalled) that
+            # yields a visible durable STALLED state — never a parent-wait kill.
+            if is_timeout:
+                _api_calls = 0
+                try:
+                    _api_calls = int(child.get_activity_summary().get("api_call_count", 0) or 0)
+                except Exception:
+                    pass
+                # Investigation artifact only (does NOT stop the child): a child
+                # that has not yet made an API call gets a diagnostic dump so a
+                # human can inspect what it is doing while it continues.
+                _diag: Optional[str] = None
+                if _api_calls == 0:
+                    try:
+                        _diag = _dump_subagent_timeout_diagnostic(
+                            child=child, task_index=task_index,
+                            timeout_seconds=float(child_timeout or 0.0),
+                            duration_seconds=float(duration),
+                            worker_thread=_worker_thread_holder.get("t"), goal=goal,
+                        )
+                    except Exception:
+                        _diag = None
+                return _detach_timed_out_child(
+                    child=child, child_future=_child_future, child_task_id=child_task_id,
+                    task_index=task_index, api_calls=_api_calls, duration=duration,
+                    child_timeout=child_timeout, diagnostic_path=_diag,
+                )
+            # Non-timeout: the child's execution RAISED — a genuine child error or
+            # failed admission/startup. Signal it to stop cleanly and report FAILED
+            # (a failed admission is NEVER turned into a detached task).
             try:
                 if hasattr(child, "interrupt"):
                     child.interrupt()
@@ -2199,9 +2366,9 @@ def _run_single_child(
                     child._interrupt_requested = True
             except Exception:
                 pass
+            _record_child_terminal(_durable_store, child_task_id, ok=False,
+                                   error=type(_timeout_exc).__name__)
 
-            is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
-            duration = round(time.monotonic() - child_start, 2)
             logger.warning(
                 "Subagent %d %s after %.1fs",
                 task_index,

@@ -1,0 +1,5 @@
+model:
+  default: mock-model
+  provider: custom
+  base_url: http://r4-mock:8080/v1
+  api_key: none

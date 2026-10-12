@@ -269,3 +269,6 @@ consent-record-*
 wakeword-human/
 wakeword-build/
 recordings/
+
+# durable-exec edge TLS material (admin-supplied, never committed)
+deploy/edge/tls/*.pem

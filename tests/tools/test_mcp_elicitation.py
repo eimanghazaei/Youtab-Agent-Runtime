@@ -69,6 +69,14 @@ class TestSchemaSummary:
 
 
 class TestElicitationHandlerFormMode:
+    def test_passes_raw_schema_and_server_identity_to_consent(self):
+        schema = {"properties": {"approved": {"type": "boolean"}}}
+        handler = ElicitationHandler("pay", {"timeout": 5})
+        with patch("tools.approval.request_elicitation_consent", return_value="decline") as consent:
+            asyncio.run(handler(context=None, params=_form_params("authorize", schema)))
+        assert consent.call_args.kwargs["server_name"] == "pay"
+        assert consent.call_args.kwargs["requested_schema"] == schema
+
     def test_user_accepts_once_returns_accept(self):
         handler = ElicitationHandler("pay", {"timeout": 5})
         params = _form_params(
