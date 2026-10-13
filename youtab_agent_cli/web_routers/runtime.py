@@ -2242,6 +2242,9 @@ async def runtime_create_run(
                 }
             ))
             or (mode == "manual" and fallback != (requested != engine_identity.public_label))
+            or (fallback and engine != "amour.v03")
+            or (mode == "manual" and fallback and requested != "Eco v.01")
+            or (mode == "auto" and engine != ("amour.v03" if fallback else "eco.v01"))
         ):
             raise HTTPException(status_code=422, detail={"error": "invalid_engine_selection"})
 
@@ -2469,6 +2472,17 @@ async def runtime_create_run(
             # Persist binding/grant/mode atomically with the row (see hook).
             on_created=_persist_run_metadata,
         )
+        if not created:
+            existing_selection = _engine_selection_from_events(kb.list_events(conn, run_id))
+            expected_selection = (
+                {"profile_id": engine, "public_label": engine_identity.public_label,
+                 **(selection or {})}
+                if engine_identity is not None else None
+            )
+            if existing_selection != expected_selection:
+                raise HTTPException(
+                    status_code=412, detail={"error": "engine_selection_mismatch"}
+                )
         # WAVE-30H #8 + Batch2 #F4: on an idempotent hit the run already exists with
         # its persisted binding; a caller pinning an expected digest must have it match
         # the EXISTING run's binding — else a replayed Idempotency-Key could attach the

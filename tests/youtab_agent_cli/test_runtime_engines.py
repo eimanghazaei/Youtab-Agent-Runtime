@@ -135,7 +135,7 @@ def _sign(method, path, tenant, user, body: bytes, nonce=None, correlation="cid-
 
 
 def _create_run(client, *, task="add 2 and 2", engine=None, selection=None,
-                tenant="tenantA", user="userA"):
+                tenant="tenantA", user="userA", idempotency_key=None):
     payload = {"agent": "default", "task": task}
     if engine is not None:
         payload["engine"] = engine
@@ -146,6 +146,8 @@ def _create_run(client, *, task="add 2 and 2", engine=None, selection=None,
     headers = _identity_headers(tenant, user)
     headers.update(_sign("POST", path, tenant, user, body))
     headers["Content-Type"] = "application/json"
+    if idempotency_key is not None:
+        headers["Idempotency-Key"] = idempotency_key
     return client.post(path, content=body, headers=headers)
 
 
@@ -372,6 +374,41 @@ def test_signed_fallback_decision_survives_reopen_and_rejects_mismatch(client):
     malformed = _create_run(client, engine="amour.v03",
                             selection={**selection, "requested_engine": ["Eco v.01"]})
     assert malformed.status_code == 422
+    wrong_route = _create_run(client, engine="amour.v03",
+                              selection={**selection, "requested_engine": "Alpha v0.6"})
+    assert wrong_route.status_code == 422
+    wrong_primary = _create_run(client, engine="amour.v03", selection={
+        **selection, "selection_mode": "auto", "requested_engine": None,
+        "fallback_used": False, "routing_reason": "eco_primary",
+    })
+    assert wrong_primary.status_code == 422
+
+
+def test_signed_engine_decision_idempotent_replay_must_match(client):
+    first = {
+        "engine_id": "amour.v03", "selected_engine": "Amour v0.3",
+        "selection_mode": "manual", "requested_engine": "Amour v0.3",
+        "routing_reason": "user_selection", "fallback_used": False,
+        "available": True,
+    }
+    key = "same-engine-decision"
+    created = _create_run(client, engine="amour.v03", selection=first,
+                          idempotency_key=key)
+    assert created.status_code == 200, created.text
+    repeated = _create_run(client, engine="amour.v03", selection=first,
+                           idempotency_key=key)
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["run_id"] == created.json()["run_id"]
+
+    different = _create_run(client, engine="amour.v03", selection={
+        **first, "requested_engine": "Eco v.01",
+        "routing_reason": "availability_fallback", "fallback_used": True,
+    }, idempotency_key=key)
+    assert different.status_code == 412
+    assert different.json()["detail"]["error"] == "engine_selection_mismatch"
+    detail = client.get(f"/api/runtime/v1/runs/{created.json()['run_id']}",
+                        headers=_identity_headers())
+    assert detail.json()["engine_selection"]["routing_reason"] == "user_selection"
 
 
 def test_create_run_eco_without_model_tag_fails_closed(client, monkeypatch):
