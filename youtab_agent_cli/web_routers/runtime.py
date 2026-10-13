@@ -1433,6 +1433,8 @@ def _engine_availability(profile_id: str) -> str:
     exact endpoint a run would dial — no longer the loopback-only default that
     made a remote-but-authorised engine read as permanently unavailable.
     """
+    if profile_id == agent_identity.ECO_PROFILE_ID and not agent_identity.eco_model_configured():
+        return "unavailable"
     conn = engine_connection.resolve_connection(profile_id)
     if conn is None:
         return "unavailable"

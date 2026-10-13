@@ -189,11 +189,22 @@ def test_engines_availability_unavailable_when_unconfigured(client):
     assert all(e["availability"] == "unavailable" for e in engines)
 
 
+def test_reachable_eco_without_model_is_unavailable(client, monkeypatch):
+    monkeypatch.delenv("YOUTAB_ECO_MODEL", raising=False)
+    monkeypatch.setattr(runtime, "_connection_reachable", lambda conn: True)
+    runtime._engine_avail_cache.clear()
+
+    engines = client.get("/api/runtime/v1/engines", headers=_identity_headers()).json()["engines"]
+    eco = next(e for e in engines if e["profile_id"] == "eco.v01")
+    assert eco["availability"] == "unavailable"
+
+
 def test_engines_availability_online_only_with_real_check(client, monkeypatch):
     # An external engine goes online ONLY when a credential is present for its
     # provider; a local engine ONLY when its endpoint is reachable.
     monkeypatch.setattr(runtime, "_external_credential_present", lambda provider: provider == "deepseek")
     monkeypatch.setattr(runtime, "_connection_reachable", lambda conn: conn.provider == "ollama")
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", "isolated-test-model")
     runtime._engine_avail_cache.clear()
 
     engines = {e["profile_id"]: e for e in
@@ -212,7 +223,7 @@ def test_health_probes_the_canonical_remote_endpoint_not_only_loopback(client, m
     the availability check (the same endpoint execution would dial), instead of
     being dropped as non-loopback and read as permanently unavailable."""
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://100.108.46.86:11434")
-    monkeypatch.delenv("YOUTAB_ECO_MODEL", raising=False)
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", "isolated-test-model")
     probed: list[str] = []
 
     def _fake_reachable(url, *, timeout=1.0):
@@ -253,6 +264,7 @@ def test_availability_recovers_and_restores_eco(client, monkeypatch):
     """ECO down -> unavailable; ECO recovers + cache expiry -> online again
     (so Auto's ECO-first routing is restored without a restart)."""
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://100.108.46.86:11434")
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", "isolated-test-model")
     state = {"up": False}
     monkeypatch.setattr(
         runtime,
