@@ -87,6 +87,7 @@ def test_kanban_worker_prompt_limits_greeting_to_requested_scope():
     ordinary_chat = _make_agent(valid_tool_names=["read_file"])
 
     assert "A greeting needs only a short greeting" in _stable_prompt(worker)
+    assert "authorized unblock or review comments" in _stable_prompt(worker)
     assert "A greeting needs only a short greeting" not in _stable_prompt(ordinary_chat)
 
 
