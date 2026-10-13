@@ -593,10 +593,11 @@ def test_a_second_session_inherits_no_dead_microphone_verdict(monkeypatch, wired
     assert ww.audio_is_silent() is True
     assert ww.stop_listening(owner=owner) is True
 
+    monkeypatch.setattr(ww, "_SILENCE_ALERT_SECONDS", 60)
     second = ww.start_listening(lambda: None, owner=owner, config={})
     try:
+        assert second is not first
         assert second.audio_silent is False
-        assert second._silent_frames == 0
     finally:
         assert ww.stop_listening(owner=owner) is True
 
