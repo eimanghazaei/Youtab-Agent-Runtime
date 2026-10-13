@@ -623,6 +623,8 @@ class HarnessProcess:
                     self.kill(force=True)
             else:
                 self.kill(force=True)
+            if not self._wait_exit(timeout=self.ready_timeout):
+                raise HarnessError("owned child did not exit before restart")
         self._join_reader()
         # Clear any leftover graceful-stop request so a relaunched idle child is
         # not immediately stopped by a stale marker.

@@ -134,15 +134,20 @@ def _sign(method, path, tenant, user, body: bytes, nonce=None, correlation="cid-
     }
 
 
-def _create_run(client, *, task="add 2 and 2", engine=None, tenant="tenantA", user="userA"):
+def _create_run(client, *, task="add 2 and 2", engine=None, selection=None,
+                tenant="tenantA", user="userA", idempotency_key=None):
     payload = {"agent": "default", "task": task}
     if engine is not None:
         payload["engine"] = engine
+    if selection is not None:
+        payload["engine_selection"] = selection
     body = json.dumps(payload).encode()
     path = "/api/runtime/v1/runs"
     headers = _identity_headers(tenant, user)
     headers.update(_sign("POST", path, tenant, user, body))
     headers["Content-Type"] = "application/json"
+    if idempotency_key is not None:
+        headers["Idempotency-Key"] = idempotency_key
     return client.post(path, content=body, headers=headers)
 
 
@@ -189,11 +194,22 @@ def test_engines_availability_unavailable_when_unconfigured(client):
     assert all(e["availability"] == "unavailable" for e in engines)
 
 
+def test_reachable_eco_without_model_is_unavailable(client, monkeypatch):
+    monkeypatch.delenv("YOUTAB_ECO_MODEL", raising=False)
+    monkeypatch.setattr(runtime, "_connection_reachable", lambda conn: True)
+    runtime._engine_avail_cache.clear()
+
+    engines = client.get("/api/runtime/v1/engines", headers=_identity_headers()).json()["engines"]
+    eco = next(e for e in engines if e["profile_id"] == "eco.v01")
+    assert eco["availability"] == "unavailable"
+
+
 def test_engines_availability_online_only_with_real_check(client, monkeypatch):
     # An external engine goes online ONLY when a credential is present for its
     # provider; a local engine ONLY when its endpoint is reachable.
     monkeypatch.setattr(runtime, "_external_credential_present", lambda provider: provider == "deepseek")
     monkeypatch.setattr(runtime, "_connection_reachable", lambda conn: conn.provider == "ollama")
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", "isolated-test-model")
     runtime._engine_avail_cache.clear()
 
     engines = {e["profile_id"]: e for e in
@@ -212,7 +228,7 @@ def test_health_probes_the_canonical_remote_endpoint_not_only_loopback(client, m
     the availability check (the same endpoint execution would dial), instead of
     being dropped as non-loopback and read as permanently unavailable."""
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://100.108.46.86:11434")
-    monkeypatch.delenv("YOUTAB_ECO_MODEL", raising=False)
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", "isolated-test-model")
     probed: list[str] = []
 
     def _fake_reachable(url, *, timeout=1.0):
@@ -253,6 +269,7 @@ def test_availability_recovers_and_restores_eco(client, monkeypatch):
     """ECO down -> unavailable; ECO recovers + cache expiry -> online again
     (so Auto's ECO-first routing is restored without a restart)."""
     monkeypatch.setenv("OLLAMA_BASE_URL", "http://100.108.46.86:11434")
+    monkeypatch.setenv("YOUTAB_ECO_MODEL", "isolated-test-model")
     state = {"up": False}
     monkeypatch.setattr(
         runtime,
@@ -327,6 +344,71 @@ def test_create_run_with_known_engine_records_selection_and_overrides(client, mo
     # detail must not leak the resolved provider/model behind the selection
     assert _eco_tag not in json.dumps(detail["engine_selection"])
     assert "ollama" not in json.dumps(detail["engine_selection"])
+
+
+def test_signed_fallback_decision_survives_reopen_and_rejects_mismatch(client):
+    selection = {
+        "engine_id": "amour.v03",
+        "selected_engine": "Amour v0.3",
+        "selection_mode": "manual",
+        "requested_engine": "Eco v.01",
+        "routing_reason": "availability_fallback",
+        "fallback_used": True,
+        "available": True,
+    }
+    created = _create_run(client, engine="amour.v03", selection=selection)
+    assert created.status_code == 200, created.text
+    run_id = created.json()["run_id"]
+    detail = client.get(f"/api/runtime/v1/runs/{run_id}", headers=_identity_headers())
+    assert detail.status_code == 200, detail.text
+    assert all(detail.json()["engine_selection"][key] == value
+               for key, value in selection.items())
+
+    mismatched = _create_run(client, engine="amour.v03",
+                             selection={**selection, "engine_id": "eco.v01"})
+    assert mismatched.status_code == 422
+    assert mismatched.json()["detail"]["error"] == "invalid_engine_selection"
+    extra = _create_run(client, engine="amour.v03",
+                        selection={**selection, "provider": "should-never-persist"})
+    assert extra.status_code == 422
+    malformed = _create_run(client, engine="amour.v03",
+                            selection={**selection, "requested_engine": ["Eco v.01"]})
+    assert malformed.status_code == 422
+    wrong_route = _create_run(client, engine="amour.v03",
+                              selection={**selection, "requested_engine": "Alpha v0.6"})
+    assert wrong_route.status_code == 422
+    wrong_primary = _create_run(client, engine="amour.v03", selection={
+        **selection, "selection_mode": "auto", "requested_engine": None,
+        "fallback_used": False, "routing_reason": "eco_primary",
+    })
+    assert wrong_primary.status_code == 422
+
+
+def test_signed_engine_decision_idempotent_replay_must_match(client):
+    first = {
+        "engine_id": "amour.v03", "selected_engine": "Amour v0.3",
+        "selection_mode": "manual", "requested_engine": "Amour v0.3",
+        "routing_reason": "user_selection", "fallback_used": False,
+        "available": True,
+    }
+    key = "same-engine-decision"
+    created = _create_run(client, engine="amour.v03", selection=first,
+                          idempotency_key=key)
+    assert created.status_code == 200, created.text
+    repeated = _create_run(client, engine="amour.v03", selection=first,
+                           idempotency_key=key)
+    assert repeated.status_code == 200, repeated.text
+    assert repeated.json()["run_id"] == created.json()["run_id"]
+
+    different = _create_run(client, engine="amour.v03", selection={
+        **first, "requested_engine": "Eco v.01",
+        "routing_reason": "availability_fallback", "fallback_used": True,
+    }, idempotency_key=key)
+    assert different.status_code == 412
+    assert different.json()["detail"]["error"] == "engine_selection_mismatch"
+    detail = client.get(f"/api/runtime/v1/runs/{created.json()['run_id']}",
+                        headers=_identity_headers())
+    assert detail.json()["engine_selection"]["routing_reason"] == "user_selection"
 
 
 def test_create_run_eco_without_model_tag_fails_closed(client, monkeypatch):

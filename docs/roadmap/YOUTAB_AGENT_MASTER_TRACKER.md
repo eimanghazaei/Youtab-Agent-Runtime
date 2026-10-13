@@ -728,13 +728,15 @@ Auto-merge Barrier is red-and-expected while Draft; the Engine hit a SQLite-lock
 failure and passed on rerun; **real ECO execution is NOT LIVE_VERIFIED.**
 
 ## Routing decision (BINDING, final)
-Auto = ECO first; Amour = automatic fallback ONLY when ECO is genuinely
-unavailable; both unavailable → honest failure. Explicit ECO unavailable → honest
-failure (never Amour). Explicit Amour → Amour. No strength/length/quality/
+Auto = ECO first; Amour = automatic fallback when ECO is genuinely
+unavailable; both unavailable → honest failure. Per the Owner's 2026-10-13
+decision, explicit ECO also falls back to Amour only when ECO is unavailable.
+Explicit Amour → Amour. No strength/length/quality/
 preference reroute; no Alpha (or any 3rd provider) in the automatic chain.
 Implemented gateway `bcefc4bf` (`engine_selection.resolve_engine_selection`,
 `agent_auto_ladder` by role), engine `18a623c41` (`engine_connection`). CI_GREEN.
-LIVE_VERIFIED = pending the isolated VPS ECO run.
+LIVE_VERIFIED = pending the isolated VPS ECO run. The 2026-10-13 change is in
+coordinated Draft gateway/runtime/frontend PRs; it is not deployed.
 
 ## Roadmap items (dependency order)
 | # | Item | Status | Repo/PR | Evidence | Blocker | Next action |

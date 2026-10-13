@@ -288,7 +288,8 @@ def _uv_self_update_is_fresh(now: float | None = None) -> bool:
 
         stamp = get_youtab_home() / "cache" / ".uv_self_update_stamp"
         age = (now if now is not None else time.time()) - stamp.stat().st_mtime
-        return 0 <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
+        # Windows file timestamps can briefly lead the wall clock after a touch.
+        return -60 <= age < UV_SELF_UPDATE_INTERVAL_SECONDS
     except Exception:
         return False
 

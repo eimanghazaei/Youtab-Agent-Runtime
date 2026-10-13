@@ -82,6 +82,15 @@ def _prompt_parts(agent):
         return build_system_prompt_parts(agent)
 
 
+def test_kanban_worker_prompt_limits_greeting_to_requested_scope():
+    worker = _make_agent(valid_tool_names=["kanban_show"], _kanban_worker_guidance=None)
+    ordinary_chat = _make_agent(valid_tool_names=["read_file"])
+
+    assert "A greeting needs only a short greeting" in _stable_prompt(worker)
+    assert "authorized unblock or review comments" in _stable_prompt(worker)
+    assert "A greeting needs only a short greeting" not in _stable_prompt(ordinary_chat)
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""
@@ -145,7 +154,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
 
     expected_profile = (
         "Active Youtab profile: default. Other profiles (if any) live "
-        "under /youtab/profiles/<name>/. Each profile has its own skills/, "
+        f"under {Path('/youtab')}/profiles/<name>/. Each profile has its own skills/, "
         "plugins/, cron/, and memories/ that affect a different session than "
         "this one. Do not modify another profile's skills/plugins/cron/memories "
         "unless the user explicitly directs you to."
