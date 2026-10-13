@@ -728,6 +728,39 @@ def _mode_from_events(events: "List[kb.Event]") -> str:
     return "model"
 
 
+def _validate_engine_decision(selection: Dict[str, Any], engine: str) -> None:
+    identity = agent_identity.identity_for_profile(engine)
+    if set(selection) != _ENGINE_DECISION_FIELDS or identity is None:
+        raise HTTPException(status_code=422, detail={"error": "invalid_engine_selection"})
+    mode = selection["selection_mode"]
+    requested = selection["requested_engine"]
+    fallback = selection["fallback_used"]
+    reason = selection["routing_reason"]
+    expected_reason = (
+        "availability_fallback" if fallback else
+        "user_selection" if mode == "manual" else "eco_primary"
+    )
+    if (
+        selection["engine_id"] != engine
+        or selection["selected_engine"] != identity.public_label
+        or mode not in ("manual", "auto")
+        or type(fallback) is not bool
+        or selection["available"] is not True
+        or reason != expected_reason
+        or (mode == "auto" and requested is not None)
+        or (mode == "manual" and (
+            not isinstance(requested, str) or requested not in {
+                item.public_label for item in agent_identity.public_agents()
+            }
+        ))
+        or (mode == "manual" and fallback != (requested != identity.public_label))
+        or (fallback and engine != "amour.v03")
+        or (mode == "manual" and fallback and requested != "Eco v.01")
+        or (mode == "auto" and engine != ("amour.v03" if fallback else "eco.v01"))
+    ):
+        raise HTTPException(status_code=422, detail={"error": "invalid_engine_selection"})
+
+
 def _engine_selection_from_events(events: "List[kb.Event]") -> Optional[Dict[str, Any]]:
     """The branded engine selection recorded at create, or ``None``.
 
@@ -738,13 +771,28 @@ def _engine_selection_from_events(events: "List[kb.Event]") -> Optional[Dict[str
         if e.kind == _ENGINE_EVENT and isinstance(e.payload, dict):
             pid = e.payload.get("profile_id")
             if pid:
+                if not isinstance(pid, str):
+                    raise HTTPException(
+                        status_code=422, detail={"error": "invalid_engine_selection"}
+                    )
                 selected = {"profile_id": pid, "public_label": e.payload.get("public_label")}
                 if _ENGINE_DECISION_FIELDS & e.payload.keys() and not _ENGINE_DECISION_FIELDS <= e.payload.keys():
                     raise HTTPException(
                         status_code=422, detail={"error": "invalid_engine_selection"}
                     )
                 if _ENGINE_DECISION_FIELDS <= e.payload.keys():
-                    selected.update({key: e.payload[key] for key in _ENGINE_DECISION_FIELDS})
+                    if set(e.payload) != _ENGINE_DECISION_FIELDS | {"profile_id", "public_label"}:
+                        raise HTTPException(
+                            status_code=422, detail={"error": "invalid_engine_selection"}
+                        )
+                    decision = {key: e.payload[key] for key in _ENGINE_DECISION_FIELDS}
+                    _validate_engine_decision(decision, pid)
+                    identity = agent_identity.identity_for_profile(pid)
+                    if selected["public_label"] != identity.public_label:
+                        raise HTTPException(
+                            status_code=422, detail={"error": "invalid_engine_selection"}
+                        )
+                    selected.update(decision)
                 return selected
     return None
 
@@ -2221,36 +2269,9 @@ async def runtime_create_run(
     # fields against the selected engine before recording it with the task.
     selection = payload.get("engine_selection")
     if "engine_selection" in payload:
-        if (not isinstance(selection, dict) or set(selection) != _ENGINE_DECISION_FIELDS
-                or engine_identity is None):
+        if not isinstance(selection, dict) or engine_identity is None:
             raise HTTPException(status_code=422, detail={"error": "invalid_engine_selection"})
-        mode = selection["selection_mode"]
-        requested = selection["requested_engine"]
-        fallback = selection["fallback_used"]
-        reason = selection["routing_reason"]
-        expected_reason = (
-            "availability_fallback" if fallback else
-            "user_selection" if mode == "manual" else "eco_primary"
-        )
-        if (
-            selection["engine_id"] != engine
-            or selection["selected_engine"] != engine_identity.public_label
-            or mode not in ("manual", "auto")
-            or type(fallback) is not bool
-            or selection["available"] is not True
-            or reason != expected_reason
-            or (mode == "auto" and requested is not None)
-            or (mode == "manual" and (
-                not isinstance(requested, str) or requested not in {
-                    identity.public_label for identity in agent_identity.public_agents()
-                }
-            ))
-            or (mode == "manual" and fallback != (requested != engine_identity.public_label))
-            or (fallback and engine != "amour.v03")
-            or (mode == "manual" and fallback and requested != "Eco v.01")
-            or (mode == "auto" and engine != ("amour.v03" if fallback else "eco.v01"))
-        ):
-            raise HTTPException(status_code=422, detail={"error": "invalid_engine_selection"})
+        _validate_engine_decision(selection, engine)
 
     title = str(payload.get("title") or f"[{identity.tenant}] {task_text[:80]}").strip()
     goal_mode = bool(payload.get("goal_mode", False))

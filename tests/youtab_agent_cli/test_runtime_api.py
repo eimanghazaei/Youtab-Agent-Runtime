@@ -1159,6 +1159,21 @@ def test_retry_rejects_partial_engine_decision(client):
     assert _count_retry_children() == before
 
 
+def test_retry_rejects_contradictory_complete_engine_decision(client):
+    oid = _seed_bound_original(engine_payload={
+        "profile_id": "eco.v01", "public_label": "Eco v.01",
+        "engine_id": "amour.v03", "selected_engine": "Amour v0.3",
+        "selection_mode": "auto", "requested_engine": None,
+        "routing_reason": "eco_primary", "fallback_used": False,
+        "available": True,
+    })
+    before = _count_retry_children()
+    response = _post_retry(client, oid)
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "invalid_engine_selection"
+    assert _count_retry_children() == before
+
+
 def test_retry_inherits_full_execution_binding(client):
     oid = _seed_bound_original(
         limits={"max_cost_eur": 3, "worker_attempt_limit": 1})
