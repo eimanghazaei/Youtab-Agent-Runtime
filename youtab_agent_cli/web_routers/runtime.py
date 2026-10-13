@@ -739,6 +739,10 @@ def _engine_selection_from_events(events: "List[kb.Event]") -> Optional[Dict[str
             pid = e.payload.get("profile_id")
             if pid:
                 selected = {"profile_id": pid, "public_label": e.payload.get("public_label")}
+                if _ENGINE_DECISION_FIELDS & e.payload.keys() and not _ENGINE_DECISION_FIELDS <= e.payload.keys():
+                    raise HTTPException(
+                        status_code=422, detail={"error": "invalid_engine_selection"}
+                    )
                 if _ENGINE_DECISION_FIELDS <= e.payload.keys():
                     selected.update({key: e.payload[key] for key in _ENGINE_DECISION_FIELDS})
                 return selected
