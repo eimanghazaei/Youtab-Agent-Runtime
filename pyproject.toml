@@ -80,10 +80,8 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
-  # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
-  # and GHSA-qccp-gfcp-xxvc (header leak across origins).
-  "urllib3>=2.7.0,<3",
+  "PyJWT[crypto]==2.15.1",
+  "urllib3>=2.8.0,<3",
   # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
   # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
   "cryptography==50.0.0",  # CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf; bumped 48.0.1->50.0.0 (WAVE-28 A06) to clear CVE-2026-69247 (fixed 50.0.0), CVE-2026-69248/69249 (fixed 49.0.0). Verify uv lock still resolves the msal/alibabacloud-tea-openapi/hindsight extras.
@@ -402,8 +400,12 @@ constraint-dependencies = [
   # tornado is pulled by python-telegram-bot (telegram extra). 6.5.5 carries a
   # cluster of DoS/leak advisories (CVE-2026-49853 cross-origin Authorization
   # forwarding, CVE-2026-49855 gzip bomb, CVE-2026-82397 event-loop stall,
-  # GHSA-wwv5-g3v4-889x cookie-attr injection). All are fixed by 6.5.8.
-  "tornado>=6.5.8",
+  # GHSA-wwv5-g3v4-889x cookie-attr injection). Later advisories require 6.5.9.
+  "tornado>=6.5.9",
+  # Floors for 2026-10-13 all-extras audit; these packages remain transitive.
+  "fsspec>=2026.6.0",
+  "multidict>=6.9.1",
+  "oauthlib>=4.0.0",
   # pyasn1 is pulled by pyasn1-modules -> google-auth (google/gemini extras).
   # CVE-2026-59884/59885/59886 (quadratic-complexity DoS in the BER/CER/DER
   # decoder) are all fixed in 0.6.4.
