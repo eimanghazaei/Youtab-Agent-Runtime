@@ -253,6 +253,10 @@ _MODE_EVENT = "runtime_execution_mode"
 # selected (a profile_id + its public label). Consumer-safe; never carries the
 # resolved provider/model/override behind that selection.
 _ENGINE_EVENT = "runtime_engine_selection"
+_ENGINE_DECISION_FIELDS = frozenset({
+    "engine_id", "selected_engine", "selection_mode", "requested_engine",
+    "routing_reason", "fallback_used", "available",
+})
 
 # Event recorded at create-run carrying the authoritative, server-clamped per-run
 # limit set (WAVE-30B §8). Numeric limits + max_cost_eur only — never a secret.
@@ -727,15 +731,17 @@ def _mode_from_events(events: "List[kb.Event]") -> str:
 def _engine_selection_from_events(events: "List[kb.Event]") -> Optional[Dict[str, Any]]:
     """The branded engine selection recorded at create, or ``None``.
 
-    Consumer-safe projection: ``{profile_id, public_label}`` only. The resolved
-    provider/model/override that selection drove is deliberately NOT recorded on
-    the event and never surfaces here.
+    Consumer-safe product decision only. The resolved provider/model/override
+    is deliberately NOT recorded on the event and never surfaces here.
     """
     for e in events:
         if e.kind == _ENGINE_EVENT and isinstance(e.payload, dict):
             pid = e.payload.get("profile_id")
             if pid:
-                return {"profile_id": pid, "public_label": e.payload.get("public_label")}
+                selected = {"profile_id": pid, "public_label": e.payload.get("public_label")}
+                if _ENGINE_DECISION_FIELDS <= e.payload.keys():
+                    selected.update({key: e.payload[key] for key in _ENGINE_DECISION_FIELDS})
+                return selected
     return None
 
 
@@ -2109,7 +2115,7 @@ async def runtime_create_run(
 
     Body: ``{ "agent": "<profile>", "task": "<prompt>", "goal_mode"?: bool,
     "title"?: str, "skills"?: [str], "max_runtime_seconds"?: int,
-    "engine"?: "<profile_id>" }``.
+    "engine"?: "<profile_id>", "engine_selection"?: { ... } }``.
 
     ``agent`` (the worker profile) is required. ``engine`` is optional and
     orthogonal: it selects the branded model substrate (e.g. ``eco.v01``) and,
@@ -2206,6 +2212,38 @@ async def runtime_create_run(
                     engine,
                 )
                 raise HTTPException(status_code=503, detail={"error": "engine_unavailable"})
+
+    # A signed Brain decision is durable run provenance. Validate its public
+    # fields against the selected engine before recording it with the task.
+    selection = payload.get("engine_selection")
+    if "engine_selection" in payload:
+        if (not isinstance(selection, dict) or set(selection) != _ENGINE_DECISION_FIELDS
+                or engine_identity is None):
+            raise HTTPException(status_code=422, detail={"error": "invalid_engine_selection"})
+        mode = selection["selection_mode"]
+        requested = selection["requested_engine"]
+        fallback = selection["fallback_used"]
+        reason = selection["routing_reason"]
+        expected_reason = (
+            "availability_fallback" if fallback else
+            "user_selection" if mode == "manual" else "eco_primary"
+        )
+        if (
+            selection["engine_id"] != engine
+            or selection["selected_engine"] != engine_identity.public_label
+            or mode not in ("manual", "auto")
+            or type(fallback) is not bool
+            or selection["available"] is not True
+            or reason != expected_reason
+            or (mode == "auto" and requested is not None)
+            or (mode == "manual" and (
+                not isinstance(requested, str) or requested not in {
+                    identity.public_label for identity in agent_identity.public_agents()
+                }
+            ))
+            or (mode == "manual" and fallback != (requested != engine_identity.public_label))
+        ):
+            raise HTTPException(status_code=422, detail={"error": "invalid_engine_selection"})
 
     title = str(payload.get("title") or f"[{identity.tenant}] {task_text[:80]}").strip()
     goal_mode = bool(payload.get("goal_mode", False))
@@ -2396,6 +2434,7 @@ async def runtime_create_run(
             kb._append_event(conn, rid, _ENGINE_EVENT, {
                 "profile_id": engine,
                 "public_label": engine_identity.public_label,
+                **(selection or {}),
             })
         _limits_dict = run_limits.to_dict()
         if _task_max_retries is not None:
@@ -2865,10 +2904,7 @@ async def runtime_retry_run(
                 )
                 # Re-record the branded engine selection (same profile as the original).
                 if _binding["engine_selection"] is not None:
-                    kb._append_event(conn, rid, _ENGINE_EVENT, {
-                        "profile_id": _binding["engine_selection"]["profile_id"],
-                        "public_label": _binding["engine_selection"].get("public_label"),
-                    })
+                    kb._append_event(conn, rid, _ENGINE_EVENT, _binding["engine_selection"])
                 # Re-record the authoritative clamped cost policy / limits.
                 if _binding["limits"]:
                     kb._append_event(conn, rid, _LIMITS_EVENT, _binding["limits"])

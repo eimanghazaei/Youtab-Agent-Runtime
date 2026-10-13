@@ -134,10 +134,13 @@ def _sign(method, path, tenant, user, body: bytes, nonce=None, correlation="cid-
     }
 
 
-def _create_run(client, *, task="add 2 and 2", engine=None, tenant="tenantA", user="userA"):
+def _create_run(client, *, task="add 2 and 2", engine=None, selection=None,
+                tenant="tenantA", user="userA"):
     payload = {"agent": "default", "task": task}
     if engine is not None:
         payload["engine"] = engine
+    if selection is not None:
+        payload["engine_selection"] = selection
     body = json.dumps(payload).encode()
     path = "/api/runtime/v1/runs"
     headers = _identity_headers(tenant, user)
@@ -339,6 +342,36 @@ def test_create_run_with_known_engine_records_selection_and_overrides(client, mo
     # detail must not leak the resolved provider/model behind the selection
     assert _eco_tag not in json.dumps(detail["engine_selection"])
     assert "ollama" not in json.dumps(detail["engine_selection"])
+
+
+def test_signed_fallback_decision_survives_reopen_and_rejects_mismatch(client):
+    selection = {
+        "engine_id": "amour.v03",
+        "selected_engine": "Amour v0.3",
+        "selection_mode": "manual",
+        "requested_engine": "Eco v.01",
+        "routing_reason": "availability_fallback",
+        "fallback_used": True,
+        "available": True,
+    }
+    created = _create_run(client, engine="amour.v03", selection=selection)
+    assert created.status_code == 200, created.text
+    run_id = created.json()["run_id"]
+    detail = client.get(f"/api/runtime/v1/runs/{run_id}", headers=_identity_headers())
+    assert detail.status_code == 200, detail.text
+    assert all(detail.json()["engine_selection"][key] == value
+               for key, value in selection.items())
+
+    mismatched = _create_run(client, engine="amour.v03",
+                             selection={**selection, "engine_id": "eco.v01"})
+    assert mismatched.status_code == 422
+    assert mismatched.json()["detail"]["error"] == "invalid_engine_selection"
+    extra = _create_run(client, engine="amour.v03",
+                        selection={**selection, "provider": "should-never-persist"})
+    assert extra.status_code == 422
+    malformed = _create_run(client, engine="amour.v03",
+                            selection={**selection, "requested_engine": ["Eco v.01"]})
+    assert malformed.status_code == 422
 
 
 def test_create_run_eco_without_model_tag_fails_closed(client, monkeypatch):
