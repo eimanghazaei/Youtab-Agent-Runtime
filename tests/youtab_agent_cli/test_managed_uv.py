@@ -276,7 +276,8 @@ class TestUpdateManagedUv:
 
 
 
-    def test_fresh_stamp_skips_network_self_update_but_not_repair(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("future_skew_s", (0, 2))
+    def test_fresh_stamp_skips_network_self_update_but_not_repair(self, tmp_path, monkeypatch, future_skew_s):
         """A recent success stamp must skip `uv self update` entirely while the
         vulnerable-runtime repair probe still runs (CVE repair is never gated)."""
         from youtab_agent_cli.managed_uv import RuntimeRepairResult, update_managed_uv
@@ -292,6 +293,8 @@ class TestUpdateManagedUv:
         stamp = tmp_path / "cache" / ".uv_self_update_stamp"
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.touch()
+        timestamp = stamp.stat().st_mtime + future_skew_s
+        os.utime(stamp, (timestamp, timestamp))
 
         with patch("youtab_constants.get_youtab_home", return_value=tmp_path), \
              patch("youtab_agent_cli.managed_uv.get_youtab_home", return_value=tmp_path), \
