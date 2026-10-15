@@ -95,3 +95,38 @@ def test_a_missing_artifact_degrades_to_the_generic_label(monkeypatch, tmp_path)
     finally:
         ai._artifact.cache_clear()
         ai._agents_by_id.cache_clear()
+
+
+def test_eco_model_default_is_the_committed_binding(monkeypatch):
+    """With no deployment override, ECO resolves to the artifact's placeholder
+    model — the committed roster is authoritative and unchanged."""
+    monkeypatch.delenv(ai._ECO_MODEL_ENV, raising=False)
+    bound = ai.engine_binding_for_profile("eco.v01")
+    assert bound is not None
+    provider, model = bound
+    assert provider == "ollama"
+    assert model == "qwen3.5:9b"
+
+
+def test_eco_model_env_override_replaces_only_the_model(monkeypatch):
+    """A deployment injects the concrete on-prem model tag via the protected
+    server-side env; it replaces ECO's model and nothing else."""
+    injected = "youtab-" + "qwen35-9b-agent-64k:latest"
+    monkeypatch.setenv(ai._ECO_MODEL_ENV, injected)
+    bound = ai.engine_binding_for_profile("eco.v01")
+    assert bound == ("ollama", injected)
+
+
+def test_eco_model_override_does_not_touch_other_engines(monkeypatch):
+    """The ECO override is scoped to the ECO profile: Amour (and every other
+    engine) keeps its own binding regardless of the ECO env."""
+    monkeypatch.setenv(ai._ECO_MODEL_ENV, "some-other-tag:latest")
+    amour = ai.engine_binding_for_profile("amour.v03")
+    assert amour == (_PROVIDER, _PROVIDER + "-v4-flash")
+
+
+def test_eco_blank_override_falls_back_to_default(monkeypatch):
+    """An empty/whitespace override is treated as unset, not as a blank model."""
+    monkeypatch.setenv(ai._ECO_MODEL_ENV, "   ")
+    bound = ai.engine_binding_for_profile("eco.v01")
+    assert bound == ("ollama", "qwen3.5:9b")

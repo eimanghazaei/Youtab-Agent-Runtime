@@ -1,0 +1,7 @@
+name: runtime_service
+version: 1.0.0
+description: "Dashboard auth provider — non-interactive service-bearer secret for the Youtab Agent Runtime product surface (/api/runtime/v1). Authenticates the youtab-ai-os gateway's AgentRuntimeConnector: it verifies an inbound Authorization bearer token against YOUTAB_AGENT_RUNTIME_SERVICE_SECRET with a constant-time compare and vouches for the caller as the runtime-service principal (scope: runtime), then registers /api/runtime/v1/ as a token-authable prefix so the gateway's service call reaches the router instead of the interactive cookie gate. Fails CLOSED: a weak/short/low-entropy secret (< 256 bits) is rejected at registration and the whole runtime surface stays disabled (401). No-op when the env var is unset. Behavioural knobs (scope, min_secret_chars) live under dashboard.runtime_auth in config.yaml. Mirrors the bundled dashboard_auth/drain plugin."
+author: YoutabBV
+kind: backend
+requires_env:
+  - YOUTAB_AGENT_RUNTIME_SERVICE_SECRET
