@@ -4800,7 +4800,26 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    original = kwargs.get("user_task")
+                    if (server_name == "simorgh" and tool_name == "simorgh_chat"
+                            and isinstance(args, dict)
+                            and isinstance(args.get("message"), dict)
+                            and "business_read" in args["message"]
+                            and isinstance(original, str) and original):
+                        bearer = kwargs.get("_host_account_bearer")
+                        if bearer is not None and (
+                                not isinstance(bearer, str) or not bearer
+                                or any(char.isspace() for char in bearer)):
+                            return tool_error("Invalid host account credential")
+                        meta = {"youtab/original_user_task": original}
+                        if bearer is not None:
+                            meta["youtab/account_bearer"] = bearer
+                        result = await server.session.call_tool(
+                            tool_name, arguments=args,
+                            meta=meta,
+                        )
+                    else:
+                        result = await server.session.call_tool(tool_name, arguments=args)
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably

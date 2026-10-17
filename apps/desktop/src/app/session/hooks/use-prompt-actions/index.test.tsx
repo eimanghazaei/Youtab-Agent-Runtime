@@ -1624,6 +1624,42 @@ describe('usePromptActions submit / queue drain semantics', () => {
     vi.restoreAllMocks()
   })
 
+  it('binds the Simorgh account nonce to the exact submitted turn without exposing the bearer', async () => {
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState(RUNTIME_SESSION_ID), model: 'simorgh'
+    })
+    const prepareSimorghTurn = vi.fn(async () => ({ nonce: 'a'.repeat(32) }))
+    const priorDesktop = Object.getOwnPropertyDescriptor(window, 'youtabDesktop')
+
+    Object.defineProperty(window, 'youtabDesktop', {
+      configurable: true, value: { prepareSimorghTurn }
+    })
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    try {
+      let handle: HarnessHandle | null = null
+      await actRender(
+        <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+      )
+      await handle!.submitText('Read my open orders')
+
+      expect(prepareSimorghTurn).toHaveBeenCalledWith({
+        sessionId: RUNTIME_SESSION_ID, text: 'Read my open orders', profile: undefined
+      })
+      expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+        session_id: RUNTIME_SESSION_ID,
+        text: 'Read my open orders',
+        simorgh_account_nonce: 'a'.repeat(32)
+      }, 1_800_000)
+      expect(JSON.stringify(requestGateway.mock.calls)).not.toContain('account_bearer')
+    } finally {
+      dropSessionState(RUNTIME_SESSION_ID)
+
+      if (priorDesktop) { Object.defineProperty(window, 'youtabDesktop', priorDesktop) }
+      else { Reflect.deleteProperty(window, 'youtabDesktop') }
+    }
+  })
+
   it('clears a leftover interrupted flag on a fresh submit (so the new turn streams)', async () => {
     const seeds: Record<string, unknown>[] = []
     const requestGateway = vi.fn(async () => ({}) as never)

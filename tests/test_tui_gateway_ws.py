@@ -106,6 +106,32 @@ def test_ws_connection_registers_then_disconnect_unregisters_live_transport(monk
         server._live_transports.clear()
 
 
+def test_malformed_account_handoff_does_not_log_bearer(monkeypatch, caplog):
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
+
+    class FakeWS:
+        calls = 0
+
+        async def accept(self):
+            pass
+
+        async def send_text(self, _line):
+            pass
+
+        async def receive_text(self):
+            self.calls += 1
+            if self.calls == 1:
+                return '{"method":"simorgh.account.stage","account_bearer":"synthetic-secret"'
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS()))
+    assert "synthetic-secret" not in caplog.text
+    assert "ws parse error" in caplog.text
+
+
 def test_ws_disconnect_releases_wake_word_owner(monkeypatch):
     released = []
     created = []

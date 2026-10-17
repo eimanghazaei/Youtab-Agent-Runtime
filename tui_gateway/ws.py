@@ -39,7 +39,6 @@ _log = logging.getLogger(__name__)
 # to flush a WS frame before we mark the transport dead. Protects handler
 # threads from a wedged socket.
 _WS_WRITE_TIMEOUT_S = 10.0
-_WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on
 # a short timer instead of waking the event loop once per token. A model reply
@@ -353,11 +352,10 @@ async def handle_ws(ws: Any) -> None:
             except json.JSONDecodeError as exc:
                 parse_errors += 1
                 _log.warning(
-                    "ws parse error peer=%s index=%d error=%s payload=%r",
+                    "ws parse error peer=%s index=%d error=%s",
                     peer,
                     messages,
                     exc,
-                    line[:_WS_LOG_PAYLOAD_PREVIEW],
                 )
                 ok = await transport.write_async(
                     {

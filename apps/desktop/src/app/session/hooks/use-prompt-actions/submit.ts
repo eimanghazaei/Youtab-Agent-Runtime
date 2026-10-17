@@ -20,6 +20,7 @@ import {
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import {
+  $currentModel,
   $sessions,
   resolveComposerSessionKey,
   setAwaitingResponse,
@@ -608,14 +609,30 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           ...(options?.fromQueue && { queued: true })
         })
 
+        const prepareSubmitParams = async (targetId: string) => {
+          const params = submitParams(targetId)
+          const model = $sessionStates.get()[targetId]?.model || $currentModel.get()
+
+          if (model !== 'simorgh' || options?.fromQueue || !window.youtabDesktop?.prepareSimorghTurn) {
+            return params
+          }
+
+          const storedId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
+          const profile = storedId ? await resolveSessionProfile(storedId) : null
+          const staged = await window.youtabDesktop.prepareSimorghTurn({ sessionId: targetId, text, profile })
+
+          return staged.nonce ? { ...params, simorgh_account_nonce: staged.nonce } : params
+        }
+
         // On sleep/wake the gateway's in-memory session may have been cleared
         // while the desktop app still holds the old session ID. Detect this,
         // resume the stored session to re-register it, and retry once.
         let submitErr: unknown = null
 
         try {
+          const prepared = await prepareSubmitParams(sessionId)
           await withSessionBusyRetry(() =>
-            requestGateway('prompt.submit', submitParams(sessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+            requestGateway('prompt.submit', prepared, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
@@ -649,8 +666,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 activeSessionIdRef.current = recoveredId
               }
 
+              const recoveredParams = await prepareSubmitParams(recoveredId)
               await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', submitParams(recoveredId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+                requestGateway('prompt.submit', recoveredParams, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
               )
             } else {
               submitErr = firstErr

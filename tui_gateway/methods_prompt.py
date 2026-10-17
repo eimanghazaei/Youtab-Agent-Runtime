@@ -13,6 +13,33 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 
+@method("simorgh.account.stage")
+def _(rid, params: dict) -> dict:
+    peer = getattr(current_transport(), "_peer", "")
+    if (os.environ.get("YOUTAB_AGENT_DESKTOP") != "1"
+            or not peer.startswith(("127.0.0.1:", "::1:"))):
+        return _err(rid, 4030, "Desktop account handoff unavailable")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    digest = params.get("prompt_sha256")
+    bearer = params.get("account_bearer")
+    if (not isinstance(digest, str) or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+            or not isinstance(bearer, str) or not bearer or len(bearer) > 8192
+            or any(char.isspace() for char in bearer)):
+        return _err(rid, 4000, "Invalid account handoff")
+    with session["history_lock"]:
+        if session.get("running") or _session_uses_compute_host(session):
+            return _err(rid, 4090, "Account handoff requires an idle local turn")
+        nonce = uuid.uuid4().hex
+        session["_simorgh_account_stage"] = (digest, nonce, bearer, time.monotonic() + 15)
+    timer = threading.Timer(15, _expire_simorgh_account_stage, args=(session, nonce))
+    timer.daemon = True
+    timer.start()
+    return _ok(rid, {"nonce": nonce})
+
+
 def _pending_reaction_notes(session: dict) -> str:
     """Note block describing reactions the user added since the last turn, or "".
 
@@ -144,6 +171,7 @@ def _(rid, params: dict) -> dict:
             queued=bool(params.get("queued")),
         )
         if busy_response is not None:
+            _expire_simorgh_account_stage(session, str(params.get("simorgh_account_nonce") or ""))
             return busy_response
         # The old turn finished between the two lock acquisitions. Retry the
         # claim so this prompt starts normally instead of being stranded in a
@@ -222,6 +250,13 @@ def _(rid, params: dict) -> dict:
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
 
+    simorgh_account_bearer = (
+        _take_simorgh_account_stage(session, raw_text, params.get("simorgh_account_nonce"))
+        if not turn_isolation else None
+    )
+    if text != raw_text:
+        simorgh_account_bearer = None
+
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
         if not isolated_response.get("error"):
@@ -247,6 +282,7 @@ def _(rid, params: dict) -> dict:
         # only errors when the build itself fails or the bounded cap expires.
         err = _wait_agent_for_prompt(session, rid, sid)
         if err:
+            _expire_simorgh_account_stage(session, str(params.get("simorgh_account_nonce") or ""))
             # Terminal frame + retained snapshot (not a bare "error" event +
             # cleared inflight): if the client is disconnected right now, the
             # retained snapshot is the only way resume can show this failure.
@@ -262,6 +298,7 @@ def _(rid, params: dict) -> dict:
             return
         with session["history_lock"]:
             if session.get("_turn_cancel_requested") or not session.get("running"):
+                session.pop("_simorgh_account_stage", None)
                 session["running"] = False
                 _clear_inflight_turn(session)
                 # Surface the cancellation to the client. Without this emit the
@@ -280,7 +317,10 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        if simorgh_account_bearer:
+            _run_prompt_submit(rid, sid, session, text, simorgh_account_bearer=simorgh_account_bearer)
+        else:
+            _run_prompt_submit(rid, sid, session, text)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck

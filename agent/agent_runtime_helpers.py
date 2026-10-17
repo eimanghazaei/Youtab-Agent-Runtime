@@ -38,7 +38,7 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
-from agent.turn_context import drop_stale_api_content
+from agent.turn_context import drop_stale_api_content, simorgh_account_bearer, simorgh_original_task
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -1546,11 +1546,10 @@ def restore_primary_runtime(agent) -> bool:
                 from agent.credential_pool import load_pool
 
                 agent._credential_pool = load_pool(primary_provider)
-            except Exception as exc:
+            except Exception:
                 logger.warning(
-                    "Restore could not reload primary credential pool for %s: %s",
+                    "Restore could not reload primary pool for %s",
                     primary_provider,
-                    exc,
                 )
 
         # The snapshot's api_key was captured at construction time.  Across
@@ -2242,11 +2241,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             try:
                 from agent.credential_pool import load_pool
                 agent._credential_pool = load_pool(new_provider)
-            except Exception as _pool_exc:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 logger.warning(
-                    "switch_model: credential pool reload failed for %s (%s); "
+                    "switch_model: pool reload failed for %s; "
                     "continuing without pool rotation this turn",
-                    new_provider, _pool_exc,
+                    new_provider,
                 )
         # ── Build new client ──
         if (new_provider or "").strip().lower() == "moa":
@@ -2732,6 +2731,12 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 tool_request_middleware_trace=list(_tool_middleware_trace),
             )
+            original = simorgh_original_task(agent, function_name, next_args)
+            if original is not None:
+                dispatch_kwargs["user_task"] = original
+            account = simorgh_account_bearer(agent, function_name, next_args)
+            if account is not None:
+                dispatch_kwargs["_host_account_bearer"] = account
             if skip_tool_execution_middleware:
                 dispatch_kwargs["skip_tool_execution_middleware"] = True
             return _ra().handle_function_call(

@@ -687,5 +687,7 @@ def finalize_turn(
 
     agent._turn_preflight_display_snapshot = None
     agent._turn_received_provider_response = False
+    agent._simorgh_original_turn = None
+    agent._simorgh_account_turn = None
 
     return result

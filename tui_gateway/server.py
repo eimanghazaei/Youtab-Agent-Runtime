@@ -5404,13 +5404,14 @@ def _agent_cbs(sid: str) -> dict:
     # _run_prompt_submit as defense-in-depth — the per-turn set overwrites
     # this, and the finally block clears it so a stale closure can't fire.
     if _load_interim_assistant_messages():
-        callbacks["interim_assistant_callback"] = (
-            lambda text, *, already_streamed=False: _emit(
+        def emit_interim_assistant(text, *, already_streamed=False):
+            _emit(
                 "message.interim",
                 sid,
                 {"text": str(text), "already_streamed": bool(already_streamed)},
             )
-        )
+
+        callbacks["interim_assistant_callback"] = emit_interim_assistant
 
     return callbacks
 
@@ -8959,9 +8960,27 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
+def _expire_simorgh_account_stage(session: dict, nonce: str) -> None:
+    with session["history_lock"]:
+        staged = session.get("_simorgh_account_stage")
+        if staged and staged[1] == nonce:
+            session.pop("_simorgh_account_stage", None)
+
+
+def _take_simorgh_account_stage(session: dict, raw_text: Any, nonce: Any) -> str | None:
+    with session["history_lock"]:
+        staged = session.pop("_simorgh_account_stage", None)
+    if (not staged or not isinstance(raw_text, str) or not isinstance(nonce, str)
+            or time.monotonic() > staged[3] or nonce != staged[1]):
+        return None
+    digest = hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+    return staged[2] if digest == staged[0] else None
+
+
 def _run_prompt_submit(
     rid, sid: str, session: dict, text: Any, *, display_kind: str | None = None,
     display_metadata: dict | None = None,
+    simorgh_account_bearer: str | None = None,
 ) -> None:
     with session["history_lock"]:
         history = list(session["history"])
@@ -8982,6 +9001,7 @@ def _run_prompt_submit(
     _emit("message.start", sid)
 
     def run():
+        agent._simorgh_account_pending = simorgh_account_bearer
         approval_token = None
         session_tokens = []
         home_token = None  # per-turn YOUTAB_AGENT_HOME override for a resumed remote profile
@@ -9599,6 +9619,8 @@ def _run_prompt_submit(
                 )
                 _emit("error", sid, {"message": str(e)})
         finally:
+            agent._simorgh_account_pending = None
+            agent._simorgh_account_turn = None
             if thinking_started:
                 # Kill the ambient thinking sound the moment the turn ends —
                 # error and success paths both land here.
@@ -11230,7 +11252,7 @@ def _compute_mcp_rev() -> str:
             sort_keys=True,
             default=str,
         )
-        return hashlib.sha1(rev_src.encode()).hexdigest()[:12]
+        return hashlib.sha256(rev_src.encode()).hexdigest()[:12]
     except Exception:
         return ""
 

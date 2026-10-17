@@ -49,6 +49,27 @@ from agent.model_metadata import (
 logger = logging.getLogger(__name__)
 
 
+def simorgh_original_task(agent, function_name: str, function_args: dict) -> str | None:
+    """Return the active human turn only for a first-party business-read proposal."""
+    if function_name != "mcp__simorgh__simorgh_chat":
+        return None
+    if not isinstance(function_args, dict) or not isinstance(function_args.get("message"), dict):
+        return None
+    if "business_read" not in function_args["message"]:
+        return None
+    bound_turn, original = getattr(agent, "_simorgh_original_turn", None) or (None, None)
+    if bound_turn != getattr(agent, "_current_turn_id", None):
+        return None
+    return original if isinstance(original, str) and original else None
+
+
+def simorgh_account_bearer(agent, function_name: str, function_args: dict) -> str | None:
+    if simorgh_original_task(agent, function_name, function_args) is None:
+        return None
+    bound_turn, bearer = getattr(agent, "_simorgh_account_turn", None) or (None, None)
+    return bearer if bound_turn == getattr(agent, "_current_turn_id", None) else None
+
+
 def compose_user_api_content(
     content: Any,
     ext_prefetch_cache: str,
@@ -578,6 +599,10 @@ def build_turn_context(
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
+    agent._simorgh_original_turn = (turn_id, original_user_message)
+    bearer = getattr(agent, "_simorgh_account_pending", None)
+    agent._simorgh_account_pending = None
+    agent._simorgh_account_turn = (turn_id, bearer) if isinstance(bearer, str) and bearer else None
 
     # Track memory nudge trigger (turn-based, checked here).
     should_review_memory = False

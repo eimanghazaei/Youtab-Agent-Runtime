@@ -2236,6 +2236,57 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    @pytest.mark.parametrize("empty_first", [False, True])
+    @pytest.mark.parametrize("effort", ["high", "none"])
+    def test_summary_preserves_overrides_without_reenabling_tools(self, agent, empty_first, effort):
+        """Iteration-limit summaries retain settings, never request new effects."""
+        agent.provider = "openai"
+        agent.model = "brain"
+        agent.max_tokens = 8192
+        agent._cached_system_prompt = "You are helpful."
+        agent.request_overrides = {
+            "reasoning_effort": effort,
+            "max_tokens": 9000,
+            "extra_body": {
+                "custom_setting": "keep", "model": "nested-wrong-model",
+                "tools": _make_tool_defs("web_search"), "stream": True,
+                "functions": [{"name": "web_search", "parameters": {}}],
+                "function_call": "auto",
+            },
+            "model": "wrong-model",
+            "messages": [{"role": "user", "content": "wrong-history"}],
+            "tools": _make_tool_defs("web_search"),
+            "tool_choice": "required",
+            "parallel_tool_calls": True,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        original_overrides = dict(agent.request_overrides)
+        agent.client.chat.completions.create.side_effect = (
+            [_mock_response(content=""), _mock_response(content="Summary")]
+            if empty_first else [_mock_response(content="Summary")]
+        )
+        profile = SimpleNamespace(build_extra_body=lambda **kwargs: {"tags": ["profile-tag"]})
+        with patch("providers.get_provider_profile", return_value=profile):
+            result = agent._handle_max_iterations(
+                [{"role": "user", "content": "summarize original task"}], 60,
+            )
+        assert result == "Summary"
+        calls = agent.client.chat.completions.create.call_args_list
+        assert len(calls) == (2 if empty_first else 1)
+        for call in calls:
+            sent = call.kwargs
+            assert sent["model"] == "brain"
+            assert sent["reasoning_effort"] == effort
+            assert sent["max_tokens"] == 9000
+            assert sent["extra_body"]["tags"] == ["profile-tag"]
+            assert sent["extra_body"]["custom_setting"] == "keep"
+            assert any(m.get("content") == "summarize original task" for m in sent["messages"])
+            forbidden = ("tools", "tool_choice", "parallel_tool_calls", "stream", "stream_options", "functions", "function_call")
+            assert not any(k in sent for k in forbidden)
+            assert not any(k in sent["extra_body"] for k in (*forbidden, "model", "messages"))
+        assert agent.request_overrides == original_overrides
+
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")
         agent.client.chat.completions.create.return_value = resp

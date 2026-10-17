@@ -19,6 +19,27 @@ from model_tools import (
 # =========================================================================
 
 class TestHandleFunctionCall:
+    def test_host_account_bearer_reaches_only_simorgh_dispatch(self):
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as dispatch:
+            handle_function_call(
+                "mcp__simorgh__simorgh_chat",
+                {"message": {"business_read": {"account_id": "B"}},
+                 "_host_account_bearer": "model-forged"},
+                user_task="Read account A", _host_account_bearer="synthetic-account",
+                skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+            assert dispatch.call_args.kwargs["_host_account_bearer"] == "synthetic-account"
+            assert dispatch.call_args.args[1]["_host_account_bearer"] == "model-forged"
+            dispatch.reset_mock()
+            handle_function_call(
+                "web_search", {"q": "test"},
+                _host_account_bearer="synthetic-account",
+                skip_pre_tool_call_hook=True, skip_tool_request_middleware=True,
+                skip_tool_execution_middleware=True,
+            )
+            assert "_host_account_bearer" not in dispatch.call_args.kwargs
+
     def test_agent_loop_tool_returns_error(self):
         for tool_name in _AGENT_LOOP_TOOLS:
             result = json.loads(handle_function_call(tool_name, {}))

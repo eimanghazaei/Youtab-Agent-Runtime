@@ -2734,6 +2734,7 @@ def _(rid, params: dict) -> dict:
         with session["history_lock"]:
             session["_turn_cancel_requested"] = True
             session["queued_prompt"] = None
+            session.pop("_simorgh_account_stage", None)
         _clear_pending(sid)
         try:
             from tools.approval import resolve_gateway_approval
@@ -2760,6 +2761,10 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
+        session.pop("_simorgh_account_stage", None)
+        if session.get("agent") is not None:
+            session["agent"]._simorgh_account_pending = None
+            session["agent"]._simorgh_account_turn = None
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):

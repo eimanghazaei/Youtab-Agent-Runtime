@@ -1255,6 +1255,8 @@ def run_conversation(
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
+            agent._simorgh_original_turn = None
+            agent._simorgh_account_turn = None
             _apply_active_turn_redirect(agent, messages, _redirect_text)
             if isinstance(original_user_message, str):
                 original_user_message = (
@@ -3279,8 +3281,8 @@ def run_conversation(
                             # visible in agent.log — silent loss here is
                             # the root cause of undercounted analytics.
                             logger.debug(
-                                "Token persistence failed (session=%s, tokens=%d): %s",
-                                agent.session_id, total_tokens, e,
+                                "Token persistence failed (session=%s, tokens=%d, error=%s)",
+                                agent.session_id, total_tokens, type(e).__name__,
                             )
                     
                     if agent.verbose_logging:

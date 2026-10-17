@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.context_compressor import ContextCompressor
-from agent.turn_context import TurnContext, build_turn_context
+from agent.turn_context import TurnContext, build_turn_context, simorgh_original_task
 from youtab_state import SessionDB
 
 
@@ -206,6 +206,37 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.messages[-1] == {"role": "user", "content": "hello"}
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
     assert ctx.active_system_prompt == "SYSTEM"
+
+
+def test_simorgh_original_turn_is_host_owned_and_turn_scoped():
+    agent = _FakeAgent()
+    ctx = _build(agent, user_message="Read account A, not B")
+    proposal = {"message": {"business_read": {"account_id": "B"}}}
+    assert simorgh_original_task(agent, "mcp__simorgh__simorgh_chat", proposal) == ctx.original_user_message
+    assert simorgh_original_task(agent, "mcp__other__simorgh_chat", proposal) is None
+    assert simorgh_original_task(agent, "mcp__simorgh__simorgh_chat", {"message": {"content": "hi"}}) is None
+    agent._current_turn_id = "next-turn"
+    assert simorgh_original_task(agent, "mcp__simorgh__simorgh_chat", proposal) is None
+    agent._current_turn_id = ctx.turn_id
+    agent._simorgh_original_turn = None  # in-turn correction or finalizer
+    assert simorgh_original_task(agent, "mcp__simorgh__simorgh_chat", proposal) is None
+
+
+def test_simorgh_account_bearer_is_consumed_and_turn_scoped():
+    from agent.turn_context import simorgh_account_bearer
+
+    agent = _FakeAgent()
+    agent._simorgh_account_pending = "synthetic-account"
+    ctx = _build(agent, user_message="Read account A")
+    proposal = {"message": {"business_read": {"account_id": "A"}}}
+    assert agent._simorgh_account_pending is None
+    assert simorgh_account_bearer(agent, "mcp__simorgh__simorgh_chat", proposal) == "synthetic-account"
+    assert simorgh_account_bearer(agent, "mcp__other__simorgh_chat", proposal) is None
+    agent._current_turn_id = "next-turn"
+    assert simorgh_account_bearer(agent, "mcp__simorgh__simorgh_chat", proposal) is None
+    agent._current_turn_id = ctx.turn_id
+    agent._simorgh_account_turn = None
+    assert simorgh_account_bearer(agent, "mcp__simorgh__simorgh_chat", proposal) is None
 
 
 def test_turn_start_replaces_stale_parent_history_with_compression_child():

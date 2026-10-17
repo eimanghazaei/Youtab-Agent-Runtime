@@ -496,6 +496,54 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_simorgh_business_read_carries_original_only_in_mcp_meta(self):
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        session = MagicMock()
+        session.call_tool = AsyncMock(return_value=_make_call_result("refused"))
+        _servers["simorgh"] = _make_mock_server("simorgh", session=session)
+        proposed = {"thread_id": "t", "message": {"business_read": {"account_id": "B"}}}
+        try:
+            handler = _make_tool_handler("simorgh", "simorgh_chat", 30)
+            with self._patch_mcp_loop():
+                handler(proposed, user_task="Read account A, not B")
+                session.call_tool.assert_awaited_with(
+                    "simorgh_chat", arguments=proposed,
+                    meta={"youtab/original_user_task": "Read account A, not B"},
+                )
+                session.call_tool.reset_mock()
+                handler(proposed, user_task="Read account A, not B",
+                        _host_account_bearer="synthetic-account")
+                session.call_tool.assert_awaited_with(
+                    "simorgh_chat", arguments=proposed,
+                    meta={"youtab/original_user_task": "Read account A, not B",
+                          "youtab/account_bearer": "synthetic-account"},
+                )
+                session.call_tool.reset_mock()
+                invalid = json.loads(handler(
+                    proposed, user_task="Read account A, not B",
+                    _host_account_bearer="synthetic account",
+                ))
+                assert "error" in invalid
+                assert "synthetic account" not in json.dumps(invalid)
+                session.call_tool.assert_not_awaited()
+                handler(proposed)
+                session.call_tool.assert_awaited_with("simorgh_chat", arguments=proposed)
+                session.call_tool.reset_mock()
+                injected = {**proposed, "_host_account_bearer": "model-forged"}
+                handler(injected, user_task="Read account A, not B")
+                session.call_tool.assert_awaited_with(
+                    "simorgh_chat", arguments=injected,
+                    meta={"youtab/original_user_task": "Read account A, not B"},
+                )
+                session.call_tool.reset_mock()
+                ordinary = {"thread_id": "t", "message": {"content": "hi"}}
+                handler(ordinary, user_task="Read account A, not B",
+                        _host_account_bearer="synthetic-account")
+                session.call_tool.assert_awaited_with("simorgh_chat", arguments=ordinary)
+        finally:
+            _servers.pop("simorgh", None)
+
 
     def test_recycled_stdio_server_reconnects_lazily_on_tool_call(self):
         from tools.mcp_tool import _make_tool_handler, _servers
@@ -1136,11 +1184,11 @@ class TestBuildSafeEnv:
             "OPENAI_API_KEY": "sk-proj-abc123",
         }
         with patch.dict("os.environ", fake_env, clear=True):
-            result = _build_safe_env(None)
+            result = {key.upper(): value for key, value in _build_safe_env(None).items()}
 
-        assert result["ProgramFiles"] == r"C:\Program Files"
-        assert result["ProgramData"] == r"C:\ProgramData"
-        assert result["ProgramW6432"] == r"C:\Program Files"
+        assert result["PROGRAMFILES"] == r"C:\Program Files"
+        assert result["PROGRAMDATA"] == r"C:\ProgramData"
+        assert result["PROGRAMW6432"] == r"C:\Program Files"
         assert result["LOCALAPPDATA"].endswith("Local")
         assert result["APPDATA"].endswith("Roaming")
         assert result["USERPROFILE"] == r"C:\Users\alice"

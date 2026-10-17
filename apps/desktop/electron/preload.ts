@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('youtabDesktop', {
   revalidateConnection: () => ipcRenderer.invoke('youtab:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('youtab:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('youtab:gateway:ws-url', profile),
+  prepareSimorghTurn: payload => ipcRenderer.invoke('youtab:simorgh:prepare-turn', payload),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('youtab:window:openSession', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('youtab:window:openInstance'),
   claimAmbientCue: key => ipcRenderer.invoke('youtab:ambient:claim', key),

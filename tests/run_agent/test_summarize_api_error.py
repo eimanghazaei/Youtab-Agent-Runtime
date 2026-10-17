@@ -38,6 +38,42 @@ def test_empty_body_falls_back_to_response_json_error_message():
     assert "model `foo` does not exist" in summary
 
 
+def test_provider_error_summary_never_echoes_a_synthetic_key(monkeypatch):
+    from agent import redact
+
+    key = "fw-" + "A" * 40
+    monkeypatch.setattr(redact, "_REDACT_ENABLED", False)
+
+    body_error = _make_empty_body_error("")
+    body_error.body = {"error": {"message": f"rejected {key}"}}
+    raw_error = RuntimeError(f"provider rejected {key}")
+
+    for error in (body_error, raw_error):
+        summary = AIAgent._summarize_api_error(error)
+        assert key not in summary
+        assert "rejected" in summary
+
+
+def test_failed_account_refresh_does_not_log_exception_secret(monkeypatch, caplog):
+    import youtab_agent_cli.auth as auth
+
+    key = "fw-" + "A" * 40
+
+    def fail_refresh(**_kwargs):
+        raise RuntimeError(f"upstream echoed {key}")
+
+    monkeypatch.setattr(auth, "resolve_youtab_runtime_credentials", fail_refresh)
+    agent = AIAgent.__new__(AIAgent)
+    agent.provider = "youtab"
+    agent.api_mode = "chat_completions"
+
+    with caplog.at_level("DEBUG"):
+        assert agent._try_refresh_youtab_client_credentials() is False
+
+    assert key not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
 
 
 

@@ -1097,6 +1097,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    _host_account_bearer: Optional[str] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1198,6 +1199,7 @@ def handle_function_call(
                 tool_call_id=tool_call_id,
                 session_id=session_id,
                 user_task=user_task,
+                _host_account_bearer=_host_account_bearer,
                 enabled_tools=enabled_tools,
                 skip_pre_tool_call_hook=skip_pre_tool_call_hook,
                 skip_tool_request_middleware=skip_tool_request_middleware,
@@ -1339,6 +1341,9 @@ def handle_function_call(
                         task_id=task_id,
                         session_id=session_id,
                         user_task=user_task,
+                        **({"_host_account_bearer": _host_account_bearer}
+                           if function_name == "mcp__simorgh__simorgh_chat"
+                           and _host_account_bearer is not None else {}),
                     )
             if skip_tool_execution_middleware:
                 result = _dispatch(function_args)

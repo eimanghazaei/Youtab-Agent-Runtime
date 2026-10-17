@@ -197,6 +197,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { isTrustedSimorghRendererUrl, stageSimorghAccountTurn } from './simorgh-account-stage'
 import { ensureSpawnHelperExecutable } from './spawn-helper-perms'
 import { createBootstrapCoordinator, sshConfigFingerprint } from './ssh-bootstrap-coordinator'
 import { collectSshConfigHosts, parseSshGOutput } from './ssh-config'
@@ -9786,6 +9787,54 @@ ipcMain.handle('youtab:backend:touch', async (_event, profile) => {
 })
 ipcMain.handle('youtab:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))
+})
+ipcMain.handle('youtab:simorgh:prepare-turn', async (event, payload) => {
+  const rendererUrl = DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString()
+  if (!BrowserWindow.fromWebContents(event.sender) || event.senderFrame !== event.sender.mainFrame
+      || !isTrustedSimorghRendererUrl(event.sender.getURL(), rendererUrl)) {
+    throw new Error('Simorgh account handoff unavailable')
+  }
+
+  const sessionId = payload?.sessionId
+  const text = payload?.text
+
+  if (typeof sessionId !== 'string' || !sessionId || typeof text !== 'string' || !text) {
+    throw new Error('Invalid Simorgh turn')
+  }
+
+  const profile = resolveNativeProviderProfile(payload?.profile, readEffectiveDesktopProfile())
+
+  assertNativeProfileDirectory(profile)
+
+  const portal = requireNativePortalAuthority(resolvePortalBaseUrl())
+  const saved = _loadNativeTokens(portal)
+
+  if (!saved || !saved.profiles?.includes(profile) || saved.logoutPending || saved.rotationPending) {
+    return { nonce: null, reason: 'account_login_required' }
+  }
+
+  const account = await ensureNativeAccessToken(portal)
+  const current = _loadNativeTokens(portal)
+
+  if (!account || !current || current.userId !== saved.userId || !current.profiles?.includes(profile)
+      || current.logoutPending || current.rotationPending) {
+    return { nonce: null, reason: 'account_login_required' }
+  }
+
+  const connection = await ensureBackend(profile)
+  const wsUrl = new URL(connection.wsUrl || '')
+
+  if (connection.mode !== 'local' || wsUrl.protocol !== 'ws:' || wsUrl.hostname !== '127.0.0.1') {
+    throw new Error('Simorgh account handoff requires a local Runtime')
+  }
+
+  const nonce = await stageSimorghAccountTurn(connection.wsUrl, {
+    session_id: sessionId,
+    prompt_sha256: crypto.createHash('sha256').update(text, 'utf8').digest('hex'),
+    account_bearer: account
+  })
+
+  return { nonce }
 })
 ipcMain.handle('youtab:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {

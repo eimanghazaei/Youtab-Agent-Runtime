@@ -49,6 +49,7 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from agent.turn_context import simorgh_account_bearer, simorgh_original_task
 
 logger = logging.getLogger(__name__)
 
@@ -1670,6 +1671,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _spinner_result = None
             try:
                 def _execute(next_args: dict) -> Any:
+                    original = simorgh_original_task(agent, function_name, next_args)
+                    account = simorgh_account_bearer(agent, function_name, next_args)
                     return _ra().handle_function_call(
                         function_name,
                         next_args,
@@ -1677,6 +1680,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         tool_call_id=tool_call.id,
                         session_id=agent.session_id or "",
                         turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        **({"user_task": original} if original is not None else {}),
+                        **({"_host_account_bearer": account} if account is not None else {}),
                         api_request_id=getattr(agent, "_current_api_request_id", "")
                         or "",
                         enabled_tools=(
@@ -1740,6 +1745,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         else:
             try:
                 def _execute(next_args: dict) -> Any:
+                    original = simorgh_original_task(agent, function_name, next_args)
+                    account = simorgh_account_bearer(agent, function_name, next_args)
                     return _ra().handle_function_call(
                         function_name,
                         next_args,
@@ -1747,6 +1754,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                         tool_call_id=tool_call.id,
                         session_id=agent.session_id or "",
                         turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        **({"user_task": original} if original is not None else {}),
+                        **({"_host_account_bearer": account} if account is not None else {}),
                         api_request_id=getattr(agent, "_current_api_request_id", "")
                         or "",
                         enabled_tools=(

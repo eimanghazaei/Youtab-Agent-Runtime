@@ -1916,10 +1916,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                         "Fallback to %s/%s: attached fallback credential pool",
                         fb_provider, fb_model,
                     )
-            except Exception as exc:
+            except Exception:
                 logger.debug(
-                    "Fallback to %s/%s: could not attach credential pool: %s",
-                    fb_provider, fb_model, exc,
+                    "Fallback to %s/%s: could not attach pool",
+                    fb_provider, fb_model,
                 )
 
         # Honor per-provider / per-model request_timeout_seconds for the
@@ -2079,6 +2079,25 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
     def _managed_summary_call(request, callback, *, retry_count: int):
         from agent import relay_llm
+
+        if agent.api_mode == "chat_completions":
+            # The summary bypasses the normal transport builder. Keep its
+            # configured request settings on both attempts without permitting
+            # overrides to replace sanitized history or request new effects.
+            summary_structure = {
+                "model", "messages", "tools", "tool_choice", "parallel_tool_calls",
+                "stream", "stream_options", "functions", "function_call",
+            }
+            for key, value in (agent.request_overrides or {}).items():
+                if key in summary_structure:
+                    continue
+                if key == "extra_body" and isinstance(value, dict):
+                    request[key] = {
+                        **request.get(key, {}),
+                        **{k: v for k, v in value.items() if k not in summary_structure},
+                    }
+                else:
+                    request[key] = value
 
         return relay_llm.execute_current(
             request,
