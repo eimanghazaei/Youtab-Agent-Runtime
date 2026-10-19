@@ -13,7 +13,14 @@ import secrets
 import socket
 import struct
 from typing import Optional
-from defusedxml import ElementTree as ET
+
+# Construction only. This module BUILDS the outbound callback reply from our own
+# trusted values (encrypt/signature/timestamp/nonce) — it never parses untrusted
+# XML — so the stdlib ElementTree is correct here. defusedxml.ElementTree is a
+# parse-hardening shim: it deliberately does NOT re-export Element/SubElement, so
+# importing it here raised AttributeError and broke WXBizMsgCrypt.encrypt().
+# Untrusted inbound XML must still be parsed with defusedxml at the parse site.
+import xml.etree.ElementTree as ET
 
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
