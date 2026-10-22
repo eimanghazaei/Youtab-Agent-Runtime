@@ -271,6 +271,12 @@ _YOUTAB_AGENT_BEHAVIORAL_VARS = frozenset({
     # children; tests that exercise child behavior set it explicitly.
     "YOUTAB_AGENT_DELEGATED_CHILD_CONTEXT",
     "YOUTAB_AGENT_TENANT",
+    # The other half of the managed-run principal. Browser state is scoped by
+    # (tenant, user), so a value leaked from the shell — or inherited when
+    # pytest is launched from a delegated worker, as the note above describes —
+    # would silently move the resolved profile directory and make those tests
+    # non-deterministic. Its siblings above are cleared for the same reason.
+    "YOUTAB_AGENT_KANBAN_CREATED_BY",
     # Honcho host selection changes which nested config block wins. A local
     # shell override leaked "myhost" into the full suite and flipped 20
     # otherwise-unrelated config tests away from the default "youtab" host.
