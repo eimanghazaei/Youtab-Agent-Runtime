@@ -942,6 +942,10 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Authoritative gateway per-request correlation id (canonical v1 signed field).
+    # This is the dedicated column; ``session_id`` above remains the legacy
+    # overload (set to the same value for now) to be retired in a later slice.
+    correlation_id: Optional[str] = None
     # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
     # blocks. Set by ``block_task``; preserved across unblock so a re-block for
     # the same kind is recognisable as an unblock↔re-block loop.
@@ -1029,6 +1033,9 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            correlation_id=(
+                row["correlation_id"] if "correlation_id" in keys else None
             ),
             block_kind=(
                 row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
@@ -1208,6 +1215,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
     session_id           TEXT,
+    -- Authoritative gateway per-request correlation id (canonical v1 signed
+    -- field 8). This is the dedicated correlation column; ``session_id`` above
+    -- remains the legacy overload carrying the same value for now and will be
+    -- retired in a later slice. Indexed for per-correlation lookups.
+    correlation_id       TEXT,
     -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
     -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
     -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
@@ -2397,6 +2409,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "correlation_id" not in cols:
+        # Authoritative gateway per-request correlation id (canonical v1 signed
+        # field). Additive + reversible: legacy rows get NULL; a downgrade simply
+        # stops reading the column. ``session_id`` keeps the legacy overload.
+        _add_column_if_missing(
+            conn, "tasks", "correlation_id", "correlation_id TEXT"
+        )
+
     if "block_kind" not in cols:
         # Typed block reason (VALID_BLOCK_KINDS) or NULL for legacy/un-typed
         # blocks. Existing blocked rows get NULL, which is treated as a
@@ -2426,6 +2446,9 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_tasks_session_id ON tasks(session_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_correlation_id ON tasks(correlation_id)"
     )
 
     # task_events gained a run_id column; back-fill it as NULL for
@@ -2817,7 +2840,20 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
-def create_task(
+def create_task(conn: sqlite3.Connection, **kwargs) -> str:
+    """Backward-compatible wrapper: create a task and return only its id.
+
+    Existing callers depend on the ``str`` return. Callers that must know
+    whether the run was NEWLY created vs. returned via an ``idempotency_key``
+    hit (e.g. the runtime create handler, which must append create-time
+    mode/engine events exactly once) should call :func:`create_task_ex`, which
+    returns ``(task_id, created)``.
+    """
+    task_id, _created = create_task_ex(conn, **kwargs)
+    return task_id
+
+
+def create_task_ex(
     conn: sqlite3.Connection,
     *,
     title: str,
@@ -2841,13 +2877,18 @@ def create_task(
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
+    correlation_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
-) -> str:
+) -> tuple[str, bool]:
     """Create a new task and optionally link it under parent tasks.
 
-    Returns the new task id.  Status is ``ready`` when there are no
+    Returns ``(task_id, created)`` where ``created`` is ``True`` when a new row
+    was inserted and ``False`` when an existing row was returned via an
+    ``idempotency_key`` hit. This lets callers perform create-once side effects
+    (e.g. appending create-time events) without duplicating them on idempotent
+    retries. Status is ``ready`` when there are no
     parents (or all parents already ``done``), otherwise ``todo``.
     If ``triage=True``, status is forced to ``triage`` regardless of
     parents — a specifier/triager is expected to promote the task to
@@ -3036,20 +3077,35 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
+    # Idempotency FAST PATH — return the existing task instead of creating a
+    # duplicate. Done BEFORE entering write_txn to keep the common (already
+    # exists) case cheap and to avoid taking a write lock just to look up.
+    # This lookup is racy on its own (two concurrent same-key creators can both
+    # miss it), so it is NOT authoritative: the write_txn below re-checks under
+    # the BEGIN IMMEDIATE lock before inserting (see ``_existing_idempotent``).
+    #
+    # SECURITY: the lookup is scoped to the SAME (tenant, created_by) that owns
+    # the run — the exact ownership boundary the runtime surface enforces on
+    # every read (see web_routers/runtime.py::_load_owned_task). An
+    # Idempotency-Key is caller-controlled, so without this scope a different
+    # tenant/user submitting a colliding key would be handed back another
+    # owner's run (disclosing its tenant/correlation id and suppressing their
+    # own create). Scoped, a colliding key from a different owner simply creates
+    # their own run. ``IS`` gives correct NULL-matches-NULL semantics.
+    def _existing_idempotent() -> Optional[str]:
         row = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived' "
+            "AND tenant IS ? AND created_by IS ? "
             "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
+            (idempotency_key, tenant, created_by),
         ).fetchone()
-        if row:
-            return row["id"]
+        return row["id"] if row else None
+
+    if idempotency_key:
+        existing = _existing_idempotent()
+        if existing is not None:
+            return existing, False
 
     now = int(time.time())
 
@@ -3078,6 +3134,20 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                # AUTHORITATIVE idempotency re-check under the write lock. The
+                # ``idx_tasks_idempotency`` index is non-unique, so the pre-lock
+                # fast path is racy: two concurrent same-key creators can both
+                # miss it. ``write_txn`` opens BEGIN IMMEDIATE, which serialises
+                # writers — so the loser reaches this point only AFTER the winner
+                # has committed its INSERT, and now observes the existing row.
+                # Returning here (no writes performed) commits an empty
+                # transaction and yields the winner's run with created=False, so
+                # exactly one row per key is ever inserted.
+                if idempotency_key:
+                    existing = _existing_idempotent()
+                    if existing is not None:
+                        return existing, False
+
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -3136,8 +3206,8 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
-                        goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        goal_mode, goal_max_turns, session_id, correlation_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3162,6 +3232,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        correlation_id,
                     ),
                 )
                 for pid in parents:
@@ -3189,7 +3260,7 @@ def create_task(
                     },
                 )
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
-            return task_id
+            return task_id, True
         except sqlite3.IntegrityError:
             if attempt == 1:
                 raise
@@ -8788,6 +8859,19 @@ def _resolve_worker_cli_toolsets(youtab_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _apply_correlation_env(env: "dict[str, str]", task: Task) -> "dict[str, str]":
+    """Inject the authoritative correlation id into a worker env, if present.
+
+    This is how model dispatch carries the gateway correlation id to the child
+    worker (contract C4). Pure and side-effect-free on ``task`` so it can be
+    unit-tested without spawning a subprocess. No-op when the task has no
+    correlation id (legacy rows, non-gateway creation paths).
+    """
+    if task.correlation_id:
+        env["YOUTAB_AGENT_CORRELATION_ID"] = task.correlation_id
+    return env
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -8843,6 +8927,8 @@ def _default_spawn(
         pass
     if task.tenant:
         env["YOUTAB_AGENT_TENANT"] = task.tenant
+    # Carry the authoritative gateway correlation id to the worker (contract C4).
+    _apply_correlation_env(env, task)
     env["YOUTAB_AGENT_KANBAN_TASK"] = task.id
     env["YOUTAB_AGENT_KANBAN_WORKSPACE"] = workspace
     # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
