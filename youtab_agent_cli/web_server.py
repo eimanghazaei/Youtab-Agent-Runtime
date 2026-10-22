@@ -44,6 +44,7 @@ import time
 import urllib.error
 import urllib.parse
 import zipfile
+import ipaddress
 
 from youtab_agent_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
@@ -8041,6 +8042,38 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # ids the endpoint advertises (OpenAI ``/v1/models`` shape) so the GUI can
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
+        parsed = urllib.parse.urlparse(value.rstrip("/"))
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            return {"ok": False, "reachable": True, "message": "Enter a valid http(s) endpoint URL."}
+
+        host = parsed.hostname
+        try:
+            # If host is a literal IP, validate it directly; otherwise resolve
+            # and validate all returned addresses.
+            try:
+                ip_obj = ipaddress.ip_address(host)
+                resolved_ips = [ip_obj]
+            except ValueError:
+                resolved = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+                resolved_ips = [ipaddress.ip_address(item[4][0]) for item in resolved]
+
+            for ip_obj in resolved_ips:
+                if (
+                    ip_obj.is_private
+                    or ip_obj.is_loopback
+                    or ip_obj.is_link_local
+                    or ip_obj.is_multicast
+                    or ip_obj.is_reserved
+                    or ip_obj.is_unspecified
+                ):
+                    return {
+                        "ok": False,
+                        "reachable": True,
+                        "message": "Endpoint URL resolves to a non-public address and is not allowed.",
+                    }
+        except Exception:
+            return {"ok": False, "reachable": True, "message": "Could not validate endpoint host."}
+
         url = value.rstrip("/") + "/models"
         # Send the optional API key so endpoints that require auth on
         # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
