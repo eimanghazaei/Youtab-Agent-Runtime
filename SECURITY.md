@@ -7,7 +7,7 @@ scope for vulnerability reports.
 ## 1. Reporting a Vulnerability
 
 Report privately via [GitHub Security Advisories](https://github.com/eimanghazaei/Youtab-Agent-Runtime/security/advisories/new)
-or **security@youtab.io**. Do not open public issues for
+or **direct@youtab.nl**. Do not open public issues for
 security vulnerabilities. **Youtab Agent Runtime does not operate a bug
 bounty program.**
 
@@ -330,6 +330,6 @@ that:
 - **Coordinated disclosure window:** 90 days from report, or until a
   fix is released, whichever comes first.
 - **Channel:** the GHSA thread or email correspondence with
-  security@youtab.io.
+  Direct@Youtab.nl.
 - **Credit:** reporters are credited in release notes unless
   anonymity is requested.
