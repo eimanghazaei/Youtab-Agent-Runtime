@@ -1018,6 +1018,24 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
             gr.GatewayRunner._launch_detached_restart_command(cls._fake_self())
         )
 
+    # These tests patch the GLOBAL ``subprocess.Popen``, so they observe every
+    # subprocess the process starts — not only the watcher's.  The suite also
+    # runs the background update check (``banner.prefetch_update_check``), which
+    # shells out to git; on a PR build (where the checkout leaves ``FETCH_HEAD``
+    # set) those git calls land inside these tests and were counted as watcher
+    # spawns — inflating the counts and even absorbing the injected ``OSError``.
+    # Key on the watcher's own argv shape instead and let every unrelated
+    # subprocess through untouched, so the assertions measure what they claim.
+    # NOTE: ``argv[1] == "-c"`` alone is not enough — git is invoked as
+    # ``git -c protocol.version=2 fetch ...`` — hence the trailing command too.
+    @staticmethod
+    def _is_watcher_spawn(argv) -> bool:
+        return (
+            len(argv) > 5
+            and argv[1] == "-c"
+            and list(argv[-2:]) == ["gateway", "restart"]
+        )
+
     def test_outer_watcher_retries_without_breakaway_on_oserror(self, monkeypatch):
         import gateway.run as gr
         from youtab_agent_cli._subprocess_compat import (
@@ -1032,6 +1050,8 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         calls = []
 
         def fake_popen(argv, **kwargs):
+            if not self._is_watcher_spawn(argv):
+                return MagicMock()  # unrelated subprocess (e.g. the update check's git)
             calls.append((argv, kwargs))
             if len(calls) == 1:
                 raise OSError(5, "Access is denied")  # ERROR_ACCESS_DENIED
@@ -1091,10 +1111,14 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         monkeypatch.setattr(gr, "_resolve_youtab_bin", lambda: ["youtab"])
 
         calls = []
-        monkeypatch.setattr(
-            "subprocess.Popen",
-            lambda argv, **kwargs: calls.append((argv, kwargs)) or MagicMock(),
-        )
+
+        def fake_popen(argv, **kwargs):
+            if not self._is_watcher_spawn(argv):
+                return MagicMock()  # unrelated subprocess (e.g. the update check's git)
+            calls.append((argv, kwargs))
+            return MagicMock()
+
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
         warn = MagicMock()
         monkeypatch.setattr(gr.logger, "warning", warn)
 
@@ -1114,6 +1138,8 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         calls = []
 
         def always_fail(argv, **kwargs):
+            if not self._is_watcher_spawn(argv):
+                return MagicMock()  # unrelated subprocess (e.g. the update check's git)
             calls.append((argv, kwargs))
             raise OSError(5, "Access is denied")
 

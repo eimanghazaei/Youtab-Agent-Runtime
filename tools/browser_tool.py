@@ -2902,9 +2902,60 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     import urllib.parse
     from agent.redact import _PREFIX_RE
     url_decoded = urllib.parse.unquote(url)
+    # ``"authorization": "denied"`` marks a payload as a POLICY REFUSAL rather
+    # than a failure -- see ``tools.registry.TOOL_AUTHORIZATION_DENIED``. The
+    # managed-run progress feed reads it and does not record a refused call as
+    # work; without it the durable feed asserts that a blocked tool ran.
+    #
+    # THE CRITERION IS ORDERING, NOT THE MESSAGE. A guard carries the marker
+    # only when it returns BEFORE the tool's action happens. Twelve do. The
+    # other thirteen error returns in this module do not, and five of those
+    # were marked on a first pass by matching on "Blocked:" text instead of
+    # reading the control flow -- which is the mistake this comment exists to
+    # prevent.
+    #
+    # Those six are POST-ACTION result-withholding guards: the action already
+    # ran and the guard refuses to hand back what it produced.
+    # ``browser_snapshot`` has taken the snapshot ("before returning the
+    # snapshot"), ``browser_back`` has executed the history move ("Re-check
+    # post-navigation"), both ``_browser_eval`` rechecks are labelled
+    # "Post-eval ... withhold the result", ``browser_get_images`` has run its
+    # eval, and ``_camofox_eval`` has already POSTed the expression to
+    # ``/tabs/{tab_id}/evaluate``. Suppressing their steps deleted a TRUE row
+    # for work that really happened, which AGENTS.md's capability posture
+    # forbids outright: a mitigation must preserve the feature while enforcing
+    # the boundary, and the trace is part of the feature.
+    #
+    # ``_camofox_eval`` was the one that took two passes, and the reason is
+    # worth keeping: the first audit read only the lines between its ``def``
+    # and the guard, saw no action in that window, and called it pre-action.
+    # The ``_post`` is eight lines into the function, above the envelope
+    # parsing -- outside the window, and decisive. Read the whole function,
+    # not the neighbourhood of the guard.
+    #
+    # Also unmarked, and not authorization decisions at all: the two
+    # post-redirect guards below, the navigation-failed return, scroll's
+    # invalid `direction` (input validation), _browser_eval's generic error,
+    # _camofox_eval's "JS eval unsupported" (a capability limit) and its
+    # generic tool_error, and browser_vision's missing screenshot file.
+    #
+    # The eleven that ARE marked, each verified by reading its ordering:
+    # these six pre-navigation guards; `_blocked_private_page_action`, whose
+    # three callers (click/type/press) all return it before their command;
+    # both `browser_console` guards; `_browser_eval`'s expression pre-scan
+    # (which inspects the expression WITHOUT evaluating it, unlike the
+    # post-eval rechecks above); and `browser_vision`, whose own comment is
+    # "Re-check the current URL before capturing anything" -- the
+    # `_run_browser_command` above it only reads the URL.
+    #
+    # Reading the current URL to decide is not itself the tool's action, which
+    # is why `browser_vision` and `_camofox_private_page_block` stay marked
+    # while the post-eval rechecks do not: the former probe, the latter have
+    # already done the thing.
     if _PREFIX_RE.search(url) or _PREFIX_RE.search(url_decoded):
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": "Blocked: URL contains what appears to be an API key or token. "
                      "Secrets must not be sent in URLs.",
         })
@@ -2913,6 +2964,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if _PREFIX_RE.search(url) or _PREFIX_RE.search(normalized_decoded):
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": "Blocked: URL contains what appears to be an API key or token. "
                      "Secrets must not be sent in URLs.",
         })
@@ -2933,6 +2985,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if sensitive_query_key and not _is_local_backend() and not auto_local_this_nav:
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": (
                 "Blocked: URL contains a credential-like query parameter "
                 f"({sensitive_query_key}). Cloud browser backends are third-party "
@@ -2953,6 +3006,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if _is_always_blocked_url(url):
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": "Blocked: URL targets a cloud metadata endpoint",
         })
 
@@ -2964,6 +3018,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     ):
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": "Blocked: URL targets a private or internal address",
         })
 
@@ -2972,6 +3027,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     if blocked:
         return json.dumps({
             "success": False,
+            "authorization": "denied",
             "error": blocked["message"],
             "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]},
         })
@@ -3021,6 +3077,10 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Always-blocked floor (cloud metadata / IMDS) is enforced for every
         # backend and even when auto_local_this_nav is true — see pre-nav
         # check for rationale (#16234).
+        # NOT marked `"authorization": "denied"` -- on purpose. See the note
+        # above the pre-navigation guards: the open command succeeded, so the
+        # agent did browse; these withhold the RESULT and reset the session.
+        # Marking them would delete a true progress row.
         if (
             final_url
             and final_url != url
@@ -3452,6 +3512,7 @@ def _blocked_private_page_action(effective_task_id: str, action: str) -> Optiona
         return None
     return json.dumps({
         "success": False,
+        "authorization": "denied",
         "error": (
             "Blocked: page URL targets a private or internal address "
             f"({blocked_url}). Refusing to {action} on this page in this "
@@ -3479,7 +3540,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
     if expression is not None:
         policy_error = _enforce_browser_eval_policy(expression)
         if policy_error:
-            return json.dumps({"success": False, "error": policy_error}, ensure_ascii=False)
+            return json.dumps({"success": False, "authorization": "denied", "error": policy_error}, ensure_ascii=False)
         return _browser_eval(expression, task_id)
 
     # --- Console output mode (original behaviour) ---
@@ -3494,6 +3555,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         if _blocked_url:
             return json.dumps({
                 "success": False,
+                "authorization": "denied",
                 "error": (
                     "Blocked: page URL targets a private or internal address "
                     f"({_blocked_url}). This may have been caused by a "
@@ -3767,6 +3829,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
         if blocked_literal:
             return json.dumps({
                 "success": False,
+                "authorization": "denied",
                 "error": (
                     "Blocked: JavaScript expression targets a private or "
                     f"internal address ({blocked_literal}). Reading internal "
@@ -3957,6 +4020,12 @@ def _camofox_eval(expression: str, task_id: Optional[str] = None) -> str:
             except (json.JSONDecodeError, ValueError):
                 pass
 
+        # POST-ACTION, so NOT marked `"authorization": "denied"` -- the
+        # expression was already sent to `/tabs/{tab_id}/evaluate` above and
+        # has run in the page. If it navigated somewhere private this withholds
+        # the RESULT of work that happened; the step belongs in the trace. The
+        # equivalent post-eval recheck in `_browser_eval` is unmarked for the
+        # same reason. See the note above the pre-navigation guards.
         if _eval_ssrf_guard_active(task_id or "default"):
             _blocked_url = _camofox_current_page_private_url(tab_id, user_id)
             if _blocked_url:
@@ -4165,6 +4234,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 if _current_url and not _is_safe_url(_current_url):
                     return json.dumps({
                         "success": False,
+                        "authorization": "denied",
                         "error": (
                             "Blocked: page URL targets a private or internal address "
                             f"({_current_url}). This may have been caused by a "

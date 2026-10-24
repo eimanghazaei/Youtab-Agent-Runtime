@@ -113,6 +113,349 @@ _API_CALL_MODULES = frozenset({
 })
 
 
+# ── Managed-run progress steps (controlled, human-readable) ───────────────────
+#
+# A managed worker (dispatched with ``YOUTAB_AGENT_KANBAN_TASK`` = the durable
+# run id) records a short "what am I doing now" line to the run's event feed
+# before each batch of tool calls, so a watching UI shows real progress instead
+# of a bare heartbeat. The line is a curated phrase plus an optional scrubbed
+# detail (a search query, a file's basename); it is bounded and secret-scrubbed
+# here and sanitised again by the gateway/UI. A normal (non-managed) run never
+# touches this path, and every failure is swallowed — surfacing progress must
+# never affect execution. The payload is a PLAIN STRING so it survives the
+# gateway's string-only event projection and renders as one activity line.
+
+_RUNTIME_STEP_PHRASES = {
+    "web_search": "Searching the web",
+    "web_extract": "Reading a web page",
+    "read_file": "Reading a file",
+    "write_file": "Writing a file",
+    "patch": "Editing a file",
+    "search_files": "Searching the files",
+    "terminal": "Running a command",
+    "execute_code": "Running code",
+    "browser_navigate": "Browsing the web",
+    "browser_snapshot": "Looking at the page",
+    "browser_click": "Using the browser",
+    "todo": "Planning the work",
+    "session_search": "Searching past sessions",
+    "memory": "Updating memory",
+    "skill_view": "Reading a skill",
+    "image_generate": "Generating an image",
+    "delegate_task": "Delegating a subtask",
+    # Codex app-server built-ins. `_codex_item_to_tool_name` maps
+    # commandExecution -> exec_command and fileChange -> apply_patch, and its
+    # webSearch maps to `web_search` which is already above. Codex's
+    # mcpToolCall items for Youtab's own tools arrive under their BARE names
+    # (the namespace is stripped by design), so they match the entries above
+    # without any translation.
+    #
+    # The phrases are the same ones the native equivalents use, because the
+    # work is the same work -- a managed run should not read differently
+    # depending on which runtime executed the tool.
+    "exec_command": "Running a command",
+    "apply_patch": "Editing a file",
+}
+
+# Conservative, self-contained secret scrub (the governed redaction module is not
+# available on this code path): obvious key/token/JWT shapes and URL credentials.
+# agent/redact.py is the governed redactor and owns the credential-PREFIX
+# universe (sk-, ghp_, xox*, AKIA, AIza, JWTs, ENV assignments, auth headers,
+# connection strings, URL userinfo and query credentials). It is shared and
+# centrally maintained, so this module must not keep a competing prefix
+# allowlist: each attempt to do so missed the next shape - Bearer, then
+# cookies, then AWS_SECRET_ACCESS_KEY, then AIza.
+#
+# Measured against that redactor, two STRUCTURAL classes remain uncovered, and
+# they do not grow the way a prefix list does:
+#   1. a bare auth scheme with no header name ("Bearer <token>");
+#   2. Cookie / Set-Cookie values and framework session names.
+# Those are supplemented here. Contributing them upstream would benefit every
+# caller and deserves its own bounded change: agent/redact.py redacts all
+# product logging, so widening it needs its own review.
+_STEP_SUPPLEMENT_RE = re.compile(
+    # A bare scheme + credential.
+    #
+    # NO length floor on either scheme now.
+    #
+    # `bearer` had one to keep "bearer of bad news" out of the match, and that
+    # reasoning was wrong in the direction that costs something: RFC 6750
+    # defines b64token as `1*(ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" /
+    # "/") *"="`, so `Bearer abc123` is a perfectly valid credential and the
+    # floor left it intact in a row that is persisted and broadcast.
+    #
+    # Unlike `basic`, a Bearer token is OPAQUE -- there is no structure to
+    # test, so there is no way to tell a short token from a short word. Any
+    # attempt would be a prose allowlist, which is the thing this module's
+    # own comment warns against. So it fails closed, and the cost is bounded
+    # and visible: "bearer of bad news" in a search query becomes
+    # "[redacted]". This file's rule is already written down -- "a dropped
+    # progress row costs nothing; a leaked one cannot be recalled."
+    #
+    # `basic` CANNOT use a length floor: Basic credentials have no minimum
+    # encoded length -- `Basic dTpw` is `u:p`, four characters -- so the floor
+    # let short ones through into a row that is persisted and broadcast to
+    # task viewers. But `basic` is also ordinary prose ("basic setup"), so
+    # dropping the floor alone would over-redact.
+    #
+    # The discriminator is what a Basic credential IS: base64 of
+    # `user:password`. `_basic_token_is_credential` decodes the candidate and
+    # requires a colon, which separates the two cleanly and without a length
+    # rule at all:
+    #
+    #     dTpw             -> u:p          redacted
+    #     YWRtaW46cGFzcw== -> admin:pass   redacted
+    #     setup / basic    -> not base64   kept
+    #     plan / auth      -> no colon     kept
+    r"\bbearer\s+\S+"
+    r"|\bbasic\s+(?P<basic>[A-Za-z0-9+/=]{4,})"
+    # The auth header name in ASSIGNMENT form. The governed redactor covers
+    # the header form ("Authorization: X") and api_key=/token=, but not
+    # "authorization=X".
+    r"|\bauthorization\s*[:=]\s*\S+"
+    # A Cookie / Set-Cookie header is credential material wholesale: it holds
+    # one or more name=value pairs, any of which may be a live session.
+    # Bounded to the line so text after it survives.
+    r"|(?:set-)?cookie\s*[:=]\s*[^\r\n]+"
+    # Cookie names that are never ordinary prose, so any value length goes.
+    r"|\b[\w-]*(?:phpsessid|jsessionid|session[_-]?id|sessid|csrftoken|csrf|xsrf)"
+    r"[\w-]*\s*[:=]\s*\S+"
+    # The bare word "session" takes a length floor so prose survives.
+    r"|\bsession\s*[:=]\s*\S{8,}",
+    re.IGNORECASE,
+)
+
+_STEP_MAX_DETAIL = 48
+_STEP_MAX_SUMMARY = 120
+# A progress row is cosmetic; it must never inherit the board's 120s wait.
+_STEP_BUSY_TIMEOUT_MS = 500
+
+
+def _basic_token_is_credential(token: str) -> bool:
+    """Whether a token after `Basic ` decodes to `user:password`.
+
+    This is the whole definition of a Basic credential, and it is what lets
+    the pattern above drop its length floor without over-redacting prose:
+    `setup` and `basic` are not valid base64 at all, and `plan`/`auth` decode
+    to bytes with no colon, while `dTpw` decodes to `u:p`.
+    """
+    import base64
+    import binascii
+
+    try:
+        decoded = base64.b64decode(token + "=" * (-len(token) % 4), validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    return b":" in decoded
+
+
+def _redact_step_match(match: "re.Match[str]") -> str:
+    """Redact a supplement match, except prose that only looks like `Basic X`.
+
+    Every alternative in `_STEP_SUPPLEMENT_RE` redacts unconditionally apart
+    from the `basic` one, which has no length floor and so needs the decode
+    test to tell `Basic dTpw` from "basic setup".
+    """
+    token = match.groupdict().get("basic")
+    if token is not None and not _basic_token_is_credential(token):
+        return match.group(0)
+    return "[redacted]"
+
+
+def _scrub_step_text(text: Any, *, max_chars: int) -> str:
+    """Redact credentials, collapse whitespace, bound length.
+
+    Fails CLOSED: this line is persisted and broadcast to task viewers, so if
+    the governed redactor cannot run the caller gets "" and nothing is
+    emitted. A dropped progress row costs nothing; a leaked one cannot be
+    recalled.
+    """
+    if not isinstance(text, str):
+        text = str(text)
+    try:
+        from agent.redact import redact_sensitive_text
+
+        # force=True so a logging preference cannot re-expose this, and
+        # redact_url_credentials=True because a persisted, broadcast row is a
+        # non-navigation egress boundary.
+        s = redact_sensitive_text(text, force=True, redact_url_credentials=True)
+    except Exception:  # noqa: BLE001 - fail closed, never emit raw text.
+        logger.debug("step redaction unavailable; dropping line", exc_info=True)
+        return ""
+    if not isinstance(s, str):
+        return ""
+    s = _STEP_SUPPLEMENT_RE.sub(_redact_step_match, s)
+    s = " ".join(s.split())
+    if len(s) > max_chars:
+        s = s[:max_chars].rstrip() + "…"
+    return s
+
+
+def _runtime_step_detail(tool_name: str, raw_args: Any) -> str:
+    """A short, safe noun for a tool call (a query, a file's basename), or ''."""
+    try:
+        if isinstance(raw_args, dict):
+            args: Any = raw_args
+        elif isinstance(raw_args, str) and raw_args.strip():
+            args = json.loads(raw_args)
+        else:
+            args = {}
+    except Exception:
+        return ""
+    if not isinstance(args, dict):
+        return ""
+    name = str(tool_name or "")
+    if name in ("web_search", "session_search"):
+        q = args.get("query") or args.get("q") or ""
+        return _scrub_step_text(q, max_chars=_STEP_MAX_DETAIL)
+    if name in ("read_file", "write_file", "patch", "apply_patch"):
+        path = str(args.get("path") or args.get("file_path") or "")
+        if not path:
+            # Codex's fileChange shape, which has no `path` of its own:
+            #     {"changes": [{"kind": "update", "path": "a.py"}, ...]}
+            # Take the first path so an `apply_patch` step is as informative
+            # as the native `patch` one instead of silently detail-less.
+            changes = args.get("changes")
+            if isinstance(changes, list):
+                for change in changes:
+                    if isinstance(change, dict) and change.get("path"):
+                        path = str(change["path"])
+                        break
+        base = path.replace("\\", "/").rsplit("/", 1)[-1]
+        return _scrub_step_text(base, max_chars=_STEP_MAX_DETAIL)
+    return ""
+
+
+def _runtime_step_phrase(tool_name: Any, raw_args: Any) -> str:
+    """One controlled progress line for a single tool call, or '' if unmappable."""
+    name = str(tool_name or "")
+    if not name:
+        # Tool names are validated/repaired before this seam, so a missing name
+        # is an anomaly: emit nothing rather than a bogus row.
+        return ""
+    phrase = _RUNTIME_STEP_PHRASES.get(name)
+    if phrase is None:
+        phrase = (
+            "Using the browser"
+            if name.startswith("browser_")
+            else ("Running " + name.replace("_", " ").strip())
+        )
+    try:
+        detail = _runtime_step_detail(name, raw_args)
+    except Exception:
+        detail = ""
+    summary = phrase + ((": " + detail) if detail else "")
+    return _scrub_step_text(summary, max_chars=_STEP_MAX_SUMMARY)
+
+
+def emit_runtime_step(tool_name: Any, tool_args: Any) -> None:
+    """Record a controlled progress line for a MANAGED run; no-op otherwise.
+
+    Called from the tool executor *after* authorization succeeds and execution
+    begins. Emitting earlier (per batch, before dispatch) recorded work that a
+    plugin policy, a scope check or ``_tool_guardrails.before_call`` then
+    rejected, and pushed model-proposed arguments into the durable feed before
+    they were validated.
+
+    Three boundaries this must respect, all of them enforced below:
+
+    * A delegate_task child runs in the SAME process under
+      ``delegated_child_context`` and inherits the parent\'s task and run id.
+      ``write_txn`` would have refused the write via
+      ``_assert_not_delegated_child_mutation``; appending in autocommit
+      bypasses that, so the child boundary is checked explicitly here. Without
+      it, every child tool appears as parent work in the parent\'s run feed.
+    * The row is fenced to the live attempt the way
+      ``heartbeat_worker(..., expected_run_id=...)`` fences its update. A
+      reclaimed or un-killable worker must not keep appending steps to an
+      attempt that has ended, because the dashboard broadcasts every insert.
+    * The row is cosmetic, so the connection is opened WITH a short
+      telemetry-specific busy timeout rather than having one applied after the
+      board default already waited, and the single-row append runs in SQLite
+      autocommit instead of through ``write_txn``, whose BEGIN IMMEDIATE retry
+      boundary could stall a tool for minutes during a worker stampede. One
+      cold-open per worker process may still pay the normal first-connect
+      initialization; that is per process, not per tool.
+
+    Fail-open on error, and fail-CLOSED on redaction: a step that cannot be
+    scrubbed is dropped rather than emitted.
+    """
+    task_id = (os.environ.get("YOUTAB_AGENT_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return
+    try:
+        from agent.delegation_context import is_delegated_child_process_context
+
+        if is_delegated_child_process_context():
+            return
+    except Exception:  # noqa: BLE001 - cannot prove we are not a child: stay out.
+        logger.debug("delegation context unavailable; skipping step", exc_info=True)
+        return
+    try:
+        summary = _runtime_step_phrase(tool_name, tool_args)
+        if not summary:
+            return
+        # The dispatcher hands the worker its attempt id
+        # (``YOUTAB_AGENT_KANBAN_RUN_ID``). Record it, like the heartbeat and
+        # terminal events do, so steps stay grouped with the attempt that
+        # produced them after a reclaim or retry.
+        attempt = (os.environ.get("YOUTAB_AGENT_KANBAN_RUN_ID") or "").strip()
+        try:
+            attempt_id = int(attempt) if attempt else None
+        except ValueError:
+            attempt_id = None
+        if attempt_id is None:
+            # No valid attempt id means NO row. This used to fall back to the
+            # status-only fence ("fail-open so a malformed id does not lose
+            # the step"), and that fallback is what the fence was for: with
+            # `current_run_id` out of the predicate, a reclaimed worker whose
+            # attempt has been superseded keeps appending unattributed steps
+            # to a task that is running again under a NEW attempt. The
+            # dashboard broadcasts every insert, so the live attempt's feed
+            # interleaves with a dead one's.
+            #
+            # Nothing legitimate reaches here: the dispatcher always exports
+            # `YOUTAB_AGENT_KANBAN_RUN_ID = str(task.current_run_id)` when it
+            # spawns a worker (youtab_agent_cli/kanban_db.py), so a missing or
+            # non-numeric value in a process that DOES carry
+            # YOUTAB_AGENT_KANBAN_TASK is an anomaly. Losing one cosmetic row
+            # in an anomaly is the cheap side of this trade.
+            return
+        from youtab_agent_cli import kanban_db as kb
+
+
+        # `only_if_initialized` makes this a no-op on a cold database rather
+        # than paying for initialization. `connect()` skips the cross-process
+        # init lock -- bounded at 10s -- plus header validation, the integrity
+        # probe and additive migrations only once this process has initialized
+        # the path, and `busy_timeout_ms` bounds none of that; it limits
+        # SQLite's own lock waits, which come afterwards. In a freshly spawned
+        # worker the cache is empty, so this row would otherwise sit in front
+        # of the tool result on its way to the model and spend run budget on a
+        # row nothing depends on. By the time tools run, the worker's claim and
+        # heartbeat have normally warmed it; when they have not, the row is
+        # dropped by the ColdDatabase below.
+        with kb.connect_closing(busy_timeout_ms=_STEP_BUSY_TIMEOUT_MS,
+                                only_if_initialized=True) as conn:
+            # One statement, not a SELECT fence followed by an INSERT. This
+            # append runs in autocommit by design (see above: a cosmetic row
+            # must not take write_txn's BEGIN IMMEDIATE retry boundary, which
+            # can stall a tool for minutes during a worker stampede), and in
+            # autocommit two statements are two transactions. A worker being
+            # reclaimed could pass the check and then still insert, which the
+            # dashboard broadcasts -- steps appearing on a task that has
+            # already finished, or a dead attempt's steps interleaved with
+            # the live one's. `append_event_if_run_active` makes the attempt
+            # predicate the row source of the INSERT, so it is evaluated
+            # inside the write: no matching task row, no insert, no
+            # broadcast.
+            kb.append_event_if_run_active(
+                conn, task_id, "runtime_step", summary, run_id=attempt_id
+            )
+    except Exception:  # noqa: BLE001 - progress is best-effort, never fatal.
+        logger.debug("runtime step emit failed; continuing", exc_info=True)
+
+
 def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text: str) -> None:
     """Append a provider-safe checkpoint and correction to the live turn.
 
@@ -6096,6 +6439,9 @@ def run_conversation(
                     try:
                         agent.stream_delta_callback(None)
                     except Exception:
+                        # Closing the streaming display is cosmetic: a display
+                        # callback that fails must never abort the turn before
+                        # the tools below run.
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)

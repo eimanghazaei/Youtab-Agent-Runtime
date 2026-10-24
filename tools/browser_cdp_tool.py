@@ -22,7 +22,7 @@ import json
 import logging
 from typing import Any, Dict, Optional
 
-from tools.registry import registry, tool_error
+from tools.registry import registry, tool_authorization_error, tool_error
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,10 @@ def _resolve_cdp_endpoint() -> str:
 
 
 def _private_page_guard_error(blocked_url: str, method: str) -> str:
-    return tool_error(
+    # tool_authorization_error, not tool_error: these guards REFUSE, they do
+    # not fail, and the managed-run progress feed must not record a refused
+    # CDP call as work. See tools/registry.TOOL_AUTHORIZATION_DENIED.
+    return tool_authorization_error(
         "Blocked: page URL targets a private or internal address "
         f"({blocked_url}). Raw CDP method {method!r} could expose private "
         "page content or state.",
@@ -151,7 +154,7 @@ def _browser_cdp_private_guard(
                 bt._is_always_blocked_url(target_url)  # type: ignore[attr-defined]
                 or not bt._is_safe_url(target_url)  # type: ignore[attr-defined]
             ):
-                return tool_error(
+                return tool_authorization_error(
                     "Blocked: CDP Page.navigate target is a private or "
                     f"internal address ({target_url}).",
                     method=method,
@@ -162,7 +165,7 @@ def _browser_cdp_private_guard(
             expression = str((params or {}).get("expression") or "")
             blocked_literal = bt._expression_targets_private_url(expression)  # type: ignore[attr-defined]
             if blocked_literal:
-                return tool_error(
+                return tool_authorization_error(
                     "Blocked: CDP Runtime.evaluate expression targets a "
                     f"private or internal address ({blocked_literal}).",
                     method=method,

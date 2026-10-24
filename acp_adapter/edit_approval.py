@@ -245,7 +245,14 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
         proposal = build_edit_proposal(tool_name, arguments)
     except Exception as exc:
         logger.warning("Could not build ACP edit approval proposal for %s: %s", tool_name, exc)
-        return json.dumps({"error": f"Edit approval denied: could not prepare diff ({exc})"}, ensure_ascii=False)
+        # Marked as an authorization refusal: the edit never happened, so the
+        # managed-run progress feed must not record it as work.
+        # See tools/registry.TOOL_AUTHORIZATION_DENIED.
+        return json.dumps(
+            {"error": f"Edit approval denied: could not prepare diff ({exc})",
+             "authorization": "denied"},
+            ensure_ascii=False,
+        )
 
     if proposal is None:
         return None
@@ -258,7 +265,11 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
 
     if approved:
         return None
-    return json.dumps({"error": "Edit approval denied by ACP client; file was not modified."}, ensure_ascii=False)
+    return json.dumps(
+        {"error": "Edit approval denied by ACP client; file was not modified.",
+         "authorization": "denied"},
+        ensure_ascii=False,
+    )
 
 
 def build_acp_edit_tool_call(proposal: EditProposal):

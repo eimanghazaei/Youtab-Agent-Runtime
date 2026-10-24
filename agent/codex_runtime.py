@@ -384,6 +384,147 @@ def _codex_item_to_preview(item: dict) -> Any:
     return None
 
 
+# Mirrors tools.registry.TOOL_AUTHORIZATION_DENIED, duplicated as a literal
+# for the same reason agent.tool_executor does: this module is loaded on the
+# Codex turn path and tools.registry pulls in the whole tool surface. A wrong
+# value here fails OPEN -- a progress row for a blocked call, which is visible
+# -- and the suite asserts the two agree.
+_TOOL_AUTHORIZATION_DENIED = "denied"
+
+
+def _refusal_envelope(value: Any) -> bool:
+    """Whether `value` IS a handler envelope marked as an authorization refusal.
+
+    Top level only, deliberately. `value` is either the object the handler
+    returned or the JSON string it returned; in both cases the marker is a key
+    of that object and of nothing nested inside it. Mirrors
+    `agent.tool_executor._is_authorization_refusal`, including the substring
+    probe that keeps a megabyte of file content from being parsed to answer a
+    progress-reporting question.
+    """
+    if isinstance(value, dict):
+        return value.get("authorization") == _TOOL_AUTHORIZATION_DENIED
+    if not isinstance(value, str):
+        return False
+    text = value.lstrip()
+    if not text.startswith("{") or '"authorization"' not in text:
+        return False
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    return (isinstance(parsed, dict)
+            and parsed.get("authorization") == _TOOL_AUTHORIZATION_DENIED)
+
+
+def _codex_item_refused(item: dict) -> bool:
+    """Whether a completed codex item carries a handler-level REFUSAL.
+
+    `_codex_item_completion_payload`'s `is_error` cannot answer this. An
+    internal MCP handler returns its JSON as an ordinary FastMCP string, so a
+    policy refusal is placed INSIDE `mcpToolCall.result` -- often wrapped
+    again as text inside a content list -- and never reaches the item's
+    top-level `error`. The item therefore looks successful.
+
+    That matters because the managed-run progress feed reads the disposition:
+    `model_tools.handle_function_call` rejecting `web_search` through
+    `resolve_pre_tool_block` would otherwise persist a step containing the
+    original query for a search that never ran, and Youtab's own browser and
+    file guards return the same marked envelopes through this path.
+
+    The scan is restricted to `mcpToolCall` items from the INTERNAL server.
+    That restriction is the security half: tool results are untrusted input
+    (AGENTS.md), and an external MCP tool that fetches or echoes arbitrary
+    JSON could otherwise return a nested `{"authorization": "denied"}` and
+    suppress its own progress row with content it controls. Only Youtab's own
+    handler channel may assert a refusal. Codex's built-ins
+    (`commandExecution`, `fileChange`, `webSearch`) never carry this marker at
+    all, and Youtab's browser and file guards all arrive through the internal
+    server, so nothing legitimate is lost.
+
+    Restricting the CHANNEL was only half of it. Within that channel the
+    marker is read off the ENVELOPE -- the top level of the object the
+    handler itself returned -- and never from the data inside it.
+
+    An earlier version searched the result recursively, descending into
+    nested containers and parsing strings that were themselves JSON. That
+    read a tool's own OUTPUT as its disposition. Three internal tools return
+    text verbatim at a shallow key -- `execute_code`'s stdout
+    (`tools/code_execution_tool.py`), `read_terminal`
+    (`tools/read_terminal_tool.py`), and the command output tails in
+    `tools/process_registry.py` -- so code that merely PRINTED
+    `{"authorization": "denied"}` deleted its own "Running code" row from the
+    durable trace, which is the one place a reviewer would look to find out
+    what the run did. Tool results are untrusted input (AGENTS.md), and that
+    applies to the internal server's payloads too: the server is trusted to
+    report ITS OWN verdict, not to vouch for bytes it was handed.
+
+    The descent also bought nothing. Every refusing site -- all nineteen
+    literals plus `tools.registry.tool_authorization_error`, whose envelope
+    is `{"error": ..., "authorization": "denied"}` -- puts the key at the top
+    level of its own object. Nothing legitimate nests it, and
+    `agent.tool_executor._is_authorization_refusal`, the same marker on the
+    non-Codex path, has always been top-level only; this makes the two
+    agree.
+
+    So exactly two shapes are honoured: the handler's object itself, and that
+    object wrapped once in FastMCP's content list, which is the TRANSPORT
+    rather than part of the payload. `contentItems` is not among the fields
+    checked because it belongs to `dynamicToolCall`, which this function has
+    already returned False for.
+    """
+    if (item.get("type") != "mcpToolCall"
+            or item.get("server") != _INTERNAL_MCP_SERVER):
+        return False
+
+    for field in ("result", "error"):
+        value = item.get(field)
+        if _refusal_envelope(value):
+            return True
+        # FastMCP hands the handler's JSON back as TEXT inside a content
+        # list. Unwrap exactly that one level, and only each entry's `text`:
+        # anything deeper is the tool's data, not its verdict.
+        if isinstance(value, dict):
+            entries = value.get("content")
+            if isinstance(entries, list):
+                for entry in entries:
+                    if (isinstance(entry, dict)
+                            and _refusal_envelope(entry.get("text"))):
+                        return True
+    return False
+
+
+def _codex_item_ran(item: dict) -> bool:
+    """Whether a completed item shows evidence the tool actually EXECUTED.
+
+    Used to tell a tool that ran and failed from one that never ran, so a
+    failure still produces a progress row. Suppressing every error completion
+    recreated on this runtime the exact gap already fixed for the native
+    executor: the trace disappears precisely when something goes wrong, which
+    is when it is worth reading.
+
+    The evidence is per item type and is read off the item rather than
+    assumed:
+
+      commandExecution  an `exitCode` is the process's own result, so its
+                        presence proves the command ran. Absent, there is no
+                        evidence it did.
+      fileChange        codex names the outcome in `status`; the declined
+                        vocabulary is treated as "did not run" and anything
+                        else -- including a plain failure -- as "ran".
+      everything else   an error reported by a provider or a tool means the
+                        call was made.
+    """
+    item_type = item.get("type") or ""
+    if item_type == "commandExecution":
+        return item.get("exitCode") is not None
+    if item_type == "fileChange":
+        status = str(item.get("status") or "").strip().lower()
+        return status not in {"declined", "rejected", "denied", "cancelled",
+                              "canceled", "aborted", "not_approved"}
+    return True
+
+
 def _codex_item_completion_payload(item: dict) -> tuple[str, bool]:
     """Return (result_text, is_error) for a completed codex tool item.
     Mirrors the projector's tool-result content so the bubble shows the
@@ -534,13 +675,66 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
                     name, exc_info=True,
                 )
         complete_cb = getattr(agent, "tool_complete_callback", None)
+        completed_args = prior[1] if prior is not None else _codex_item_to_args(item)
         if complete_cb is not None:
-            args = prior[1] if prior is not None else _codex_item_to_args(item)
             try:
-                complete_cb(_stable_call_id(item, name), name, args, result)
+                complete_cb(_stable_call_id(item, name), name, completed_args, result)
             except Exception:
                 logger.debug(
                     "tool_complete_callback raised for %s", name, exc_info=True,
+                )
+
+        # Managed-run progress feed. `run_conversation` returns into
+        # `_run_codex_app_server_turn` before the tool executor is reached, so
+        # `agent/tool_executor._emit_managed_progress` never runs on this
+        # runtime -- without this, a managed worker with
+        # `openai_runtime=codex_app_server` has a heartbeat-only feed.
+        #
+        # This is the correct seam rather than `item/started`: codex asks for
+        # approval AFTER the item starts, so a step emitted there would claim
+        # work for a command the user may still decline.
+        #
+        # A tool that RAN still gets a row, even when it failed. Dropping
+        # every error completion recreated here the gap already fixed for the
+        # native executor -- the trace vanishing exactly when something goes
+        # wrong -- and AGENTS.md's capability posture is explicit that a
+        # mitigation must preserve the feature, trace included.
+        #
+        # So the two questions are asked separately: `_codex_item_refused`
+        # answers "did Youtab's own handler refuse this", and
+        # `_codex_item_ran` answers "is there evidence it executed". A failure
+        # with evidence is traced; only the case with neither -- no refusal
+        # marker and no sign it ran, such as a `commandExecution` with no
+        # `exitCode` -- is skipped, because recording "Running a command" for
+        # a command that never started is the failure this feed has been
+        # corrected for twice.
+        #
+        # No double emission: Youtab's own tools reached through the internal
+        # MCP server run in a separate youtab-agent-tools-mcp-server
+        # subprocess that never calls `emit_runtime_step`, so the codex-level
+        # event is the only one.
+        #
+        # Guarded like every other callback here -- progress reporting must
+        # never tear down the turn loop.
+        # `is_error` does not enter this decision at all, and that is the
+        # point. A `commandExecution` with no `exitCode` reports
+        # `is_error=False` -- there is no failing exit code to report -- so
+        # gating on `not is_error` let exactly the never-ran case through
+        # while still dropping the ran-and-failed one. Asking only "was it
+        # refused" and "did it run" gets both right:
+        #
+        #   exit 0        refused=False ran=True   -> row
+        #   exit 1        refused=False ran=True   -> row  (the fix)
+        #   no exitCode   refused=False ran=False  -> none (the fix)
+        #   internal refusal            refused=True   -> none
+        if not _codex_item_refused(item) and _codex_item_ran(item):
+            try:
+                from agent.conversation_loop import emit_runtime_step
+
+                emit_runtime_step(name, completed_args)
+            except Exception:
+                logger.debug(
+                    "emit_runtime_step raised for %s", name, exc_info=True,
                 )
 
     def _fire_text_delta(params: dict) -> None:

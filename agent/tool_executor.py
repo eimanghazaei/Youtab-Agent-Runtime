@@ -351,6 +351,129 @@ def _managed_values(
     )
 
 
+# Mirrors tools.registry.TOOL_AUTHORIZATION_DENIED. Duplicated as a literal
+# rather than imported because this module is on the hot tool-dispatch path and
+# tools.registry pulls in the whole tool surface; a wrong value here fails open
+# (a progress row for a blocked call), which is visible, and the test suite
+# asserts the two agree.
+_TOOL_AUTHORIZATION_DENIED = "denied"
+
+# The probe that decides whether a result is worth parsing at all.
+#
+# A size cap was here first and had a hole: a CORRECTLY marked refusal was
+# ignored because its envelope was large. Gateway ask mode echoes the full
+# command back in its pending-approval payload, and the approval parser
+# accepts compound commands well past any cap one would pick, so the feed
+# recorded "Running a command" for a command that never ran.
+#
+# A substring probe has no such threshold. It is one scan over a string
+# already in memory; only a result actually carrying the key is parsed, at any
+# size; and a megabyte of file content is still rejected without being
+# parsed, which is what the cap was for.
+_AUTHORIZATION_KEY = '"authorization"'
+
+
+def _is_authorization_refusal(result: Any) -> bool:
+    """Whether a tool's return value is an AUTHORIZATION REFUSAL.
+
+    Deliberately narrow: only the explicit
+    `tools.registry.TOOL_AUTHORIZATION_DENIED` marker counts. The first
+    version of this treated every `tool_error(...)` envelope as a refusal, and
+    that was wrong in the costly direction -- handlers use the same envelope
+    for ordinary post-execution failures (`web_search_tool` returns
+    `tool_error(error_msg)` when its provider raises), so an authorized search
+    that really ran and then timed out emitted no progress row at all. The
+    feed went blank exactly when something went wrong, which is when it is
+    most worth reading.
+
+    So refusal is CARRIED by the refusing site rather than inferred here:
+    `read_file`'s internal-path and credential denylist returns
+    `tool_authorization_error(...)`, and `acp_adapter.edit_approval` sets the
+    same key. A new refusal path has to opt in, which is the right default --
+    the failure mode of forgetting is a progress row for a blocked call, which
+    is visible, rather than a silently missing feed.
+
+    Cost is controlled by a SUBSTRING PROBE, not a size cap. Tool results
+    carry whole file contents and a successful `read_file` can be a megabyte
+    of JSON, so parsing every result to answer a progress-reporting question
+    would be real cost for no benefit -- but a cap was the wrong way to avoid
+    that and had a hole of its own: gateway ask mode echoes the full command
+    back in its pending-approval payload, and the approval parser accepts
+    compound commands well past any cap one would pick, so a correctly marked
+    refusal was ignored solely because its envelope was large.
+
+    Probing for the key first has neither problem. A result without the
+    marker is rejected after one substring scan and never parsed; a result
+    with it is parsed however large it is. There is no size at which a
+    refusal stops being recognised.
+    """
+    if isinstance(result, dict):
+        return result.get("authorization") == _TOOL_AUTHORIZATION_DENIED
+    if not isinstance(result, str):
+        return False
+    text = result.lstrip()
+    if not text.startswith("{") or _AUTHORIZATION_KEY not in text:
+        return False
+    try:
+        parsed = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return (
+        isinstance(parsed, dict)
+        and parsed.get("authorization") == _TOOL_AUTHORIZATION_DENIED
+    )
+
+
+def _emit_managed_progress(
+    function_name: str, function_args: dict, *, result: Any
+) -> None:
+    """Record the managed-run progress step for a tool that actually ran.
+
+    Emitted AFTER ``execute``, not before it, and skipped when the tool
+    REFUSED -- refused specifically, not merely failed. The distinction is
+    carried by the refusing site via
+    ``tools.registry.TOOL_AUTHORIZATION_DENIED``, because handlers use one
+    error envelope for both and an authorized call that ran and then failed
+    must still appear in the feed. See ``_is_authorization_refusal``.
+
+    The middleware above clears policy, scope and guardrails, but
+    tool-specific authorization runs inside the handler: ``read_file``
+    applies the Youtab internal-path and credential-store denylist
+    (``tools/file_tools.py``, ``get_read_block_error``), and
+    ``write_file``/``patch`` can still be refused by ACP edit approval
+    (``acp_adapter/edit_approval.maybe_require_edit_approval``). Emitting
+    before ``execute`` meant a managed run recorded "Reading auth.json" --
+    the basename of a file the agent was never allowed to open -- and
+    asserted that a refused tool was running. The dashboard broadcasts every
+    insert, so that row is durable and visible.
+
+    This module already claimed the opposite ("never claims a rejected tool
+    ran"); it was true only of the middleware rejections, and is now true of
+    tool-internal ones too.
+
+    The cost is liveness: the row lands when the tool finishes rather than
+    when it starts, so a slow tool shows nothing while it works. That is the
+    right way round -- a progress feed that is briefly behind is a worse
+    product than one that discloses blocked arguments, and only the second is
+    a governance problem (AGENTS.md: no capability may self-authorize an
+    effect; tool results are untrusted until validated).
+
+    ``emit_runtime_step`` is itself a no-op outside a managed run and
+    fail-open on any error; this wrapper only has to survive the deferred
+    import, which stays deferred because conversation_loop owns the step
+    vocabulary and importing it at module scope would add an import-time edge
+    between the two.
+    """
+    if _is_authorization_refusal(result):
+        return
+    try:
+        from agent.conversation_loop import emit_runtime_step
+    except Exception:  # noqa: BLE001 - progress must never block a tool.
+        logger.debug("runtime step emitter unavailable; continuing", exc_info=True)
+        return
+    emit_runtime_step(function_name, function_args)
+
+
 def _run_agent_tool_execution_middleware(
     agent,
     *,
@@ -479,7 +602,25 @@ def _run_agent_tool_execution_middleware(
             agent._iters_since_skill = 0
 
         _advance_start_order(_begin)
-        return execute(final_args)
+        try:
+            outcome = execute(final_args)
+        except BaseException:
+            # A RAISED failure is still an authorized tool that ran. The
+            # executors around this one catch these and turn them into
+            # ordinary tool-error results, so without this the feed loses
+            # exactly the failing steps -- the same hole as treating every
+            # error envelope as a refusal, reached through the exception path
+            # instead of the return path.
+            #
+            # `result=None` is deliberate: None is not a refusal envelope, so
+            # the step is emitted. The emitter is fail-open and never raises,
+            # and the original exception is re-raised unchanged.
+            _emit_managed_progress(function_name, final_args, result=None)
+            raise
+        # After execution, and only for a tool that was not refused by its own
+        # handler -- see _emit_managed_progress.
+        _emit_managed_progress(function_name, final_args, result=outcome)
+        return outcome
 
     def _youtab_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(
