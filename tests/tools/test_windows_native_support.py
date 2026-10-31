@@ -1037,7 +1037,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
                 raise OSError(5, "Access is denied")  # ERROR_ACCESS_DENIED
             return MagicMock()
 
-        monkeypatch.setattr("subprocess.Popen", fake_popen)
+        monkeypatch.setattr(gr, "_restart_watcher_popen", fake_popen)
 
         self._drive(gr)
 
@@ -1092,7 +1092,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
 
         calls = []
         monkeypatch.setattr(
-            "subprocess.Popen",
+            gr, "_restart_watcher_popen",
             lambda argv, **kwargs: calls.append((argv, kwargs)) or MagicMock(),
         )
         warn = MagicMock()
@@ -1117,7 +1117,7 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
             calls.append((argv, kwargs))
             raise OSError(5, "Access is denied")
 
-        monkeypatch.setattr("subprocess.Popen", always_fail)
+        monkeypatch.setattr(gr, "_restart_watcher_popen", always_fail)
         warn = MagicMock()
         monkeypatch.setattr(gr.logger, "warning", warn)
 
@@ -1152,3 +1152,35 @@ class TestGatewayRunRestartWatcherOuterPopenFallback:
         assert argv_used[2] not in rendered  # watcher script body
         assert "argv" not in fmt.lower()
         assert "env=" not in fmt.lower()
+
+
+    def test_restart_spawn_mock_does_not_capture_other_subprocesses(self, monkeypatch):
+        import gateway.run as gr
+        from tools.environments import local
+
+        monkeypatch.setattr(gr.sys, "platform", "win32")
+        monkeypatch.setattr(gr, "_resolve_youtab_bin", lambda: ["youtab"])
+        unrelated = MagicMock(return_value=MagicMock())
+        monkeypatch.setattr(subprocess, "Popen", unrelated)
+
+        def prepare_env(**kwargs):
+            assert kwargs == {"scrub_secrets": False, "inherit_profile_home": True}
+            subprocess.Popen(["synthetic-environment-probe"])
+            return os.environ.copy()
+
+        monkeypatch.setattr(local, "build_subprocess_env", prepare_env)
+        calls = []
+
+        def fail_watcher(argv, **kwargs):
+            calls.append((argv, kwargs))
+            raise OSError(5, "Access is denied")
+
+        monkeypatch.setattr(gr, "_restart_watcher_popen", fail_watcher)
+        warning = MagicMock()
+        monkeypatch.setattr(gr.logger, "warning", warning)
+        self._drive(gr)
+
+        unrelated.assert_called_once_with(["synthetic-environment-probe"])
+        assert len(calls) == 2, "both watcher attempts must still execute"
+        assert calls[0][0] == calls[1][0]
+        warning.assert_called_once()
